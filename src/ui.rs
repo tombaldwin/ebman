@@ -400,9 +400,7 @@ fn draw_alarms_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
                     .add_modifier(Modifier::BOLD)
             } else if l.starts_with("OK") {
                 Style::default().fg(theme.health_green)
-            } else if l.starts_with("INSUFFICIENT") {
-                Style::default().fg(theme.muted)
-            } else if l.trim_start().starts_with("↳") {
+            } else if l.starts_with("INSUFFICIENT") || l.trim_start().starts_with("↳") {
                 Style::default().fg(theme.muted)
             } else {
                 Style::default().fg(theme.text)
@@ -2929,6 +2927,25 @@ fn humanize_age(d: chrono::Duration) -> String {
     }
 }
 
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let v = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(v[1])[1]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3027,9 +3044,9 @@ mod tests {
         // Next window → different frame.
         assert_ne!(a, spinner(250, IconStyle::Unicode));
         // ASCII fallback uses a different palette.
-        assert!(SPINNER_FRAMES.iter().any(|f| *f == a));
+        assert!(SPINNER_FRAMES.contains(&a));
         let ascii = spinner(0, IconStyle::Ascii);
-        assert!(ASCII_SPINNER.iter().any(|f| *f == ascii));
+        assert!(ASCII_SPINNER.contains(&ascii));
     }
 
     #[test]
@@ -3098,23 +3115,4 @@ mod tests {
         }
         out
     }
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-    let v = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(r);
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(v[1])[1]
 }

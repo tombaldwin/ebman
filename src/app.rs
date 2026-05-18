@@ -1403,16 +1403,15 @@ impl App {
                     self.view_mode = self.view_mode.next();
                     self.status_message = Some(format!("view: {}", self.view_mode.label()));
                 }
-                KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if self.events_visible {
-                        self.events_panel_height = (self.events_panel_height + 1).min(30);
-                    }
+                KeyCode::Up
+                    if key.modifiers.contains(KeyModifiers::CONTROL) && self.events_visible =>
+                {
+                    self.events_panel_height = (self.events_panel_height + 1).min(30);
                 }
-                KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if self.events_visible {
-                        self.events_panel_height =
-                            self.events_panel_height.saturating_sub(1).max(4);
-                    }
+                KeyCode::Down
+                    if key.modifiers.contains(KeyModifiers::CONTROL) && self.events_visible =>
+                {
+                    self.events_panel_height = self.events_panel_height.saturating_sub(1).max(4);
                 }
                 KeyCode::Char('s') => {
                     self.sort_key = self.sort_key.next();
@@ -1796,10 +1795,7 @@ impl App {
         let Some(target_env) = self
             .cached_display
             .iter()
-            .filter_map(|r| match r {
-                DisplayRow::Env(_) => Some(r),
-                DisplayRow::Separator => None,
-            })
+            .filter(|r| matches!(r, DisplayRow::Env(_)))
             .nth(n.saturating_sub(1))
         else {
             return;
@@ -2470,16 +2466,14 @@ impl App {
                     self.spawn_action(m);
                 }
                 (KeyCode::Char('n'), ConfirmKind::YesNo) => self.close_action_flow(),
-                (KeyCode::Enter, ConfirmKind::TypeName) => {
-                    if modal.typed == modal.target_env {
-                        let m = modal.clone();
-                        self.action_flow = Some(ActionFlow::Running {
-                            action: m.action,
-                            env: m.target_env.clone(),
-                            since: Instant::now(),
-                        });
-                        self.spawn_action(m);
-                    }
+                (KeyCode::Enter, ConfirmKind::TypeName) if modal.typed == modal.target_env => {
+                    let m = modal.clone();
+                    self.action_flow = Some(ActionFlow::Running {
+                        action: m.action,
+                        env: m.target_env.clone(),
+                        since: Instant::now(),
+                    });
+                    self.spawn_action(m);
                 }
                 (KeyCode::Backspace, ConfirmKind::TypeName) => {
                     modal.typed.pop();
@@ -2489,10 +2483,11 @@ impl App {
                 }
                 _ => {}
             },
-            ActionFlow::Running { .. } => match key.code {
-                KeyCode::Esc => self.close_action_flow(),
-                _ => {}
-            },
+            ActionFlow::Running { .. } => {
+                if key.code == KeyCode::Esc {
+                    self.close_action_flow();
+                }
+            }
         }
     }
 
@@ -2752,9 +2747,9 @@ impl App {
                 Some(name) => {
                     let label = rest[1..].join(" ");
                     if label.is_empty() {
-                        self.error_message = Some(format!(
-                            "usage: :alias <env-name> <label>  (label cannot be empty)"
-                        ));
+                        self.error_message = Some(
+                            "usage: :alias <env-name> <label>  (label cannot be empty)".to_string(),
+                        );
                     } else {
                         self.aliases.insert(name.to_string(), label.clone());
                         self.status_message = Some(format!("alias '{name}' → \"{label}\""));
@@ -2943,7 +2938,7 @@ impl App {
                     self.status_message =
                         Some("no saved views — :save-view <name> to create one".into());
                 } else {
-                    let listing: Vec<String> = self.saved_views.keys().map(|k| k.clone()).collect();
+                    let listing: Vec<String> = self.saved_views.keys().cloned().collect();
                     self.status_message = Some(format!("views: {}", listing.join(", ")));
                 }
             }
@@ -3338,7 +3333,7 @@ impl App {
                 }
                 match result {
                     Ok(mut apps) => {
-                        apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                        apps.sort_by_key(|a| a.name.to_lowercase());
                         self.applications = apps;
                         if self.applications.is_empty() {
                             self.app_table_state.select(None);
@@ -3558,7 +3553,7 @@ impl App {
                     }) if requested == &env_name => {
                         *body = format_alarms(result);
                     }
-                    _ => return,
+                    _ => (),
                 }
             }
             AppMsg::PreflightEvents {
@@ -4362,8 +4357,8 @@ where
     for k in prev_counts.keys().chain(next_counts.keys()) {
         keys.insert(k.clone(), ());
     }
-    keys.into_iter()
-        .filter_map(|(k, _)| {
+    keys.into_keys()
+        .filter_map(|k| {
             let p = *prev_counts.get(&k).unwrap_or(&0);
             let n = *next_counts.get(&k).unwrap_or(&0);
             let d = n - p;

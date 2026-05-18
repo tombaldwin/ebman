@@ -306,7 +306,7 @@ impl AwsClient {
                 let sent_at = attrs
                     .get(&M::SentTimestamp)
                     .and_then(|v| v.parse::<i64>().ok())
-                    .and_then(|ms| DateTime::from_timestamp_millis(ms));
+                    .and_then(DateTime::from_timestamp_millis);
                 QueueMessage {
                     id: m.message_id.unwrap_or_default(),
                     receipt_handle: m.receipt_handle.unwrap_or_default(),

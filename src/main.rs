@@ -266,87 +266,6 @@ fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
     (to_u8(r1), to_u8(g1), to_u8(b1))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::hsl_to_rgb;
-
-    #[test]
-    fn hsl_to_rgb_red() {
-        let (r, g, b) = hsl_to_rgb(0.0, 1.0, 0.5);
-        assert_eq!((r, g, b), (255, 0, 0));
-    }
-
-    #[test]
-    fn hsl_to_rgb_cyan_and_magenta() {
-        let (r, g, b) = hsl_to_rgb(180.0, 1.0, 0.5);
-        assert_eq!((r, g, b), (0, 255, 255));
-        let (r, g, b) = hsl_to_rgb(300.0, 1.0, 0.5);
-        assert_eq!((r, g, b), (255, 0, 255));
-    }
-
-    use super::prune_old_crash_reports;
-
-    #[test]
-    fn prune_old_crash_reports_keeps_newest() {
-        let dir = std::env::temp_dir().join(format!("ebman-prune-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        // Names sort lexicographically the same as chronologically.
-        let names = [
-            "crash-20260101T000000Z.log",
-            "crash-20260102T000000Z.log",
-            "crash-20260103T000000Z.log",
-            "crash-20260104T000000Z.log",
-            "crash-20260105T000000Z.log",
-        ];
-        for n in names {
-            std::fs::write(dir.join(n), b"x").unwrap();
-        }
-        // Also drop in an unrelated file — must not be touched.
-        std::fs::write(dir.join("not-a-crash.log"), b"y").unwrap();
-        // keep=3 means "after the about-to-be-written report, total ≤ 3".
-        // So with 5 existing files, the 3 oldest are dropped to make room.
-        prune_old_crash_reports(&dir, 3);
-        assert!(!dir.join(names[0]).exists());
-        assert!(!dir.join(names[1]).exists());
-        assert!(!dir.join(names[2]).exists());
-        assert!(dir.join(names[3]).exists());
-        assert!(dir.join(names[4]).exists());
-        assert!(dir.join("not-a-crash.log").exists());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn prune_old_crash_reports_under_limit_is_noop() {
-        let dir = std::env::temp_dir().join(format!("ebman-prune-under-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("crash-2026.log"), b"x").unwrap();
-        prune_old_crash_reports(&dir, 5);
-        assert!(dir.join("crash-2026.log").exists());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn hsl_to_rgb_clamps_to_valid_range() {
-        // u8 enforces 0..=255 by type, so additionally assert that moderate-saturation
-        // mid-lightness inputs produce visible (non-collapsed) outputs across the wheel,
-        // and that hue is wrapped modulo 360 (h=-30 should equal h=330).
-        for h in [-30.0, 0.0, 90.0, 180.0, 270.0, 360.0, 720.0] {
-            let (r, g, b) = hsl_to_rgb(h, 0.7, 0.65);
-            let max = r.max(g).max(b);
-            let min = r.min(g).min(b);
-            assert!(max > min, "hue {h} collapsed to greyscale");
-        }
-        assert_eq!(hsl_to_rgb(-30.0, 0.7, 0.65), hsl_to_rgb(330.0, 0.7, 0.65));
-        assert_eq!(hsl_to_rgb(0.0, 0.7, 0.65), hsl_to_rgb(360.0, 0.7, 0.65));
-        // Zero saturation collapses to greyscale at lightness * 255.
-        let (r, g, b) = hsl_to_rgb(123.0, 0.0, 0.5);
-        assert_eq!(r, g);
-        assert_eq!(g, b);
-    }
-}
-
 fn enter_tui() -> Result<Tui> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -459,4 +378,83 @@ fn init_logging() -> Result<LogReloadHandle> {
 
 fn dirs_log_dir() -> std::path::PathBuf {
     util::cache_dir()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{hsl_to_rgb, prune_old_crash_reports};
+
+    #[test]
+    fn hsl_to_rgb_red() {
+        let (r, g, b) = hsl_to_rgb(0.0, 1.0, 0.5);
+        assert_eq!((r, g, b), (255, 0, 0));
+    }
+
+    #[test]
+    fn hsl_to_rgb_cyan_and_magenta() {
+        let (r, g, b) = hsl_to_rgb(180.0, 1.0, 0.5);
+        assert_eq!((r, g, b), (0, 255, 255));
+        let (r, g, b) = hsl_to_rgb(300.0, 1.0, 0.5);
+        assert_eq!((r, g, b), (255, 0, 255));
+    }
+
+    #[test]
+    fn prune_old_crash_reports_keeps_newest() {
+        let dir = std::env::temp_dir().join(format!("ebman-prune-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Names sort lexicographically the same as chronologically.
+        let names = [
+            "crash-20260101T000000Z.log",
+            "crash-20260102T000000Z.log",
+            "crash-20260103T000000Z.log",
+            "crash-20260104T000000Z.log",
+            "crash-20260105T000000Z.log",
+        ];
+        for n in names {
+            std::fs::write(dir.join(n), b"x").unwrap();
+        }
+        // Also drop in an unrelated file — must not be touched.
+        std::fs::write(dir.join("not-a-crash.log"), b"y").unwrap();
+        // keep=3 means "after the about-to-be-written report, total ≤ 3".
+        // So with 5 existing files, the 3 oldest are dropped to make room.
+        prune_old_crash_reports(&dir, 3);
+        assert!(!dir.join(names[0]).exists());
+        assert!(!dir.join(names[1]).exists());
+        assert!(!dir.join(names[2]).exists());
+        assert!(dir.join(names[3]).exists());
+        assert!(dir.join(names[4]).exists());
+        assert!(dir.join("not-a-crash.log").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_old_crash_reports_under_limit_is_noop() {
+        let dir = std::env::temp_dir().join(format!("ebman-prune-under-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("crash-2026.log"), b"x").unwrap();
+        prune_old_crash_reports(&dir, 5);
+        assert!(dir.join("crash-2026.log").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hsl_to_rgb_clamps_to_valid_range() {
+        // u8 enforces 0..=255 by type, so additionally assert that moderate-saturation
+        // mid-lightness inputs produce visible (non-collapsed) outputs across the wheel,
+        // and that hue is wrapped modulo 360 (h=-30 should equal h=330).
+        for h in [-30.0, 0.0, 90.0, 180.0, 270.0, 360.0, 720.0] {
+            let (r, g, b) = hsl_to_rgb(h, 0.7, 0.65);
+            let max = r.max(g).max(b);
+            let min = r.min(g).min(b);
+            assert!(max > min, "hue {h} collapsed to greyscale");
+        }
+        assert_eq!(hsl_to_rgb(-30.0, 0.7, 0.65), hsl_to_rgb(330.0, 0.7, 0.65));
+        assert_eq!(hsl_to_rgb(0.0, 0.7, 0.65), hsl_to_rgb(360.0, 0.7, 0.65));
+        // Zero saturation collapses to greyscale at lightness * 255.
+        let (r, g, b) = hsl_to_rgb(123.0, 0.0, 0.5);
+        assert_eq!(r, g);
+        assert_eq!(g, b);
+    }
 }
