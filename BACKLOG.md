@@ -190,6 +190,13 @@ Living list of done / pending / dropped work. New entries get added at the botto
 - `LICENSE-MIT` / `LICENSE-APACHE` files committed; `Cargo.toml` declares `readme = "README.md"`; `.gitignore` covers macOS / editor / cache patterns.
 - Audit log + crash report rotation: `audit.log` rotates to `audit.log.1` at 1 MiB; crash hook prunes oldest `crash-*.log` files keeping the 10 most recent.
 
+### Performance + reliability (post-review)
+- Per-application colour HashMap memoized in `App.cached_app_colors`; rebuilt only on `rebuild_view` rather than every frame. New `assign_app_colors` pure helper has tests for stable first-appearance, palette wraparound, and empty-palette no-ops.
+- Throttle / backoff for EB describe APIs: `is_throttling_error` recognises `ThrottlingException` / `RequestLimitExceeded` / `429`, and `throttle_backoff` doubles the next-refresh delay (capped at 5 min). The ticker skips spawn_refresh while `throttle_until` is in the future; `Ctrl-R` always overrides. Consecutive-throttle counter resets on the next success. State cleared on context switch.
+
+### Tier 1 features (post-review)
+- **Live log tail**: new Logs tab in Detail. `^R` triggers `RequestEnvironmentInfo("tail")`, polls `RetrieveEnvironmentInfo` up to 12× at 2s intervals, then fetches each instance's pre-signed S3 URL via `curl`. UI advances through Requesting → Polling (with attempt counter) → Fetching → Ready stages. Per-instance content is shown with a banner row; regex search (`/`) filters visible lines independently of the Events tab search. Requires `curl` on PATH.
+
 ---
 
 ## Backlog
@@ -211,8 +218,6 @@ Items list `Depends on:` only when another backlog or done item is a real prereq
 ### Refactors — structural cleanup remaining
 
 - [ ] **Split `src/app.rs` (4400+ lines, ~50 fields)** — `handle_key` is a flat dispatch across 10+ modes; the file is past the point where one branch can be changed confidently without reading the others. Extract per-mode handlers into their own modules (`mode_detail.rs`, `mode_dlq.rs`, `mode_action.rs`, …); action-flow state machine into `action.rs`; DLQ state machine into `dlq.rs`; persistence / `rebuild_view` into `view.rs`.
-- [ ] **Memoize per-env colour HashMap in `draw_table`** — rebuilt every render; cheap individually, painful at 30 fps in a wide list. Memoize on env-list identity (length + last-modified seq).
-- [ ] **Throttle / backoff for EB describe APIs** — a user with ~200 envs and a 5 s refresh interval will hit per-account rate limits; currently surfaces as a generic error toast. Detect `ThrottlingException`, back off the refresh interval, surface state to the user.
 
 ### Tier 0 — distribution & hygiene
 - [ ] **README screenshots / demo gif** — text README shipped; capturing screenshots requires running the TUI in a real terminal (not this shell).
@@ -220,7 +225,6 @@ Items list `Depends on:` only when another backlog or done item is a real prereq
 - [ ] **Homebrew formula / GitHub Releases with binaries** — macOS users won't `cargo install`. Depends on CI building release artefacts.
 
 ### Tier 1 — operator killer features (the daily-driver gap)
-- [ ] **Live log tail** — `RequestEnvironmentInfo("tail")` + `RetrieveEnvironmentInfo`; new Logs tab in Detail. Regex search reused from Events tab. (most-requested EB feature; `eb logs` is one-shot.) *Depends on:* shared polling helper (also useful for Detail auto-refresh).
 - [ ] **Deploy a version** — `DescribeApplicationVersions` per app; `D` deploys selected version to chosen env via `UpdateEnvironment(version_label)`. Add a Versions tab to the Application drill-down.
 - [ ] **Option settings editor** — modal text input for the most-edited namespaces (`aws:elasticbeanstalk:application:environment` for env vars; `aws:autoscaling:asg` for min/max; instance type / proxy). Pre-fill current values; submit via `UpdateEnvironment(option_settings)`.
 - [ ] **Multi-region overview** — `:region all` (or `Ctrl-A`) fans `DescribeEnvironments` across N regions in parallel; adds REGION column. Driven by `extra_regions` config + a sane default set. *Depends on:* parallel-fan-out helper (shared with Org-wide health).
@@ -270,7 +274,6 @@ Items list `Depends on:` only when another backlog or done item is a real prereq
 Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-line reason. Drop the entry once retried (successfully or with the user's deliberate decision to defer further).
 
 - **README screenshots / demo gif** — autonomous shell has no real TTY; can't render the TUI for capture. Retry from an interactive session.
-- **Live log tail (Tier 1)** — out of scope for this run; requires building a polling-via-S3 helper and a new Logs tab. Substantial enough to deserve its own focused session.
 - **Deploy a version (Tier 1)** — requires DescribeApplicationVersions + an Application drill-down view; defer.
 - **Option settings editor (Tier 1)** — requires a modal text-input form generator and a category-tree of namespaces; defer.
 - **Multi-region overview (Tier 1)** — requires a parallel-fan-out helper and a REGION column / cross-region context model; defer.

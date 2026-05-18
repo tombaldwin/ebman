@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -83,12 +81,14 @@ fn tab_icon(t: DetailTab, icons: IconStyle) -> &'static str {
         (IconStyle::Unicode, DetailTab::Instances) => "▣",
         (IconStyle::Unicode, DetailTab::Metrics) => "▆",
         (IconStyle::Unicode, DetailTab::Queue) => "✉",
+        (IconStyle::Unicode, DetailTab::Logs) => "≣",
         (IconStyle::Unicode, DetailTab::Config) => "⚙",
         // ASCII fallbacks: one letter per tab so each is distinguishable.
         (IconStyle::Ascii, DetailTab::Events) => "E",
         (IconStyle::Ascii, DetailTab::Instances) => "I",
         (IconStyle::Ascii, DetailTab::Metrics) => "M",
         (IconStyle::Ascii, DetailTab::Queue) => "Q",
+        (IconStyle::Ascii, DetailTab::Logs) => "L",
         (IconStyle::Ascii, DetailTab::Config) => "C",
     }
 }
@@ -800,15 +800,9 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
         .collect();
     let header = Row::new(header_cells).height(1);
 
-    // Assign palette colors in order of first appearance.
-    let mut app_colors: HashMap<String, Color> = HashMap::new();
-    for i in indexes {
-        let name = &app.environments[*i].application;
-        if !app_colors.contains_key(name) {
-            let idx = app_colors.len() % theme.app_palette.len();
-            app_colors.insert(name.clone(), theme.app_palette[idx]);
-        }
-    }
+    // Per-application palette colour map is precomputed by App::rebuild_view
+    // and stored on the app — rebuilding it here per frame is unnecessary.
+    let app_colors = &app.cached_app_colors;
 
     // Hover only applies while the user is interacting with the table itself.
     let hover = if app.mode == Mode::Normal {
@@ -1360,6 +1354,8 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App) {
         help_line(":saved-configs", "list EB saved configuration templates per application"),
         help_line(":plugins  /  :NAME", "list / invoke plugin commands defined in commands.toml"),
         help_line("[ / ] (Metrics tab)", "decrease / increase metric range (15m → 24h)"),
+        help_line("(Logs tab) ^R", "request tail logs (takes ~10–20s while EB samples instances)"),
+        help_line("(Logs tab) /", "regex-filter the visible log lines"),
         Line::from(""),
         Line::from(Span::styled(
             format!(
@@ -1868,6 +1864,7 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
         DetailTab::Instances => draw_detail_instances(f, chunks[2], detail, &app.theme),
         DetailTab::Metrics => draw_detail_metrics(f, chunks[2], detail, &app.theme),
         DetailTab::Queue => draw_detail_queue(f, chunks[2], detail, app.redact, &app.theme),
+        DetailTab::Logs => draw_detail_logs(f, chunks[2], detail, &app.theme),
         DetailTab::Config => draw_detail_config(
             f,
             chunks[2],
@@ -1893,6 +1890,12 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
                 || detail.loading_instances
                 || detail.loading_queues
                 || detail.loading_metrics
+                || matches!(
+                    detail.log_tail.stage,
+                    crate::app::LogTailStage::Requesting
+                        | crate::app::LogTailStage::Polling
+                        | crate::app::LogTailStage::Fetching
+                )
             {
                 Span::styled(" loading…", Style::default().fg(app.theme.health_yellow))
             } else {
@@ -2397,6 +2400,152 @@ fn draw_detail_queue(
         )));
     }
     f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn draw_detail_logs(f: &mut Frame, area: Rect, detail: &crate::app::DetailState, theme: &Theme) {
+    use crate::app::LogTailStage;
+    let tail = &detail.log_tail;
+    let lines_total: usize = tail
+        .by_instance
+        .iter()
+        .map(|(_, t)| t.lines().count())
+        .sum();
+    let matches = if let Some(re) = tail.search_pattern.as_ref() {
+        tail.by_instance
+            .iter()
+            .map(|(_, t)| t.lines().filter(|l| re.is_match(l)).count())
+            .sum::<usize>()
+    } else {
+        0
+    };
+    let title = if tail.search_pattern.is_some() {
+        format!(
+            " Logs · {} instance(s) · {lines_total} lines · matches: {matches} ",
+            tail.by_instance.len()
+        )
+    } else {
+        format!(
+            " Logs · {} instance(s) · {lines_total} lines ",
+            tail.by_instance.len()
+        )
+    };
+    let outer = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(
+            title,
+            Style::default()
+                .fg(theme.title_alt)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .padding(Padding::horizontal(1));
+    let inner = outer.inner(area);
+    f.render_widget(outer, area);
+
+    // Stage line + search bar at the top.
+    let stage_line: Line<'static> = match tail.stage {
+        LogTailStage::Idle => Line::from(Span::styled(
+            " press ^R to start log tail",
+            Style::default().fg(theme.muted),
+        )),
+        LogTailStage::Requesting => Line::from(Span::styled(
+            " requesting tail from EB…",
+            Style::default().fg(theme.health_yellow),
+        )),
+        LogTailStage::Polling => Line::from(Span::styled(
+            format!(
+                " waiting for instance samples (attempt {}/12)…",
+                tail.poll_attempt.max(1)
+            ),
+            Style::default().fg(theme.health_yellow),
+        )),
+        LogTailStage::Fetching => Line::from(Span::styled(
+            " fetching log content…",
+            Style::default().fg(theme.health_yellow),
+        )),
+        LogTailStage::Ready => {
+            if let Some(err) = &tail.error {
+                Line::from(Span::styled(
+                    format!(" {err}"),
+                    Style::default().fg(theme.health_red),
+                ))
+            } else if tail.search_active || tail.search_pattern.is_some() {
+                let mut spans = vec![
+                    Span::styled(
+                        "/",
+                        Style::default()
+                            .fg(theme.health_yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" "),
+                    Span::styled(tail.search_input.clone(), Style::default().fg(theme.text)),
+                ];
+                if tail.search_active {
+                    spans.push(Span::styled(
+                        "_",
+                        Style::default()
+                            .fg(theme.health_yellow)
+                            .add_modifier(Modifier::SLOW_BLINK),
+                    ));
+                    spans.push(Span::styled(
+                        "  [enter] apply  [esc] cancel",
+                        Style::default().fg(theme.muted),
+                    ));
+                } else if let Some(err) = &tail.search_error {
+                    spans.push(Span::styled(
+                        format!("  {err}"),
+                        Style::default().fg(theme.health_red),
+                    ));
+                }
+                Line::from(spans)
+            } else {
+                Line::from(Span::styled(
+                    " ^R refresh   / search   esc clear",
+                    Style::default().fg(theme.muted),
+                ))
+            }
+        }
+    };
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(inner);
+    f.render_widget(Paragraph::new(stage_line), rows[0]);
+
+    // Body — concatenate per-instance blocks separated by a banner row.
+    let mut body: Vec<Line<'static>> = Vec::new();
+    if tail.by_instance.is_empty() && tail.stage != LogTailStage::Ready {
+        body.push(Line::from(Span::styled(
+            "  (no content yet)",
+            Style::default().fg(theme.muted),
+        )));
+    }
+    for (instance_id, text) in &tail.by_instance {
+        body.push(Line::from(Span::styled(
+            format!("── {instance_id} "),
+            Style::default()
+                .fg(theme.title)
+                .add_modifier(Modifier::BOLD),
+        )));
+        for raw in text.lines() {
+            if let Some(re) = tail.search_pattern.as_ref() {
+                if !re.is_match(raw) {
+                    continue;
+                }
+            }
+            body.push(Line::from(Span::styled(
+                raw.to_string(),
+                Style::default().fg(theme.text),
+            )));
+        }
+        body.push(Line::from(""));
+    }
+    let scroll = (tail.scroll, 0);
+    f.render_widget(
+        Paragraph::new(body)
+            .wrap(Wrap { trim: false })
+            .scroll(scroll),
+        rows[1],
+    );
 }
 
 fn draw_detail_config(

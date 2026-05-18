@@ -7,7 +7,7 @@ Browse environments, drill into events / instances / metrics / queue / config, s
 ## Features
 
 - **Live environment table** — name, application, tier, status, health, trend sparkline, platform, version, CNAME, age.
-- **Drill-down view** per env: Events (regex-searchable), Instances (with health causes), Metrics (CloudWatch line charts), Queue (for Worker tier — main + DLQ stats), Config.
+- **Drill-down view** per env: Events (regex-searchable), Instances (with health causes), Metrics (CloudWatch line charts), Queue (for Worker tier — main + DLQ stats), Logs (tail log per instance, regex-filterable; requires `curl` on PATH), Config.
 - **DLQ viewer** with per-message resend and strict-typed purge.
 - **Actions menu**: Rebuild, Restart, Swap CNAMEs, Terminate. Destructive actions require typing the env name.
 - **Command bar (`:`)** — `:region X`, `:profile X`, `:sort KEY`, `:save NAME`, `:filter NAME`, `:redact on`, `:export`, `:refresh`, `:help`, `:q`.

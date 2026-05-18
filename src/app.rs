@@ -372,6 +372,7 @@ pub enum DetailTab {
     Instances,
     Metrics,
     Queue,
+    Logs,
     Config,
 }
 
@@ -382,9 +383,46 @@ impl DetailTab {
             Self::Instances => "Instances",
             Self::Metrics => "Metrics",
             Self::Queue => "Queue",
+            Self::Logs => "Logs",
             Self::Config => "Config",
         }
     }
+}
+
+/// Per-instance tail-log capture state.
+#[derive(Debug, Clone, Default)]
+pub struct LogTail {
+    /// `(ec2_instance_id, last_known_content)` — content is empty until the
+    /// first fetch lands. Order is preserved across refreshes so the user
+    /// doesn't see instance entries jump around.
+    pub by_instance: Vec<(String, String)>,
+    /// Sub-state of the request/poll/fetch pipeline.
+    pub stage: LogTailStage,
+    /// Last `RetrieveEnvironmentInfo` poll attempt (1-based; 0 = haven't polled).
+    pub poll_attempt: u32,
+    /// Sticky error so the user can see why the tail failed.
+    pub error: Option<String>,
+    /// When set, the tab is filtered to lines matching this regex.
+    pub search_input: String,
+    pub search_active: bool,
+    pub search_pattern: Option<regex::Regex>,
+    pub search_error: Option<String>,
+    pub scroll: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LogTailStage {
+    /// Tab opened but no request issued (or context cleared).
+    #[default]
+    Idle,
+    /// `RequestEnvironmentInfo` in flight.
+    Requesting,
+    /// `RetrieveEnvironmentInfo` poll loop in flight.
+    Polling,
+    /// At least one URL fetch in flight.
+    Fetching,
+    /// All content fetched — UI shows the tabbed content.
+    Ready,
 }
 
 pub struct DetailState {
@@ -411,6 +449,8 @@ pub struct DetailState {
     pub loading_metrics: bool,
     pub loading_tags: bool,
     pub error: Option<String>,
+    /// Tail-log state, populated when the user visits the Logs tab.
+    pub log_tail: LogTail,
 }
 
 impl DetailState {
@@ -560,6 +600,14 @@ pub struct App {
     /// match this snapshot, so user-initiated status set between kickoff and
     /// apply (e.g. pressing `s` to sort during the round-trip) is preserved.
     pub status_snapshot_at_refresh: Option<(Option<String>, Option<String>)>,
+    /// When set, the next ticker firing skips `spawn_refresh` until this
+    /// instant has passed. Driven by exponential backoff in response to
+    /// AWS throttling responses; the user can still force a refresh with
+    /// `Ctrl-R` / `:refresh`.
+    pub throttle_until: Option<Instant>,
+    /// How many consecutive refreshes have come back throttled. Each one
+    /// roughly doubles the back-off; resets to zero on the next success.
+    pub consecutive_throttles: u32,
     pub notify_bell: bool,
     pub required_tags: Vec<String>,
     pub newly_red: HashSet<String>,
@@ -571,6 +619,11 @@ pub struct App {
     prev_status: HashMap<String, String>,
     cached_filtered: Vec<usize>,
     cached_display: Vec<DisplayRow>,
+    /// Per-application palette colour, assigned by order of first appearance
+    /// in the *filtered* view. Rebuilt in [`App::rebuild_view`] so that the
+    /// render hot path can look up `app → Color` without allocating a fresh
+    /// HashMap per frame (previously `draw_table` did this on every draw).
+    pub cached_app_colors: HashMap<String, ratatui::style::Color>,
     pending_select: Option<String>,
     aws: Arc<AwsClient>,
     generation: u64,
@@ -652,6 +705,22 @@ enum AppMsg {
         action: Action,
         env_name: String,
         result: Result<(), String>,
+    },
+    /// Intermediate progress for the tail-logs pipeline (`Requesting` →
+    /// `Polling` → `Fetching` → `Ready`). The UI consumes these so the user
+    /// sees forward motion during the multi-second wait for EB to upload tail
+    /// samples to S3.
+    DetailLogsProgress {
+        gen: u64,
+        env_name: String,
+        stage: LogTailStage,
+        attempt: u32,
+    },
+    /// Final tail-logs payload — `Vec<(ec2_instance_id, log_text)>` on success.
+    DetailLogs {
+        gen: u64,
+        env_name: String,
+        result: Result<Vec<(String, String)>, String>,
     },
 }
 
@@ -804,6 +873,8 @@ impl App {
                 .unwrap_or_else(|_| "info,aws=warn,hyper=warn".to_string()),
             plugins: plugins_loaded.plugins,
             status_snapshot_at_refresh: None,
+            throttle_until: None,
+            consecutive_throttles: 0,
             notify_bell: config.notify_bell,
             required_tags: config.required_tags,
             newly_red: HashSet::new(),
@@ -814,6 +885,7 @@ impl App {
             prev_status: HashMap::new(),
             cached_filtered: Vec::new(),
             cached_display: Vec::new(),
+            cached_app_colors: HashMap::new(),
             pending_select: persisted.selected_env,
             aws,
             generation: 0,
@@ -860,7 +932,12 @@ impl App {
                     }
                 }
                 _ = ticker.tick() => {
-                    if !self.frozen {
+                    let now = Instant::now();
+                    let backed_off = self
+                        .throttle_until
+                        .map(|t| now < t)
+                        .unwrap_or(false);
+                    if !self.frozen && !backed_off {
                         self.spawn_refresh();
                         if matches!(self.mode, Mode::Detail) {
                             if let Some(d) = self.detail.as_ref() {
@@ -869,6 +946,10 @@ impl App {
                                 }
                             }
                         }
+                    } else if backed_off && self.throttle_until.is_some_and(|t| now >= t) {
+                        // Just crossed the back-off horizon — clear so the next
+                        // tick proceeds normally even if no refresh fired here.
+                        self.throttle_until = None;
                     }
                 }
                 _ = anim.tick(), if self.loading_since.is_some() || !self.toasts.is_empty() => {
@@ -1182,8 +1263,12 @@ impl App {
                 _ => {}
             },
             Mode::Detail => {
-                // If a search is being typed, capture keys there first.
-                if self.detail.as_ref().is_some_and(|d| d.search_active) {
+                // If a search is being typed (events or logs tab), capture keys there first.
+                if self
+                    .detail
+                    .as_ref()
+                    .is_some_and(|d| d.search_active || d.log_tail.search_active)
+                {
                     self.handle_detail_search_key(key);
                     return;
                 }
@@ -1241,6 +1326,18 @@ impl App {
                             d.search_active = true;
                             d.search_input.clear();
                             d.search_error = None;
+                        }
+                    }
+                    KeyCode::Char('/')
+                        if matches!(
+                            self.detail.as_ref().map(|d| d.tab()),
+                            Some(DetailTab::Logs)
+                        ) =>
+                    {
+                        if let Some(d) = self.detail.as_mut() {
+                            d.log_tail.search_active = true;
+                            d.log_tail.search_input.clear();
+                            d.log_tail.search_error = None;
                         }
                     }
                     KeyCode::Char('n')
@@ -1725,6 +1822,7 @@ impl App {
         if env.tier == "Worker" {
             tabs.push(DetailTab::Queue);
         }
+        tabs.push(DetailTab::Logs);
         tabs.push(DetailTab::Config);
         let detail = DetailState {
             env_name: env.name.clone(),
@@ -1750,6 +1848,7 @@ impl App {
             loading_metrics: false,
             loading_tags: false,
             error: None,
+            log_tail: LogTail::default(),
         };
         self.detail = Some(detail);
         self.mode = Mode::Detail;
@@ -1811,6 +1910,9 @@ impl App {
             DetailTab::Instances => {
                 detail.instances_scroll = scroll_apply(detail.instances_scroll, delta);
             }
+            DetailTab::Logs => {
+                detail.log_tail.scroll = scroll_apply(detail.log_tail.scroll, delta);
+            }
             DetailTab::Metrics | DetailTab::Queue | DetailTab::Config => {}
         }
     }
@@ -1827,6 +1929,7 @@ impl App {
             DetailTab::Instances => self.spawn_detail_instances(env_name),
             DetailTab::Queue => self.spawn_detail_queues(app_name, env_name),
             DetailTab::Metrics => self.spawn_detail_metrics(env_name),
+            DetailTab::Logs => self.spawn_detail_logs(env_name),
             DetailTab::Config => {}
         }
     }
@@ -1835,13 +1938,45 @@ impl App {
         let Some(detail) = self.detail.as_mut() else {
             return;
         };
+        // Pick the search target based on which tab's search is currently active.
+        // The Logs tab carries its own search state on `log_tail` so its filter
+        // is independent of the Events tab's filter.
+        let on_logs = detail.log_tail.search_active;
         match key.code {
             KeyCode::Esc => {
-                detail.search_active = false;
-                detail.search_input.clear();
-                detail.search_error = None;
+                if on_logs {
+                    detail.log_tail.search_active = false;
+                    detail.log_tail.search_input.clear();
+                    detail.log_tail.search_error = None;
+                } else {
+                    detail.search_active = false;
+                    detail.search_input.clear();
+                    detail.search_error = None;
+                }
             }
             KeyCode::Enter => {
+                if on_logs {
+                    detail.log_tail.search_active = false;
+                    if detail.log_tail.search_input.is_empty() {
+                        detail.log_tail.search_pattern = None;
+                        detail.log_tail.search_error = None;
+                        return;
+                    }
+                    match regex::RegexBuilder::new(&detail.log_tail.search_input)
+                        .case_insensitive(true)
+                        .build()
+                    {
+                        Ok(r) => {
+                            detail.log_tail.search_pattern = Some(r);
+                            detail.log_tail.search_error = None;
+                        }
+                        Err(e) => {
+                            detail.log_tail.search_pattern = None;
+                            detail.log_tail.search_error = Some(format!("invalid regex: {e}"));
+                        }
+                    }
+                    return;
+                }
                 detail.search_active = false;
                 if detail.search_input.is_empty() {
                     detail.search_pattern = None;
@@ -1863,9 +1998,19 @@ impl App {
                 }
             }
             KeyCode::Backspace => {
-                detail.search_input.pop();
+                if on_logs {
+                    detail.log_tail.search_input.pop();
+                } else {
+                    detail.search_input.pop();
+                }
             }
-            KeyCode::Char(c) if is_text_input(&key) => detail.search_input.push(c),
+            KeyCode::Char(c) if is_text_input(&key) => {
+                if on_logs {
+                    detail.log_tail.search_input.push(c);
+                } else {
+                    detail.search_input.push(c);
+                }
+            }
             _ => {}
         }
     }
@@ -1914,6 +2059,29 @@ impl App {
         d.metrics_range_secs = RANGES[next];
         let env_name = d.env_name.clone();
         self.spawn_detail_metrics(env_name);
+    }
+
+    fn spawn_detail_logs(&mut self, env_name: String) {
+        if let Some(d) = self.detail.as_mut() {
+            // Re-entering an in-flight tail is a refresh; reset state. Existing
+            // content is retained until the new fetch lands so the user keeps
+            // seeing the previous tail rather than a blank screen.
+            d.log_tail.stage = LogTailStage::Requesting;
+            d.log_tail.poll_attempt = 0;
+            d.log_tail.error = None;
+        }
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let env_for_msg = env_name.clone();
+        tokio::spawn(async move {
+            let result = collect_tail_logs(aws, env_name.clone(), tx.clone(), gen).await;
+            let _ = tx.send(AppMsg::DetailLogs {
+                gen,
+                env_name: env_for_msg,
+                result,
+            });
+        });
     }
 
     fn spawn_detail_metrics(&mut self, env_name: String) {
@@ -3298,6 +3466,52 @@ impl App {
                     Err(msg) => detail.error = Some(msg),
                 }
             }
+            AppMsg::DetailLogsProgress {
+                gen,
+                env_name,
+                stage,
+                attempt,
+            } => {
+                if gen != self.generation {
+                    return;
+                }
+                let Some(detail) = self.detail.as_mut() else {
+                    return;
+                };
+                if detail.env_name != env_name {
+                    return;
+                }
+                detail.log_tail.stage = stage;
+                if matches!(stage, LogTailStage::Polling) {
+                    detail.log_tail.poll_attempt = attempt;
+                }
+            }
+            AppMsg::DetailLogs {
+                gen,
+                env_name,
+                result,
+            } => {
+                if gen != self.generation {
+                    return;
+                }
+                let Some(detail) = self.detail.as_mut() else {
+                    return;
+                };
+                if detail.env_name != env_name {
+                    return;
+                }
+                match result {
+                    Ok(by_instance) => {
+                        detail.log_tail.by_instance = by_instance;
+                        detail.log_tail.stage = LogTailStage::Ready;
+                        detail.log_tail.error = None;
+                    }
+                    Err(msg) => {
+                        detail.log_tail.stage = LogTailStage::Ready;
+                        detail.log_tail.error = Some(msg);
+                    }
+                }
+            }
             AppMsg::DryRunResult {
                 gen,
                 env_name,
@@ -3476,6 +3690,10 @@ impl App {
                 // Overlays show data from the previous context (describe dump,
                 // alarms list, …); close them so the user doesn't act on stale info.
                 self.current_overlay = None;
+                // Reset throttle back-off across context switches — the new
+                // account/region has its own rate limits.
+                self.throttle_until = None;
+                self.consecutive_throttles = 0;
                 // Diff state is keyed by env name. Switching accounts/regions may
                 // surface envs with overlapping names but unrelated history;
                 // clearing here prevents spurious "newly red" / status-delta noise
@@ -3641,6 +3859,16 @@ impl App {
             self.cached_display.push(DisplayRow::Env(*i));
             prev_app = Some(e.application.as_str());
         }
+
+        // Per-application palette colour cache. Assigned by order of first
+        // appearance in the filtered view; rebuilt here so the render path
+        // can do an O(1) lookup instead of building this map per frame.
+        self.cached_app_colors = assign_app_colors(
+            self.cached_filtered
+                .iter()
+                .map(|i| self.environments[*i].application.as_str()),
+            &self.theme.app_palette,
+        );
     }
 
     fn apply_refresh(&mut self, result: Result<Vec<Environment>, String>) {
@@ -3702,6 +3930,10 @@ impl App {
                 self.load_state = LoadState::Idle;
                 self.loading_since = None;
                 self.last_refresh = Some(chrono::Utc::now());
+                // A successful refresh resets the throttle back-off so the
+                // next throttle (if any) starts again from the base interval.
+                self.consecutive_throttles = 0;
+                self.throttle_until = None;
                 // Clear status/error only if the user hasn't replaced them
                 // during the refresh round-trip. Otherwise their action message
                 // (sort change, alias set, …) would get clobbered here.
@@ -3723,7 +3955,18 @@ impl App {
                 self.load_state = LoadState::Error;
                 self.loading_since = None;
                 self.status_snapshot_at_refresh = None;
-                self.error_message = Some(self.format_aws_error("refresh", &msg));
+                if is_throttling_error(&msg) {
+                    let backoff =
+                        throttle_backoff(self.refresh_interval, self.consecutive_throttles);
+                    self.consecutive_throttles = self.consecutive_throttles.saturating_add(1);
+                    self.throttle_until = Some(Instant::now() + backoff);
+                    self.error_message = Some(format!(
+                        "rate-limited by AWS — backing off {}s (^R to force)",
+                        backoff.as_secs().max(1)
+                    ));
+                } else {
+                    self.error_message = Some(self.format_aws_error("refresh", &msg));
+                }
             }
         }
     }
@@ -3799,6 +4042,123 @@ pub enum YankKind {
 pub enum DisplayRow {
     Env(usize),
     Separator,
+}
+
+/// Drive the tail-log capture pipeline end-to-end:
+/// 1. `RequestEnvironmentInfo` to kick EB into producing samples.
+/// 2. Poll `RetrieveEnvironmentInfo` until pre-signed S3 URLs appear or we
+///    hit the attempt cap.
+/// 3. Fetch each URL (sequentially — typically only 1-3 instances; serial
+///    keeps error handling simple and avoids hammering S3).
+///
+/// Progress messages are emitted via `tx` so the UI advances through the
+/// Requesting → Polling → Fetching → Ready states while this future runs.
+async fn collect_tail_logs(
+    aws: Arc<AwsClient>,
+    env_name: String,
+    tx: mpsc::UnboundedSender<AppMsg>,
+    gen: u64,
+) -> std::result::Result<Vec<(String, String)>, String> {
+    const POLL_ATTEMPTS: u32 = 12;
+    const POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+    aws.request_env_info_tail(&env_name)
+        .await
+        .map_err(|e| flatten_err("request_env_info_tail", e))?;
+    let _ = tx.send(AppMsg::DetailLogsProgress {
+        gen,
+        env_name: env_name.clone(),
+        stage: LogTailStage::Polling,
+        attempt: 0,
+    });
+
+    let mut urls: Vec<(String, String)> = Vec::new();
+    for attempt in 1..=POLL_ATTEMPTS {
+        tokio::time::sleep(POLL_INTERVAL).await;
+        urls = aws
+            .retrieve_env_info_tail(&env_name)
+            .await
+            .map_err(|e| flatten_err("retrieve_env_info_tail", e))?;
+        if !urls.is_empty() {
+            break;
+        }
+        let _ = tx.send(AppMsg::DetailLogsProgress {
+            gen,
+            env_name: env_name.clone(),
+            stage: LogTailStage::Polling,
+            attempt,
+        });
+    }
+    if urls.is_empty() {
+        return Err(format!(
+            "no tail samples uploaded after {}s — instance role may lack s3:PutObject on the EB info bucket",
+            POLL_ATTEMPTS as u64 * POLL_INTERVAL.as_secs()
+        ));
+    }
+    let _ = tx.send(AppMsg::DetailLogsProgress {
+        gen,
+        env_name: env_name.clone(),
+        stage: LogTailStage::Fetching,
+        attempt: 0,
+    });
+
+    let mut out = Vec::with_capacity(urls.len());
+    for (instance_id, url) in urls {
+        match AwsClient::fetch_url_text(&url).await {
+            Ok(text) => out.push((instance_id, text)),
+            Err(e) => out.push((instance_id, format!("(fetch failed: {e})"))),
+        }
+    }
+    Ok(out)
+}
+
+/// Recognise AWS throttling error messages. The SDK surfaces these via the
+/// `ThrottlingException` code (EB, STS) or `RequestLimitExceeded` (older
+/// services). Match case-insensitively against the flattened error string so
+/// that exact framing of the message doesn't matter.
+fn is_throttling_error(msg: &str) -> bool {
+    let lower = msg.to_lowercase();
+    [
+        "throttling",
+        "throttlingexception",
+        "requestlimitexceeded",
+        "too many requests",
+        "rate exceeded",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+/// Exponential back-off horizon: 2× base on the first throttle, doubling each
+/// consecutive failure, capped at 5 minutes. The 5 min cap keeps the app
+/// responsive when the throttle clears — the user shouldn't have to wait
+/// arbitrarily long after rate limits ease.
+fn throttle_backoff(base: Duration, consecutive: u32) -> Duration {
+    const MAX_BACKOFF: Duration = Duration::from_secs(300);
+    let factor: u32 = 2u32.saturating_pow(consecutive.min(6).saturating_add(1));
+    let scaled = base.saturating_mul(factor);
+    scaled.min(MAX_BACKOFF)
+}
+
+/// Assign palette colours to application names in order of first appearance.
+/// Once the palette is exhausted, colours wrap around (so the 17th distinct app
+/// reuses the first colour, etc.). With an empty palette the result is empty —
+/// callers should fall back to a default text colour.
+fn assign_app_colors<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+    palette: &[ratatui::style::Color],
+) -> HashMap<String, ratatui::style::Color> {
+    let mut out: HashMap<String, ratatui::style::Color> = HashMap::new();
+    if palette.is_empty() {
+        return out;
+    }
+    for name in names {
+        if !out.contains_key(name) {
+            let idx = out.len() % palette.len();
+            out.insert(name.to_string(), palette[idx]);
+        }
+    }
+    out
 }
 
 fn yank(text: &str) -> std::result::Result<(), String> {
@@ -4615,6 +4975,75 @@ mod tests {
         let cmd = build_describe_cli("my env!", "eu-west-2", Some("prod"));
         assert!(cmd.contains("--environment-names 'my env!'"));
         assert!(cmd.contains("--profile prod"));
+    }
+
+    #[test]
+    fn is_throttling_error_matches_common_aws_strings() {
+        assert!(is_throttling_error("ThrottlingException: Rate exceeded"));
+        assert!(is_throttling_error(
+            "service error: ThrottlingException — please slow down"
+        ));
+        assert!(is_throttling_error("RequestLimitExceeded"));
+        assert!(is_throttling_error("HTTP 429 Too Many Requests"));
+        assert!(is_throttling_error("rate exceeded for this account"));
+        // Negative cases.
+        assert!(!is_throttling_error("EnvironmentNotFound"));
+        assert!(!is_throttling_error("AccessDenied"));
+        assert!(!is_throttling_error(""));
+    }
+
+    #[test]
+    fn throttle_backoff_grows_then_caps() {
+        let base = Duration::from_secs(15);
+        let b0 = throttle_backoff(base, 0);
+        let b1 = throttle_backoff(base, 1);
+        let b2 = throttle_backoff(base, 2);
+        // First throttle: 2x base (30 s); second: 4x; third: 8x.
+        assert_eq!(b0, Duration::from_secs(30));
+        assert_eq!(b1, Duration::from_secs(60));
+        assert_eq!(b2, Duration::from_secs(120));
+        // Way past the cap stays at the cap.
+        let bn = throttle_backoff(base, 30);
+        assert_eq!(bn, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn throttle_backoff_handles_overflow_safely() {
+        // Pathologically large base must not panic — saturating_mul keeps us safe.
+        let base = Duration::MAX;
+        let b = throttle_backoff(base, 5);
+        assert_eq!(b, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn assign_app_colors_stable_first_appearance() {
+        use ratatui::style::Color;
+        let palette = vec![Color::Red, Color::Green, Color::Blue];
+        let names = ["app-a", "app-b", "app-a", "app-c", "app-b"];
+        let m = assign_app_colors(names.iter().copied(), &palette);
+        assert_eq!(m.get("app-a").copied(), Some(Color::Red));
+        assert_eq!(m.get("app-b").copied(), Some(Color::Green));
+        assert_eq!(m.get("app-c").copied(), Some(Color::Blue));
+        assert_eq!(m.len(), 3);
+    }
+
+    #[test]
+    fn assign_app_colors_wraps_when_palette_exhausted() {
+        use ratatui::style::Color;
+        let palette = vec![Color::Red, Color::Green];
+        let names = ["a", "b", "c", "d"];
+        let m = assign_app_colors(names.iter().copied(), &palette);
+        assert_eq!(m.get("a").copied(), Some(Color::Red));
+        assert_eq!(m.get("b").copied(), Some(Color::Green));
+        // c wraps back to palette[0]; d to palette[1].
+        assert_eq!(m.get("c").copied(), Some(Color::Red));
+        assert_eq!(m.get("d").copied(), Some(Color::Green));
+    }
+
+    #[test]
+    fn assign_app_colors_empty_palette_yields_empty_map() {
+        let m = assign_app_colors(["a", "b"].iter().copied(), &[]);
+        assert!(m.is_empty());
     }
 
     #[test]

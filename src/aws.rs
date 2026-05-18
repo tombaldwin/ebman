@@ -522,6 +522,71 @@ impl AwsClient {
         Ok(())
     }
 
+    /// Ask EB to start collecting the tail log for an env. Per-instance log
+    /// snapshots become available via `retrieve_env_info` once each instance
+    /// has uploaded its sample to S3 (usually 5-15 seconds).
+    pub async fn request_env_info_tail(&self, env_name: &str) -> Result<()> {
+        use aws_sdk_elasticbeanstalk::types::EnvironmentInfoType;
+        self.client
+            .request_environment_info()
+            .environment_name(env_name)
+            .info_type(EnvironmentInfoType::Tail)
+            .send()
+            .await
+            .map_err(|e| eyre!("RequestEnvironmentInfo failed: {e}"))?;
+        Ok(())
+    }
+
+    /// Read whatever tail-log samples EB has on file for the env, mapped to
+    /// pre-signed S3 URLs. Empty vec means no samples have been uploaded yet —
+    /// poll again. Each entry is `(ec2_instance_id, pre_signed_url)`.
+    pub async fn retrieve_env_info_tail(&self, env_name: &str) -> Result<Vec<(String, String)>> {
+        use aws_sdk_elasticbeanstalk::types::EnvironmentInfoType;
+        let resp = self
+            .client
+            .retrieve_environment_info()
+            .environment_name(env_name)
+            .info_type(EnvironmentInfoType::Tail)
+            .send()
+            .await
+            .map_err(|e| eyre!("RetrieveEnvironmentInfo failed: {e}"))?;
+        let mut out = Vec::new();
+        for info in resp.environment_info.unwrap_or_default() {
+            if let (Some(id), Some(url)) = (info.ec2_instance_id, info.message) {
+                out.push((id, url));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Fetch the body of a pre-signed S3 URL. Shells out to `curl` so we don't
+    /// pull in an HTTP-client dep; pre-signed URLs are plain HTTPS GETs with
+    /// no auth headers, which curl handles trivially. 15 s cap per fetch.
+    pub async fn fetch_url_text(url: &str) -> Result<String> {
+        use tokio::process::Command;
+        let out = Command::new("curl")
+            .args([
+                "-s",
+                "-S",
+                "--fail-with-body",
+                "--max-time",
+                "15",
+                "--no-buffer",
+            ])
+            .arg(url)
+            .output()
+            .await
+            .map_err(|e| eyre!("could not invoke curl (is it installed?): {e}"))?;
+        if !out.status.success() {
+            return Err(eyre!(
+                "curl exit {}: {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
     pub async fn list_instances(&self, env_name: &str) -> Result<Vec<Instance>> {
         let resp = self
             .client
