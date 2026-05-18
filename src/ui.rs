@@ -1453,10 +1453,12 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
                 _ => " j/k move  1-9 jump  ' name-jump  g/G top/bottom  tab scope  enter drill  b console  D describe  space multi  * pin  / filter  : command  ^K palette  s/S sort  ^G group  ^E events  ^] focus  f freeze  y/Y yank  ^Y export  ^W cli  r region  p profile  ^R refresh  ^X redact  ? help  q quit".into(),
             }
         }
-        Mode::Detail => {
-            " tab/shift-tab switch  j/k scroll  a actions  ^R refresh  R auto-refresh  esc / q back"
-                .into()
-        }
+        Mode::Detail => match app.detail.as_ref().map(|d| d.tab()) {
+            Some(crate::app::DetailTab::Instances) => {
+                " INSTANCES  j/k move  enter console  s ssm shell  y yank id  x terminate  a actions  ^R refresh  esc / q back".into()
+            }
+            _ => " tab/shift-tab switch  j/k scroll  a actions  ^R refresh  R auto-refresh  esc / q back".into(),
+        },
         Mode::Action => " j/k move  type to filter  enter confirm  esc cancel".into(),
         Mode::Dlq => match app.dlq.as_ref().map(|d| d.viewing) {
             Some(crate::app::QueueView::Main) => {
