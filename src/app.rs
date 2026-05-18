@@ -72,7 +72,21 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "save",
     "drop",
     "filters",
+    "batch-rebuild",
+    "batch-restart",
+    "deselect",
+    "select-clear",
+    "minimap",
 ];
+
+/// Which on-screen panel is "focused" — i.e. which one j/k/Enter target. The
+/// main table is the default; the user can `Ctrl-]` over to the events panel
+/// (when visible) for cursor navigation + line yank.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    Table,
+    Events,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewMode {
@@ -487,6 +501,13 @@ pub struct DetailState {
     pub error: Option<String>,
     /// Tail-log state, populated when the user visits the Logs tab.
     pub log_tail: LogTail,
+    /// Mouse column over the Metrics tab body, captured on hover. The metrics
+    /// renderer maps this to a point index and shows the value at that index
+    /// in the title row of each chart.
+    pub metrics_hover_col: Option<u16>,
+    /// Inner Rect of the Metrics tab body, captured by the renderer so
+    /// handle_mouse can ignore moves outside it.
+    pub metrics_body_rect: Option<ratatui::layout::Rect>,
 }
 
 impl DetailState {
@@ -605,6 +626,27 @@ pub struct App {
     pub events: Vec<EbEvent>,
     pub events_visible: bool,
     pub events_scroll: u16,
+    /// Inner Rect of the events panel — captured by the renderer so the mouse
+    /// handler can detect drags on the top edge (divider row) for resize.
+    pub events_area: Option<ratatui::layout::Rect>,
+    /// Set when a divider drag is in progress; stores the events panel
+    /// height at the moment the user pressed down so we can compute the
+    /// delta against the current mouse row.
+    pub events_drag_origin: Option<u16>,
+    /// When set, the user has "entered" the events panel for navigation: J/K
+    /// move the cursor within the events list, Y yanks the highlighted line.
+    /// `None` means events keys are inert and the main table responds to J/K.
+    pub events_cursor: Option<usize>,
+    /// Env names the user has marked for batch action via `space`. Cleared on
+    /// Esc, on context switch, and after a successful batch dispatch.
+    pub multi_selected: BTreeSet<String>,
+    /// Render a small corner mini-map showing one coloured cell per env.
+    /// Off by default — toggled via `:minimap on|off`.
+    pub show_minimap: bool,
+    /// Currently-focused panel. Drives j/k routing and footer hints.
+    pub focus: Focus,
+    /// User-defined key bindings parsed from `~/.config/ebman/keys.toml`.
+    pub custom_keys: crate::keys::CustomKeys,
     pub detail: Option<DetailState>,
     pub action_flow: Option<ActionFlow>,
     pub dlq: Option<DlqState>,
@@ -902,6 +944,13 @@ impl App {
             events: Vec::new(),
             events_visible,
             events_scroll: 0,
+            events_area: None,
+            events_drag_origin: None,
+            events_cursor: None,
+            multi_selected: BTreeSet::new(),
+            show_minimap: false,
+            focus: Focus::Table,
+            custom_keys: crate::keys::load(),
             detail: None,
             action_flow: None,
             dlq: None,
@@ -1122,6 +1171,60 @@ impl App {
     }
 
     fn handle_mouse(&mut self, m: MouseEvent) {
+        // Drag-to-resize on the events-panel divider. The divider is the top
+        // row of the events area (one row above the panel body, conceptually).
+        // We bracket the row with a 1-cell tolerance so clicks land easily.
+        if self.events_visible {
+            if let Some(area) = self.events_area {
+                let divider_row = area.y;
+                let in_drag = self.events_drag_origin.is_some();
+                match m.kind {
+                    MouseEventKind::Down(MouseButton::Left)
+                        if (m.row as i32 - divider_row as i32).abs() <= 0 =>
+                    {
+                        self.events_drag_origin = Some(self.events_panel_height);
+                        return;
+                    }
+                    MouseEventKind::Drag(MouseButton::Left) if in_drag => {
+                        // The mouse row is now where the divider should sit;
+                        // events panel height = footer_bottom - mouse_row.
+                        let footer_bottom = area.y.saturating_add(area.height).saturating_add(2);
+                        let new_height = footer_bottom.saturating_sub(m.row);
+                        self.events_panel_height = new_height.clamp(4, 30);
+                        return;
+                    }
+                    MouseEventKind::Up(MouseButton::Left) if in_drag => {
+                        self.events_drag_origin = None;
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Metrics-tab hover capture: in Detail mode, track the mouse column
+        // when it's over the metrics body so the renderer can surface the
+        // value at that point.
+        if matches!(self.mode, Mode::Detail) {
+            if let Some(d) = self.detail.as_mut() {
+                if d.tab() == DetailTab::Metrics {
+                    if let MouseEventKind::Moved = m.kind {
+                        let in_body = d
+                            .metrics_body_rect
+                            .map(|r| {
+                                m.column >= r.x
+                                    && m.column < r.x.saturating_add(r.width)
+                                    && m.row >= r.y
+                                    && m.row < r.y.saturating_add(r.height)
+                            })
+                            .unwrap_or(false);
+                        d.metrics_hover_col = if in_body { Some(m.column) } else { None };
+                    }
+                }
+            }
+            return;
+        }
+
         // Mouse events steer the main table — wheel scroll moves selection,
         // left click selects a row, hover tints. None of those make sense
         // outside Normal mode: in Detail / Dlq / Action / Palette / QuickJump
@@ -1437,121 +1540,230 @@ impl App {
             }
             Mode::Action => self.handle_action_key(key),
             Mode::Dlq => self.handle_dlq_key(key),
-            Mode::Normal => match key.code {
-                KeyCode::Char('q') => self.quit = true,
-                KeyCode::Tab => self.scope = self.scope.next(),
-                KeyCode::BackTab => self.scope = self.scope.prev(),
-                KeyCode::Enter if self.scope == Scope::Apps => self.drill_into_app(),
-                KeyCode::Enter => self.open_detail(),
-                KeyCode::Char('a') if self.scope == Scope::Envs => self.open_action_menu(),
-                KeyCode::F(5) => self.manual_refresh(),
-                KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.manual_refresh();
+            Mode::Normal => {
+                // Custom keybindings — checked first so a user-bound key
+                // overrides any built-in fallthrough. Only F1-F12 and
+                // uppercase single-letters are accepted by the parser, which
+                // limits collision risk with existing bindings.
+                if let Some(command) = self.lookup_custom_key(&key) {
+                    self.execute_command(&command);
+                    return;
                 }
-                KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.redact = !self.redact;
-                    self.status_message = Some(if self.redact {
-                        "redact mode ON".into()
-                    } else {
-                        "redact mode off".into()
-                    });
-                }
-                KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.grouped = !self.grouped;
-                    self.rebuild_view();
-                    self.status_message = Some(if self.grouped {
-                        "grouped by application".into()
-                    } else {
-                        "ungrouped".into()
-                    });
-                }
-                KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.events_visible = !self.events_visible;
-                    if self.events_visible {
-                        self.events_scroll = 0;
-                        // events were fetched on each refresh; if we have none yet, prompt one.
-                        if self.events.is_empty() {
-                            self.spawn_events();
+                match key.code {
+                    KeyCode::Char('q') => self.quit = true,
+                    KeyCode::Tab => self.scope = self.scope.next(),
+                    KeyCode::BackTab => self.scope = self.scope.prev(),
+                    KeyCode::Enter if self.scope == Scope::Apps => self.drill_into_app(),
+                    KeyCode::Enter => self.open_detail(),
+                    KeyCode::Char('a') if self.scope == Scope::Envs => self.open_action_menu(),
+                    KeyCode::F(5) => self.manual_refresh(),
+                    KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.manual_refresh();
+                    }
+                    KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.redact = !self.redact;
+                        self.status_message = Some(if self.redact {
+                            "redact mode ON".into()
+                        } else {
+                            "redact mode off".into()
+                        });
+                    }
+                    KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.grouped = !self.grouped;
+                        self.rebuild_view();
+                        self.status_message = Some(if self.grouped {
+                            "grouped by application".into()
+                        } else {
+                            "ungrouped".into()
+                        });
+                    }
+                    KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.events_visible = !self.events_visible;
+                        if self.events_visible {
+                            self.events_scroll = 0;
+                            // events were fetched on each refresh; if we have none yet, prompt one.
+                            if self.events.is_empty() {
+                                self.spawn_events();
+                            }
                         }
                     }
+                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.view_mode = self.view_mode.next();
+                        self.status_message = Some(format!("view: {}", self.view_mode.label()));
+                    }
+                    KeyCode::Up
+                        if key.modifiers.contains(KeyModifiers::CONTROL) && self.events_visible =>
+                    {
+                        self.events_panel_height = (self.events_panel_height + 1).min(30);
+                    }
+                    KeyCode::Down
+                        if key.modifiers.contains(KeyModifiers::CONTROL) && self.events_visible =>
+                    {
+                        self.events_panel_height =
+                            self.events_panel_height.saturating_sub(1).max(4);
+                    }
+                    KeyCode::Char('s') => {
+                        self.sort_key = self.sort_key.next();
+                        self.resort_envs();
+                        self.status_message = Some(format!(
+                            "sort: {} ({})",
+                            self.sort_key.label(),
+                            if self.sort_desc { "desc" } else { "asc" }
+                        ));
+                    }
+                    KeyCode::Char('S') => {
+                        self.sort_desc = !self.sort_desc;
+                        self.resort_envs();
+                        self.status_message = Some(format!(
+                            "sort: {} ({})",
+                            self.sort_key.label(),
+                            if self.sort_desc { "desc" } else { "asc" }
+                        ));
+                    }
+                    KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.export_tsv();
+                    }
+                    KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.yank_cli();
+                    }
+                    KeyCode::Char(']') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.focus = match self.focus {
+                            Focus::Table => {
+                                if self.events_visible {
+                                    Focus::Events
+                                } else {
+                                    Focus::Table
+                                }
+                            }
+                            Focus::Events => Focus::Table,
+                        };
+                        if matches!(self.focus, Focus::Events) && self.events_cursor.is_none() {
+                            self.events_cursor = Some(0);
+                        }
+                        if matches!(self.focus, Focus::Table) {
+                            self.events_cursor = None;
+                        }
+                        self.status_message = Some(format!(
+                            "focus: {}",
+                            if matches!(self.focus, Focus::Table) {
+                                "table"
+                            } else {
+                                "events"
+                            }
+                        ));
+                    }
+                    KeyCode::Char('[') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.focus = match self.focus {
+                            Focus::Events => Focus::Table,
+                            Focus::Table => {
+                                if self.events_visible {
+                                    Focus::Events
+                                } else {
+                                    Focus::Table
+                                }
+                            }
+                        };
+                    }
+                    KeyCode::Char(' ') if self.scope == Scope::Envs => {
+                        if let Some(env) = self.selected_env().cloned() {
+                            if !self.multi_selected.remove(&env.name) {
+                                self.multi_selected.insert(env.name);
+                            }
+                            let n = self.multi_selected.len();
+                            self.status_message = if n == 0 {
+                                Some("multi-select cleared".into())
+                            } else {
+                                Some(format!(
+                                    "{n} env(s) selected (a = batch action, esc = clear)"
+                                ))
+                            };
+                        }
+                    }
+                    KeyCode::Char('y') => {
+                        if let Some(i) = self.events_cursor {
+                            self.yank_event_at(i);
+                        } else {
+                            self.yank_selected(YankKind::Cname);
+                        }
+                    }
+                    KeyCode::Char('Y') => self.yank_selected(YankKind::Name),
+                    KeyCode::Char('J') if self.events_visible && !self.events.is_empty() => {
+                        let next = self
+                            .events_cursor
+                            .map(|c| (c + 1).min(self.events.len().saturating_sub(1)))
+                            .unwrap_or(0);
+                        self.events_cursor = Some(next);
+                    }
+                    KeyCode::Char('K') if self.events_visible && !self.events.is_empty() => {
+                        self.events_cursor = self.events_cursor.and_then(|c| c.checked_sub(1));
+                    }
+                    KeyCode::Char('b') if self.scope == Scope::Envs => self.open_in_console(),
+                    KeyCode::Char('D') if self.scope == Scope::Envs => self.open_describe_overlay(),
+                    KeyCode::Char('*') if self.scope == Scope::Envs => self.toggle_pin_selected(),
+                    KeyCode::Char('f') if self.scope == Scope::Envs => {
+                        self.frozen = !self.frozen;
+                        self.status_message = Some(if self.frozen {
+                            "frozen — auto-refresh paused".into()
+                        } else {
+                            "unfrozen".into()
+                        });
+                    }
+                    KeyCode::Char(c @ '1'..='9') => self.quick_jump((c as u8 - b'0') as usize),
+                    KeyCode::Char('?') => self.mode = Mode::Help,
+                    KeyCode::Char(':') => {
+                        self.command_input.clear();
+                        self.mode = Mode::Command;
+                    }
+                    KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.open_palette();
+                    }
+                    KeyCode::Char('\'') => {
+                        self.quickjump_input.clear();
+                        self.mode = Mode::QuickJump;
+                    }
+                    KeyCode::Char('/') => {
+                        self.filter.clear();
+                        self.mode = Mode::Filter;
+                    }
+                    KeyCode::Char('p') => self.open_profile_picker(),
+                    KeyCode::Char('r') => self.open_region_picker(),
+                    KeyCode::Char('j') | KeyCode::Down => match self.focus {
+                        Focus::Events if self.events_visible => {
+                            let next = self
+                                .events_cursor
+                                .map(|c| (c + 1).min(self.events.len().saturating_sub(1)))
+                                .unwrap_or(0);
+                            self.events_cursor = Some(next);
+                        }
+                        _ => self.move_scope_selection(1),
+                    },
+                    KeyCode::Char('k') | KeyCode::Up => match self.focus {
+                        Focus::Events if self.events_visible => {
+                            self.events_cursor = self.events_cursor.and_then(|c| c.checked_sub(1));
+                        }
+                        _ => self.move_scope_selection(-1),
+                    },
+                    KeyCode::Char('g') | KeyCode::Home => self.scope_select_first(),
+                    KeyCode::Char('G') | KeyCode::End => self.scope_select_last(),
+                    _ => {}
                 }
-                KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.view_mode = self.view_mode.next();
-                    self.status_message = Some(format!("view: {}", self.view_mode.label()));
-                }
-                KeyCode::Up
-                    if key.modifiers.contains(KeyModifiers::CONTROL) && self.events_visible =>
-                {
-                    self.events_panel_height = (self.events_panel_height + 1).min(30);
-                }
-                KeyCode::Down
-                    if key.modifiers.contains(KeyModifiers::CONTROL) && self.events_visible =>
-                {
-                    self.events_panel_height = self.events_panel_height.saturating_sub(1).max(4);
-                }
-                KeyCode::Char('s') => {
-                    self.sort_key = self.sort_key.next();
-                    self.resort_envs();
-                    self.status_message = Some(format!(
-                        "sort: {} ({})",
-                        self.sort_key.label(),
-                        if self.sort_desc { "desc" } else { "asc" }
-                    ));
-                }
-                KeyCode::Char('S') => {
-                    self.sort_desc = !self.sort_desc;
-                    self.resort_envs();
-                    self.status_message = Some(format!(
-                        "sort: {} ({})",
-                        self.sort_key.label(),
-                        if self.sort_desc { "desc" } else { "asc" }
-                    ));
-                }
-                KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.export_tsv();
-                }
-                KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.yank_cli();
-                }
-                KeyCode::Char('y') => self.yank_selected(YankKind::Cname),
-                KeyCode::Char('Y') => self.yank_selected(YankKind::Name),
-                KeyCode::Char('b') if self.scope == Scope::Envs => self.open_in_console(),
-                KeyCode::Char('D') if self.scope == Scope::Envs => self.open_describe_overlay(),
-                KeyCode::Char('*') if self.scope == Scope::Envs => self.toggle_pin_selected(),
-                KeyCode::Char('f') if self.scope == Scope::Envs => {
-                    self.frozen = !self.frozen;
-                    self.status_message = Some(if self.frozen {
-                        "frozen — auto-refresh paused".into()
-                    } else {
-                        "unfrozen".into()
-                    });
-                }
-                KeyCode::Char(c @ '1'..='9') => self.quick_jump((c as u8 - b'0') as usize),
-                KeyCode::Char('?') => self.mode = Mode::Help,
-                KeyCode::Char(':') => {
-                    self.command_input.clear();
-                    self.mode = Mode::Command;
-                }
-                KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.open_palette();
-                }
-                KeyCode::Char('\'') => {
-                    self.quickjump_input.clear();
-                    self.mode = Mode::QuickJump;
-                }
-                KeyCode::Char('/') => {
-                    self.filter.clear();
-                    self.mode = Mode::Filter;
-                }
-                KeyCode::Char('p') => self.open_profile_picker(),
-                KeyCode::Char('r') => self.open_region_picker(),
-                KeyCode::Char('j') | KeyCode::Down => self.move_scope_selection(1),
-                KeyCode::Char('k') | KeyCode::Up => self.move_scope_selection(-1),
-                KeyCode::Char('g') | KeyCode::Home => self.scope_select_first(),
-                KeyCode::Char('G') | KeyCode::End => self.scope_select_last(),
-                _ => {}
-            },
+            }
         }
+    }
+
+    /// Resolve a Normal-mode key event against the user's `keys.toml`.
+    /// Currently supports F1–F12 and single uppercase letters; returns the
+    /// command body (without `:`) when bound.
+    fn lookup_custom_key(&self, key: &KeyEvent) -> Option<String> {
+        if !key.modifiers.is_empty() && !key.modifiers.contains(KeyModifiers::SHIFT) {
+            return None;
+        }
+        let spec = match key.code {
+            KeyCode::F(n) if (1..=12).contains(&n) => format!("F{n}"),
+            KeyCode::Char(c) if c.is_ascii_uppercase() => c.to_string(),
+            _ => return None,
+        };
+        self.custom_keys.bindings.get(&spec).cloned()
     }
 
     fn manual_refresh(&mut self) {
@@ -1921,6 +2133,8 @@ impl App {
             loading_tags: false,
             error: None,
             log_tail: LogTail::default(),
+            metrics_hover_col: None,
+            metrics_body_rect: None,
         };
         self.detail = Some(detail);
         self.mode = Mode::Detail;
@@ -2690,6 +2904,41 @@ impl App {
         });
     }
 
+    /// Fire a single non-destructive action for batch mode. Unlike
+    /// `spawn_action` this doesn't need a `ConfirmModal` — the user already
+    /// opted in by typing `:batch-…`. Only Rebuild and RestartAppServer are
+    /// allowed; destructive actions still require per-env strict confirm.
+    fn spawn_batch_action(&mut self, action: Action, env: String) {
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        write_audit_entry(
+            self.context.account_id.as_deref(),
+            self.context.profile.as_deref(),
+            &self.context.region,
+            action,
+            &env,
+            None,
+        );
+        let env_for_msg = env.clone();
+        tokio::spawn(async move {
+            let result = match action {
+                Action::Rebuild => aws.rebuild_env(&env).await,
+                Action::RestartAppServer => aws.restart_app_server(&env).await,
+                _ => Err(color_eyre::eyre::eyre!(
+                    "batch-mode only supports Rebuild / Restart"
+                )),
+            }
+            .map_err(|e| flatten_err("batch_action", e));
+            let _ = tx.send(AppMsg::ActionResult {
+                gen,
+                action,
+                env_name: env_for_msg,
+                result,
+            });
+        });
+    }
+
     fn spawn_action(&mut self, modal: ConfirmModal) {
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
@@ -3093,6 +3342,45 @@ impl App {
                         .collect();
                     self.status_message = Some(format!("filters: {}", listing.join("  ")));
                 }
+            }
+            "batch-rebuild" | "batch-restart" => {
+                if self.read_only {
+                    self.error_message = Some("read-only mode — batch actions disabled".into());
+                    return;
+                }
+                if self.multi_selected.is_empty() {
+                    self.error_message =
+                        Some("no envs selected — press space to mark envs first".into());
+                    return;
+                }
+                let action = if cmd == "batch-rebuild" {
+                    Action::Rebuild
+                } else {
+                    Action::RestartAppServer
+                };
+                let names: Vec<String> = self.multi_selected.iter().cloned().collect();
+                let n = names.len();
+                for name in names {
+                    self.spawn_batch_action(action, name);
+                }
+                self.status_message = Some(format!(
+                    "dispatched {} to {n} env(s) — watch the events panel for outcomes",
+                    action.label()
+                ));
+                self.multi_selected.clear();
+            }
+            "minimap" => {
+                self.show_minimap = parse_toggle(rest.first().copied(), self.show_minimap);
+                self.status_message = Some(if self.show_minimap {
+                    "minimap ON".into()
+                } else {
+                    "minimap off".into()
+                });
+            }
+            "deselect" | "select-clear" => {
+                let n = self.multi_selected.len();
+                self.multi_selected.clear();
+                self.status_message = Some(format!("cleared {n} env selection(s)"));
             }
             other => {
                 if let Some(plugin) = self.plugins.get(other).cloned() {
@@ -4348,6 +4636,33 @@ fn assign_app_colors<'a>(
         }
     }
     out
+}
+
+impl App {
+    fn yank_event_at(&mut self, idx: usize) {
+        let Some(ev) = self.events.get(idx) else {
+            self.events_cursor = None;
+            return;
+        };
+        let when = ev
+            .at
+            .map(|t| {
+                t.with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string()
+            })
+            .unwrap_or_else(|| "—".into());
+        let line = format!("{when}  [{}]  {}  {}", ev.severity, ev.env, ev.message);
+        match yank(&line) {
+            Ok(()) => {
+                self.status_message = Some(format!(
+                    "yanked event line ({} chars)",
+                    line.chars().count()
+                ));
+            }
+            Err(e) => self.error_message = Some(format!("clipboard error: {e}")),
+        }
+    }
 }
 
 fn yank(text: &str) -> std::result::Result<(), String> {

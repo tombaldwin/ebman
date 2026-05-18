@@ -1,6 +1,7 @@
 mod app;
 mod aws;
 mod config;
+mod keys;
 mod plugins;
 mod profiles;
 mod sso;

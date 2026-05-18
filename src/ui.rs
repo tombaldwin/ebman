@@ -138,7 +138,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         } else {
             0
         };
-        let mut constraints: Vec<Constraint> = vec![Constraint::Length(5), Constraint::Min(3)];
+        // Header is taller when the user has saved filters — the chip bar
+        // needs its own row. Stays at 5 otherwise so we don't waste vertical
+        // space on accounts with no saved filters.
+        let header_height: u16 = if app.named_filters.is_empty() { 5 } else { 6 };
+        let mut constraints: Vec<Constraint> =
+            vec![Constraint::Length(header_height), Constraint::Min(3)];
         if events_height > 0 {
             constraints.push(Constraint::Length(events_height));
         }
@@ -155,9 +160,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             Scope::Apps => draw_apps_table(f, chunks[1], app),
         }
         if app.events_visible {
+            app.events_area = Some(chunks[2]);
             draw_events(f, chunks[2], app);
             draw_footer(f, chunks[3], app);
         } else {
+            app.events_area = None;
             draw_footer(f, chunks[2], app);
         }
     }
@@ -661,8 +668,32 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
 
     // Breadcrumb: region / application / env — gives context at a glance.
     let crumb = breadcrumb_line(app);
-    let info = Paragraph::new(vec![crumb, Line::from(line1), Line::from(line2)])
-        .block(titled_block(theme, "ebman", false, theme.title));
+    // Saved-filter tab bar — only rendered when the user has saved any.
+    // Each chip is the filter name; the chip matching the currently-applied
+    // filter is highlighted. The user activates with `:f NAME` or the palette.
+    let mut paragraph_lines: Vec<Line> = vec![crumb, Line::from(line1), Line::from(line2)];
+    if !app.named_filters.is_empty() {
+        let mut chips: Vec<Span> =
+            vec![Span::styled("Filters: ", Style::default().fg(theme.muted))];
+        for (name, value) in app.named_filters.iter() {
+            let active = !app.filter.is_empty() && value == &app.filter;
+            chips.push(Span::styled(
+                format!(" {name} "),
+                if active {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(theme.title_alt)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.muted)
+                },
+            ));
+            chips.push(Span::raw(" "));
+        }
+        paragraph_lines.push(Line::from(chips));
+    }
+    let info =
+        Paragraph::new(paragraph_lines).block(titled_block(theme, "ebman", false, theme.title));
     f.render_widget(info, cols[0]);
 
     let scope_label = match app.scope {
@@ -866,6 +897,11 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                 } else {
                     ""
                 };
+                let checked = if app.multi_selected.contains(&e.name) {
+                    "✓ "
+                } else {
+                    ""
+                };
                 let alert = if app.newly_red.contains(&e.name) {
                     "▲ "
                 } else {
@@ -888,6 +924,12 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                     None => ("", theme.text),
                 };
                 let name_cell = Cell::from(Line::from(vec![
+                    Span::styled(
+                        checked.to_string(),
+                        Style::default()
+                            .fg(theme.title_alt)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled(
                         star.to_string(),
                         Style::default()
@@ -1093,6 +1135,74 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
         f.render_widget(Clear, row);
         f.render_widget(para, row);
     }
+
+    if app.show_minimap {
+        draw_minimap(f, area, app);
+    }
+}
+
+/// Render a small picture-in-picture minimap of all envs in the top-right
+/// corner of the table area. Each env is a single coloured cell driven by
+/// health (Green / Yellow / Red / Grey). Capped to a 4-row × 30-column box
+/// so it doesn't dominate narrow terminals; if there are more envs than
+/// fit, the rest are dropped.
+fn draw_minimap(f: &mut Frame, area: Rect, app: &App) {
+    let theme = &app.theme;
+    let envs = &app.environments;
+    if envs.is_empty() {
+        return;
+    }
+    let max_w: u16 = area.width.saturating_sub(2).min(30);
+    let max_h: u16 = 4.min(area.height.saturating_sub(2));
+    if max_w == 0 || max_h == 0 {
+        return;
+    }
+    let capacity = (max_w as usize) * (max_h as usize);
+    let to_show: Vec<&crate::aws::Environment> = envs.iter().take(capacity).collect();
+    let needed_w: u16 = (to_show.len() as u16).min(max_w);
+    let rows_needed: u16 = ((to_show.len() as u16) + max_w - 1) / max_w;
+    let rows: u16 = rows_needed.min(max_h);
+    let map_rect = Rect {
+        x: area.x + area.width.saturating_sub(needed_w + 2),
+        y: area.y + 1,
+        width: needed_w + 2,
+        height: rows + 2,
+    };
+    f.render_widget(Clear, map_rect);
+    f.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(theme.muted))
+            .title(Span::styled(
+                " minimap ",
+                Style::default().fg(theme.title_alt),
+            )),
+        map_rect,
+    );
+    for (i, e) in to_show.iter().enumerate() {
+        let row_idx = (i as u16) / max_w;
+        let col_idx = (i as u16) % max_w;
+        if row_idx >= rows {
+            break;
+        }
+        let cell = Rect {
+            x: map_rect.x + 1 + col_idx,
+            y: map_rect.y + 1 + row_idx,
+            width: 1,
+            height: 1,
+        };
+        let color = match e.health.to_lowercase().as_str() {
+            "green" | "ok" => theme.health_green,
+            "yellow" | "warning" => theme.health_yellow,
+            "red" | "severe" => theme.health_red,
+            _ => theme.health_grey,
+        };
+        f.render_widget(
+            Paragraph::new(Span::styled("█", Style::default().fg(color))),
+            cell,
+        );
+    }
 }
 
 fn tier_cell(tier: &str, theme: &Theme) -> Cell<'static> {
@@ -1150,13 +1260,24 @@ fn draw_events(f: &mut Frame, area: Rect, app: &App) {
     let lines: Vec<Line> = app
         .events
         .iter()
-        .map(|e| {
+        .enumerate()
+        .map(|(i, e)| {
             let when = match e.at {
                 Some(t) => humanize_age(now.signed_duration_since(t)),
                 None => "—".into(),
             };
             let sev_style = severity_style(&e.severity, &app.theme);
+            let is_cursor = app.events_cursor == Some(i);
+            let marker = if is_cursor { "▶ " } else { "  " };
+            let marker_style = if is_cursor {
+                Style::default()
+                    .fg(app.theme.title_alt)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(app.theme.muted)
+            };
             Line::from(vec![
+                Span::styled(marker, marker_style),
                 Span::styled(
                     format!("{:>4} ", when),
                     Style::default().fg(app.theme.muted),
@@ -1306,25 +1427,28 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(Line::from(top)), rows[0]);
 
     // Bottom row: key strip — always visible, mode-aware.
-    let keys = match app.mode {
-        Mode::Filter => " type to filter   [enter] apply   [esc] cancel",
-        Mode::Help => " j/k scroll   ? / esc / q   close help",
-        Mode::Picker => " j/k move   type to filter   [enter] select   [esc] cancel",
-        Mode::Command => " type a command   [enter] run   [esc] cancel  (try :help)",
-        Mode::QuickJump => " type env name prefix   [enter] keep selection   [esc] cancel",
-        Mode::Palette => " type to fuzzy-find   ↑/↓ move   [enter] run   [esc] cancel",
+    let keys: String = match app.mode {
+        Mode::Filter => " type to filter   [enter] apply   [esc] cancel".into(),
+        Mode::Help => " j/k scroll   ? / esc / q   close help".into(),
+        Mode::Picker => " j/k move   type to filter   [enter] select   [esc] cancel".into(),
+        Mode::Command => " type a command   [enter] run   [esc] cancel  (try :help)".into(),
+        Mode::QuickJump => " type env name prefix   [enter] keep selection   [esc] cancel".into(),
+        Mode::Palette => " type to fuzzy-find   ↑/↓ move   [enter] run   [esc] cancel".into(),
         Mode::Normal => {
-            " j/k move  1-9 jump  ' name-jump  g/G top/bottom  tab scope  enter drill  b console  D describe  * pin  / filter  : command  ^K palette  s/S sort  ^G group  ^E events  f freeze  y/Y yank  ^Y export  ^W cli  r region  p profile  ^R refresh  ^X redact  ? help  q quit"
+            // Focus-aware key strip: the events panel has its own navigation.
+            match app.focus {
+                crate::app::Focus::Events if app.events_visible => {
+                    " EVENTS  j/k cursor   y yank line   ^] back to table   ^E hide   esc / q".into()
+                }
+                _ => " j/k move  1-9 jump  ' name-jump  g/G top/bottom  tab scope  enter drill  b console  D describe  space multi  * pin  / filter  : command  ^K palette  s/S sort  ^G group  ^E events  ^] focus  f freeze  y/Y yank  ^Y export  ^W cli  r region  p profile  ^R refresh  ^X redact  ? help  q quit".into(),
+            }
         }
         Mode::Detail => {
             " tab/shift-tab switch  j/k scroll  a actions  ^R refresh  R auto-refresh  esc / q back"
+                .into()
         }
-        Mode::Action => {
-            " j/k move  type to filter  enter confirm  esc cancel"
-        }
-        Mode::Dlq => {
-            " j/k move  r resend  p purge  ^R refresh  esc / q back"
-        }
+        Mode::Action => " j/k move  type to filter  enter confirm  esc cancel".into(),
+        Mode::Dlq => " j/k move  r resend  p purge  ^R refresh  esc / q back".into(),
     };
     f.render_widget(
         Paragraph::new(Span::styled(keys, Style::default().fg(Color::Gray))),
@@ -1865,11 +1989,12 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
-fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
+fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
     let Some(detail) = app.detail.as_ref() else {
         return;
     };
-    let env = &detail.env_snapshot;
+    let env = detail.env_snapshot.clone();
+    let env = &env;
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -1920,15 +2045,17 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(tab_line).block(tabs_block), chunks[1]);
 
     // Body
-    match detail.tab() {
-        DetailTab::Events => draw_detail_events(f, chunks[2], detail, &app.theme),
-        DetailTab::Instances => draw_detail_instances(f, chunks[2], detail, &app.theme),
-        DetailTab::Metrics => draw_detail_metrics(f, chunks[2], detail, &app.theme),
-        DetailTab::Queue => draw_detail_queue(f, chunks[2], detail, app.redact, &app.theme),
-        DetailTab::Logs => draw_detail_logs(f, chunks[2], detail, &app.theme),
+    let body_area = chunks[2];
+    let active_tab = detail.tab();
+    match active_tab {
+        DetailTab::Events => draw_detail_events(f, body_area, detail, &app.theme),
+        DetailTab::Instances => draw_detail_instances(f, body_area, detail, &app.theme),
+        DetailTab::Metrics => draw_detail_metrics(f, body_area, detail, &app.theme),
+        DetailTab::Queue => draw_detail_queue(f, body_area, detail, app.redact, &app.theme),
+        DetailTab::Logs => draw_detail_logs(f, body_area, detail, &app.theme),
         DetailTab::Config => draw_detail_config(
             f,
-            chunks[2],
+            body_area,
             env,
             detail,
             app.redact,
@@ -1936,23 +2063,46 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
             &app.theme,
         ),
     }
+    // Snapshot the fields the footer block needs before we drop the immutable
+    // borrow and reach for `app.detail.as_mut()` to write metrics_body_rect.
+    let footer_state = DetailFooterState {
+        auto_refresh: detail.auto_refresh,
+        error: detail.error.clone(),
+        loading_events: detail.loading_events,
+        loading_instances: detail.loading_instances,
+        loading_queues: detail.loading_queues,
+        loading_metrics: detail.loading_metrics,
+        log_stage: detail.log_tail.stage,
+    };
+
+    // Remember the Metrics body rect so handle_mouse can decide whether a
+    // Moved event falls inside it. Cleared as soon as the user leaves the
+    // tab so stale rects from a previous tab don't pin a hover line.
+    if let Some(d) = app.detail.as_mut() {
+        d.metrics_body_rect = if active_tab == DetailTab::Metrics {
+            Some(body_area)
+        } else {
+            d.metrics_hover_col = None;
+            None
+        };
+    }
 
     // Footer
-    let auto_badge: Span<'static> = if detail.auto_refresh {
+    let auto_badge: Span<'static> = if footer_state.auto_refresh {
         pill("AUTO", Color::Black, app.theme.health_green)
     } else {
         Span::raw("")
     };
     let footer = Paragraph::new(vec![
         Line::from(vec![
-            if let Some(err) = &detail.error {
+            if let Some(err) = &footer_state.error {
                 Span::styled(format!(" {err}"), Style::default().fg(app.theme.health_red))
-            } else if detail.loading_events
-                || detail.loading_instances
-                || detail.loading_queues
-                || detail.loading_metrics
+            } else if footer_state.loading_events
+                || footer_state.loading_instances
+                || footer_state.loading_queues
+                || footer_state.loading_metrics
                 || matches!(
-                    detail.log_tail.stage,
+                    footer_state.log_stage,
                     crate::app::LogTailStage::Requesting
                         | crate::app::LogTailStage::Polling
                         | crate::app::LogTailStage::Fetching
@@ -1971,6 +2121,16 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
         )),
     ]);
     f.render_widget(footer, chunks[3]);
+}
+
+struct DetailFooterState {
+    auto_refresh: bool,
+    error: Option<String>,
+    loading_events: bool,
+    loading_instances: bool,
+    loading_queues: bool,
+    loading_metrics: bool,
+    log_stage: crate::app::LogTailStage,
 }
 
 fn render_tabs(tabs: &[DetailTab], active: usize, theme: &Theme) -> Line<'static> {
@@ -2201,16 +2361,18 @@ fn draw_detail_instances(
 }
 
 fn draw_detail_metrics(f: &mut Frame, area: Rect, detail: &crate::app::DetailState, theme: &Theme) {
-    let outer = titled_block(
-        theme,
-        &format!(
+    let title_text = if detail.metrics_hover_col.is_some() {
+        format!(
+            "Metrics · last {} · CloudWatch · cursor pinned (mouse to roam)",
+            humanize_range(detail.metrics_range_secs)
+        )
+    } else {
+        format!(
             "Metrics · last {} · CloudWatch",
             humanize_range(detail.metrics_range_secs)
-        ),
-        true,
-        theme.title,
-    )
-    .padding(Padding::horizontal(1));
+        )
+    };
+    let outer = titled_block(theme, &title_text, true, theme.title).padding(Padding::horizontal(1));
     let inner = outer.inner(area);
     f.render_widget(outer, area);
 
@@ -2260,6 +2422,12 @@ fn draw_detail_metrics(f: &mut Frame, area: Rect, detail: &crate::app::DetailSta
         // latency we flag `last > 1.5 × mean(prior)`. Health / other series
         // don't carry an interpretable baseline so we skip them.
         let anomaly = series_anomaly_label(&series.id, &values);
+        // Hover lookup: if the mouse column is over the metrics body, translate
+        // it to a point index and surface the value at that index.
+        let hover_value = detail
+            .metrics_hover_col
+            .and_then(|col| hover_index(col, inner, values.len()))
+            .and_then(|idx| values.get(idx).copied());
         let mut title_spans: Vec<Span<'static>> = vec![
             Span::styled(
                 format!("{:<26} ", series.label),
@@ -2287,6 +2455,15 @@ fn draw_detail_metrics(f: &mut Frame, area: Rect, detail: &crate::app::DetailSta
                 label,
                 Style::default()
                     .fg(theme.health_red)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        if let Some(hv) = hover_value {
+            title_spans.push(Span::raw("  "));
+            title_spans.push(Span::styled(
+                format!("@cursor {}", format_metric(&series.id, hv)),
+                Style::default()
+                    .fg(theme.title_alt)
                     .add_modifier(Modifier::BOLD),
             ));
         }
@@ -2319,6 +2496,24 @@ fn draw_detail_metrics(f: &mut Frame, area: Rect, detail: &crate::app::DetailSta
             .y_axis(Axis::default().bounds([0.0, max_y]));
         f.render_widget(chart, row_layout[1]);
     }
+}
+
+/// Map a mouse column to the corresponding metric point index. `col` is the
+/// raw terminal column from the crossterm event; `area` is the inner Rect of
+/// the metrics body; `n` is the number of points in the series. Returns
+/// `None` when the column is outside the body. The mapping is linear with
+/// integer rounding so the cursor "snaps" to the nearest sample.
+pub fn hover_index(col: u16, area: Rect, n: usize) -> Option<usize> {
+    if n == 0 || area.width < 2 {
+        return None;
+    }
+    if col < area.x || col >= area.x.saturating_add(area.width) {
+        return None;
+    }
+    let rel = (col - area.x) as f64;
+    let width = (area.width - 1) as f64;
+    let scaled = (rel / width) * (n as f64 - 1.0);
+    Some(scaled.round() as usize)
 }
 
 /// Return an anomaly badge for a metric series, or `None` if the latest sample
@@ -3061,6 +3256,21 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hover_index_maps_column_to_point() {
+        use ratatui::layout::Rect;
+        let area = Rect::new(10, 0, 11, 5); // x=10..20 (inclusive of x=20-1)
+                                            // x=10 → first point; x=20 → last point.
+        assert_eq!(super::hover_index(10, area, 11), Some(0));
+        assert_eq!(super::hover_index(20, area, 11), Some(10));
+        assert_eq!(super::hover_index(15, area, 11), Some(5));
+        // Out of range → None.
+        assert_eq!(super::hover_index(9, area, 11), None);
+        assert_eq!(super::hover_index(21, area, 11), None);
+        // Empty series → None even when in range.
+        assert_eq!(super::hover_index(10, area, 0), None);
+    }
 
     #[test]
     fn series_anomaly_flags_5xx_spike() {
