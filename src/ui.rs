@@ -894,7 +894,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                     Some(theme.row_yellow_bg)
                 } else if is_hover {
                     Some(theme.row_hover_bg)
-                } else if env_position % 2 == 0 {
+                } else if env_position.is_multiple_of(2) {
                     Some(theme.row_alt_bg)
                 } else {
                     None
