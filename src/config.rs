@@ -44,7 +44,9 @@ pub fn parse(text: &str) -> Config {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let Some((key, raw_val)) = line.split_once('=') else { continue };
+        let Some((key, raw_val)) = line.split_once('=') else {
+            continue;
+        };
         let key = key.trim();
         let value = raw_val.trim().trim_matches('"').to_string();
         match key {
@@ -102,7 +104,10 @@ grouped_default = false
 "#;
         let cfg = parse(text);
         assert_eq!(cfg.refresh_interval, Duration::from_secs(30));
-        assert_eq!(cfg.extra_regions, vec!["us-gov-east-1".to_string(), "cn-north-1".to_string()]);
+        assert_eq!(
+            cfg.extra_regions,
+            vec!["us-gov-east-1".to_string(), "cn-north-1".to_string()]
+        );
         assert_eq!(cfg.redact_default, Some(true));
         assert_eq!(cfg.grouped_default, Some(false));
     }

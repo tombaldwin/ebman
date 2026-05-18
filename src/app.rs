@@ -17,7 +17,10 @@ use ratatui::{
 use tokio::sync::mpsc;
 
 use crate::{
-    aws::{Application, AwsClient, AwsContext, CwAlarm, Environment, Event as EbEvent, Identity, Instance, MetricSeries, QueueMessage, WorkerQueues},
+    aws::{
+        Application, AwsClient, AwsContext, CwAlarm, Environment, Event as EbEvent, Identity,
+        Instance, MetricSeries, QueueMessage, WorkerQueues,
+    },
     config::Config,
     profiles,
     state::{self, PersistedState},
@@ -316,10 +319,19 @@ impl Action {
 }
 
 pub enum ActionFlow {
-    Menu { list_state: ListState },
-    SwapTarget { source: String, picker: Picker },
+    Menu {
+        list_state: ListState,
+    },
+    SwapTarget {
+        source: String,
+        picker: Picker,
+    },
     Confirm(ConfirmModal),
-    Running { action: Action, env: String, since: Instant },
+    Running {
+        action: Action,
+        env: String,
+        since: Instant,
+    },
 }
 
 #[derive(Clone)]
@@ -387,7 +399,7 @@ pub struct DetailState {
     pub metrics_range_secs: i64,
     pub auto_refresh: bool,
     pub search_input: String,
-    pub search_active: bool,    // true while user is typing a pattern
+    pub search_active: bool, // true while user is typing a pattern
     pub search_pattern: Option<regex::Regex>,
     pub search_error: Option<String>,
     pub events_scroll: u16,
@@ -429,7 +441,12 @@ impl Picker {
         if !items.is_empty() {
             list_state.select(Some(initial));
         }
-        Self { kind, items, filter: String::new(), list_state }
+        Self {
+            kind,
+            items,
+            filter: String::new(),
+            list_state,
+        }
     }
 
     pub fn title(&self) -> &'static str {
@@ -468,7 +485,9 @@ impl Picker {
     }
 
     pub fn selected_value(&self) -> Option<String> {
-        self.list_state.selected().and_then(|i| self.items.get(i).cloned())
+        self.list_state
+            .selected()
+            .and_then(|i| self.items.get(i).cloned())
     }
 }
 
@@ -561,22 +580,79 @@ pub struct App {
 }
 
 enum AppMsg {
-    Refresh { gen: u64, result: Result<Vec<Environment>, String> },
-    Applications { gen: u64, result: Result<Vec<Application>, String> },
+    Refresh {
+        gen: u64,
+        result: Result<Vec<Environment>, String>,
+    },
+    Applications {
+        gen: u64,
+        result: Result<Vec<Application>, String>,
+    },
     Rebuild(Result<Box<AwsClient>, String>),
-    Identity { gen: u64, result: Result<Identity, String> },
-    Events { gen: u64, result: Result<Vec<EbEvent>, String> },
-    DetailEvents { gen: u64, env_name: String, result: Result<Vec<EbEvent>, String> },
-    DetailInstances { gen: u64, env_name: String, result: Result<Vec<Instance>, String> },
-    DetailQueues { gen: u64, env_name: String, result: Result<WorkerQueues, String> },
-    DetailMetrics { gen: u64, env_name: String, result: Result<Vec<MetricSeries>, String> },
-    DetailTags { gen: u64, env_name: String, result: Result<Vec<(String, String)>, String> },
-    DryRunResult { gen: u64, env_name: String, result: Result<Vec<Instance>, String> },
-    PreflightEvents { gen: u64, env_name: String, result: Result<Vec<EbEvent>, String> },
-    Alarms { gen: u64, env_name: String, result: Result<Vec<CwAlarm>, String> },
-    DlqMessages { gen: u64, env_name: String, result: Result<Vec<QueueMessage>, String> },
-    DlqActionResult { gen: u64, env_name: String, result: Result<DlqOp, String> },
-    ActionResult { gen: u64, action: Action, env_name: String, result: Result<(), String> },
+    Identity {
+        gen: u64,
+        result: Result<Identity, String>,
+    },
+    Events {
+        gen: u64,
+        result: Result<Vec<EbEvent>, String>,
+    },
+    DetailEvents {
+        gen: u64,
+        env_name: String,
+        result: Result<Vec<EbEvent>, String>,
+    },
+    DetailInstances {
+        gen: u64,
+        env_name: String,
+        result: Result<Vec<Instance>, String>,
+    },
+    DetailQueues {
+        gen: u64,
+        env_name: String,
+        result: Result<WorkerQueues, String>,
+    },
+    DetailMetrics {
+        gen: u64,
+        env_name: String,
+        result: Result<Vec<MetricSeries>, String>,
+    },
+    DetailTags {
+        gen: u64,
+        env_name: String,
+        result: Result<Vec<(String, String)>, String>,
+    },
+    DryRunResult {
+        gen: u64,
+        env_name: String,
+        result: Result<Vec<Instance>, String>,
+    },
+    PreflightEvents {
+        gen: u64,
+        env_name: String,
+        result: Result<Vec<EbEvent>, String>,
+    },
+    Alarms {
+        gen: u64,
+        env_name: String,
+        result: Result<Vec<CwAlarm>, String>,
+    },
+    DlqMessages {
+        gen: u64,
+        env_name: String,
+        result: Result<Vec<QueueMessage>, String>,
+    },
+    DlqActionResult {
+        gen: u64,
+        env_name: String,
+        result: Result<DlqOp, String>,
+    },
+    ActionResult {
+        gen: u64,
+        action: Action,
+        env_name: String,
+        result: Result<(), String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -595,20 +671,21 @@ async fn init_client(
     //   2. verify_identity is *best-effort* — STS perms aren't required to use
     //      EB describe APIs. On failure we log + surface a startup warning but
     //      keep going with the client, leaving account/caller fields unset.
-    let (mut client, used_profile, used_region) = match AwsClient::with(profile.clone(), region.clone()).await {
-        Ok(c) => (c, profile, region),
-        Err(e) if profile.is_some() || region.is_some() => {
-            tracing::warn!(
-                error = %e,
-                profile = ?profile,
-                region = ?region,
-                "persisted profile/region failed to resolve — falling back to env defaults"
-            );
-            let c = AwsClient::with(None, None).await?;
-            (c, None, None)
-        }
-        Err(e) => return Err(e),
-    };
+    let (mut client, used_profile, used_region) =
+        match AwsClient::with(profile.clone(), region.clone()).await {
+            Ok(c) => (c, profile, region),
+            Err(e) if profile.is_some() || region.is_some() => {
+                tracing::warn!(
+                    error = %e,
+                    profile = ?profile,
+                    region = ?region,
+                    "persisted profile/region failed to resolve — falling back to env defaults"
+                );
+                let c = AwsClient::with(None, None).await?;
+                (c, None, None)
+            }
+            Err(e) => return Err(e),
+        };
 
     let warning = match client.verify_identity().await {
         Ok(id) => {
@@ -640,7 +717,10 @@ impl App {
 
         let (sort_key, sort_desc) = parse_sort(persisted.sort.as_deref());
         let redact = persisted.redact.or(config.redact_default).unwrap_or(false);
-        let grouped = persisted.grouped.or(config.grouped_default).unwrap_or(false);
+        let grouped = persisted
+            .grouped
+            .or(config.grouped_default)
+            .unwrap_or(false);
         let events_visible = persisted.events_visible.unwrap_or(false);
         let refresh_interval = config.refresh_interval;
 
@@ -654,10 +734,7 @@ impl App {
         let plugin_startup_warning = if plugins_loaded.warnings.is_empty() {
             None
         } else {
-            Some(format!(
-                "plugins: {}",
-                plugins_loaded.warnings.join("; ")
-            ))
+            Some(format!("plugins: {}", plugins_loaded.warnings.join("; ")))
         };
 
         let mut app = Self {
@@ -1077,15 +1154,21 @@ impl App {
                 KeyCode::Down | KeyCode::Char('j')
                     if !key.modifiers.contains(KeyModifiers::CONTROL) =>
                 {
-                    if let Some(p) = self.picker.as_mut() { p.move_selection(1); }
+                    if let Some(p) = self.picker.as_mut() {
+                        p.move_selection(1);
+                    }
                 }
                 KeyCode::Up | KeyCode::Char('k')
                     if !key.modifiers.contains(KeyModifiers::CONTROL) =>
                 {
-                    if let Some(p) = self.picker.as_mut() { p.move_selection(-1); }
+                    if let Some(p) = self.picker.as_mut() {
+                        p.move_selection(-1);
+                    }
                 }
                 KeyCode::Backspace => {
-                    if let Some(p) = self.picker.as_mut() { p.filter.pop(); }
+                    if let Some(p) = self.picker.as_mut() {
+                        p.filter.pop();
+                    }
                 }
                 KeyCode::Char(c) if is_text_input(&key) => {
                     if let Some(p) = self.picker.as_mut() {
@@ -1133,26 +1216,47 @@ impl App {
                     KeyCode::Char('d') => self.open_dlq(),
                     KeyCode::Char('D') => self.open_describe_overlay(),
                     KeyCode::Char(']')
-                        if matches!(self.detail.as_ref().map(|d| d.tab()), Some(DetailTab::Metrics)) =>
+                        if matches!(
+                            self.detail.as_ref().map(|d| d.tab()),
+                            Some(DetailTab::Metrics)
+                        ) =>
                     {
                         self.cycle_metrics_range(1);
                     }
                     KeyCode::Char('[')
-                        if matches!(self.detail.as_ref().map(|d| d.tab()), Some(DetailTab::Metrics)) =>
+                        if matches!(
+                            self.detail.as_ref().map(|d| d.tab()),
+                            Some(DetailTab::Metrics)
+                        ) =>
                     {
                         self.cycle_metrics_range(-1);
                     }
-                    KeyCode::Char('/') if matches!(self.detail.as_ref().map(|d| d.tab()), Some(DetailTab::Events)) => {
+                    KeyCode::Char('/')
+                        if matches!(
+                            self.detail.as_ref().map(|d| d.tab()),
+                            Some(DetailTab::Events)
+                        ) =>
+                    {
                         if let Some(d) = self.detail.as_mut() {
                             d.search_active = true;
                             d.search_input.clear();
                             d.search_error = None;
                         }
                     }
-                    KeyCode::Char('n') if matches!(self.detail.as_ref().map(|d| d.tab()), Some(DetailTab::Events)) => {
+                    KeyCode::Char('n')
+                        if matches!(
+                            self.detail.as_ref().map(|d| d.tab()),
+                            Some(DetailTab::Events)
+                        ) =>
+                    {
                         self.detail_search_jump(1);
                     }
-                    KeyCode::Char('N') if matches!(self.detail.as_ref().map(|d| d.tab()), Some(DetailTab::Events)) => {
+                    KeyCode::Char('N')
+                        if matches!(
+                            self.detail.as_ref().map(|d| d.tab()),
+                            Some(DetailTab::Events)
+                        ) =>
+                    {
                         self.detail_search_jump(-1);
                     }
                     _ => {}
@@ -1173,16 +1277,20 @@ impl App {
                 }
                 KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     self.redact = !self.redact;
-                    self.status_message = Some(
-                        if self.redact { "redact mode ON".into() } else { "redact mode off".into() },
-                    );
+                    self.status_message = Some(if self.redact {
+                        "redact mode ON".into()
+                    } else {
+                        "redact mode off".into()
+                    });
                 }
                 KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     self.grouped = !self.grouped;
                     self.rebuild_view();
-                    self.status_message = Some(
-                        if self.grouped { "grouped by application".into() } else { "ungrouped".into() },
-                    );
+                    self.status_message = Some(if self.grouped {
+                        "grouped by application".into()
+                    } else {
+                        "ungrouped".into()
+                    });
                 }
                 KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     self.events_visible = !self.events_visible;
@@ -1205,7 +1313,8 @@ impl App {
                 }
                 KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     if self.events_visible {
-                        self.events_panel_height = self.events_panel_height.saturating_sub(1).max(4);
+                        self.events_panel_height =
+                            self.events_panel_height.saturating_sub(1).max(4);
                     }
                 }
                 KeyCode::Char('s') => {
@@ -1239,13 +1348,11 @@ impl App {
                 KeyCode::Char('*') if self.scope == Scope::Envs => self.toggle_pin_selected(),
                 KeyCode::Char('f') if self.scope == Scope::Envs => {
                     self.frozen = !self.frozen;
-                    self.status_message = Some(
-                        if self.frozen {
-                            "frozen — auto-refresh paused".into()
-                        } else {
-                            "unfrozen".into()
-                        },
-                    );
+                    self.status_message = Some(if self.frozen {
+                        "frozen — auto-refresh paused".into()
+                    } else {
+                        "unfrozen".into()
+                    });
                 }
                 KeyCode::Char(c @ '1'..='9') => self.quick_jump((c as u8 - b'0') as usize),
                 KeyCode::Char('?') => self.mode = Mode::Help,
@@ -1297,7 +1404,11 @@ impl App {
                 .list_alarms_for_env(&env_name)
                 .await
                 .map_err(|e| flatten_err("list_alarms_for_env", e));
-            let _ = tx.send(AppMsg::Alarms { gen, env_name: name_for_msg, result });
+            let _ = tx.send(AppMsg::Alarms {
+                gen,
+                env_name: name_for_msg,
+                result,
+            });
         });
     }
 
@@ -1369,7 +1480,9 @@ impl App {
         let cmd = build_describe_cli(
             &env.name,
             &self.context.region,
-            self.override_profile.as_deref().or(self.context.profile.as_deref()),
+            self.override_profile
+                .as_deref()
+                .or(self.context.profile.as_deref()),
         );
         match yank(&cmd) {
             Ok(()) => {
@@ -1384,7 +1497,11 @@ impl App {
         let mut out = String::from("[\n");
         for (idx, &i) in self.cached_filtered.iter().enumerate() {
             let e = &self.environments[i];
-            let cname = if self.redact { redact_block(&e.cname) } else { e.cname.clone() };
+            let cname = if self.redact {
+                redact_block(&e.cname)
+            } else {
+                e.cname.clone()
+            };
             let updated = e
                 .updated
                 .map(|u| format!("\"{}\"", u.to_rfc3339()))
@@ -1409,8 +1526,7 @@ impl App {
         out.push(']');
         match yank(&out) {
             Ok(()) => {
-                self.status_message =
-                    Some(format!("exported {count} rows (JSON) to clipboard"));
+                self.status_message = Some(format!("exported {count} rows (JSON) to clipboard"));
             }
             Err(e) => self.error_message = Some(format!("clipboard error: {e}")),
         }
@@ -1423,11 +1539,12 @@ impl App {
         out.push_str("| ---- | ----------- | ---- | ------ | ------ | -------- | ------- | ----- | ------- |\n");
         for &i in &self.cached_filtered {
             let e = &self.environments[i];
-            let cname = if self.redact { redact_block(&e.cname) } else { e.cname.clone() };
-            let updated = e
-                .updated
-                .map(|u| u.to_rfc3339())
-                .unwrap_or_default();
+            let cname = if self.redact {
+                redact_block(&e.cname)
+            } else {
+                e.cname.clone()
+            };
+            let updated = e.updated.map(|u| u.to_rfc3339()).unwrap_or_default();
             out.push_str(&format!(
                 "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
                 md_escape(&e.name),
@@ -1505,7 +1622,11 @@ impl App {
         scored.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
         self.palette_filtered = scored.into_iter().map(|(i, _)| i).collect();
         self.palette_state
-            .select(if self.palette_filtered.is_empty() { None } else { Some(0) });
+            .select(if self.palette_filtered.is_empty() {
+                None
+            } else {
+                Some(0)
+            });
     }
 
     fn palette_move(&mut self, delta: i32) {
@@ -1520,9 +1641,15 @@ impl App {
     }
 
     fn palette_execute(&mut self) {
-        let Some(pos) = self.palette_state.selected() else { return };
-        let Some(&idx) = self.palette_filtered.get(pos) else { return };
-        let Some(item) = self.palette_items.get(idx).cloned() else { return };
+        let Some(pos) = self.palette_state.selected() else {
+            return;
+        };
+        let Some(&idx) = self.palette_filtered.get(pos) else {
+            return;
+        };
+        let Some(item) = self.palette_items.get(idx).cloned() else {
+            return;
+        };
         self.mode = Mode::Normal;
         self.palette_input.clear();
         match item.action {
@@ -1637,7 +1764,9 @@ impl App {
     }
 
     fn spawn_detail_tags(&mut self) {
-        let Some(d) = self.detail.as_ref() else { return };
+        let Some(d) = self.detail.as_ref() else {
+            return;
+        };
         let Some(arn) = d.env_snapshot.arn.clone() else {
             return;
         };
@@ -1649,13 +1778,22 @@ impl App {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         tokio::spawn(async move {
-            let result = aws.list_tags(&arn).await.map_err(|e| flatten_err("list_tags", e));
-            let _ = tx.send(AppMsg::DetailTags { gen, env_name, result });
+            let result = aws
+                .list_tags(&arn)
+                .await
+                .map_err(|e| flatten_err("list_tags", e));
+            let _ = tx.send(AppMsg::DetailTags {
+                gen,
+                env_name,
+                result,
+            });
         });
     }
 
     fn detail_cycle_tab(&mut self, delta: i32) {
-        let Some(detail) = self.detail.as_mut() else { return };
+        let Some(detail) = self.detail.as_mut() else {
+            return;
+        };
         let n = detail.tabs.len() as i32;
         let next = (detail.tab_idx as i32 + delta).rem_euclid(n) as usize;
         detail.tab_idx = next;
@@ -1663,7 +1801,9 @@ impl App {
     }
 
     fn detail_scroll(&mut self, delta: i32) {
-        let Some(detail) = self.detail.as_mut() else { return };
+        let Some(detail) = self.detail.as_mut() else {
+            return;
+        };
         match detail.tab() {
             DetailTab::Events => {
                 detail.events_scroll = scroll_apply(detail.events_scroll, delta);
@@ -1676,7 +1816,9 @@ impl App {
     }
 
     fn detail_refresh_active_tab(&mut self) {
-        let Some(detail) = self.detail.as_ref() else { return };
+        let Some(detail) = self.detail.as_ref() else {
+            return;
+        };
         let env_name = detail.env_name.clone();
         let app_name = detail.env_snapshot.application.clone();
         let tab = detail.tab();
@@ -1690,7 +1832,9 @@ impl App {
     }
 
     fn handle_detail_search_key(&mut self, key: KeyEvent) {
-        let Some(detail) = self.detail.as_mut() else { return };
+        let Some(detail) = self.detail.as_mut() else {
+            return;
+        };
         match key.code {
             KeyCode::Esc => {
                 detail.search_active = false;
@@ -1727,8 +1871,12 @@ impl App {
     }
 
     fn detail_search_jump(&mut self, delta: i32) {
-        let Some(detail) = self.detail.as_mut() else { return };
-        let Some(re) = detail.search_pattern.as_ref() else { return };
+        let Some(detail) = self.detail.as_mut() else {
+            return;
+        };
+        let Some(re) = detail.search_pattern.as_ref() else {
+            return;
+        };
         let n = detail.events.len();
         if n == 0 {
             return;
@@ -1755,7 +1903,9 @@ impl App {
 
     fn cycle_metrics_range(&mut self, delta: i32) {
         const RANGES: &[i64] = &[900, 3600, 21_600, 86_400]; // 15m / 1h / 6h / 24h
-        let Some(d) = self.detail.as_mut() else { return };
+        let Some(d) = self.detail.as_mut() else {
+            return;
+        };
         let cur = RANGES
             .iter()
             .position(|r| *r == d.metrics_range_secs)
@@ -1767,7 +1917,11 @@ impl App {
     }
 
     fn spawn_detail_metrics(&mut self, env_name: String) {
-        let range = self.detail.as_ref().map(|d| d.metrics_range_secs).unwrap_or(3600);
+        let range = self
+            .detail
+            .as_ref()
+            .map(|d| d.metrics_range_secs)
+            .unwrap_or(3600);
         if let Some(d) = self.detail.as_mut() {
             d.loading_metrics = true;
             d.error = None;
@@ -1781,12 +1935,18 @@ impl App {
                 .fetch_env_metrics(&name, range)
                 .await
                 .map_err(|e| flatten_err("fetch_env_metrics", e));
-            let _ = tx.send(AppMsg::DetailMetrics { gen, env_name, result });
+            let _ = tx.send(AppMsg::DetailMetrics {
+                gen,
+                env_name,
+                result,
+            });
         });
     }
 
     fn open_dlq(&mut self) {
-        let Some(detail) = self.detail.as_ref() else { return };
+        let Some(detail) = self.detail.as_ref() else {
+            return;
+        };
         if detail.tab() != DetailTab::Queue {
             return;
         }
@@ -1813,7 +1973,11 @@ impl App {
 
     fn close_dlq(&mut self) {
         self.dlq = None;
-        self.mode = if self.detail.is_some() { Mode::Detail } else { Mode::Normal };
+        self.mode = if self.detail.is_some() {
+            Mode::Detail
+        } else {
+            Mode::Normal
+        };
     }
 
     fn spawn_dlq_fetch(&mut self) {
@@ -1826,8 +1990,15 @@ impl App {
         let env_name = dlq.env_name.clone();
         let dlq_url = dlq.dlq_url.clone();
         tokio::spawn(async move {
-            let result = aws.peek_messages(&dlq_url, 10).await.map_err(|e| flatten_err("peek_messages", e));
-            let _ = tx.send(AppMsg::DlqMessages { gen, env_name, result });
+            let result = aws
+                .peek_messages(&dlq_url, 10)
+                .await
+                .map_err(|e| flatten_err("peek_messages", e));
+            let _ = tx.send(AppMsg::DlqMessages {
+                gen,
+                env_name,
+                result,
+            });
         });
     }
 
@@ -1860,13 +2031,17 @@ impl App {
             KeyCode::Esc | KeyCode::Char('q') => self.close_dlq(),
             KeyCode::Char('j') | KeyCode::Down => {
                 let n = dlq.messages.len();
-                if n == 0 { return; }
+                if n == 0 {
+                    return;
+                }
                 let cur = dlq.list_state.selected().unwrap_or(0);
                 dlq.list_state.select(Some((cur + 1) % n));
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 let n = dlq.messages.len();
-                if n == 0 { return; }
+                if n == 0 {
+                    return;
+                }
                 let cur = dlq.list_state.selected().unwrap_or(0);
                 dlq.list_state.select(Some((cur + n - 1) % n));
             }
@@ -1890,8 +2065,12 @@ impl App {
             return;
         }
         let Some(dlq) = self.dlq.as_mut() else { return };
-        let Some(idx) = dlq.list_state.selected() else { return };
-        let Some(msg) = dlq.messages.get(idx).cloned() else { return };
+        let Some(idx) = dlq.list_state.selected() else {
+            return;
+        };
+        let Some(msg) = dlq.messages.get(idx).cloned() else {
+            return;
+        };
         if dlq.main_queue_url.is_empty() {
             dlq.error = Some("main queue URL unknown — cannot resend".into());
             return;
@@ -1911,7 +2090,9 @@ impl App {
         tokio::spawn(async move {
             let result = match aws.send_message(&main_url, &msg.body).await {
                 Ok(()) => match aws.delete_message(&dlq_url, &msg.receipt_handle).await {
-                    Ok(()) => Ok(DlqOp::Resent { message_id: msg.id.clone() }),
+                    Ok(()) => Ok(DlqOp::Resent {
+                        message_id: msg.id.clone(),
+                    }),
                     Err(e) => {
                         tracing::error!(target: "ebman::aws", op = "dlq_delete_after_send", error = ?e, "aws call failed");
                         Err(format!("sent to main queue, but DLQ delete failed: {e}"))
@@ -1922,7 +2103,11 @@ impl App {
                     Err(format!("send to main queue failed: {e}"))
                 }
             };
-            let _ = tx.send(AppMsg::DlqActionResult { gen, env_name, result });
+            let _ = tx.send(AppMsg::DlqActionResult {
+                gen,
+                env_name,
+                result,
+            });
         });
     }
 
@@ -1946,7 +2131,11 @@ impl App {
                 .await
                 .map(|_| DlqOp::Purged)
                 .map_err(|e| flatten_err("purge_queue", e));
-            let _ = tx.send(AppMsg::DlqActionResult { gen, env_name, result });
+            let _ = tx.send(AppMsg::DlqActionResult {
+                gen,
+                env_name,
+                result,
+            });
         });
     }
 
@@ -1964,7 +2153,11 @@ impl App {
                 .describe_worker_queues(&application_name, &name)
                 .await
                 .map_err(|e| flatten_err("describe_worker_queues", e));
-            let _ = tx.send(AppMsg::DetailQueues { gen, env_name, result });
+            let _ = tx.send(AppMsg::DetailQueues {
+                gen,
+                env_name,
+                result,
+            });
         });
     }
 
@@ -1982,7 +2175,11 @@ impl App {
                 .list_events_for_env(&name, 50)
                 .await
                 .map_err(|e| flatten_err("list_events_for_env", e));
-            let _ = tx.send(AppMsg::DetailEvents { gen, env_name, result });
+            let _ = tx.send(AppMsg::DetailEvents {
+                gen,
+                env_name,
+                result,
+            });
         });
     }
 
@@ -1996,7 +2193,8 @@ impl App {
 
     fn open_action_menu(&mut self) {
         if self.read_only {
-            self.error_message = Some("read-only mode — actions are disabled (:readonly off to enable)".into());
+            self.error_message =
+                Some("read-only mode — actions are disabled (:readonly off to enable)".into());
             return;
         }
         if self.target_env_for_action().is_none() {
@@ -2037,7 +2235,9 @@ impl App {
                     list_state.select(Some(next));
                 }
                 KeyCode::Enter => {
-                    let Some(idx) = list_state.selected() else { return };
+                    let Some(idx) = list_state.selected() else {
+                        return;
+                    };
                     let action = ACTIONS[idx];
                     self.advance_action_flow(action);
                 }
@@ -2059,7 +2259,9 @@ impl App {
                     picker.filter.pop();
                 }
                 KeyCode::Enter => {
-                    let Some(target) = picker.selected_value() else { return };
+                    let Some(target) = picker.selected_value() else {
+                        return;
+                    };
                     let source = match flow {
                         ActionFlow::SwapTarget { source, .. } => source.clone(),
                         _ => return,
@@ -2079,7 +2281,10 @@ impl App {
                 KeyCode::Char(c) if is_text_input(&key) => {
                     picker.filter.push(c);
                     let filt = picker.filtered();
-                    if !filt.iter().any(|i| Some(*i) == picker.list_state.selected()) {
+                    if !filt
+                        .iter()
+                        .any(|i| Some(*i) == picker.list_state.selected())
+                    {
                         picker.list_state.select(filt.first().copied());
                     }
                 }
@@ -2139,7 +2344,11 @@ impl App {
                     .collect();
                 if candidates.is_empty() {
                     self.action_flow = None;
-                    self.mode = if self.detail.is_some() { Mode::Detail } else { Mode::Normal };
+                    self.mode = if self.detail.is_some() {
+                        Mode::Detail
+                    } else {
+                        Mode::Normal
+                    };
                     self.error_message = Some(format!(
                         "no swap candidates: app '{}' has only one environment",
                         env.application
@@ -2207,7 +2416,11 @@ impl App {
                 .list_events_for_env(&env_name, 3)
                 .await
                 .map_err(|e| flatten_err("preflight_events", e));
-            let _ = tx.send(AppMsg::PreflightEvents { gen, env_name, result });
+            let _ = tx.send(AppMsg::PreflightEvents {
+                gen,
+                env_name,
+                result,
+            });
         });
     }
 
@@ -2216,8 +2429,15 @@ impl App {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         tokio::spawn(async move {
-            let result = aws.list_instances(&env_name).await.map_err(|e| flatten_err("dry_run_list_instances", e));
-            let _ = tx.send(AppMsg::DryRunResult { gen, env_name, result });
+            let result = aws
+                .list_instances(&env_name)
+                .await
+                .map_err(|e| flatten_err("dry_run_list_instances", e));
+            let _ = tx.send(AppMsg::DryRunResult {
+                gen,
+                env_name,
+                result,
+            });
         });
     }
 
@@ -2247,7 +2467,12 @@ impl App {
                 },
             }
             .map_err(|e| flatten_err("action", e));
-            let _ = tx.send(AppMsg::ActionResult { gen, action, env_name: env, result });
+            let _ = tx.send(AppMsg::ActionResult {
+                gen,
+                action,
+                env_name: env,
+                result,
+            });
         });
     }
 
@@ -2265,7 +2490,11 @@ impl App {
                 .list_instances(&name)
                 .await
                 .map_err(|e| flatten_err("list_instances", e));
-            let _ = tx.send(AppMsg::DetailInstances { gen, env_name, result });
+            let _ = tx.send(AppMsg::DetailInstances {
+                gen,
+                env_name,
+                result,
+            });
         });
     }
 
@@ -2291,7 +2520,10 @@ impl App {
             },
             "sort" => {
                 let Some(key) = rest.first() else {
-                    self.error_message = Some("usage: :sort <key> [asc|desc]  — keys: name app status health version age".into());
+                    self.error_message = Some(
+                        "usage: :sort <key> [asc|desc]  — keys: name app status health version age"
+                            .into(),
+                    );
                     return;
                 };
                 match SortKey::parse(key) {
@@ -2311,34 +2543,41 @@ impl App {
             "group" => {
                 self.grouped = parse_toggle(rest.first().copied(), self.grouped);
                 self.rebuild_view();
-                self.status_message = Some(
-                    if self.grouped { "grouped by application".into() } else { "ungrouped".into() },
-                );
+                self.status_message = Some(if self.grouped {
+                    "grouped by application".into()
+                } else {
+                    "ungrouped".into()
+                });
             }
             "redact" => {
                 self.redact = parse_toggle(rest.first().copied(), self.redact);
-                self.status_message = Some(
-                    if self.redact { "redact mode ON".into() } else { "redact mode off".into() },
-                );
+                self.status_message = Some(if self.redact {
+                    "redact mode ON".into()
+                } else {
+                    "redact mode off".into()
+                });
             }
             "events" => {
                 self.events_visible = parse_toggle(rest.first().copied(), self.events_visible);
                 if self.events_visible && self.events.is_empty() {
                     self.spawn_events();
                 }
-                self.status_message = Some(
-                    if self.events_visible { "events panel ON".into() } else { "events panel off".into() },
-                );
+                self.status_message = Some(if self.events_visible {
+                    "events panel ON".into()
+                } else {
+                    "events panel off".into()
+                });
             }
             "export" => self.export_tsv(),
             "json" => self.export_json(),
             "report" | "markdown" => self.export_markdown(),
             "readonly" => {
                 self.read_only = parse_toggle(rest.first().copied(), self.read_only);
-                self.status_message = Some(
-                    if self.read_only { "read-only ON — destructive actions disabled".into() }
-                    else { "read-only off".into() },
-                );
+                self.status_message = Some(if self.read_only {
+                    "read-only ON — destructive actions disabled".into()
+                } else {
+                    "read-only off".into()
+                });
             }
             "pin" => self.toggle_pin_selected(),
             "alias" => match rest.first().copied() {
@@ -2383,13 +2622,14 @@ impl App {
                 self.current_overlay = Some(Overlay::History(self.format_message_log()));
             }
             "saved-configs" | "configs" => {
-                self.current_overlay = Some(Overlay::SavedConfigs(format_saved_configs(&self.applications)));
+                self.current_overlay = Some(Overlay::SavedConfigs(format_saved_configs(
+                    &self.applications,
+                )));
             }
             "plugins" => {
                 if self.plugins.is_empty() {
-                    self.status_message = Some(
-                        "no plugins — add ~/.config/ebman/commands.toml".into(),
-                    );
+                    self.status_message =
+                        Some("no plugins — add ~/.config/ebman/commands.toml".into());
                 } else {
                     let names: Vec<&str> = self.plugins.keys().map(String::as_str).collect();
                     self.status_message = Some(format!(":<plugin>  {}", names.join(", ")));
@@ -2418,7 +2658,8 @@ impl App {
                                 Some(format!("no environment named '{target}' in current view"));
                         }
                         Some(right) => {
-                            self.current_overlay = Some(Overlay::Diff(diff_envs(&left, &right, self.redact)));
+                            self.current_overlay =
+                                Some(Overlay::Diff(diff_envs(&left, &right, self.redact)));
                         }
                     }
                 }
@@ -2436,7 +2677,8 @@ impl App {
             }
             "loglevel" => match rest.first() {
                 None => {
-                    self.status_message = Some(format!("current log directive: {}", self.log_directive));
+                    self.status_message =
+                        Some(format!("current log directive: {}", self.log_directive));
                 }
                 Some(level) => {
                     self.set_log_level(level);
@@ -2530,10 +2772,10 @@ impl App {
             },
             "views" => {
                 if self.saved_views.is_empty() {
-                    self.status_message = Some("no saved views — :save-view <name> to create one".into());
+                    self.status_message =
+                        Some("no saved views — :save-view <name> to create one".into());
                 } else {
-                    let listing: Vec<String> =
-                        self.saved_views.keys().map(|k| k.clone()).collect();
+                    let listing: Vec<String> = self.saved_views.keys().map(|k| k.clone()).collect();
                     self.status_message = Some(format!("views: {}", listing.join(", ")));
                 }
             }
@@ -2560,16 +2802,20 @@ impl App {
                     self.status_message = Some(format!("filter: {name} → \"{}\"", self.filter));
                 }
                 Some(name) => {
-                    self.error_message = Some(format!("no saved filter named '{name}' — try :filters"));
+                    self.error_message =
+                        Some(format!("no saved filter named '{name}' — try :filters"));
                 }
             },
             "save" => match rest.first() {
                 Some(name) => {
                     if self.filter.is_empty() {
-                        self.error_message = Some("nothing to save — set a filter with / first".into());
+                        self.error_message =
+                            Some("nothing to save — set a filter with / first".into());
                     } else {
-                        self.named_filters.insert((*name).to_string(), self.filter.clone());
-                        self.status_message = Some(format!("saved filter '{name}' = \"{}\"", self.filter));
+                        self.named_filters
+                            .insert((*name).to_string(), self.filter.clone());
+                        self.status_message =
+                            Some(format!("saved filter '{name}' = \"{}\"", self.filter));
                         self.persist_state();
                     }
                 }
@@ -2588,7 +2834,8 @@ impl App {
             },
             "filters" => {
                 if self.named_filters.is_empty() {
-                    self.status_message = Some("no saved filters — :save <name> to create one".into());
+                    self.status_message =
+                        Some("no saved filters — :save <name> to create one".into());
                 } else {
                     let listing: Vec<String> = self
                         .named_filters
@@ -2625,7 +2872,9 @@ impl App {
             &env.application,
             &env.tier,
             &self.context.region,
-            self.override_profile.as_deref().or(self.context.profile.as_deref()),
+            self.override_profile
+                .as_deref()
+                .or(self.context.profile.as_deref()),
         );
         match yank(&rendered) {
             Ok(()) => {
@@ -2662,7 +2911,11 @@ impl App {
         state::save(&PersistedState {
             profile: self.override_profile.clone(),
             region: self.override_region.clone(),
-            filter: if self.filter.is_empty() { None } else { Some(self.filter.clone()) },
+            filter: if self.filter.is_empty() {
+                None
+            } else {
+                Some(self.filter.clone())
+            },
             sort: Some(format!(
                 "{}:{}",
                 self.sort_key.label(),
@@ -2716,7 +2969,11 @@ impl App {
                     .to_lowercase()
                     .cmp(&b.version_label.to_lowercase()),
             };
-            if desc { ord.reverse() } else { ord }
+            if desc {
+                ord.reverse()
+            } else {
+                ord
+            }
         });
         self.rebuild_view();
     }
@@ -2738,7 +2995,10 @@ impl App {
             Ok(()) => {
                 self.status_message = Some(format!(
                     "copied {} to clipboard",
-                    match kind { YankKind::Cname => "CNAME", YankKind::Name => "name" }
+                    match kind {
+                        YankKind::Cname => "CNAME",
+                        YankKind::Name => "name",
+                    }
                 ));
             }
             Err(e) => self.error_message = Some(format!("clipboard error: {e}")),
@@ -2748,23 +3008,33 @@ impl App {
     fn export_tsv(&mut self) {
         let count = self.cached_filtered.len();
         let mut out = String::new();
-        out.push_str("NAME\tAPPLICATION\tTIER\tSTATUS\tHEALTH\tPLATFORM\tVERSION\tCNAME\tUPDATED\n");
+        out.push_str(
+            "NAME\tAPPLICATION\tTIER\tSTATUS\tHEALTH\tPLATFORM\tVERSION\tCNAME\tUPDATED\n",
+        );
         for &i in &self.cached_filtered {
             let e = &self.environments[i];
-            let cname = if self.redact { redact_block(&e.cname) } else { e.cname.clone() };
-            let updated = e
-                .updated
-                .map(|u| u.to_rfc3339())
-                .unwrap_or_default();
+            let cname = if self.redact {
+                redact_block(&e.cname)
+            } else {
+                e.cname.clone()
+            };
+            let updated = e.updated.map(|u| u.to_rfc3339()).unwrap_or_default();
             out.push_str(&format!(
                 "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-                e.name, e.application, e.tier, e.status, e.health, e.platform, e.version_label, cname, updated
+                e.name,
+                e.application,
+                e.tier,
+                e.status,
+                e.health,
+                e.platform,
+                e.version_label,
+                cname,
+                updated
             ));
         }
         match yank(&out) {
             Ok(()) => {
-                self.status_message =
-                    Some(format!("exported {count} rows (TSV) to clipboard"));
+                self.status_message = Some(format!("exported {count} rows (TSV) to clipboard"));
             }
             Err(e) => self.error_message = Some(format!("clipboard error: {e}")),
         }
@@ -2813,7 +3083,10 @@ impl App {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         tokio::spawn(async move {
-            let result = aws.verify_identity().await.map_err(|e| flatten_err("verify_identity", e));
+            let result = aws
+                .verify_identity()
+                .await
+                .map_err(|e| flatten_err("verify_identity", e));
             let _ = tx.send(AppMsg::Identity { gen, result });
         });
     }
@@ -2830,7 +3103,10 @@ impl App {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         tokio::spawn(async move {
-            let result = aws.list_environments().await.map_err(|e| flatten_err("list_environments", e));
+            let result = aws
+                .list_environments()
+                .await
+                .map_err(|e| flatten_err("list_environments", e));
             let _ = tx.send(AppMsg::Refresh { gen, result });
         });
         if self.events_visible {
@@ -2844,7 +3120,10 @@ impl App {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         tokio::spawn(async move {
-            let result = aws.list_applications().await.map_err(|e| flatten_err("list_applications", e));
+            let result = aws
+                .list_applications()
+                .await
+                .map_err(|e| flatten_err("list_applications", e));
             let _ = tx.send(AppMsg::Applications { gen, result });
         });
     }
@@ -2854,7 +3133,10 @@ impl App {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         tokio::spawn(async move {
-            let result = aws.list_events(50).await.map_err(|e| flatten_err("list_events", e));
+            let result = aws
+                .list_events(50)
+                .await
+                .map_err(|e| flatten_err("list_events", e));
             let _ = tx.send(AppMsg::Events { gen, result });
         });
     }
@@ -2914,11 +3196,17 @@ impl App {
                     Err(msg) => tracing::warn!(error = %msg, "event fetch failed"),
                 }
             }
-            AppMsg::DetailEvents { gen, env_name, result } => {
+            AppMsg::DetailEvents {
+                gen,
+                env_name,
+                result,
+            } => {
                 if gen != self.generation {
                     return;
                 }
-                let Some(detail) = self.detail.as_mut() else { return };
+                let Some(detail) = self.detail.as_mut() else {
+                    return;
+                };
                 if detail.env_name != env_name {
                     return; // user switched to a different env meanwhile
                 }
@@ -2931,7 +3219,12 @@ impl App {
                     Err(msg) => detail.error = Some(msg),
                 }
             }
-            AppMsg::ActionResult { gen, action, env_name, result } => {
+            AppMsg::ActionResult {
+                gen,
+                action,
+                env_name,
+                result,
+            } => {
                 if gen != self.generation {
                     return;
                 }
@@ -2946,28 +3239,30 @@ impl App {
                 match result {
                     Ok(()) => {
                         self.close_action_flow();
-                        self.status_message = Some(format!(
-                            "{} on {env_name} dispatched",
-                            action.label()
-                        ));
+                        self.status_message =
+                            Some(format!("{} on {env_name} dispatched", action.label()));
                         self.spawn_refresh();
                     }
                     Err(msg) => {
                         // Keep the confirm modal open via a Running→error transition;
                         // simpler: close flow, surface the error.
                         self.close_action_flow();
-                        self.error_message = Some(format!(
-                            "{} on {env_name} failed: {msg}",
-                            action.label()
-                        ));
+                        self.error_message =
+                            Some(format!("{} on {env_name} failed: {msg}", action.label()));
                     }
                 }
             }
-            AppMsg::DetailInstances { gen, env_name, result } => {
+            AppMsg::DetailInstances {
+                gen,
+                env_name,
+                result,
+            } => {
                 if gen != self.generation {
                     return;
                 }
-                let Some(detail) = self.detail.as_mut() else { return };
+                let Some(detail) = self.detail.as_mut() else {
+                    return;
+                };
                 if detail.env_name != env_name {
                     return;
                 }
@@ -2980,11 +3275,17 @@ impl App {
                     Err(msg) => detail.error = Some(msg),
                 }
             }
-            AppMsg::DetailMetrics { gen, env_name, result } => {
+            AppMsg::DetailMetrics {
+                gen,
+                env_name,
+                result,
+            } => {
                 if gen != self.generation {
                     return;
                 }
-                let Some(detail) = self.detail.as_mut() else { return };
+                let Some(detail) = self.detail.as_mut() else {
+                    return;
+                };
                 if detail.env_name != env_name {
                     return;
                 }
@@ -2997,7 +3298,11 @@ impl App {
                     Err(msg) => detail.error = Some(msg),
                 }
             }
-            AppMsg::DryRunResult { gen, env_name, result } => {
+            AppMsg::DryRunResult {
+                gen,
+                env_name,
+                result,
+            } => {
                 if gen != self.generation {
                     return;
                 }
@@ -3020,7 +3325,11 @@ impl App {
                     });
                 }
             }
-            AppMsg::Alarms { gen, env_name, result } => {
+            AppMsg::Alarms {
+                gen,
+                env_name,
+                result,
+            } => {
                 if gen != self.generation {
                     return;
                 }
@@ -3029,13 +3338,20 @@ impl App {
                 // The overlay carries the env it was opened for; only replace
                 // its body if that still matches the result we just received.
                 match self.current_overlay.as_mut() {
-                    Some(Overlay::Alarms { env_name: requested, body }) if requested == &env_name => {
+                    Some(Overlay::Alarms {
+                        env_name: requested,
+                        body,
+                    }) if requested == &env_name => {
                         *body = format_alarms(result);
                     }
                     _ => return,
                 }
             }
-            AppMsg::PreflightEvents { gen, env_name, result } => {
+            AppMsg::PreflightEvents {
+                gen,
+                env_name,
+                result,
+            } => {
                 if gen != self.generation {
                     return;
                 }
@@ -3050,11 +3366,17 @@ impl App {
                     modal.recent_events = Some(events);
                 }
             }
-            AppMsg::DetailTags { gen, env_name, result } => {
+            AppMsg::DetailTags {
+                gen,
+                env_name,
+                result,
+            } => {
                 if gen != self.generation {
                     return;
                 }
-                let Some(detail) = self.detail.as_mut() else { return };
+                let Some(detail) = self.detail.as_mut() else {
+                    return;
+                };
                 if detail.env_name != env_name {
                     return;
                 }
@@ -3064,11 +3386,17 @@ impl App {
                     Err(msg) => tracing::warn!(error = %msg, "tags fetch failed"),
                 }
             }
-            AppMsg::DetailQueues { gen, env_name, result } => {
+            AppMsg::DetailQueues {
+                gen,
+                env_name,
+                result,
+            } => {
                 if gen != self.generation {
                     return;
                 }
-                let Some(detail) = self.detail.as_mut() else { return };
+                let Some(detail) = self.detail.as_mut() else {
+                    return;
+                };
                 if detail.env_name != env_name {
                     return;
                 }
@@ -3081,7 +3409,11 @@ impl App {
                     Err(msg) => detail.error = Some(msg),
                 }
             }
-            AppMsg::DlqMessages { gen, env_name, result } => {
+            AppMsg::DlqMessages {
+                gen,
+                env_name,
+                result,
+            } => {
                 if gen != self.generation {
                     return;
                 }
@@ -3104,7 +3436,11 @@ impl App {
                     Err(msg) => dlq.error = Some(msg),
                 }
             }
-            AppMsg::DlqActionResult { gen, env_name, result } => {
+            AppMsg::DlqActionResult {
+                gen,
+                env_name,
+                result,
+            } => {
                 if gen != self.generation {
                     return;
                 }
@@ -3204,15 +3540,20 @@ impl App {
             Scope::Envs => self.select_last(),
             Scope::Apps => {
                 if !self.applications.is_empty() {
-                    self.app_table_state.select(Some(self.applications.len() - 1));
+                    self.app_table_state
+                        .select(Some(self.applications.len() - 1));
                 }
             }
         }
     }
 
     fn drill_into_app(&mut self) {
-        let Some(idx) = self.app_table_state.selected() else { return };
-        let Some(name) = self.applications.get(idx).map(|a| a.name.clone()) else { return };
+        let Some(idx) = self.app_table_state.selected() else {
+            return;
+        };
+        let Some(name) = self.applications.get(idx).map(|a| a.name.clone()) else {
+            return;
+        };
         self.filter = name.clone();
         self.scope = Scope::Envs;
         self.rebuild_view();
@@ -3228,10 +3569,7 @@ impl App {
 
     fn select_last(&mut self) {
         let rows = self.display_rows();
-        if let Some(pos) = rows
-            .iter()
-            .rposition(|r| matches!(r, DisplayRow::Env(_)))
-        {
+        if let Some(pos) = rows.iter().rposition(|r| matches!(r, DisplayRow::Env(_))) {
             self.table_state.select(Some(pos));
         }
     }
@@ -3253,10 +3591,7 @@ impl App {
             return;
         }
         let current = self.table_state.selected().unwrap_or(selectable[0]);
-        let pos_in_selectable = selectable
-            .iter()
-            .position(|i| *i == current)
-            .unwrap_or(0) as i32;
+        let pos_in_selectable = selectable.iter().position(|i| *i == current).unwrap_or(0) as i32;
         let next = (pos_in_selectable + delta).rem_euclid(selectable.len() as i32) as usize;
         self.table_state.select(Some(selectable[next]));
     }
@@ -3312,9 +3647,8 @@ impl App {
         match result {
             Ok(envs) => {
                 // Track newly-Red transitions for the anomaly highlight.
-                let is_red = |h: &str| {
-                    h.eq_ignore_ascii_case("Red") || h.eq_ignore_ascii_case("Severe")
-                };
+                let is_red =
+                    |h: &str| h.eq_ignore_ascii_case("Red") || h.eq_ignore_ascii_case("Severe");
                 self.newly_red.clear();
                 for e in &envs {
                     let prev_red = self
@@ -3415,9 +3749,10 @@ impl App {
                 return;
             }
         }
-        let valid = self.table_state.selected().is_some_and(|s| {
-            matches!(self.cached_display.get(s), Some(DisplayRow::Env(_)))
-        });
+        let valid = self
+            .table_state
+            .selected()
+            .is_some_and(|s| matches!(self.cached_display.get(s), Some(DisplayRow::Env(_))));
         if !valid {
             self.table_state.select(Some(first_env_idx));
         }
@@ -3482,7 +3817,9 @@ fn flatten_err(op: &str, e: color_eyre::eyre::Report) -> String {
 }
 
 fn parse_sort(raw: Option<&str>) -> (SortKey, bool) {
-    let Some(s) = raw else { return (SortKey::App, false) };
+    let Some(s) = raw else {
+        return (SortKey::App, false);
+    };
     let (k, dir) = s.split_once(':').unwrap_or((s, "asc"));
     let key = SortKey::parse(k.trim()).unwrap_or(SortKey::App);
     let desc = dir.trim().eq_ignore_ascii_case("desc");
@@ -3566,7 +3903,10 @@ fn build_palette_items(app: &App) -> Vec<PaletteItem> {
         ("alias-drop ", "remove alias for <env-name>"),
         ("diff ", "diff with another env: <env-name>"),
         ("cols ", "manage columns (list / hide / show / reset)"),
-        ("loglevel ", "set tracing filter (trace/debug/info/warn/error)"),
+        (
+            "loglevel ",
+            "set tracing filter (trace/debug/info/warn/error)",
+        ),
         ("readonly ", "toggle read-only (on/off)"),
     ];
     for (prefix, desc) in prefill_cmds {
@@ -3667,7 +4007,11 @@ where
             let p = *prev_counts.get(&k).unwrap_or(&0);
             let n = *next_counts.get(&k).unwrap_or(&0);
             let d = n - p;
-            if d != 0 { Some((k, d)) } else { None }
+            if d != 0 {
+                Some((k, d))
+            } else {
+                None
+            }
         })
         .collect()
 }
@@ -3698,7 +4042,13 @@ fn format_saved_configs(apps: &[Application]) -> String {
 }
 
 fn diff_envs(left: &Environment, right: &Environment, redact_on: bool) -> String {
-    let cn = |s: &str| if redact_on { redact_block(s) } else { s.to_string() };
+    let cn = |s: &str| {
+        if redact_on {
+            redact_block(s)
+        } else {
+            s.to_string()
+        }
+    };
     let updated = |e: &Environment| {
         e.updated
             .map(|u| u.to_rfc3339())
@@ -3706,12 +4056,20 @@ fn diff_envs(left: &Environment, right: &Environment, redact_on: bool) -> String
     };
     let rows: Vec<(&str, String, String)> = vec![
         ("Name", left.name.clone(), right.name.clone()),
-        ("Application", left.application.clone(), right.application.clone()),
+        (
+            "Application",
+            left.application.clone(),
+            right.application.clone(),
+        ),
         ("Tier", left.tier.clone(), right.tier.clone()),
         ("Status", left.status.clone(), right.status.clone()),
         ("Health", left.health.clone(), right.health.clone()),
         ("Platform", left.platform.clone(), right.platform.clone()),
-        ("Version", left.version_label.clone(), right.version_label.clone()),
+        (
+            "Version",
+            left.version_label.clone(),
+            right.version_label.clone(),
+        ),
         ("CNAME", cn(&left.cname), cn(&right.cname)),
         ("Updated", updated(left), updated(right)),
     ];
@@ -3795,7 +4153,9 @@ fn encode_view(app: &App) -> String {
 fn apply_view(app: &mut App, snap: &str) {
     let mut new_filter = String::new();
     for part in snap.split(';') {
-        let Some((k, v)) = part.split_once('=') else { continue };
+        let Some((k, v)) = part.split_once('=') else {
+            continue;
+        };
         match k.trim() {
             "filter" => new_filter = v.trim().to_string(),
             "sort" => {
@@ -3897,7 +4257,9 @@ fn build_describe_cli(env_name: &str, region: &str, profile: Option<&str>) -> St
 }
 
 fn shell_quote(s: &str) -> String {
-    if s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/')) {
+    if s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
+    {
         s.to_string()
     } else {
         // POSIX-safe single-quote: replace ' with '\'' and wrap.
@@ -3952,12 +4314,7 @@ fn write_audit_outcome(
 /// plenty for an interactive operator tool.
 const AUDIT_LOG_MAX_BYTES: u64 = 1 << 20;
 
-fn write_audit_line(
-    account: Option<&str>,
-    profile: Option<&str>,
-    region: &str,
-    detail: &str,
-) {
+fn write_audit_line(account: Option<&str>, profile: Option<&str>, region: &str, detail: &str) {
     let dir = crate::util::cache_dir();
     if std::fs::create_dir_all(&dir).is_err() {
         return;
@@ -3986,12 +4343,17 @@ fn write_audit_line(
 /// Best-effort: any I/O error is swallowed — we don't want to lose the audit
 /// entry just because rotation failed.
 fn rotate_if_oversize(path: &std::path::Path, max_bytes: u64) {
-    let Ok(meta) = std::fs::metadata(path) else { return };
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
     if meta.len() <= max_bytes {
         return;
     }
     let backup = {
-        let mut name = path.file_name().map(|s| s.to_os_string()).unwrap_or_default();
+        let mut name = path
+            .file_name()
+            .map(|s| s.to_os_string())
+            .unwrap_or_default();
         name.push(".1");
         path.with_file_name(name)
     };
@@ -4113,7 +4475,14 @@ mod tests {
 
     #[test]
     fn sort_key_parse_roundtrip() {
-        for k in [SortKey::Name, SortKey::App, SortKey::Status, SortKey::Health, SortKey::Version, SortKey::Age] {
+        for k in [
+            SortKey::Name,
+            SortKey::App,
+            SortKey::Status,
+            SortKey::Health,
+            SortKey::Version,
+            SortKey::Age,
+        ] {
             assert_eq!(SortKey::parse(k.label()), Some(k));
         }
         assert_eq!(SortKey::parse("bogus"), None);
@@ -4379,7 +4748,10 @@ mod tests {
             fake_env("b", "Ready", "Red", "v1"),
         ];
         let delta = bucket_delta(&prev, &next, |e| e.health.clone());
-        assert!(delta.is_empty(), "expected no deltas with empty prev, got {delta:?}");
+        assert!(
+            delta.is_empty(),
+            "expected no deltas with empty prev, got {delta:?}"
+        );
     }
 
     #[test]
@@ -4443,7 +4815,13 @@ mod tests {
                 "filter" => got_filter = v.into(),
                 "sort" => got_sort = parse_sort(Some(v)),
                 "grouped" => got_grouped = v == "true",
-                "scope" => got_scope = if v == "apps" { Scope::Apps } else { Scope::Envs },
+                "scope" => {
+                    got_scope = if v == "apps" {
+                        Scope::Apps
+                    } else {
+                        Scope::Envs
+                    }
+                }
                 _ => {}
             }
         }

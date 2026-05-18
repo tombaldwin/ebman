@@ -10,7 +10,7 @@ pub struct PersistedState {
     pub profile: Option<String>,
     pub region: Option<String>,
     pub filter: Option<String>,
-    pub sort: Option<String>,       // e.g. "app:asc", "health:desc"
+    pub sort: Option<String>, // e.g. "app:asc", "health:desc"
     pub grouped: Option<bool>,
     pub redact: Option<bool>,
     pub events_visible: Option<bool>,
@@ -37,7 +37,9 @@ pub fn parse(text: &str) -> PersistedState {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let Some((key, raw_val)) = line.split_once('=') else { continue };
+        let Some((key, raw_val)) = line.split_once('=') else {
+            continue;
+        };
         let value = raw_val.trim().trim_matches('"').to_string();
         if value.is_empty() {
             continue;
@@ -187,8 +189,14 @@ filter.dev = "production"
 filter.prod = "live"
 "#;
         let s = parse(text);
-        assert_eq!(s.named_filters.get("dev").map(String::as_str), Some("production"));
-        assert_eq!(s.named_filters.get("prod").map(String::as_str), Some("live"));
+        assert_eq!(
+            s.named_filters.get("dev").map(String::as_str),
+            Some("production")
+        );
+        assert_eq!(
+            s.named_filters.get("prod").map(String::as_str),
+            Some("live")
+        );
     }
 
     #[test]
@@ -203,7 +211,10 @@ hidden_cols = "TREND,PLATFORM"
         let s = parse(text);
         assert!(s.pinned.contains("prod-api"));
         assert!(s.pinned.contains("prod-worker"));
-        assert_eq!(s.aliases.get("awseb-e-abc").map(String::as_str), Some("production"));
+        assert_eq!(
+            s.aliases.get("awseb-e-abc").map(String::as_str),
+            Some("production")
+        );
         assert!(s.saved_views.contains_key("dev"));
         assert!(s.hidden_cols.contains("TREND"));
         assert!(s.hidden_cols.contains("PLATFORM"));

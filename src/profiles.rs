@@ -14,7 +14,9 @@ pub fn load_profiles() -> Vec<String> {
 }
 
 fn read_profiles(path: &PathBuf, config_style: bool, out: &mut BTreeSet<String>) {
-    let Ok(content) = std::fs::read_to_string(path) else { return };
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return;
+    };
     for line in content.lines() {
         let line = line.trim();
         if !line.starts_with('[') || !line.ends_with(']') {

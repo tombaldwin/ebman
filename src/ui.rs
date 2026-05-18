@@ -6,21 +6,28 @@ use ratatui::{
     symbols::Marker,
     text::{Line, Span},
     widgets::{
-        Axis, Block, BorderType, Borders, Cell, Chart, Clear, Dataset, GraphType, List,
-        ListItem, Padding, Paragraph, Row, Table, Wrap,
+        Axis, Block, BorderType, Borders, Cell, Chart, Clear, Dataset, GraphType, List, ListItem,
+        Padding, Paragraph, Row, Table, Wrap,
     },
     Frame,
 };
 
 use crate::theme::{IconStyle, Theme};
 
-use crate::app::{App, Action, ActionFlow, ConfirmKind, DetailTab, DisplayRow, LoadState, Mode, Overlay, Scope, SortKey, ToastKind, ViewMode, ACTIONS};
+use crate::app::{
+    Action, ActionFlow, App, ConfirmKind, DetailTab, DisplayRow, LoadState, Mode, Overlay, Scope,
+    SortKey, ToastKind, ViewMode, ACTIONS,
+};
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const ASCII_SPINNER: &[&str] = &["|", "/", "-", "\\"];
 
 fn rounded_block(theme: &Theme, active: bool) -> Block<'static> {
-    let color = if active { theme.border_active } else { theme.border_idle };
+    let color = if active {
+        theme.border_active
+    } else {
+        theme.border_idle
+    };
     Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -55,18 +62,18 @@ fn health_dot(health: &str, theme: &Theme) -> Span<'static> {
         "grey" | "gray" | "info" | "no data" | "pending" => theme.health_grey,
         _ => theme.text,
     };
-    let glyph = if theme.icons == IconStyle::Ascii { "*" } else { "●" };
+    let glyph = if theme.icons == IconStyle::Ascii {
+        "*"
+    } else {
+        "●"
+    };
     Span::styled(glyph, Style::default().fg(c).add_modifier(Modifier::BOLD))
 }
 
 fn spinner(elapsed_ms: u128, icons: IconStyle) -> &'static str {
     match icons {
-        IconStyle::Unicode => {
-            SPINNER_FRAMES[(elapsed_ms / 100) as usize % SPINNER_FRAMES.len()]
-        }
-        IconStyle::Ascii => {
-            ASCII_SPINNER[(elapsed_ms / 100) as usize % ASCII_SPINNER.len()]
-        }
+        IconStyle::Unicode => SPINNER_FRAMES[(elapsed_ms / 100) as usize % SPINNER_FRAMES.len()],
+        IconStyle::Ascii => ASCII_SPINNER[(elapsed_ms / 100) as usize % ASCII_SPINNER.len()],
     }
 }
 
@@ -126,11 +133,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     } else if app.mode == Mode::Detail && app.detail.is_some() {
         draw_detail(f, f.area(), app);
     } else {
-        let events_height: u16 = if app.events_visible { app.events_panel_height } else { 0 };
-        let mut constraints: Vec<Constraint> = vec![
-            Constraint::Length(5),
-            Constraint::Min(3),
-        ];
+        let events_height: u16 = if app.events_visible {
+            app.events_panel_height
+        } else {
+            0
+        };
+        let mut constraints: Vec<Constraint> = vec![Constraint::Length(5), Constraint::Min(3)];
         if events_height > 0 {
             constraints.push(Constraint::Length(events_height));
         }
@@ -191,19 +199,27 @@ fn draw_palette(f: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
     let layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(3), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(3),
+            Constraint::Length(1),
+        ])
         .split(popup);
 
     // Input bar
     let input = Paragraph::new(Line::from(vec![
         Span::styled(
             " ❯ ",
-            Style::default().fg(theme.title_alt).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.title_alt)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(app.palette_input.clone(), Style::default().fg(theme.text)),
         Span::styled(
             "_",
-            Style::default().fg(theme.title_alt).add_modifier(Modifier::SLOW_BLINK),
+            Style::default()
+                .fg(theme.title_alt)
+                .add_modifier(Modifier::SLOW_BLINK),
         ),
     ]))
     .block(titled_block(theme, "palette", true, theme.title_alt));
@@ -231,10 +247,7 @@ fn draw_palette(f: &mut Frame, area: Rect, app: &App) {
                     format!("{:<32}", it.label),
                     Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(
-                    it.detail.clone(),
-                    Style::default().fg(theme.muted),
-                ),
+                Span::styled(it.detail.clone(), Style::default().fg(theme.muted)),
             ]))
         })
         .collect();
@@ -275,7 +288,12 @@ fn draw_toasts(f: &mut Frame, area: Rect, app: &App) {
     let x = area.x + area.width.saturating_sub(width + 2);
     let mut y = area.y + area.height.saturating_sub(total_h + 2);
     for t in &app.toasts {
-        let rect = Rect { x, y, width, height: toast_h };
+        let rect = Rect {
+            x,
+            y,
+            width,
+            height: toast_h,
+        };
         let (border_color, label) = match t.kind {
             ToastKind::Info => (theme.title, "info"),
             ToastKind::Success => (theme.health_green, "ok"),
@@ -287,7 +305,9 @@ fn draw_toasts(f: &mut Frame, area: Rect, app: &App) {
             .border_style(Style::default().fg(border_color))
             .title(Span::styled(
                 format!(" {label} "),
-                Style::default().fg(border_color).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(border_color)
+                    .add_modifier(Modifier::BOLD),
             ));
         let mut text = t.text.clone();
         // Truncate so it fits one line inside the box.
@@ -315,7 +335,9 @@ fn draw_saved_configs_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) 
         .lines()
         .map(|l| {
             let style = if l.starts_with("Application:") {
-                Style::default().fg(theme.title_alt).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(theme.title_alt)
+                    .add_modifier(Modifier::BOLD)
             } else if l.trim_start().starts_with('▸') {
                 Style::default().fg(theme.text)
             } else if l.starts_with("─") {
@@ -326,17 +348,15 @@ fn draw_saved_configs_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) 
             Line::from(Span::styled(l.to_string(), style))
         })
         .collect();
-    let p = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .block(
-            titled_block(
-                &app.theme,
-                "saved configurations — esc / q to close",
-                true,
-                app.theme.title,
-            )
-            .padding(Padding::uniform(1)),
-        );
+    let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        titled_block(
+            &app.theme,
+            "saved configurations — esc / q to close",
+            true,
+            app.theme.title,
+        )
+        .padding(Padding::uniform(1)),
+    );
     f.render_widget(p, popup);
 }
 
@@ -348,7 +368,9 @@ fn draw_diff_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
         .lines()
         .map(|l| {
             let style = if l.starts_with('≠') {
-                Style::default().fg(theme.health_yellow).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(theme.health_yellow)
+                    .add_modifier(Modifier::BOLD)
             } else if l.starts_with("─") {
                 Style::default().fg(theme.muted)
             } else {
@@ -357,12 +379,10 @@ fn draw_diff_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
             Line::from(Span::styled(l.to_string(), style))
         })
         .collect();
-    let p = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .block(
-            titled_block(&app.theme, "diff — esc / q to close", true, app.theme.title)
-                .padding(Padding::uniform(1)),
-        );
+    let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        titled_block(&app.theme, "diff — esc / q to close", true, app.theme.title)
+            .padding(Padding::uniform(1)),
+    );
     f.render_widget(p, popup);
 }
 
@@ -375,7 +395,9 @@ fn draw_alarms_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
         .map(|l| {
             // Highlight alarm state at the start of each line.
             let style = if l.starts_with("ALARM") {
-                Style::default().fg(theme.health_red).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(theme.health_red)
+                    .add_modifier(Modifier::BOLD)
             } else if l.starts_with("OK") {
                 Style::default().fg(theme.health_green)
             } else if l.starts_with("INSUFFICIENT") {
@@ -388,12 +410,15 @@ fn draw_alarms_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
             Line::from(Span::styled(l.to_string(), style))
         })
         .collect();
-    let p = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .block(
-            titled_block(&app.theme, "alarms — esc / q to close", true, app.theme.title)
-                .padding(Padding::uniform(1)),
-        );
+    let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        titled_block(
+            &app.theme,
+            "alarms — esc / q to close",
+            true,
+            app.theme.title,
+        )
+        .padding(Padding::uniform(1)),
+    );
     f.render_widget(p, popup);
 }
 
@@ -402,14 +427,22 @@ fn draw_history_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
     f.render_widget(Clear, popup);
     let lines: Vec<Line> = text
         .lines()
-        .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(app.theme.text))))
+        .map(|l| {
+            Line::from(Span::styled(
+                l.to_string(),
+                Style::default().fg(app.theme.text),
+            ))
+        })
         .collect();
-    let p = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .block(
-            titled_block(&app.theme, "history — esc / q to close", true, app.theme.title)
-                .padding(Padding::uniform(1)),
-        );
+    let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        titled_block(
+            &app.theme,
+            "history — esc / q to close",
+            true,
+            app.theme.title,
+        )
+        .padding(Padding::uniform(1)),
+    );
     f.render_widget(p, popup);
 }
 
@@ -418,14 +451,22 @@ fn draw_whatsnew(f: &mut Frame, area: Rect, app: &App, text: &str) {
     f.render_widget(Clear, popup);
     let lines: Vec<Line> = text
         .lines()
-        .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(app.theme.text))))
+        .map(|l| {
+            Line::from(Span::styled(
+                l.to_string(),
+                Style::default().fg(app.theme.text),
+            ))
+        })
         .collect();
-    let p = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .block(
-            titled_block(&app.theme, "what's new — esc / w / q to close", true, app.theme.title_alt)
-                .padding(Padding::uniform(1)),
-        );
+    let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        titled_block(
+            &app.theme,
+            "what's new — esc / w / q to close",
+            true,
+            app.theme.title_alt,
+        )
+        .padding(Padding::uniform(1)),
+    );
     f.render_widget(p, popup);
 }
 
@@ -434,14 +475,22 @@ fn draw_describe(f: &mut Frame, area: Rect, app: &App, text: &str) {
     f.render_widget(Clear, popup);
     let lines: Vec<Line> = text
         .lines()
-        .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(app.theme.text))))
+        .map(|l| {
+            Line::from(Span::styled(
+                l.to_string(),
+                Style::default().fg(app.theme.text),
+            ))
+        })
         .collect();
-    let p = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .block(
-            titled_block(&app.theme, "describe — esc / D / q to close", true, app.theme.title_alt)
-                .padding(Padding::uniform(1)),
-        );
+    let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        titled_block(
+            &app.theme,
+            "describe — esc / D / q to close",
+            true,
+            app.theme.title_alt,
+        )
+        .padding(Padding::uniform(1)),
+    );
     f.render_widget(p, popup);
 }
 
@@ -452,7 +501,11 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
         .split(area);
 
-    let profile = app.context.profile.clone().unwrap_or_else(|| "default".into());
+    let profile = app
+        .context
+        .profile
+        .clone()
+        .unwrap_or_else(|| "default".into());
     let last = match app.last_refresh {
         Some(t) => format!(
             "{} (every {}s)",
@@ -484,8 +537,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         app.redact,
     );
     let caller = redact(
-        &app
-            .context
+        &app.context
             .caller_arn
             .as_deref()
             .map(short_caller)
@@ -533,13 +585,12 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     if !app.filter.is_empty() {
         line2.push(sep());
         let filter_text = app.filter.clone();
-        line2.push(Span::styled(
-            "Filter: ",
-            Style::default().fg(theme.muted),
-        ));
+        line2.push(Span::styled("Filter: ", Style::default().fg(theme.muted)));
         line2.push(Span::styled(
             filter_text,
-            Style::default().fg(theme.health_yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.health_yellow)
+                .add_modifier(Modifier::BOLD),
         ));
     }
     if app.grouped {
@@ -564,7 +615,11 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     if app.alerts > 0 {
         line2.push(sep());
         line2.push(pill(
-            &format!("! {} alert{}", app.alerts, if app.alerts == 1 { "" } else { "s" }),
+            &format!(
+                "! {} alert{}",
+                app.alerts,
+                if app.alerts == 1 { "" } else { "s" }
+            ),
             Color::White,
             theme.health_red,
         ));
@@ -592,7 +647,9 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         Line::from(vec![
             Span::styled(
                 "Elastic Beanstalk  ",
-                Style::default().fg(theme.title_alt).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.title_alt)
+                    .add_modifier(Modifier::BOLD),
             ),
             pill(scope_label, Color::Black, theme.title),
         ]),
@@ -608,9 +665,15 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
 
 fn draw_apps_table(f: &mut Frame, area: Rect, app: &mut App) {
     let theme = app.theme.clone();
-    let header = Row::new(["NAME", "VERSIONS", "CREATED", "UPDATED", "DESCRIPTION"].map(|h| {
-        Cell::from(h).style(Style::default().fg(theme.title).add_modifier(Modifier::BOLD))
-    }))
+    let header = Row::new(
+        ["NAME", "VERSIONS", "CREATED", "UPDATED", "DESCRIPTION"].map(|h| {
+            Cell::from(h).style(
+                Style::default()
+                    .fg(theme.title)
+                    .add_modifier(Modifier::BOLD),
+            )
+        }),
+    )
     .height(1);
 
     let now = chrono::Utc::now();
@@ -661,7 +724,9 @@ fn draw_apps_table(f: &mut Frame, area: Rect, app: &mut App) {
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("▌ ")
-        .block(titled_block(&theme, &title, !popup_open, theme.title).padding(Padding::horizontal(1)));
+        .block(
+            titled_block(&theme, &title, !popup_open, theme.title).padding(Padding::horizontal(1)),
+        );
     f.render_stateful_widget(table, area, &mut app.app_table_state);
 }
 
@@ -722,8 +787,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                     | (SortKey::Age, SortKey::Age)
                     | (SortKey::Version, SortKey::Version)
             );
-            let show_marker = primary_match
-                && !matches!(*label, "TREND" | "CNAME" | "TIER");
+            let show_marker = primary_match && !matches!(*label, "TREND" | "CNAME" | "TIER");
             if show_marker {
                 text.push_str(sort_marker);
             }
@@ -747,7 +811,11 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
     }
 
     // Hover only applies while the user is interacting with the table itself.
-    let hover = if app.mode == Mode::Normal { app.hover_row } else { None };
+    let hover = if app.mode == Mode::Normal {
+        app.hover_row
+    } else {
+        None
+    };
     let display = app.display_rows();
     let now = chrono::Utc::now();
     let mut env_idx: usize = 0;
@@ -773,16 +841,28 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                     .get(&e.name)
                     .cloned()
                     .unwrap_or_else(|| e.name.clone());
-                let star = if app.pinned.contains(&e.name) { "★ " } else { "" };
-                let alert = if app.newly_red.contains(&e.name) { "▲ " } else { "" };
+                let star = if app.pinned.contains(&e.name) {
+                    "★ "
+                } else {
+                    ""
+                };
+                let alert = if app.newly_red.contains(&e.name) {
+                    "▲ "
+                } else {
+                    ""
+                };
                 let name_cell = Cell::from(Line::from(vec![
                     Span::styled(
                         star.to_string(),
-                        Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(theme.accent)
+                            .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
                         alert.to_string(),
-                        Style::default().fg(theme.health_red).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(theme.health_red)
+                            .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
                         display_name,
@@ -799,8 +879,9 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                         "STATUS" => status_cell(&e.status, &theme),
                         "HEALTH" => Cell::from(health_dot(&e.health, &theme)),
                         "TREND" => Cell::from(sparkline_for(app.history.get(&e.name), &theme)),
-                        "PLATFORM" => Cell::from(e.platform.clone())
-                            .style(Style::default().fg(theme.muted)),
+                        "PLATFORM" => {
+                            Cell::from(e.platform.clone()).style(Style::default().fg(theme.muted))
+                        }
                         "VERSION" => Cell::from(e.version_label.clone())
                             .style(Style::default().fg(theme.app_palette[0])),
                         "CNAME" => Cell::from(redact(&e.cname, app.redact))
@@ -846,18 +927,17 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                 let dashes = "─".repeat(DIVIDER_FILL_WIDTH);
                 let count = columns.len();
                 let cells = (0..count).map(|_| {
-                    Cell::from(Span::styled(dashes.clone(), Style::default().fg(next_color)))
+                    Cell::from(Span::styled(
+                        dashes.clone(),
+                        Style::default().fg(next_color),
+                    ))
                 });
                 Row::new(cells)
             }
         })
         .collect();
 
-    let title = format!(
-        "Environments  {}/{}",
-        indexes.len(),
-        app.environments.len()
-    );
+    let title = format!("Environments  {}/{}", indexes.len(), app.environments.len());
     let widths: Vec<Constraint> = columns
         .iter()
         .map(|(label, _)| match *label {
@@ -948,7 +1028,9 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
         let lines = vec![
             Line::from(Span::styled(
                 format!("  ◌  {heading}"),
-                Style::default().fg(theme.muted).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.muted)
+                    .add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(
                 format!("     {hint}"),
@@ -974,11 +1056,11 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
 fn tier_cell(tier: &str, theme: &Theme) -> Cell<'static> {
     match tier {
         "Worker" => Cell::from(pill("Worker", Color::Black, theme.accent)),
-        "Web" => Cell::from(Span::styled(
-            "Web",
+        "Web" => Cell::from(Span::styled("Web", Style::default().fg(theme.muted))),
+        other => Cell::from(Span::styled(
+            other.to_string(),
             Style::default().fg(theme.muted),
         )),
-        other => Cell::from(Span::styled(other.to_string(), Style::default().fg(theme.muted))),
     }
 }
 
@@ -1000,15 +1082,17 @@ fn status_cell(status: &str, theme: &Theme) -> Cell<'static> {
 
 fn draw_events(f: &mut Frame, area: Rect, app: &App) {
     let title = format!("Events  {}", app.events.len());
-    let block = titled_block(&app.theme, &title, true, app.theme.title)
-        .padding(Padding::horizontal(1));
+    let block =
+        titled_block(&app.theme, &title, true, app.theme.title).padding(Padding::horizontal(1));
 
     if app.events.is_empty() {
         let lines = vec![
             Line::from(""),
             Line::from(Span::styled(
                 "  ◌  no events yet",
-                Style::default().fg(app.theme.muted).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(app.theme.muted)
+                    .add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(
                 "     they appear on the next refresh — ^R now, or wait for the tick",
@@ -1031,18 +1115,25 @@ fn draw_events(f: &mut Frame, area: Rect, app: &App) {
             };
             let sev_style = severity_style(&e.severity, &app.theme);
             Line::from(vec![
-                Span::styled(format!("{:>4} ", when), Style::default().fg(app.theme.muted)),
+                Span::styled(
+                    format!("{:>4} ", when),
+                    Style::default().fg(app.theme.muted),
+                ),
                 Span::styled(format!("{:<5} ", e.severity), sev_style),
                 Span::styled(
                     format!("{} ", env_label(e)),
-                    Style::default().fg(app.theme.text).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(app.theme.text)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(e.message.clone()),
             ])
         })
         .collect();
 
-    let para = Paragraph::new(lines).block(block).scroll((app.events_scroll, 0));
+    let para = Paragraph::new(lines)
+        .block(block)
+        .scroll((app.events_scroll, 0));
     f.render_widget(para, area);
 }
 
@@ -1084,23 +1175,68 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
     let mut top: Vec<Span> = Vec::new();
     match app.mode {
         Mode::Filter => {
-            top.push(Span::styled(" /", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+            top.push(Span::styled(
+                " /",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ));
             top.push(Span::raw(" "));
-            top.push(Span::styled(app.filter.clone(), Style::default().fg(Color::White)));
-            top.push(Span::styled("_", Style::default().fg(Color::Yellow).add_modifier(Modifier::SLOW_BLINK)));
-            top.push(Span::styled("  [enter] apply  [esc] cancel", Style::default().fg(Color::Gray)));
+            top.push(Span::styled(
+                app.filter.clone(),
+                Style::default().fg(Color::White),
+            ));
+            top.push(Span::styled(
+                "_",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::SLOW_BLINK),
+            ));
+            top.push(Span::styled(
+                "  [enter] apply  [esc] cancel",
+                Style::default().fg(Color::Gray),
+            ));
         }
         Mode::Command => {
-            top.push(Span::styled(" :", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
-            top.push(Span::styled(app.command_input.clone(), Style::default().fg(Color::White)));
-            top.push(Span::styled("_", Style::default().fg(Color::Cyan).add_modifier(Modifier::SLOW_BLINK)));
-            top.push(Span::styled("   [enter] run  [esc] cancel", Style::default().fg(Color::Gray)));
+            top.push(Span::styled(
+                " :",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            top.push(Span::styled(
+                app.command_input.clone(),
+                Style::default().fg(Color::White),
+            ));
+            top.push(Span::styled(
+                "_",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::SLOW_BLINK),
+            ));
+            top.push(Span::styled(
+                "   [enter] run  [esc] cancel",
+                Style::default().fg(Color::Gray),
+            ));
         }
         Mode::QuickJump => {
-            top.push(Span::styled(" '", Style::default().fg(app.theme.accent).add_modifier(Modifier::BOLD)));
+            top.push(Span::styled(
+                " '",
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ));
             top.push(Span::raw(" "));
-            top.push(Span::styled(app.quickjump_input.clone(), Style::default().fg(app.theme.text)));
-            top.push(Span::styled("_", Style::default().fg(app.theme.accent).add_modifier(Modifier::SLOW_BLINK)));
+            top.push(Span::styled(
+                app.quickjump_input.clone(),
+                Style::default().fg(app.theme.text),
+            ));
+            top.push(Span::styled(
+                "_",
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::SLOW_BLINK),
+            ));
             top.push(Span::styled(
                 "   jump to env by name prefix   [enter] keep   [esc] cancel",
                 Style::default().fg(app.theme.muted),
@@ -1108,9 +1244,15 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         }
         _ => {
             if let Some(msg) = &app.error_message {
-                top.push(Span::styled(format!(" {msg}"), Style::default().fg(Color::Red)));
+                top.push(Span::styled(
+                    format!(" {msg}"),
+                    Style::default().fg(Color::Red),
+                ));
             } else if let Some(msg) = &app.status_message {
-                top.push(Span::styled(format!(" {msg}"), Style::default().fg(Color::Yellow)));
+                top.push(Span::styled(
+                    format!(" {msg}"),
+                    Style::default().fg(Color::Yellow),
+                ));
             } else if !app.filter.is_empty() {
                 top.push(Span::styled(
                     format!(" filter: {}", app.filter),
@@ -1234,7 +1376,10 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App) {
     let help = Paragraph::new(lines)
         .wrap(Wrap { trim: false })
         .scroll((app.help_scroll, 0))
-        .block(titled_block(&app.theme, "help", true, app.theme.title_alt).padding(Padding::uniform(1)));
+        .block(
+            titled_block(&app.theme, "help", true, app.theme.title_alt)
+                .padding(Padding::uniform(1)),
+        );
     f.render_widget(help, popup);
 }
 
@@ -1263,14 +1408,23 @@ fn draw_dlq(f: &mut Frame, area: Rect, app: &mut App) {
             Style::default().fg(theme.health_yellow),
         ),
     ]))
-    .block(titled_block(&theme, "Dead-Letter Queue", true, theme.health_red));
+    .block(titled_block(
+        &theme,
+        "Dead-Letter Queue",
+        true,
+        theme.health_red,
+    ));
     f.render_widget(header, chunks[0]);
 
     // Message list
     let block = rounded_block(&theme, true);
     if dlq.messages.is_empty() {
         let p = Paragraph::new(Span::styled(
-            if dlq.loading { "loading messages…" } else { "no messages in DLQ" },
+            if dlq.loading {
+                "loading messages…"
+            } else {
+                "no messages in DLQ"
+            },
             Style::default().fg(theme.muted),
         ))
         .block(block);
@@ -1286,10 +1440,22 @@ fn draw_dlq(f: &mut Frame, area: Rect, app: &mut App) {
                     .map(|t| humanize_age(now.signed_duration_since(t)))
                     .unwrap_or_else(|| "—".into());
                 let preview = m.body.lines().next().unwrap_or("").to_string();
-                let preview = if preview.len() > 80 { format!("{}…", &preview[..80]) } else { preview };
+                let preview = if preview.len() > 80 {
+                    format!("{}…", &preview[..80])
+                } else {
+                    preview
+                };
                 ListItem::new(Line::from(vec![
-                    Span::styled(format!(" {:<20} ", m.id), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-                    Span::styled(format!("recv:{:<3} ", m.receive_count), Style::default().fg(Color::Yellow)),
+                    Span::styled(
+                        format!(" {:<20} ", m.id),
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("recv:{:<3} ", m.receive_count),
+                        Style::default().fg(Color::Yellow),
+                    ),
                     Span::styled(format!("{:>5} ", age), Style::default().fg(Color::Gray)),
                     Span::raw(preview),
                 ]))
@@ -1297,7 +1463,11 @@ fn draw_dlq(f: &mut Frame, area: Rect, app: &mut App) {
             .collect();
         let list = List::new(items)
             .block(block)
-            .highlight_style(Style::default().bg(Color::Rgb(40, 60, 90)).add_modifier(Modifier::BOLD))
+            .highlight_style(
+                Style::default()
+                    .bg(Color::Rgb(40, 60, 90))
+                    .add_modifier(Modifier::BOLD),
+            )
             .highlight_symbol("▌ ");
         f.render_stateful_widget(list, chunks[1], &mut dlq.list_state);
     }
@@ -1305,16 +1475,36 @@ fn draw_dlq(f: &mut Frame, area: Rect, app: &mut App) {
     // Footer / confirm
     if dlq.confirm_purge {
         let line = Paragraph::new(Line::from(vec![
-            Span::styled(" PURGE DLQ — type ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-            Span::styled(dlq.env_name.clone(), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            Span::styled(" to confirm: ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                " PURGE DLQ — type ",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                dlq.env_name.clone(),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " to confirm: ",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(
                 dlq.purge_typed.clone(),
                 Style::default()
-                    .fg(if dlq.purge_typed == dlq.env_name { Color::Green } else { Color::White })
+                    .fg(if dlq.purge_typed == dlq.env_name {
+                        Color::Green
+                    } else {
+                        Color::White
+                    })
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("_", Style::default().fg(Color::Yellow).add_modifier(Modifier::SLOW_BLINK)),
+            Span::styled(
+                "_",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::SLOW_BLINK),
+            ),
         ]));
         f.render_widget(line, chunks[2]);
     } else {
@@ -1334,7 +1524,9 @@ fn draw_dlq(f: &mut Frame, area: Rect, app: &mut App) {
 
 fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
     let theme = app.theme.clone();
-    let Some(flow) = app.action_flow.as_mut() else { return };
+    let Some(flow) = app.action_flow.as_mut() else {
+        return;
+    };
     match flow {
         ActionFlow::Menu { list_state } => {
             let popup = centered_rect(50, 40, area);
@@ -1347,7 +1539,9 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                 .iter()
                 .map(|a| {
                     let style = if a.destructive() {
-                        Style::default().fg(theme.health_red).add_modifier(Modifier::BOLD)
+                        Style::default()
+                            .fg(theme.health_red)
+                            .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(theme.text)
                     };
@@ -1376,15 +1570,29 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
             f.render_widget(Clear, popup);
             let layout = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Length(3), Constraint::Min(3), Constraint::Length(1)])
+                .constraints([
+                    Constraint::Length(3),
+                    Constraint::Min(3),
+                    Constraint::Length(1),
+                ])
                 .split(popup);
             let title = format!("swap CNAMEs: {source} ↔ ?");
             let block = titled_block(&theme, &title, true, theme.title_alt);
             let prompt = Paragraph::new(Line::from(vec![
-                Span::styled(" /", Style::default().fg(theme.health_yellow).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    " /",
+                    Style::default()
+                        .fg(theme.health_yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(" "),
                 Span::styled(picker.filter.clone(), Style::default().fg(theme.text)),
-                Span::styled("_", Style::default().fg(theme.health_yellow).add_modifier(Modifier::SLOW_BLINK)),
+                Span::styled(
+                    "_",
+                    Style::default()
+                        .fg(theme.health_yellow)
+                        .add_modifier(Modifier::SLOW_BLINK),
+                ),
             ]))
             .block(block);
             f.render_widget(prompt, layout[0]);
@@ -1422,24 +1630,25 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
         ActionFlow::Confirm(modal) => {
             let popup = centered_rect(60, 35, area);
             f.render_widget(Clear, popup);
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .title(Span::styled(
-                    " confirm ",
-                    Style::default()
-                        .fg(if modal.action.destructive() { Color::Red } else { Color::Magenta })
-                        .add_modifier(Modifier::BOLD),
-                ));
+            let block = Block::default().borders(Borders::ALL).title(Span::styled(
+                " confirm ",
+                Style::default()
+                    .fg(if modal.action.destructive() {
+                        Color::Red
+                    } else {
+                        Color::Magenta
+                    })
+                    .add_modifier(Modifier::BOLD),
+            ));
             let mut lines: Vec<Line> = Vec::new();
             let summary = match modal.action {
                 Action::Rebuild => format!(
                     "Rebuild environment '{}'? (terminates and recreates all instances)",
                     modal.target_env
                 ),
-                Action::RestartAppServer => format!(
-                    "Restart app server on environment '{}'?",
-                    modal.target_env
-                ),
+                Action::RestartAppServer => {
+                    format!("Restart app server on environment '{}'?", modal.target_env)
+                }
                 Action::SwapCnames => format!(
                     "Swap CNAMEs between '{}' and '{}'?",
                     modal.target_env,
@@ -1453,7 +1662,13 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 format!("  {summary}"),
-                Style::default().fg(if modal.action.destructive() { Color::Red } else { Color::White }).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(if modal.action.destructive() {
+                        Color::Red
+                    } else {
+                        Color::White
+                    })
+                    .add_modifier(Modifier::BOLD),
             )));
             // Dry-run preview: instance count + AZ spread, when available.
             if modal.loading_dryrun {
@@ -1464,14 +1679,20 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                 )));
             } else if let Some(dr) = &modal.dryrun {
                 lines.push(Line::from(""));
-                let inst_word = if dr.instance_count == 1 { "instance" } else { "instances" };
+                let inst_word = if dr.instance_count == 1 {
+                    "instance"
+                } else {
+                    "instances"
+                };
                 let az_word = if dr.az_count == 1 { "AZ" } else { "AZs" };
                 lines.push(Line::from(Span::styled(
                     format!(
                         "  impact: {} {inst_word} across {} {az_word}",
                         dr.instance_count, dr.az_count
                     ),
-                    Style::default().fg(theme.health_yellow).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(theme.health_yellow)
+                        .add_modifier(Modifier::BOLD),
                 )));
             }
             // Pre-flight events: last 3 events on this env.
@@ -1520,7 +1741,12 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                 ConfirmKind::TypeName => {
                     lines.push(Line::from(vec![
                         Span::styled("  type ", Style::default().fg(Color::Gray)),
-                        Span::styled(modal.target_env.clone(), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                        Span::styled(
+                            modal.target_env.clone(),
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
                         Span::styled(" to confirm:", Style::default().fg(Color::Gray)),
                     ]));
                     lines.push(Line::from(""));
@@ -1529,9 +1755,16 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                         Span::raw("  "),
                         Span::styled(
                             modal.typed.clone(),
-                            Style::default().fg(if matches { Color::Green } else { Color::White }).add_modifier(Modifier::BOLD),
+                            Style::default()
+                                .fg(if matches { Color::Green } else { Color::White })
+                                .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled("_", Style::default().fg(Color::Yellow).add_modifier(Modifier::SLOW_BLINK)),
+                        Span::styled(
+                            "_",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::SLOW_BLINK),
+                        ),
                     ]));
                     lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(
@@ -1554,7 +1787,9 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                 Line::from(""),
                 Line::from(Span::styled(
                     format!("  {} on {env}…", action.label()),
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
                 )),
                 Line::from(""),
                 Line::from(Span::styled(
@@ -1562,19 +1797,21 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                     Style::default().fg(Color::Gray),
                 )),
             ];
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .title(Span::styled(
-                    " running ",
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-                ));
+            let block = Block::default().borders(Borders::ALL).title(Span::styled(
+                " running ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ));
             f.render_widget(Paragraph::new(lines).block(block), popup);
         }
     }
 }
 
 fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
-    let Some(detail) = app.detail.as_ref() else { return };
+    let Some(detail) = app.detail.as_ref() else {
+        return;
+    };
     let env = &detail.env_snapshot;
 
     let chunks = Layout::default()
@@ -1602,7 +1839,9 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
         h1.push(Span::raw("  "));
         h1.push(Span::styled(
             reco,
-            Style::default().fg(app.theme.health_yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(app.theme.health_yellow)
+                .add_modifier(Modifier::BOLD),
         ));
     }
 
@@ -1613,8 +1852,9 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
     h2.push(sep());
     h2.extend(kv("CNAME", &cname_text));
     let header_title = format!("environment: {}", env.name);
-    let header = Paragraph::new(vec![Line::from(h1), Line::from(h2), Line::raw("")])
-        .block(titled_block(&app.theme, &header_title, true, app.theme.title));
+    let header = Paragraph::new(vec![Line::from(h1), Line::from(h2), Line::raw("")]).block(
+        titled_block(&app.theme, &header_title, true, app.theme.title),
+    );
     f.render_widget(header, chunks[0]);
 
     // Tab strip
@@ -1691,7 +1931,11 @@ fn render_tabs(tabs: &[DetailTab], active: usize, theme: &Theme) -> Line<'static
 
 fn draw_detail_events(f: &mut Frame, area: Rect, detail: &crate::app::DetailState, theme: &Theme) {
     let matches = if let Some(re) = detail.search_pattern.as_ref() {
-        detail.events.iter().filter(|e| re.is_match(&e.message)).count()
+        detail
+            .events
+            .iter()
+            .filter(|e| re.is_match(&e.message))
+            .count()
     } else {
         0
     };
@@ -1704,16 +1948,17 @@ fn draw_detail_events(f: &mut Frame, area: Rect, detail: &crate::app::DetailStat
         .borders(Borders::ALL)
         .title(Span::styled(
             title,
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .padding(Padding::horizontal(1));
     let inner = outer.inner(area);
     f.render_widget(outer, area);
 
     // Reserve a line at the top for the search prompt when active or applied.
-    let show_search_bar = detail.search_active
-        || detail.search_pattern.is_some()
-        || detail.search_error.is_some();
+    let show_search_bar =
+        detail.search_active || detail.search_pattern.is_some() || detail.search_error.is_some();
     let (search_area, body_area) = if show_search_bar {
         let rows = Layout::default()
             .direction(Direction::Vertical)
@@ -1726,12 +1971,25 @@ fn draw_detail_events(f: &mut Frame, area: Rect, detail: &crate::app::DetailStat
 
     if let Some(sa) = search_area {
         let mut spans = vec![
-            Span::styled("/", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "/",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" "),
-            Span::styled(detail.search_input.clone(), Style::default().fg(Color::White)),
+            Span::styled(
+                detail.search_input.clone(),
+                Style::default().fg(Color::White),
+            ),
         ];
         if detail.search_active {
-            spans.push(Span::styled("_", Style::default().fg(Color::Yellow).add_modifier(Modifier::SLOW_BLINK)));
+            spans.push(Span::styled(
+                "_",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::SLOW_BLINK),
+            ));
             spans.push(Span::styled(
                 "  [enter] apply  [esc] cancel",
                 Style::default().fg(Color::Gray),
@@ -1755,7 +2013,9 @@ fn draw_detail_events(f: &mut Frame, area: Rect, detail: &crate::app::DetailStat
             Line::from(""),
             Line::from(Span::styled(
                 " ◌  no events for this environment",
-                Style::default().fg(theme.muted).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.muted)
+                    .add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(
                 "    ^R to re-fetch, R to toggle auto-refresh",
@@ -1788,7 +2048,10 @@ fn draw_detail_events(f: &mut Frame, area: Rect, detail: &crate::app::DetailStat
             };
             Line::from(vec![
                 Span::styled(format!("{:>4} ", when), Style::default().fg(theme.muted)),
-                Span::styled(format!("{:<5} ", e.severity), severity_style(&e.severity, theme)),
+                Span::styled(
+                    format!("{:<5} ", e.severity),
+                    severity_style(&e.severity, theme),
+                ),
                 Span::styled(e.message.clone(), msg_style),
             ])
         })
@@ -1797,12 +2060,19 @@ fn draw_detail_events(f: &mut Frame, area: Rect, detail: &crate::app::DetailStat
     f.render_widget(p, body_area);
 }
 
-fn draw_detail_instances(f: &mut Frame, area: Rect, detail: &crate::app::DetailState, theme: &Theme) {
+fn draw_detail_instances(
+    f: &mut Frame,
+    area: Rect,
+    detail: &crate::app::DetailState,
+    theme: &Theme,
+) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(Span::styled(
             format!(" Instances [{}] ", detail.instances.len()),
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .padding(Padding::horizontal(1));
     if detail.instances.is_empty() && !detail.loading_instances {
@@ -1810,7 +2080,9 @@ fn draw_detail_instances(f: &mut Frame, area: Rect, detail: &crate::app::DetailS
             Line::from(""),
             Line::from(Span::styled(
                 "  ◌  no instance data",
-                Style::default().fg(theme.muted).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.muted)
+                    .add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(
                 "     env may be terminating, or DescribeInstancesHealth not yet warm",
@@ -1831,10 +2103,21 @@ fn draw_detail_instances(f: &mut Frame, area: Rect, detail: &crate::app::DetailS
                 .map(|t| humanize_age(now.signed_duration_since(t)))
                 .unwrap_or_else(|| "—".into());
             let mut head = vec![
-                Span::styled(format!("{:<19} ", i.id), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format!("{:<19} ", i.id),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(format!("{:<8} ", i.health), health_style(&i.color, theme)),
-                Span::styled(format!("{:<12} ", i.instance_type), Style::default().fg(Color::Gray)),
-                Span::styled(format!("{:<14} ", i.availability_zone), Style::default().fg(Color::Gray)),
+                Span::styled(
+                    format!("{:<12} ", i.instance_type),
+                    Style::default().fg(Color::Gray),
+                ),
+                Span::styled(
+                    format!("{:<14} ", i.availability_zone),
+                    Style::default().fg(Color::Gray),
+                ),
                 Span::styled(format!("up {age}"), Style::default().fg(Color::Gray)),
             ];
             let mut lines = vec![Line::from(std::mem::take(&mut head))];
@@ -1847,14 +2130,19 @@ fn draw_detail_instances(f: &mut Frame, area: Rect, detail: &crate::app::DetailS
             lines
         })
         .collect();
-    let p = Paragraph::new(lines).block(block).scroll((detail.instances_scroll, 0));
+    let p = Paragraph::new(lines)
+        .block(block)
+        .scroll((detail.instances_scroll, 0));
     f.render_widget(p, area);
 }
 
 fn draw_detail_metrics(f: &mut Frame, area: Rect, detail: &crate::app::DetailState, theme: &Theme) {
     let outer = titled_block(
         theme,
-        &format!("Metrics · last {} · CloudWatch", humanize_range(detail.metrics_range_secs)),
+        &format!(
+            "Metrics · last {} · CloudWatch",
+            humanize_range(detail.metrics_range_secs)
+        ),
         true,
         theme.title,
     )
@@ -1905,7 +2193,9 @@ fn draw_detail_metrics(f: &mut Frame, area: Rect, detail: &crate::app::DetailSta
         let title = Line::from(vec![
             Span::styled(
                 format!("{:<26} ", series.label),
-                Style::default().fg(series_color).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(series_color)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!("now {}  ", format_metric(&series.id, last)),
@@ -1995,12 +2285,20 @@ fn humanize_range(secs: i64) -> String {
     }
 }
 
-fn draw_detail_queue(f: &mut Frame, area: Rect, detail: &crate::app::DetailState, redact_on: bool, theme: &Theme) {
+fn draw_detail_queue(
+    f: &mut Frame,
+    area: Rect,
+    detail: &crate::app::DetailState,
+    redact_on: bool,
+    theme: &Theme,
+) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(Span::styled(
             " Queue ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .padding(Padding::horizontal(2));
 
@@ -2035,23 +2333,21 @@ fn draw_detail_queue(f: &mut Frame, area: Rect, detail: &crate::app::DetailState
                 };
                 vec![
                     Line::from(vec![
-                        Span::styled(
-                            format!("{label:<22}"),
-                            Style::default().fg(theme.muted),
-                        ),
+                        Span::styled(format!("{label:<22}"), Style::default().fg(theme.muted)),
                         Span::styled(
                             format!("visible:  {:>5}  ", s.visible),
                             Style::default()
-                                .fg(if s.visible > 0 { theme.health_yellow } else { theme.text })
+                                .fg(if s.visible > 0 {
+                                    theme.health_yellow
+                                } else {
+                                    theme.text
+                                })
                                 .add_modifier(Modifier::BOLD),
                         ),
                         bar(s.visible, theme.health_yellow),
                     ]),
                     Line::from(vec![
-                        Span::styled(
-                            format!("{:<22}", ""),
-                            Style::default().fg(theme.muted),
-                        ),
+                        Span::styled(format!("{:<22}", ""), Style::default().fg(theme.muted)),
                         Span::styled(
                             format!("in-flight:{:>5}  ", s.in_flight),
                             Style::default().fg(theme.text),
@@ -2059,10 +2355,7 @@ fn draw_detail_queue(f: &mut Frame, area: Rect, detail: &crate::app::DetailState
                         bar(s.in_flight, theme.app_palette[0]),
                     ]),
                     Line::from(vec![
-                        Span::styled(
-                            format!("{:<22}", ""),
-                            Style::default().fg(theme.muted),
-                        ),
+                        Span::styled(format!("{:<22}", ""), Style::default().fg(theme.muted)),
                         Span::styled(
                             format!("delayed:  {:>5}  ", s.delayed),
                             Style::default().fg(theme.muted),
@@ -2119,7 +2412,11 @@ fn draw_detail_config(
 
     let updated = env
         .updated
-        .map(|u| u.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S %Z").to_string())
+        .map(|u| {
+            u.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M:%S %Z")
+                .to_string()
+        })
         .unwrap_or_else(|| "—".into());
 
     let row = |label: &'static str, value: String| -> Line<'static> {
@@ -2164,7 +2461,10 @@ fn draw_detail_config(
             monthly,
         );
         if missing > 0 {
-            summary.push_str(&format!("  ({missing} unknown type{})", if missing == 1 { "" } else { "s" }));
+            summary.push_str(&format!(
+                "  ({missing} unknown type{})",
+                if missing == 1 { "" } else { "s" }
+            ));
         }
         lines.push(Line::from(vec![
             Span::styled(
@@ -2198,7 +2498,10 @@ fn draw_detail_config(
         )));
         for (k, v) in &detail.tags {
             lines.push(Line::from(vec![
-                Span::styled(format!("  {k:<18}"), Style::default().fg(theme.app_palette[0])),
+                Span::styled(
+                    format!("  {k:<18}"),
+                    Style::default().fg(theme.app_palette[0]),
+                ),
                 Span::styled(v.clone(), Style::default().fg(theme.text)),
             ]));
         }
@@ -2216,13 +2519,12 @@ fn draw_detail_config(
         if !missing.is_empty() {
             lines.push(Line::raw(""));
             lines.push(Line::from(vec![
-                Span::styled(
-                    "Tag policy    ",
-                    Style::default().fg(theme.muted),
-                ),
+                Span::styled("Tag policy    ", Style::default().fg(theme.muted)),
                 Span::styled(
                     format!("⚠ missing required tag(s): {}", missing.join(", ")),
-                    Style::default().fg(theme.health_yellow).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(theme.health_yellow)
+                        .add_modifier(Modifier::BOLD),
                 ),
             ]));
         }
@@ -2233,21 +2535,37 @@ fn draw_detail_config(
 
 fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
     let theme = app.theme.clone();
-    let Some(picker) = app.picker.as_mut() else { return };
+    let Some(picker) = app.picker.as_mut() else {
+        return;
+    };
     let popup = centered_rect(50, 60, area);
     f.render_widget(Clear, popup);
 
     let layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(3), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(3),
+            Constraint::Length(1),
+        ])
         .split(popup);
 
     let filter_block = titled_block(&theme, picker.title().trim(), true, theme.title_alt);
     let filter_inner = Paragraph::new(Line::from(vec![
-        Span::styled(" /", Style::default().fg(theme.health_yellow).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " /",
+            Style::default()
+                .fg(theme.health_yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw(" "),
         Span::styled(picker.filter.clone(), Style::default().fg(theme.text)),
-        Span::styled("_", Style::default().fg(theme.health_yellow).add_modifier(Modifier::SLOW_BLINK)),
+        Span::styled(
+            "_",
+            Style::default()
+                .fg(theme.health_yellow)
+                .add_modifier(Modifier::SLOW_BLINK),
+        ),
     ]))
     .block(filter_block);
     f.render_widget(filter_inner, layout[0]);
@@ -2288,7 +2606,12 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
 
 fn help_line<'a>(key: &'a str, desc: &'a str) -> Line<'a> {
     Line::from(vec![
-        Span::styled(format!(" {key:<12}"), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!(" {key:<12}"),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(desc, Style::default().fg(Color::White)),
     ])
 }
@@ -2341,14 +2664,12 @@ fn humanize_duration(secs: u64) -> String {
 fn breadcrumb_line(app: &App) -> Line<'static> {
     let theme = &app.theme;
     let region = app.context.region.clone();
-    let mut spans: Vec<Span<'static>> = vec![
-        Span::styled(
-            region,
-            Style::default()
-                .fg(theme.title)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ];
+    let mut spans: Vec<Span<'static>> = vec![Span::styled(
+        region,
+        Style::default()
+            .fg(theme.title)
+            .add_modifier(Modifier::BOLD),
+    )];
     let env = match (app.mode, app.detail.as_ref()) {
         (Mode::Detail, Some(d)) => Some((d.env_snapshot.application.clone(), d.env_name.clone())),
         _ => app
@@ -2359,7 +2680,9 @@ fn breadcrumb_line(app: &App) -> Line<'static> {
         spans.push(Span::styled(" / ", Style::default().fg(theme.muted)));
         spans.push(Span::styled(
             app_name,
-            Style::default().fg(theme.title_alt).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.title_alt)
+                .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(" / ", Style::default().fg(theme.muted)));
         spans.push(Span::styled(
@@ -2373,7 +2696,12 @@ fn breadcrumb_line(app: &App) -> Line<'static> {
 fn kv<'a>(key: &'a str, value: &'a str) -> Vec<Span<'a>> {
     vec![
         Span::styled(format!("{key}: "), Style::default().fg(Color::Gray)),
-        Span::styled(value.to_string(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            value.to_string(),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
     ]
 }
 
@@ -2381,7 +2709,10 @@ fn sep() -> Span<'static> {
     Span::styled("  •  ", Style::default().fg(Color::Gray))
 }
 
-fn sparkline_for(samples: Option<&std::collections::VecDeque<String>>, theme: &Theme) -> Line<'static> {
+fn sparkline_for(
+    samples: Option<&std::collections::VecDeque<String>>,
+    theme: &Theme,
+) -> Line<'static> {
     let Some(samples) = samples else {
         return Line::from(Span::raw(" ".repeat(SPARKLINE_WIDTH)));
     };
@@ -2421,7 +2752,6 @@ fn health_style(health: &str, theme: &Theme) -> Style {
     };
     Style::default().fg(color).add_modifier(Modifier::BOLD)
 }
-
 
 fn redact(value: &str, on: bool) -> String {
     if !on || value.is_empty() || value == "—" {
@@ -2639,4 +2969,3 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         ])
         .split(v[1])[1]
 }
-

@@ -171,8 +171,8 @@ fn draw_splash(terminal: &mut Tui, frame: u64) -> Result<()> {
                     // left-to-right over ~1 s, then the letters settle to cyan
                     // and stay there for the rest of the splash.
                     const SPOTLIGHT_FRAMES: f64 = 33.0; // ~1 s at 30 ms ticks
-                    const SPOTLIGHT_WIDTH: f64 = 9.0;   // column-wise softness
-                    const LOGO_TRAVEL: f64 = 56.0;      // includes off-screen exit
+                    const SPOTLIGHT_WIDTH: f64 = 9.0; // column-wise softness
+                    const LOGO_TRAVEL: f64 = 56.0; // includes off-screen exit
                     let pos = (frame as f64 / SPOTLIGHT_FRAMES) * LOGO_TRAVEL;
                     let dist = (col as f64 - pos).abs();
                     let glow = (1.0 - dist / SPOTLIGHT_WIDTH).clamp(0.0, 1.0);
@@ -356,7 +356,11 @@ fn enter_tui() -> Result<Tui> {
 
 fn leave_tui(terminal: &mut Tui) -> Result<()> {
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
     terminal.show_cursor()?;
     Ok(())
 }
@@ -407,7 +411,9 @@ fn write_crash_report(info: &panic::PanicHookInfo<'_>) {
 const MAX_CRASH_REPORTS: usize = 10;
 
 fn prune_old_crash_reports(dir: &std::path::Path, keep: usize) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     let mut crashes: Vec<std::path::PathBuf> = entries
         .filter_map(|e| e.ok())
         .map(|e| e.path())

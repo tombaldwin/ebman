@@ -18,7 +18,7 @@ pub struct Event {
 #[derive(Clone, Debug)]
 pub struct CwAlarm {
     pub name: String,
-    pub state: String,        // OK / ALARM / INSUFFICIENT_DATA
+    pub state: String, // OK / ALARM / INSUFFICIENT_DATA
     pub state_reason: String,
     pub metric_name: String,
     pub namespace: String,
@@ -58,8 +58,8 @@ pub struct QueueMessage {
 #[derive(Clone, Debug)]
 pub struct Instance {
     pub id: String,
-    pub health: String,         // Ok / Warning / Degraded / Severe / Info / NoData / Unknown / Pending
-    pub color: String,          // Green / Yellow / Red / Grey
+    pub health: String, // Ok / Warning / Degraded / Severe / Info / NoData / Unknown / Pending
+    pub color: String,  // Green / Yellow / Red / Grey
     pub causes: Vec<String>,
     pub instance_type: String,
     pub availability_zone: String,
@@ -82,8 +82,8 @@ pub struct Environment {
     pub application: String,
     pub status: String,
     pub health: String,
-    pub platform: String,         // family + version, e.g. "Java 17"
-    pub tier: String,             // "Web" / "Worker" / "?"
+    pub platform: String, // family + version, e.g. "Java 17"
+    pub tier: String,     // "Web" / "Worker" / "?"
     pub cname: String,
     pub version_label: String,
     pub arn: Option<String>,
@@ -166,7 +166,8 @@ impl AwsClient {
     }
 
     pub async fn list_events_for_env(&self, env_name: &str, max: i32) -> Result<Vec<Event>> {
-        self.list_events_inner(Some(env_name.to_string()), max).await
+        self.list_events_inner(Some(env_name.to_string()), max)
+            .await
     }
 
     async fn list_events_inner(&self, env_name: Option<String>, max: i32) -> Result<Vec<Event>> {
@@ -352,9 +353,7 @@ impl AwsClient {
             let resp = req.send().await?;
             for a in resp.metric_alarms.unwrap_or_default() {
                 let dims = a.dimensions.clone().unwrap_or_default();
-                let touches = dims
-                    .iter()
-                    .any(|d| d.value.as_deref() == Some(env_name));
+                let touches = dims.iter().any(|d| d.value.as_deref() == Some(env_name));
                 if !touches {
                     continue;
                 }
@@ -405,10 +404,7 @@ impl AwsClient {
                 .period(60)
                 .stat(stat)
                 .build();
-            MetricDataQuery::builder()
-                .id(id)
-                .metric_stat(ms)
-                .build()
+            MetricDataQuery::builder().id(id).metric_stat(ms).build()
         };
 
         let resp = self
@@ -433,7 +429,8 @@ impl AwsClient {
         .into_iter()
         .collect();
 
-        let mut by_id: std::collections::HashMap<String, MetricSeries> = std::collections::HashMap::new();
+        let mut by_id: std::collections::HashMap<String, MetricSeries> =
+            std::collections::HashMap::new();
         for r in resp.metric_data_results.unwrap_or_default() {
             let id = r.id.unwrap_or_default();
             let display = labels
@@ -451,13 +448,17 @@ impl AwsClient {
                 })
                 .collect();
             points.sort_by_key(|(t, _)| *t);
-            by_id.insert(id.clone(), MetricSeries { id, label: display, points });
+            by_id.insert(
+                id.clone(),
+                MetricSeries {
+                    id,
+                    label: display,
+                    points,
+                },
+            );
         }
 
-        Ok(order
-            .iter()
-            .filter_map(|id| by_id.remove(*id))
-            .collect())
+        Ok(order.iter().filter_map(|id| by_id.remove(*id)).collect())
     }
 
     pub async fn purge_queue(&self, queue_url: &str) -> Result<()> {
@@ -535,9 +536,7 @@ impl AwsClient {
             .into_iter()
             .map(|i| Instance {
                 id: i.instance_id.unwrap_or_default(),
-                health: i
-                    .health_status
-                    .unwrap_or_default(),
+                health: i.health_status.unwrap_or_default(),
                 color: i.color.unwrap_or_default(),
                 causes: i.causes.unwrap_or_default(),
                 instance_type: i.instance_type.unwrap_or_default(),

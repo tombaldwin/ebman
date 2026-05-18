@@ -54,12 +54,17 @@ pub fn parse(text: &str, reserved: &[&str]) -> Loaded {
             current_name = rest.strip_prefix("commands.").map(|n| n.trim().to_string());
             continue;
         }
-        let Some(name) = current_name.as_deref() else { continue };
-        let Some((key, raw_val)) = line.split_once('=') else { continue };
+        let Some(name) = current_name.as_deref() else {
+            continue;
+        };
+        let Some((key, raw_val)) = line.split_once('=') else {
+            continue;
+        };
         let value = raw_val.trim().trim_matches('"').to_string();
-        let entry = out
-            .entry(name.to_string())
-            .or_insert(Plugin { template: String::new(), description: None });
+        let entry = out.entry(name.to_string()).or_insert(Plugin {
+            template: String::new(),
+            description: None,
+        });
         match key.trim() {
             "template" => entry.template = value,
             "description" => entry.description = Some(value),
@@ -70,9 +75,7 @@ pub fn parse(text: &str, reserved: &[&str]) -> Loaded {
     // Drop entries without templates.
     out.retain(|name, p| {
         if p.template.is_empty() {
-            warnings.push(format!(
-                "plugin '{name}' has no template — skipped"
-            ));
+            warnings.push(format!("plugin '{name}' has no template — skipped"));
             return false;
         }
         if reserved.contains(&name.as_str()) {
@@ -83,7 +86,10 @@ pub fn parse(text: &str, reserved: &[&str]) -> Loaded {
         }
         true
     });
-    Loaded { plugins: out, warnings }
+    Loaded {
+        plugins: out,
+        warnings,
+    }
 }
 
 /// Substitute `{name}`, `{cname}`, `{application}`, `{tier}`, `{region}`,
@@ -129,7 +135,10 @@ description = "shell into one instance"
         assert_eq!(p["warm-cache"].template, "curl https://{cname}/_warm");
         assert!(p["warm-cache"].description.is_none());
         assert_eq!(p["ssh"].template, "ssh ec2-user@{cname}");
-        assert_eq!(p["ssh"].description.as_deref(), Some("shell into one instance"));
+        assert_eq!(
+            p["ssh"].description.as_deref(),
+            Some("shell into one instance")
+        );
         assert!(loaded.warnings.is_empty());
     }
 
