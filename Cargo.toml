@@ -5,6 +5,7 @@ edition = "2021"
 rust-version = "1.82"
 description = "k9s-style TUI for AWS Elastic Beanstalk"
 license = "MIT OR Apache-2.0"
+readme = "README.md"
 repository = "https://github.com/tombaldwin/ebman"
 keywords = ["aws", "elasticbeanstalk", "tui", "ratatui"]
 categories = ["command-line-utilities"]

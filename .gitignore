@@ -1,2 +1,15 @@
 /target
 
+# macOS
+.DS_Store
+
+# Editors
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Local caches and crash reports (ebman writes to ~/.cache; safety net for any in-tree runs)
+*.log
+crash-*.log

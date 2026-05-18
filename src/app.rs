@@ -25,6 +25,52 @@ use crate::{
     ui, Tui,
 };
 
+/// Names of all built-in `:commands`. Used to detect collisions when loading
+/// user plugins from `commands.toml` — plugins that shadow a built-in are
+/// dropped with a warning rather than silently masking it.
+pub const BUILTIN_COMMANDS: &[&str] = &[
+    "q",
+    "quit",
+    "refresh",
+    "help",
+    "?",
+    "region",
+    "r",
+    "profile",
+    "p",
+    "sort",
+    "group",
+    "redact",
+    "events",
+    "export",
+    "json",
+    "report",
+    "markdown",
+    "readonly",
+    "pin",
+    "alias",
+    "alias-drop",
+    "alias-rm",
+    "whatsnew",
+    "history",
+    "saved-configs",
+    "configs",
+    "plugins",
+    "diff",
+    "alarms",
+    "loglevel",
+    "cols",
+    "save-view",
+    "view",
+    "views",
+    "view-drop",
+    "filter",
+    "f",
+    "save",
+    "drop",
+    "filters",
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewMode {
     Default,
@@ -76,6 +122,30 @@ impl Scope {
 const HISTORY_CAP: usize = 20;
 const MESSAGE_LOG_CAP: usize = 50;
 const TOAST_CAP: usize = 4;
+
+/// A single read-only popup that overlays the main UI. Only one can be open
+/// at once: opening another replaces it; `Esc` / `q` dismisses it. Replacing
+/// the previous six `Option<String>` fields with this enum eliminates the
+/// "did I forget one?" footgun every time a new overlay is added (separate
+/// dismiss path, separate draw conditional, separate dismiss-on-context-switch
+/// branch, …).
+#[derive(Debug, Clone)]
+pub enum Overlay {
+    /// Raw `DescribeEnvironment` dump shown as pretty JSON via `D`.
+    Describe(String),
+    /// Embedded changelog shown via `:whatsnew`.
+    Whatsnew(String),
+    /// Recent status/error message log shown via `:history`.
+    History(String),
+    /// CloudWatch alarms list shown via `:alarms`. `env_name` carries the env
+    /// the fetch was issued for, so a late `AppMsg::Alarms` for a different
+    /// env can be dropped instead of replacing the overlay's contents.
+    Alarms { env_name: String, body: String },
+    /// Side-by-side env comparison shown via `:diff NAME`.
+    Diff(String),
+    /// EB saved-configuration templates per app shown via `:saved-configs`.
+    SavedConfigs(String),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)] // Success reserved for future success-specific toasts.
@@ -450,12 +520,8 @@ pub struct App {
     pub hover_row: Option<usize>,
     pub alerts: usize, // count of envs currently in Red, recomputed each refresh
     pub frozen: bool,  // when true, auto-refresh ticker is no-op
-    pub describe_overlay: Option<String>, // raw env dump shown as a popup
-    pub whatsnew_overlay: Option<String>, // changelog popup shown via `:whatsnew`
-    pub history_overlay: Option<String>,  // recent status/error messages shown via `:history`
-    pub alarms_overlay: Option<String>,   // CloudWatch alarms list shown via `:alarms`
-    pub diff_overlay: Option<String>,     // side-by-side env comparison shown via `:diff NAME`
-    pub saved_configs_overlay: Option<String>, // EB saved configurations per app via `:saved-configs`
+    /// The currently visible overlay popup, if any. See [`Overlay`].
+    pub current_overlay: Option<Overlay>,
     pub message_log: VecDeque<(chrono::DateTime<chrono::Utc>, MsgKind, String)>,
     pub toasts: VecDeque<Toast>,
     pub palette_input: String,
@@ -470,6 +536,11 @@ pub struct App {
     pub log_reload: Option<crate::LogReloadHandle>,
     pub log_directive: String,
     pub plugins: BTreeMap<String, crate::plugins::Plugin>,
+    /// Snapshot of `(status_message, error_message)` captured when the current
+    /// refresh was spawned. apply_refresh clears messages only if they still
+    /// match this snapshot, so user-initiated status set between kickoff and
+    /// apply (e.g. pressing `s` to sort during the round-trip) is preserved.
+    pub status_snapshot_at_refresh: Option<(Option<String>, Option<String>)>,
     pub notify_bell: bool,
     pub required_tags: Vec<String>,
     pub newly_red: HashSet<String>,
@@ -502,7 +573,7 @@ enum AppMsg {
     DetailTags { gen: u64, env_name: String, result: Result<Vec<(String, String)>, String> },
     DryRunResult { gen: u64, env_name: String, result: Result<Vec<Instance>, String> },
     PreflightEvents { gen: u64, env_name: String, result: Result<Vec<EbEvent>, String> },
-    Alarms { gen: u64, result: Result<Vec<CwAlarm>, String> },
+    Alarms { gen: u64, env_name: String, result: Result<Vec<CwAlarm>, String> },
     DlqMessages { gen: u64, env_name: String, result: Result<Vec<QueueMessage>, String> },
     DlqActionResult { gen: u64, env_name: String, result: Result<DlqOp, String> },
     ActionResult { gen: u64, action: Action, env_name: String, result: Result<(), String> },
@@ -517,9 +588,15 @@ pub enum DlqOp {
 async fn init_client(
     profile: Option<String>,
     region: Option<String>,
-) -> Result<(AwsClient, Option<String>, Option<String>)> {
-    match build_and_verify(profile.clone(), region.clone()).await {
-        Ok(c) => Ok((c, profile, region)),
+) -> Result<(AwsClient, Option<String>, Option<String>, Option<String>)> {
+    // Two-stage init:
+    //   1. AwsClient::with must succeed (SDK config / region parsing). On
+    //      failure we fall back from persisted profile/region to env defaults.
+    //   2. verify_identity is *best-effort* — STS perms aren't required to use
+    //      EB describe APIs. On failure we log + surface a startup warning but
+    //      keep going with the client, leaving account/caller fields unset.
+    let (mut client, used_profile, used_region) = match AwsClient::with(profile.clone(), region.clone()).await {
+        Ok(c) => (c, profile, region),
         Err(e) if profile.is_some() || region.is_some() => {
             tracing::warn!(
                 error = %e,
@@ -527,28 +604,33 @@ async fn init_client(
                 region = ?region,
                 "persisted profile/region failed to resolve — falling back to env defaults"
             );
-            let c = build_and_verify(None, None).await?;
-            Ok((c, None, None))
+            let c = AwsClient::with(None, None).await?;
+            (c, None, None)
         }
-        Err(e) => Err(e),
-    }
-}
+        Err(e) => return Err(e),
+    };
 
-async fn build_and_verify(
-    profile: Option<String>,
-    region: Option<String>,
-) -> Result<AwsClient> {
-    let mut client = AwsClient::with(profile, region).await?;
-    let identity = client.verify_identity().await?;
-    client.context.account_id = identity.account_id;
-    client.context.caller_arn = identity.caller_arn;
-    Ok(client)
+    let warning = match client.verify_identity().await {
+        Ok(id) => {
+            client.context.account_id = id.account_id;
+            client.context.caller_arn = id.caller_arn;
+            None
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "sts:GetCallerIdentity failed — proceeding without identity. EB describe perms may still be available."
+            );
+            Some(format!("identity unknown ({e}); EB calls may still work"))
+        }
+    };
+    Ok((client, used_profile, used_region, warning))
 }
 
 impl App {
     pub async fn new(config: Config) -> Result<Self> {
         let persisted = state::load();
-        let (aws, override_profile, override_region) =
+        let (aws, override_profile, override_region, identity_warning) =
             init_client(persisted.profile.clone(), persisted.region.clone()).await?;
         let aws = Arc::new(aws);
         let context = aws.context.clone();
@@ -564,6 +646,20 @@ impl App {
 
         let mut app_table_state = TableState::default();
         app_table_state.select(Some(0));
+
+        let plugins_loaded = crate::plugins::load(BUILTIN_COMMANDS);
+        for w in &plugins_loaded.warnings {
+            tracing::warn!(target: "ebman::plugins", "{}", w);
+        }
+        let plugin_startup_warning = if plugins_loaded.warnings.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "plugins: {}",
+                plugins_loaded.warnings.join("; ")
+            ))
+        };
+
         let mut app = Self {
             context,
             scope: Scope::Envs,
@@ -614,12 +710,7 @@ impl App {
             hover_row: None,
             alerts: 0,
             frozen: false,
-            describe_overlay: None,
-            whatsnew_overlay: None,
-            history_overlay: None,
-            alarms_overlay: None,
-            diff_overlay: None,
-            saved_configs_overlay: None,
+            current_overlay: None,
             message_log: VecDeque::with_capacity(MESSAGE_LOG_CAP),
             toasts: VecDeque::with_capacity(TOAST_CAP),
             palette_input: String::new(),
@@ -634,7 +725,8 @@ impl App {
             log_reload: None,
             log_directive: std::env::var("RUST_LOG")
                 .unwrap_or_else(|_| "info,aws=warn,hyper=warn".to_string()),
-            plugins: crate::plugins::load(),
+            plugins: plugins_loaded.plugins,
+            status_snapshot_at_refresh: None,
             notify_bell: config.notify_bell,
             required_tags: config.required_tags,
             newly_red: HashSet::new(),
@@ -653,6 +745,13 @@ impl App {
             quit: false,
         };
         app.rebuild_view();
+        // Plugin warnings take priority over identity warnings — they're a user
+        // misconfiguration the user can act on now; identity_warning is informational.
+        if let Some(w) = plugin_startup_warning {
+            app.error_message = Some(w);
+        } else if let Some(w) = identity_warning {
+            app.error_message = Some(w);
+        }
         Ok(app)
     }
 
@@ -732,6 +831,19 @@ impl App {
     }
 
     fn push_toast(&mut self, kind: ToastKind, text: String) {
+        // Dedupe: if an identical toast (same kind + text) is already on
+        // screen, refresh its timestamp instead of stacking a duplicate.
+        // Without this, a flurry of identical status updates (e.g. repeated
+        // "no environment selected" key presses, or a rebuilt-context message
+        // arriving twice) would push the same card N times.
+        if let Some(existing) = self
+            .toasts
+            .iter_mut()
+            .find(|t| t.text == text && t.kind == kind)
+        {
+            existing.shown_at = Instant::now();
+            return;
+        }
         while self.toasts.len() >= TOAST_CAP {
             self.toasts.pop_front();
         }
@@ -776,12 +888,20 @@ impl App {
     }
 
     fn handle_mouse(&mut self, m: MouseEvent) {
-        // Don't steer the table while a popup is up or while the user is typing
-        // a command/filter — accidental scroll would be confusing.
-        if matches!(
-            self.mode,
-            Mode::Help | Mode::Picker | Mode::Command | Mode::Filter
-        ) {
+        // Mouse events steer the main table — wheel scroll moves selection,
+        // left click selects a row, hover tints. None of those make sense
+        // outside Normal mode: in Detail / Dlq / Action / Palette / QuickJump
+        // the table is hidden, and a wheel scroll would silently change which
+        // env you'd land on when you popped back out. Pickers / overlays /
+        // command-mode are also handled by the keyboard.
+        //
+        // Apps scope shares the table area but uses a different selection
+        // state; mouse routing for that is out of scope for now (movement
+        // would land on env rows even when Apps is the active scope).
+        let mouse_active = matches!(self.mode, Mode::Normal)
+            && self.scope == Scope::Envs
+            && self.current_overlay.is_none();
+        if !mouse_active {
             self.hover_row = None;
             return;
         }
@@ -839,47 +959,18 @@ impl App {
             return;
         }
 
-        // Read-only popups (describe / whatsnew) overlay any mode and absorb
-        // all keys until dismissed.
-        if self.describe_overlay.is_some() {
-            if matches!(
-                key.code,
-                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('d') | KeyCode::Char('D')
-            ) {
-                self.describe_overlay = None;
-            }
-            return;
-        }
-        if self.whatsnew_overlay.is_some() {
-            if matches!(
-                key.code,
-                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('w')
-            ) {
-                self.whatsnew_overlay = None;
-            }
-            return;
-        }
-        if self.history_overlay.is_some() {
-            if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
-                self.history_overlay = None;
-            }
-            return;
-        }
-        if self.alarms_overlay.is_some() {
-            if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
-                self.alarms_overlay = None;
-            }
-            return;
-        }
-        if self.diff_overlay.is_some() {
-            if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
-                self.diff_overlay = None;
-            }
-            return;
-        }
-        if self.saved_configs_overlay.is_some() {
-            if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
-                self.saved_configs_overlay = None;
+        // Read-only popups overlay any mode and absorb all keys until dismissed.
+        // Variant-specific extra dismiss keys (e.g. `D` re-toggles describe, `w`
+        // re-toggles whatsnew) are honoured in addition to the universal Esc/q.
+        if let Some(overlay) = self.current_overlay.as_ref() {
+            let universal = matches!(key.code, KeyCode::Esc | KeyCode::Char('q'));
+            let variant_extra = match overlay {
+                Overlay::Describe(_) => matches!(key.code, KeyCode::Char('d') | KeyCode::Char('D')),
+                Overlay::Whatsnew(_) => matches!(key.code, KeyCode::Char('w')),
+                _ => false,
+            };
+            if universal || variant_extra {
+                self.current_overlay = None;
             }
             return;
         }
@@ -1190,15 +1281,23 @@ impl App {
     }
 
     fn spawn_alarms_fetch(&mut self, env_name: String) {
+        // The fetch's env name lives on the Overlay::Alarms variant so a late
+        // result for a different env can be dropped at the handler. The body
+        // is initially a placeholder until the result arrives.
+        self.current_overlay = Some(Overlay::Alarms {
+            env_name: env_name.clone(),
+            body: format!("fetching alarms for {env_name}…"),
+        });
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
+        let name_for_msg = env_name.clone();
         tokio::spawn(async move {
             let result = aws
                 .list_alarms_for_env(&env_name)
                 .await
-                .map_err(|e| format!("{e}"));
-            let _ = tx.send(AppMsg::Alarms { gen, result });
+                .map_err(|e| flatten_err("list_alarms_for_env", e));
+            let _ = tx.send(AppMsg::Alarms { gen, env_name: name_for_msg, result });
         });
     }
 
@@ -1234,7 +1333,7 @@ impl App {
     fn open_whatsnew(&mut self) {
         // Embedded changelog text. Keep this short — full release notes live in
         // git history / GitHub releases. Update on every release.
-        self.whatsnew_overlay = Some(WHATSNEW.into());
+        self.current_overlay = Some(Overlay::Whatsnew(WHATSNEW.into()));
     }
 
     fn toggle_pin_selected(&mut self) {
@@ -1361,7 +1460,7 @@ impl App {
             self.status_message = Some("no environment selected".into());
             return;
         };
-        self.describe_overlay = Some(describe_env(&env));
+        self.current_overlay = Some(Overlay::Describe(describe_env(&env)));
     }
 
     fn open_in_console(&mut self) {
@@ -1550,7 +1649,7 @@ impl App {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         tokio::spawn(async move {
-            let result = aws.list_tags(&arn).await.map_err(|e| format!("{e}"));
+            let result = aws.list_tags(&arn).await.map_err(|e| flatten_err("list_tags", e));
             let _ = tx.send(AppMsg::DetailTags { gen, env_name, result });
         });
     }
@@ -1681,7 +1780,7 @@ impl App {
             let result = aws
                 .fetch_env_metrics(&name, range)
                 .await
-                .map_err(|e| format!("{e}"));
+                .map_err(|e| flatten_err("fetch_env_metrics", e));
             let _ = tx.send(AppMsg::DetailMetrics { gen, env_name, result });
         });
     }
@@ -1727,7 +1826,7 @@ impl App {
         let env_name = dlq.env_name.clone();
         let dlq_url = dlq.dlq_url.clone();
         tokio::spawn(async move {
-            let result = aws.peek_messages(&dlq_url, 10).await.map_err(|e| format!("{e}"));
+            let result = aws.peek_messages(&dlq_url, 10).await.map_err(|e| flatten_err("peek_messages", e));
             let _ = tx.send(AppMsg::DlqMessages { gen, env_name, result });
         });
     }
@@ -1813,9 +1912,15 @@ impl App {
             let result = match aws.send_message(&main_url, &msg.body).await {
                 Ok(()) => match aws.delete_message(&dlq_url, &msg.receipt_handle).await {
                     Ok(()) => Ok(DlqOp::Resent { message_id: msg.id.clone() }),
-                    Err(e) => Err(format!("sent to main queue, but DLQ delete failed: {e}")),
+                    Err(e) => {
+                        tracing::error!(target: "ebman::aws", op = "dlq_delete_after_send", error = ?e, "aws call failed");
+                        Err(format!("sent to main queue, but DLQ delete failed: {e}"))
+                    }
                 },
-                Err(e) => Err(format!("send to main queue failed: {e}")),
+                Err(e) => {
+                    tracing::error!(target: "ebman::aws", op = "dlq_send", error = ?e, "aws call failed");
+                    Err(format!("send to main queue failed: {e}"))
+                }
             };
             let _ = tx.send(AppMsg::DlqActionResult { gen, env_name, result });
         });
@@ -1840,7 +1945,7 @@ impl App {
                 .purge_queue(&dlq_url)
                 .await
                 .map(|_| DlqOp::Purged)
-                .map_err(|e| format!("{e}"));
+                .map_err(|e| flatten_err("purge_queue", e));
             let _ = tx.send(AppMsg::DlqActionResult { gen, env_name, result });
         });
     }
@@ -1858,7 +1963,7 @@ impl App {
             let result = aws
                 .describe_worker_queues(&application_name, &name)
                 .await
-                .map_err(|e| format!("{e}"));
+                .map_err(|e| flatten_err("describe_worker_queues", e));
             let _ = tx.send(AppMsg::DetailQueues { gen, env_name, result });
         });
     }
@@ -1876,7 +1981,7 @@ impl App {
             let result = aws
                 .list_events_for_env(&name, 50)
                 .await
-                .map_err(|e| format!("{e}"));
+                .map_err(|e| flatten_err("list_events_for_env", e));
             let _ = tx.send(AppMsg::DetailEvents { gen, env_name, result });
         });
     }
@@ -2101,7 +2206,7 @@ impl App {
             let result = aws
                 .list_events_for_env(&env_name, 3)
                 .await
-                .map_err(|e| format!("{e}"));
+                .map_err(|e| flatten_err("preflight_events", e));
             let _ = tx.send(AppMsg::PreflightEvents { gen, env_name, result });
         });
     }
@@ -2111,7 +2216,7 @@ impl App {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         tokio::spawn(async move {
-            let result = aws.list_instances(&env_name).await.map_err(|e| format!("{e}"));
+            let result = aws.list_instances(&env_name).await.map_err(|e| flatten_err("dry_run_list_instances", e));
             let _ = tx.send(AppMsg::DryRunResult { gen, env_name, result });
         });
     }
@@ -2141,7 +2246,7 @@ impl App {
                     None => Err(color_eyre::eyre::eyre!("swap target missing")),
                 },
             }
-            .map_err(|e| format!("{e}"));
+            .map_err(|e| flatten_err("action", e));
             let _ = tx.send(AppMsg::ActionResult { gen, action, env_name: env, result });
         });
     }
@@ -2159,7 +2264,7 @@ impl App {
             let result = aws
                 .list_instances(&name)
                 .await
-                .map_err(|e| format!("{e}"));
+                .map_err(|e| flatten_err("list_instances", e));
             let _ = tx.send(AppMsg::DetailInstances { gen, env_name, result });
         });
     }
@@ -2275,10 +2380,10 @@ impl App {
             },
             "whatsnew" => self.open_whatsnew(),
             "history" => {
-                self.history_overlay = Some(self.format_message_log());
+                self.current_overlay = Some(Overlay::History(self.format_message_log()));
             }
             "saved-configs" | "configs" => {
-                self.saved_configs_overlay = Some(format_saved_configs(&self.applications));
+                self.current_overlay = Some(Overlay::SavedConfigs(format_saved_configs(&self.applications)));
             }
             "plugins" => {
                 if self.plugins.is_empty() {
@@ -2313,7 +2418,7 @@ impl App {
                                 Some(format!("no environment named '{target}' in current view"));
                         }
                         Some(right) => {
-                            self.diff_overlay = Some(diff_envs(&left, &right, self.redact));
+                            self.current_overlay = Some(Overlay::Diff(diff_envs(&left, &right, self.redact)));
                         }
                     }
                 }
@@ -2325,10 +2430,7 @@ impl App {
                     self.selected_env().map(|e| e.name.clone())
                 };
                 match env_opt {
-                    Some(env_name) => {
-                        self.alarms_overlay = Some(format!("fetching alarms for {env_name}…"));
-                        self.spawn_alarms_fetch(env_name);
-                    }
+                    Some(env_name) => self.spawn_alarms_fetch(env_name),
                     None => self.error_message = Some("no environment selected".into()),
                 }
             }
@@ -2700,7 +2802,7 @@ impl App {
         tokio::spawn(async move {
             let result = match AwsClient::with(profile, region).await {
                 Ok(c) => Ok(Box::new(c)),
-                Err(e) => Err(format!("{e}")),
+                Err(e) => Err(flatten_err("aws_client_with", e)),
             };
             let _ = tx.send(AppMsg::Rebuild(result));
         });
@@ -2711,7 +2813,7 @@ impl App {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         tokio::spawn(async move {
-            let result = aws.verify_identity().await.map_err(|e| format!("{e}"));
+            let result = aws.verify_identity().await.map_err(|e| flatten_err("verify_identity", e));
             let _ = tx.send(AppMsg::Identity { gen, result });
         });
     }
@@ -2722,11 +2824,13 @@ impl App {
         }
         self.load_state = LoadState::Loading;
         self.loading_since = Some(Instant::now());
+        self.status_snapshot_at_refresh =
+            Some((self.status_message.clone(), self.error_message.clone()));
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         tokio::spawn(async move {
-            let result = aws.list_environments().await.map_err(|e| format!("{e}"));
+            let result = aws.list_environments().await.map_err(|e| flatten_err("list_environments", e));
             let _ = tx.send(AppMsg::Refresh { gen, result });
         });
         if self.events_visible {
@@ -2740,7 +2844,7 @@ impl App {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         tokio::spawn(async move {
-            let result = aws.list_applications().await.map_err(|e| format!("{e}"));
+            let result = aws.list_applications().await.map_err(|e| flatten_err("list_applications", e));
             let _ = tx.send(AppMsg::Applications { gen, result });
         });
     }
@@ -2750,7 +2854,7 @@ impl App {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         tokio::spawn(async move {
-            let result = aws.list_events(50).await.map_err(|e| format!("{e}"));
+            let result = aws.list_events(50).await.map_err(|e| flatten_err("list_events", e));
             let _ = tx.send(AppMsg::Events { gen, result });
         });
     }
@@ -2831,6 +2935,14 @@ impl App {
                 if gen != self.generation {
                     return;
                 }
+                write_audit_outcome(
+                    self.context.account_id.as_deref(),
+                    self.context.profile.as_deref(),
+                    &self.context.region,
+                    action,
+                    &env_name,
+                    result.as_ref().map(|_| ()).map_err(|e| e.as_str()),
+                );
                 match result {
                     Ok(()) => {
                         self.close_action_flow();
@@ -2908,11 +3020,20 @@ impl App {
                     });
                 }
             }
-            AppMsg::Alarms { gen, result } => {
+            AppMsg::Alarms { gen, env_name, result } => {
                 if gen != self.generation {
                     return;
                 }
-                self.alarms_overlay = Some(format_alarms(result));
+                // Drop stale results: the user may have closed the overlay or
+                // requested alarms for a different env during the round-trip.
+                // The overlay carries the env it was opened for; only replace
+                // its body if that still matches the result we just received.
+                match self.current_overlay.as_mut() {
+                    Some(Overlay::Alarms { env_name: requested, body }) if requested == &env_name => {
+                        *body = format_alarms(result);
+                    }
+                    _ => return,
+                }
             }
             AppMsg::PreflightEvents { gen, env_name, result } => {
                 if gen != self.generation {
@@ -3016,6 +3137,19 @@ impl App {
                 self.events.clear();
                 self.events_scroll = 0;
                 self.history.clear();
+                // Overlays show data from the previous context (describe dump,
+                // alarms list, …); close them so the user doesn't act on stale info.
+                self.current_overlay = None;
+                // Diff state is keyed by env name. Switching accounts/regions may
+                // surface envs with overlapping names but unrelated history;
+                // clearing here prevents spurious "newly red" / status-delta noise
+                // on the first refresh in the new context.
+                self.prev_health.clear();
+                self.prev_status.clear();
+                self.prev_alerts = 0;
+                self.newly_red.clear();
+                self.health_delta.clear();
+                self.status_delta.clear();
                 self.rebuild_view();
                 self.table_state.select(None);
                 self.status_message = Some(format!(
@@ -3234,14 +3368,27 @@ impl App {
                 self.load_state = LoadState::Idle;
                 self.loading_since = None;
                 self.last_refresh = Some(chrono::Utc::now());
-                self.status_message = None;
-                self.error_message = None;
+                // Clear status/error only if the user hasn't replaced them
+                // during the refresh round-trip. Otherwise their action message
+                // (sort change, alias set, …) would get clobbered here.
+                if let Some((prev_status, prev_error)) = self.status_snapshot_at_refresh.take() {
+                    if self.status_message == prev_status {
+                        self.status_message = None;
+                    }
+                    if self.error_message == prev_error {
+                        self.error_message = None;
+                    }
+                } else {
+                    self.status_message = None;
+                    self.error_message = None;
+                }
                 self.restore_or_clamp_selection();
             }
             Err(msg) => {
                 tracing::error!(error = %msg, "refresh failed");
                 self.load_state = LoadState::Error;
                 self.loading_since = None;
+                self.status_snapshot_at_refresh = None;
                 self.error_message = Some(self.format_aws_error("refresh", &msg));
             }
         }
@@ -3322,6 +3469,16 @@ pub enum DisplayRow {
 fn yank(text: &str) -> std::result::Result<(), String> {
     let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
     cb.set_text(text.to_string()).map_err(|e| e.to_string())
+}
+
+/// Pair every async AWS error with a full-chain log entry. The returned string
+/// is the SDK's top-level `Display` (concise, suitable for the toast/footer);
+/// the chain — including the underlying `dyn Error` causes that color-eyre
+/// records on `Report` — goes to `ebman.log` via `tracing::error!`. Without
+/// this the chain was lost both from the UI and the log.
+fn flatten_err(op: &str, e: color_eyre::eyre::Report) -> String {
+    tracing::error!(target: "ebman::aws", op = op, error = ?e, "aws call failed");
+    format!("{e}")
 }
 
 fn parse_sort(raw: Option<&str>) -> (SortKey, bool) {
@@ -3488,17 +3645,18 @@ fn bucket_delta<F>(
 where
     F: Fn(&Environment) -> String,
 {
+    // Only count envs present in *both* sides. Disappearing envs aren't a
+    // transition (they just left), and new envs aren't a transition either
+    // (no previous state to compare). This also makes a cleared `prev`
+    // (e.g. after a context switch) produce zero deltas, instead of spamming
+    // +N for every bucket the first time the new context loads.
     let mut prev_counts: BTreeMap<String, i32> = BTreeMap::new();
     let mut next_counts: BTreeMap<String, i32> = BTreeMap::new();
-    // Only count envs present in both — disappearing envs don't count as deltas.
-    let live_names: HashSet<&str> = next.iter().map(|e| e.name.as_str()).collect();
-    for (name, bucket) in prev {
-        if live_names.contains(name.as_str()) {
-            *prev_counts.entry(bucket.clone()).or_insert(0) += 1;
-        }
-    }
     for e in next {
-        *next_counts.entry(accessor(e)).or_insert(0) += 1;
+        if let Some(prev_bucket) = prev.get(&e.name) {
+            *prev_counts.entry(prev_bucket.clone()).or_insert(0) += 1;
+            *next_counts.entry(accessor(e)).or_insert(0) += 1;
+        }
     }
     let mut keys: BTreeMap<String, ()> = BTreeMap::new();
     for k in prev_counts.keys().chain(next_counts.keys()) {
@@ -3766,9 +3924,33 @@ fn write_audit_entry(
         Some(other) => format!("{env} ↔ {other}"),
         None => env.to_string(),
     };
-    let detail = format!("action={:?} target={target}", action);
+    let detail = format!("stage=dispatched action={action:?} target={target}");
     write_audit_line(account, profile, region, &detail);
 }
+
+/// Log the outcome of a dispatched action. Called once the SDK response lands
+/// so that the audit trail reflects what AWS actually did, not just what we
+/// asked it to do.
+fn write_audit_outcome(
+    account: Option<&str>,
+    profile: Option<&str>,
+    region: &str,
+    action: Action,
+    env: &str,
+    result: Result<(), &str>,
+) {
+    let outcome = match result {
+        Ok(()) => "ok".to_string(),
+        Err(e) => format!("err=\"{}\"", e.replace('"', "'")),
+    };
+    let detail = format!("stage=completed action={action:?} target={env} {outcome}");
+    write_audit_line(account, profile, region, &detail);
+}
+
+/// Soft cap on `audit.log` size before we rotate to `audit.log.1` (single
+/// historical backup, older history is discarded). 1 MiB ≈ ~5k action entries,
+/// plenty for an interactive operator tool.
+const AUDIT_LOG_MAX_BYTES: u64 = 1 << 20;
 
 fn write_audit_line(
     account: Option<&str>,
@@ -3781,6 +3963,7 @@ fn write_audit_line(
         return;
     }
     let path = dir.join("audit.log");
+    rotate_if_oversize(&path, AUDIT_LOG_MAX_BYTES);
     let when = chrono::Utc::now().to_rfc3339();
     let line = format!(
         "{when}\taccount={}\tprofile={}\tregion={}\t{detail}\n",
@@ -3796,6 +3979,23 @@ fn write_audit_line(
     {
         let _ = f.write_all(line.as_bytes());
     }
+}
+
+/// If `path` exists and is larger than `max_bytes`, move it to `path.1`
+/// (overwriting any previous backup) so the next write starts a fresh file.
+/// Best-effort: any I/O error is swallowed — we don't want to lose the audit
+/// entry just because rotation failed.
+fn rotate_if_oversize(path: &std::path::Path, max_bytes: u64) {
+    let Ok(meta) = std::fs::metadata(path) else { return };
+    if meta.len() <= max_bytes {
+        return;
+    }
+    let backup = {
+        let mut name = path.file_name().map(|s| s.to_os_string()).unwrap_or_default();
+        name.push(".1");
+        path.with_file_name(name)
+    };
+    let _ = std::fs::rename(path, backup);
 }
 
 fn console_url(region: &str, app_name: &str, env_name: &str) -> String {
@@ -4049,6 +4249,37 @@ mod tests {
     }
 
     #[test]
+    fn rotate_if_oversize_renames_when_too_big() {
+        let dir = std::env::temp_dir().join(format!("ebman-rotate-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("audit.log");
+        let backup = dir.join("audit.log.1");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&backup);
+        // Write 100 bytes; rotation threshold = 50.
+        std::fs::write(&path, vec![b'x'; 100]).unwrap();
+        rotate_if_oversize(&path, 50);
+        assert!(!path.exists(), "current file should have been renamed");
+        assert!(backup.exists(), "rotated backup should now exist");
+        let _ = std::fs::remove_file(&backup);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn rotate_if_oversize_leaves_small_files_alone() {
+        let dir = std::env::temp_dir().join(format!("ebman-rotate-small-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("audit.log");
+        let _ = std::fs::remove_file(&path);
+        std::fs::write(&path, b"tiny").unwrap();
+        rotate_if_oversize(&path, 1_000);
+        assert!(path.exists());
+        assert!(!dir.join("audit.log.1").exists());
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
     fn shell_quote_passes_safe_chars_unchanged() {
         assert_eq!(shell_quote("safe-Name_1.0"), "safe-Name_1.0");
         assert_eq!(shell_quote("with space"), "'with space'");
@@ -4127,15 +4358,28 @@ mod tests {
         let next = vec![
             fake_env("a", "Ready", "Yellow", "v1"), // Green → Yellow: −1 Green, +1 Yellow
             fake_env("b", "Ready", "Red", "v1"),    // Red → Red: no change
-            fake_env("d", "Ready", "Green", "v1"),  // new env: counts as +1 Green
+            fake_env("d", "Ready", "Green", "v1"),  // new env: ignored (no prev state)
         ];
         let delta = bucket_delta(&prev, &next, |e| e.health.clone());
         let map: BTreeMap<String, i32> = delta.into_iter().collect();
-        // c disappeared; doesn't show. a went Green→Yellow: Green −1, Yellow +1.
-        // d is new with Green: +1 Green. Net Green: 0; should be filtered.
-        assert_eq!(map.get("Green").copied(), None);
+        // Only env `a` transitions: −1 Green, +1 Yellow. b unchanged; c disappeared (ignored); d is new (ignored).
+        assert_eq!(map.get("Green").copied(), Some(-1));
         assert_eq!(map.get("Yellow").copied(), Some(1));
-        assert_eq!(map.get("Red").copied(), None); // unchanged
+        assert_eq!(map.get("Red").copied(), None);
+    }
+
+    #[test]
+    fn bucket_delta_empty_prev_yields_no_deltas() {
+        // Regression: when prev_health is cleared (e.g. on context switch),
+        // the delta against the new env list should produce nothing. Otherwise
+        // every env shows up as a transition.
+        let prev = HashMap::new();
+        let next = vec![
+            fake_env("a", "Ready", "Green", "v1"),
+            fake_env("b", "Ready", "Red", "v1"),
+        ];
+        let delta = bucket_delta(&prev, &next, |e| e.health.clone());
+        assert!(delta.is_empty(), "expected no deltas with empty prev, got {delta:?}");
     }
 
     #[test]

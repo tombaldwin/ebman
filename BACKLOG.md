@@ -173,11 +173,29 @@ Living list of done / pending / dropped work. New entries get added at the botto
 - Toast notifications: bottom-right transient cards (rounded, kind-coloured border) replace the footer-only feedback for status / error events; up to 4 stacked; auto-dismiss (4 s info / 8 s error); animation ticker wakes the draw loop so toasts disappear on idle
 - `Ctrl-K` command palette: fuzzy-search across `:` commands (no-arg / with-arg), env names (jump cursor), saved views, and user plugins; substring scoring with detail-match penalty; ↑/↓ navigate, Enter dispatches, Esc cancels
 
+### Code review follow-ups (2026-05-18)
+- Async per-env results carry `env_name`; `AppMsg::Alarms` now drops late results that don't match the requested env. Removed silent overwrite of overlay contents by stale results.
+- Overlay rendering routed through the same code path for Detail / Dlq / main views — popups opened from Detail (`D` describe) now actually paint.
+- Mouse events only steer the main table in Normal mode + Envs scope + no overlay open. Wheel scroll no longer silently moves selection while Detail / Dlq / Action / Palette is visible.
+- Diff state (`prev_health`, `prev_status`, `prev_alerts`, `newly_red`, `health_delta`, `status_delta`) and any open overlay are cleared on profile/region switch. Prevents cross-account "newly red" toasts and ▲N spam on the first refresh after a switch.
+- `bucket_delta` semantics tightened: only counts envs present in *both* prev and next. New envs and disappeared envs are not deltas. With an empty prev (post-clear) the delta is empty.
+- `init_client` makes `verify_identity` best-effort — `sts:GetCallerIdentity` failure logs a startup warning instead of refusing to launch. EB describe permissions don't require STS.
+- `status_message` race fixed: `apply_refresh` only clears messages that still match the snapshot taken at refresh kickoff. User actions during the round-trip (sort, alias, pin, …) survive.
+- Audit log captures dispatch + outcome — `write_audit_outcome` writes a second entry once the SDK response lands, so the trail reflects success / validation error / timeout, not just the dispatch time.
+- `hsl_to_rgb_clamps_to_valid_range` test asserts real properties: hue wrap, greyscale collapse on zero saturation. No more `let _ = r;`.
+- Plugin name collisions surface — `plugins::parse` takes a reserved-name list; colliding entries are dropped with a warning logged via tracing and shown as a startup error in the UI.
+- `flatten_err` helper logs the full SDK error chain via `tracing::error!` before flattening to Display for the toast / footer. The chain is no longer lost from `ebman.log`.
+- Toast deduplication: identical (kind + text) toasts refresh the existing card's timestamp instead of stacking duplicates.
+- Overlay enum: replaced six `Option<String>` fields and one `alarms_pending_for` correlation field with a single `current_overlay: Option<Overlay>`. Unified dismiss, render, and context-switch-close paths.
+- `LICENSE-MIT` / `LICENSE-APACHE` files committed; `Cargo.toml` declares `readme = "README.md"`; `.gitignore` covers macOS / editor / cache patterns.
+- Audit log + crash report rotation: `audit.log` rotates to `audit.log.1` at 1 MiB; crash hook prunes oldest `crash-*.log` files keeping the 10 most recent.
+
 ---
 
 ## Backlog
 
 Tier definitions:
+- **Refactors** — structural / design tightening surfaced by code review.
 - **Tier 0** — distribution & hygiene before shipping publicly.
 - **Tier 1** — blocks daily-driver replacement of the AWS console.
 - **Tier 2** — UX patterns directly borrowed from e1s / lazygit / lazydocker.
@@ -189,6 +207,12 @@ Tier definitions:
 - **Tier 8** — maybe / unprioritised; not committed to scope.
 
 Items list `Depends on:` only when another backlog or done item is a real prerequisite.
+
+### Refactors — structural cleanup remaining
+
+- [ ] **Split `src/app.rs` (4400+ lines, ~50 fields)** — `handle_key` is a flat dispatch across 10+ modes; the file is past the point where one branch can be changed confidently without reading the others. Extract per-mode handlers into their own modules (`mode_detail.rs`, `mode_dlq.rs`, `mode_action.rs`, …); action-flow state machine into `action.rs`; DLQ state machine into `dlq.rs`; persistence / `rebuild_view` into `view.rs`.
+- [ ] **Memoize per-env colour HashMap in `draw_table`** — rebuilt every render; cheap individually, painful at 30 fps in a wide list. Memoize on env-list identity (length + last-modified seq).
+- [ ] **Throttle / backoff for EB describe APIs** — a user with ~200 envs and a 5 s refresh interval will hit per-account rate limits; currently surfaces as a generic error toast. Detect `ThrottlingException`, back off the refresh interval, surface state to the user.
 
 ### Tier 0 — distribution & hygiene
 - [ ] **README screenshots / demo gif** — text README shipped; capturing screenshots requires running the TUI in a real terminal (not this shell).

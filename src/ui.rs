@@ -14,7 +14,7 @@ use ratatui::{
 
 use crate::theme::{IconStyle, Theme};
 
-use crate::app::{App, Action, ActionFlow, ConfirmKind, DetailTab, DisplayRow, LoadState, Mode, Scope, SortKey, ToastKind, ViewMode, ACTIONS};
+use crate::app::{App, Action, ActionFlow, ConfirmKind, DetailTab, DisplayRow, LoadState, Mode, Overlay, Scope, SortKey, ToastKind, ViewMode, ACTIONS};
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const ASCII_SPINNER: &[&str] = &["|", "/", "-", "\\"];
@@ -119,42 +119,44 @@ const SPARKLINE_WIDTH: usize = 20;
 const DIVIDER_FILL_WIDTH: usize = 200;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
+    // Background — Dlq / Detail use a full-screen alternative layout; otherwise
+    // draw the main header + table + events + footer.
     if app.mode == Mode::Dlq && app.dlq.is_some() {
         draw_dlq(f, f.area(), app);
-        return;
-    }
-    if app.mode == Mode::Detail && app.detail.is_some() {
+    } else if app.mode == Mode::Detail && app.detail.is_some() {
         draw_detail(f, f.area(), app);
-        return;
-    }
-
-    let events_height: u16 = if app.events_visible { app.events_panel_height } else { 0 };
-    let mut constraints: Vec<Constraint> = vec![
-        Constraint::Length(5),
-        Constraint::Min(3),
-    ];
-    if events_height > 0 {
-        constraints.push(Constraint::Length(events_height));
-    }
-    constraints.push(Constraint::Length(2));
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(constraints)
-        .split(f.area());
-
-    draw_header(f, chunks[0], app);
-    match app.scope {
-        Scope::Envs => draw_table(f, chunks[1], app),
-        Scope::Apps => draw_apps_table(f, chunks[1], app),
-    }
-    if app.events_visible {
-        draw_events(f, chunks[2], app);
-        draw_footer(f, chunks[3], app);
     } else {
-        draw_footer(f, chunks[2], app);
+        let events_height: u16 = if app.events_visible { app.events_panel_height } else { 0 };
+        let mut constraints: Vec<Constraint> = vec![
+            Constraint::Length(5),
+            Constraint::Min(3),
+        ];
+        if events_height > 0 {
+            constraints.push(Constraint::Length(events_height));
+        }
+        constraints.push(Constraint::Length(2));
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(constraints)
+            .split(f.area());
+
+        draw_header(f, chunks[0], app);
+        match app.scope {
+            Scope::Envs => draw_table(f, chunks[1], app),
+            Scope::Apps => draw_apps_table(f, chunks[1], app),
+        }
+        if app.events_visible {
+            draw_events(f, chunks[2], app);
+            draw_footer(f, chunks[3], app);
+        } else {
+            draw_footer(f, chunks[2], app);
+        }
     }
 
+    // Overlays and modal popups — paint on top of whichever background was
+    // drawn above. Keeping these unconditional means a `D`-press from Detail
+    // still surfaces the describe overlay; previously the early return swallowed it.
     if app.mode == Mode::Help {
         draw_help(f, f.area(), app);
     }
@@ -164,23 +166,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.mode == Mode::Action {
         draw_action(f, f.area(), app);
     }
-    if app.describe_overlay.is_some() {
-        draw_describe(f, f.area(), app);
-    }
-    if app.whatsnew_overlay.is_some() {
-        draw_whatsnew(f, f.area(), app);
-    }
-    if app.history_overlay.is_some() {
-        draw_history_overlay(f, f.area(), app);
-    }
-    if app.alarms_overlay.is_some() {
-        draw_alarms_overlay(f, f.area(), app);
-    }
-    if app.diff_overlay.is_some() {
-        draw_diff_overlay(f, f.area(), app);
-    }
-    if app.saved_configs_overlay.is_some() {
-        draw_saved_configs_overlay(f, f.area(), app);
+    if let Some(overlay) = app.current_overlay.clone() {
+        match overlay {
+            Overlay::Describe(text) => draw_describe(f, f.area(), app, &text),
+            Overlay::Whatsnew(text) => draw_whatsnew(f, f.area(), app, &text),
+            Overlay::History(text) => draw_history_overlay(f, f.area(), app, &text),
+            Overlay::Alarms { body, .. } => draw_alarms_overlay(f, f.area(), app, &body),
+            Overlay::Diff(text) => draw_diff_overlay(f, f.area(), app, &text),
+            Overlay::SavedConfigs(text) => draw_saved_configs_overlay(f, f.area(), app, &text),
+        }
     }
     if app.mode == Mode::Palette {
         draw_palette(f, f.area(), app);
@@ -313,8 +307,7 @@ fn draw_toasts(f: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-fn draw_saved_configs_overlay(f: &mut Frame, area: Rect, app: &App) {
-    let Some(text) = app.saved_configs_overlay.as_deref() else { return };
+fn draw_saved_configs_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
     let popup = centered_rect(60, 70, area);
     f.render_widget(Clear, popup);
     let theme = &app.theme;
@@ -347,8 +340,7 @@ fn draw_saved_configs_overlay(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(p, popup);
 }
 
-fn draw_diff_overlay(f: &mut Frame, area: Rect, app: &App) {
-    let Some(text) = app.diff_overlay.as_deref() else { return };
+fn draw_diff_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
     let popup = centered_rect(80, 70, area);
     f.render_widget(Clear, popup);
     let theme = &app.theme;
@@ -374,8 +366,7 @@ fn draw_diff_overlay(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(p, popup);
 }
 
-fn draw_alarms_overlay(f: &mut Frame, area: Rect, app: &App) {
-    let Some(text) = app.alarms_overlay.as_deref() else { return };
+fn draw_alarms_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
     let popup = centered_rect(70, 70, area);
     f.render_widget(Clear, popup);
     let theme = &app.theme;
@@ -406,8 +397,7 @@ fn draw_alarms_overlay(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(p, popup);
 }
 
-fn draw_history_overlay(f: &mut Frame, area: Rect, app: &App) {
-    let Some(text) = app.history_overlay.as_deref() else { return };
+fn draw_history_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
     let popup = centered_rect(60, 70, area);
     f.render_widget(Clear, popup);
     let lines: Vec<Line> = text
@@ -423,8 +413,7 @@ fn draw_history_overlay(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(p, popup);
 }
 
-fn draw_whatsnew(f: &mut Frame, area: Rect, app: &App) {
-    let Some(text) = app.whatsnew_overlay.as_deref() else { return };
+fn draw_whatsnew(f: &mut Frame, area: Rect, app: &App, text: &str) {
     let popup = centered_rect(60, 70, area);
     f.render_widget(Clear, popup);
     let lines: Vec<Line> = text
@@ -440,8 +429,7 @@ fn draw_whatsnew(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(p, popup);
 }
 
-fn draw_describe(f: &mut Frame, area: Rect, app: &App) {
-    let Some(text) = app.describe_overlay.as_deref() else { return };
+fn draw_describe(f: &mut Frame, area: Rect, app: &App, text: &str) {
     let popup = centered_rect(60, 70, area);
     f.render_widget(Clear, popup);
     let lines: Vec<Line> = text

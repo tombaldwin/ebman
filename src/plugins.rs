@@ -9,12 +9,20 @@ pub struct Plugin {
     pub description: Option<String>,
 }
 
-pub fn load() -> BTreeMap<String, Plugin> {
+/// Result of parsing `commands.toml`: the keep-list plus any warnings the user
+/// should know about (collisions with built-ins, missing templates, …).
+#[derive(Debug, Default, Clone)]
+pub struct Loaded {
+    pub plugins: BTreeMap<String, Plugin>,
+    pub warnings: Vec<String>,
+}
+
+pub fn load(reserved: &[&str]) -> Loaded {
     let path = config_file("commands.toml");
     let Ok(text) = std::fs::read_to_string(&path) else {
-        return BTreeMap::new();
+        return Loaded::default();
     };
-    parse(&text)
+    parse(&text, reserved)
 }
 
 /// Parse a minimal TOML subset specific to `commands.toml`:
@@ -28,7 +36,12 @@ pub fn load() -> BTreeMap<String, Plugin> {
 /// Other sections / keys are silently ignored. Quoted strings only; no
 /// multi-line or triple-quoted strings. This keeps the parser tiny and
 /// matches what real users will hand-write.
-pub fn parse(text: &str) -> BTreeMap<String, Plugin> {
+///
+/// `reserved` is the set of names already claimed by built-in `:commands`. Any
+/// plugin defined with a colliding name is dropped, and a warning is recorded
+/// in [`Loaded::warnings`] so the app can surface it to the user instead of
+/// silently picking the built-in.
+pub fn parse(text: &str, reserved: &[&str]) -> Loaded {
     let mut out: BTreeMap<String, Plugin> = BTreeMap::new();
     let mut current_name: Option<String> = None;
     for raw in text.lines() {
@@ -53,9 +66,24 @@ pub fn parse(text: &str) -> BTreeMap<String, Plugin> {
             _ => {}
         }
     }
+    let mut warnings = Vec::new();
     // Drop entries without templates.
-    out.retain(|_, p| !p.template.is_empty());
-    out
+    out.retain(|name, p| {
+        if p.template.is_empty() {
+            warnings.push(format!(
+                "plugin '{name}' has no template — skipped"
+            ));
+            return false;
+        }
+        if reserved.contains(&name.as_str()) {
+            warnings.push(format!(
+                "plugin '{name}' collides with a built-in :{name} command — skipped"
+            ));
+            return false;
+        }
+        true
+    });
+    Loaded { plugins: out, warnings }
 }
 
 /// Substitute `{name}`, `{cname}`, `{application}`, `{tier}`, `{region}`,
@@ -95,12 +123,14 @@ template = "curl https://{cname}/_warm"
 template = "ssh ec2-user@{cname}"
 description = "shell into one instance"
 "#;
-        let p = parse(text);
+        let loaded = parse(text, &[]);
+        let p = &loaded.plugins;
         assert_eq!(p.len(), 2);
         assert_eq!(p["warm-cache"].template, "curl https://{cname}/_warm");
         assert!(p["warm-cache"].description.is_none());
         assert_eq!(p["ssh"].template, "ssh ec2-user@{cname}");
         assert_eq!(p["ssh"].description.as_deref(), Some("shell into one instance"));
+        assert!(loaded.warnings.is_empty());
     }
 
     #[test]
@@ -109,8 +139,42 @@ description = "shell into one instance"
 [commands.broken]
 description = "no template here"
 "#;
-        let p = parse(text);
-        assert!(p.is_empty());
+        let loaded = parse(text, &[]);
+        assert!(loaded.plugins.is_empty());
+        assert_eq!(loaded.warnings.len(), 1);
+        assert!(loaded.warnings[0].contains("broken"));
+    }
+
+    #[test]
+    fn parse_drops_and_warns_on_builtin_collision() {
+        let text = r#"
+[commands.refresh]
+template = "echo hijacked"
+
+[commands.warm]
+template = "echo ok"
+"#;
+        let loaded = parse(text, &["refresh", "quit"]);
+        assert!(loaded.plugins.contains_key("warm"));
+        assert!(!loaded.plugins.contains_key("refresh"));
+        assert!(loaded
+            .warnings
+            .iter()
+            .any(|w| w.contains("refresh") && w.contains("built-in")));
+    }
+
+    #[test]
+    fn parse_uses_default_template_when_only_description_after_collision() {
+        // Sanity check: entries that survive the collision filter still need a template.
+        let text = r#"
+[commands.empty]
+description = "no template here"
+[commands.ok]
+template = "echo"
+"#;
+        let loaded = parse(text, &[]);
+        assert_eq!(loaded.plugins.len(), 1);
+        assert!(loaded.plugins.contains_key("ok"));
     }
 
     #[test]
