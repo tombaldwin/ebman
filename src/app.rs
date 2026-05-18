@@ -1516,7 +1516,13 @@ impl App {
 
     fn handle_event(&mut self, event: Event) {
         match event {
-            Event::Key(key) if key.kind == KeyEventKind::Press => self.handle_key(key),
+            // Press AND Repeat — the latter fires when the user holds a
+            // key (Backspace to delete a line, arrow to scroll). Repeat
+            // events were previously dropped, which felt like "the key
+            // isn't working" inside the embedded shell pane.
+            Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
+                self.handle_key(key)
+            }
             Event::Mouse(m) => self.handle_mouse(m),
             _ => {}
         }

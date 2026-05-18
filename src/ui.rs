@@ -3383,33 +3383,30 @@ fn draw_shell(f: &mut Frame, area: Rect, app: &mut App) {
         return;
     };
     let theme = &app.theme;
-    let chunks = Layout::default()
+    let footer_rows: u16 = 1;
+    let outer_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Min(1),
-            Constraint::Length(1),
-        ])
+        .constraints([Constraint::Min(1), Constraint::Length(footer_rows)])
         .split(area);
-
-    // Title bar: pane label + detach hint.
-    let header = Line::from(vec![
-        Span::styled(
-            format!(" ⌥ {} ", shell.label),
+    // Bordered block holds the shell content with a title bar — gives
+    // the subprocess natural breathing room (the border eats 1 row at top
+    // and bottom, 1 col at left and right) and keeps the pane label
+    // visible without crowding the first line of output.
+    let title_text = format!(" ⌥ {}    F12 detach    ^D / exit close ", shell.label);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.title))
+        .title(Span::styled(
+            title_text,
             Style::default()
                 .fg(theme.title)
                 .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            "   F12 detach   ^D / exit  close",
-            Style::default().fg(theme.muted),
-        ),
-    ]);
-    f.render_widget(Paragraph::new(header), chunks[0]);
-
-    let body = chunks[1];
-    // Resize the PTY to fit the current body so the subprocess gets a
-    // sensible TIOCSWINSZ on terminal resize.
+        ));
+    let body = block.inner(outer_chunks[0]);
+    f.render_widget(block, outer_chunks[0]);
+    // Resize the PTY to fit the available body area so the subprocess
+    // gets a sensible TIOCSWINSZ on terminal resize.
     shell.resize(body.height, body.width);
 
     // Lock the parser and walk the visible cells. We render into the
@@ -3463,7 +3460,7 @@ fn draw_shell(f: &mut Frame, area: Rect, app: &mut App) {
         " SHELL  keys forwarded to subprocess  ·  F12 detach  ·  ^D / exit closes ",
         Style::default().fg(theme.muted),
     ));
-    f.render_widget(Paragraph::new(footer), chunks[2]);
+    f.render_widget(Paragraph::new(footer), outer_chunks[1]);
 }
 
 /// Map a vt100 cell colour to a ratatui Color. vt100 distinguishes
