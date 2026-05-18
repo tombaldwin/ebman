@@ -1049,7 +1049,11 @@ impl App {
         Ok(app)
     }
 
-    pub async fn run(&mut self, terminal: &mut Tui) -> Result<()> {
+    pub async fn run(
+        &mut self,
+        terminal: &mut Tui,
+        mut control_rx: Option<mpsc::UnboundedReceiver<crate::control::ControlOp>>,
+    ) -> Result<()> {
         let mut events = EventStream::new();
         let mut ticker = tokio::time::interval(self.refresh_interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1108,6 +1112,14 @@ impl App {
                 }
                 Some(msg) = self.msg_rx.recv() => {
                     self.handle_msg(msg);
+                }
+                Some(op) = async {
+                    match control_rx.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    self.handle_control_op(op, terminal);
                 }
             }
 
@@ -1789,6 +1801,54 @@ impl App {
             _ => return None,
         };
         self.custom_keys.bindings.get(&spec).cloned()
+    }
+
+    /// Apply a `ControlOp` received over the control socket. Snapshot ops
+    /// read the terminal's current back-buffer; key/command ops dispatch
+    /// through the normal handlers so all existing bindings still apply.
+    fn handle_control_op(&mut self, op: crate::control::ControlOp, terminal: &mut Tui) {
+        use crate::control::ControlOp;
+        match op {
+            ControlOp::Screen(reply) => {
+                let text = crate::control::render_buffer_as_text(terminal.current_buffer_mut());
+                let _ = reply.send(text);
+            }
+            ControlOp::Key(ke) => {
+                self.handle_event(Event::Key(ke));
+            }
+            ControlOp::Command(text) => {
+                self.execute_command(&text);
+            }
+            ControlOp::State(reply) => {
+                let selected = self
+                    .selected_env()
+                    .map(|e| e.name.clone())
+                    .unwrap_or_default();
+                let env_count = self.environments.len();
+                let load = match self.load_state {
+                    LoadState::Idle => "idle",
+                    LoadState::Loading => "loading",
+                    LoadState::Error => "error",
+                };
+                let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+                let json = format!(
+                    "{{\"mode\":\"{:?}\",\"profile\":\"{}\",\"region\":\"{}\",\"account\":\"{}\",\"envs\":{},\"selected\":\"{}\",\"filter\":\"{}\",\"load\":\"{}\",\"sort\":\"{}\",\"grouped\":{},\"redact\":{},\"focus\":\"{:?}\"}}",
+                    self.mode,
+                    esc(self.context.profile.as_deref().unwrap_or("")),
+                    esc(&self.context.region),
+                    esc(self.context.account_id.as_deref().unwrap_or("")),
+                    env_count,
+                    esc(&selected),
+                    esc(&self.filter),
+                    load,
+                    self.sort_key.label(),
+                    self.grouped,
+                    self.redact,
+                    self.focus,
+                );
+                let _ = reply.send(json);
+            }
+        }
     }
 
     fn manual_refresh(&mut self) {

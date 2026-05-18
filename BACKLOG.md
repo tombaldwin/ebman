@@ -222,6 +222,10 @@ Living list of done / pending / dropped work. New entries get added at the botto
 - **`ebman action <rebuild|restart|terminate> --env NAME [--yes]`** dispatches an action without entering the TUI. Terminate requires `--yes`.
 - `--help` updated to document subcommands; `--version`, `-h`, `-V`, `--read-only` flags continue to work.
 
+### Remote control plane
+- **`--control-socket PATH`** — when set, ebman opens a Unix socket at PATH with 0600 perms and accepts one-shot requests: `SCREEN` (plain-text dump of the current frame from the ratatui back-buffer), `KEY <spec>` (synthesised key event injected via `handle_event`; spec supports Ctrl/Shift/Alt + arrows / Enter / F1-12 / single chars / `Char(x)`), `CMD <text>` (runs a `:` command), `STATE` (flat JSON with mode / profile / region / account / envs / selected / load / sort / grouped / redact / focus).
+- **`ebman ctl <op>` subcommand** — one-shot client; defaults to `~/.cache/ebman/control.sock`; override with `--socket PATH`. Examples: `ebman ctl screen`, `ebman ctl key Down`, `ebman ctl key Ctrl+R`, `ebman ctl cmd ":region eu-west-2"`, `ebman ctl state`.
+
 ### Distribution + remaining bits
 - **Custom Platforms list**: `:custom-platforms` (alias `:platforms`) fetches `ListPlatformVersions` filtered to `PlatformOwner=self` and surfaces ARN / branch / version / status / lifecycle in an overlay.
 - **GitHub Actions release workflow**: `.github/workflows/release.yml` triggers on `v*` tags, builds `x86_64-unknown-linux-gnu` / `aarch64-apple-darwin` / `x86_64-apple-darwin` release binaries, tarballs each with README + LICENSE files, attaches them + SHA-256 checksums to a draft GitHub Release.

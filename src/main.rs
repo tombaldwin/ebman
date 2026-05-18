@@ -1,6 +1,7 @@
 mod app;
 mod aws;
 mod config;
+mod control;
 mod keys;
 mod plugins;
 mod profiles;
@@ -36,17 +37,20 @@ type Tui = Terminal<CrosstermBackend<Stdout>>;
 async fn main() -> Result<()> {
     // Handle CLI flags before any TUI / logging setup so they print cleanly.
     let mut read_only = false;
+    let mut control_socket: Option<std::path::PathBuf> = None;
     let args: Vec<String> = std::env::args().skip(1).collect();
-    // Subcommand support: `ebman envs [--json]`, `ebman action ACTION --env NAME --yes`.
-    // Falls through to the TUI when no subcommand is present.
+    // Subcommand support: `ebman envs [--json]`, `ebman action ACTION --env NAME --yes`,
+    // `ebman ctl <op> …`. Falls through to the TUI when no subcommand is present.
     if let Some(first) = args.first() {
         match first.as_str() {
             "envs" => return run_envs_cli(&args).await,
             "action" => return run_action_cli(&args).await,
+            "ctl" => return run_ctl_cli(&args).await,
             _ => {}
         }
     }
-    for arg in &args {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--version" | "-V" => {
                 println!("ebman {}", env!("CARGO_PKG_VERSION"));
@@ -57,6 +61,13 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
             "--read-only" => read_only = true,
+            "--control-socket" => {
+                control_socket = iter.next().map(std::path::PathBuf::from);
+                if control_socket.is_none() {
+                    eprintln!("ebman: --control-socket requires a path argument");
+                    std::process::exit(2);
+                }
+            }
             other if other.starts_with('-') => {
                 eprintln!("ebman: unknown flag {other}\n");
                 print_help();
@@ -102,7 +113,16 @@ async fn main() -> Result<()> {
     };
     app_inst.read_only = read_only;
     app_inst.log_reload = Some(log_handle);
-    let result = app_inst.run(&mut terminal).await;
+
+    // Optional control socket. Spawn the listener *after* the splash so the
+    // socket is guaranteed to exist by the time the user can issue commands.
+    let control_rx = control_socket.map(|path| {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        control::spawn_listener(path, tx);
+        rx
+    });
+
+    let result = app_inst.run(&mut terminal, control_rx).await;
     leave_tui(&mut terminal)?;
     result
 }
@@ -118,14 +138,18 @@ USAGE:
     ebman [FLAGS]
 
 FLAGS:
-    -V, --version    Print version and exit.
-    -h, --help       Print this help and exit.
-        --read-only  Start with destructive actions disabled (also toggleable with :readonly).
+    -V, --version           Print version and exit.
+    -h, --help              Print this help and exit.
+        --read-only         Start with destructive actions disabled (also toggleable with :readonly).
+        --control-socket P  Open a Unix socket at P for remote control (off by default).
+                            Pair with `ebman ctl <op>` to drive the running session.
 
 SUBCOMMANDS:
     envs [--json]                                List environments in current profile / region.
     action ACTION --env NAME [--yes]             Run an action (rebuild|restart|terminate) on an env.
                                                   Terminate requires --yes to confirm.
+    ctl <screen|key|cmd|state> [args]            Talk to a running ebman via --control-socket.
+                                                  Use --socket PATH to override the default location.
 
 CONFIG:
     ~/.config/ebman/config.toml   user configuration (see README)
@@ -223,6 +247,62 @@ async fn run_action_cli(args: &[String]) -> Result<()> {
             std::process::exit(1);
         }
     }
+}
+
+/// Subcommand: `ebman ctl <op> [args] [--socket PATH]`. Opens a one-shot Unix
+/// socket connection to a running ebman process and prints the response.
+async fn run_ctl_cli(args: &[String]) -> Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::UnixStream;
+    let mut socket_path = control::default_socket_path();
+    let mut rest: Vec<&str> = Vec::new();
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == "--socket" {
+            if let Some(p) = iter.next() {
+                socket_path = std::path::PathBuf::from(p);
+            } else {
+                eprintln!("ebman ctl: --socket requires a path");
+                std::process::exit(2);
+            }
+        } else {
+            rest.push(arg.as_str());
+        }
+    }
+    if rest.is_empty() {
+        eprintln!(
+            "usage: ebman ctl <screen|key|cmd|state> [args]  [--socket PATH]\n\
+             examples:\n  ebman ctl screen\n  ebman ctl key Down\n  ebman ctl key Ctrl+R\n  \
+             ebman ctl cmd region eu-west-2\n  ebman ctl state"
+        );
+        std::process::exit(2);
+    }
+    let head = rest[0].to_ascii_uppercase();
+    let body = rest[1..].join(" ");
+    let request = if body.is_empty() {
+        head
+    } else {
+        format!("{head} {body}")
+    };
+    let mut stream = UnixStream::connect(&socket_path).await.map_err(|e| {
+        color_eyre::eyre::eyre!(
+            "ebman ctl: connect to {} failed: {e}\n  hint: start ebman with `--control-socket {}`",
+            socket_path.display(),
+            socket_path.display()
+        )
+    })?;
+    stream.write_all(request.as_bytes()).await?;
+    stream.write_all(b"\n").await?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await?;
+    print!("{response}");
+    if !response.ends_with('\n') {
+        println!();
+    }
+    if response.starts_with("ERR ") {
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 /// Minimal JSON-string escape for CLI output. Mirrors the webhook payload
