@@ -222,6 +222,12 @@ Living list of done / pending / dropped work. New entries get added at the botto
 - **`ebman action <rebuild|restart|terminate> --env NAME [--yes]`** dispatches an action without entering the TUI. Terminate requires `--yes`.
 - `--help` updated to document subcommands; `--version`, `-h`, `-V`, `--read-only` flags continue to work.
 
+### Distribution + remaining bits
+- **Custom Platforms list**: `:custom-platforms` (alias `:platforms`) fetches `ListPlatformVersions` filtered to `PlatformOwner=self` and surfaces ARN / branch / version / status / lifecycle in an overlay.
+- **GitHub Actions release workflow**: `.github/workflows/release.yml` triggers on `v*` tags, builds `x86_64-unknown-linux-gnu` / `aarch64-apple-darwin` / `x86_64-apple-darwin` release binaries, tarballs each with README + LICENSE files, attaches them + SHA-256 checksums to a draft GitHub Release.
+- **Homebrew formula template**: `Formula/ebman.rb` installable via `brew install --formula ./Formula/ebman.rb`. The `sha256` fields are stubs — maintainer will need to bump them per release (the release workflow emits the checksums alongside each tarball).
+- **`cargo install` smoke test**: verified locally that `cargo install --path . --locked` builds and produces a `--version`-reporting binary on stock toolchain. The crates.io publish step is still maintainer-driven.
+
 ---
 
 ## Backlog
@@ -259,7 +265,6 @@ Items list `Depends on:` only when another backlog or done item is a real prereq
 - [ ] **Embedded recorder** — record + replay sessions to `.cast` (asciinema). Deferred — needs its own input-capture + replay infrastructure.
 
 ### Tier 8 — maybe / unprioritised
-- [ ] **Custom Platforms** — list `DescribeCustomPlatforms` for accounts that build them.
 - [ ] **Snapshot at a point in time** — "what envs looked like 1h ago" (would need local history).
 
 ---
@@ -269,10 +274,10 @@ Items list `Depends on:` only when another backlog or done item is a real prereq
 Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-line reason. Drop the entry once retried (successfully or with the user's deliberate decision to defer further).
 
 - **README screenshots / demo gif** — autonomous shell has no real TTY; can't render the TUI for capture. Retry from an interactive session.
-- **Deploy a version (Tier 1)** — requires DescribeApplicationVersions + an Application drill-down view; defer.
 - **Option settings editor (Tier 1)** — requires a modal text-input form generator and a category-tree of namespaces; defer.
-- **Multi-region overview (Tier 1)** — requires a parallel-fan-out helper and a REGION column / cross-region context model; defer.
-- **Custom Platforms (Tier 8)** — niche, low value; only relevant to accounts that build custom platforms. Defer until requested.
+- **Split `src/app.rs`** — refactor spans 10+ mode handlers + state machines, exceeds the CLAUDE.md "touches > 3 modules" stop condition. Pick up in a focused session.
+- **Embedded asciinema recorder (Tier 6)** — needs its own input-capture/replay infrastructure; defer.
+- **`sts:AssumeRole`-based account switcher (Tier 4)** — needs an `[accounts]` config schema with role ARNs + credentials injection; defer. The current `:account NAME` aliases `:profile NAME` for the standard one-profile-per-account pattern.
 
 ---
 

@@ -77,6 +77,15 @@ pub struct Application {
 }
 
 #[derive(Clone, Debug)]
+pub struct CustomPlatform {
+    pub arn: String,
+    pub branch: String,
+    pub version: String,
+    pub status: String,
+    pub lifecycle: String,
+}
+
+#[derive(Clone, Debug)]
 pub struct AppVersion {
     pub label: String,
     pub description: String,
@@ -561,6 +570,48 @@ impl AwsClient {
             .await
             .map_err(|e| eyre!("DeleteConfigurationTemplate failed: {e}"))?;
         Ok(())
+    }
+
+    /// List custom EB platforms in this account. Filters server-side via
+    /// `PlatformOwner=self` so we only show platforms the caller built, not
+    /// the AWS-managed ones. Returns the ARN, platform branch name, and
+    /// lifecycle state per entry.
+    pub async fn list_custom_platforms(&self) -> Result<Vec<CustomPlatform>> {
+        use aws_sdk_elasticbeanstalk::types::PlatformFilter;
+        let filter = PlatformFilter::builder()
+            .r#type("PlatformOwner")
+            .operator("=")
+            .values("self")
+            .build();
+        let mut next_token: Option<String> = None;
+        let mut out: Vec<CustomPlatform> = Vec::new();
+        loop {
+            let mut req = self.client.list_platform_versions().filters(filter.clone());
+            if let Some(t) = next_token.clone() {
+                req = req.next_token(t);
+            }
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| eyre!("ListPlatformVersions failed: {e}"))?;
+            for p in resp.platform_summary_list.unwrap_or_default() {
+                out.push(CustomPlatform {
+                    arn: p.platform_arn.unwrap_or_default(),
+                    branch: p.platform_branch_name.unwrap_or_default(),
+                    version: p.platform_version.unwrap_or_default(),
+                    status: p
+                        .platform_status
+                        .map(|s| s.as_str().to_string())
+                        .unwrap_or_default(),
+                    lifecycle: p.platform_lifecycle_state.unwrap_or_default(),
+                });
+            }
+            match resp.next_token {
+                Some(t) if !t.is_empty() => next_token = Some(t),
+                _ => break,
+            }
+        }
+        Ok(out)
     }
 
     /// List application versions for `application_name`, sorted newest-first

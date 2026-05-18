@@ -85,6 +85,8 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "account",
     "find-env",
     "org-health",
+    "custom-platforms",
+    "platforms",
 ];
 
 /// Which on-screen panel is "focused" — i.e. which one j/k/Enter target. The
@@ -3060,6 +3062,49 @@ impl App {
                 Some(r) => self.apply_picker_choice(PickerKind::Region, r.to_string()),
                 None => self.error_message = Some("usage: :region <name> | all | off".into()),
             },
+            "custom-platforms" | "platforms" => {
+                let aws = self.aws.clone();
+                let tx = self.msg_tx.clone();
+                let gen = self.generation;
+                self.status_message = Some("fetching custom platforms…".into());
+                tokio::spawn(async move {
+                    let result = aws
+                        .list_custom_platforms()
+                        .await
+                        .map_err(|e| flatten_err("list_custom_platforms", e));
+                    let body = match result {
+                        Ok(platforms) if platforms.is_empty() => "Custom platforms: none\n\n\
+                             This account hasn't built any custom EB platforms.\n\
+                             `eb platform create` is the usual CLI entry.\n\nesc / q to close"
+                            .to_string(),
+                        Ok(platforms) => {
+                            let lines: Vec<String> = platforms
+                                .iter()
+                                .map(|p| {
+                                    format!(
+                                        "  ▸ {} v{}\n      branch: {}\n      status: {} / lifecycle: {}\n      {}",
+                                        if p.branch.is_empty() { "(unnamed)" } else { &p.branch },
+                                        p.version,
+                                        p.branch,
+                                        p.status,
+                                        p.lifecycle,
+                                        p.arn
+                                    )
+                                })
+                                .collect();
+                            format!(
+                                "Custom platforms ({})\n\
+                                 ─────────────────────\n\n\
+                                 {}\n\nesc / q to close",
+                                platforms.len(),
+                                lines.join("\n\n")
+                            )
+                        }
+                        Err(e) => format!("custom platforms: {e}\n\nesc / q to close"),
+                    };
+                    let _ = tx.send(AppMsg::CrossAccountSearch { gen, body });
+                });
+            }
             "org-health" => {
                 let profiles = crate::profiles::load_profiles();
                 let region = self.context.region.clone();
