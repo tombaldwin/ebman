@@ -1,0 +1,35 @@
+[package]
+name = "ebman"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+description = "k9s-style TUI for AWS Elastic Beanstalk"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/tombaldwin/ebman"
+keywords = ["aws", "elasticbeanstalk", "tui", "ratatui"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+tokio-stream = "0.1"
+futures = "0.3"
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-elasticbeanstalk = "1"
+aws-sdk-sts = "1"
+aws-sdk-sqs = "1"
+aws-sdk-cloudwatch = "1"
+aws-types = "1"
+chrono = "0.4"
+color-eyre = "0.6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+arboard = "3"
+regex = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

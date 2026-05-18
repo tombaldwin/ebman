@@ -1,0 +1,56 @@
+# AI working rules for ebman
+
+This file is read by Claude Code (and similar agents) on session start. Follow it.
+
+## What this project is
+
+`ebman` is a Rust + ratatui TUI for AWS Elastic Beanstalk, k9s-styled. Source under `src/`. Backlog in `BACKLOG.md`. Tests live alongside the code in `#[cfg(test)] mod tests` blocks.
+
+## Mandatory loop for autonomous work
+
+When the user asks for autonomous work (e.g. "run autonomously", "build all the above", "next", or any directive to ship multiple items without per-step approval), you **must**:
+
+1. **Build green before claiming done.** `cargo build` must succeed with no new warnings. `cargo test` must pass. If either fails, fix it before moving on.
+
+2. **Self-review every meaningful change.** After each substantive feature or pass, perform a code review against the changes you made and surface bugs, design issues, dead code, missed edge cases, and inconsistencies. The review goes in your message back to the user — not just internal thinking.
+
+3. **Act on review findings — don't just list them.** Anything you identify in a self-review that is a bug, an inconsistency, dead code, or a borderline-design choice that could be tightened *must be fixed in the same turn*, unless the user has been asked and has explicitly deferred it. "I noticed X but left it" is not acceptable in autonomous mode.
+
+4. **Add tests for new pure logic.** Any new helper / parser / pure function (sorting, filtering, formatting, parsing config, etc.) needs at least one `#[cfg(test)]` test covering happy path and obvious failure modes. Extract pure logic out of UI/event handlers when needed to make it testable.
+
+5. **Update `BACKLOG.md`** when items move from pending → done, or when new items are discovered. Keep the "Done" and "Backlog" sections in sync with reality.
+
+## Stop conditions — skip and continue, don't halt
+
+If an autonomous-mode item hits any of these, **skip it and move to the next item in the run.** Don't halt the whole run; don't ask permission mid-stream. Record the skip in the final summary message so the user can pick it up later.
+
+- A destructive AWS action that wasn't pre-authorised.
+- A refactor that touches more than ~3 modules and isn't clearly required by the current task.
+- A design trade-off with no obvious winner (more than one reasonable shape).
+- Repeated failure on the same compile error after 2 attempts.
+- Any other hard blocker (missing credentials, missing dep, third-party API change, etc.).
+
+The final message must explicitly list **skipped items** alongside what shipped, what was reviewed-and-fixed, and what tests were added. Each skip needs a one-line reason so the user can decide whether to retry or drop it.
+
+## House conventions (don't re-discover by breaking)
+
+- **Match-arm order matters.** Guarded `KeyCode::Char(...) if Ctrl` arms must come before the unguarded `KeyCode::Char(...)` arm for the same character. Compiler does not warn on shadowing here.
+- **State mutations that affect the view (`filter`, `sort_key`, `sort_desc`, `grouped`, `environments`) must call `App::rebuild_view()`.** The cached `cached_filtered` / `cached_display` slices are stale otherwise.
+- **Async-result handlers check `generation`.** Every spawned task carries the generation it was launched at; if the App's `generation` has advanced (context switch) the result is dropped. New `AppMsg` variants must follow this pattern.
+- **No hardcoded colours.** Use `app.theme.*`. Hardcoded `Color::Cyan` / `Color::Gray` is a regression.
+- **No hardcoded paths.** Use `util::config_dir()` / `util::cache_dir()` / `util::config_file(...)`.
+- **No `println!` / `eprintln!` in the running app** — the alternate screen swallows them and they corrupt the TUI. Use `tracing::*` macros; output goes to `~/.cache/ebman/ebman.log`.
+- **The animation ticker is gated on `loading_since.is_some()`.** Don't move work into it that needs to run while idle — add a separate ticker.
+- **`State` and `Config` parsing is in pure `parse(&str)` functions.** Keep the I/O wrappers thin so the parsers stay unit-testable.
+
+## What "done" looks like for each landed item
+
+- Code compiles, no new warnings.
+- All tests pass.
+- New pure logic has tests.
+- `BACKLOG.md` reflects the change.
+- Final message to the user explicitly lists: what shipped, what was reviewed-and-fixed in the same pass, what tests were added, **what was skipped (with one-line reasons)**, and any follow-ups deliberately deferred.
+
+## When not in autonomous mode
+
+When the user is driving step-by-step (asks "what do you think?", "next?", per-item approvals), prefer brief recommendations over large changes. Don't trigger the full mandatory loop above; instead, propose and await direction. Still keep `cargo build` and `cargo test` green at every commit point.

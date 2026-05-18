@@ -1,0 +1,275 @@
+# ebman backlog
+
+Living list of done / pending / dropped work. New entries get added at the bottom of their section. Priority tiers below are loose — pick what fits.
+
+---
+
+## Done
+
+### Core foundation
+- Listing & live refresh: `DescribeEnvironments` with pagination, every 15 s
+- Manual refresh (`Ctrl-R` / `F5`) with debounced loading indicator
+- Generation counter so stale results from previous contexts are dropped
+- Crash-safe panic hook that restores the terminal
+- File logging to `~/.cache/ebman/ebman.log` with `RUST_LOG` env support
+- Boot splash while STS resolves
+
+### Identity & context
+- `Account`, `Region`, `Profile`, `Caller` shown in header
+- `STS GetCallerIdentity` runs async after rebuild (off the hot path)
+- In-app profile picker (`p`) — parses `~/.aws/config` + `~/.aws/credentials`
+- In-app region picker (`r`) — 30 commercial regions + user-defined extras
+- `:region NAME` / `:profile NAME` command-bar entries
+- SSO-friendly hint: rewrites `ExpiredToken` errors into `aws sso login --profile X` instructions
+- Strict-validate profile/region on startup; falls back to env defaults if invalid
+
+### Table view
+- Columns: NAME / APPLICATION / TIER / STATUS / ● / TREND / PLATFORM / VERSION / CNAME / AGE
+- Sort cycling (`s` / `S`) — order matches column order in the UI
+- Filter mode (`/`) — case-insensitive, multi-field
+- Group-by-application (`Ctrl-G`) — coloured horizontal partitions between groups
+- Stable, sequential per-app colour assignment from a 16-colour palette
+- Zebra striping that counts Env rows only (separators don't break the cadence)
+- Severity row tint (Red / Yellow envs get tinted backgrounds)
+- Mouse: wheel scroll, left-click to select, hover tints the row
+- In-memory health sparkline per env (last 20 samples; oldest 1/3 dim)
+- Status / tier rendered as coloured "pills"; health rendered as `●` dot (or `*` in ASCII)
+- View-mode toggle (`Ctrl-D`) cycles default / compact
+
+### Drill-down
+- `Enter` opens a per-env Detail view; `Esc` returns
+- Tabs: **Events / Instances / Metrics / Queue (Worker only) / Config**
+- `Tab`/`Shift-Tab` (or `h`/`l`) cycle tabs; refresh on switch
+- Events tab: `DescribeEvents` filtered by env, regex search (`/`, `n`, `N`), match highlighting
+- Instances tab: `DescribeInstancesHealth` with all attributes; cause lines indented
+- Metrics tab: real `Chart` widget with braille markers; `EnvHealth / 4xx / 5xx / LatencyP90`; per-series `now / max / min / Δ` with direction-of-bad colouring
+- Queue tab: queue URL + visible/in-flight/delayed with sub-character micro-bars
+- Config tab: env metadata, no extra API call
+- `Ctrl-R` re-fetches active tab
+
+### Worker / SQS
+- Tier badge (Web/Worker) parsed from `EnvironmentDescription.tier`
+- Platform-family parser handles both solution-stack and platform-arn formats
+- Worker queue URL discovery via `DescribeConfigurationSettings`
+- DLQ URL derivation by convention if not explicitly configured
+- `sqs:GetQueueAttributes` for visible / in-flight / delayed counts on both queues
+- DLQ viewer (`d` in Detail's Queue tab): peeks messages, shows id / receive-count / age / body preview
+- DLQ actions: per-message resend (send-to-main + delete-from-DLQ), bulk purge with strict typed confirm
+
+### Actions
+- Action menu (`a`): Rebuild / Restart / Swap CNAMEs / Terminate
+- Rebuild / Restart: Y/N confirm
+- Swap CNAMEs: filterable picker of env candidates in the same app, then Y/N confirm
+- Terminate: strict — must type the env name exactly
+- Status / error feedback in footer
+- Auto-refresh after success
+
+### Events panel (main view)
+- `Ctrl-E` toggles a bottom panel listing the most recent events across all envs
+- Severity-coloured (`ERROR/FATAL/WARN/INFO/DEBUG/TRACE`)
+- `Ctrl-↑`/`↓` resize the panel
+- Alert badge: count of envs currently in Red (recomputed per refresh)
+
+### Command bar
+- `:` enters command mode
+- Commands: `:q / :quit`, `:region X`, `:profile X`, `:sort KEY [desc]`, `:group [on|off]`, `:redact [on|off]`, `:events [on|off]`, `:save NAME`, `:f NAME`, `:filter NAME`, `:filters`, `:drop NAME`, `:export`, `:refresh`, `:help`
+
+### Filters, sorting, persistence
+- Named filters: `:save NAME` / `:f NAME` / `:filters` / `:drop NAME` — persisted across runs
+- Filter / sort / grouping / redact / events-visible / selected env all persist in `~/.config/ebman/state.toml`
+- Cursor restored to the same env across restarts
+
+### Privacy & redaction
+- Redact mode (`Ctrl-X`) blurs Account, Caller ARN, CNAMEs with `▓` blocks
+- TSV export respects redact mode
+
+### Yank / export
+- `y` copies CNAME of selected env, `Y` copies the name (via `arboard`)
+- `Ctrl-Y` copies the filtered view as TSV
+
+### Tabs / scope
+- `Tab` / `Shift-Tab` cycle scope: **Envs ↔ Apps**
+- Apps scope lists `DescribeApplications`; `Enter` on an application filters Envs to that app
+
+### Theming & visual polish
+- `Theme` struct with `dark` and `light` presets (loaded from `config.toml: theme = "..."`)
+- Icon style (`unicode` / `ascii`) with ascii fallbacks for spinner, tab icons, health dot, title decoration
+- Rounded borders everywhere
+- Decorated block titles (`[ ◆ name ◆ ]`)
+- Active-panel vs idle-panel border colours
+- Animated braille spinner during loads (ticker gated on `loading_since`)
+- Sparkline fade (oldest samples dim)
+
+### Configuration
+- `~/.config/ebman/config.toml`: `refresh_interval_secs`, `extra_regions`, `redact_default`, `grouped_default`, `theme`, `icons`
+- `~/.config/ebman/state.toml`: persisted app state (managed by app)
+
+### Help & onboarding
+- `?` opens help popup; scrollable with `j`/`k`
+- Footer key strip mode-aware (Normal / Detail / Action / Picker / Filter / Command / Help / Dlq)
+
+### Quality
+- Unit tests (49 passing) across `util / state / config / theme / aws / app / ui`
+- Generation/epoch invariants for refresh, identity, detail, DLQ message handlers
+
+### CLI & distribution
+- `--version` / `-V` and `--help` / `-h` flags (exit before TUI)
+- MSRV declared (`rust-version = "1.82"`)
+- README with feature summary, keymap, config, and "what's stored locally" section
+- GitHub Actions CI: build + test on macOS and Linux, `cargo fmt --check`, `cargo clippy -D warnings`, MSRV gate on 1.82
+- Cargo metadata: license, repository, keywords, categories
+
+### Operator UX (Tier 1 & 2)
+- Detail auto-refresh: `R` toggles a per-tab tick driven by the main 15s ticker; AUTO pill in the Detail footer
+- Open env in AWS console (`b`) via `open` / `xdg-open`; works in Normal and Detail modes
+- Describe overlay (`D`) — popup with the env dumped as pretty JSON; works in Normal and Detail modes
+- Breadcrumb top-line in the header: `region / application / env` (env follows selection or the Detail snapshot)
+- Frozen / paused mode (`f`) — halts auto-refresh; `FROZEN` pill in the header; manual `Ctrl-R` still works
+- Quick-jumps: `1`-`9` select the env at that position in the current view
+- Pin / star envs (`*` or `:pin`); pinned envs float to the top; `★` glyph in the NAME column; persisted across runs
+- Local env aliases (`:alias NAME LABEL` / `:alias-drop NAME`); alias replaces the rendered name; filter search matches aliases too; persisted
+
+### Safety & audit
+- Read-only mode: `--read-only` CLI flag or `:readonly on`; disables Actions menu, DLQ resend, DLQ purge; green `READ-ONLY` pill in the header
+- Local audit log at `~/.cache/ebman/audit.log` for every dispatched action (rebuild / restart / swap / terminate / dlq-resend / dlq-purge)
+- Crash report writer: on panic, writes `~/.cache/ebman/crash-TS.log` with backtrace, panic location, and payload
+
+### Exports
+- JSON export (`:json`) — copies filtered view as a JSON array
+- Markdown report (`:report` / `:markdown`) — copies filtered view as a Markdown table
+
+### Themes & onboarding
+- `Theme::high_contrast()` preset (`theme = "high-contrast"` / `hc` / `highcontrast`)
+- Notification bell on increase in Red-env count (`notify_bell = true` in `config.toml`)
+- `:whatsnew` embedded changelog popup
+- Spacious view mode — third position in the `Ctrl-D` cycle (Default → Compact → Spacious); 2-row data rows + `Padding::horizontal(2)` on the table block; `SPACIOUS` pill in the header
+
+### Workflow extras
+- `Ctrl-W` yanks the equivalent `aws elasticbeanstalk describe-environments` command (POSIX-safe shell-quoting)
+- Quick-jump by name: `'` enters a mini-mode; typing a prefix moves selection to the first matching env (matches alias too); `Enter` keeps, `Esc` cancels
+- Anomaly highlight: red `▲` glyph in NAME column on envs that transitioned to Red since the previous refresh
+- Saved views: `:save-view NAME` snapshots filter / sort / grouping / scope; `:view NAME` restores; `:views` lists; `:view-drop NAME` removes. Persisted across runs.
+- Tag view: `ListTagsForResource` per env on Detail open; tags shown in the Config tab
+- Metrics time-range selector: `[` / `]` cycles 15m / 1h / 6h / 24h while on the Metrics tab; re-fetches on change
+- Cost annotation in Config tab: per-instance hourly rate (us-east-1 baseline table) × instance count → $/hr and $/mo; flags unknown instance types
+- Required-tag policy: `required_tags = "Owner,Project"` in `config.toml`; Config tab shows a `⚠ missing required tag(s):` line when any are absent
+- Recommendation surface in Detail header health line: `≥ Nm in Red` / `≥ Nm in Yellow` when the env has been in that state for ≥1 minute of consecutive samples
+- `:history` overlay listing the last 50 status / error messages with timestamps
+- Dry-run preview on destructive confirms: spawns `DescribeInstancesHealth` for Rebuild / Terminate; modal shows `impact: N instances across M AZs`
+- Pre-flight events recap: confirm modal also fetches `DescribeEvents` for the env (last 3) and renders them under the impact line
+- Configurable columns: `:cols list | hide NAME | show NAME | reset`; persisted in `state.toml` as `hidden_cols`; works on top of the default / compact / spacious view-mode presets; NAME is non-hideable
+- Sticky filter row in header: `Filter: <text>` shown in header line 2 when a filter is active, so it stays visible above the table even when the footer is occupied by a status/error message
+- In-app `:loglevel <level>` — live-reloads the tracing filter via `tracing-subscriber` reload handle. Bare levels (trace/debug/info/warn/error) auto-add `aws=warn,hyper=warn` so AWS noise stays capped; full directives (`my_crate=trace`) accepted as-is
+- CloudWatch alarms list (`:alarms`) — `DescribeAlarms` filtered client-side to alarms whose dimensions reference the selected env; popup overlay with state colouring (ALARM red, OK green, INSUFFICIENT_DATA muted)
+- Diff two envs (`:diff NAME`) — overlay showing field-by-field comparison between the currently-selected env and the named target; differing fields prefixed with `≠` in yellow; truncates long values; respects redact mode
+- Saved Configurations list (`:saved-configs` / `:configs`) — popup listing EB saved-configuration templates grouped by application; pulled from `DescribeApplications.configuration_templates`
+- Plugin commands — `~/.config/ebman/commands.toml` defines `[commands.NAME] template = "..."`; `:NAME` substitutes `{name}`/`{cname}`/`{application}`/`{tier}`/`{region}`/`{profile}` and yanks the rendered command to the clipboard; `:plugins` lists what's available
+- Hover preview line — when the mouse hovers a row, the bottom-most row of the table overlays a dim full-detail summary (name + alias + app + status/health + platform + CNAME, untruncated, redact-aware)
+
+### Slick UX pass
+- ASCII-block boot splash: 5-line `ebman` logo + tagline + "connecting to AWS…" inside a rounded card while STS resolves
+- Empty states with friendly hint lines: "no environments in this account / region — try a different region (r) or profile (p)" / "no events for this environment — ^R to re-fetch" / "no instance data — env may be terminating"
+- Status delta indicator in header: per-refresh `▲N Bucket` / `▼N Bucket` chips on Envs line, colour-coded by bucket (Red/Yellow/Green/Updating/Terminating); silently omits unchanged buckets
+- Toast notifications: bottom-right transient cards (rounded, kind-coloured border) replace the footer-only feedback for status / error events; up to 4 stacked; auto-dismiss (4 s info / 8 s error); animation ticker wakes the draw loop so toasts disappear on idle
+- `Ctrl-K` command palette: fuzzy-search across `:` commands (no-arg / with-arg), env names (jump cursor), saved views, and user plugins; substring scoring with detail-match penalty; ↑/↓ navigate, Enter dispatches, Esc cancels
+
+---
+
+## Backlog
+
+Tier definitions:
+- **Tier 0** — distribution & hygiene before shipping publicly.
+- **Tier 1** — blocks daily-driver replacement of the AWS console.
+- **Tier 2** — UX patterns directly borrowed from e1s / lazygit / lazydocker.
+- **Tier 3** — observability and smart surfacing.
+- **Tier 4** — multi-account / org-scale operations.
+- **Tier 5** — safety, audit, and destructive-action workflow.
+- **Tier 6** — power-user, scripting, and extensibility.
+- **Tier 7** — polish and quality of life.
+- **Tier 8** — maybe / unprioritised; not committed to scope.
+
+Items list `Depends on:` only when another backlog or done item is a real prerequisite.
+
+### Tier 0 — distribution & hygiene
+- [ ] **README screenshots / demo gif** — text README shipped; capturing screenshots requires running the TUI in a real terminal (not this shell).
+- [ ] **`cargo install ebman` smoke test** — verify the binary installs cleanly from a stock toolchain. (Local-only verification possible; full smoke test needs a crates.io publish.)
+- [ ] **Homebrew formula / GitHub Releases with binaries** — macOS users won't `cargo install`. Depends on CI building release artefacts.
+
+### Tier 1 — operator killer features (the daily-driver gap)
+- [ ] **Live log tail** — `RequestEnvironmentInfo("tail")` + `RetrieveEnvironmentInfo`; new Logs tab in Detail. Regex search reused from Events tab. (most-requested EB feature; `eb logs` is one-shot.) *Depends on:* shared polling helper (also useful for Detail auto-refresh).
+- [ ] **Deploy a version** — `DescribeApplicationVersions` per app; `D` deploys selected version to chosen env via `UpdateEnvironment(version_label)`. Add a Versions tab to the Application drill-down.
+- [ ] **Option settings editor** — modal text input for the most-edited namespaces (`aws:elasticbeanstalk:application:environment` for env vars; `aws:autoscaling:asg` for min/max; instance type / proxy). Pre-fill current values; submit via `UpdateEnvironment(option_settings)`.
+- [ ] **Multi-region overview** — `:region all` (or `Ctrl-A`) fans `DescribeEnvironments` across N regions in parallel; adds REGION column. Driven by `extra_regions` config + a sane default set. *Depends on:* parallel-fan-out helper (shared with Org-wide health).
+
+### Tier 2 — UX patterns borrowed from e1s / lazygit / lazydocker
+- [ ] **Per-panel key strip** — lazygit-style: hint strip changes based on focused panel (table vs events panel vs detail tab). *Depends on:* focused-panel model.
+- [ ] **Env groups as tabs** — generalises named filters into a tab bar.
+- [ ] **Multi-select for batch actions** — `space` toggles; `a` runs the action across the selection with per-env confirm.
+- [ ] **Focused-panel model** — `Ctrl-]`/`[` cycles focus; navigation keys go to the focused panel.
+
+### Tier 3 — observability / smarts
+- [ ] **Metric chart hover** — read the value at the cursor x-position.
+- [ ] **Anomaly highlight (5xx)** — flag envs whose 5xx jumped >2× baseline since last refresh. (Red-transition variant already done.)
+- [ ] **Drift detection** — flag envs whose option_settings haven't changed in >N days, or have changed recently.
+- [ ] **Webhook on transition** — POST to a URL when an env crosses into Red. Useful for Slack.
+
+### Tier 4 — multi-account / org
+- [ ] **Account switcher** — `:account NAME` assumes a role and rebuilds context.
+- [ ] **Cross-account search** — find an env by name across configured accounts.
+- [ ] **SSO session expiry countdown** — show remaining TTL in the header.
+- [ ] **Org-wide health overview** — fan out across accounts; one table. *Depends on:* parallel-fan-out helper.
+
+### Tier 5 — safety & workflow
+- [ ] **Pre-flight check: traffic level** — recent events already shown; still missing live request rate / active deploy indicator.
+
+### Tier 6 — power-user / scripting
+- [ ] **Non-interactive CLI** — `ebman envs --json`; `ebman action rebuild --env foo --yes`. Same code paths, no TUI.
+- [ ] **Embedded recorder** — record + replay sessions to `.cast` (asciinema).
+- [ ] **Custom keybindings** — `~/.config/ebman/keys.toml` rebinds keys (or aliases keys to commands).
+
+### Tier 7 — polish & QoL
+- [ ] **First-run wizard** — when no `~/.aws/credentials` or `~/.config/ebman/config.toml` exists, walk through setup.
+- [ ] **Update checker** — on startup, hit crates.io / GitHub releases and surface a footer note if a newer version exists.
+- [ ] **Resizable panels (mouse drag)** — drag the divider between events panel and table with the mouse. (Keyboard resize via `Ctrl-↑/↓` already exists.)
+- [ ] **Selectable + yankable events panel** — add a selection cursor to the main events panel; `y` yanks the highlighted event line. *Depends on:* events panel selection cursor (new).
+
+### Tier 8 — maybe / unprioritised
+- [ ] **Saved Configurations management** — create / delete / update from app (list-only is done).
+- [ ] **Custom Platforms** — list `DescribeCustomPlatforms` for accounts that build them.
+- [ ] **Snapshot at a point in time** — "what envs looked like 1h ago" (would need local history).
+- [ ] **Picture-in-picture mini-map** — health blocks for all envs in a corner.
+
+---
+
+## Skipped — needs retry
+
+Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-line reason. Drop the entry once retried (successfully or with the user's deliberate decision to defer further).
+
+- **README screenshots / demo gif** — autonomous shell has no real TTY; can't render the TUI for capture. Retry from an interactive session.
+- **Live log tail (Tier 1)** — out of scope for this run; requires building a polling-via-S3 helper and a new Logs tab. Substantial enough to deserve its own focused session.
+- **Deploy a version (Tier 1)** — requires DescribeApplicationVersions + an Application drill-down view; defer.
+- **Option settings editor (Tier 1)** — requires a modal text-input form generator and a category-tree of namespaces; defer.
+- **Multi-region overview (Tier 1)** — requires a parallel-fan-out helper and a REGION column / cross-region context model; defer.
+- **Custom Platforms (Tier 8)** — niche, low value; only relevant to accounts that build custom platforms. Defer until requested.
+
+---
+
+## Dropped / explicitly out of scope
+
+- Multi-service AWS dashboard (RDS / ECS / Lambda). Stays out of scope — ebman is EB-focused on purpose; generic-AWS TUIs already exist (clawscli, cloudlens) and sprawl.
+- `Ctrl-N` to dismiss alert badge. Removed when alerts switched from "transitions since last ack" to "currently Red".
+
+---
+
+## Notable inspirations
+
+- **[e1s](https://github.com/keidarcy/e1s)** — same problem shape (k9s-for-ECS). UX template; `b` console deeplink and `d` describe overlay come from here.
+- **[k9s](https://github.com/derailed/k9s)** — original model. Resource aliases, `:` command bar, drill-down.
+- **[stu](https://github.com/lusingander/stu)** — Rust + ratatui S3 explorer; same stack idioms.
+- **[gitui](https://github.com/gitui-org/gitui)** — ratatui async patterns under load.
+- **[lazydocker](https://github.com/jesseduffield/lazydocker)** — panel + tab metaphor mirrors our drill-down.
+- **[lazygit](https://github.com/jesseduffield/lazygit)** — per-panel hint strip, contextual action menu.
+- **[gh dash](https://github.com/dlvhdr/gh-dash)** — sectioned dashboards inspired the "env groups as tabs" idea.
+- **[bottom](https://github.com/ClementTsang/bottom)** — ratatui dashboard widget patterns; Metrics tab follows this.
+- **[harlequin](https://github.com/tconbeer/harlequin)** / **[atuin](https://github.com/atuinsh/atuin)** — fuzzy-find UI patterns for filtering long streams.
+- **[tig](https://github.com/jonas/tig)** — paged event-log + ref panel for timeline views.
