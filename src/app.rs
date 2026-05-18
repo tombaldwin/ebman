@@ -327,6 +327,10 @@ pub enum Mode {
     Dlq,
     QuickJump,
     Palette,
+    /// Embedded shell pane is foreground; keystrokes are forwarded to the
+    /// subprocess's PTY rather than dispatched as ebman key bindings.
+    /// F12 detaches back to `shell_return_mode`.
+    Shell,
 }
 
 #[derive(Debug, Clone)]
@@ -793,11 +797,15 @@ pub struct App {
     /// user keeps their terminal session across a code change. Driven by
     /// `ControlOp::Reload` over the control socket.
     pub reload_requested: bool,
-    /// When `Some`, the run loop suspends the TUI, runs
-    /// `aws ssm start-session --target <id>` inline (inherited stdio), then
-    /// resumes. The user gets a real interactive shell on the instance
-    /// without leaving ebman.
+    /// When `Some`, the run loop spawns an embedded SSM shell session
+    /// targeting this instance ID into `current_shell`. Keystrokes in
+    /// `Mode::Shell` are forwarded to the PTY rather than dispatched as
+    /// ebman key bindings.
     pub pending_shell_target: Option<String>,
+    /// The live embedded shell pane, if any. `None` outside Mode::Shell.
+    pub current_shell: Option<Box<crate::shell::ShellSession>>,
+    /// Mode to return to when the user detaches from a shell pane (F12).
+    pub shell_return_mode: Mode,
     /// Snapshot of the last buffer we rendered, captured from inside the
     /// `terminal.draw` closure. ratatui swaps the front/back buffer after
     /// `draw()` returns, so a snapshot taken at SCREEN-request time via
@@ -1118,6 +1126,8 @@ impl App {
             update_available: None,
             reload_requested: false,
             pending_shell_target: None,
+            current_shell: None,
+            shell_return_mode: Mode::Normal,
             last_rendered_buffer: None,
             notify_bell: config.notify_bell,
             required_tags: config.required_tags,
@@ -1222,7 +1232,7 @@ impl App {
                         self.throttle_until = None;
                     }
                 }
-                _ = anim.tick(), if self.loading_since.is_some() || !self.toasts.is_empty() => {
+                _ = anim.tick(), if self.loading_since.is_some() || !self.toasts.is_empty() || self.current_shell.is_some() => {
                     // Wake the draw loop so the spinner can advance and toasts
                     // expire promptly. Gated to keep idle CPU at zero otherwise.
                 }
@@ -1261,23 +1271,119 @@ impl App {
             {
                 self.toasts.pop_front();
             }
-            // Pending inline subprocess (SSM session). Done after event /
-            // message handling so the action that requested it is fully
-            // applied (status messages logged etc.) before we yield the
-            // terminal.
+            // Pending embedded shell — allocate a PTY and switch mode.
             if let Some(target) = self.pending_shell_target.take() {
-                self.run_inline_ssm(terminal, &target)?;
+                self.open_embedded_shell(terminal, &target)?;
+            }
+
+            // Auto-close the shell pane when the subprocess has exited.
+            if matches!(self.mode, Mode::Shell)
+                && self.current_shell.as_ref().is_some_and(|s| s.is_dead())
+            {
+                self.close_shell_session();
             }
         }
         self.persist_state();
         Ok(())
     }
 
-    /// Suspend the TUI, run `aws ssm start-session --target <id>` with
-    /// inherited stdio so the user gets a real interactive shell on the
-    /// instance, then re-enter the TUI on exit. Requires the AWS CLI and
-    /// the `session-manager-plugin` on PATH plus `ssm:StartSession` IAM
-    /// perms on the target.
+    /// Open an embedded SSM session into `instance_id`. Allocates a PTY,
+    /// spawns `aws ssm start-session` inside it, and switches to
+    /// `Mode::Shell` where keystrokes are forwarded to the subprocess
+    /// instead of running ebman bindings. **F12** detaches back to the
+    /// previous mode; the session keeps running and the user can re-open
+    /// the pane (state preserved). The session ends when the subprocess
+    /// exits — typically via the user typing `exit` or `^D`.
+    fn open_embedded_shell(&mut self, terminal: &mut Tui, instance_id: &str) -> Result<()> {
+        let region = self.context.region.clone();
+        let profile = self
+            .override_profile
+            .clone()
+            .or_else(|| self.context.profile.clone());
+        write_audit_line(
+            self.context.account_id.as_deref(),
+            profile.as_deref(),
+            &region,
+            &format!("stage=dispatched action=SsmSession target={instance_id}"),
+        );
+
+        let size = terminal.size()?;
+        // Reserve 2 rows for a thin status bar so the pane title + detach
+        // hint are always visible.
+        let rows = size.height.saturating_sub(2).max(4);
+        let cols = size.width.max(20);
+
+        let mut args = vec![
+            "ssm",
+            "start-session",
+            "--target",
+            instance_id,
+            "--region",
+            &region,
+        ];
+        let prof = profile.clone();
+        if let Some(p) = prof.as_deref() {
+            args.push("--profile");
+            args.push(p);
+        }
+        match crate::shell::ShellSession::spawn(
+            "aws",
+            &args,
+            rows,
+            cols,
+            format!("ssm: {instance_id}"),
+        ) {
+            Ok(session) => {
+                self.current_shell = Some(Box::new(session));
+                self.shell_return_mode = self.mode;
+                self.mode = Mode::Shell;
+                self.status_message = Some(format!(
+                    "ssm session into {instance_id} — F12 detaches, ^D / exit closes"
+                ));
+            }
+            Err(e) => {
+                self.error_message = Some(format!(
+                    "could not start SSM session ({e}). Install the AWS CLI + session-manager-plugin and check ssm:StartSession IAM"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Forward a key event to the running shell's PTY. Called only when
+    /// `Mode::Shell` is active. F12 is consumed locally as the detach key.
+    pub fn handle_shell_key(&mut self, key: KeyEvent) {
+        // F12 detaches without killing the subprocess.
+        if matches!(key.code, KeyCode::F(12)) {
+            self.mode = self.shell_return_mode;
+            self.status_message = Some(
+                "detached from shell — F12 reattaches, or open shell again from Instances tab"
+                    .into(),
+            );
+            return;
+        }
+        if let Some(shell) = self.current_shell.as_mut() {
+            if let Some(bytes) = crate::shell::key_event_to_bytes(&key) {
+                let _ = shell.send(&bytes);
+            }
+        }
+    }
+
+    /// Tear down a finished shell session: the subprocess has exited, the
+    /// reader thread returned. Surfaces a status message and routes the
+    /// user back to where they came from.
+    pub fn close_shell_session(&mut self) {
+        if let Some(mut s) = self.current_shell.take() {
+            s.kill();
+            self.status_message = Some(format!("{} ended", s.label));
+        }
+        self.mode = self.shell_return_mode;
+    }
+
+    /// Legacy inline-subprocess path. Kept for the case where the user
+    /// wants to drop straight out of the TUI rather than embed; currently
+    /// unused but documented for future toggling.
+    #[allow(dead_code)]
     fn run_inline_ssm(&mut self, terminal: &mut Tui, instance_id: &str) -> Result<()> {
         use crossterm::{
             event::{DisableMouseCapture, EnableMouseCapture},
@@ -1606,6 +1712,9 @@ impl App {
                 KeyCode::Char(c) if is_text_input(&key) => self.command_input.push(c),
                 _ => {}
             },
+            Mode::Shell => {
+                self.handle_shell_key(key);
+            }
             Mode::Palette => match key.code {
                 KeyCode::Esc => {
                     self.mode = Mode::Normal;
