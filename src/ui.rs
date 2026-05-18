@@ -2965,7 +2965,7 @@ fn draw_detail_config(
         let (hourly, missing) = crate::app::estimate_cost(&detail.instances);
         let monthly = hourly * 730.0; // avg hrs/month
         let mut summary = format!(
-            "{:>4} instance{}  ~ ${:.2}/hr  ~ ${:.0}/mo",
+            "{} instance{}  ~ ${:.2}/hr  ~ ${:.0}/mo",
             detail.instances.len(),
             if detail.instances.len() == 1 { "" } else { "s" },
             hourly,
@@ -3007,12 +3007,18 @@ fn draw_detail_config(
             format!("Tags          ({} total)", detail.tags.len()),
             Style::default().fg(theme.muted),
         )));
+        // Tag-key column: 20 chars normally; long keys (e.g.
+        // `elasticbeanstalk:environment-name`) blow past the column, so we
+        // always emit at least 2 spaces of separator before the value.
+        let tag_key_col = 20usize;
         for (k, v) in &detail.tags {
+            let key_text = if k.chars().count() < tag_key_col {
+                format!("  {k:<width$}", width = tag_key_col)
+            } else {
+                format!("  {k}  ")
+            };
             lines.push(Line::from(vec![
-                Span::styled(
-                    format!("  {k:<18}"),
-                    Style::default().fg(theme.app_palette[0]),
-                ),
+                Span::styled(key_text, Style::default().fg(theme.app_palette[0])),
                 Span::styled(v.clone(), Style::default().fg(theme.text)),
             ]));
         }
@@ -3116,9 +3122,18 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn help_line<'a>(key: &'a str, desc: &'a str) -> Line<'a> {
+    // Pad short keys to a 16-char column so descriptions line up, but if the
+    // key itself is wider than the column always emit at least 2 spaces of
+    // separator so it can't glue against the description.
+    let key_col = 16usize;
+    let formatted = if key.chars().count() < key_col {
+        format!(" {key:<width$}", width = key_col)
+    } else {
+        format!(" {key}  ")
+    };
     Line::from(vec![
         Span::styled(
-            format!(" {key:<12}"),
+            formatted,
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
