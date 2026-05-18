@@ -793,6 +793,11 @@ pub struct App {
     /// user keeps their terminal session across a code change. Driven by
     /// `ControlOp::Reload` over the control socket.
     pub reload_requested: bool,
+    /// When `Some`, the run loop suspends the TUI, runs
+    /// `aws ssm start-session --target <id>` inline (inherited stdio), then
+    /// resumes. The user gets a real interactive shell on the instance
+    /// without leaving ebman.
+    pub pending_shell_target: Option<String>,
     /// Snapshot of the last buffer we rendered, captured from inside the
     /// `terminal.draw` closure. ratatui swaps the front/back buffer after
     /// `draw()` returns, so a snapshot taken at SCREEN-request time via
@@ -1112,6 +1117,7 @@ impl App {
             sso_expiry: crate::sso::latest_session_expiry(),
             update_available: None,
             reload_requested: false,
+            pending_shell_target: None,
             last_rendered_buffer: None,
             notify_bell: config.notify_bell,
             required_tags: config.required_tags,
@@ -1255,8 +1261,101 @@ impl App {
             {
                 self.toasts.pop_front();
             }
+            // Pending inline subprocess (SSM session). Done after event /
+            // message handling so the action that requested it is fully
+            // applied (status messages logged etc.) before we yield the
+            // terminal.
+            if let Some(target) = self.pending_shell_target.take() {
+                self.run_inline_ssm(terminal, &target)?;
+            }
         }
         self.persist_state();
+        Ok(())
+    }
+
+    /// Suspend the TUI, run `aws ssm start-session --target <id>` with
+    /// inherited stdio so the user gets a real interactive shell on the
+    /// instance, then re-enter the TUI on exit. Requires the AWS CLI and
+    /// the `session-manager-plugin` on PATH plus `ssm:StartSession` IAM
+    /// perms on the target.
+    fn run_inline_ssm(&mut self, terminal: &mut Tui, instance_id: &str) -> Result<()> {
+        use crossterm::{
+            event::{DisableMouseCapture, EnableMouseCapture},
+            execute,
+            terminal::{
+                disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+            },
+        };
+        // 1. Leave the TUI cleanly.
+        disable_raw_mode()?;
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
+        terminal.show_cursor()?;
+
+        let region = self.context.region.clone();
+        let profile = self
+            .override_profile
+            .clone()
+            .or_else(|| self.context.profile.clone());
+        write_audit_line(
+            self.context.account_id.as_deref(),
+            profile.as_deref(),
+            &region,
+            &format!("stage=dispatched action=SsmSession target={instance_id}"),
+        );
+
+        println!("→ aws ssm start-session --target {instance_id}");
+        println!(
+            "  region={region}{}",
+            match &profile {
+                Some(p) => format!("  profile={p}"),
+                None => String::new(),
+            }
+        );
+        println!("  ^D or `exit` to return to ebman");
+        println!();
+
+        let mut cmd = std::process::Command::new("aws");
+        cmd.arg("ssm")
+            .arg("start-session")
+            .arg("--target")
+            .arg(instance_id)
+            .arg("--region")
+            .arg(&region);
+        if let Some(p) = &profile {
+            cmd.arg("--profile").arg(p);
+        }
+        let status = cmd.status();
+
+        // 3. Re-enter the TUI regardless of the subprocess outcome.
+        enable_raw_mode()?;
+        execute!(
+            terminal.backend_mut(),
+            EnterAlternateScreen,
+            EnableMouseCapture
+        )?;
+        terminal.hide_cursor()?;
+        terminal.clear()?;
+
+        match status {
+            Ok(s) if s.success() => {
+                self.status_message = Some(format!("ssm session to {instance_id} ended"));
+            }
+            Ok(s) => {
+                self.error_message = Some(format!(
+                    "aws ssm start-session exited {} — check that the AWS CLI + session-manager-plugin are installed and you have ssm:StartSession",
+                    s.code().unwrap_or(-1)
+                ));
+            }
+            Err(e) => {
+                self.error_message = Some(format!(
+                    "could not invoke `aws`: {e} — install the AWS CLI + session-manager-plugin"
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -1680,6 +1779,20 @@ impl App {
                         ) =>
                     {
                         self.yank_instance_id();
+                    }
+                    KeyCode::Char('s')
+                        if matches!(
+                            self.detail.as_ref().map(|d| d.tab()),
+                            Some(DetailTab::Instances)
+                        ) =>
+                    {
+                        // Queue an SSM session into the selected instance.
+                        // The run loop handles the TUI suspend/resume.
+                        if let Some(d) = self.detail.as_ref() {
+                            if let Some(inst) = d.instances.get(d.instances_cursor) {
+                                self.pending_shell_target = Some(inst.id.clone());
+                            }
+                        }
                     }
                     KeyCode::Char('x')
                         if matches!(
