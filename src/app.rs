@@ -82,6 +82,12 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "config-apply",
     "versions",
     "deploy",
+    "upgrade",
+    "clone",
+    "scale",
+    "stop",
+    "start",
+    "abort",
     "account",
     "find-env",
     "org-health",
@@ -370,6 +376,16 @@ pub enum Action {
     RestartAppServer,
     SwapCnames,
     Terminate,
+    /// Deploy a specific application-version label to the env.
+    Deploy,
+    /// Migrate the env to a different platform ARN (rolling).
+    UpgradePlatform,
+    /// Clone the env into a new one with a chosen name.
+    Clone,
+    /// Set ASG min/max so the env scales to a fixed count.
+    Scale,
+    /// Cancel an in-flight environment update.
+    AbortUpdate,
 }
 
 impl Action {
@@ -379,6 +395,11 @@ impl Action {
             Self::RestartAppServer => "Restart app server",
             Self::SwapCnames => "Swap CNAMEs with another env",
             Self::Terminate => "Terminate environment",
+            Self::Deploy => "Deploy application version",
+            Self::UpgradePlatform => "Upgrade platform",
+            Self::Clone => "Clone environment",
+            Self::Scale => "Scale (min/max)",
+            Self::AbortUpdate => "Abort current update",
         }
     }
     pub fn destructive(self) -> bool {
@@ -418,6 +439,31 @@ pub struct ConfirmModal {
     /// CHANGE: updated 4m ago". Surfaced above the Y/N row so the operator
     /// sees mid-flight changes before authorising another action.
     pub traffic_warning: Option<String>,
+    /// Version label to deploy when `action == Deploy`. None for other actions.
+    pub deploy_version: Option<String>,
+    /// Platform ARN to migrate to when `action == UpgradePlatform`.
+    pub upgrade_platform_arn: Option<String>,
+    /// Human-readable label for the upgrade target — shown in the modal.
+    pub upgrade_platform_label: Option<String>,
+    /// New env name when `action == Clone`.
+    pub clone_target: Option<String>,
+    /// Desired min/max instance counts when `action == Scale`. Both set to
+    /// the same value for a "scale to N" operation; differ for explicit
+    /// min/max overrides.
+    pub scale_min: Option<i32>,
+    pub scale_max: Option<i32>,
+}
+
+/// Helper carrying the optional parameters needed by the new parameterised
+/// actions. Avoids passing six `Option<…>` args to `open_parameterised_action`.
+#[derive(Default, Clone, Debug)]
+pub struct ParameterisedAction {
+    pub deploy_version: Option<String>,
+    pub upgrade_platform_arn: Option<String>,
+    pub upgrade_platform_label: Option<String>,
+    pub clone_target: Option<String>,
+    pub scale_min: Option<i32>,
+    pub scale_max: Option<i32>,
 }
 
 #[derive(Clone, Debug)]
@@ -435,7 +481,12 @@ pub enum ConfirmKind {
 pub const ACTIONS: &[Action] = &[
     Action::Rebuild,
     Action::RestartAppServer,
+    Action::Deploy,
+    Action::UpgradePlatform,
+    Action::Scale,
+    Action::Clone,
     Action::SwapCnames,
+    Action::AbortUpdate,
     Action::Terminate,
 ];
 
@@ -3072,6 +3123,12 @@ impl App {
                         recent_events: None,
                         loading_events: false,
                         traffic_warning: warning,
+                        deploy_version: None,
+                        upgrade_platform_arn: None,
+                        upgrade_platform_label: None,
+                        clone_target: None,
+                        scale_min: None,
+                        scale_max: None,
                     }));
                 }
                 KeyCode::Char(c) if is_text_input(&key) => {
@@ -3168,6 +3225,12 @@ impl App {
                     recent_events: None,
                     loading_events: true,
                     traffic_warning: compute_traffic_warning(&env),
+                    deploy_version: None,
+                    upgrade_platform_arn: None,
+                    upgrade_platform_label: None,
+                    clone_target: None,
+                    scale_min: None,
+                    scale_max: None,
                 }));
                 self.spawn_dry_run(env.name.clone());
                 self.spawn_preflight_events(env.name.clone());
@@ -3184,9 +3247,68 @@ impl App {
                     recent_events: None,
                     loading_events: true,
                     traffic_warning: compute_traffic_warning(&env),
+                    deploy_version: None,
+                    upgrade_platform_arn: None,
+                    upgrade_platform_label: None,
+                    clone_target: None,
+                    scale_min: None,
+                    scale_max: None,
                 }));
                 self.spawn_dry_run(env.name.clone());
                 self.spawn_preflight_events(env.name.clone());
+            }
+            // Parameterised actions need user input before the confirm can
+            // be built. The menu closes itself and pre-fills the command
+            // bar so the user types `<arg>` and Enter, which routes through
+            // the existing `:deploy` / `:upgrade` / `:clone` / `:scale`
+            // handlers (all of which open a confirm modal).
+            Action::Deploy => {
+                self.close_action_flow();
+                self.mode = Mode::Command;
+                self.command_input = "deploy ".into();
+                self.status_message = Some("type a version label and press enter".into());
+            }
+            Action::UpgradePlatform => {
+                self.close_action_flow();
+                self.spawn_list_compatible_platforms(env.name.clone());
+                self.mode = Mode::Command;
+                self.command_input = "upgrade ".into();
+                self.status_message =
+                    Some("listing platforms in overlay; paste an ARN and press enter".into());
+            }
+            Action::Clone => {
+                self.close_action_flow();
+                self.mode = Mode::Command;
+                self.command_input = "clone ".into();
+                self.status_message = Some("type a new env name and press enter".into());
+            }
+            Action::Scale => {
+                self.close_action_flow();
+                self.mode = Mode::Command;
+                self.command_input = "scale ".into();
+                self.status_message = Some(
+                    "scale N (instances), or `scale min N` / `scale max N`; enter to apply".into(),
+                );
+            }
+            Action::AbortUpdate => {
+                self.action_flow = Some(ActionFlow::Confirm(ConfirmModal {
+                    action,
+                    target_env: env.name.clone(),
+                    swap_with: None,
+                    typed: String::new(),
+                    kind: ConfirmKind::YesNo,
+                    dryrun: None,
+                    loading_dryrun: false,
+                    recent_events: None,
+                    loading_events: false,
+                    traffic_warning: compute_traffic_warning(&env),
+                    deploy_version: None,
+                    upgrade_platform_arn: None,
+                    upgrade_platform_label: None,
+                    clone_target: None,
+                    scale_min: None,
+                    scale_max: None,
+                }));
             }
             _ => {
                 self.action_flow = Some(ActionFlow::Confirm(ConfirmModal {
@@ -3200,6 +3322,12 @@ impl App {
                     recent_events: None,
                     loading_events: false,
                     traffic_warning: compute_traffic_warning(&env),
+                    deploy_version: None,
+                    upgrade_platform_arn: None,
+                    upgrade_platform_label: None,
+                    clone_target: None,
+                    scale_min: None,
+                    scale_max: None,
                 }));
             }
         }
@@ -3274,6 +3402,86 @@ impl App {
         });
     }
 
+    /// Open a confirm modal for an action that carries parameters (deploy
+    /// version, clone target, scale min/max, …). Uses the same Y/N path as
+    /// the existing Rebuild / Restart / Swap confirms so the operator sees
+    /// the impact summary before authorising.
+    fn open_parameterised_action(&mut self, action: Action, params: ParameterisedAction) {
+        if self.read_only {
+            self.error_message =
+                Some("read-only mode — actions disabled (:readonly off to enable)".into());
+            return;
+        }
+        let Some(env) = self.selected_env().cloned() else {
+            self.error_message = Some("no environment selected".into());
+            return;
+        };
+        let modal = ConfirmModal {
+            action,
+            target_env: env.name.clone(),
+            swap_with: None,
+            typed: String::new(),
+            kind: ConfirmKind::YesNo,
+            dryrun: None,
+            loading_dryrun: false,
+            recent_events: None,
+            loading_events: false,
+            traffic_warning: compute_traffic_warning(&env),
+            deploy_version: params.deploy_version,
+            upgrade_platform_arn: params.upgrade_platform_arn,
+            upgrade_platform_label: params.upgrade_platform_label,
+            clone_target: params.clone_target,
+            scale_min: params.scale_min,
+            scale_max: params.scale_max,
+        };
+        self.action_flow = Some(ActionFlow::Confirm(modal));
+        self.mode = Mode::Action;
+    }
+
+    /// Fetch `list_compatible_platforms` for `env` and surface them in an
+    /// overlay so the user can copy the desired ARN into `:upgrade <arn>`.
+    fn spawn_list_compatible_platforms(&mut self, env_name: String) {
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        self.status_message = Some(format!(
+            "fetching compatible platform versions for {env_name}…"
+        ));
+        let env_for_msg = env_name.clone();
+        tokio::spawn(async move {
+            let result = aws
+                .list_compatible_platforms(&env_name)
+                .await
+                .map_err(|e| flatten_err("list_compatible_platforms", e));
+            let body = match result {
+                Ok(p) if p.is_empty() => {
+                    format!("No compatible platform versions found for {env_for_msg}.\n\nesc / q to close")
+                }
+                Ok(platforms) => {
+                    let mut lines: Vec<String> = vec![
+                        format!("Compatible platform versions for {env_for_msg}"),
+                        "─────────────────────────────────────────────".into(),
+                        String::new(),
+                    ];
+                    for p in platforms.iter().take(20) {
+                        lines.push(format!(
+                            "  v{}  {}  ({}, {})",
+                            p.version, p.branch, p.status, p.lifecycle
+                        ));
+                        lines.push(format!("      {}", p.arn));
+                    }
+                    lines.push(String::new());
+                    lines.push(
+                        "Copy an ARN and run `:upgrade <ARN>` to migrate. esc / q to close".into(),
+                    );
+                    lines.join("\n")
+                }
+                Err(e) => format!("upgrade list failed: {e}\n\nesc / q to close"),
+            };
+            let _ = tx.send(AppMsg::CrossAccountSearch { gen, body });
+        });
+    }
+
     fn spawn_action(&mut self, modal: ConfirmModal) {
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
@@ -3281,6 +3489,11 @@ impl App {
         let action = modal.action;
         let env = modal.target_env.clone();
         let swap_with = modal.swap_with.clone();
+        let deploy_version = modal.deploy_version.clone();
+        let upgrade_arn = modal.upgrade_platform_arn.clone();
+        let clone_target = modal.clone_target.clone();
+        let scale_min = modal.scale_min;
+        let scale_max = modal.scale_max;
         write_audit_entry(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
@@ -3298,6 +3511,23 @@ impl App {
                     Some(dest) => aws.swap_cnames(&env, &dest).await,
                     None => Err(color_eyre::eyre::eyre!("swap target missing")),
                 },
+                Action::Deploy => match deploy_version {
+                    Some(ver) => aws.deploy_version(&env, &ver).await,
+                    None => Err(color_eyre::eyre::eyre!("deploy version missing")),
+                },
+                Action::UpgradePlatform => match upgrade_arn {
+                    Some(arn) => aws.upgrade_platform(&env, &arn).await,
+                    None => Err(color_eyre::eyre::eyre!("upgrade platform ARN missing")),
+                },
+                Action::Clone => match clone_target {
+                    Some(target) => aws.clone_env(&env, &target).await,
+                    None => Err(color_eyre::eyre::eyre!("clone target name missing")),
+                },
+                Action::Scale => match (scale_min, scale_max) {
+                    (Some(mn), Some(mx)) => aws.scale_env(&env, mn, mx).await,
+                    _ => Err(color_eyre::eyre::eyre!("scale min/max missing")),
+                },
+                Action::AbortUpdate => aws.abort_environment_update(&env).await,
             }
             .map_err(|e| flatten_err("action", e));
             let _ = tx.send(AppMsg::ActionResult {
@@ -3948,42 +4178,84 @@ impl App {
                         Some("usage: :deploy <version-label>  (applies to selected env)".into());
                 }
                 Some(version) => {
-                    if self.read_only {
-                        self.error_message = Some("read-only mode — deploy disabled".into());
-                        return;
-                    }
+                    self.open_parameterised_action(
+                        Action::Deploy,
+                        ParameterisedAction {
+                            deploy_version: Some(version.to_string()),
+                            ..Default::default()
+                        },
+                    );
+                }
+            },
+            "upgrade" => match rest.first().copied() {
+                None => {
+                    // No ARN given — open an overlay listing newer versions
+                    // for the env's platform branch so the user can copy one.
                     let Some(env) = self.selected_env().cloned() else {
                         self.error_message = Some("no environment selected".into());
                         return;
                     };
-                    let version = version.to_string();
-                    let aws = self.aws.clone();
-                    let tx = self.msg_tx.clone();
-                    let gen = self.generation;
-                    let env_name = env.name.clone();
-                    write_audit_line(
-                        self.context.account_id.as_deref(),
-                        self.context.profile.as_deref(),
-                        &self.context.region,
-                        &format!(
-                            "stage=dispatched action=Deploy target={env_name} version={version}"
-                        ),
+                    self.spawn_list_compatible_platforms(env.name);
+                }
+                Some(arn) => {
+                    self.open_parameterised_action(
+                        Action::UpgradePlatform,
+                        ParameterisedAction {
+                            upgrade_platform_arn: Some(arn.to_string()),
+                            upgrade_platform_label: Some(arn.to_string()),
+                            ..Default::default()
+                        },
                     );
-                    self.status_message = Some(format!("deploying {version} → {env_name}…"));
-                    tokio::spawn(async move {
-                        let result = aws
-                            .deploy_version(&env_name, &version)
-                            .await
-                            .map_err(|e| flatten_err("deploy_version", e));
-                        let _ = tx.send(AppMsg::ActionResult {
-                            gen,
-                            action: Action::Rebuild,
-                            env_name,
-                            result,
-                        });
-                    });
                 }
             },
+            "clone" => match rest.first().copied() {
+                None => {
+                    self.error_message =
+                        Some("usage: :clone <new-env-name>  (clones the selected env)".into());
+                }
+                Some(target) => {
+                    self.open_parameterised_action(
+                        Action::Clone,
+                        ParameterisedAction {
+                            clone_target: Some(target.to_string()),
+                            ..Default::default()
+                        },
+                    );
+                }
+            },
+            "scale" => match rest.first().copied().and_then(|s| s.parse::<i32>().ok()) {
+                Some(n) if n >= 0 => self.open_parameterised_action(
+                    Action::Scale,
+                    ParameterisedAction {
+                        scale_min: Some(n),
+                        scale_max: Some(n),
+                        ..Default::default()
+                    },
+                ),
+                _ => {
+                    self.error_message =
+                        Some("usage: :scale N  (sets min=max=N; use :stop for 0)".into());
+                }
+            },
+            "stop" => self.open_parameterised_action(
+                Action::Scale,
+                ParameterisedAction {
+                    scale_min: Some(0),
+                    scale_max: Some(0),
+                    ..Default::default()
+                },
+            ),
+            "start" => self.open_parameterised_action(
+                Action::Scale,
+                ParameterisedAction {
+                    scale_min: Some(1),
+                    scale_max: Some(1),
+                    ..Default::default()
+                },
+            ),
+            "abort" => {
+                self.open_parameterised_action(Action::AbortUpdate, ParameterisedAction::default())
+            }
             "config-save" => match rest.first().copied() {
                 None => {
                     self.error_message =

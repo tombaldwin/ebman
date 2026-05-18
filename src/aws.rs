@@ -651,6 +651,198 @@ impl AwsClient {
         Ok(())
     }
 
+    /// List the newer platform versions in the same branch family as the
+    /// env's current platform. Filtered server-side to `Ready` platforms;
+    /// branch matching is best-effort using the current ARN's branch suffix
+    /// (e.g. `Tomcat 9 with Corretto 17`). Sorted newest version first.
+    pub async fn list_compatible_platforms(&self, env_name: &str) -> Result<Vec<CustomPlatform>> {
+        use aws_sdk_elasticbeanstalk::types::{PlatformFilter, PlatformStatus};
+        // Read the env's current platform ARN.
+        let desc = self
+            .client
+            .describe_environments()
+            .environment_names(env_name)
+            .send()
+            .await
+            .map_err(|e| eyre!("DescribeEnvironments failed: {e}"))?;
+        let env = desc
+            .environments
+            .unwrap_or_default()
+            .into_iter()
+            .next()
+            .ok_or_else(|| eyre!("env '{env_name}' not found"))?;
+        let current_arn = env.platform_arn.clone().unwrap_or_default();
+        let stack_or_arn = env
+            .solution_stack_name
+            .clone()
+            .unwrap_or_else(|| current_arn.clone());
+        let branch = platform_branch_from(&stack_or_arn);
+        let owner_filter = PlatformFilter::builder()
+            .r#type("PlatformStatus")
+            .operator("=")
+            .values(PlatformStatus::Ready.as_str())
+            .build();
+        let mut filters = vec![owner_filter];
+        if !branch.is_empty() {
+            filters.push(
+                PlatformFilter::builder()
+                    .r#type("PlatformBranchName")
+                    .operator("=")
+                    .values(branch.clone())
+                    .build(),
+            );
+        }
+        let mut next_token: Option<String> = None;
+        let mut out: Vec<CustomPlatform> = Vec::new();
+        loop {
+            let mut req = self.client.list_platform_versions();
+            for f in &filters {
+                req = req.filters(f.clone());
+            }
+            if let Some(t) = next_token.clone() {
+                req = req.next_token(t);
+            }
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| eyre!("ListPlatformVersions failed: {e}"))?;
+            for p in resp.platform_summary_list.unwrap_or_default() {
+                out.push(CustomPlatform {
+                    arn: p.platform_arn.unwrap_or_default(),
+                    branch: p.platform_branch_name.unwrap_or_default(),
+                    version: p.platform_version.unwrap_or_default(),
+                    status: p
+                        .platform_status
+                        .map(|s| s.as_str().to_string())
+                        .unwrap_or_default(),
+                    lifecycle: p.platform_lifecycle_state.unwrap_or_default(),
+                });
+            }
+            match resp.next_token {
+                Some(t) if !t.is_empty() => next_token = Some(t),
+                _ => break,
+            }
+        }
+        // Sort newest-first by semver-ish version.
+        out.sort_by(|a, b| compare_versions(&b.version, &a.version));
+        Ok(out)
+    }
+
+    /// Migrate the env to a new platform ARN via UpdateEnvironment. EB
+    /// performs this as a rolling update; the API returns immediately and
+    /// the event log carries progress.
+    pub async fn upgrade_platform(&self, env_name: &str, platform_arn: &str) -> Result<()> {
+        self.client
+            .update_environment()
+            .environment_name(env_name)
+            .platform_arn(platform_arn)
+            .send()
+            .await
+            .map_err(|e| eyre!("UpdateEnvironment(platform_arn) failed: {e}"))?;
+        Ok(())
+    }
+
+    /// Clone an env: snapshot the source's settings into a transient
+    /// configuration template, spin up a new env from it, then clean the
+    /// template up. The new env starts the usual EB launch process — the
+    /// caller can monitor via DescribeEvents.
+    pub async fn clone_env(&self, source_env_name: &str, target_env_name: &str) -> Result<()> {
+        // Snapshot the source env's application + ID.
+        let desc = self
+            .client
+            .describe_environments()
+            .environment_names(source_env_name)
+            .send()
+            .await
+            .map_err(|e| eyre!("DescribeEnvironments failed: {e}"))?;
+        let env = desc
+            .environments
+            .unwrap_or_default()
+            .into_iter()
+            .next()
+            .ok_or_else(|| eyre!("source env '{source_env_name}' not found"))?;
+        let application = env
+            .application_name
+            .ok_or_else(|| eyre!("source env has no application_name"))?;
+        let env_id = env
+            .environment_id
+            .ok_or_else(|| eyre!("source env has no environment_id"))?;
+        // Use a transient template name so we can clean it up even if the
+        // create fails partway.
+        let template = format!(
+            "__ebman-clone-{}-{}",
+            target_env_name,
+            chrono::Utc::now().timestamp()
+        );
+        self.client
+            .create_configuration_template()
+            .application_name(&application)
+            .template_name(&template)
+            .environment_id(&env_id)
+            .send()
+            .await
+            .map_err(|e| eyre!("CreateConfigurationTemplate failed: {e}"))?;
+        // Best-effort cleanup even if create_environment fails — we don't
+        // want to leave debris.
+        let create_result = self
+            .client
+            .create_environment()
+            .application_name(&application)
+            .environment_name(target_env_name)
+            .template_name(&template)
+            .send()
+            .await;
+        let _ = self
+            .client
+            .delete_configuration_template()
+            .application_name(&application)
+            .template_name(&template)
+            .send()
+            .await;
+        create_result.map_err(|e| eyre!("CreateEnvironment failed: {e}"))?;
+        Ok(())
+    }
+
+    /// Set the env's `aws:autoscaling:asg:{MinSize,MaxSize}` so the ASG
+    /// reaches `count` instances. Passing `Some(0)` is the "stop" pattern
+    /// (no instances, env keeps its config). The API returns immediately;
+    /// EB performs the scale as a rolling change.
+    pub async fn scale_env(&self, env_name: &str, min: i32, max: i32) -> Result<()> {
+        use aws_sdk_elasticbeanstalk::types::ConfigurationOptionSetting;
+        let opts = vec![
+            ConfigurationOptionSetting::builder()
+                .namespace("aws:autoscaling:asg")
+                .option_name("MinSize")
+                .value(min.to_string())
+                .build(),
+            ConfigurationOptionSetting::builder()
+                .namespace("aws:autoscaling:asg")
+                .option_name("MaxSize")
+                .value(max.to_string())
+                .build(),
+        ];
+        self.client
+            .update_environment()
+            .environment_name(env_name)
+            .set_option_settings(Some(opts))
+            .send()
+            .await
+            .map_err(|e| eyre!("UpdateEnvironment(asg) failed: {e}"))?;
+        Ok(())
+    }
+
+    /// Stop an in-flight environment update. Useful to bail out of a hung
+    /// deploy. No-op if EB sees no operation in progress.
+    pub async fn abort_environment_update(&self, env_name: &str) -> Result<()> {
+        self.client
+            .abort_environment_update()
+            .environment_name(env_name)
+            .send()
+            .await
+            .map_err(|e| eyre!("AbortEnvironmentUpdate failed: {e}"))?;
+        Ok(())
+    }
+
     /// List custom EB platforms in this account. Filters server-side via
     /// `PlatformOwner=self` so we only show platforms the caller built, not
     /// the AWS-managed ones. Returns the ARN, platform branch name, and
@@ -934,6 +1126,53 @@ fn map_env(e: aws_sdk_elasticbeanstalk::types::EnvironmentDescription) -> Enviro
 /// Fan-out helper: build a transient `AwsClient` for `region` (sharing the
 /// caller's profile) and pull `DescribeEnvironments` from there. Each
 /// returned env has `region` stamped so the table can sort / group on it.
+/// Best-effort extraction of the EB platform branch name from a solution
+/// stack name or platform ARN. The names look like `64bit Amazon Linux 2023
+/// v4.5.2 running Tomcat 9 Corretto 17` — we keep the "running …" tail and
+/// strip any leading "running " marker. ARNs follow a separate scheme and
+/// already carry the branch in their path.
+fn platform_branch_from(stack_or_arn: &str) -> String {
+    if let Some(rest) = stack_or_arn.split(" running ").nth(1) {
+        return rest.trim().to_string();
+    }
+    if stack_or_arn.starts_with("arn:") {
+        // Branch is the second-to-last path segment.
+        let parts: Vec<&str> = stack_or_arn.split('/').collect();
+        if parts.len() >= 2 {
+            return parts[parts.len() - 2].to_string();
+        }
+    }
+    String::new()
+}
+
+/// Compare two dotted version strings semver-ish. Numeric tokens compared
+/// numerically; non-numeric tails fall back to string comparison. Returns
+/// `Ordering` so this can drive `sort_by`.
+fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let parse = |s: &str| {
+        s.split('.')
+            .map(|p| p.split('-').next().unwrap_or(p).parse::<u64>().ok())
+            .collect::<Vec<_>>()
+    };
+    let av = parse(a);
+    let bv = parse(b);
+    for i in 0..av.len().max(bv.len()) {
+        let aa = av.get(i).and_then(|x| *x);
+        let bb = bv.get(i).and_then(|x| *x);
+        match (aa, bb) {
+            (Some(x), Some(y)) => match x.cmp(&y) {
+                Ordering::Equal => continue,
+                o => return o,
+            },
+            (Some(_), None) => return Ordering::Greater,
+            (None, Some(_)) => return Ordering::Less,
+            (None, None) => break,
+        }
+    }
+    a.cmp(b)
+}
+
 pub async fn list_environments_in_region(
     profile: Option<String>,
     region: String,
