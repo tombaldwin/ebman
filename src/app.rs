@@ -1172,6 +1172,14 @@ impl App {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut anim = tokio::time::interval(Duration::from_millis(100));
         anim.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Higher-frequency ticker for the embedded shell pane (~30 fps) so
+        // PTY output renders promptly. Idle-gated below.
+        let mut shell_tick = tokio::time::interval(Duration::from_millis(30));
+        shell_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Track mode across iterations so we can clear the terminal when
+        // entering or leaving Shell mode (avoids the prior view bleeding
+        // around the new pane / shell content lingering after exit).
+        let mut prev_mode = self.mode;
         self.spawn_refresh();
         self.spawn_update_check();
 
@@ -1183,6 +1191,14 @@ impl App {
             // different env since the last fetch. Fires before draw so the
             // user sees "loading…" rather than the previous env's events.
             self.refresh_events_if_selection_changed();
+
+            // Clear the terminal on Shell-mode boundary crossings so cells
+            // from the prior view don't bleed through (entering Shell) and
+            // shell content doesn't linger when we exit (leaving Shell).
+            if (self.mode == Mode::Shell) != (prev_mode == Mode::Shell) {
+                let _ = terminal.clear();
+            }
+            prev_mode = self.mode;
 
             let mut snapshot: Option<ratatui::buffer::Buffer> = None;
             terminal.draw(|f| {
@@ -1232,7 +1248,11 @@ impl App {
                         self.throttle_until = None;
                     }
                 }
-                _ = anim.tick(), if self.loading_since.is_some() || !self.toasts.is_empty() || self.current_shell.is_some() => {
+                _ = shell_tick.tick(), if self.current_shell.is_some() => {
+                    // ~30 fps redraw while a shell pane is live so typed
+                    // echo / backspace erase / vim frames render promptly.
+                }
+                _ = anim.tick(), if self.loading_since.is_some() || !self.toasts.is_empty() => {
                     // Wake the draw loop so the spinner can advance and toasts
                     // expire promptly. Gated to keep idle CPU at zero otherwise.
                 }

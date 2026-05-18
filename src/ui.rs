@@ -3412,8 +3412,10 @@ fn draw_shell(f: &mut Frame, area: Rect, app: &mut App) {
     // Lock the parser and walk the visible cells. We render into the
     // ratatui buffer directly because that's the cheapest way to preserve
     // the per-cell style information.
+    let mut cursor_pos: Option<(u16, u16)> = None;
     if let Ok(parser) = shell.parser.lock() {
         let screen = parser.screen();
+        let (cur_row, cur_col) = screen.cursor_position();
         let buf = f.buffer_mut();
         for row in 0..body.height {
             for col in 0..body.width {
@@ -3428,7 +3430,8 @@ fn draw_shell(f: &mut Frame, area: Rect, app: &mut App) {
                 let target = &mut buf[(target_x, target_y)];
                 match cell {
                     Some(c) => {
-                        target.set_symbol(&c.contents());
+                        let sym = c.contents();
+                        target.set_symbol(if sym.is_empty() { " " } else { &sym });
                         let mut style = Style::default();
                         style = style.fg(vt100_color_to_ratatui(c.fgcolor()));
                         style = style.bg(vt100_color_to_ratatui(c.bgcolor()));
@@ -3450,10 +3453,21 @@ fn draw_shell(f: &mut Frame, area: Rect, app: &mut App) {
                     }
                     None => {
                         target.set_symbol(" ");
+                        target.set_style(Style::default());
                     }
                 }
             }
         }
+        // Translate vt100's cursor into screen coords for the real cursor.
+        if cur_row < body.height && cur_col < body.width && !screen.hide_cursor() {
+            cursor_pos = Some((body.x + cur_col, body.y + cur_row));
+        }
+    }
+
+    // Real terminal cursor at the vt100 cursor position so the user can
+    // see where they're typing and follow visual editors (vim, less, etc.).
+    if let Some((cx, cy)) = cursor_pos {
+        f.set_cursor_position((cx, cy));
     }
 
     let footer = Line::from(Span::styled(
