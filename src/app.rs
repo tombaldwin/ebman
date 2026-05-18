@@ -88,6 +88,8 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "stop",
     "start",
     "abort",
+    "resources",
+    "res",
     "rebuild",
     "restart",
     "terminate",
@@ -1498,6 +1500,22 @@ impl App {
         {
             existing.shown_at = Instant::now();
             return;
+        }
+        // Bucket-aware dedupe: status-diff toasts like "▲2 Red", "▲3 Red"
+        // would otherwise stack as the deltas churn. Collapse to the latest
+        // value when the new text shares the same delta-bucket key as an
+        // existing toast.
+        if let Some(new_key) = delta_toast_key(&text) {
+            if let Some(existing) = self.toasts.iter_mut().find(|t| {
+                t.kind == kind
+                    && delta_toast_key(&t.text)
+                        .map(|k| k == new_key)
+                        .unwrap_or(false)
+            }) {
+                existing.text = text;
+                existing.shown_at = Instant::now();
+                return;
+            }
         }
         while self.toasts.len() >= TOAST_CAP {
             self.toasts.pop_front();
@@ -3837,6 +3855,19 @@ impl App {
             self.error_message = Some("no environment selected".into());
             return;
         };
+        // Deploy / UpgradePlatform / Scale / Clone all roll instances or
+        // create new ones — same impact-preview as Rebuild deserves to be
+        // shown so the operator sees "N instances across M AZs" + recent
+        // events before authorising. Abort never touches instances directly,
+        // so skip the pre-flight work for that one.
+        let wants_dryrun = matches!(
+            action,
+            Action::Deploy
+                | Action::UpgradePlatform
+                | Action::Scale
+                | Action::Clone
+                | Action::Rebuild
+        );
         let modal = ConfirmModal {
             action,
             target_env: env.name.clone(),
@@ -3844,9 +3875,9 @@ impl App {
             typed: String::new(),
             kind: ConfirmKind::YesNo,
             dryrun: None,
-            loading_dryrun: false,
+            loading_dryrun: wants_dryrun,
             recent_events: None,
-            loading_events: false,
+            loading_events: wants_dryrun,
             traffic_warning: compute_traffic_warning(&env),
             deploy_version: params.deploy_version,
             upgrade_platform_arn: params.upgrade_platform_arn,
@@ -3857,6 +3888,10 @@ impl App {
         };
         self.action_flow = Some(ActionFlow::Confirm(modal));
         self.mode = Mode::Action;
+        if wants_dryrun {
+            self.spawn_dry_run(env.name.clone());
+            self.spawn_preflight_events(env.name.clone());
+        }
     }
 
     /// Fetch `list_compatible_platforms` for `env` and surface them in an
@@ -4676,6 +4711,28 @@ impl App {
             ),
             "abort" => {
                 self.open_parameterised_action(Action::AbortUpdate, ParameterisedAction::default())
+            }
+            "resources" | "res" => {
+                let Some(env) = self.selected_env().cloned() else {
+                    self.error_message = Some("no environment selected".into());
+                    return;
+                };
+                let aws = self.aws.clone();
+                let tx = self.msg_tx.clone();
+                let gen = self.generation;
+                let env_name = env.name.clone();
+                self.status_message = Some(format!("fetching env resources for {env_name}…"));
+                tokio::spawn(async move {
+                    let result = aws
+                        .describe_env_resources(&env_name)
+                        .await
+                        .map_err(|e| flatten_err("describe_env_resources", e));
+                    let body = match result {
+                        Ok(text) => text,
+                        Err(e) => format!("resources: {e}\n\nesc / q to close"),
+                    };
+                    let _ = tx.send(AppMsg::CrossAccountSearch { gen, body });
+                });
             }
             "rebuild" => {
                 self.open_parameterised_action(Action::Rebuild, ParameterisedAction::default())
@@ -6229,6 +6286,36 @@ impl App {
     }
 }
 
+/// Extract a "delta toast key" from text shaped like `▲2 Red` / `▼1 Yellow`.
+/// Returns `Some(bucket_name)` when the text is a status-delta toast and we
+/// want subsequent updates for the same bucket to replace rather than stack.
+/// Pure function so it's easy to pin down in tests.
+pub fn delta_toast_key(text: &str) -> Option<String> {
+    let trimmed = text.trim_start();
+    let mut chars = trimmed.chars();
+    let first = chars.next()?;
+    if first != '▲' && first != '▼' {
+        return None;
+    }
+    let rest: String = chars.collect();
+    // Require at least one digit immediately after the arrow.
+    let first_rest = rest.chars().next()?;
+    if !first_rest.is_ascii_digit() {
+        return None;
+    }
+    let bucket_start = rest.find(|c: char| !c.is_ascii_digit())?;
+    let after_digits = &rest[bucket_start..];
+    let bucket = after_digits.trim_start();
+    if bucket.is_empty() || !bucket.starts_with(|c: char| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    let word: String = bucket
+        .chars()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .collect();
+    Some(word)
+}
+
 fn yank(text: &str) -> std::result::Result<(), String> {
     let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
     cb.set_text(text.to_string()).map_err(|e| e.to_string())
@@ -7154,6 +7241,31 @@ mod tests {
         let base = Duration::MAX;
         let b = throttle_backoff(base, 5);
         assert_eq!(b, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn delta_toast_key_extracts_bucket_for_delta_shapes() {
+        assert_eq!(super::delta_toast_key("▲2 Red").as_deref(), Some("Red"));
+        assert_eq!(
+            super::delta_toast_key("▼1 Yellow").as_deref(),
+            Some("Yellow")
+        );
+        // Leading whitespace is allowed.
+        assert_eq!(
+            super::delta_toast_key("  ▲10 Green").as_deref(),
+            Some("Green")
+        );
+    }
+
+    #[test]
+    fn delta_toast_key_returns_none_for_non_delta_text() {
+        assert_eq!(super::delta_toast_key("refreshing…"), None);
+        assert_eq!(super::delta_toast_key(""), None);
+        assert_eq!(super::delta_toast_key("▲"), None);
+        // Arrow with no count.
+        assert_eq!(super::delta_toast_key("▲ Red"), None);
+        // Arrow + count but no bucket word.
+        assert_eq!(super::delta_toast_key("▲5 "), None);
     }
 
     #[test]

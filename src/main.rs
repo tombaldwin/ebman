@@ -543,6 +543,10 @@ fn write_crash_report(info: &panic::PanicHookInfo<'_>) {
 /// older is deleted. Best-effort; any I/O error is silently ignored so the
 /// crash hook stays minimal.
 const MAX_CRASH_REPORTS: usize = 10;
+/// Crash reports older than this are deleted regardless of the count cap.
+/// Old crash logs become unactionable quickly — keep a month's window so we
+/// catch repeat-offender bugs but don't accumulate forever.
+const CRASH_REPORT_MAX_AGE_DAYS: u64 = 30;
 
 fn prune_old_crash_reports(dir: &std::path::Path, keep: usize) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -558,6 +562,23 @@ fn prune_old_crash_reports(dir: &std::path::Path, keep: usize) {
                 .unwrap_or(false)
         })
         .collect();
+    // Age-based purge: drop anything older than CRASH_REPORT_MAX_AGE_DAYS
+    // even if we're under the count cap. Old crashes are seldom useful.
+    let age_cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(
+            CRASH_REPORT_MAX_AGE_DAYS * 24 * 3600,
+        ))
+        .unwrap_or(std::time::UNIX_EPOCH);
+    crashes.retain(|p| {
+        let too_old = std::fs::metadata(p)
+            .and_then(|m| m.modified())
+            .map(|t| t < age_cutoff)
+            .unwrap_or(false);
+        if too_old {
+            let _ = std::fs::remove_file(p);
+        }
+        !too_old
+    });
     if crashes.len() < keep {
         return;
     }
@@ -658,6 +679,28 @@ mod tests {
         std::fs::write(dir.join("crash-2026.log"), b"x").unwrap();
         prune_old_crash_reports(&dir, 5);
         assert!(dir.join("crash-2026.log").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_old_crash_reports_drops_files_past_ttl() {
+        let dir = std::env::temp_dir().join(format!("ebman-prune-ttl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let fresh = dir.join("crash-fresh.log");
+        let stale = dir.join("crash-stale.log");
+        std::fs::write(&fresh, b"x").unwrap();
+        std::fs::write(&stale, b"x").unwrap();
+        // Backdate the "stale" file's mtime to 60 days ago — past the
+        // 30-day TTL the pruner enforces.
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(60 * 24 * 3600);
+        let file = std::fs::File::open(&stale).unwrap();
+        file.set_modified(past).unwrap();
+        drop(file);
+        // Under count cap (10) so age is the only reason to prune.
+        prune_old_crash_reports(&dir, 10);
+        assert!(fresh.exists(), "fresh file should survive");
+        assert!(!stale.exists(), "stale file should be deleted by TTL");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

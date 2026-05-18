@@ -222,6 +222,76 @@ impl AwsClient {
         Ok(events)
     }
 
+    /// Full `DescribeEnvironmentResources` dump for an env, formatted as a
+    /// human-readable string suitable for an overlay. Covers ASGs,
+    /// instances, launch configurations, launch templates, load balancers,
+    /// trigger names, and SQS queues — i.e. every infra resource EB
+    /// manages for the env. Useful for "what's actually under this env?".
+    pub async fn describe_env_resources(&self, env_name: &str) -> Result<String> {
+        let resp = self
+            .client
+            .describe_environment_resources()
+            .environment_name(env_name)
+            .send()
+            .await
+            .map_err(|e| eyre!("DescribeEnvironmentResources failed: {e}"))?;
+        let res = resp
+            .environment_resources
+            .ok_or_else(|| eyre!("no environment_resources in response"))?;
+        let mut out = String::new();
+        out.push_str(&format!("Resources for {env_name}\n"));
+        out.push_str("───────────────────────────────────────\n\n");
+        let asgs = res.auto_scaling_groups.unwrap_or_default();
+        out.push_str(&format!("Auto-scaling groups ({})\n", asgs.len()));
+        for a in &asgs {
+            out.push_str(&format!("  ▸ {}\n", a.name.as_deref().unwrap_or("?")));
+        }
+        let instances = res.instances.unwrap_or_default();
+        out.push_str(&format!("\nInstances ({})\n", instances.len()));
+        for i in &instances {
+            out.push_str(&format!("  ▸ {}\n", i.id.as_deref().unwrap_or("?")));
+        }
+        let lcs = res.launch_configurations.unwrap_or_default();
+        if !lcs.is_empty() {
+            out.push_str(&format!("\nLaunch configurations ({})\n", lcs.len()));
+            for l in &lcs {
+                out.push_str(&format!("  ▸ {}\n", l.name.as_deref().unwrap_or("?")));
+            }
+        }
+        let lts = res.launch_templates.unwrap_or_default();
+        if !lts.is_empty() {
+            out.push_str(&format!("\nLaunch templates ({})\n", lts.len()));
+            for l in &lts {
+                out.push_str(&format!("  ▸ {}\n", l.id.as_deref().unwrap_or("?")));
+            }
+        }
+        let lbs = res.load_balancers.unwrap_or_default();
+        out.push_str(&format!("\nLoad balancers ({})\n", lbs.len()));
+        for l in &lbs {
+            out.push_str(&format!("  ▸ {}\n", l.name.as_deref().unwrap_or("?")));
+        }
+        let triggers = res.triggers.unwrap_or_default();
+        if !triggers.is_empty() {
+            out.push_str(&format!("\nTriggers ({})\n", triggers.len()));
+            for t in &triggers {
+                out.push_str(&format!("  ▸ {}\n", t.name.as_deref().unwrap_or("?")));
+            }
+        }
+        let queues = res.queues.unwrap_or_default();
+        if !queues.is_empty() {
+            out.push_str(&format!("\nQueues ({})\n", queues.len()));
+            for q in &queues {
+                out.push_str(&format!(
+                    "  ▸ {}\n      {}\n",
+                    q.name.as_deref().unwrap_or("?"),
+                    q.url.as_deref().unwrap_or("?")
+                ));
+            }
+        }
+        out.push_str("\nesc / q to close");
+        Ok(out)
+    }
+
     /// Resolve the worker queue URL (and DLQ URL) for an env. EB autocreates
     /// queues when the user doesn't override `WorkerQueueURL`, and in that
     /// (common) case the option value comes back empty — so we ask
