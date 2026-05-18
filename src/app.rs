@@ -703,6 +703,10 @@ pub struct App {
     pub extra_regions: Vec<String>,
     pub events: Vec<EbEvent>,
     pub events_visible: bool,
+    /// Env the current `events` list was fetched for. `None` = global. Used
+    /// by `refresh_events_if_selection_changed` to detect when the user has
+    /// moved the table cursor to a different env and refetch.
+    pub events_for_env: Option<String>,
     pub events_scroll: u16,
     /// Inner Rect of the events panel — captured by the renderer so the mouse
     /// handler can detect drags on the top edge (divider row) for resize.
@@ -1046,6 +1050,7 @@ impl App {
             extra_regions: config.extra_regions,
             events: Vec::new(),
             events_visible,
+            events_for_env: None,
             events_scroll: 0,
             events_area: None,
             events_drag_origin: None,
@@ -1147,6 +1152,11 @@ impl App {
             // The closure both renders and clones the resulting buffer so the
             // control plane has a faithful snapshot — ratatui's terminal swaps
             // front/back after draw() so we can't grab it post-hoc.
+            // Refetch the events panel when the cursor has moved to a
+            // different env since the last fetch. Fires before draw so the
+            // user sees "loading…" rather than the previous env's events.
+            self.refresh_events_if_selection_changed();
+
             let mut snapshot: Option<ratatui::buffer::Buffer> = None;
             terminal.draw(|f| {
                 ui::draw(f, self);
@@ -4700,13 +4710,35 @@ impl App {
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
+        // Scope the events panel to the currently-selected env so it tells
+        // the user about *this* env, not the entire account. Falls back to
+        // the global event stream when no env is selected. The previously-
+        // fetched env name is recorded so we can detect selection changes
+        // and refetch without firing a request on every j/k.
+        let selected = self.selected_env().map(|e| e.name.clone());
+        self.events_for_env = selected.clone();
         tokio::spawn(async move {
-            let result = aws
-                .list_events(50)
-                .await
-                .map_err(|e| flatten_err("list_events", e));
+            let result = match selected {
+                Some(name) => aws.list_events_for_env(&name, 50).await,
+                None => aws.list_events(50).await,
+            }
+            .map_err(|e| flatten_err("list_events", e));
             let _ = tx.send(AppMsg::Events { gen, result });
         });
+    }
+
+    /// Refetch the events panel if the cursor has moved to a different env
+    /// since the last fetch. Called from the main loop just before draw, so
+    /// any keystroke / mouse click that changed selection picks up the new
+    /// env's events on the next frame.
+    fn refresh_events_if_selection_changed(&mut self) {
+        if !self.events_visible {
+            return;
+        }
+        let selected = self.selected_env().map(|e| e.name.clone());
+        if selected != self.events_for_env {
+            self.spawn_events();
+        }
     }
 
     fn handle_msg(&mut self, msg: AppMsg) {
