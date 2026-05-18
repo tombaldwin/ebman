@@ -1239,7 +1239,11 @@ fn status_cell(status: &str, theme: &Theme) -> Cell<'static> {
 }
 
 fn draw_events(f: &mut Frame, area: Rect, app: &App) {
-    let title = format!("Events  {}", app.events.len());
+    let scope_suffix = match app.events_for_env.as_deref() {
+        Some(env) => format!(" · {env}"),
+        None => " · all envs".to_string(),
+    };
+    let title = format!("Events  {}{}", app.events.len(), scope_suffix);
     let block =
         titled_block(&app.theme, &title, true, app.theme.title).padding(Padding::horizontal(1));
 
