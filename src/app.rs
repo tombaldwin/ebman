@@ -88,6 +88,10 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "stop",
     "start",
     "abort",
+    "rebuild",
+    "restart",
+    "terminate",
+    "swap",
     "account",
     "find-env",
     "org-health",
@@ -579,6 +583,13 @@ pub struct DetailState {
     /// tab body lists both rows; j/k moves the cursor, Enter opens the
     /// selected queue's viewer.
     pub queue_cursor: usize,
+    /// Cursor position within the Instances tab — selects one of
+    /// `detail.instances` for actions (Enter = console, y = yank id,
+    /// x = terminate). Independent of `instances_scroll`.
+    pub instances_cursor: usize,
+    /// Pending single-instance terminate confirmation. Holds the
+    /// instances-tab index when the user pressed `x`; Y/N resolves it.
+    pub instance_terminate_confirm: Option<usize>,
     /// Mouse column over the Metrics tab body, captured on hover. The metrics
     /// renderer maps this to a point index and shows the value at that index
     /// in the title row of each chart.
@@ -1587,6 +1598,28 @@ impl App {
                     self.handle_detail_search_key(key);
                     return;
                 }
+                // Instance-terminate confirm intercepts ALL keys until resolved.
+                if let Some(idx) = self
+                    .detail
+                    .as_ref()
+                    .and_then(|d| d.instance_terminate_confirm)
+                {
+                    match key.code {
+                        KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                            if let Some(d) = self.detail.as_mut() {
+                                d.instance_terminate_confirm = None;
+                            }
+                            self.spawn_terminate_instance(idx);
+                        }
+                        _ => {
+                            if let Some(d) = self.detail.as_mut() {
+                                d.instance_terminate_confirm = None;
+                            }
+                            self.status_message = Some("terminate cancelled".into());
+                        }
+                    }
+                    return;
+                }
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => {
                         self.detail = None;
@@ -1630,6 +1663,36 @@ impl App {
                             self.open_queue_viewer(crate::app::QueueView::Main);
                         } else {
                             self.open_queue_viewer(crate::app::QueueView::Dlq);
+                        }
+                    }
+                    KeyCode::Enter
+                        if matches!(
+                            self.detail.as_ref().map(|d| d.tab()),
+                            Some(DetailTab::Instances)
+                        ) =>
+                    {
+                        self.open_instance_in_console();
+                    }
+                    KeyCode::Char('y')
+                        if matches!(
+                            self.detail.as_ref().map(|d| d.tab()),
+                            Some(DetailTab::Instances)
+                        ) =>
+                    {
+                        self.yank_instance_id();
+                    }
+                    KeyCode::Char('x')
+                        if matches!(
+                            self.detail.as_ref().map(|d| d.tab()),
+                            Some(DetailTab::Instances)
+                        ) =>
+                    {
+                        // Start delete-confirm flow. Y/N resolved in the
+                        // same handler the next time a key arrives.
+                        if let Some(d) = self.detail.as_mut() {
+                            if d.instances.get(d.instances_cursor).is_some() {
+                                d.instance_terminate_confirm = Some(d.instances_cursor);
+                            }
                         }
                     }
                     KeyCode::Char('d') => self.open_dlq(),
@@ -2346,6 +2409,8 @@ impl App {
             error: None,
             log_tail: LogTail::default(),
             queue_cursor: 0,
+            instances_cursor: 0,
+            instance_terminate_confirm: None,
             metrics_hover_col: None,
             metrics_body_rect: None,
         };
@@ -2407,7 +2472,16 @@ impl App {
                 detail.events_scroll = scroll_apply(detail.events_scroll, delta);
             }
             DetailTab::Instances => {
-                detail.instances_scroll = scroll_apply(detail.instances_scroll, delta);
+                let n = detail.instances.len();
+                if n == 0 {
+                    return;
+                }
+                let cur = detail.instances_cursor as i32;
+                let next = (cur + delta).rem_euclid(n as i32) as usize;
+                detail.instances_cursor = next;
+                // Keep the scroll offset roughly aligned with the cursor so
+                // the active row stays visible when navigating with j/k.
+                detail.instances_scroll = (next as u16).saturating_sub(3);
             }
             DetailTab::Logs => {
                 detail.log_tail.scroll = scroll_apply(detail.log_tail.scroll, delta);
@@ -3416,6 +3490,95 @@ impl App {
     /// version, clone target, scale min/max, …). Uses the same Y/N path as
     /// the existing Rebuild / Restart / Swap confirms so the operator sees
     /// the impact summary before authorising.
+    /// Open the currently-selected instance (in the Instances tab) in the
+    /// EC2 console. No-op when no instance is selected.
+    fn open_instance_in_console(&mut self) {
+        let Some(d) = self.detail.as_ref() else {
+            return;
+        };
+        let Some(inst) = d.instances.get(d.instances_cursor) else {
+            return;
+        };
+        let region = self.context.region.clone();
+        let id = inst.id.clone();
+        let url = format!(
+            "https://{region}.console.aws.amazon.com/ec2/home?region={region}#InstanceDetails:instanceId={id}"
+        );
+        let display = id.clone();
+        let result = std::process::Command::new(if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        })
+        .arg(&url)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+        match result {
+            Ok(_) => {
+                self.status_message = Some(format!("opened {display} in EC2 console"));
+            }
+            Err(e) => {
+                self.error_message = Some(format!("could not open browser: {e}"));
+            }
+        }
+    }
+
+    /// Copy the currently-selected instance ID to the clipboard.
+    fn yank_instance_id(&mut self) {
+        let Some(d) = self.detail.as_ref() else {
+            return;
+        };
+        let Some(inst) = d.instances.get(d.instances_cursor) else {
+            return;
+        };
+        let id = inst.id.clone();
+        match yank(&id) {
+            Ok(()) => self.status_message = Some(format!("yanked instance id: {id}")),
+            Err(e) => self.error_message = Some(format!("clipboard error: {e}")),
+        }
+    }
+
+    /// Fire `ec2:TerminateInstances` for the selected instance. ASG will
+    /// re-launch a replacement automatically. Goes through the same
+    /// `AppMsg::ActionResult` path so the status surface stays consistent.
+    fn spawn_terminate_instance(&mut self, idx: usize) {
+        let Some(d) = self.detail.as_ref() else {
+            return;
+        };
+        let Some(inst) = d.instances.get(idx).cloned() else {
+            return;
+        };
+        if self.read_only {
+            self.error_message = Some("read-only mode — terminate disabled".into());
+            return;
+        }
+        let env_name = d.env_name.clone();
+        let id = inst.id.clone();
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        write_audit_line(
+            self.context.account_id.as_deref(),
+            self.context.profile.as_deref(),
+            &self.context.region,
+            &format!("stage=dispatched action=TerminateInstance target={env_name} instance={id}"),
+        );
+        self.status_message = Some(format!("terminating instance {id}…"));
+        tokio::spawn(async move {
+            let result = aws
+                .terminate_instance(&id)
+                .await
+                .map_err(|e| flatten_err("terminate_instance", e));
+            let _ = tx.send(AppMsg::ActionResult {
+                gen,
+                action: Action::Rebuild, // reused — we just need the result path
+                env_name,
+                result,
+            });
+        });
+    }
+
     fn open_parameterised_action(&mut self, action: Action, params: ParameterisedAction) {
         if self.read_only {
             self.error_message =
@@ -4266,6 +4429,68 @@ impl App {
             "abort" => {
                 self.open_parameterised_action(Action::AbortUpdate, ParameterisedAction::default())
             }
+            "rebuild" => {
+                self.open_parameterised_action(Action::Rebuild, ParameterisedAction::default())
+            }
+            "restart" => self.open_parameterised_action(
+                Action::RestartAppServer,
+                ParameterisedAction::default(),
+            ),
+            "terminate" => {
+                // Terminate keeps its strict-typed-name guard. Routes via the
+                // same `a` → menu → confirm path rather than open_parameterised_action,
+                // which defaults to a Y/N confirm.
+                self.open_action_menu();
+                self.advance_action_flow(Action::Terminate);
+            }
+            "swap" => match rest.first().copied() {
+                None => {
+                    self.error_message =
+                        Some("usage: :swap <target-env>  (must be in same application)".into());
+                }
+                Some(target) => {
+                    let Some(env) = self.selected_env().cloned() else {
+                        self.error_message = Some("no environment selected".into());
+                        return;
+                    };
+                    let target = target.to_string();
+                    // Verify target exists in same application before opening confirm.
+                    let target_exists = self
+                        .environments
+                        .iter()
+                        .any(|e| e.name == target && e.application == env.application);
+                    if !target_exists {
+                        self.error_message = Some(format!(
+                            "swap target '{target}' not found in app '{}'",
+                            env.application
+                        ));
+                        return;
+                    }
+                    if self.read_only {
+                        self.error_message = Some("read-only mode — swap disabled".into());
+                        return;
+                    }
+                    self.action_flow = Some(ActionFlow::Confirm(ConfirmModal {
+                        action: Action::SwapCnames,
+                        target_env: env.name.clone(),
+                        swap_with: Some(target),
+                        typed: String::new(),
+                        kind: ConfirmKind::YesNo,
+                        dryrun: None,
+                        loading_dryrun: false,
+                        recent_events: None,
+                        loading_events: false,
+                        traffic_warning: compute_traffic_warning(&env),
+                        deploy_version: None,
+                        upgrade_platform_arn: None,
+                        upgrade_platform_label: None,
+                        clone_target: None,
+                        scale_min: None,
+                        scale_max: None,
+                    }));
+                    self.mode = Mode::Action;
+                }
+            },
             "config-save" => match rest.first().copied() {
                 None => {
                     self.error_message =

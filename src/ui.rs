@@ -2369,42 +2369,72 @@ fn draw_detail_instances(
         return;
     }
     let now = chrono::Utc::now();
-    let lines: Vec<Line> = detail
-        .instances
-        .iter()
-        .flat_map(|i| {
-            let age = i
-                .launched_at
-                .map(|t| humanize_age(now.signed_duration_since(t)))
-                .unwrap_or_else(|| "—".into());
-            let mut head = vec![
-                Span::styled(
-                    format!("{:<19} ", i.id),
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(format!("{:<8} ", i.health), health_style(&i.color, theme)),
-                Span::styled(
-                    format!("{:<12} ", i.instance_type),
-                    Style::default().fg(Color::Gray),
-                ),
-                Span::styled(
-                    format!("{:<14} ", i.availability_zone),
-                    Style::default().fg(Color::Gray),
-                ),
-                Span::styled(format!("up {age}"), Style::default().fg(Color::Gray)),
-            ];
-            let mut lines = vec![Line::from(std::mem::take(&mut head))];
-            for cause in &i.causes {
+    let cursor_idx = detail.instances_cursor;
+    let confirming = detail.instance_terminate_confirm.is_some();
+    let mut lines: Vec<Line> = Vec::new();
+    if confirming {
+        if let Some(idx) = detail.instance_terminate_confirm {
+            if let Some(inst) = detail.instances.get(idx) {
                 lines.push(Line::from(Span::styled(
-                    format!("    ↳ {cause}"),
-                    Style::default().fg(Color::Yellow),
+                    format!(
+                        "  ⚠ TERMINATE instance {}? ASG will replace it. y / n",
+                        inst.id
+                    ),
+                    Style::default()
+                        .fg(theme.health_red)
+                        .add_modifier(Modifier::BOLD),
                 )));
+                lines.push(Line::from(""));
             }
-            lines
-        })
-        .collect();
+        }
+    }
+    for (idx, i) in detail.instances.iter().enumerate() {
+        let age = i
+            .launched_at
+            .map(|t| humanize_age(now.signed_duration_since(t)))
+            .unwrap_or_else(|| "—".into());
+        let is_cursor = idx == cursor_idx;
+        let (marker, marker_style) = if is_cursor {
+            (
+                "▶ ",
+                Style::default()
+                    .fg(theme.title_alt)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            ("  ", Style::default().fg(theme.muted))
+        };
+        let id_style = if is_cursor {
+            Style::default()
+                .fg(theme.title_alt)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
+        };
+        let head = vec![
+            Span::styled(marker.to_string(), marker_style),
+            Span::styled(format!("{:<19} ", i.id), id_style),
+            Span::styled(format!("{:<8} ", i.health), health_style(&i.color, theme)),
+            Span::styled(
+                format!("{:<12} ", i.instance_type),
+                Style::default().fg(Color::Gray),
+            ),
+            Span::styled(
+                format!("{:<14} ", i.availability_zone),
+                Style::default().fg(Color::Gray),
+            ),
+            Span::styled(format!("up {age}"), Style::default().fg(Color::Gray)),
+        ];
+        lines.push(Line::from(head));
+        for cause in &i.causes {
+            lines.push(Line::from(Span::styled(
+                format!("      ↳ {cause}"),
+                Style::default().fg(Color::Yellow),
+            )));
+        }
+    }
     let p = Paragraph::new(lines)
         .block(block)
         .scroll((detail.instances_scroll, 0));
