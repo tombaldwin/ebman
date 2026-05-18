@@ -218,35 +218,80 @@ impl AwsClient {
         Ok(events)
     }
 
-    /// Resolve the worker queue URL (and DLQ URL, if configured) for an env via
-    /// DescribeConfigurationSettings → option `aws:elasticbeanstalk:sqsd:WorkerQueueURL`.
+    /// Resolve the worker queue URL (and DLQ URL) for an env. EB autocreates
+    /// queues when the user doesn't override `WorkerQueueURL`, and in that
+    /// (common) case the option value comes back empty — so we ask
+    /// `DescribeEnvironmentResources` first, which exposes the actual queue
+    /// URLs under named entries (`WorkerQueue`, `WorkerDeadLetterQueue`).
+    /// Falls back to the option-settings path for users who override the
+    /// URL explicitly.
     pub async fn describe_worker_queues(
         &self,
         application_name: &str,
         env_name: &str,
     ) -> Result<WorkerQueues> {
-        let resp = self
-            .client
-            .describe_configuration_settings()
-            .application_name(application_name)
-            .environment_name(env_name)
-            .send()
-            .await?;
-
         let mut main_url: Option<String> = None;
         let mut dlq_url: Option<String> = None;
-        for setting in resp.configuration_settings.unwrap_or_default() {
-            for opt in setting.option_settings.unwrap_or_default() {
-                let ns = opt.namespace.unwrap_or_default();
-                let name = opt.option_name.unwrap_or_default();
-                if ns != "aws:elasticbeanstalk:sqsd" {
-                    continue;
+
+        // Primary path: ask EB for the env's resources. Includes the URLs of
+        // the queues EB created automatically when WorkerQueueURL is empty.
+        if let Ok(resp) = self
+            .client
+            .describe_environment_resources()
+            .environment_name(env_name)
+            .send()
+            .await
+        {
+            if let Some(res) = resp.environment_resources {
+                for q in res.queues.unwrap_or_default() {
+                    let name = q.name.unwrap_or_default();
+                    let url = q.url.unwrap_or_default();
+                    if url.is_empty() {
+                        continue;
+                    }
+                    match name.as_str() {
+                        "WorkerQueue" => main_url = Some(url),
+                        "WorkerDeadLetterQueue" => dlq_url = Some(url),
+                        _ => {}
+                    }
                 }
-                match name.as_str() {
-                    "WorkerQueueURL" => main_url = opt.value,
-                    // DLQ is referenced via deadletter queue option name varies; capture if present.
-                    "DeadLetterQueueURL" => dlq_url = opt.value,
-                    _ => {}
+            }
+        }
+
+        // Fallback / override: look at user-supplied option settings in case
+        // the env explicitly points at a queue the user manages outside EB.
+        if main_url.is_none() || dlq_url.is_none() {
+            if let Ok(resp) = self
+                .client
+                .describe_configuration_settings()
+                .application_name(application_name)
+                .environment_name(env_name)
+                .send()
+                .await
+            {
+                for setting in resp.configuration_settings.unwrap_or_default() {
+                    for opt in setting.option_settings.unwrap_or_default() {
+                        let ns = opt.namespace.unwrap_or_default();
+                        let name = opt.option_name.unwrap_or_default();
+                        if ns != "aws:elasticbeanstalk:sqsd" {
+                            continue;
+                        }
+                        match name.as_str() {
+                            "WorkerQueueURL" => {
+                                let v = opt.value.unwrap_or_default();
+                                if !v.is_empty() && main_url.is_none() {
+                                    main_url = Some(v);
+                                }
+                            }
+                            "DeadLetterQueueURL" => {
+                                let v = opt.value.unwrap_or_default();
+                                if !v.is_empty() && dlq_url.is_none() {
+                                    dlq_url = Some(v);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
                 }
             }
         }
@@ -300,26 +345,57 @@ impl AwsClient {
         })
     }
 
-    /// Long-poll-free receive: returns up to `max` messages with a short visibility
-    /// timeout so the caller can read without disturbing other consumers.
+    /// Peek up to `max` messages from `queue_url` with a short visibility
+    /// timeout (so we don't disrupt real consumers). SQS `ReceiveMessage`
+    /// returns at most 10 per call AND, because the queue is partitioned, a
+    /// single call commonly returns fewer than requested even with a deep
+    /// queue. We therefore loop with a short long-poll, accumulating unique
+    /// messages until we hit `max`, until two consecutive calls return zero,
+    /// or until the per-call budget runs out. De-duplication is by message
+    /// id — a partition can return the same message across calls within the
+    /// visibility-timeout window if we're slow.
     pub async fn peek_messages(&self, queue_url: &str, max: i32) -> Result<Vec<QueueMessage>> {
         use aws_sdk_sqs::types::MessageSystemAttributeName as M;
-        let resp = self
-            .sqs
-            .receive_message()
-            .queue_url(queue_url)
-            .max_number_of_messages(max.clamp(1, 10))
-            .visibility_timeout(2) // very short — we're peeking
-            .wait_time_seconds(0)
-            .message_system_attribute_names(M::ApproximateReceiveCount)
-            .message_system_attribute_names(M::SentTimestamp)
-            .send()
-            .await?;
-        let out = resp
-            .messages
-            .unwrap_or_default()
-            .into_iter()
-            .map(|m| {
+        let target = max.clamp(1, 100) as usize;
+        let mut out: Vec<QueueMessage> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut empty_in_a_row = 0;
+        // Cap total iterations so a sparse queue can't spin forever.
+        for _ in 0..((target / 10).max(1) + 4) {
+            if out.len() >= target {
+                break;
+            }
+            let resp = self
+                .sqs
+                .receive_message()
+                .queue_url(queue_url)
+                .max_number_of_messages(((target - out.len()).clamp(1, 10)) as i32)
+                // Visibility timeout long enough to read + dedupe across the
+                // loop without holding messages back from real consumers for
+                // any noticeable time.
+                .visibility_timeout(5)
+                // Short long-poll: SQS will wait up to 1s for messages from
+                // additional partitions before returning. Trades a little
+                // latency for much better recall.
+                .wait_time_seconds(1)
+                .message_system_attribute_names(M::ApproximateReceiveCount)
+                .message_system_attribute_names(M::SentTimestamp)
+                .send()
+                .await?;
+            let batch = resp.messages.unwrap_or_default();
+            if batch.is_empty() {
+                empty_in_a_row += 1;
+                if empty_in_a_row >= 2 {
+                    break;
+                }
+                continue;
+            }
+            empty_in_a_row = 0;
+            for m in batch {
+                let id = m.message_id.clone().unwrap_or_default();
+                if !id.is_empty() && !seen.insert(id.clone()) {
+                    continue;
+                }
                 let attrs = m.attributes.unwrap_or_default();
                 let receive_count = attrs
                     .get(&M::ApproximateReceiveCount)
@@ -329,15 +405,18 @@ impl AwsClient {
                     .get(&M::SentTimestamp)
                     .and_then(|v| v.parse::<i64>().ok())
                     .and_then(DateTime::from_timestamp_millis);
-                QueueMessage {
-                    id: m.message_id.unwrap_or_default(),
+                out.push(QueueMessage {
+                    id,
                     receipt_handle: m.receipt_handle.unwrap_or_default(),
                     body: m.body.unwrap_or_default(),
                     receive_count,
                     sent_at,
+                });
+                if out.len() >= target {
+                    break;
                 }
-            })
-            .collect();
+            }
+        }
         Ok(out)
     }
 

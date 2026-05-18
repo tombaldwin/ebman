@@ -42,6 +42,11 @@ pub enum ControlOp {
     Command(String),
     /// Request a JSON snapshot of high-level App state.
     State(oneshot::Sender<String>),
+    /// Re-exec the binary at `std::env::current_exe()` with the original
+    /// argv. The run loop exits cleanly and `main()` then performs the
+    /// `exec`, so the parent shell's terminal is reused by the new process.
+    /// Pair with a prior `cargo build --release` to pick up source changes.
+    Reload,
 }
 
 /// Open the Unix socket at `path` and spawn a listener task that translates
@@ -147,6 +152,13 @@ async fn handle_connection(
                     .await?;
             }
         },
+        "RELOAD" => {
+            // Reply OK *before* the run loop tears down the TUI so the
+            // client sees the exit signal cleanly. Best-effort; if mpsc
+            // send fails the app is already shutting down.
+            let _ = tx.send(ControlOp::Reload);
+            write_half.write_all(b"OK\n").await?;
+        }
         "CMD" => {
             let cmd = tail.trim().trim_start_matches(':').to_string();
             if cmd.is_empty() {

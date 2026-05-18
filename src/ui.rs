@@ -1454,7 +1454,12 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
                 .into()
         }
         Mode::Action => " j/k move  type to filter  enter confirm  esc cancel".into(),
-        Mode::Dlq => " j/k move  r resend  p purge  ^R refresh  esc / q back".into(),
+        Mode::Dlq => match app.dlq.as_ref().map(|d| d.viewing) {
+            Some(crate::app::QueueView::Main) => {
+                " MAIN  j/k move  enter view body  x delete  m → DLQ  ^R refresh  esc / q back".into()
+            }
+            _ => " DLQ  j/k move  enter view body  r resend  x delete  p purge  m → MAIN  ^R refresh  esc / q back".into(),
+        },
     };
     f.render_widget(
         Paragraph::new(Span::styled(keys, Style::default().fg(Color::Gray))),
@@ -1569,9 +1574,13 @@ fn draw_dlq(f: &mut Frame, area: Rect, app: &mut App) {
         ])
         .split(area);
 
-    // Header
+    // Header — adapts to which queue is currently loaded.
+    let (window_title, view_label, accent) = match dlq.viewing {
+        crate::app::QueueView::Main => ("Main Worker Queue", "MAIN", theme.health_yellow),
+        crate::app::QueueView::Dlq => ("Dead-Letter Queue", "DLQ", theme.health_red),
+    };
     let header = Paragraph::new(Line::from(vec![
-        Span::styled("DLQ: ", Style::default().fg(theme.muted)),
+        Span::styled(format!("{view_label}: "), Style::default().fg(theme.muted)),
         Span::styled(
             dlq.env_name.clone(),
             Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
@@ -1581,13 +1590,18 @@ fn draw_dlq(f: &mut Frame, area: Rect, app: &mut App) {
             format!("{} messages", dlq.messages.len()),
             Style::default().fg(theme.health_yellow),
         ),
+        if dlq.confirm_delete_idx.is_some() {
+            Span::styled(
+                "   ⚠ delete this message? y / n",
+                Style::default()
+                    .fg(theme.health_red)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::raw("")
+        },
     ]))
-    .block(titled_block(
-        &theme,
-        "Dead-Letter Queue",
-        true,
-        theme.health_red,
-    ));
+    .block(titled_block(&theme, window_title, true, accent));
     f.render_widget(header, chunks[0]);
 
     // Message list
@@ -1682,15 +1696,20 @@ fn draw_dlq(f: &mut Frame, area: Rect, app: &mut App) {
         ]));
         f.render_widget(line, chunks[2]);
     } else {
+        let keys = match dlq.viewing {
+            crate::app::QueueView::Main => {
+                " MAIN  j/k move  enter view body  x delete  m → DLQ  ^R refresh  esc / q back"
+            }
+            crate::app::QueueView::Dlq => {
+                " DLQ  j/k move  enter view body  r resend  x delete  p purge  m → MAIN  ^R refresh  esc / q back"
+            }
+        };
         let footer = Paragraph::new(vec![
             Line::from(match &dlq.error {
                 Some(err) => Span::styled(format!(" {err}"), Style::default().fg(Color::Red)),
                 None => Span::raw(""),
             }),
-            Line::from(Span::styled(
-                " j/k move   r resend   p purge   ^R refresh   esc / q back",
-                Style::default().fg(Color::Gray),
-            )),
+            Line::from(Span::styled(keys, Style::default().fg(Color::Gray))),
         ]);
         f.render_widget(footer, chunks[2]);
     }
@@ -2682,27 +2701,59 @@ fn draw_detail_queue(
         }
     };
 
+    let main_selected = detail.queue_cursor == 0;
+    let dlq_selected = detail.queue_cursor == 1;
+    let queue_row = |selected: bool, label: &str, value: String| -> Line<'static> {
+        let (marker, marker_style) = if selected {
+            (
+                "▶ ",
+                Style::default()
+                    .fg(theme.title_alt)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            ("  ", Style::default().fg(theme.muted))
+        };
+        let label_style = if selected {
+            Style::default()
+                .fg(theme.title_alt)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.muted)
+        };
+        let value_style = if selected {
+            Style::default()
+                .fg(theme.title_alt)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text)
+        };
+        Line::from(vec![
+            Span::styled(marker.to_string(), marker_style),
+            Span::styled(format!("{label:<20}"), label_style),
+            Span::styled(value, value_style),
+        ])
+    };
+
     let mut lines = Vec::new();
-    lines.push(row(
+    lines.push(queue_row(
+        main_selected,
         "Main queue URL",
         redact(q.main_url.as_deref().unwrap_or("—"), redact_on),
-        None,
     ));
-    lines.extend(stats_row("  stats", q.main_stats.as_ref()));
+    lines.extend(stats_row("    stats", q.main_stats.as_ref()));
     lines.push(Line::from(""));
-    lines.push(row(
+    lines.push(queue_row(
+        dlq_selected,
         "DLQ URL",
         redact(q.dlq_url.as_deref().unwrap_or("—"), redact_on),
-        None,
     ));
-    lines.extend(stats_row("  stats", q.dlq_stats.as_ref()));
-    if q.dlq_url.is_some() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "  press 'd' to view DLQ messages",
-            Style::default().fg(Color::Gray),
-        )));
-    }
+    lines.extend(stats_row("    stats", q.dlq_stats.as_ref()));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  j/k pick queue · enter view messages · d quick-open DLQ",
+        Style::default().fg(Color::Gray),
+    )));
     if detail.loading_queues {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(

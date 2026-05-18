@@ -124,6 +124,26 @@ async fn main() -> Result<()> {
 
     let result = app_inst.run(&mut terminal, control_rx).await;
     leave_tui(&mut terminal)?;
+    // Honour a reload request from the control socket: re-exec the same
+    // binary with the original argv so the parent shell's terminal is
+    // reused by the new process. Done AFTER `leave_tui` so the old TUI
+    // state (raw mode, alt-screen, mouse capture) is fully torn down
+    // before the new process sets it back up.
+    if result.is_ok() && app_inst.reload_requested {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            let exe = std::env::current_exe()?;
+            let argv: Vec<String> = std::env::args().skip(1).collect();
+            let err = std::process::Command::new(exe).args(argv).exec();
+            // `exec` only returns on failure.
+            return Err(color_eyre::eyre::eyre!("reload exec failed: {err}"));
+        }
+        #[cfg(not(unix))]
+        {
+            eprintln!("ebman: reload is unix-only");
+        }
+    }
     result
 }
 
@@ -148,8 +168,10 @@ SUBCOMMANDS:
     envs [--json]                                List environments in current profile / region.
     action ACTION --env NAME [--yes]             Run an action (rebuild|restart|terminate) on an env.
                                                   Terminate requires --yes to confirm.
-    ctl <screen|key|cmd|state> [args]            Talk to a running ebman via --control-socket.
-                                                  Use --socket PATH to override the default location.
+    ctl <screen|key|cmd|state|reload> [args]     Talk to a running ebman via --control-socket.
+                                                  `reload` re-execs the binary (rebuild first via
+                                                  `cargo build --release`). Use --socket PATH to
+                                                  override the default location.
 
 CONFIG:
     ~/.config/ebman/config.toml   user configuration (see README)

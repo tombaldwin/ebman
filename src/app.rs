@@ -349,6 +349,19 @@ pub struct DlqState {
     pub error: Option<String>,
     pub confirm_purge: bool,
     pub purge_typed: String,
+    /// Which queue is currently loaded — DLQ (default) or the main worker
+    /// queue. Toggled by `m`. The same UI surfaces both; resend / purge are
+    /// disabled in Main view because purging a working queue is too dangerous.
+    pub viewing: QueueView,
+    /// Pending single-message delete confirmation. Holds the index of the
+    /// message the user pressed `x` on; `y` confirms, anything else cancels.
+    pub confirm_delete_idx: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueView {
+    Dlq,
+    Main,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -511,6 +524,10 @@ pub struct DetailState {
     pub error: Option<String>,
     /// Tail-log state, populated when the user visits the Logs tab.
     pub log_tail: LogTail,
+    /// Cursor position within the Queue tab (0 = Main queue, 1 = DLQ). The
+    /// tab body lists both rows; j/k moves the cursor, Enter opens the
+    /// selected queue's viewer.
+    pub queue_cursor: usize,
     /// Mouse column over the Metrics tab body, captured on hover. The metrics
     /// renderer maps this to a point index and shows the value at that index
     /// in the title row of each chart.
@@ -706,6 +723,17 @@ pub struct App {
     /// Newer ebman release advertised by crates.io, if any. Populated by the
     /// fire-and-forget update-check task that runs once at startup.
     pub update_available: Option<crate::update_check::LatestRelease>,
+    /// When `true`, `run()` exits and `main()` re-execs the binary so the
+    /// user keeps their terminal session across a code change. Driven by
+    /// `ControlOp::Reload` over the control socket.
+    pub reload_requested: bool,
+    /// Snapshot of the last buffer we rendered, captured from inside the
+    /// `terminal.draw` closure. ratatui swaps the front/back buffer after
+    /// `draw()` returns, so a snapshot taken at SCREEN-request time via
+    /// `current_buffer_mut()` would read the empty back-buffer; cloning
+    /// during the render is the only reliable way to expose what's actually
+    /// on screen to the control plane.
+    pub last_rendered_buffer: Option<ratatui::buffer::Buffer>,
     pub notify_bell: bool,
     pub required_tags: Vec<String>,
     /// Webhook URL invoked once per env that transitions into Red on refresh.
@@ -1016,6 +1044,8 @@ impl App {
             consecutive_throttles: 0,
             sso_expiry: crate::sso::latest_session_expiry(),
             update_available: None,
+            reload_requested: false,
+            last_rendered_buffer: None,
             notify_bell: config.notify_bell,
             required_tags: config.required_tags,
             webhook_url: config.webhook_url,
@@ -1063,7 +1093,15 @@ impl App {
         self.spawn_update_check();
 
         loop {
-            terminal.draw(|f| ui::draw(f, self))?;
+            // The closure both renders and clones the resulting buffer so the
+            // control plane has a faithful snapshot — ratatui's terminal swaps
+            // front/back after draw() so we can't grab it post-hoc.
+            let mut snapshot: Option<ratatui::buffer::Buffer> = None;
+            terminal.draw(|f| {
+                ui::draw(f, self);
+                snapshot = Some(f.buffer_mut().clone());
+            })?;
+            self.last_rendered_buffer = snapshot;
             if self.quit {
                 break;
             }
@@ -1514,6 +1552,25 @@ impl App {
                     KeyCode::Char('a') => self.open_action_menu(),
                     KeyCode::Char('b') => self.open_in_console(),
                     KeyCode::Char('*') => self.toggle_pin_selected(),
+                    KeyCode::Enter
+                        if matches!(
+                            self.detail.as_ref().map(|d| d.tab()),
+                            Some(DetailTab::Queue)
+                        ) =>
+                    {
+                        // On the Queue tab, Enter opens whichever queue the
+                        // cursor is on. 0 = Main, 1 = DLQ.
+                        let want_main = self
+                            .detail
+                            .as_ref()
+                            .map(|d| d.queue_cursor == 0)
+                            .unwrap_or(false);
+                        if want_main {
+                            self.open_queue_viewer(crate::app::QueueView::Main);
+                        } else {
+                            self.open_queue_viewer(crate::app::QueueView::Dlq);
+                        }
+                    }
                     KeyCode::Char('d') => self.open_dlq(),
                     KeyCode::Char('D') => self.open_describe_overlay(),
                     KeyCode::Char(']')
@@ -1806,11 +1863,15 @@ impl App {
     /// Apply a `ControlOp` received over the control socket. Snapshot ops
     /// read the terminal's current back-buffer; key/command ops dispatch
     /// through the normal handlers so all existing bindings still apply.
-    fn handle_control_op(&mut self, op: crate::control::ControlOp, terminal: &mut Tui) {
+    fn handle_control_op(&mut self, op: crate::control::ControlOp, _terminal: &mut Tui) {
         use crate::control::ControlOp;
         match op {
             ControlOp::Screen(reply) => {
-                let text = crate::control::render_buffer_as_text(terminal.current_buffer_mut());
+                let text = self
+                    .last_rendered_buffer
+                    .as_ref()
+                    .map(crate::control::render_buffer_as_text)
+                    .unwrap_or_else(|| "(no frame rendered yet)".to_string());
                 let _ = reply.send(text);
             }
             ControlOp::Key(ke) => {
@@ -1818,6 +1879,11 @@ impl App {
             }
             ControlOp::Command(text) => {
                 self.execute_command(&text);
+            }
+            ControlOp::Reload => {
+                self.reload_requested = true;
+                self.quit = true;
+                self.status_message = Some("reloading (exec self)…".into());
             }
             ControlOp::State(reply) => {
                 let selected = self
@@ -2218,6 +2284,7 @@ impl App {
             loading_tags: false,
             error: None,
             log_tail: LogTail::default(),
+            queue_cursor: 0,
             metrics_hover_col: None,
             metrics_body_rect: None,
         };
@@ -2284,7 +2351,13 @@ impl App {
             DetailTab::Logs => {
                 detail.log_tail.scroll = scroll_apply(detail.log_tail.scroll, delta);
             }
-            DetailTab::Metrics | DetailTab::Queue | DetailTab::Config => {}
+            DetailTab::Queue => {
+                // Cursor wraps between the two queue rows (Main / DLQ).
+                let n: i32 = 2;
+                let cur = detail.queue_cursor as i32;
+                detail.queue_cursor = (cur + delta).rem_euclid(n) as usize;
+            }
+            DetailTab::Metrics | DetailTab::Config => {}
         }
     }
 
@@ -2482,6 +2555,47 @@ impl App {
         });
     }
 
+    /// Open the worker-queue viewer for the env in Detail mode, defaulting
+    /// to whichever queue the caller asked for. `open_dlq` is the legacy
+    /// shortcut that always opens the DLQ.
+    fn open_queue_viewer(&mut self, viewing: QueueView) {
+        let Some(detail) = self.detail.as_ref() else {
+            return;
+        };
+        if detail.tab() != DetailTab::Queue {
+            return;
+        }
+        let main_url = detail.queues.main_url.clone().unwrap_or_default();
+        let dlq_url = detail.queues.dlq_url.clone().unwrap_or_default();
+        let target_url = match viewing {
+            QueueView::Main => main_url.clone(),
+            QueueView::Dlq => dlq_url.clone(),
+        };
+        if target_url.is_empty() {
+            self.status_message = Some(match viewing {
+                QueueView::Main => "no main queue URL known".into(),
+                QueueView::Dlq => "no DLQ for this environment".into(),
+            });
+            return;
+        }
+        let dlq = DlqState {
+            env_name: detail.env_name.clone(),
+            main_queue_url: main_url,
+            dlq_url,
+            messages: Vec::new(),
+            list_state: ListState::default(),
+            loading: false,
+            error: None,
+            confirm_purge: false,
+            purge_typed: String::new(),
+            viewing,
+            confirm_delete_idx: None,
+        };
+        self.dlq = Some(dlq);
+        self.mode = Mode::Dlq;
+        self.spawn_dlq_fetch();
+    }
+
     fn open_dlq(&mut self) {
         let Some(detail) = self.detail.as_ref() else {
             return;
@@ -2504,6 +2618,8 @@ impl App {
             error: None,
             confirm_purge: false,
             purge_typed: String::new(),
+            viewing: QueueView::Dlq,
+            confirm_delete_idx: None,
         };
         self.dlq = Some(dlq);
         self.mode = Mode::Dlq;
@@ -2527,10 +2643,13 @@ impl App {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_name = dlq.env_name.clone();
-        let dlq_url = dlq.dlq_url.clone();
+        let queue_url = match dlq.viewing {
+            QueueView::Dlq => dlq.dlq_url.clone(),
+            QueueView::Main => dlq.main_queue_url.clone(),
+        };
         tokio::spawn(async move {
             let result = aws
-                .peek_messages(&dlq_url, 10)
+                .peek_messages(&queue_url, 50)
                 .await
                 .map_err(|e| flatten_err("peek_messages", e));
             let _ = tx.send(AppMsg::DlqMessages {
@@ -2541,8 +2660,75 @@ impl App {
         });
     }
 
+    /// Delete a single message from whichever queue is currently loaded
+    /// (`dlq.viewing`). The message's `receipt_handle` keeps it deletable
+    /// even though our visibility timeout window is short — SQS treats the
+    /// receipt handle as the canonical authorisation token for delete.
+    fn spawn_dlq_delete_one(&mut self, idx: usize) {
+        let Some(dlq) = self.dlq.as_mut() else { return };
+        let Some(msg) = dlq.messages.get(idx).cloned() else {
+            return;
+        };
+        let queue_url = match dlq.viewing {
+            QueueView::Dlq => dlq.dlq_url.clone(),
+            QueueView::Main => dlq.main_queue_url.clone(),
+        };
+        if queue_url.is_empty() {
+            self.error_message = Some("queue URL missing — cannot delete".into());
+            return;
+        }
+        let env_name = dlq.env_name.clone();
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        write_audit_line(
+            self.context.account_id.as_deref(),
+            self.context.profile.as_deref(),
+            &self.context.region,
+            &format!(
+                "sqs-delete env={env_name} queue={} msg_id={}",
+                if matches!(dlq.viewing, QueueView::Main) {
+                    "MAIN"
+                } else {
+                    "DLQ"
+                },
+                msg.id
+            ),
+        );
+        tokio::spawn(async move {
+            let result = aws
+                .delete_message(&queue_url, &msg.receipt_handle)
+                .await
+                .map(|_| DlqOp::Resent {
+                    // Reuse the existing "Resent" variant — the handler
+                    // already drops the message by id, which is exactly what
+                    // delete should do.
+                    message_id: msg.id.clone(),
+                })
+                .map_err(|e| flatten_err("delete_message", e));
+            let _ = tx.send(AppMsg::DlqActionResult {
+                gen,
+                env_name,
+                result,
+            });
+        });
+    }
+
     fn handle_dlq_key(&mut self, key: KeyEvent) {
         let Some(dlq) = self.dlq.as_mut() else { return };
+        // Single-message delete confirmation: Y/N inline. Anything else cancels.
+        if let Some(idx) = dlq.confirm_delete_idx {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                    dlq.confirm_delete_idx = None;
+                    self.spawn_dlq_delete_one(idx);
+                }
+                _ => {
+                    dlq.confirm_delete_idx = None;
+                }
+            }
+            return;
+        }
         // Strict-confirm mode for purge: capture text input until match.
         if dlq.confirm_purge {
             match key.code {
@@ -2568,6 +2754,40 @@ impl App {
 
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => self.close_dlq(),
+            KeyCode::Enter => {
+                let Some(idx) = dlq.list_state.selected() else {
+                    return;
+                };
+                let Some(msg) = dlq.messages.get(idx).cloned() else {
+                    return;
+                };
+                let when = msg
+                    .sent_at
+                    .map(|t| {
+                        t.with_timezone(&chrono::Local)
+                            .format("%Y-%m-%d %H:%M:%S %Z")
+                            .to_string()
+                    })
+                    .unwrap_or_else(|| "—".into());
+                let view_label = match dlq.viewing {
+                    QueueView::Main => "Main queue",
+                    QueueView::Dlq => "DLQ",
+                };
+                let body = format!(
+                    "{view_label} message\n\
+                     ─────────────────────────────\n\
+                     id:           {}\n\
+                     receive-count:{}\n\
+                     sent:         {when}\n\
+                     bytes:        {}\n\n\
+                     ─ body ─\n{}\n\nesc / q to close",
+                    msg.id,
+                    msg.receive_count,
+                    msg.body.len(),
+                    msg.body
+                );
+                self.current_overlay = Some(Overlay::Describe(body));
+            }
             KeyCode::Char('j') | KeyCode::Down => {
                 let n = dlq.messages.len();
                 if n == 0 {
@@ -2587,7 +2807,37 @@ impl App {
             KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.spawn_dlq_fetch();
             }
-            KeyCode::Char('r') => self.spawn_dlq_resend_selected(),
+            KeyCode::Char('r') => {
+                if matches!(dlq.viewing, QueueView::Main) {
+                    self.error_message = Some("resend is only available in DLQ view".into());
+                } else {
+                    self.spawn_dlq_resend_selected();
+                }
+            }
+            KeyCode::Char('m') => {
+                // Toggle which queue is loaded. Main-queue view disables
+                // resend/purge (too dangerous on a live queue). Refetch on switch.
+                if dlq.main_queue_url.is_empty() {
+                    self.error_message = Some("no main queue URL known".into());
+                } else {
+                    dlq.viewing = match dlq.viewing {
+                        QueueView::Dlq => QueueView::Main,
+                        QueueView::Main => QueueView::Dlq,
+                    };
+                    dlq.messages.clear();
+                    dlq.list_state.select(None);
+                    self.spawn_dlq_fetch();
+                }
+            }
+            KeyCode::Char('x') => {
+                // Single-message delete. The dispatch loop catches y/n in the
+                // next iteration via `confirm_delete_idx`.
+                if let Some(idx) = dlq.list_state.selected() {
+                    if dlq.messages.get(idx).is_some() {
+                        dlq.confirm_delete_idx = Some(idx);
+                    }
+                }
+            }
             KeyCode::Char('p') => {
                 if let Some(dlq) = self.dlq.as_mut() {
                     dlq.confirm_purge = true;
