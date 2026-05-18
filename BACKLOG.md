@@ -250,9 +250,27 @@ Tier definitions:
 
 Items list `Depends on:` only when another backlog or done item is a real prerequisite.
 
+### Console-replacement gap — items between "useful" and "indispensable"
+
+The three things still keeping users in the AWS console day-to-day. Highest-leverage backlog block; ordered by impact.
+
+- [ ] **Option settings + env var editor** — modal form for the most-edited namespaces, starting with `aws:elasticbeanstalk:application:environment` (env vars), `aws:autoscaling:asg` (min/max), `aws:autoscaling:launchconfiguration` (instance type, key pair, security groups). Pre-fill current values from `DescribeConfigurationSettings`; submit via `UpdateEnvironment(option_settings)`. Needs a small modal-form abstraction (label + input + validation) that can be reused for tags, search filters, etc.
+- [ ] **CloudWatch Logs streaming (real `tail -f`)** — the current Logs tab is a one-shot `RequestEnvironmentInfo("tail")` snapshot. Switch to `cloudwatch:GetLogEvents` against the env's log groups with `start_from_head=false` and a polling tick; falls back to the existing snapshot path when the env doesn't ship logs to CloudWatch. Regex filter reused from the snapshot path.
+- [ ] **Deploy from local path / S3** — `:deploy --from ./build.zip` or `:deploy --from s3://bucket/key`: upload to the env's storage location (`CreateStorageLocation` + S3 PutObject), `CreateApplicationVersion`, then `UpdateEnvironment(version_label)`. Covers the actual deploy story; the current `:deploy <label>` only ships existing versions.
+
 ### Refactors — structural cleanup remaining
 
-- [ ] **Split `src/app.rs` (4400+ lines, ~50 fields)** — `handle_key` is a flat dispatch across 10+ modes; the file is past the point where one branch can be changed confidently without reading the others. Extract per-mode handlers into their own modules (`mode_detail.rs`, `mode_dlq.rs`, `mode_action.rs`, …); action-flow state machine into `action.rs`; DLQ state machine into `dlq.rs`; persistence / `rebuild_view` into `view.rs`.
+- [ ] **Split `src/app.rs` (6000+ lines, 60+ fields)** — `handle_key` is a flat dispatch across 10+ modes; the file is past the point where one branch can be changed confidently without reading the others. Extract per-mode handlers into their own modules (`mode_detail.rs`, `mode_dlq.rs`, `mode_action.rs`, …); action-flow state machine into `action.rs`; DLQ state machine into `dlq.rs`; persistence / `rebuild_view` into `view.rs`. Stop-conditioned in autonomous mode; needs a focused session.
+- [ ] **Mocked-AWS test coverage** — currently only pure helpers are tested. Two real regressions this week were caught only by the user (DescribeConfigurationSettings returning empty WorkerQueueURL when EB autocreates the queue; peek_messages returning <max without long-polling and a loop). Adopt `aws-smithy-mocks` (or hand-rolled `ReplayingClient`) to assert on observed request shapes and exercise response variants. Foundation for confidently changing aws.rs without breaking silently.
+
+### Polish + correctness — small wins
+- [ ] **Dry-run preview for Deploy / Scale / Clone** — Rebuild and Terminate already fetch instances + recent events into the confirm modal. The new parameterised actions skip that path and show only the traffic-warning chip. Hook them up — operator should see "this will roll N instances across M AZs" before authorising a deploy too.
+- [ ] **Pending-actions panel** — actions are fire-and-forget; we only know they were dispatched. A small "in-flight" panel listing recent dispatches with timestamps + outcome (once the result arrives) would replace having to monitor the Events panel for completion.
+- [ ] **Per-context help** — the global `?` overlay is a single wall of text. Pressing `?` inside the DLQ viewer / action confirm / detail tab should surface only the keys relevant to that mode (using the existing per-mode footer hint material as the source of truth).
+- [ ] **`:resources` overlay** — `DescribeEnvironmentResources` dump (ASG, instances, LBs, launch templates, queues) in a single overlay. Already saved the queue-URL bug; useful as a "what's actually in this env" view.
+- [ ] **Sortable mini-table for Config-tab tags** — currently free-text rows. Render as a small table with key / value columns, sortable.
+- [ ] **Status-diff toast suppression** — after long sleeps the `▲N Red` / `▼N` toasts can fire repeatedly as deltas churn; rate-limit by bucket so each transition only toasts once per N seconds.
+- [ ] **Crash-report TTL** — keep at most 10 newest *and* auto-delete anything older than 30 days, even if we're under the count cap. Currently only count-bounded.
 
 ### Tier 0 — distribution & hygiene
 - [ ] **README screenshots / demo gif** — text README shipped; capturing screenshots requires running the TUI in a real terminal (not this shell).
@@ -260,7 +278,14 @@ Items list `Depends on:` only when another backlog or done item is a real prereq
 - [ ] **Homebrew formula / GitHub Releases with binaries** — macOS users won't `cargo install`. Depends on CI building release artefacts.
 
 ### Tier 1 — operator killer features (the daily-driver gap)
-- [ ] **Option settings editor** — modal text input for the most-edited namespaces (`aws:elasticbeanstalk:application:environment` for env vars; `aws:autoscaling:asg` for min/max; instance type / proxy). Pre-fill current values; submit via `UpdateEnvironment(option_settings)`. *Deferred*: needs a generic modal-form generator; substantial enough to deserve a dedicated session.
+- (moved) Option settings editor → see "Console-replacement gap" above.
+- (moved) CloudWatch Logs streaming → see "Console-replacement gap" above.
+- (moved) Deploy from local path / S3 → see "Console-replacement gap" above.
+
+### Write-path completeness — currently read-only surfaces
+- [ ] **Tags editor** — `update_tags_for_resource` to add / remove env tags. Currently the Config tab shows tags read-only.
+- [ ] **Application-version management** — list versions across an app, delete old ones (`DeleteApplicationVersion`), force-delete with source-bundle removal. Currently only "deploy an existing label".
+- [ ] **Saved-configuration overlay → editable** — `:saved-configs` already lists; add inline create/apply/delete keybindings (`c` create from selected env, `a` apply to selected env, `x` delete).
 
 ### Tier 4 — multi-account / org
 - [ ] **Account switcher with sts:AssumeRole** — the current `:account NAME` is a `:profile NAME` alias. A proper assume-role flow needs an `[accounts]` config schema in `config.toml` with role ARNs, an AssumeRole call, and credentials injection into the SDK. Deferred.
@@ -270,6 +295,15 @@ Items list `Depends on:` only when another backlog or done item is a real prereq
 
 ### Tier 8 — maybe / unprioritised
 - [ ] **Snapshot at a point in time** — "what envs looked like 1h ago" (would need local history).
+
+### Trim candidates — built, but probably over-served
+Honest list of features that landed during expansion sprints but aren't earning their maintenance cost. Don't remove unilaterally; flag for review.
+
+- **Webhook on Red transition** — single-URL POST is too rigid for real ops workflows. A proper Slack block-kit integration (with env context, action buttons) would replace it; otherwise consider trimming back to a `tracing::warn!` and a status toast.
+- **Custom keybindings (`keys.toml`)** — supports F1-F12 and uppercase aliases to `:commands`. Almost no one will write this file; the underlying need (palette + per-context hints) is served by `Ctrl-K`.
+- **Multi-region overview / org-wide health / cross-account search** — useful in theory; most teams operate in one account+region day-to-day. The `aws::list_environments_in_region` fan-out helper is the real win, retain that.
+- **Embedded mini-map (`:minimap`)** — cute corner overlay; no operational signal beyond what the main table already shows.
+- **Asciinema recorder (deferred in BACKLOG)** — keep deferred; standalone replay infrastructure is its own product.
 
 ---
 
