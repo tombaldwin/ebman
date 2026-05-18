@@ -18,8 +18,8 @@ use tokio::sync::mpsc;
 
 use crate::{
     aws::{
-        Application, AwsClient, AwsContext, CwAlarm, Environment, Event as EbEvent, Identity,
-        Instance, MetricSeries, QueueMessage, WorkerQueues,
+        AppVersion, Application, AwsClient, AwsContext, CwAlarm, Environment, Event as EbEvent,
+        Identity, Instance, MetricSeries, QueueMessage, WorkerQueues,
     },
     config::Config,
     profiles,
@@ -77,6 +77,14 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "deselect",
     "select-clear",
     "minimap",
+    "config-save",
+    "config-delete",
+    "config-apply",
+    "versions",
+    "deploy",
+    "account",
+    "find-env",
+    "org-health",
 ];
 
 /// Which on-screen panel is "focused" — i.e. which one j/k/Enter target. The
@@ -645,6 +653,9 @@ pub struct App {
     pub show_minimap: bool,
     /// Currently-focused panel. Drives j/k routing and footer hints.
     pub focus: Focus,
+    /// Regions to fan refreshes across. Empty = single-region mode (only the
+    /// AwsClient's region). Populated by `:region all`.
+    pub multi_regions: Vec<String>,
     /// User-defined key bindings parsed from `~/.config/ebman/keys.toml`.
     pub custom_keys: crate::keys::CustomKeys,
     pub detail: Option<DetailState>,
@@ -810,6 +821,17 @@ enum AppMsg {
         env_name: String,
         result: Result<Vec<(String, String)>, String>,
     },
+    /// Cross-account search payload from `:find-env`. Surfaced in an overlay.
+    CrossAccountSearch {
+        gen: u64,
+        body: String,
+    },
+    /// Application versions listing for the env's app, fetched via `:versions`.
+    AppVersions {
+        gen: u64,
+        application: String,
+        result: Result<Vec<AppVersion>, String>,
+    },
     /// Result of the startup update-check. `None` means "no newer release"
     /// or the check couldn't reach crates.io; either way, the UI doesn't
     /// nag the user. We don't carry a generation — the message is anchored
@@ -950,6 +972,7 @@ impl App {
             multi_selected: BTreeSet::new(),
             show_minimap: false,
             focus: Focus::Table,
+            multi_regions: Vec::new(),
             custom_keys: crate::keys::load(),
             detail: None,
             action_flow: None,
@@ -3008,9 +3031,181 @@ impl App {
             "q" | "quit" => self.quit = true,
             "refresh" => self.manual_refresh(),
             "help" | "?" => self.mode = Mode::Help,
-            "region" | "r" => match rest.first() {
-                Some(r) => self.apply_picker_choice(PickerKind::Region, (*r).to_string()),
-                None => self.error_message = Some("usage: :region <name>".into()),
+            "region" | "r" => match rest.first().copied() {
+                Some("all") => {
+                    let mut regions = self.extra_regions.clone();
+                    if !regions.iter().any(|r| r == &self.context.region) {
+                        regions.push(self.context.region.clone());
+                    }
+                    if regions.is_empty() {
+                        self.error_message =
+                            Some("no regions configured — set extra_regions in config.toml".into());
+                        return;
+                    }
+                    regions.sort();
+                    regions.dedup();
+                    self.multi_regions = regions.clone();
+                    self.status_message = Some(format!(
+                        "multi-region: fanning across {} regions ({})",
+                        regions.len(),
+                        regions.join(", ")
+                    ));
+                    self.spawn_refresh();
+                }
+                Some("off") | Some("single") => {
+                    self.multi_regions.clear();
+                    self.status_message = Some("multi-region off".into());
+                    self.spawn_refresh();
+                }
+                Some(r) => self.apply_picker_choice(PickerKind::Region, r.to_string()),
+                None => self.error_message = Some("usage: :region <name> | all | off".into()),
+            },
+            "org-health" => {
+                let profiles = crate::profiles::load_profiles();
+                let region = self.context.region.clone();
+                let tx = self.msg_tx.clone();
+                let gen = self.generation;
+                self.status_message = Some(format!(
+                    "scanning {} profile(s) in {region} for org health…",
+                    profiles.len()
+                ));
+                tokio::spawn(async move {
+                    use futures::future::join_all;
+                    let tasks = profiles.into_iter().map(|p| {
+                        let r = region.clone();
+                        async move {
+                            let res =
+                                crate::aws::list_environments_in_region(Some(p.clone()), r).await;
+                            (p, res)
+                        }
+                    });
+                    let results = join_all(tasks).await;
+                    let mut lines: Vec<String> = vec![
+                        "Org-wide health (one row per profile)".into(),
+                        "─────────────────────────────────────".into(),
+                        String::new(),
+                    ];
+                    let mut total = 0usize;
+                    let mut total_red = 0usize;
+                    for (profile, r) in results {
+                        match r {
+                            Ok(envs) => {
+                                let n = envs.len();
+                                total += n;
+                                let red = envs
+                                    .iter()
+                                    .filter(|e| {
+                                        e.health.eq_ignore_ascii_case("Red")
+                                            || e.health.eq_ignore_ascii_case("Severe")
+                                    })
+                                    .count();
+                                total_red += red;
+                                let warning = if red > 0 { " ⚠" } else { "" };
+                                lines.push(format!(
+                                    "  {profile:<20}  envs:{n:<4}  red:{red}{warning}"
+                                ));
+                            }
+                            Err(e) => {
+                                lines.push(format!("  {profile:<20}  ERROR: {e}"));
+                            }
+                        }
+                    }
+                    lines.push(String::new());
+                    lines.push(format!(
+                        "Total: {total} envs, {total_red} in Red across all profiles"
+                    ));
+                    lines.push("esc / q to close".into());
+                    let _ = tx.send(AppMsg::CrossAccountSearch {
+                        gen,
+                        body: lines.join("\n"),
+                    });
+                });
+            }
+            "find-env" => match rest.first().copied() {
+                None => {
+                    self.error_message =
+                        Some("usage: :find-env <name-substring>  (scans every AWS profile)".into());
+                }
+                Some(needle) => {
+                    let needle = needle.to_string();
+                    let profiles = crate::profiles::load_profiles();
+                    let region = self.context.region.clone();
+                    let tx = self.msg_tx.clone();
+                    let gen = self.generation;
+                    self.status_message = Some(format!(
+                        "searching '{needle}' across {} profile(s) in {region}…",
+                        profiles.len()
+                    ));
+                    tokio::spawn(async move {
+                        use futures::future::join_all;
+                        let needle_lc = needle.to_lowercase();
+                        let region_for_tasks = region.clone();
+                        let tasks = profiles.into_iter().map(|p| {
+                            let r = region_for_tasks.clone();
+                            let n = needle_lc.clone();
+                            async move {
+                                match crate::aws::list_environments_in_region(Some(p.clone()), r)
+                                    .await
+                                {
+                                    Ok(envs) => {
+                                        let hits: Vec<String> = envs
+                                            .into_iter()
+                                            .filter(|e| {
+                                                e.name.to_lowercase().contains(&n)
+                                                    || e.application.to_lowercase().contains(&n)
+                                            })
+                                            .map(|e| {
+                                                format!("  • {p}  / {} ({})", e.name, e.health)
+                                            })
+                                            .collect();
+                                        (p, Ok(hits))
+                                    }
+                                    Err(e) => (p, Err(format!("{e}"))),
+                                }
+                            }
+                        });
+                        let results = join_all(tasks).await;
+                        let mut hits: Vec<String> = Vec::new();
+                        let mut errs: Vec<String> = Vec::new();
+                        for (profile, r) in results {
+                            match r {
+                                Ok(mut h) if !h.is_empty() => hits.append(&mut h),
+                                Ok(_) => {}
+                                Err(e) => errs.push(format!("  {profile}: {e}")),
+                            }
+                        }
+                        let body = format!(
+                            "Cross-account search for '{needle}'\n\
+                             ─────────────────────────────────\n\n\
+                             {}\n\n\
+                             {}\n\nesc / q to close",
+                            if hits.is_empty() {
+                                "(no matches)".to_string()
+                            } else {
+                                hits.join("\n")
+                            },
+                            if errs.is_empty() {
+                                String::new()
+                            } else {
+                                format!("Errors:\n{}", errs.join("\n"))
+                            },
+                        );
+                        let _ = tx.send(AppMsg::CrossAccountSearch { gen, body });
+                    });
+                }
+            },
+            "account" => match rest.first() {
+                // `:account NAME` is an alias for `:profile NAME`. The common
+                // AWS pattern is to have one profile per account (often with
+                // `role_arn` chained off a base profile), so switching profile
+                // is effectively switching account. A true sts:AssumeRole-based
+                // account model needs a separate config schema; left for a
+                // dedicated session.
+                Some(p) => self.apply_picker_choice(PickerKind::Profile, (*p).to_string()),
+                None => {
+                    self.error_message =
+                        Some("usage: :account <profile-name>  (alias for :profile)".into())
+                }
             },
             "profile" | "p" => match rest.first() {
                 Some(p) => self.apply_picker_choice(PickerKind::Profile, (*p).to_string()),
@@ -3369,6 +3564,177 @@ impl App {
                 ));
                 self.multi_selected.clear();
             }
+            "versions" => {
+                let Some(env) = self.selected_env().cloned() else {
+                    self.error_message = Some("no environment selected".into());
+                    return;
+                };
+                let app_name = env.application.clone();
+                let aws = self.aws.clone();
+                let tx = self.msg_tx.clone();
+                let gen = self.generation;
+                self.status_message =
+                    Some(format!("fetching application versions for {app_name}…"));
+                tokio::spawn(async move {
+                    let result = aws
+                        .list_application_versions(&app_name)
+                        .await
+                        .map_err(|e| flatten_err("list_application_versions", e));
+                    let _ = tx.send(AppMsg::AppVersions {
+                        gen,
+                        application: app_name,
+                        result,
+                    });
+                });
+            }
+            "deploy" => match rest.first().copied() {
+                None => {
+                    self.error_message =
+                        Some("usage: :deploy <version-label>  (applies to selected env)".into());
+                }
+                Some(version) => {
+                    if self.read_only {
+                        self.error_message = Some("read-only mode — deploy disabled".into());
+                        return;
+                    }
+                    let Some(env) = self.selected_env().cloned() else {
+                        self.error_message = Some("no environment selected".into());
+                        return;
+                    };
+                    let version = version.to_string();
+                    let aws = self.aws.clone();
+                    let tx = self.msg_tx.clone();
+                    let gen = self.generation;
+                    let env_name = env.name.clone();
+                    write_audit_line(
+                        self.context.account_id.as_deref(),
+                        self.context.profile.as_deref(),
+                        &self.context.region,
+                        &format!(
+                            "stage=dispatched action=Deploy target={env_name} version={version}"
+                        ),
+                    );
+                    self.status_message = Some(format!("deploying {version} → {env_name}…"));
+                    tokio::spawn(async move {
+                        let result = aws
+                            .deploy_version(&env_name, &version)
+                            .await
+                            .map_err(|e| flatten_err("deploy_version", e));
+                        let _ = tx.send(AppMsg::ActionResult {
+                            gen,
+                            action: Action::Rebuild,
+                            env_name,
+                            result,
+                        });
+                    });
+                }
+            },
+            "config-save" => match rest.first().copied() {
+                None => {
+                    self.error_message =
+                        Some("usage: :config-save <template-name>  (uses selected env)".into());
+                }
+                Some(template) => {
+                    let Some(env) = self.selected_env().cloned() else {
+                        self.error_message = Some("no environment selected".into());
+                        return;
+                    };
+                    let Some(env_id) = env.id.clone() else {
+                        self.error_message =
+                            Some("env has no internal ID — refresh and retry".into());
+                        return;
+                    };
+                    let template = template.to_string();
+                    let app_name = env.application.clone();
+                    let aws = self.aws.clone();
+                    let tx = self.msg_tx.clone();
+                    let gen = self.generation;
+                    self.status_message = Some(format!(
+                        "saving config from {} as template '{template}'…",
+                        env.name
+                    ));
+                    let action = Action::Rebuild; // placeholder; we reuse ActionResult for outcome
+                    let display_env = env.name.clone();
+                    let template_for_msg = template.clone();
+                    tokio::spawn(async move {
+                        let result = aws
+                            .create_config_template(&app_name, &template, &env_id)
+                            .await
+                            .map_err(|e| flatten_err("create_config_template", e));
+                        let labelled = result
+                            .map(|_| ())
+                            .map_err(|e| format!("config-save '{template_for_msg}': {e}"));
+                        let _ = tx.send(AppMsg::ActionResult {
+                            gen,
+                            action,
+                            env_name: display_env,
+                            result: labelled,
+                        });
+                    });
+                }
+            },
+            "config-delete" => match (rest.first().copied(), rest.get(1).copied()) {
+                (Some(app_name), Some(template)) => {
+                    let aws = self.aws.clone();
+                    let tx = self.msg_tx.clone();
+                    let gen = self.generation;
+                    let template = template.to_string();
+                    let app_name = app_name.to_string();
+                    self.status_message = Some(format!(
+                        "deleting template '{template}' from app '{app_name}'…"
+                    ));
+                    let template_for_msg = template.clone();
+                    tokio::spawn(async move {
+                        let result = aws
+                            .delete_config_template(&app_name, &template)
+                            .await
+                            .map_err(|e| flatten_err("delete_config_template", e))
+                            .map_err(|e| format!("config-delete '{template_for_msg}': {e}"));
+                        let _ = tx.send(AppMsg::ActionResult {
+                            gen,
+                            action: Action::Rebuild,
+                            env_name: template_for_msg,
+                            result,
+                        });
+                    });
+                }
+                _ => {
+                    self.error_message =
+                        Some("usage: :config-delete <application> <template-name>".into());
+                }
+            },
+            "config-apply" => match rest.first().copied() {
+                None => {
+                    self.error_message = Some(
+                        "usage: :config-apply <template-name>  (applies to selected env)".into(),
+                    );
+                }
+                Some(template) => {
+                    let Some(env) = self.selected_env().cloned() else {
+                        self.error_message = Some("no environment selected".into());
+                        return;
+                    };
+                    let template = template.to_string();
+                    let aws = self.aws.clone();
+                    let tx = self.msg_tx.clone();
+                    let gen = self.generation;
+                    let env_name = env.name.clone();
+                    self.status_message =
+                        Some(format!("applying template '{template}' to {env_name}…"));
+                    tokio::spawn(async move {
+                        let result = aws
+                            .apply_config_template(&env_name, &template)
+                            .await
+                            .map_err(|e| flatten_err("apply_config_template", e));
+                        let _ = tx.send(AppMsg::ActionResult {
+                            gen,
+                            action: Action::Rebuild,
+                            env_name,
+                            result,
+                        });
+                    });
+                }
+            },
             "minimap" => {
                 self.show_minimap = parse_toggle(rest.first().copied(), self.show_minimap);
                 self.status_message = Some(if self.show_minimap {
@@ -3644,16 +4010,46 @@ impl App {
         self.loading_since = Some(Instant::now());
         self.status_snapshot_at_refresh =
             Some((self.status_message.clone(), self.error_message.clone()));
-        let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
-        tokio::spawn(async move {
-            let result = aws
-                .list_environments()
-                .await
-                .map_err(|e| flatten_err("list_environments", e));
-            let _ = tx.send(AppMsg::Refresh { gen, result });
-        });
+        if self.multi_regions.is_empty() {
+            let aws = self.aws.clone();
+            tokio::spawn(async move {
+                let result = aws
+                    .list_environments()
+                    .await
+                    .map_err(|e| flatten_err("list_environments", e));
+                let _ = tx.send(AppMsg::Refresh { gen, result });
+            });
+        } else {
+            let regions = self.multi_regions.clone();
+            let profile = self
+                .override_profile
+                .clone()
+                .or_else(|| self.context.profile.clone());
+            tokio::spawn(async move {
+                use futures::future::join_all;
+                let tasks = regions.into_iter().map(|r| {
+                    let p = profile.clone();
+                    async move { crate::aws::list_environments_in_region(p, r).await }
+                });
+                let results = join_all(tasks).await;
+                let mut envs = Vec::new();
+                let mut errs = Vec::new();
+                for r in results {
+                    match r {
+                        Ok(v) => envs.extend(v),
+                        Err(e) => errs.push(format!("{e}")),
+                    }
+                }
+                let result = if envs.is_empty() && !errs.is_empty() {
+                    Err(errs.join("; "))
+                } else {
+                    Ok(envs)
+                };
+                let _ = tx.send(AppMsg::Refresh { gen, result });
+            });
+        }
         if self.events_visible {
             self.spawn_events();
         }
@@ -3887,6 +4283,42 @@ impl App {
                         detail.log_tail.stage = LogTailStage::Ready;
                         detail.log_tail.error = Some(msg);
                     }
+                }
+            }
+            AppMsg::CrossAccountSearch { gen, body } => {
+                if gen != self.generation {
+                    return;
+                }
+                self.current_overlay = Some(Overlay::SavedConfigs(body));
+            }
+            AppMsg::AppVersions {
+                gen,
+                application,
+                result,
+            } => {
+                if gen != self.generation {
+                    return;
+                }
+                match result {
+                    Ok(versions) if versions.is_empty() => {
+                        self.status_message =
+                            Some(format!("no application versions for {application}"));
+                    }
+                    Ok(versions) => {
+                        let summary = versions
+                            .iter()
+                            .take(20)
+                            .map(|v| format!("{} ({})", v.label, v.description))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        self.current_overlay = Some(Overlay::SavedConfigs(format!(
+                            "Application versions: {application}\n\
+                             ────────────────────────────────────\n\
+                             {summary}\n\n\
+                             Use `:deploy <label>` to ship one to the selected env.\nesc / q to close"
+                        )));
+                    }
+                    Err(msg) => self.error_message = Some(msg),
                 }
             }
             AppMsg::UpdateCheck(latest) => {
@@ -5500,6 +5932,8 @@ mod tests {
             version_label: "v1".into(),
             arn: None,
             updated,
+            id: None,
+            region: None,
         }
     }
 
@@ -5701,6 +6135,8 @@ mod tests {
             version_label: version.into(),
             arn: None,
             updated: None,
+            id: None,
+            region: None,
         }
     }
 
@@ -5864,6 +6300,8 @@ mod tests {
             version_label: "v42".into(),
             arn: None,
             updated: None,
+            id: None,
+            region: None,
         };
         let text = describe_env(&env);
         assert!(text.contains("\"name\""));

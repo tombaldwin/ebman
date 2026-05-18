@@ -35,7 +35,7 @@ pub fn latest_session_expiry() -> Option<DateTime<Utc>> {
         if at <= now {
             continue;
         }
-        if best.map_or(true, |b| at > b) {
+        if best.is_none_or(|b| at > b) {
             best = Some(at);
         }
     }

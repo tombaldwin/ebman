@@ -812,6 +812,10 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
         ("CNAME", SortKey::Name),
         ("AGE", SortKey::Age),
     ];
+    // REGION column only renders when the user has fanned across regions.
+    if !app.multi_regions.is_empty() {
+        full.insert(1, ("REGION", SortKey::App));
+    }
     if compact {
         // Compact preset hides TREND + PLATFORM regardless of user pref.
         full.retain(|(label, _)| !matches!(*label, "TREND" | "PLATFORM"));
@@ -971,6 +975,8 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                         "CNAME" => Cell::from(redact(&e.cname, app.redact))
                             .style(Style::default().fg(theme.muted)),
                         "AGE" => Cell::from(age.clone()).style(Style::default().fg(theme.muted)),
+                        "REGION" => Cell::from(e.region.clone().unwrap_or_default())
+                            .style(Style::default().fg(theme.accent)),
                         _ => Cell::from(""),
                     })
                     .collect();
@@ -1160,7 +1166,7 @@ fn draw_minimap(f: &mut Frame, area: Rect, app: &App) {
     let capacity = (max_w as usize) * (max_h as usize);
     let to_show: Vec<&crate::aws::Environment> = envs.iter().take(capacity).collect();
     let needed_w: u16 = (to_show.len() as u16).min(max_w);
-    let rows_needed: u16 = ((to_show.len() as u16) + max_w - 1) / max_w;
+    let rows_needed: u16 = (to_show.len() as u16).div_ceil(max_w);
     let rows: u16 = rows_needed.min(max_h);
     let map_rect = Rect {
         x: area.x + area.width.saturating_sub(needed_w + 2),

@@ -1,7 +1,7 @@
-/// Check crates.io for a newer release of `ebman`. The check fires once at
-/// startup and writes its result to the App via an `AppMsg::UpdateCheck`. We
-/// don't pull in `reqwest` for this — `curl` is already a dependency of the
-/// log-tail feature, so a one-shot subprocess fits in the same budget.
+//! Check crates.io for a newer release of `ebman`. The check fires once at
+//! startup and writes its result to the App via an `AppMsg::UpdateCheck`. We
+//! don't pull in `reqwest` for this — `curl` is already a dependency of the
+//! log-tail feature, so a one-shot subprocess fits in the same budget.
 
 /// Result returned by `check_async`. `None` means "no newer release" /
 /// "couldn't reach crates.io" / "version string didn't parse" — anything that

@@ -77,6 +77,13 @@ pub struct Application {
 }
 
 #[derive(Clone, Debug)]
+pub struct AppVersion {
+    pub label: String,
+    pub description: String,
+    pub created: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug)]
 pub struct Environment {
     pub name: String,
     pub application: String,
@@ -88,6 +95,12 @@ pub struct Environment {
     pub version_label: String,
     pub arn: Option<String>,
     pub updated: Option<DateTime<Utc>>,
+    /// Internal EB environment ID (e.g. `e-abcdef1234`). Required by APIs
+    /// that snapshot config from a live env (CreateConfigurationTemplate).
+    pub id: Option<String>,
+    /// Region the env was discovered in, when results were fanned out across
+    /// multiple regions. `None` in single-region mode.
+    pub region: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -513,6 +526,101 @@ impl AwsClient {
         Ok(())
     }
 
+    /// Snapshot an env's current configuration as a named template under the
+    /// same application. Idempotent for the user — if a template with the
+    /// same name already exists, the API returns an error which we surface.
+    pub async fn create_config_template(
+        &self,
+        application_name: &str,
+        template_name: &str,
+        source_env_name: &str,
+    ) -> Result<()> {
+        self.client
+            .create_configuration_template()
+            .application_name(application_name)
+            .template_name(template_name)
+            .environment_id(source_env_name)
+            .send()
+            .await
+            .map_err(|e| eyre!("CreateConfigurationTemplate failed: {e}"))?;
+        Ok(())
+    }
+
+    /// Delete a configuration template by name. AWS will refuse if the
+    /// template is currently in use; we pass the error back unchanged.
+    pub async fn delete_config_template(
+        &self,
+        application_name: &str,
+        template_name: &str,
+    ) -> Result<()> {
+        self.client
+            .delete_configuration_template()
+            .application_name(application_name)
+            .template_name(template_name)
+            .send()
+            .await
+            .map_err(|e| eyre!("DeleteConfigurationTemplate failed: {e}"))?;
+        Ok(())
+    }
+
+    /// List application versions for `application_name`, sorted newest-first
+    /// by `date_created`. Each entry carries the version label and the
+    /// optional description text shown in the EB console.
+    pub async fn list_application_versions(
+        &self,
+        application_name: &str,
+    ) -> Result<Vec<AppVersion>> {
+        let resp = self
+            .client
+            .describe_application_versions()
+            .application_name(application_name)
+            .send()
+            .await
+            .map_err(|e| eyre!("DescribeApplicationVersions failed: {e}"))?;
+        let mut out: Vec<AppVersion> = resp
+            .application_versions
+            .unwrap_or_default()
+            .into_iter()
+            .map(|v| AppVersion {
+                label: v.version_label.unwrap_or_default(),
+                description: v.description.unwrap_or_default(),
+                created: v
+                    .date_created
+                    .and_then(|d| DateTime::from_timestamp(d.secs(), d.subsec_nanos())),
+            })
+            .collect();
+        out.sort_by_key(|v| std::cmp::Reverse(v.created));
+        Ok(out)
+    }
+
+    /// Deploy a specific application-version label to an existing env via
+    /// `UpdateEnvironment(version_label)`. Returns immediately — the env
+    /// will mutate in the background.
+    pub async fn deploy_version(&self, env_name: &str, version_label: &str) -> Result<()> {
+        self.client
+            .update_environment()
+            .environment_name(env_name)
+            .version_label(version_label)
+            .send()
+            .await
+            .map_err(|e| eyre!("UpdateEnvironment(version_label) failed: {e}"))?;
+        Ok(())
+    }
+
+    /// Apply a saved configuration template to an existing env via
+    /// `UpdateEnvironment(template_name)`. The env will start mutating in
+    /// the background; surface the launch via the events panel.
+    pub async fn apply_config_template(&self, env_name: &str, template_name: &str) -> Result<()> {
+        self.client
+            .update_environment()
+            .environment_name(env_name)
+            .template_name(template_name)
+            .send()
+            .await
+            .map_err(|e| eyre!("UpdateEnvironment(template_name) failed: {e}"))?;
+        Ok(())
+    }
+
     pub async fn terminate_env(&self, env_name: &str) -> Result<()> {
         self.client
             .terminate_environment()
@@ -688,7 +796,24 @@ fn map_env(e: aws_sdk_elasticbeanstalk::types::EnvironmentDescription) -> Enviro
         updated: e
             .date_updated
             .and_then(|d| DateTime::from_timestamp(d.secs(), d.subsec_nanos())),
+        id: e.environment_id,
+        region: None,
     }
+}
+
+/// Fan-out helper: build a transient `AwsClient` for `region` (sharing the
+/// caller's profile) and pull `DescribeEnvironments` from there. Each
+/// returned env has `region` stamped so the table can sort / group on it.
+pub async fn list_environments_in_region(
+    profile: Option<String>,
+    region: String,
+) -> Result<Vec<Environment>> {
+    let client = AwsClient::with(profile, Some(region.clone())).await?;
+    let mut envs = client.list_environments().await?;
+    for e in &mut envs {
+        e.region = Some(region.clone());
+    }
+    Ok(envs)
 }
 
 /// Pulls the family + version out of either a solution_stack_name like

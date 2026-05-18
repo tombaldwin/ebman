@@ -196,6 +196,31 @@ Living list of done / pending / dropped work. New entries get added at the botto
 
 ### Tier 1 features (post-review)
 - **Live log tail**: new Logs tab in Detail. `^R` triggers `RequestEnvironmentInfo("tail")`, polls `RetrieveEnvironmentInfo` up to 12× at 2s intervals, then fetches each instance's pre-signed S3 URL via `curl`. UI advances through Requesting → Polling (with attempt counter) → Fetching → Ready stages. Per-instance content is shown with a banner row; regex search (`/`) filters visible lines independently of the Events tab search. Requires `curl` on PATH.
+- **Deploy a version**: `:versions` lists `DescribeApplicationVersions` for the selected env's app in an overlay, sorted newest-first. `:deploy <label>` calls `UpdateEnvironment(version_label)` and records a dispatched audit entry. The outcome flows through the existing `AppMsg::ActionResult` path so success/failure surfaces in the footer.
+- **Multi-region overview**: `:region all` flips into multi-region mode and fans `DescribeEnvironments` across `extra_regions ∪ {current}` in parallel. Each env gets its origin region stamped, and a REGION column is conditionally inserted in the table. `:region off` returns to single-region. New `aws::list_environments_in_region` helper is shared with cross-account search and org-health.
+
+### Tier 2 / 3 / 4 / 5 / 6 / 7 batch
+- **Header signals**: SSO session expiry countdown pill (red/yellow/grey by TTL), update-available pill driven by a one-shot crates.io check via curl, `:minimap on|off` overlay of one coloured cell per env (health-driven), saved-filter chip bar appears when `named_filters` is non-empty.
+- **Pre-flight traffic warning** in the confirm modal: `compute_traffic_warning` flags ACTIVE DEPLOY / RECENT CHANGE / currently-Red before authorising further actions.
+- **Drift glyphs** in NAME column: ◆ for envs updated within 24h, ◇ (muted) for envs unchanged > 30d.
+- **5xx / 4xx / p90 anomaly badge** in Metrics tab (`series_anomaly_label` flags last sample > 2x baseline for error rates / 1.5x for latency).
+- **Webhook on Red transition**: `webhook_url` config option; `build_webhook_payload` emits a flat JSON object via curl POST.
+- **Selectable + yankable events panel**: `events_cursor`, `J`/`K` move, `y` yanks the line; `▶` glyph on the cursor row.
+- **Multi-select + batch actions**: space toggles selection (✓ marker in NAME), `:batch-rebuild` / `:batch-restart` dispatch non-destructive actions across the selection in one shot.
+- **Mouse-drag panel resize**: drag the divider between events panel and table; height clamped to [4, 30].
+- **Focused-panel model + per-panel key strip**: `Focus` enum (Table / Events), `Ctrl-]` / `Ctrl-[` cycle, j/k routes by focus, footer strip swaps to events keys when focused there.
+- **Custom keybindings**: new `src/keys.rs` parses `~/.config/ebman/keys.toml`; F1-F12 and uppercase A-Z aliases to `:` commands. `App.lookup_custom_key` intercepts in Normal mode before built-in dispatch.
+- **Saved Configurations full CRUD**: `:config-save`, `:config-delete`, `:config-apply` wired to `CreateConfigurationTemplate` / `DeleteConfigurationTemplate` / `UpdateEnvironment(template_name)`.
+- **`:account NAME`** alias for `:profile NAME` (the standard AWS pattern of one profile per account). A real `sts:AssumeRole`-based account model is deferred to a dedicated session.
+- **Cross-account search**: `:find-env <substring>` fans `DescribeEnvironments` across every profile in `~/.aws/{config,credentials}` (in the current region), reports hits in an overlay.
+- **Org-wide health overview**: `:org-health` aggregates env / Red counts per profile across all configured profiles, surfaced in an overlay.
+- **First-run wizard**: when no persisted state + no AWS creds, a welcome overlay walks through bare-minimum setup.
+- **Metric chart hover**: `metrics_hover_col` + `metrics_body_rect` capture mouse position in Detail/Metrics; `hover_index` pure helper maps column → point index → `@cursor <value>` in each chart's title row.
+
+### Non-interactive CLI
+- **`ebman envs [--json]`** prints the env list as TSV or JSON.
+- **`ebman action <rebuild|restart|terminate> --env NAME [--yes]`** dispatches an action without entering the TUI. Terminate requires `--yes`.
+- `--help` updated to document subcommands; `--version`, `-h`, `-V`, `--read-only` flags continue to work.
 
 ---
 
@@ -225,47 +250,17 @@ Items list `Depends on:` only when another backlog or done item is a real prereq
 - [ ] **Homebrew formula / GitHub Releases with binaries** — macOS users won't `cargo install`. Depends on CI building release artefacts.
 
 ### Tier 1 — operator killer features (the daily-driver gap)
-- [ ] **Deploy a version** — `DescribeApplicationVersions` per app; `D` deploys selected version to chosen env via `UpdateEnvironment(version_label)`. Add a Versions tab to the Application drill-down.
-- [ ] **Option settings editor** — modal text input for the most-edited namespaces (`aws:elasticbeanstalk:application:environment` for env vars; `aws:autoscaling:asg` for min/max; instance type / proxy). Pre-fill current values; submit via `UpdateEnvironment(option_settings)`.
-- [ ] **Multi-region overview** — `:region all` (or `Ctrl-A`) fans `DescribeEnvironments` across N regions in parallel; adds REGION column. Driven by `extra_regions` config + a sane default set. *Depends on:* parallel-fan-out helper (shared with Org-wide health).
-
-### Tier 2 — UX patterns borrowed from e1s / lazygit / lazydocker
-- [ ] **Per-panel key strip** — lazygit-style: hint strip changes based on focused panel (table vs events panel vs detail tab). *Depends on:* focused-panel model.
-- [ ] **Env groups as tabs** — generalises named filters into a tab bar.
-- [ ] **Multi-select for batch actions** — `space` toggles; `a` runs the action across the selection with per-env confirm.
-- [ ] **Focused-panel model** — `Ctrl-]`/`[` cycles focus; navigation keys go to the focused panel.
-
-### Tier 3 — observability / smarts
-- [ ] **Metric chart hover** — read the value at the cursor x-position.
-- [ ] **Anomaly highlight (5xx)** — flag envs whose 5xx jumped >2× baseline since last refresh. (Red-transition variant already done.)
-- [ ] **Drift detection** — flag envs whose option_settings haven't changed in >N days, or have changed recently.
-- [ ] **Webhook on transition** — POST to a URL when an env crosses into Red. Useful for Slack.
+- [ ] **Option settings editor** — modal text input for the most-edited namespaces (`aws:elasticbeanstalk:application:environment` for env vars; `aws:autoscaling:asg` for min/max; instance type / proxy). Pre-fill current values; submit via `UpdateEnvironment(option_settings)`. *Deferred*: needs a generic modal-form generator; substantial enough to deserve a dedicated session.
 
 ### Tier 4 — multi-account / org
-- [ ] **Account switcher** — `:account NAME` assumes a role and rebuilds context.
-- [ ] **Cross-account search** — find an env by name across configured accounts.
-- [ ] **SSO session expiry countdown** — show remaining TTL in the header.
-- [ ] **Org-wide health overview** — fan out across accounts; one table. *Depends on:* parallel-fan-out helper.
-
-### Tier 5 — safety & workflow
-- [ ] **Pre-flight check: traffic level** — recent events already shown; still missing live request rate / active deploy indicator.
+- [ ] **Account switcher with sts:AssumeRole** — the current `:account NAME` is a `:profile NAME` alias. A proper assume-role flow needs an `[accounts]` config schema in `config.toml` with role ARNs, an AssumeRole call, and credentials injection into the SDK. Deferred.
 
 ### Tier 6 — power-user / scripting
-- [ ] **Non-interactive CLI** — `ebman envs --json`; `ebman action rebuild --env foo --yes`. Same code paths, no TUI.
-- [ ] **Embedded recorder** — record + replay sessions to `.cast` (asciinema).
-- [ ] **Custom keybindings** — `~/.config/ebman/keys.toml` rebinds keys (or aliases keys to commands).
-
-### Tier 7 — polish & QoL
-- [ ] **First-run wizard** — when no `~/.aws/credentials` or `~/.config/ebman/config.toml` exists, walk through setup.
-- [ ] **Update checker** — on startup, hit crates.io / GitHub releases and surface a footer note if a newer version exists.
-- [ ] **Resizable panels (mouse drag)** — drag the divider between events panel and table with the mouse. (Keyboard resize via `Ctrl-↑/↓` already exists.)
-- [ ] **Selectable + yankable events panel** — add a selection cursor to the main events panel; `y` yanks the highlighted event line. *Depends on:* events panel selection cursor (new).
+- [ ] **Embedded recorder** — record + replay sessions to `.cast` (asciinema). Deferred — needs its own input-capture + replay infrastructure.
 
 ### Tier 8 — maybe / unprioritised
-- [ ] **Saved Configurations management** — create / delete / update from app (list-only is done).
 - [ ] **Custom Platforms** — list `DescribeCustomPlatforms` for accounts that build them.
 - [ ] **Snapshot at a point in time** — "what envs looked like 1h ago" (would need local history).
-- [ ] **Picture-in-picture mini-map** — health blocks for all envs in a corner.
 
 ---
 

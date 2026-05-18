@@ -36,7 +36,17 @@ type Tui = Terminal<CrosstermBackend<Stdout>>;
 async fn main() -> Result<()> {
     // Handle CLI flags before any TUI / logging setup so they print cleanly.
     let mut read_only = false;
-    for arg in std::env::args().skip(1) {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    // Subcommand support: `ebman envs [--json]`, `ebman action ACTION --env NAME --yes`.
+    // Falls through to the TUI when no subcommand is present.
+    if let Some(first) = args.first() {
+        match first.as_str() {
+            "envs" => return run_envs_cli(&args).await,
+            "action" => return run_action_cli(&args).await,
+            _ => {}
+        }
+    }
+    for arg in &args {
         match arg.as_str() {
             "--version" | "-V" => {
                 println!("ebman {}", env!("CARGO_PKG_VERSION"));
@@ -112,6 +122,11 @@ FLAGS:
     -h, --help       Print this help and exit.
         --read-only  Start with destructive actions disabled (also toggleable with :readonly).
 
+SUBCOMMANDS:
+    envs [--json]                                List environments in current profile / region.
+    action ACTION --env NAME [--yes]             Run an action (rebuild|restart|terminate) on an env.
+                                                  Terminate requires --yes to confirm.
+
 CONFIG:
     ~/.config/ebman/config.toml   user configuration (see README)
     ~/.config/ebman/state.toml    persisted session state (managed by the app)
@@ -120,6 +135,100 @@ CONFIG:
 KEYS:
     Once running, press '?' for the in-app help screen."
     );
+}
+
+async fn run_envs_cli(args: &[String]) -> Result<()> {
+    let json = args.iter().any(|a| a == "--json");
+    let aws = aws::AwsClient::with(None, None).await?;
+    let envs = aws
+        .list_environments()
+        .await
+        .map_err(|e| color_eyre::eyre::eyre!("list_environments: {e}"))?;
+    if json {
+        // Hand-rolled JSON to avoid pulling serde_json. Schema is flat and stable.
+        let entries: Vec<String> = envs
+            .iter()
+            .map(|e| {
+                format!(
+                    "{{\"name\":\"{}\",\"application\":\"{}\",\"status\":\"{}\",\"health\":\"{}\",\"platform\":\"{}\",\"cname\":\"{}\",\"version_label\":\"{}\"}}",
+                    cli_esc(&e.name),
+                    cli_esc(&e.application),
+                    cli_esc(&e.status),
+                    cli_esc(&e.health),
+                    cli_esc(&e.platform),
+                    cli_esc(&e.cname),
+                    cli_esc(&e.version_label),
+                )
+            })
+            .collect();
+        println!("[{}]", entries.join(","));
+    } else {
+        println!("NAME\tAPPLICATION\tSTATUS\tHEALTH\tPLATFORM\tCNAME\tVERSION");
+        for e in &envs {
+            println!(
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                e.name, e.application, e.status, e.health, e.platform, e.cname, e.version_label
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn run_action_cli(args: &[String]) -> Result<()> {
+    // Expected shape: ebman action ACTION --env NAME [--yes]
+    let action_name = args.get(1).map(|s| s.as_str()).unwrap_or("");
+    if action_name.is_empty() || action_name.starts_with('-') {
+        eprintln!("usage: ebman action <rebuild|restart|terminate> --env NAME [--yes]");
+        std::process::exit(2);
+    }
+    let mut env_name: Option<String> = None;
+    let mut yes = false;
+    let mut iter = args.iter().skip(2);
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--env" => env_name = iter.next().cloned(),
+            "--yes" => yes = true,
+            other => {
+                eprintln!("ebman action: unknown flag '{other}'");
+                std::process::exit(2);
+            }
+        }
+    }
+    let Some(env) = env_name else {
+        eprintln!("ebman action: --env NAME is required");
+        std::process::exit(2);
+    };
+    let destructive = matches!(action_name, "terminate");
+    if destructive && !yes {
+        eprintln!("ebman action: '{action_name}' is destructive; re-run with --yes to confirm");
+        std::process::exit(3);
+    }
+    let aws = aws::AwsClient::with(None, None).await?;
+    let result = match action_name {
+        "rebuild" => aws.rebuild_env(&env).await,
+        "restart" => aws.restart_app_server(&env).await,
+        "terminate" => aws.terminate_env(&env).await,
+        other => {
+            eprintln!("ebman action: unknown action '{other}'");
+            std::process::exit(2);
+        }
+    };
+    match result {
+        Ok(()) => {
+            println!("ok: {action_name} on {env} dispatched");
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("err: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Minimal JSON-string escape for CLI output. Mirrors the webhook payload
+/// escape — quotes and backslashes only; EB names don't contain control chars.
+fn cli_esc(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 const SPLASH_SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -385,7 +494,14 @@ fn dirs_log_dir() -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{hsl_to_rgb, prune_old_crash_reports};
+    use super::{cli_esc, hsl_to_rgb, prune_old_crash_reports};
+
+    #[test]
+    fn cli_esc_escapes_quotes_and_backslashes() {
+        assert_eq!(cli_esc("hello"), "hello");
+        assert_eq!(cli_esc("a\"b"), "a\\\"b");
+        assert_eq!(cli_esc("a\\b"), "a\\\\b");
+    }
 
     #[test]
     fn hsl_to_rgb_red() {
