@@ -630,6 +630,34 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         line2.push(sep());
         line2.push(pill("READ-ONLY", Color::Black, theme.health_green));
     }
+    if let Some(release) = app.update_available.as_ref() {
+        line2.push(sep());
+        line2.push(pill(
+            &format!("UPDATE {}", release.version),
+            Color::Black,
+            theme.title_alt,
+        ));
+    }
+    if let Some(exp) = app.sso_expiry {
+        let remaining = exp.signed_duration_since(chrono::Utc::now());
+        if remaining > chrono::Duration::seconds(0) {
+            let mins = remaining.num_minutes();
+            let label = if mins >= 60 {
+                format!("SSO {}h", remaining.num_hours())
+            } else {
+                format!("SSO {mins}m")
+            };
+            let bg = if mins < 15 {
+                theme.health_red
+            } else if mins < 60 {
+                theme.health_yellow
+            } else {
+                theme.health_grey
+            };
+            line2.push(sep());
+            line2.push(pill(&label, Color::Black, bg));
+        }
+    }
 
     // Breadcrumb: region / application / env — gives context at a glance.
     let crumb = breadcrumb_line(app);
@@ -843,6 +871,22 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                 } else {
                     ""
                 };
+                // Drift glyph: ◆ if env's configuration was updated in the last
+                // 24h (someone deployed / changed options), ◇ if it's been
+                // longer than 30 days (sleeping env that may be on stale runtime).
+                let (drift_glyph, drift_color) = match e.updated {
+                    Some(u) => {
+                        let dur = now.signed_duration_since(u);
+                        if dur < chrono::Duration::hours(24) && dur > chrono::Duration::zero() {
+                            ("◆ ", theme.title_alt)
+                        } else if dur > chrono::Duration::days(30) {
+                            ("◇ ", theme.muted)
+                        } else {
+                            ("", theme.text)
+                        }
+                    }
+                    None => ("", theme.text),
+                };
                 let name_cell = Cell::from(Line::from(vec![
                     Span::styled(
                         star.to_string(),
@@ -854,6 +898,12 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                         alert.to_string(),
                         Style::default()
                             .fg(theme.health_red)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        drift_glyph.to_string(),
+                        Style::default()
+                            .fg(drift_color)
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
@@ -1664,6 +1714,19 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                     })
                     .add_modifier(Modifier::BOLD),
             )));
+            // Pre-flight traffic-level warning if anything noteworthy is in
+            // progress (mid-deploy, recent change, currently Red). Rendered
+            // before the dry-run info so the operator sees state-level concerns
+            // first.
+            if let Some(w) = &modal.traffic_warning {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    format!("  ⚠ {w}"),
+                    Style::default()
+                        .fg(theme.health_red)
+                        .add_modifier(Modifier::BOLD),
+                )));
+            }
             // Dry-run preview: instance count + AZ spread, when available.
             if modal.loading_dryrun {
                 lines.push(Line::from(""));
@@ -2191,7 +2254,13 @@ fn draw_detail_metrics(f: &mut Frame, area: Rect, detail: &crate::app::DetailSta
         let first = values.first().copied().unwrap_or(last);
         let delta = last - first;
 
-        let title = Line::from(vec![
+        // Anomaly: a series-specific signal that the most recent sample is
+        // dramatically above its short-term baseline. For error-rate series
+        // (`req5xx`, `req4xx`) we flag `last > 2 × mean(prior points)`; for
+        // latency we flag `last > 1.5 × mean(prior)`. Health / other series
+        // don't carry an interpretable baseline so we skip them.
+        let anomaly = series_anomaly_label(&series.id, &values);
+        let mut title_spans: Vec<Span<'static>> = vec![
             Span::styled(
                 format!("{:<26} ", series.label),
                 Style::default()
@@ -2211,7 +2280,17 @@ fn draw_detail_metrics(f: &mut Frame, area: Rect, detail: &crate::app::DetailSta
                 Style::default().fg(theme.muted),
             ),
             delta_span(delta, &series.id, theme),
-        ]);
+        ];
+        if let Some(label) = anomaly {
+            title_spans.push(Span::raw("  "));
+            title_spans.push(Span::styled(
+                label,
+                Style::default()
+                    .fg(theme.health_red)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        let title = Line::from(title_spans);
         let row_layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(1), Constraint::Min(1)])
@@ -2239,6 +2318,39 @@ fn draw_detail_metrics(f: &mut Frame, area: Rect, detail: &crate::app::DetailSta
             .x_axis(Axis::default().bounds([0.0, max_x]))
             .y_axis(Axis::default().bounds([0.0, max_y]));
         f.render_widget(chart, row_layout[1]);
+    }
+}
+
+/// Return an anomaly badge for a metric series, or `None` if the latest sample
+/// looks consistent with the baseline. The threshold is series-dependent —
+/// error rates spike more aggressively than latency does, so we use a higher
+/// multiplier for `req4xx` / `req5xx` than for `p90`. Series IDs we don't
+/// recognise (e.g. `health`) return `None`.
+pub fn series_anomaly_label(id: &str, values: &[f64]) -> Option<String> {
+    if values.len() < 4 {
+        return None;
+    }
+    let last = *values.last()?;
+    let prior = &values[..values.len() - 1];
+    let sum: f64 = prior.iter().copied().filter(|v| v.is_finite()).sum();
+    let count = prior.iter().filter(|v| v.is_finite()).count() as f64;
+    if count == 0.0 {
+        return None;
+    }
+    let mean = sum / count;
+    if mean <= 0.0 || !last.is_finite() {
+        return None;
+    }
+    let (multiplier, glyph) = match id {
+        "req5xx" => (2.0_f64, "▲ anomaly: 5xx > 2× baseline"),
+        "req4xx" => (2.0_f64, "▲ anomaly: 4xx > 2× baseline"),
+        "p90" => (1.5_f64, "▲ anomaly: latency > 1.5× baseline"),
+        _ => return None,
+    };
+    if last > mean * multiplier {
+        Some(glyph.to_string())
+    } else {
+        None
     }
 }
 
@@ -2949,6 +3061,30 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn series_anomaly_flags_5xx_spike() {
+        let v = vec![1.0, 1.0, 1.0, 1.0, 10.0];
+        assert!(super::series_anomaly_label("req5xx", &v).is_some());
+    }
+
+    #[test]
+    fn series_anomaly_quiet_when_stable() {
+        let v = vec![5.0, 5.0, 5.0, 5.0, 5.5];
+        assert!(super::series_anomaly_label("req5xx", &v).is_none());
+    }
+
+    #[test]
+    fn series_anomaly_ignores_unrelated_id() {
+        let v = vec![1.0, 1.0, 1.0, 1.0, 99.0];
+        assert!(super::series_anomaly_label("health", &v).is_none());
+    }
+
+    #[test]
+    fn series_anomaly_handles_short_series() {
+        let v = vec![1.0, 9.0];
+        assert!(super::series_anomaly_label("req5xx", &v).is_none());
+    }
 
     #[test]
     fn humanize_age_buckets() {

@@ -202,6 +202,37 @@ Recent additions:
 
 Press esc / q / w to close.";
 
+const WELCOME_OVERLAY: &str = "\
+Welcome to ebman
+================
+
+Looks like this is your first run — no AWS credentials or persisted ebman
+state were found on this machine. Here's what you'll need:
+
+1. AWS credentials. Either:
+     aws sso login --profile my-sso-profile     (recommended)
+   or set up ~/.aws/credentials with an access key, then
+     export AWS_PROFILE=my-profile
+
+2. The IAM identity needs at least these EB read permissions:
+     elasticbeanstalk:DescribeEnvironments
+     elasticbeanstalk:DescribeApplications
+     elasticbeanstalk:DescribeEvents
+   Destructive actions (rebuild / restart / swap / terminate) require their
+   matching write permission; you can stay safe with `--read-only` until then.
+
+3. Optional: drop a config at ~/.config/ebman/config.toml. See README.md for
+   the full schema (theme, refresh_interval_secs, extra_regions, …).
+
+Key bindings:
+  ?         this help screen
+  p / r     switch profile / region
+  :         command bar
+  Ctrl-K    fuzzy command palette
+  Ctrl-X    redact mode (good for screenshots / streaming)
+
+Press esc / q / w to close.";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortKey {
     App,
@@ -345,6 +376,11 @@ pub struct ConfirmModal {
     pub loading_dryrun: bool,
     pub recent_events: Option<Vec<EbEvent>>,
     pub loading_events: bool,
+    /// One-line pre-flight warning derived from the env's current state when
+    /// the modal opened — e.g. "ACTIVE DEPLOY: status=Updating" or "RECENT
+    /// CHANGE: updated 4m ago". Surfaced above the Y/N row so the operator
+    /// sees mid-flight changes before authorising another action.
+    pub traffic_warning: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -608,8 +644,18 @@ pub struct App {
     /// How many consecutive refreshes have come back throttled. Each one
     /// roughly doubles the back-off; resets to zero on the next success.
     pub consecutive_throttles: u32,
+    /// Latest still-valid `expiresAt` discovered in `~/.aws/sso/cache`.
+    /// Recomputed on every ticker tick — the file is cheap to read and the
+    /// user may `aws sso login` from another shell while ebman is open.
+    pub sso_expiry: Option<chrono::DateTime<chrono::Utc>>,
+    /// Newer ebman release advertised by crates.io, if any. Populated by the
+    /// fire-and-forget update-check task that runs once at startup.
+    pub update_available: Option<crate::update_check::LatestRelease>,
     pub notify_bell: bool,
     pub required_tags: Vec<String>,
+    /// Webhook URL invoked once per env that transitions into Red on refresh.
+    /// `None` disables the feature.
+    pub webhook_url: Option<String>,
     pub newly_red: HashSet<String>,
     /// Delta in counts vs. the previous refresh, e.g. {"Red" → +1, "Yellow" → -1}.
     pub health_delta: Vec<(String, i32)>,
@@ -722,12 +768,31 @@ enum AppMsg {
         env_name: String,
         result: Result<Vec<(String, String)>, String>,
     },
+    /// Result of the startup update-check. `None` means "no newer release"
+    /// or the check couldn't reach crates.io; either way, the UI doesn't
+    /// nag the user. We don't carry a generation — the message is anchored
+    /// to the process, not a particular AWS context.
+    UpdateCheck(Option<crate::update_check::LatestRelease>),
 }
 
 #[derive(Debug, Clone)]
 pub enum DlqOp {
     Resent { message_id: String },
     Purged,
+}
+
+/// True when this looks like the user's very first run: no persisted ebman
+/// state on disk *and* no AWS credentials or config to talk to. We use that as
+/// the trigger for the welcome overlay rather than nagging on every cold
+/// start.
+fn is_first_run() -> bool {
+    let no_state = !crate::util::config_file("state.toml").exists();
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default();
+    let no_creds = !home.join(".aws").join("credentials").exists()
+        && !home.join(".aws").join("config").exists();
+    no_state && no_creds
 }
 
 async fn init_client(
@@ -875,8 +940,11 @@ impl App {
             status_snapshot_at_refresh: None,
             throttle_until: None,
             consecutive_throttles: 0,
+            sso_expiry: crate::sso::latest_session_expiry(),
+            update_available: None,
             notify_bell: config.notify_bell,
             required_tags: config.required_tags,
+            webhook_url: config.webhook_url,
             newly_red: HashSet::new(),
             health_delta: Vec::new(),
             status_delta: Vec::new(),
@@ -901,6 +969,9 @@ impl App {
         } else if let Some(w) = identity_warning {
             app.error_message = Some(w);
         }
+        if is_first_run() {
+            app.current_overlay = Some(Overlay::Whatsnew(WELCOME_OVERLAY.into()));
+        }
         Ok(app)
     }
 
@@ -911,6 +982,7 @@ impl App {
         let mut anim = tokio::time::interval(Duration::from_millis(100));
         anim.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         self.spawn_refresh();
+        self.spawn_update_check();
 
         loop {
             terminal.draw(|f| ui::draw(f, self))?;
@@ -932,6 +1004,10 @@ impl App {
                     }
                 }
                 _ = ticker.tick() => {
+                    // Cheap and self-contained — re-read the SSO cache on every
+                    // tick so the header countdown stays accurate even if the
+                    // user `aws sso login`s in another shell mid-session.
+                    self.sso_expiry = crate::sso::latest_session_expiry();
                     let now = Instant::now();
                     let backed_off = self
                         .throttle_until
@@ -2430,6 +2506,12 @@ impl App {
                         ActionFlow::SwapTarget { source, .. } => source.clone(),
                         _ => return,
                     };
+                    let warning = self
+                        .environments
+                        .iter()
+                        .find(|e| e.name == source)
+                        .map(compute_traffic_warning)
+                        .unwrap_or(None);
                     self.action_flow = Some(ActionFlow::Confirm(ConfirmModal {
                         action: Action::SwapCnames,
                         target_env: source,
@@ -2440,6 +2522,7 @@ impl App {
                         loading_dryrun: false,
                         recent_events: None,
                         loading_events: false,
+                        traffic_warning: warning,
                     }));
                 }
                 KeyCode::Char(c) if is_text_input(&key) => {
@@ -2535,6 +2618,7 @@ impl App {
                     loading_dryrun: true,
                     recent_events: None,
                     loading_events: true,
+                    traffic_warning: compute_traffic_warning(&env),
                 }));
                 self.spawn_dry_run(env.name.clone());
                 self.spawn_preflight_events(env.name.clone());
@@ -2550,6 +2634,7 @@ impl App {
                     loading_dryrun: true,
                     recent_events: None,
                     loading_events: true,
+                    traffic_warning: compute_traffic_warning(&env),
                 }));
                 self.spawn_dry_run(env.name.clone());
                 self.spawn_preflight_events(env.name.clone());
@@ -2565,6 +2650,7 @@ impl App {
                     loading_dryrun: false,
                     recent_events: None,
                     loading_events: false,
+                    traffic_warning: compute_traffic_warning(&env),
                 }));
             }
         }
@@ -3254,6 +3340,14 @@ impl App {
         });
     }
 
+    fn spawn_update_check(&mut self) {
+        let tx = self.msg_tx.clone();
+        tokio::spawn(async move {
+            let result = crate::update_check::check_async().await;
+            let _ = tx.send(AppMsg::UpdateCheck(result));
+        });
+    }
+
     fn spawn_refresh(&mut self) {
         if matches!(self.load_state, LoadState::Loading) {
             return;
@@ -3505,6 +3599,12 @@ impl App {
                         detail.log_tail.stage = LogTailStage::Ready;
                         detail.log_tail.error = Some(msg);
                     }
+                }
+            }
+            AppMsg::UpdateCheck(latest) => {
+                if let Some(release) = latest {
+                    tracing::info!(target: "ebman::update", current = env!("CARGO_PKG_VERSION"), latest = %release.version, "newer ebman released on crates.io");
+                    self.update_available = Some(release);
                 }
             }
             AppMsg::DryRunResult {
@@ -3881,6 +3981,16 @@ impl App {
                         .unwrap_or(false);
                     if is_red(&e.health) && !prev_red {
                         self.newly_red.insert(e.name.clone());
+                        if let Some(url) = self.webhook_url.clone() {
+                            fire_webhook(
+                                url,
+                                e.name.clone(),
+                                e.application.clone(),
+                                e.health.clone(),
+                                self.context.region.clone(),
+                                self.context.account_id.clone(),
+                            );
+                        }
                     }
                 }
                 // Compute health + status deltas before swapping prev maps.
@@ -4105,6 +4215,90 @@ async fn collect_tail_logs(
         }
     }
     Ok(out)
+}
+
+/// Pre-flight signal for the confirm modal: looks at the env's current state
+/// at action-open time and returns a one-line warning when something
+/// noteworthy is in progress (mid-deploy, recently updated, currently in
+/// Updating / Terminating). `None` for envs that look quiet. Pure function so
+/// the rule set can be pinned down with unit tests.
+pub fn compute_traffic_warning(env: &Environment) -> Option<String> {
+    let status_lower = env.status.to_lowercase();
+    if status_lower.contains("updating") || status_lower.contains("launching") {
+        return Some(format!("ACTIVE DEPLOY: status={}", env.status));
+    }
+    if status_lower.contains("terminating") {
+        return Some(format!("env is {} already", env.status));
+    }
+    if let Some(updated) = env.updated {
+        let dur = chrono::Utc::now().signed_duration_since(updated);
+        if dur >= chrono::Duration::zero() && dur < chrono::Duration::minutes(5) {
+            return Some(format!(
+                "RECENT CHANGE: updated {}s ago",
+                dur.num_seconds().max(0)
+            ));
+        }
+    }
+    if env.health.eq_ignore_ascii_case("Red") || env.health.eq_ignore_ascii_case("Severe") {
+        return Some(format!("env is currently {}", env.health));
+    }
+    None
+}
+
+/// Render a small JSON payload describing a Red transition and fire a POST
+/// via `curl` (already in the toolchain budget for log-tail). The fire is
+/// detached — we don't await it, don't care about the response, just want to
+/// nudge the configured webhook so a Slack / collector can react. The text
+/// is escaped just enough to survive single-line JSON; env / app names from
+/// EB are restricted to alphanumeric + `-_.` so the escape is conservative.
+fn fire_webhook(
+    url: String,
+    env: String,
+    application: String,
+    health: String,
+    region: String,
+    account: Option<String>,
+) {
+    let payload = build_webhook_payload(&env, &application, &health, &region, account.as_deref());
+    tokio::spawn(async move {
+        use tokio::process::Command;
+        let _ = Command::new("curl")
+            .args([
+                "-s",
+                "-S",
+                "--max-time",
+                "10",
+                "-X",
+                "POST",
+                "-H",
+                "Content-Type: application/json",
+                "-d",
+            ])
+            .arg(&payload)
+            .arg(&url)
+            .output()
+            .await;
+    });
+}
+
+/// Format the webhook payload as a flat JSON object. Public for tests so we
+/// can pin down the shape independently of the network code.
+pub fn build_webhook_payload(
+    env: &str,
+    application: &str,
+    health: &str,
+    region: &str,
+    account: Option<&str>,
+) -> String {
+    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+    format!(
+        "{{\"event\":\"env_red\",\"env\":\"{}\",\"application\":\"{}\",\"health\":\"{}\",\"region\":\"{}\",\"account\":\"{}\"}}",
+        esc(env),
+        esc(application),
+        esc(health),
+        esc(region),
+        esc(account.unwrap_or("")),
+    )
 }
 
 /// Recognise AWS throttling error messages. The SDK surfaces these via the
@@ -4970,6 +5164,77 @@ mod tests {
         let cmd = build_describe_cli("my env!", "eu-west-2", Some("prod"));
         assert!(cmd.contains("--environment-names 'my env!'"));
         assert!(cmd.contains("--profile prod"));
+    }
+
+    fn fake_env_with(
+        name: &str,
+        status: &str,
+        health: &str,
+        updated_minutes_ago: Option<i64>,
+    ) -> Environment {
+        let updated =
+            updated_minutes_ago.map(|m| chrono::Utc::now() - chrono::Duration::minutes(m));
+        Environment {
+            name: name.into(),
+            application: "app".into(),
+            status: status.into(),
+            health: health.into(),
+            platform: "Java 17".into(),
+            tier: "Web".into(),
+            cname: "x.elb".into(),
+            version_label: "v1".into(),
+            arn: None,
+            updated,
+        }
+    }
+
+    #[test]
+    fn traffic_warning_flags_updating() {
+        let e = fake_env_with("prod", "Updating", "Yellow", Some(20));
+        assert!(super::compute_traffic_warning(&e)
+            .unwrap()
+            .contains("ACTIVE DEPLOY"));
+    }
+
+    #[test]
+    fn traffic_warning_flags_recent_change() {
+        let e = fake_env_with("prod", "Ready", "Green", Some(2));
+        assert!(super::compute_traffic_warning(&e)
+            .unwrap()
+            .contains("RECENT CHANGE"));
+    }
+
+    #[test]
+    fn traffic_warning_silent_on_quiet_env() {
+        let e = fake_env_with("prod", "Ready", "Green", Some(60));
+        assert!(super::compute_traffic_warning(&e).is_none());
+    }
+
+    #[test]
+    fn traffic_warning_flags_red_health() {
+        let e = fake_env_with("prod", "Ready", "Red", Some(120));
+        assert!(super::compute_traffic_warning(&e).unwrap().contains("Red"));
+    }
+
+    #[test]
+    fn webhook_payload_escapes_quotes_and_backslashes() {
+        let p = super::build_webhook_payload(
+            "my\"env",
+            "my\\app",
+            "Red",
+            "eu-west-2",
+            Some("123456789012"),
+        );
+        assert!(p.contains("\"event\":\"env_red\""));
+        assert!(p.contains("my\\\"env"));
+        assert!(p.contains("my\\\\app"));
+        assert!(p.contains("\"account\":\"123456789012\""));
+    }
+
+    #[test]
+    fn webhook_payload_handles_missing_account() {
+        let p = super::build_webhook_payload("env", "app", "Red", "us-east-1", None);
+        assert!(p.contains("\"account\":\"\""));
     }
 
     #[test]

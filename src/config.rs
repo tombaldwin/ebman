@@ -12,6 +12,10 @@ pub struct Config {
     pub icons: String, // "unicode" | "ascii"
     pub notify_bell: bool,
     pub required_tags: Vec<String>,
+    /// Optional URL to POST a small JSON payload to when an env transitions
+    /// into Red health. Use anything that accepts a webhook (Slack, Discord,
+    /// custom collector). Disabled when unset.
+    pub webhook_url: Option<String>,
 }
 
 impl Default for Config {
@@ -25,6 +29,7 @@ impl Default for Config {
             icons: "unicode".into(),
             notify_bell: false,
             required_tags: Vec::new(),
+            webhook_url: None,
         }
     }
 }
@@ -79,6 +84,14 @@ pub fn parse(text: &str) -> Config {
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
                     .collect();
+            }
+            "webhook_url" => {
+                let v = value.trim();
+                cfg.webhook_url = if v.is_empty() {
+                    None
+                } else {
+                    Some(v.to_string())
+                };
             }
             _ => {}
         }

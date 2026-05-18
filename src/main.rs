@@ -3,9 +3,11 @@ mod aws;
 mod config;
 mod plugins;
 mod profiles;
+mod sso;
 mod state;
 mod theme;
 mod ui;
+mod update_check;
 mod util;
 
 use std::{
