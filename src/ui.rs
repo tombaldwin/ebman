@@ -1851,6 +1851,28 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                     "TERMINATE environment '{}'. This cannot be undone.",
                     modal.target_env
                 ),
+                Action::Deploy => format!(
+                    "Deploy version '{}' to environment '{}'? (rolling, reversible)",
+                    modal.deploy_version.as_deref().unwrap_or("?"),
+                    modal.target_env
+                ),
+                Action::UpgradePlatform => format!(
+                    "Upgrade '{}' to platform: {} (rolling, reversible)",
+                    modal.target_env,
+                    modal.upgrade_platform_label.as_deref().unwrap_or("?")
+                ),
+                Action::Clone => format!(
+                    "Clone '{}' into a new env named '{}'? (creates a new env)",
+                    modal.target_env,
+                    modal.clone_target.as_deref().unwrap_or("?")
+                ),
+                Action::Scale => format!(
+                    "Scale '{}' to min={} / max={}? (rolling)",
+                    modal.target_env,
+                    modal.scale_min.unwrap_or(0),
+                    modal.scale_max.unwrap_or(0)
+                ),
+                Action::AbortUpdate => format!("Abort current update on '{}'?", modal.target_env),
             };
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
