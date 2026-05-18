@@ -191,6 +191,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-ec2"
+version = "1.226.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "27ef215366676d2392accd5a5f964e891f7a97d210b34ccabe775510ccfd0302"
+dependencies = [
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-query",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-smithy-xml",
+ "aws-types",
+ "fastrand",
+ "http 0.2.12",
+ "http 1.4.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-elasticbeanstalk"
 version = "1.99.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1034,6 +1059,7 @@ dependencies = [
  "arboard",
  "aws-config",
  "aws-sdk-cloudwatch",
+ "aws-sdk-ec2",
  "aws-sdk-elasticbeanstalk",
  "aws-sdk-sqs",
  "aws-sdk-sts",

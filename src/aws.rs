@@ -1,5 +1,6 @@
 use aws_config::{Region, SdkConfig};
 use aws_sdk_cloudwatch::Client as CwClient;
+use aws_sdk_ec2::Client as Ec2Client;
 use aws_sdk_elasticbeanstalk::Client;
 use aws_sdk_sqs::Client as SqsClient;
 use aws_sdk_sts::Client as StsClient;
@@ -130,6 +131,7 @@ pub struct AwsClient {
     client: Client,
     sqs: SqsClient,
     cw: CwClient,
+    ec2: Ec2Client,
     config: SdkConfig,
     pub context: AwsContext,
 }
@@ -154,11 +156,13 @@ impl AwsClient {
         let client = Client::new(&config);
         let sqs = SqsClient::new(&config);
         let cw = CwClient::new(&config);
+        let ec2 = Ec2Client::new(&config);
 
         Ok(Self {
             client,
             sqs,
             cw,
+            ec2,
             config,
             context: AwsContext {
                 region,
@@ -828,6 +832,20 @@ impl AwsClient {
             .send()
             .await
             .map_err(|e| eyre!("UpdateEnvironment(asg) failed: {e}"))?;
+        Ok(())
+    }
+
+    /// Terminate a single EC2 instance by ID. ASG (created by EB) re-launches
+    /// a replacement automatically. The API returns immediately; the
+    /// instance enters `shutting-down` and EB's events panel will surface
+    /// the replacement within ~30 s.
+    pub async fn terminate_instance(&self, instance_id: &str) -> Result<()> {
+        self.ec2
+            .terminate_instances()
+            .instance_ids(instance_id)
+            .send()
+            .await
+            .map_err(|e| eyre!("ec2:TerminateInstances failed: {e}"))?;
         Ok(())
     }
 
