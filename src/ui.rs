@@ -3074,19 +3074,31 @@ fn draw_detail_config(
             format!("Tags          ({} total)", detail.tags.len()),
             Style::default().fg(theme.muted),
         )));
-        // Tag-key column: 20 chars normally; long keys (e.g.
-        // `elasticbeanstalk:environment-name`) blow past the column, so we
-        // always emit at least 2 spaces of separator before the value.
-        let tag_key_col = 20usize;
-        for (k, v) in &detail.tags {
-            let key_text = if k.chars().count() < tag_key_col {
-                format!("  {k:<width$}", width = tag_key_col)
+        // Mini-table — sorted alphabetically by key (case-insensitive) so
+        // related tags (e.g. `aws:cloudformation:*`) sit together. The key
+        // column auto-sizes to the longest key for the env, clamped at
+        // half the body width so a single huge key doesn't squish values.
+        let mut sorted: Vec<(&String, &String)> = detail.tags.iter().map(|(k, v)| (k, v)).collect();
+        sorted.sort_by_key(|(k, _)| k.to_lowercase());
+        let max_key_width: usize = sorted
+            .iter()
+            .map(|(k, _)| k.chars().count())
+            .max()
+            .unwrap_or(0)
+            .clamp(12, 40);
+        for (k, v) in &sorted {
+            let key_len = k.chars().count();
+            let key_text = if key_len <= max_key_width {
+                format!("  {k:<width$}", width = max_key_width)
             } else {
-                format!("  {k}  ")
+                // Long key overflows the column — emit it on its own line so
+                // the value still aligns on the next row.
+                format!("  {k}\n  {pad:<width$}", pad = "", width = max_key_width)
             };
             lines.push(Line::from(vec![
                 Span::styled(key_text, Style::default().fg(theme.app_palette[0])),
-                Span::styled(v.clone(), Style::default().fg(theme.text)),
+                Span::raw("  "),
+                Span::styled(v.to_string(), Style::default().fg(theme.text)),
             ]));
         }
     }
