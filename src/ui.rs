@@ -126,6 +126,11 @@ const SPARKLINE_WIDTH: usize = 20;
 const DIVIDER_FILL_WIDTH: usize = 200;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
+    // Shell mode takes the whole screen; nothing else draws.
+    if app.mode == Mode::Shell && app.current_shell.is_some() {
+        draw_shell(f, f.area(), app);
+        return;
+    }
     // Background — Dlq / Detail use a full-screen alternative layout; otherwise
     // draw the main header + table + events + footer.
     if app.mode == Mode::Dlq && app.dlq.is_some() {
@@ -1466,6 +1471,10 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
             }
             _ => " DLQ  j/k move  enter view body  r resend  x delete  p purge  m → MAIN  ^R refresh  esc / q back".into(),
         },
+        Mode::Shell => {
+            // Keystrokes are forwarded to the subprocess; F12 detaches.
+            " SHELL  keys → subprocess  ·  F12 detach back to ebman  ·  ^D / exit closes".into()
+        }
     };
     f.render_widget(
         Paragraph::new(Span::styled(keys, Style::default().fg(Color::Gray))),
@@ -3361,6 +3370,111 @@ fn humanize_age(d: chrono::Duration) -> String {
         format!("{}h", secs / 3600)
     } else {
         format!("{}d", secs / 86_400)
+    }
+}
+
+/// Render an embedded shell pane: a 1-row title at the top, a 1-row footer
+/// hint at the bottom, and the vt100 screen contents filling the middle.
+/// We resize the PTY to match the available space and iterate the parser's
+/// screen cell-by-cell so xterm colours / bold / reverse propagate through
+/// to the ratatui buffer.
+fn draw_shell(f: &mut Frame, area: Rect, app: &mut App) {
+    let Some(shell) = app.current_shell.as_ref() else {
+        return;
+    };
+    let theme = &app.theme;
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(area);
+
+    // Title bar: pane label + detach hint.
+    let header = Line::from(vec![
+        Span::styled(
+            format!(" ⌥ {} ", shell.label),
+            Style::default()
+                .fg(theme.title)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "   F12 detach   ^D / exit  close",
+            Style::default().fg(theme.muted),
+        ),
+    ]);
+    f.render_widget(Paragraph::new(header), chunks[0]);
+
+    let body = chunks[1];
+    // Resize the PTY to fit the current body so the subprocess gets a
+    // sensible TIOCSWINSZ on terminal resize.
+    shell.resize(body.height, body.width);
+
+    // Lock the parser and walk the visible cells. We render into the
+    // ratatui buffer directly because that's the cheapest way to preserve
+    // the per-cell style information.
+    if let Ok(parser) = shell.parser.lock() {
+        let screen = parser.screen();
+        let buf = f.buffer_mut();
+        for row in 0..body.height {
+            for col in 0..body.width {
+                let cell = screen.cell(row, col);
+                let target_x = body.x + col;
+                let target_y = body.y + row;
+                if target_x >= buf.area.x.saturating_add(buf.area.width)
+                    || target_y >= buf.area.y.saturating_add(buf.area.height)
+                {
+                    continue;
+                }
+                let target = &mut buf[(target_x, target_y)];
+                match cell {
+                    Some(c) => {
+                        target.set_symbol(&c.contents());
+                        let mut style = Style::default();
+                        style = style.fg(vt100_color_to_ratatui(c.fgcolor()));
+                        style = style.bg(vt100_color_to_ratatui(c.bgcolor()));
+                        let mut mods = Modifier::empty();
+                        if c.bold() {
+                            mods |= Modifier::BOLD;
+                        }
+                        if c.italic() {
+                            mods |= Modifier::ITALIC;
+                        }
+                        if c.underline() {
+                            mods |= Modifier::UNDERLINED;
+                        }
+                        if c.inverse() {
+                            mods |= Modifier::REVERSED;
+                        }
+                        style = style.add_modifier(mods);
+                        target.set_style(style);
+                    }
+                    None => {
+                        target.set_symbol(" ");
+                    }
+                }
+            }
+        }
+    }
+
+    let footer = Line::from(Span::styled(
+        " SHELL  keys forwarded to subprocess  ·  F12 detach  ·  ^D / exit closes ",
+        Style::default().fg(theme.muted),
+    ));
+    f.render_widget(Paragraph::new(footer), chunks[2]);
+}
+
+/// Map a vt100 cell colour to a ratatui Color. vt100 distinguishes
+/// `Default` (terminal default) from indexed 256-colour and RGB; we
+/// pass each through to the closest ratatui equivalent so true-colour
+/// content (modern shells, vim themes) renders faithfully.
+fn vt100_color_to_ratatui(c: vt100::Color) -> Color {
+    match c {
+        vt100::Color::Default => Color::Reset,
+        vt100::Color::Idx(i) => Color::Indexed(i),
+        vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
     }
 }
 

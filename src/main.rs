@@ -5,6 +5,7 @@ mod control;
 mod keys;
 mod plugins;
 mod profiles;
+mod shell;
 mod sso;
 mod state;
 mod theme;

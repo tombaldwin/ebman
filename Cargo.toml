@@ -30,6 +30,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 arboard = "3"
 regex = "1"
+portable-pty = "0.9"
+vt100 = "0.15"
 
 [profile.release]
 lto = "thin"
