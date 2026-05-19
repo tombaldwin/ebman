@@ -88,6 +88,13 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "managed-window",
     "env",
     "instance-type",
+    "keypair",
+    "public-ip",
+    "elb-scheme",
+    "service-role",
+    "instance-profile",
+    "set-option",
+    "unset-option",
     "custom-platform-delete",
     "versions",
     "deploy",
@@ -5673,6 +5680,118 @@ impl App {
                     });
                 }
             },
+            "keypair" => match rest.first().copied() {
+                None => {
+                    self.error_message =
+                        Some("usage: :keypair NAME  (existing EC2 key pair name; triggers rolling launch-config update)".into());
+                }
+                Some(name) => {
+                    let ns = "aws:autoscaling:launchconfiguration";
+                    self.spawn_option_settings_update(
+                        format!("keypair {name}"),
+                        vec![(ns.into(), "EC2KeyName".into(), name.to_string())],
+                        vec![],
+                    );
+                }
+            },
+            "service-role" => match rest.first().copied() {
+                None => {
+                    self.error_message = Some(
+                        "usage: :service-role ARN_OR_NAME  (IAM role EB itself assumes)".into(),
+                    );
+                }
+                Some(role) => {
+                    let ns = "aws:elasticbeanstalk:environment";
+                    self.spawn_option_settings_update(
+                        format!("service-role {role}"),
+                        vec![(ns.into(), "ServiceRole".into(), role.to_string())],
+                        vec![],
+                    );
+                }
+            },
+            "instance-profile" => match rest.first().copied() {
+                None => {
+                    self.error_message = Some(
+                        "usage: :instance-profile NAME  (IAM instance profile attached to EC2 instances)".into(),
+                    );
+                }
+                Some(name) => {
+                    let ns = "aws:autoscaling:launchconfiguration";
+                    self.spawn_option_settings_update(
+                        format!("instance-profile {name}"),
+                        vec![(ns.into(), "IamInstanceProfile".into(), name.to_string())],
+                        vec![],
+                    );
+                }
+            },
+            "public-ip" => match rest.first().copied() {
+                Some("on") | Some("true") | Some("enable") => {
+                    let ns = "aws:ec2:vpc";
+                    self.spawn_option_settings_update(
+                        "public-ip on".into(),
+                        vec![(ns.into(), "AssociatePublicIpAddress".into(), "true".into())],
+                        vec![],
+                    );
+                }
+                Some("off") | Some("false") | Some("disable") => {
+                    let ns = "aws:ec2:vpc";
+                    self.spawn_option_settings_update(
+                        "public-ip off".into(),
+                        vec![(ns.into(), "AssociatePublicIpAddress".into(), "false".into())],
+                        vec![],
+                    );
+                }
+                _ => {
+                    self.error_message = Some("usage: :public-ip on|off".into());
+                }
+            },
+            "elb-scheme" => match rest.first().copied() {
+                Some(s @ ("public" | "internal")) => {
+                    let value = if s == "public" { "public" } else { "internal" };
+                    let ns = "aws:ec2:vpc";
+                    self.spawn_option_settings_update(
+                        format!("elb-scheme {value}"),
+                        vec![(ns.into(), "ELBScheme".into(), value.into())],
+                        vec![],
+                    );
+                }
+                _ => {
+                    self.error_message = Some(
+                        "usage: :elb-scheme public|internal  (internal = VPC-only, public = internet-facing)".into(),
+                    );
+                }
+            },
+            "set-option" => match (
+                rest.first().copied(),
+                rest.get(1).copied(),
+                rest.get(2).copied(),
+            ) {
+                (Some(ns), Some(opt), Some(_)) => {
+                    let value = rest[2..].join(" ");
+                    self.spawn_option_settings_update(
+                        format!("set-option {ns}.{opt}"),
+                        vec![(ns.to_string(), opt.to_string(), value)],
+                        vec![],
+                    );
+                }
+                _ => {
+                    self.error_message = Some(
+                        "usage: :set-option NAMESPACE OPTION VALUE  (generic escape hatch; VALUE tokens joined with single spaces)".into(),
+                    );
+                }
+            },
+            "unset-option" => match (rest.first().copied(), rest.get(1).copied()) {
+                (Some(ns), Some(opt)) => {
+                    self.spawn_option_settings_update(
+                        format!("unset-option {ns}.{opt}"),
+                        vec![],
+                        vec![(ns.to_string(), opt.to_string())],
+                    );
+                }
+                _ => {
+                    self.error_message = Some("usage: :unset-option NAMESPACE OPTION".into());
+                }
+            },
             "instance-type" => match rest.first().copied() {
                 None => {
                     self.error_message = Some(
@@ -7899,6 +8018,16 @@ fn build_palette_items(app: &App) -> Vec<PaletteItem> {
             "instance-type ",
             "set EC2 instance type for the env's ASG (e.g. t3.medium)",
         ),
+        ("keypair ", "set EC2 key pair NAME on the env's ASG"),
+        ("public-ip ", "toggle EC2 public IP association: on|off"),
+        ("elb-scheme ", "set ELB scheme: public|internal (rolling)"),
+        ("service-role ", "set EB service role ARN/name"),
+        (
+            "instance-profile ",
+            "set EC2 instance-profile NAME for the env's ASG",
+        ),
+        ("set-option ", "generic option set: NAMESPACE OPTION VALUE"),
+        ("unset-option ", "generic option clear: NAMESPACE OPTION"),
         ("custom-platform-delete ", "delete a custom platform by ARN"),
     ];
     for (prefix, desc) in prefill_cmds {

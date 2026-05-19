@@ -222,6 +222,19 @@ Living list of done / pending / dropped work. New entries get added at the botto
 - **`ebman action <rebuild|restart|terminate> --env NAME [--yes]`** dispatches an action without entering the TUI. Terminate requires `--yes`.
 - `--help` updated to document subcommands; `--version`, `-h`, `-V`, `--read-only` flags continue to work.
 
+### Per-option commands + generic option escape hatch (2026-05-19)
+Fills the Network + Security + miscellaneous-option gap without the modal-form abstraction. The new generic commands cover anything we don't have a friendly name for.
+
+- **`:keypair NAME`** — set EC2 key pair (security tab equivalent).
+- **`:service-role ARN_OR_NAME`** — set EB service role.
+- **`:instance-profile NAME`** — set IAM instance profile attached to EC2.
+- **`:public-ip on|off`** — toggle `AssociatePublicIpAddress`.
+- **`:elb-scheme public|internal`** — set ELB scheme.
+- **`:set-option NAMESPACE OPTION VALUE...`** — generic escape hatch for any option-settings namespace; VALUE tokens joined with single spaces.
+- **`:unset-option NAMESPACE OPTION`** — generic clear back to the platform default.
+
+All seven funnel through the shared `spawn_option_settings_update` helper, so read-only + audit + pending tracking are inherited.
+
 ### Env vars in Config tab (2026-05-19)
 - **Env vars now render in the Config tab** — operators no longer need `:env list` for the common "what's set?" case. Loaded eagerly on Detail open via the same lazy pattern as tags (`fetch_env_vars` → `AppMsg::DetailEnvVars` → `detail.env_vars`). After `:env set` / `:env unset` succeeds the Config tab auto-refreshes (the OptionSettingsUpdate handler keys on the summary prefix). Same key-column auto-sizing + overflow-to-newline layout as tags; empty values render as `""` to distinguish "set to empty" from "not set".
 
@@ -351,8 +364,8 @@ Gaps surfaced during the 2026-05-19 console-vs-ebman comparison. Each entry is a
 - [ ] **Attach / detach RDS database** — console exposes a Database tab where you can attach a new RDS instance to an env (creates the security-group + IAM linkage automatically) or detach an existing one. Needs `UpdateEnvironment(option_settings: aws:rds:dbinstance.*)` for create/attach, and a different code path for the post-creation "decouple" workflow (since EB-created RDS instances are pinned to the env's lifecycle by default).
 - [ ] **ALB listener + TLS cert config** — list and edit ALB listeners (port, protocol, default action, attached cert) for the env's ALB. Adds an "LB" tab in Detail. Needs `aws:elbv2:listener.*` option settings + an ACM cert picker. Web-tier-only.
 - [ ] **Capacity profile beyond min/max + instance type** — `:scale N` sets min=max; `:instance-type TYPE` sets the launch-config InstanceType. Console exposes a full Capacity tab with fleet composition (multi-instance-type list, on-demand base + spot %), scaling triggers (custom CW metric / threshold / cooldown), and scheduled scaling actions. New `:capacity` command opening a modal-form (depends on the option-settings editor abstraction from Tier 1) — or per-option commands like `:trigger metric LATENCY threshold 0.5`.
-- [ ] **Network / VPC editor** — console's Network tab lets you change VPC, EC2 subnets, ELB subnets, public-IP toggle, and ELB visibility (internal vs public). All via `aws:ec2:vpc.*` option settings. Operators rarely need this mid-day but when they do, current ebman forces a console trip.
-- [ ] **Security tab — IAM service role + instance profile + EC2 key pair + EC2 security groups** — currently visible read-only in the Config tab. Console lets you swap roles and key pairs without recreating the env (under controlled rolling updates). Needs `aws:elasticbeanstalk:environment.ServiceRole` + `aws:autoscaling:launchconfiguration.IamInstanceProfile / EC2KeyName / SecurityGroups`.
+- [ ] **Network / VPC editor (subnet picker)** — common cases (`:public-ip`, `:elb-scheme`) shipped as per-option commands. Subnet selection (EC2 subnets + ELB subnets) is the remaining gap — needs a multi-select picker since envs typically use 2-3 subnets across AZs. Plain `:set-option aws:ec2:vpc Subnets "subnet-a,subnet-b"` works as an escape hatch today.
+- [ ] **Security tab — EC2 security groups picker** — service role, instance profile, and key pair shipped as per-option commands (`:service-role`, `:instance-profile`, `:keypair`). Security-group list is the remaining gap — similar multi-select shape as the subnet picker. `:set-option aws:autoscaling:launchconfiguration SecurityGroups "sg-a,sg-b"` works today.
 - [ ] **Custom platforms — create** — delete shipped as `:custom-platform-delete <arn>`. Create still missing: console offers a wizard that builds a new custom AMI from a Packer template (slow — minutes — needs polling); ours would be `:custom-platform-create <packer-config>` via `elasticbeanstalk:CreatePlatformVersion`. Niche but a real gap for operators who maintain in-house base AMIs.
 
 ### Console parity — read-side gaps
