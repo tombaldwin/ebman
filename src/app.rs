@@ -703,6 +703,11 @@ pub struct DetailState {
     /// `aws:elasticbeanstalk:application:environment`. Surfaced in the
     /// Config tab so operators don't need `:env list` for the common case.
     pub env_vars: Vec<(String, String)>,
+    /// CW Logs groups discovered for this env. `None` = "not checked yet";
+    /// `Some(empty)` = "checked, none found"; `Some(non_empty)` = "live
+    /// streaming available via `s`". The Logs tab uses this to render a
+    /// hint that's accurate rather than generic.
+    pub cw_log_groups: Option<Vec<String>>,
     pub loading_events: bool,
     pub loading_instances: bool,
     pub loading_queues: bool,
@@ -1044,6 +1049,14 @@ enum AppMsg {
         gen: u64,
         env_name: String,
         result: Result<Vec<(String, String)>, String>,
+    },
+    /// CloudWatch Logs groups discovered for an env. Sent once on Detail
+    /// open; the Logs tab uses this to render an accurate "streaming
+    /// available" hint.
+    DetailLogGroups {
+        gen: u64,
+        env_name: String,
+        groups: Vec<String>,
     },
     /// Result of a `:deploy --from PATH` chain (upload → create version →
     /// optional deploy). `summary` is the same label used in the pending
@@ -2972,6 +2985,7 @@ impl App {
             instances_scroll: 0,
             tags: Vec::new(),
             env_vars: Vec::new(),
+            cw_log_groups: None,
             loading_events: false,
             loading_instances: false,
             loading_queues: false,
@@ -2993,10 +3007,35 @@ impl App {
         // annotation) is populated without the user having to switch tabs.
         self.spawn_detail_tags();
         self.spawn_detail_env_vars();
+        self.spawn_detail_log_groups();
         if let Some(d) = self.detail.as_ref() {
             let env_name = d.env_name.clone();
             self.spawn_detail_instances(env_name);
         }
+    }
+
+    fn spawn_detail_log_groups(&mut self) {
+        let Some(d) = self.detail.as_ref() else {
+            return;
+        };
+        let env_name = d.env_name.clone();
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        tokio::spawn(async move {
+            // We don't surface fetch errors here — failure just means we
+            // can't tell whether CW Logs are configured, in which case the
+            // Logs tab falls back to the generic "press ^R or s" hint.
+            let groups = aws
+                .discover_env_log_groups(&env_name)
+                .await
+                .unwrap_or_default();
+            let _ = tx.send(AppMsg::DetailLogGroups {
+                gen,
+                env_name,
+                groups,
+            });
+        });
     }
 
     fn spawn_detail_env_vars(&mut self) {
@@ -7858,6 +7897,22 @@ impl App {
                         *last_err = Some(msg);
                     }
                 }
+            }
+            AppMsg::DetailLogGroups {
+                gen,
+                env_name,
+                groups,
+            } => {
+                if gen != self.generation {
+                    return;
+                }
+                let Some(detail) = self.detail.as_mut() else {
+                    return;
+                };
+                if detail.env_name != env_name {
+                    return;
+                }
+                detail.cw_log_groups = Some(groups);
             }
             AppMsg::DetailEnvVars {
                 gen,

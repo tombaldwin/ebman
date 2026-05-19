@@ -3186,10 +3186,22 @@ fn draw_detail_logs(f: &mut Frame, area: Rect, detail: &crate::app::DetailState,
 
     // Stage line + search bar at the top.
     let stage_line: Line<'static> = match tail.stage {
-        LogTailStage::Idle => Line::from(Span::styled(
-            " press ^R for one-shot snapshot · s to live-stream CW Logs (needs `:logs-stream on`)",
-            Style::default().fg(theme.muted),
-        )),
+        LogTailStage::Idle => {
+            // Tailored hint based on whether we've discovered CW Logs groups
+            // for this env. The discover call fires on Detail open so by the
+            // time the user navigates to the Logs tab the state is usually
+            // settled.
+            let hint = match detail.cw_log_groups.as_ref() {
+                Some(groups) if !groups.is_empty() => {
+                    " press ^R for one-shot snapshot · s to live-stream CW Logs"
+                }
+                Some(_) => {
+                    " press ^R for one-shot snapshot · CW Logs not configured (`:logs-stream on` to enable)"
+                }
+                None => " press ^R for one-shot snapshot · s to live-stream CW Logs (checking…)",
+            };
+            Line::from(Span::styled(hint, Style::default().fg(theme.muted)))
+        }
         LogTailStage::Requesting => Line::from(Span::styled(
             " requesting tail from EB…",
             Style::default().fg(theme.health_yellow),
