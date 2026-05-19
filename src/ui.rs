@@ -1127,14 +1127,25 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
         })
         .collect();
     let sort_marker = if app.sort_desc { " ▼" } else { " ▲" };
+    // TREND header advertises the window length (HISTORY_CAP samples × refresh
+    // interval) so operators reading the column don't have to guess. Computed
+    // once outside the per-column map.
+    let trend_window =
+        crate::app::humanize_short_age(app.refresh_interval * crate::app::HISTORY_CAP as u32);
     let header_cells: Vec<Cell> = columns
         .iter()
         .map(|(label, key)| {
             // The HEALTH column is rendered as the dot glyph but labelled "●"
             // in the header for the canonical column; sort marker only on it
             // (and the canonical NAME/APPLICATION/STATUS/VERSION/AGE columns).
-            let display = if *label == "HEALTH" { "●" } else { *label };
-            let mut text = display.to_string();
+            let display: std::borrow::Cow<'_, str> = if *label == "HEALTH" {
+                "●".into()
+            } else if *label == "TREND" {
+                format!("TREND ({trend_window})").into()
+            } else {
+                (*label).into()
+            };
+            let mut text = display.into_owned();
             let primary_match = matches!(
                 (key, app.sort_key),
                 (SortKey::Name, SortKey::Name)
