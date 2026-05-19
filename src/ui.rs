@@ -214,6 +214,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             Overlay::Alarms { body, .. } => draw_alarms_overlay(f, f.area(), app, &body),
             Overlay::Diff(text) => draw_diff_overlay(f, f.area(), app, &text),
             Overlay::SavedConfigs(text) => draw_saved_configs_overlay(f, f.area(), app, &text),
+            Overlay::SavedConfigsInteractive { items, cursor } => {
+                draw_saved_configs_interactive(f, f.area(), app, &items, cursor)
+            }
         }
     }
     if app.mode == Mode::Palette {
@@ -357,6 +360,63 @@ fn draw_toasts(f: &mut Frame, area: Rect, app: &App) {
         f.render_widget(para, rect);
         y += toast_h;
     }
+}
+
+fn draw_saved_configs_interactive(
+    f: &mut Frame,
+    area: Rect,
+    app: &App,
+    items: &[(String, String)],
+    cursor: usize,
+) {
+    let popup = centered_rect(60, 70, area);
+    f.render_widget(Clear, popup);
+    let theme = &app.theme;
+    let target = app
+        .selected_env()
+        .map(|e| e.name.clone())
+        .unwrap_or_else(|| "—".into());
+    let max_app_width = items
+        .iter()
+        .map(|(a, _)| a.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(8, 32);
+    let mut lines: Vec<Line> = Vec::with_capacity(items.len() + 4);
+    lines.push(Line::from(Span::styled(
+        format!(" apply target: {target}"),
+        Style::default().fg(theme.muted),
+    )));
+    lines.push(Line::from(""));
+    for (i, (app_name, tmpl)) in items.iter().enumerate() {
+        let marker = if i == cursor { "▶ " } else { "  " };
+        let app_col = format!("{app_name:<width$}", width = max_app_width);
+        let style = if i == cursor {
+            Style::default()
+                .fg(theme.text)
+                .bg(theme.row_selected_bg)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text)
+        };
+        let line = Line::from(vec![
+            Span::styled(marker.to_string(), Style::default().fg(theme.accent)),
+            Span::styled(app_col, Style::default().fg(theme.title_alt)),
+            Span::styled("  /  ", Style::default().fg(theme.muted)),
+            Span::styled(tmpl.clone(), style),
+        ]);
+        lines.push(line);
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " j/k move • enter/a apply • c create • x delete • esc close ",
+        Style::default().fg(theme.muted),
+    )));
+    let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        titled_block(&app.theme, "saved configurations", true, app.theme.title)
+            .padding(Padding::uniform(1)),
+    );
+    f.render_widget(p, popup);
 }
 
 fn draw_saved_configs_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
