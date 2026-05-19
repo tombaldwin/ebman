@@ -10,6 +10,7 @@ use ratatui::{
     Frame,
 };
 
+use crate::aws::Environment;
 use crate::theme::{IconStyle, Theme};
 
 use crate::app::{
@@ -1521,6 +1522,14 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                 } else {
                     ""
                 };
+                // Transient "appeared on this refresh" marker. Stays only
+                // for the cycle in which the env was first seen, so it
+                // calls out new envs without sticking forever.
+                let added_marker = if app.newly_added.contains(&e.name) {
+                    "+ "
+                } else {
+                    ""
+                };
                 let alert = if app.newly_red.contains(&e.name) {
                     "▲ "
                 } else {
@@ -1562,6 +1571,12 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
+                        added_marker.to_string(),
+                        Style::default()
+                            .fg(theme.health_green)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
                         drift_glyph.to_string(),
                         Style::default()
                             .fg(drift_color)
@@ -1581,7 +1596,11 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                         "TIER" => tier_cell(&e.tier, &theme),
                         "STATUS" => status_cell(&e.status, &theme),
                         "HEALTH" => Cell::from(health_dot(&e.health, &theme)),
-                        "TREND" => Cell::from(sparkline_for(app.history.get(&e.name), &theme)),
+                        "TREND" => Cell::from(sparkline_for(
+                            app.history.get(&e.name),
+                            &theme,
+                            app.newly_red.contains(&e.name),
+                        )),
                         "PLATFORM" => {
                             Cell::from(e.platform.clone()).style(Style::default().fg(theme.muted))
                         }
@@ -1642,6 +1661,19 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                         _ => None,
                     })
                     .unwrap_or_else(|| (String::new(), theme.muted));
+                // Walk forward from this separator until the next one to
+                // collect the envs in this group; compute "3 envs · 1 red"
+                // style summary so operators see per-app health without
+                // scanning rows.
+                let group_envs: Vec<&Environment> = display
+                    .iter()
+                    .skip(row_idx + 1)
+                    .map_while(|r| match r {
+                        DisplayRow::Env(i) => Some(&app.environments[*i]),
+                        DisplayRow::Separator => None,
+                    })
+                    .collect();
+                let summary = summarize_group(&group_envs);
                 let dashes = "─".repeat(DIVIDER_FILL_WIDTH);
                 let count = columns.len();
                 if theme.icons == IconStyle::Powerline && !next_app_name.is_empty() {
@@ -1650,6 +1682,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                     // E0B0 cap) so the next-app section starts with its
                     // name visible in its own colour. Remaining cells stay
                     // as dashes in the same colour for visual continuity.
+                    let summary_text = summary.clone();
                     let cells: Vec<Cell> = columns
                         .iter()
                         .enumerate()
@@ -1666,6 +1699,15 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                                     ),
                                     Span::styled("\u{e0b0}", Style::default().fg(next_color)),
                                 ]))
+                            } else if i == 1 {
+                                // Summary lives in the column right after
+                                // the name banner — long enough that the
+                                // counts have room and short enough that
+                                // it doesn't push into PLATFORM.
+                                Cell::from(Span::styled(
+                                    format!(" {summary_text} "),
+                                    Style::default().fg(theme.muted),
+                                ))
                             } else {
                                 Cell::from(Span::styled(
                                     dashes.clone(),
@@ -4513,6 +4555,7 @@ fn caret_glyph(theme: &Theme) -> &'static str {
 fn sparkline_for(
     samples: Option<&std::collections::VecDeque<String>>,
     theme: &Theme,
+    pulse_last: bool,
 ) -> Line<'static> {
     let Some(samples) = samples else {
         return Line::from(Span::raw(" ".repeat(SPARKLINE_WIDTH)));
@@ -4538,7 +4581,16 @@ fn sparkline_for(
         if visible_len > 3 && i < visible_len / 3 {
             style = style.add_modifier(Modifier::DIM);
         }
-        spans.push(Span::styled("▇", style));
+        // Pulse the rightmost cell when the caller flagged a fresh health
+        // transition — swap the block to a full-height `█` and bold it so
+        // the change visually pops on the refresh that landed it.
+        let glyph = if pulse_last && i + 1 == visible_len {
+            style = style.add_modifier(Modifier::BOLD | Modifier::SLOW_BLINK);
+            "█"
+        } else {
+            "▇"
+        };
+        spans.push(Span::styled(glyph, style));
     }
     Line::from(spans)
 }
@@ -4566,6 +4618,48 @@ fn short_caller(arn: &str) -> String {
     // arn:aws:iam::123456789012:user/alice          → user/alice
     // arn:aws:sts::123456789012:assumed-role/Foo/x  → assumed-role/Foo/x
     arn.splitn(6, ':').nth(5).unwrap_or(arn).to_string()
+}
+
+/// Pure: render a one-line summary of a group of envs for the per-app
+/// banner row. Shape: `"3 envs · 2 web · 1 worker · 1 red"`. Health
+/// buckets only appear when non-zero so the summary doesn't include
+/// noise like `0 red`. Tier counts only appear when both tiers are
+/// represented in the group (showing `2 web` when every env is web adds
+/// nothing).
+fn summarize_group(envs: &[&Environment]) -> String {
+    if envs.is_empty() {
+        return String::new();
+    }
+    let total = envs.len();
+    let mut web = 0usize;
+    let mut worker = 0usize;
+    let mut red = 0usize;
+    let mut yellow = 0usize;
+    for e in envs {
+        match e.tier.as_str() {
+            "Web" => web += 1,
+            "Worker" => worker += 1,
+            _ => {}
+        }
+        match e.health.to_lowercase().as_str() {
+            "red" | "severe" | "degraded" => red += 1,
+            "yellow" | "warning" => yellow += 1,
+            _ => {}
+        }
+    }
+    let env_word = if total == 1 { "env" } else { "envs" };
+    let mut parts: Vec<String> = vec![format!("{total} {env_word}")];
+    if web > 0 && worker > 0 {
+        parts.push(format!("{web} web"));
+        parts.push(format!("{worker} worker"));
+    }
+    if red > 0 {
+        parts.push(format!("{red} red"));
+    }
+    if yellow > 0 {
+        parts.push(format!("{yellow} yellow"));
+    }
+    parts.join(" · ")
 }
 
 /// Split a version label into "fixed prefix / moving build number / fixed
@@ -4960,6 +5054,70 @@ mod tests {
         assert_eq!(cursor_marker(&t), "▌ ");
         t.icons = IconStyle::Powerline;
         assert!(cursor_marker(&t).contains('\u{e0b0}'));
+    }
+
+    #[test]
+    fn summarize_group_omits_empty_buckets() {
+        // Build envs with the minimal fields we use in summarize_group.
+        // The full Environment struct has many fields; spread defaults
+        // for the others.
+        fn e(tier: &str, health: &str) -> Environment {
+            Environment {
+                name: "n".into(),
+                application: "a".into(),
+                tier: tier.into(),
+                status: "Ready".into(),
+                health: health.into(),
+                cname: "".into(),
+                platform: "".into(),
+                version_label: "".into(),
+                updated: None,
+                id: None,
+                region: None,
+                arn: None,
+            }
+        }
+        let envs = vec![e("Web", "Green"), e("Web", "Green"), e("Web", "Red")];
+        let refs: Vec<&Environment> = envs.iter().collect();
+        let s = summarize_group(&refs);
+        // 3 envs, all web (no worker), 1 red — only the non-empty buckets
+        // appear. Tier split omitted because everyone is web.
+        assert!(s.contains("3 envs"));
+        assert!(s.contains("1 red"));
+        assert!(!s.contains("worker"));
+        assert!(!s.contains("yellow"));
+    }
+
+    #[test]
+    fn summarize_group_shows_tier_split_when_both_present() {
+        fn e(tier: &str, health: &str) -> Environment {
+            Environment {
+                name: "n".into(),
+                application: "a".into(),
+                tier: tier.into(),
+                status: "Ready".into(),
+                health: health.into(),
+                cname: "".into(),
+                platform: "".into(),
+                version_label: "".into(),
+                updated: None,
+                id: None,
+                region: None,
+                arn: None,
+            }
+        }
+        let envs = vec![e("Web", "Green"), e("Worker", "Yellow"), e("Worker", "Red")];
+        let refs: Vec<&Environment> = envs.iter().collect();
+        let s = summarize_group(&refs);
+        assert!(s.contains("1 web"));
+        assert!(s.contains("2 worker"));
+        assert!(s.contains("1 red"));
+        assert!(s.contains("1 yellow"));
+    }
+
+    #[test]
+    fn summarize_group_empty_input() {
+        assert_eq!(summarize_group(&[]), "");
     }
 
     #[test]

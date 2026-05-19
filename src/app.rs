@@ -1070,6 +1070,12 @@ pub struct App {
     /// values like `"auto"` without flattening them to the resolved style.
     pub cfg_icons_raw: String,
     pub newly_red: HashSet<String>,
+    /// Env names that appeared for the first time on the most recent
+    /// refresh (weren't in `prev_health` last cycle). Used by the env
+    /// table to render a transient `+` marker on the NAME cell so a new
+    /// env doesn't scroll past unnoticed. Cleared on context switch +
+    /// rotated each refresh.
+    pub newly_added: HashSet<String>,
     /// Delta in counts vs. the previous refresh, e.g. {"Red" → +1, "Yellow" → -1}.
     pub health_delta: Vec<(String, i32)>,
     pub status_delta: Vec<(String, i32)>,
@@ -1499,6 +1505,7 @@ impl App {
             webhook_url: config.webhook_url,
             cfg_icons_raw: config.icons.clone(),
             newly_red: HashSet::new(),
+            newly_added: HashSet::new(),
             health_delta: Vec::new(),
             status_delta: Vec::new(),
             prev_alerts: 0,
@@ -9126,6 +9133,7 @@ impl App {
                 self.prev_status.clear();
                 self.prev_alerts = 0;
                 self.newly_red.clear();
+                self.newly_added.clear();
                 self.health_delta.clear();
                 self.status_delta.clear();
                 self.rebuild_view();
@@ -9304,6 +9312,18 @@ impl App {
                 let is_red =
                     |h: &str| h.eq_ignore_ascii_case("Red") || h.eq_ignore_ascii_case("Severe");
                 self.newly_red.clear();
+                // Compute newly-added envs *before* swapping prev_health
+                // below — once we overwrite it, "previously unseen" is no
+                // longer derivable. Skip the first refresh (prev_health is
+                // empty then) so every env doesn't get flagged on startup.
+                self.newly_added.clear();
+                if !self.prev_health.is_empty() {
+                    for e in &envs {
+                        if !self.prev_health.contains_key(&e.name) {
+                            self.newly_added.insert(e.name.clone());
+                        }
+                    }
+                }
                 for e in &envs {
                     let prev_red = self
                         .prev_health
