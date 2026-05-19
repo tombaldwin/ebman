@@ -84,6 +84,7 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "alarm-create",
     "alarm-delete",
     "logs-stream",
+    "logs-tail",
     "notify",
     "managed-window",
     "env",
@@ -224,7 +225,29 @@ pub enum Overlay {
         cursor: usize,
         confirm_delete: bool,
     },
+    /// Streaming CloudWatch Logs view opened by `:logs-tail`. Polling task
+    /// pushes new events via `AppMsg::LogTailEvents` every ~2s; the buffer
+    /// is capped at `LOG_TAIL_MAX_LINES` (oldest dropped when growing).
+    /// `following` snaps to the tail on new events; the user can pause it
+    /// by scrolling up.
+    LogTail {
+        log_group: String,
+        env_name: String,
+        events: std::collections::VecDeque<crate::aws::LogEvent>,
+        scroll: u16,
+        following: bool,
+        since_ms: i64,
+        filter_input: String,
+        filter_active: bool,
+        filter_pattern: Option<regex::Regex>,
+        last_err: Option<String>,
+        /// Unique-per-session id; the polling task carries the same id and
+        /// late events for stale sessions are dropped on arrival.
+        session_id: u64,
+    },
 }
+
+pub const LOG_TAIL_MAX_LINES: usize = 2000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)] // Success reserved for future success-specific toasts.
@@ -906,6 +929,13 @@ pub struct App {
     /// before overlays in the z-order so we have to stash and restore the
     /// overlay around the help round-trip.
     pub pre_help_overlay: Option<Overlay>,
+    /// Handle to the `:logs-tail` polling task. Stored so we can `abort()`
+    /// it when the overlay closes or the user switches context. None when
+    /// no tail session is active.
+    pub log_tail_task: Option<tokio::task::JoinHandle<()>>,
+    /// Monotonically increasing id for `:logs-tail` sessions. Lets late
+    /// `AppMsg::LogTailEvents` from a previous session be dropped on arrival.
+    pub log_tail_session: u64,
     /// Newer ebman release advertised by crates.io, if any. Populated by the
     /// fire-and-forget update-check task that runs once at startup.
     pub update_available: Option<crate::update_check::LatestRelease>,
@@ -1006,6 +1036,25 @@ enum AppMsg {
         gen: u64,
         env_name: String,
         result: Result<Vec<(String, String)>, String>,
+    },
+    /// Sent once at the start of a `:logs-tail` session after the log
+    /// group is resolved (via discovery or user-supplied). Tells the App
+    /// handler to install the `Overlay::LogTail` with the resolved group.
+    LogTailOpened {
+        gen: u64,
+        session_id: u64,
+        env_name: String,
+        log_group: String,
+        since_ms: i64,
+    },
+    /// New events pushed by the `:logs-tail` polling task. `session_id`
+    /// must match the active `Overlay::LogTail` session or the message is
+    /// dropped (stale session after the user closed and reopened).
+    LogTailEvents {
+        gen: u64,
+        session_id: u64,
+        next_since_ms: i64,
+        result: Result<Vec<crate::aws::LogEvent>, String>,
     },
     DryRunResult {
         gen: u64,
@@ -1296,6 +1345,8 @@ impl App {
             help_topic: HelpTopic::Global,
             pre_help_mode: None,
             pre_help_overlay: None,
+            log_tail_task: None,
+            log_tail_session: 0,
             update_available: None,
             reload_requested: false,
             pending_shell_target: None,
@@ -1875,6 +1926,10 @@ impl App {
             Some(Overlay::SavedConfigsInteractive { .. })
         ) {
             self.handle_saved_configs_interactive_key(key);
+            return;
+        }
+        if matches!(self.current_overlay.as_ref(), Some(Overlay::LogTail { .. })) {
+            self.handle_log_tail_key(key);
             return;
         }
         if let Some(overlay) = self.current_overlay.as_ref() {
@@ -3925,6 +3980,203 @@ impl App {
         }
     }
 
+    /// Key handler for the `:logs-tail` streaming overlay. j/k scroll, G
+    /// snaps back to follow-mode (auto-tail), g jumps to top (and pauses
+    /// follow), / opens a regex filter, n clears it, esc/q closes the
+    /// overlay and tears down the polling task.
+    fn handle_log_tail_key(&mut self, key: KeyEvent) {
+        // Filter input mode swallows printable keys.
+        {
+            let Some(Overlay::LogTail {
+                filter_active,
+                filter_input,
+                filter_pattern,
+                ..
+            }) = self.current_overlay.as_mut()
+            else {
+                return;
+            };
+            if *filter_active {
+                match key.code {
+                    KeyCode::Esc => {
+                        *filter_active = false;
+                        filter_input.clear();
+                        *filter_pattern = None;
+                        return;
+                    }
+                    KeyCode::Enter => {
+                        *filter_active = false;
+                        if filter_input.is_empty() {
+                            *filter_pattern = None;
+                        } else {
+                            match regex::RegexBuilder::new(filter_input)
+                                .case_insensitive(true)
+                                .build()
+                            {
+                                Ok(re) => *filter_pattern = Some(re),
+                                Err(_) => *filter_pattern = None,
+                            }
+                        }
+                        return;
+                    }
+                    KeyCode::Backspace => {
+                        filter_input.pop();
+                        return;
+                    }
+                    KeyCode::Char(c) if is_text_input(&key) => {
+                        filter_input.push(c);
+                        return;
+                    }
+                    _ => return,
+                }
+            }
+        }
+        let Some(Overlay::LogTail {
+            scroll,
+            following,
+            filter_active,
+            filter_input,
+            filter_pattern,
+            ..
+        }) = self.current_overlay.as_mut()
+        else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                if let Some(handle) = self.log_tail_task.take() {
+                    handle.abort();
+                }
+                // Bump session id so a late `LogTailOpened` from the
+                // aborted task can't re-open the overlay after the user
+                // dismissed it (abort + channel-send race).
+                self.log_tail_session = self.log_tail_session.wrapping_add(1);
+                self.current_overlay = None;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if *scroll > 0 {
+                    *scroll -= 1;
+                }
+                if *scroll == 0 {
+                    *following = true;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                *scroll = scroll.saturating_add(1);
+                *following = false;
+            }
+            KeyCode::Char('G') | KeyCode::End => {
+                *scroll = 0;
+                *following = true;
+            }
+            KeyCode::Char('g') | KeyCode::Home => {
+                *scroll = u16::MAX;
+                *following = false;
+            }
+            KeyCode::Char('/') => {
+                *filter_active = true;
+                filter_input.clear();
+                *filter_pattern = None;
+            }
+            KeyCode::Char('n') => {
+                filter_input.clear();
+                *filter_pattern = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// Open a streaming CW Logs view for `env_name`. If `explicit_group` is
+    /// `None`, discovers the env's log groups and picks the most useful one
+    /// via `pick_default_log_group`. Aborts any active log-tail task before
+    /// starting the new one, then spawns a polling loop that sends
+    /// `AppMsg::LogTailEvents` every ~2s. The overlay opens immediately in
+    /// a "discovering" state and gets replaced with the LogTail variant
+    /// once the group is known.
+    fn spawn_logs_tail(&mut self, env_name: String, explicit_group: Option<String>) {
+        // Tear down any prior session so we don't have two pollers racing.
+        if let Some(handle) = self.log_tail_task.take() {
+            handle.abort();
+        }
+        self.log_tail_session = self.log_tail_session.wrapping_add(1);
+        let session_id = self.log_tail_session;
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let env_for_msg = env_name.clone();
+        self.status_message = Some(format!("opening log tail for {env_name}…"));
+        let handle = tokio::spawn(async move {
+            // Resolve the log group up front. If the user supplied one,
+            // trust it (no DescribeLogGroups round-trip); otherwise discover.
+            let group = match explicit_group {
+                Some(g) => g,
+                None => match aws.discover_env_log_groups(&env_for_msg).await {
+                    Ok(groups) => match pick_default_log_group(&groups) {
+                        Some(g) => g,
+                        None => {
+                            let _ = tx.send(AppMsg::LogTailEvents {
+                                gen,
+                                session_id,
+                                next_since_ms: 0,
+                                result: Err(format!(
+                                    "no CW log groups under /aws/elasticbeanstalk/{env_for_msg}/ — enable streaming with `:logs-stream on`"
+                                )),
+                            });
+                            return;
+                        }
+                    },
+                    Err(e) => {
+                        let _ = tx.send(AppMsg::LogTailEvents {
+                            gen,
+                            session_id,
+                            next_since_ms: 0,
+                            result: Err(format!("discover log groups: {e}")),
+                        });
+                        return;
+                    }
+                },
+            };
+            // First batch: fetch the last 5 minutes so the overlay isn't
+            // empty on open.
+            let mut since_ms = chrono::Utc::now().timestamp_millis() - 5 * 60 * 1000;
+            // Send an "opening" message that tells the App handler what log
+            // group resolved + replaces the overlay with a real LogTail.
+            let _ = tx.send(AppMsg::LogTailOpened {
+                gen,
+                session_id,
+                env_name: env_for_msg.clone(),
+                log_group: group.clone(),
+                since_ms,
+            });
+            loop {
+                match aws.fetch_recent_log_events(&group, since_ms, 1000).await {
+                    Ok((events, next_since)) => {
+                        let next_since_ms = next_since;
+                        let _ = tx.send(AppMsg::LogTailEvents {
+                            gen,
+                            session_id,
+                            next_since_ms,
+                            result: Ok(events),
+                        });
+                        since_ms = next_since;
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AppMsg::LogTailEvents {
+                            gen,
+                            session_id,
+                            next_since_ms: since_ms,
+                            result: Err(format!("{e}")),
+                        });
+                        // Keep going on errors — transient throttling
+                        // shouldn't kill the session.
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+        });
+        self.log_tail_task = Some(handle);
+    }
+
     /// Dispatch an `UpdateEnvironment(option_settings)` call. Used by the
     /// three "tweak one or two settings" commands (`:logs-stream`, `:notify`,
     /// `:managed-window`); each pushes its own pending row + audit entry
@@ -5928,6 +6180,20 @@ impl App {
                     }
                 }
             }
+            "logs-tail" => {
+                // `:logs-tail [LOG_GROUP]` — stream a CW Logs group for the
+                // selected env. If no group given, discover groups for the
+                // env and pick the most useful one (web.stdout.log if
+                // present, else the first by name). The polling task is
+                // tracked on App.log_tail_task so subsequent calls / close
+                // can abort cleanly.
+                let Some(env) = self.selected_env().cloned() else {
+                    self.error_message = Some("no environment selected".into());
+                    return;
+                };
+                let explicit_group = rest.first().map(|s| s.to_string());
+                self.spawn_logs_tail(env.name.clone(), explicit_group);
+            }
             "logs-stream" => {
                 // `:logs-stream on [--retention N]` enables CW Logs streaming
                 // for the env's platform/app logs; `:logs-stream off` clears
@@ -6949,6 +7215,82 @@ impl App {
                     Err(msg) => tracing::warn!(error = %msg, "tags fetch failed"),
                 }
             }
+            AppMsg::LogTailOpened {
+                gen,
+                session_id,
+                env_name,
+                log_group,
+                since_ms,
+            } => {
+                if gen != self.generation || session_id != self.log_tail_session {
+                    return;
+                }
+                self.current_overlay = Some(Overlay::LogTail {
+                    log_group,
+                    env_name,
+                    events: std::collections::VecDeque::with_capacity(LOG_TAIL_MAX_LINES),
+                    scroll: 0,
+                    following: true,
+                    since_ms,
+                    filter_input: String::new(),
+                    filter_active: false,
+                    filter_pattern: None,
+                    last_err: None,
+                    session_id,
+                });
+                self.status_message = None;
+            }
+            AppMsg::LogTailEvents {
+                gen,
+                session_id,
+                next_since_ms,
+                result,
+            } => {
+                if gen != self.generation || session_id != self.log_tail_session {
+                    return;
+                }
+                // Route to whichever overlay slot currently holds the LogTail
+                // — `current_overlay` normally, or `pre_help_overlay` if the
+                // user pressed `?` mid-tail. Without the second slot, events
+                // arriving during the help round-trip would be lost.
+                let target = if matches!(
+                    self.current_overlay.as_ref(),
+                    Some(Overlay::LogTail { session_id: s, .. }) if *s == session_id
+                ) {
+                    self.current_overlay.as_mut()
+                } else if matches!(
+                    self.pre_help_overlay.as_ref(),
+                    Some(Overlay::LogTail { session_id: s, .. }) if *s == session_id
+                ) {
+                    self.pre_help_overlay.as_mut()
+                } else {
+                    return;
+                };
+                let Some(Overlay::LogTail {
+                    events,
+                    since_ms,
+                    last_err,
+                    ..
+                }) = target
+                else {
+                    return;
+                };
+                *since_ms = next_since_ms;
+                match result {
+                    Ok(new_events) => {
+                        *last_err = None;
+                        for ev in new_events {
+                            if events.len() >= LOG_TAIL_MAX_LINES {
+                                events.pop_front();
+                            }
+                            events.push_back(ev);
+                        }
+                    }
+                    Err(msg) => {
+                        *last_err = Some(msg);
+                    }
+                }
+            }
             AppMsg::DetailEnvVars {
                 gen,
                 env_name,
@@ -7226,6 +7568,14 @@ impl App {
                 // Overlays show data from the previous context (describe dump,
                 // alarms list, …); close them so the user doesn't act on stale info.
                 self.current_overlay = None;
+                // Tear down any long-running CW Logs poll that's mid-flight;
+                // it would otherwise keep hitting the previous account's CW.
+                // Also bump session id so any in-flight LogTailOpened from
+                // the aborted task is dropped on arrival.
+                if let Some(handle) = self.log_tail_task.take() {
+                    handle.abort();
+                }
+                self.log_tail_session = self.log_tail_session.wrapping_add(1);
                 // Reset throttle back-off across context switches — the new
                 // account/region has its own rate limits.
                 self.throttle_until = None;
@@ -8003,6 +8353,10 @@ fn build_palette_items(app: &App) -> Vec<PaletteItem> {
             "toggle CW Logs streaming: on|off [--retention DAYS]",
         ),
         (
+            "logs-tail ",
+            "stream a CW Logs group for the selected env (auto-picks the best group)",
+        ),
+        (
             "notify ",
             "set notification endpoint: EMAIL_OR_SNS_ARN | off",
         ),
@@ -8160,6 +8514,26 @@ pub fn format_env_vars(vars: &[(String, String)]) -> String {
         out.push_str(&format!("{k:<key_width$} = {rendered}\n"));
     }
     out
+}
+
+/// Pick the most useful CloudWatch Logs group for an env's `:logs-tail`
+/// default. EB streams to a handful of groups per env (web.stdout.log,
+/// nginx access, eb-engine.log, …); we prefer the app stdout because that's
+/// where deploy / runtime output lives. Falls back to the first by name.
+/// Pure for testability.
+pub fn pick_default_log_group(groups: &[String]) -> Option<String> {
+    const PRIORITIES: &[&str] = &[
+        "/var/log/web.stdout.log",
+        "/var/log/eb-engine.log",
+        "/var/log/eb-hooks.log",
+        "/var/log/nginx/access.log",
+    ];
+    for needle in PRIORITIES {
+        if let Some(g) = groups.iter().find(|g| g.ends_with(needle)) {
+            return Some(g.clone());
+        }
+    }
+    groups.first().cloned()
 }
 
 /// Pull a `--flag VALUE` style named argument out of a `:command` `rest`
@@ -8955,6 +9329,42 @@ mod tests {
         assert_eq!(
             super::delta_toast_key("  ▲10 Green").as_deref(),
             Some("Green")
+        );
+    }
+
+    #[test]
+    fn pick_default_log_group_prefers_web_stdout() {
+        let groups: Vec<String> = vec![
+            "/aws/elasticbeanstalk/myenv/var/log/eb-engine.log".into(),
+            "/aws/elasticbeanstalk/myenv/var/log/web.stdout.log".into(),
+            "/aws/elasticbeanstalk/myenv/var/log/nginx/access.log".into(),
+        ];
+        assert_eq!(
+            super::pick_default_log_group(&groups).as_deref(),
+            Some("/aws/elasticbeanstalk/myenv/var/log/web.stdout.log")
+        );
+    }
+
+    #[test]
+    fn pick_default_log_group_falls_back_to_first() {
+        let groups: Vec<String> = vec!["/aws/elasticbeanstalk/myenv/var/log/custom.log".into()];
+        assert_eq!(
+            super::pick_default_log_group(&groups).as_deref(),
+            Some("/aws/elasticbeanstalk/myenv/var/log/custom.log")
+        );
+        // No groups at all → None.
+        assert_eq!(super::pick_default_log_group(&[]), None);
+    }
+
+    #[test]
+    fn pick_default_log_group_prefers_engine_log_when_stdout_absent() {
+        let groups: Vec<String> = vec![
+            "/aws/elasticbeanstalk/myenv/var/log/nginx/access.log".into(),
+            "/aws/elasticbeanstalk/myenv/var/log/eb-engine.log".into(),
+        ];
+        assert_eq!(
+            super::pick_default_log_group(&groups).as_deref(),
+            Some("/aws/elasticbeanstalk/myenv/var/log/eb-engine.log")
         );
     }
 

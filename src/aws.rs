@@ -1,5 +1,6 @@
 use aws_config::{Region, SdkConfig};
 use aws_sdk_cloudwatch::Client as CwClient;
+use aws_sdk_cloudwatchlogs::Client as CwLogsClient;
 use aws_sdk_ec2::Client as Ec2Client;
 use aws_sdk_elasticbeanstalk::Client;
 use aws_sdk_sqs::Client as SqsClient;
@@ -121,6 +122,16 @@ pub struct AwsContext {
     pub caller_arn: Option<String>,
 }
 
+/// One event from a CloudWatch Logs stream — server-side timestamp + the
+/// stream it came from + the raw message. `:logs-tail` builds these from
+/// FilterLogEvents and renders them in chronological order.
+#[derive(Clone, Debug)]
+pub struct LogEvent {
+    pub timestamp_ms: i64,
+    pub stream: String,
+    pub message: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct Identity {
     pub account_id: Option<String>,
@@ -131,6 +142,7 @@ pub struct AwsClient {
     client: Client,
     sqs: SqsClient,
     cw: CwClient,
+    cw_logs: CwLogsClient,
     ec2: Ec2Client,
     config: SdkConfig,
     pub context: AwsContext,
@@ -156,12 +168,14 @@ impl AwsClient {
         let client = Client::new(&config);
         let sqs = SqsClient::new(&config);
         let cw = CwClient::new(&config);
+        let cw_logs = CwLogsClient::new(&config);
         let ec2 = Ec2Client::new(&config);
 
         Ok(Self {
             client,
             sqs,
             cw,
+            cw_logs,
             ec2,
             config,
             context: AwsContext {
@@ -684,6 +698,84 @@ impl AwsClient {
             .await
             .map_err(|e| eyre!("UpdateEnvironment(option_settings) failed: {e}"))?;
         Ok(())
+    }
+
+    /// Discover the CloudWatch Logs groups an EB env streams to. EB names
+    /// them under the prefix `/aws/elasticbeanstalk/{env}/...` so we
+    /// `DescribeLogGroups` with that prefix. Returns sorted group names;
+    /// empty if `:logs-stream on` hasn't been issued for the env.
+    pub async fn discover_env_log_groups(&self, env_name: &str) -> Result<Vec<String>> {
+        let prefix = format!("/aws/elasticbeanstalk/{env_name}/");
+        let mut out: Vec<String> = Vec::new();
+        let mut next_token: Option<String> = None;
+        loop {
+            let mut req = self
+                .cw_logs
+                .describe_log_groups()
+                .log_group_name_prefix(&prefix);
+            if let Some(t) = next_token.take() {
+                req = req.next_token(t);
+            }
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| eyre!("DescribeLogGroups failed: {e}"))?;
+            for g in resp.log_groups.unwrap_or_default() {
+                if let Some(name) = g.log_group_name {
+                    out.push(name);
+                }
+            }
+            match resp.next_token {
+                Some(t) if !t.is_empty() => next_token = Some(t),
+                _ => break,
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+
+    /// Fetch events from one CW Logs group since `since_ms` (Unix
+    /// milliseconds). Uses `FilterLogEvents` so the result spans all log
+    /// streams in the group in chronological order — that's how an EB-tier
+    /// log group works (one stream per instance). The returned tuple is
+    /// `(events, next_since_ms)` where `next_since_ms` is the highest
+    /// timestamp + 1 we saw, suitable to pass back on the next call.
+    pub async fn fetch_recent_log_events(
+        &self,
+        log_group: &str,
+        since_ms: i64,
+        limit: i32,
+    ) -> Result<(Vec<LogEvent>, i64)> {
+        let resp = self
+            .cw_logs
+            .filter_log_events()
+            .log_group_name(log_group)
+            .start_time(since_ms)
+            .limit(limit)
+            .send()
+            .await
+            .map_err(|e| eyre!("FilterLogEvents failed: {e}"))?;
+        let mut out: Vec<LogEvent> = Vec::new();
+        let mut max_ts = since_ms;
+        for e in resp.events.unwrap_or_default() {
+            let ts = e.timestamp.unwrap_or(since_ms);
+            if ts > max_ts {
+                max_ts = ts;
+            }
+            out.push(LogEvent {
+                timestamp_ms: ts,
+                stream: e.log_stream_name.unwrap_or_default(),
+                message: e.message.unwrap_or_default(),
+            });
+        }
+        // Move the cursor past the last event we saw so the next poll
+        // doesn't return it again.
+        let next_since = if max_ts > since_ms {
+            max_ts + 1
+        } else {
+            since_ms
+        };
+        Ok((out, next_since))
     }
 
     /// Delete one or more CloudWatch alarms by name.
