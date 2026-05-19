@@ -326,7 +326,14 @@ fn draw_form(f: &mut Frame, area: Rect, app: &App) {
         ])
         .split(inner);
 
-    let banner = format!(" target: {}", form.env_name);
+    // LocalConfig forms (`:settings`) don't have an AWS target; show the
+    // config file path instead so the operator knows where the submit
+    // will land.
+    let banner = if form.env_name.is_empty() {
+        format!(" file: {}", crate::config::config_path().display())
+    } else {
+        format!(" target: {}", form.env_name)
+    };
     f.render_widget(
         Paragraph::new(Span::styled(banner, Style::default().fg(theme.muted))),
         chunks[0],

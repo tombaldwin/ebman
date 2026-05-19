@@ -2,6 +2,7 @@ mod app;
 mod aws;
 mod config;
 mod control;
+mod font_probe;
 mod form;
 mod keys;
 mod plugins;
@@ -83,7 +84,11 @@ async fn main() -> Result<()> {
     let log_handle = init_logging()?;
     install_panic_hook();
 
-    let cfg = config::load();
+    let mut cfg = config::load();
+    // Resolve `icons = "auto"` *before* we enter the alt-screen so the probe
+    // glyph never reaches the user's scrollback. Any non-auto value is
+    // passed through untouched.
+    cfg.icons = font_probe::resolve_icons_setting(&cfg.icons);
     let mut terminal = enter_tui()?;
 
     // Animate the splash while App::new resolves (config load + STS + first

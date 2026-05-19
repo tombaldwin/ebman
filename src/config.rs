@@ -9,7 +9,11 @@ pub struct Config {
     pub redact_default: Option<bool>,
     pub grouped_default: Option<bool>,
     pub theme: String,
-    pub icons: String, // "unicode" | "ascii"
+    /// Glyph set: `"unicode"` (default), `"ascii"` for low-feature
+    /// terminals, `"powerline"` (alias `"nerd"`) for Powerline-patched /
+    /// Nerd Fonts, or `"auto"` to probe the terminal at startup and pick
+    /// powerline if its support is detected, unicode otherwise.
+    pub icons: String,
     pub notify_bell: bool,
     pub required_tags: Vec<String>,
     /// Optional URL to POST a small JSON payload to when an env transitions
@@ -99,8 +103,53 @@ pub fn parse(text: &str) -> Config {
     cfg
 }
 
-fn config_path() -> PathBuf {
+pub fn config_path() -> PathBuf {
     config_file("config.toml")
+}
+
+/// Serialise the config back to disk. Round-trips the parse format and
+/// over-writes the user's existing file. Used by the `:settings` form.
+pub fn save(cfg: &Config) -> std::io::Result<()> {
+    let path = config_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let body = serialize(cfg);
+    std::fs::write(&path, body)
+}
+
+/// Pure: render a `Config` into the TOML-ish line-oriented format the
+/// parser reads. Used by `save` and unit tests.
+pub fn serialize(cfg: &Config) -> String {
+    let mut out = String::new();
+    out.push_str("# ebman configuration — written by :settings; hand-edits welcome\n\n");
+    out.push_str(&format!(
+        "refresh_interval_secs = {}\n",
+        cfg.refresh_interval.as_secs()
+    ));
+    out.push_str(&format!(
+        "extra_regions = \"{}\"\n",
+        cfg.extra_regions.join(",")
+    ));
+    if let Some(b) = cfg.redact_default {
+        out.push_str(&format!("redact_default = {b}\n"));
+    }
+    if let Some(b) = cfg.grouped_default {
+        out.push_str(&format!("grouped_default = {b}\n"));
+    }
+    out.push_str(&format!("theme = \"{}\"\n", cfg.theme));
+    out.push_str(&format!("icons = \"{}\"\n", cfg.icons));
+    out.push_str(&format!("notify_bell = {}\n", cfg.notify_bell));
+    if !cfg.required_tags.is_empty() {
+        out.push_str(&format!(
+            "required_tags = \"{}\"\n",
+            cfg.required_tags.join(",")
+        ));
+    }
+    if let Some(url) = &cfg.webhook_url {
+        out.push_str(&format!("webhook_url = \"{url}\"\n"));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -137,5 +186,50 @@ grouped_default = false
         assert_eq!(cfg.refresh_interval, Duration::from_secs(15));
         assert!(cfg.extra_regions.is_empty());
         assert!(cfg.redact_default.is_none());
+    }
+
+    #[test]
+    fn parse_icons_auto_is_preserved() {
+        let cfg = parse("icons = \"auto\"\n");
+        assert_eq!(cfg.icons, "auto");
+    }
+
+    #[test]
+    fn serialize_round_trips_full_config() {
+        let mut cfg = Config::default();
+        cfg.refresh_interval = Duration::from_secs(45);
+        cfg.extra_regions = vec!["eu-south-2".into(), "ap-southeast-4".into()];
+        cfg.redact_default = Some(true);
+        cfg.grouped_default = Some(false);
+        cfg.theme = "high-contrast".into();
+        cfg.icons = "powerline".into();
+        cfg.notify_bell = true;
+        cfg.required_tags = vec!["Owner".into(), "Env".into()];
+        cfg.webhook_url = Some("https://hooks.example/abc".into());
+
+        let body = serialize(&cfg);
+        let reparsed = parse(&body);
+        assert_eq!(reparsed.refresh_interval, cfg.refresh_interval);
+        assert_eq!(reparsed.extra_regions, cfg.extra_regions);
+        assert_eq!(reparsed.redact_default, cfg.redact_default);
+        assert_eq!(reparsed.grouped_default, cfg.grouped_default);
+        assert_eq!(reparsed.theme, cfg.theme);
+        assert_eq!(reparsed.icons, cfg.icons);
+        assert_eq!(reparsed.notify_bell, cfg.notify_bell);
+        assert_eq!(reparsed.required_tags, cfg.required_tags);
+        assert_eq!(reparsed.webhook_url, cfg.webhook_url);
+    }
+
+    #[test]
+    fn serialize_round_trips_default_config() {
+        let cfg = Config::default();
+        let body = serialize(&cfg);
+        let reparsed = parse(&body);
+        assert_eq!(reparsed.refresh_interval, cfg.refresh_interval);
+        assert_eq!(reparsed.theme, cfg.theme);
+        assert_eq!(reparsed.icons, cfg.icons);
+        assert!(reparsed.extra_regions.is_empty());
+        assert!(reparsed.required_tags.is_empty());
+        assert!(reparsed.webhook_url.is_none());
     }
 }
