@@ -655,10 +655,7 @@ fn draw_text_dump_overlay(f: &mut Frame, area: Rect, app: &App, title: &str, tex
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner);
-    f.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }),
-        chunks[0],
-    );
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), chunks[0]);
     f.render_widget(
         Paragraph::new(Span::styled(
             " esc / q to close",

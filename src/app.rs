@@ -10276,9 +10276,7 @@ mod tests {
             .map(|i| {
                 mk(
                     &format!("build-{i}"),
-                    &format!(
-                        "Application version created from https://example.com/build/{i}"
-                    ),
+                    &format!("Application version created from https://example.com/build/{i}"),
                 )
             })
             .rev()
