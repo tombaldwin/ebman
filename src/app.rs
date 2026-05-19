@@ -192,6 +192,18 @@ pub const HISTORY_CAP: usize = 20;
 const MESSAGE_LOG_CAP: usize = 50;
 const TOAST_CAP: usize = 4;
 
+/// How long a refresh has to be in flight before the `loading…` indicator
+/// in the header appears. Faster round-trips complete invisibly so the user
+/// doesn't see a quick blip on every cycle.
+pub const LOADING_INDICATOR_THRESHOLD: Duration = Duration::from_millis(300);
+
+/// Once the loading indicator becomes visible, keep it visible for at
+/// least this long even if the load completes earlier. Smooths over the
+/// case where a round-trip is *just* slow enough to cross the threshold
+/// and then finishes ~100 ms later — without the linger, the indicator
+/// flashes on and off in a single visible frame which reads as flicker.
+pub const LOADING_INDICATOR_LINGER: Duration = Duration::from_millis(500);
+
 /// A single read-only popup that overlays the main UI. Only one can be open
 /// at once: opening another replaces it; `Esc` / `q` dismisses it. Replacing
 /// the previous six `Option<String>` fields with this enum eliminates the
@@ -841,6 +853,14 @@ pub struct App {
     pub load_state: LoadState,
     pub loading_since: Option<Instant>,
     pub refresh_interval: Duration,
+    /// Once the loading indicator has been visible (i.e. `loading_since`
+    /// exceeded its display-threshold), keep showing it until this instant
+    /// even after the load actually finishes. Smooths over the case where
+    /// an AWS round-trip is *just* slow enough to trigger the indicator
+    /// and then completes ~100 ms later — without this, the status flashes
+    /// yellow → green for a single frame which reads as a flicker. Cleared
+    /// by the render path once `Instant::now() > t`.
+    pub loading_visible_until: Option<Instant>,
     pub last_refresh: Option<chrono::DateTime<chrono::Utc>>,
     pub status_message: Option<String>,
     pub error_message: Option<String>,
@@ -1337,6 +1357,7 @@ impl App {
             load_state: LoadState::Idle,
             loading_since: None,
             refresh_interval,
+            loading_visible_until: None,
             last_refresh: None,
             status_message: None,
             error_message: None,
@@ -1573,9 +1594,13 @@ impl App {
                     // ~30 fps redraw while a shell pane is live so typed
                     // echo / backspace erase / vim frames render promptly.
                 }
-                _ = anim.tick(), if self.loading_since.is_some() || !self.toasts.is_empty() => {
-                    // Wake the draw loop so the spinner can advance and toasts
-                    // expire promptly. Gated to keep idle CPU at zero otherwise.
+                _ = anim.tick(), if self.loading_since.is_some()
+                    || !self.toasts.is_empty()
+                    || self.loading_visible_until.map(|t| Instant::now() < t).unwrap_or(false) => {
+                    // Wake the draw loop so the spinner can advance, toasts
+                    // expire promptly, and the loading-indicator linger
+                    // window can finish counting down. Gated to keep idle CPU
+                    // at zero otherwise.
                 }
                 Some(msg) = self.msg_rx.recv() => {
                     self.handle_msg(msg);
@@ -8092,6 +8117,24 @@ impl App {
         });
     }
 
+    /// If the `loading…` indicator was visible during the current load (i.e.
+    /// `loading_since` was set and crossed the display threshold), arm a
+    /// linger window so the indicator stays on for at least
+    /// [`LOADING_INDICATOR_LINGER`] after the load completes. Call this
+    /// *before* clearing `loading_since` and flipping `load_state` back to
+    /// Idle/Error in the AppMsg handler.
+    fn arm_loading_linger(&mut self) {
+        let now = Instant::now();
+        if let Some(until) = compute_loading_linger_target(
+            self.loading_since,
+            LOADING_INDICATOR_THRESHOLD,
+            LOADING_INDICATOR_LINGER,
+            now,
+        ) {
+            self.loading_visible_until = Some(until);
+        }
+    }
+
     fn spawn_refresh(&mut self) {
         if matches!(self.load_state, LoadState::Loading) {
             return;
@@ -9022,6 +9065,7 @@ impl App {
                     self.context.region
                 ));
                 self.error_message = None;
+                self.arm_loading_linger();
                 self.load_state = LoadState::Idle;
                 self.persist_state();
                 self.spawn_identity();
@@ -9029,6 +9073,7 @@ impl App {
             }
             Err(msg) => {
                 tracing::error!(error = %msg, "rebuild failed");
+                self.arm_loading_linger();
                 self.load_state = LoadState::Error;
                 self.loading_since = None;
                 self.error_message = Some(self.format_aws_error("context switch", &msg));
@@ -9247,6 +9292,7 @@ impl App {
                 }
                 self.history.retain(|k, _| live.contains(k));
 
+                self.arm_loading_linger();
                 self.load_state = LoadState::Idle;
                 self.loading_since = None;
                 self.last_refresh = Some(chrono::Utc::now());
@@ -9280,6 +9326,7 @@ impl App {
             }
             Err(msg) => {
                 tracing::error!(error = %msg, "refresh failed");
+                self.arm_loading_linger();
                 self.load_state = LoadState::Error;
                 self.loading_since = None;
                 self.status_snapshot_at_refresh = None;
@@ -9545,6 +9592,24 @@ fn is_throttling_error(msg: &str) -> bool {
 /// consecutive failure, capped at 5 minutes. The 5 min cap keeps the app
 /// responsive when the throttle clears — the user shouldn't have to wait
 /// arbitrarily long after rate limits ease.
+/// Pure: given the moment a load started and the display constants, return
+/// the instant the loading indicator should remain visible until (if it
+/// was visible at all). Returns `None` when the load completed before the
+/// indicator's display threshold, signalling "no linger needed".
+pub fn compute_loading_linger_target(
+    loading_since: Option<Instant>,
+    threshold: Duration,
+    linger: Duration,
+    now: Instant,
+) -> Option<Instant> {
+    let elapsed = loading_since.map(|t| now.duration_since(t))?;
+    if elapsed >= threshold {
+        Some(now + linger)
+    } else {
+        None
+    }
+}
+
 fn throttle_backoff(base: Duration, consecutive: u32) -> Duration {
     const MAX_BACKOFF: Duration = Duration::from_secs(300);
     let factor: u32 = 2u32.saturating_pow(consecutive.min(6).saturating_add(1));
@@ -10729,6 +10794,53 @@ fn redact_block(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loading_linger_target_none_when_no_load() {
+        let now = Instant::now();
+        assert!(compute_loading_linger_target(
+            None,
+            Duration::from_millis(300),
+            Duration::from_millis(500),
+            now,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn loading_linger_target_none_when_under_threshold() {
+        let now = Instant::now();
+        // Load started 100 ms ago — threshold (300 ms) not crossed.
+        let started = now - Duration::from_millis(100);
+        assert!(compute_loading_linger_target(
+            Some(started),
+            Duration::from_millis(300),
+            Duration::from_millis(500),
+            now,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn loading_linger_target_arms_past_threshold() {
+        let now = Instant::now();
+        let started = now - Duration::from_millis(400);
+        let until = compute_loading_linger_target(
+            Some(started),
+            Duration::from_millis(300),
+            Duration::from_millis(500),
+            now,
+        )
+        .expect("should arm linger past threshold");
+        // Linger should extend ~500 ms past `now`. Allow a tiny slop so the
+        // assertion isn't sensitive to test runner clock granularity.
+        let target_delta = until.duration_since(now);
+        assert!(
+            target_delta >= Duration::from_millis(495)
+                && target_delta <= Duration::from_millis(505),
+            "linger target should be ~500ms in the future, got {target_delta:?}"
+        );
+    }
 
     #[test]
     fn sort_key_cycle_matches_ui_column_order() {

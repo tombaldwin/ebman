@@ -74,11 +74,16 @@ fn pill_chain(items: &[(String, Color, Color)], theme: &Theme) -> Vec<Span<'stat
     let powerline = theme.icons == IconStyle::Powerline;
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(items.len() * 2 + 1);
     if powerline {
-        // Lead-in arrow: default bg → first pill's bg. Renders as a small
-        // coloured triangle pointing into the first pill, so the ribbon
-        // doesn't look like it's collided with the prior content.
+        // Lead-in arrow: default bg → first pill's bg. We use U+E0B2 (LEFT-
+        // pointing solid triangle) here, not U+E0B0 — the pill's coloured
+        // base needs to sit on the *right* side of the cell (adjacent to
+        // the pill), with the empty wedge on the left (adjacent to the
+        // preceding plain text). Using E0B0 here would put the base on
+        // the left and leave only a thin point touching the pill, which
+        // visually reads as a much smaller triangle than the matching
+        // trailing E0B0 on the right edge of the chain.
         let (_, _, first_bg) = items[0];
-        spans.push(Span::styled("\u{e0b0}", Style::default().fg(first_bg)));
+        spans.push(Span::styled("\u{e0b2}", Style::default().fg(first_bg)));
         for (i, (text, fg, bg)) in items.iter().enumerate() {
             spans.push(Span::styled(
                 format!(" {text} "),
@@ -1045,14 +1050,24 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         ),
         None => format!("— (every {}s)", app.refresh_interval.as_secs()),
     };
-    let show_loading = app
+    let now = std::time::Instant::now();
+    let live_load_visible = app
         .loading_since
-        .map(|t| t.elapsed() >= std::time::Duration::from_millis(300))
+        .map(|t| t.elapsed() >= crate::app::LOADING_INDICATOR_THRESHOLD)
         .unwrap_or(false);
-    let elapsed_ms = app
-        .loading_since
-        .map(|t| t.elapsed().as_millis())
-        .unwrap_or(0);
+    let linger_active = app.loading_visible_until.map(|t| now < t).unwrap_or(false);
+    let show_loading = live_load_visible || linger_active;
+    // Spinner phase tracks the live load when one is in flight; during the
+    // linger window the spinner keeps advancing from the linger's start so
+    // the animation doesn't freeze on a single frame for half a second.
+    let elapsed_ms = if let Some(t) = app.loading_since {
+        t.elapsed().as_millis()
+    } else if let Some(until) = app.loading_visible_until {
+        let linger_started = until - crate::app::LOADING_INDICATOR_LINGER;
+        now.saturating_duration_since(linger_started).as_millis()
+    } else {
+        0
+    };
     let status: Span<'static> = match app.load_state {
         LoadState::Error => Span::styled("error", Style::default().fg(theme.health_red)),
         LoadState::Loading if show_loading => Span::styled(
@@ -1199,8 +1214,13 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     if !chain_pills.is_empty() {
         // In non-Powerline modes pill_chain doesn't add a leading sep, so
         // inject one here to space the chain from the preceding plain text.
+        // In Powerline mode the chain starts with a coloured E0B2 wedge that
+        // would otherwise sit flush against the preceding text — pad with
+        // two spaces so the wedge has visual breathing room.
         if theme.icons != IconStyle::Powerline {
             line2.push(sep(theme));
+        } else {
+            line2.push(Span::raw("  "));
         }
         line2.extend(pill_chain(&chain_pills, theme));
     }
@@ -2851,9 +2871,13 @@ fn render_tabs(tabs: &[DetailTab], active: usize, theme: &Theme) -> Line<'static
         let active_bg = theme.border_active;
         let inactive_bg = theme.row_alt_bg;
         let mut spans: Vec<Span> = Vec::with_capacity(tabs.len() * 2 + 2);
-        // Lead-in arrow flowing from default bg into the first tab.
+        // Lead-in arrow flowing from default bg into the first tab. Use
+        // U+E0B2 (LEFT-pointing) so the tab colour's base sits adjacent to
+        // the tab, not adjacent to the empty space before it — otherwise
+        // the leading wedge reads as much smaller than the trailing E0B0s
+        // along the ribbon. See pill_chain for the same rationale.
         let first_bg = if active == 0 { active_bg } else { inactive_bg };
-        spans.push(Span::styled("\u{e0b0}", Style::default().fg(first_bg)));
+        spans.push(Span::styled("\u{e0b2}", Style::default().fg(first_bg)));
         for (i, t) in tabs.iter().enumerate() {
             let is_active = i == active;
             let bg = if is_active { active_bg } else { inactive_bg };
