@@ -185,7 +185,7 @@ impl Scope {
 // must come BEFORE their unguarded counterparts (`KeyCode::Char('r') => …`),
 // otherwise the unguarded arm shadows them.
 
-const HISTORY_CAP: usize = 20;
+pub const HISTORY_CAP: usize = 20;
 const MESSAGE_LOG_CAP: usize = 50;
 const TOAST_CAP: usize = 4;
 
