@@ -412,14 +412,28 @@ fn draw_form(f: &mut Frame, area: Rect, app: &App) {
                     }
                 }
             };
-            lines.push(Line::from(vec![
+            // Trailing in-line validation marker: a single ✗ glyph in
+            // health_red next to the value when the field is invalid.
+            // The full error message still renders on its own line below;
+            // the marker is the eye-catcher that lets the operator scan
+            // for the bad field without reading every help line.
+            let mut row_spans = vec![
                 Span::styled(pointer.to_string(), Style::default().fg(theme.accent)),
                 Span::styled(
                     format!("{:<width$}  ", fld.label, width = max_label),
                     label_style,
                 ),
                 Span::styled(value_text, value_style),
-            ]));
+            ];
+            if fld.error.is_some() {
+                row_spans.push(Span::styled(
+                    "  ✗",
+                    Style::default()
+                        .fg(theme.health_red)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+            lines.push(Line::from(row_spans));
             if let Some(help) = &fld.help {
                 lines.push(Line::from(Span::styled(
                     format!("     {help}"),
@@ -2657,16 +2671,32 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                 }
             };
             lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                format!("  {summary}"),
+            // Render the env name in red+bold for destructive actions so
+            // the operator can't miss what's about to be nuked even if
+            // they scan the modal too fast to read the full sentence.
+            let body_style = Style::default()
+                .fg(if modal.action.destructive() {
+                    theme.health_red
+                } else {
+                    theme.text
+                })
+                .add_modifier(Modifier::BOLD);
+            let name_style = if modal.action.destructive() {
                 Style::default()
-                    .fg(if modal.action.destructive() {
-                        theme.health_red
-                    } else {
-                        theme.text
-                    })
-                    .add_modifier(Modifier::BOLD),
-            )));
+                    .fg(theme.health_red)
+                    .bg(theme.row_red_bg)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+                    .fg(theme.title_alt)
+                    .add_modifier(Modifier::BOLD)
+            };
+            lines.push(highlight_env_in_summary(
+                &summary,
+                &modal.target_env,
+                body_style,
+                name_style,
+            ));
             // Pre-flight traffic-level warning if anything noteworthy is in
             // progress (mid-deploy, recent change, currently Red). Rendered
             // before the dry-run info so the operator sees state-level concerns
@@ -4633,6 +4663,37 @@ fn short_caller(arn: &str) -> String {
     arn.splitn(6, ':').nth(5).unwrap_or(arn).to_string()
 }
 
+/// Pure: split a confirm-modal summary into spans so the env name (when
+/// it appears inside single quotes — the convention all our summaries
+/// follow) renders distinctly from the rest of the sentence. Useful for
+/// the destructive paths where the env name is the part the operator
+/// needs to verify at a glance. Falls back to a single styled span when
+/// the env name isn't found in the summary (e.g. a placeholder path).
+fn highlight_env_in_summary(
+    summary: &str,
+    env_name: &str,
+    body_style: Style,
+    name_style: Style,
+) -> Line<'static> {
+    let needle = format!("'{env_name}'");
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    spans.push(Span::styled("  ".to_string(), body_style));
+    if let Some(idx) = summary.find(&needle) {
+        let before = &summary[..idx];
+        let after = &summary[idx + needle.len()..];
+        if !before.is_empty() {
+            spans.push(Span::styled(before.to_string(), body_style));
+        }
+        spans.push(Span::styled(format!(" {env_name} "), name_style));
+        if !after.is_empty() {
+            spans.push(Span::styled(after.to_string(), body_style));
+        }
+    } else {
+        spans.push(Span::styled(summary.to_string(), body_style));
+    }
+    Line::from(spans)
+}
+
 /// Pick a context-aware hint to surface in the footer when nothing else
 /// is competing for the slot. Reads only from `App` fields the hint
 /// cares about, returns the first matching nudge (priority order:
@@ -5177,6 +5238,42 @@ mod tests {
         assert_eq!(cursor_marker(&t), "▌ ");
         t.icons = IconStyle::Powerline;
         assert!(cursor_marker(&t).contains('\u{e0b0}'));
+    }
+
+    #[test]
+    fn highlight_env_in_summary_breaks_at_quoted_name() {
+        let body = Style::default().fg(Color::White);
+        let name = Style::default().fg(Color::Red);
+        let line = highlight_env_in_summary(
+            "Rebuild environment 'prod-api'? (terminates and recreates)",
+            "prod-api",
+            body,
+            name,
+        );
+        // Expect at least 3 spans: leading "  " padding + body prefix +
+        // env-name + body suffix. The name span should not contain quotes.
+        let env_spans: Vec<&Span> = line
+            .spans
+            .iter()
+            .filter(|s| s.content.contains("prod-api"))
+            .collect();
+        assert_eq!(env_spans.len(), 1);
+        assert!(
+            !env_spans[0].content.contains('\''),
+            "name span should not include the surrounding single quotes: {:?}",
+            env_spans[0].content
+        );
+    }
+
+    #[test]
+    fn highlight_env_in_summary_falls_back_when_name_missing() {
+        let body = Style::default().fg(Color::White);
+        let name = Style::default().fg(Color::Red);
+        let line =
+            highlight_env_in_summary("Some action with no env reference", "prod-api", body, name);
+        // Should still render — just as one body span (plus the leading
+        // "  " padding span).
+        assert!(line.spans.iter().any(|s| s.content.contains("Some action")));
     }
 
     #[test]
