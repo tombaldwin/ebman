@@ -7925,9 +7925,27 @@ impl App {
 
     fn persist_state(&self) {
         let selected = self.selected_env().map(|e| e.name.clone());
+        // Persist the *effective* profile / region, not just the override.
+        // Otherwise a user who never explicitly ran `:profile` / `:region`
+        // (they're on AWS_PROFILE / AWS_REGION env defaults) would have a
+        // state file with no profile/region — meaning the next restart
+        // follows whatever the shell env happens to point at, which feels
+        // like ebman "forgot" where the user was. Falling back to the
+        // override only when the effective value is missing keeps tests
+        // and edge cases (unresolved SDK config) sane.
+        let region = if !self.context.region.is_empty() && self.context.region != "unknown" {
+            Some(self.context.region.clone())
+        } else {
+            self.override_region.clone()
+        };
+        let profile = self
+            .context
+            .profile
+            .clone()
+            .or_else(|| self.override_profile.clone());
         state::save(&PersistedState {
-            profile: self.override_profile.clone(),
-            region: self.override_region.clone(),
+            profile,
+            region,
             filter: if self.filter.is_empty() {
                 None
             } else {
