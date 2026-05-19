@@ -224,6 +224,8 @@ Living list of done / pending / dropped work. New entries get added at the botto
 
 ### Write-path batch (2026-05-19)
 - **Tags editor** — `aws::update_tags` wraps `UpdateTagsForResource`; `:tag KEY VALUE` adds/updates a tag and `:untag KEY` removes one. Read-only mode blocks both; ARN-missing on the selected env errors out; the call writes a dispatched + completed audit entry; on success a toast fires and the Config-tab tags refresh automatically. Pure helper `parse_tag_args` handles the "value tokens joined with spaces" convention; tested for happy path, multi-token join, and rejection of missing-value input.
+- **Application-version delete** — `aws::delete_application_version` wraps `DeleteApplicationVersion`; `:delete-version <label> [--force]` dispatches against the selected env's app. `--force` (alias `-f`) sets `DeleteSourceBundle=true` so the S3 zip is also removed. Read-only mode blocks; dispatched + completed audit entries written; outcome surfaced as a toast. AWS still rejects deletes of versions currently deployed to an env — those bubble up in the error toast.
+- **Powerline-font glyph set (`icons = "powerline"`)** — opt-in via config.toml; `IconStyle::Powerline` variant joins Unicode/Ascii. Routes thin powerline separator U+E0B1 through `sep()`, U+E0B6/E0B4 tab caps through `titled_block`, Nerd Font MDI tab icons (flash, server, chart-line, email, text-box, cog) through `tab_icon`, and U+F111 dot through `health_dot`. Spinner reuses the braille frame set (Powerline-targeted fonts include braille). README config example updated; tests for sep glyph routing and tab-icon distinctness across all three icon styles.
 
 ### Operator-feedback batch (2026-05-19)
 - **Pending-actions panel** — `PendingAction { label, target, started, completed }` queue (cap 20, completed entries expire after 60s); wired into `spawn_action` / `spawn_batch_action` / `spawn_terminate_instance` and the `AppMsg::ActionResult` handler. Header chip `⏳ N` while any are in flight; `:pending` / `:in-flight` / `:inflight` overlay lists label, target, age, and outcome.
@@ -278,7 +280,7 @@ The three things still keeping users in the AWS console day-to-day. Highest-leve
 - [ ] **Mocked-AWS test coverage** — currently only pure helpers are tested. Two real regressions this week were caught only by the user (DescribeConfigurationSettings returning empty WorkerQueueURL when EB autocreates the queue; peek_messages returning <max without long-polling and a loop). Adopt `aws-smithy-mocks` (or hand-rolled `ReplayingClient`) to assert on observed request shapes and exercise response variants. Foundation for confidently changing aws.rs without breaking silently.
 
 ### Polish + correctness — small wins
-- [ ] **Powerline-font glyph set (config opt-in)** — add `icons = "powerline"` alongside the existing `unicode` / `ascii` values in `config.toml`. Render tab strip, header pills, breadcrumb, and footer segment separators using powerline glyphs (`` `` ``, `` `` ``, `` `` ``, `` `` ``). Routed through the existing `IconStyle` enum + `tab_icon` / `spinner` helpers; falls back cleanly when the font isn't installed (it'll render as unknown-glyph placeholders, which is acceptable since opting in is explicit).
+- (all moved to Done; section retained for future polish tier)
 
 ### Tier 0 — distribution & hygiene
 - [ ] **README screenshots / demo gif** — text README shipped; capturing screenshots requires running the TUI in a real terminal (not this shell).
@@ -291,7 +293,6 @@ The three things still keeping users in the AWS console day-to-day. Highest-leve
 - (moved) Deploy from local path / S3 → see "Console-replacement gap" above.
 
 ### Write-path completeness — currently read-only surfaces
-- [ ] **Application-version management** — list versions across an app, delete old ones (`DeleteApplicationVersion`), force-delete with source-bundle removal. Currently only "deploy an existing label".
 - [ ] **Saved-configuration overlay → editable** — `:saved-configs` already lists; add inline create/apply/delete keybindings (`c` create from selected env, `a` apply to selected env, `x` delete).
 
 ### Tier 4 — multi-account / org

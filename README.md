@@ -74,7 +74,10 @@ extra_regions = ""
 # theme: "dark" or "light"
 theme = "dark"
 
-# "unicode" (default) or "ascii" for terminals without nerd/unicode support
+# "unicode" (default), "ascii" for terminals without unicode support,
+# or "powerline" (alias "nerd") for Powerline-patched / Nerd Fonts —
+# enables U+E0B0 separators and Material-Design tab icons. Unknown
+# glyphs render as boxes when the font isn't installed.
 icons = "unicode"
 
 # start with these toggles on (state.toml takes precedence after first run)

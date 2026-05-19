@@ -1027,6 +1027,28 @@ impl AwsClient {
         Ok(out)
     }
 
+    /// Delete an application version by label. `delete_source_bundle = true`
+    /// also removes the underlying `.zip` from S3 so the storage cost goes
+    /// away. EB rejects the call if the version is currently deployed to any
+    /// env — surfaced as `SourceBundleDeletionException` /
+    /// `OperationInProgressException` in the error chain.
+    pub async fn delete_application_version(
+        &self,
+        application_name: &str,
+        version_label: &str,
+        delete_source_bundle: bool,
+    ) -> Result<()> {
+        self.client
+            .delete_application_version()
+            .application_name(application_name)
+            .version_label(version_label)
+            .delete_source_bundle(delete_source_bundle)
+            .send()
+            .await
+            .map_err(|e| eyre!("DeleteApplicationVersion failed: {e}"))?;
+        Ok(())
+    }
+
     /// Deploy a specific application-version label to an existing env via
     /// `UpdateEnvironment(version_label)`. Returns immediately — the env
     /// will mutate in the background.
