@@ -222,6 +222,9 @@ Living list of done / pending / dropped work. New entries get added at the botto
 - **`ebman action <rebuild|restart|terminate> --env NAME [--yes]`** dispatches an action without entering the TUI. Terminate requires `--yes`.
 - `--help` updated to document subcommands; `--version`, `-h`, `-V`, `--read-only` flags continue to work.
 
+### Env vars in Config tab (2026-05-19)
+- **Env vars now render in the Config tab** — operators no longer need `:env list` for the common "what's set?" case. Loaded eagerly on Detail open via the same lazy pattern as tags (`fetch_env_vars` → `AppMsg::DetailEnvVars` → `detail.env_vars`). After `:env set` / `:env unset` succeeds the Config tab auto-refreshes (the OptionSettingsUpdate handler keys on the summary prefix). Same key-column auto-sizing + overflow-to-newline layout as tags; empty values render as `""` to distinguish "set to empty" from "not set".
+
 ### Instance-type + custom-platform-delete (2026-05-19)
 - **`:instance-type TYPE`** — first slice of the "capacity profile beyond min/max" gap; sets `aws:autoscaling:launchconfiguration.InstanceType` via the shared option-settings helper. EB triggers a rolling launch-config replacement. Other capacity settings (spot %, scaling triggers, scheduled scaling) still need either a modal form or per-option commands.
 - **`:custom-platform-delete <arn>`** — closes the create/delete loop for the `:custom-platforms` listing. EB rejects with a clear error if any env still uses the platform; otherwise async cleanup proceeds. Create still on backlog (slow Packer-build flow).
@@ -355,7 +358,6 @@ Gaps surfaced during the 2026-05-19 console-vs-ebman comparison. Each entry is a
 ### Console parity — read-side gaps
 
 - [ ] **Custom metric selection in Monitoring** — our Metrics tab renders a fixed 4-chart set (EnvHealth / 4xx / 5xx / latency-p90). Console's Monitoring tab lets you pick any CloudWatch metric available on the env (full ASG / ALB / EB enhanced-health metric set). Add `:metric add NAMESPACE NAME [stat]` / `:metric remove N` persisted in `state.toml`; reuse the existing chart widget.
-- [ ] **Show env vars in the Config tab** — `:env list` works on-demand, but operators frequently want to see "what's currently set" without typing a command. Add an env-vars section under tags in the Config tab; fetch via the existing `aws::fetch_env_vars` helper, mirror the lazy-load pattern used for tags. Cache on the `Detail` struct so the chart-rebuild on every paint doesn't refetch.
 
 ### Tier 4 — multi-account / org
 - [ ] **Account switcher with sts:AssumeRole** — the current `:account NAME` is a `:profile NAME` alias. A proper assume-role flow needs an `[accounts]` config schema in `config.toml` with role ARNs, an AssumeRole call, and credentials injection into the SDK. Deferred.
