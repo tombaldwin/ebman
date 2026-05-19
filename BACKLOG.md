@@ -222,6 +222,11 @@ Living list of done / pending / dropped work. New entries get added at the botto
 - **`ebman action <rebuild|restart|terminate> --env NAME [--yes]`** dispatches an action without entering the TUI. Terminate requires `--yes`.
 - `--help` updated to document subcommands; `--version`, `-h`, `-V`, `--read-only` flags continue to work.
 
+### Env-var editor (2026-05-19)
+Console's most-used edit surface (env var changes), now reachable without leaving ebman or opening a modal form. Tests: `format_env_vars_aligns_on_equals`, `format_env_vars_handles_empty_input`.
+
+- **`:env list` / `:env set KEY VAL...` / `:env unset KEY`** — single CLI surface for `aws:elasticbeanstalk:application:environment` namespace. List opens a TextOverlay of `KEY = VALUE` lines (sorted; empty values render as `""`). Set/unset funnel through the existing `spawn_option_settings_update` helper so read-only + audit + pending tracking are free. Value tokens joined with single spaces (`:tag` convention). Usage error documents that changes trigger an app-server restart per EB. Pure `format_env_vars` helper for the list rendering.
+
 ### Console-parity batch (2026-05-19)
 Shipped as one block; all use the existing pending-actions + audit-log + read-only-gating machinery. Tests added: `parse_named_arg_picks_up_value_after_flag`, `alarm_kind_to_metric_covers_known_kinds`, `format_template_settings_groups_by_namespace`, `format_template_settings_handles_empty_input`.
 
@@ -301,7 +306,7 @@ Items list `Depends on:` only when another backlog or done item is a real prereq
 
 The three things still keeping users in the AWS console day-to-day. Highest-leverage backlog block; ordered by impact.
 
-- [ ] **Option settings + env var editor** — modal form for the most-edited namespaces, starting with `aws:elasticbeanstalk:application:environment` (env vars), `aws:autoscaling:asg` (min/max), `aws:autoscaling:launchconfiguration` (instance type, key pair, security groups). Pre-fill current values from `DescribeConfigurationSettings`; submit via `UpdateEnvironment(option_settings)`. Needs a small modal-form abstraction (label + input + validation) that can be reused for tags, search filters, etc.
+- [ ] **Option settings editor (non-env-var namespaces)** — env vars are now done via `:env set/unset/list`. The remaining namespaces (`aws:autoscaling:asg` for min/max, `aws:autoscaling:launchconfiguration` for instance type/key pair/security groups, etc.) still need either a modal form or per-namespace commands. The shared `spawn_option_settings_update` helper already exists; what's missing is the UX. Modal-form abstraction (label + input + validation) would also unlock the Capacity / Network / Security gaps below.
 - [ ] **CloudWatch Logs streaming (real `tail -f`)** — the current Logs tab is a one-shot `RequestEnvironmentInfo("tail")` snapshot. Switch to `cloudwatch:GetLogEvents` against the env's log groups with `start_from_head=false` and a polling tick; falls back to the existing snapshot path when the env doesn't ship logs to CloudWatch. Regex filter reused from the snapshot path.
 - [ ] **Deploy from local path / S3** — `:deploy --from ./build.zip` or `:deploy --from s3://bucket/key`: upload to the env's storage location (`CreateStorageLocation` + S3 PutObject), `CreateApplicationVersion`, then `UpdateEnvironment(version_label)`. Covers the actual deploy story; the current `:deploy <label>` only ships existing versions.
 
@@ -346,6 +351,7 @@ Gaps surfaced during the 2026-05-19 console-vs-ebman comparison. Each entry is a
 ### Console parity — read-side gaps
 
 - [ ] **Custom metric selection in Monitoring** — our Metrics tab renders a fixed 4-chart set (EnvHealth / 4xx / 5xx / latency-p90). Console's Monitoring tab lets you pick any CloudWatch metric available on the env (full ASG / ALB / EB enhanced-health metric set). Add `:metric add NAMESPACE NAME [stat]` / `:metric remove N` persisted in `state.toml`; reuse the existing chart widget.
+- [ ] **Show env vars in the Config tab** — `:env list` works on-demand, but operators frequently want to see "what's currently set" without typing a command. Add an env-vars section under tags in the Config tab; fetch via the existing `aws::fetch_env_vars` helper, mirror the lazy-load pattern used for tags. Cache on the `Detail` struct so the chart-rebuild on every paint doesn't refetch.
 
 ### Tier 4 — multi-account / org
 - [ ] **Account switcher with sts:AssumeRole** — the current `:account NAME` is a `:profile NAME` alias. A proper assume-role flow needs an `[accounts]` config schema in `config.toml` with role ARNs, an AssumeRole call, and credentials injection into the SDK. Deferred.
