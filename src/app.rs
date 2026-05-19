@@ -2199,6 +2199,18 @@ impl App {
                         self.mode = Mode::Help;
                     }
                     KeyCode::Char('a') => self.open_action_menu(),
+                    // Guarded `b` on Instances tab opens the EC2 console for
+                    // the selected instance; must come before the unguarded
+                    // `b` (which opens the env console) per the match-arm
+                    // order rule documented in CLAUDE.md.
+                    KeyCode::Char('b')
+                        if matches!(
+                            self.detail.as_ref().map(|d| d.tab()),
+                            Some(DetailTab::Instances)
+                        ) =>
+                    {
+                        self.open_instance_in_console();
+                    }
                     KeyCode::Char('b') => self.open_in_console(),
                     KeyCode::Char('*') => self.toggle_pin_selected(),
                     KeyCode::Enter
@@ -2226,7 +2238,20 @@ impl App {
                             Some(DetailTab::Instances)
                         ) =>
                     {
-                        self.open_instance_in_console();
+                        // Enter now opens an info overlay (non-intrusive).
+                        // For the AWS EC2 console deeplink — which used to
+                        // be Enter — use `b` from the Instances tab.
+                        self.open_instance_info_overlay();
+                    }
+                    KeyCode::Char('i')
+                        if matches!(
+                            self.detail.as_ref().map(|d| d.tab()),
+                            Some(DetailTab::Instances)
+                        ) =>
+                    {
+                        // `i` is an alias for Enter on the Instances tab —
+                        // open the info overlay.
+                        self.open_instance_info_overlay();
                     }
                     KeyCode::Char('y')
                         if matches!(
@@ -5074,6 +5099,49 @@ impl App {
     /// version, clone target, scale min/max, …). Uses the same Y/N path as
     /// the existing Rebuild / Restart / Swap confirms so the operator sees
     /// the impact summary before authorising.
+    /// Surface the selected instance's details as an `Overlay::TextDump`.
+    /// Non-intrusive alternative to opening the EC2 console — operators
+    /// can scan id / type / AZ / health / causes / launch age without
+    /// leaving the TUI. `b` still opens the browser when needed.
+    fn open_instance_info_overlay(&mut self) {
+        let Some(d) = self.detail.as_ref() else {
+            return;
+        };
+        let Some(inst) = d.instances.get(d.instances_cursor) else {
+            self.status_message = Some("no instance selected".into());
+            return;
+        };
+        let mut body = String::new();
+        body.push_str(&format!("Instance ID       {}\n", inst.id));
+        body.push_str(&format!("Type              {}\n", inst.instance_type));
+        body.push_str(&format!("Availability zone {}\n", inst.availability_zone));
+        body.push_str(&format!(
+            "Health            {} ({})\n",
+            inst.health, inst.color
+        ));
+        if let Some(t) = inst.launched_at {
+            let age = chrono::Utc::now().signed_duration_since(t);
+            body.push_str(&format!(
+                "Launched          {}  (up {})\n",
+                t.format("%Y-%m-%d %H:%M UTC"),
+                humanize_short_age(age.to_std().unwrap_or_default())
+            ));
+        }
+        if !inst.causes.is_empty() {
+            body.push_str("\nCauses:\n");
+            for c in &inst.causes {
+                body.push_str(&format!("  • {c}\n"));
+            }
+        }
+        body.push_str(
+            "\nKeys: b → open in EC2 console · s → SSM shell · y → yank id · x → terminate",
+        );
+        self.current_overlay = Some(Overlay::TextDump {
+            title: format!("instance — {}", inst.id),
+            body,
+        });
+    }
+
     /// Open the currently-selected instance (in the Instances tab) in the
     /// EC2 console. No-op when no instance is selected.
     fn open_instance_in_console(&mut self) {

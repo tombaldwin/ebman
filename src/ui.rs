@@ -2558,11 +2558,37 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
             auto_badge,
         ]),
         Line::from(Span::styled(
-            " tab/shift-tab switch  j/k scroll  a actions  ^R refresh  R auto-refresh  esc / q back",
+            detail_tab_keystrip(active_tab),
             Style::default().fg(app.theme.muted),
         )),
     ]);
     f.render_widget(footer, chunks[3]);
+}
+
+/// Per-tab key strip for the Detail footer. Each tab advertises the keys
+/// most relevant to that view; common cycling keys (tab / shift-tab / ^R)
+/// stay across all of them.
+fn detail_tab_keystrip(tab: DetailTab) -> &'static str {
+    match tab {
+        DetailTab::Instances => {
+            " INSTANCES  j/k cursor  s ssm shell  i info  y yank id  x terminate  tab→ Metrics  a actions  ^R refresh  ? help  esc back"
+        }
+        DetailTab::Events => {
+            " EVENTS  j/k scroll  / filter  n/N next/prev  tab→ Instances  a actions  ^R refresh  ? help  esc back"
+        }
+        DetailTab::Metrics => {
+            " METRICS  [ / ]  range  hover values  tab→ Queue  a actions  ^R refresh  R auto-refresh  ? help  esc back"
+        }
+        DetailTab::Queue => {
+            " QUEUE  j/k pick Main/DLQ  enter view  d DLQ  ^R refresh  ? help  esc back"
+        }
+        DetailTab::Logs => {
+            " LOGS  ^R snapshot  s live-stream  / filter  ? help  esc back"
+        }
+        DetailTab::Config => {
+            " CONFIG  tab/shift-tab cycle  a actions  ^R refresh  ? help  esc back"
+        }
+    }
 }
 
 struct DetailFooterState {
@@ -2787,17 +2813,26 @@ fn draw_detail_instances(
             .map(|t| humanize_age(now.signed_duration_since(t)))
             .unwrap_or_else(|| "—".into());
         let is_cursor = idx == cursor_idx;
-        let (marker, marker_style) = if is_cursor {
-            (
-                "▶ ",
-                Style::default()
-                    .fg(theme.title_alt)
-                    .add_modifier(Modifier::BOLD),
-            )
+        // Full-row bg highlight on cursor, mirroring the main env table's
+        // pattern so the cursor reads the same way across the app.
+        let row_bg = if is_cursor {
+            Some(theme.row_selected_bg)
         } else {
-            ("  ", Style::default().fg(theme.muted))
+            None
         };
-        let id_style = if is_cursor {
+        let with_bg = |s: Style| match row_bg {
+            Some(bg) => s.bg(bg),
+            None => s,
+        };
+        let marker = if is_cursor { "▶ " } else { "  " };
+        let marker_style = with_bg(if is_cursor {
+            Style::default()
+                .fg(theme.title_alt)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.muted)
+        });
+        let id_style = with_bg(if is_cursor {
             Style::default()
                 .fg(theme.title_alt)
                 .add_modifier(Modifier::BOLD)
@@ -2805,26 +2840,32 @@ fn draw_detail_instances(
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD)
-        };
+        });
         let head = vec![
             Span::styled(marker.to_string(), marker_style),
             Span::styled(format!("{:<19} ", i.id), id_style),
-            Span::styled(format!("{:<8} ", i.health), health_style(&i.color, theme)),
+            Span::styled(
+                format!("{:<8} ", i.health),
+                with_bg(health_style(&i.color, theme)),
+            ),
             Span::styled(
                 format!("{:<12} ", i.instance_type),
-                Style::default().fg(Color::Gray),
+                with_bg(Style::default().fg(Color::Gray)),
             ),
             Span::styled(
                 format!("{:<14} ", i.availability_zone),
-                Style::default().fg(Color::Gray),
+                with_bg(Style::default().fg(Color::Gray)),
             ),
-            Span::styled(format!("up {age}"), Style::default().fg(Color::Gray)),
+            Span::styled(
+                format!("up {age}"),
+                with_bg(Style::default().fg(Color::Gray)),
+            ),
         ];
         lines.push(Line::from(head));
         for cause in &i.causes {
             lines.push(Line::from(Span::styled(
                 format!("      ↳ {cause}"),
-                Style::default().fg(Color::Yellow),
+                with_bg(Style::default().fg(Color::Yellow)),
             )));
         }
     }
@@ -3688,7 +3729,11 @@ fn draw_help_detail(f: &mut Frame, popup: Rect, app: &App) {
             "Instances tab",
             Style::default().fg(Color::Cyan),
         )),
-        help_line("enter", "open instance in EC2 console"),
+        help_line(
+            "enter / i",
+            "open instance info overlay (id, type, AZ, health, causes)",
+        ),
+        help_line("b", "open instance in EC2 console (browser)"),
         help_line("s", "embedded SSM shell into selected instance"),
         help_line("y", "yank instance ID"),
         help_line("x", "terminate selected instance (Y/N; ASG replaces)"),
