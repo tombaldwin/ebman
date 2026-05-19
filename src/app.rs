@@ -2213,6 +2213,21 @@ impl App {
                             }
                         }
                     }
+                    KeyCode::Char('s')
+                        if matches!(
+                            self.detail.as_ref().map(|d| d.tab()),
+                            Some(DetailTab::Logs)
+                        ) =>
+                    {
+                        // Open the CW Logs streaming overlay over the
+                        // existing snapshot view. spawn_logs_tail handles
+                        // group discovery + auto-pick. The snapshot path
+                        // stays untouched so esc returns to it.
+                        if let Some(d) = self.detail.as_ref() {
+                            let env_name = d.env_name.clone();
+                            self.spawn_logs_tail(env_name, None);
+                        }
+                    }
                     KeyCode::Char('x')
                         if matches!(
                             self.detail.as_ref().map(|d| d.tab()),
@@ -3255,7 +3270,7 @@ impl App {
         }
         // Snapshot the custom-metrics spec list at spawn time so concurrent
         // `:metric add`s don't race with the in-flight fetch.
-        let custom: Vec<(String, String, String, String)> = self
+        let custom: Vec<crate::aws::CustomMetricQuery> = self
             .custom_metrics
             .iter()
             .map(|(label, spec)| {
@@ -3264,6 +3279,7 @@ impl App {
                     spec.namespace.clone(),
                     spec.name.clone(),
                     spec.stat.clone(),
+                    spec.dimensions.clone(),
                 )
             })
             .collect();
@@ -4286,6 +4302,115 @@ impl App {
                 summary: summary_for_msg,
                 result,
             });
+        });
+    }
+
+    /// Register a new application version pointing at an existing S3
+    /// object, and optionally deploy it. Skips the local-read +
+    /// storage-location + put_object steps that `spawn_deploy_from_local`
+    /// does. Useful when the bundle is already in S3 — most CI pipelines
+    /// upload artifacts to S3 themselves.
+    fn spawn_deploy_from_s3(
+        &mut self,
+        bucket: String,
+        key: String,
+        explicit_label: Option<String>,
+        description: Option<String>,
+        and_deploy: bool,
+    ) {
+        if self.read_only {
+            self.error_message = Some("read-only mode — deploy-from-s3 disabled".into());
+            return;
+        }
+        let Some(env) = self.selected_env().cloned() else {
+            self.error_message = Some("no environment selected".into());
+            return;
+        };
+        // Derive label from the S3 key's basename if not pinned. Same
+        // convention as the local-path flow so the audit log + version list
+        // are consistent across the two sources.
+        let label = explicit_label
+            .unwrap_or_else(|| derive_version_label(&key, chrono::Utc::now().timestamp()));
+        let env_name = env.name.clone();
+        let app_name = env.application.clone();
+        let summary = if and_deploy {
+            format!("deploy-from-s3 {label}")
+        } else {
+            format!("create-version-from-s3 {label}")
+        };
+        write_audit_line(
+            self.context.account_id.as_deref(),
+            self.context.profile.as_deref(),
+            &self.context.region,
+            &format!(
+                "stage=dispatched action=DeployFromS3 target={env_name} label={label} source=s3://{bucket}/{key} and_deploy={and_deploy}"
+            ),
+        );
+        self.push_pending(summary.clone(), env_name.clone());
+        self.status_message = Some(format!("registering {label} from s3://{bucket}/{key}…"));
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let env_for_msg = env_name.clone();
+        let label_for_msg = label.clone();
+        let summary_for_msg = summary.clone();
+        let account = self.context.account_id.clone();
+        let profile = self.context.profile.clone();
+        let region = self.context.region.clone();
+        let description_owned = description;
+        tokio::spawn(async move {
+            if let Err(e) = aws
+                .create_app_version(
+                    &app_name,
+                    &label_for_msg,
+                    description_owned.as_deref(),
+                    &bucket,
+                    &key,
+                )
+                .await
+            {
+                let err = format!("create-version: {}", flatten_err("create_app_version", e));
+                finish_deploy_from_local(
+                    &tx,
+                    gen,
+                    env_for_msg,
+                    label_for_msg,
+                    summary_for_msg,
+                    account.as_deref(),
+                    profile.as_deref(),
+                    &region,
+                    Err(err),
+                );
+                return;
+            }
+            if and_deploy {
+                if let Err(e) = aws.deploy_version(&env_for_msg, &label_for_msg).await {
+                    let err = format!("deploy: {}", flatten_err("deploy_version", e));
+                    finish_deploy_from_local(
+                        &tx,
+                        gen,
+                        env_for_msg,
+                        label_for_msg,
+                        summary_for_msg,
+                        account.as_deref(),
+                        profile.as_deref(),
+                        &region,
+                        Err(err),
+                    );
+                    return;
+                }
+            }
+            finish_deploy_from_local(
+                &tx,
+                gen,
+                env_for_msg,
+                label_for_msg,
+                summary_for_msg,
+                account.as_deref(),
+                profile.as_deref(),
+                &region,
+                Ok(()),
+            );
         });
     }
 
@@ -5770,7 +5895,7 @@ impl App {
                         Some(p) => p.to_string(),
                         None => {
                             self.error_message = Some(
-                                "usage: :deploy --from PATH [--label LABEL] [--describe DESC] [--no-deploy]".into(),
+                                "usage: :deploy --from PATH | s3://BUCKET/KEY [--label LABEL] [--describe DESC] [--no-deploy]".into(),
                             );
                             return;
                         }
@@ -5778,7 +5903,13 @@ impl App {
                     let label = parse_named_arg::<String>(&rest, "--label");
                     let description = parse_named_arg::<String>(&rest, "--describe");
                     let no_deploy = rest.contains(&"--no-deploy");
-                    self.spawn_deploy_from_local(path, label, description, !no_deploy);
+                    // Path discriminator: `s3://` skips the upload step and
+                    // points CreateApplicationVersion at the existing object.
+                    if let Some((bucket, key)) = parse_s3_url(&path) {
+                        self.spawn_deploy_from_s3(bucket, key, label, description, !no_deploy);
+                    } else {
+                        self.spawn_deploy_from_local(path, label, description, !no_deploy);
+                    }
                 } else {
                     match rest.first().copied() {
                         None => {
@@ -6445,13 +6576,19 @@ impl App {
                         rest.get(3).copied(),
                     ) {
                         (Some(label), Some(namespace), Some(name)) => {
-                            let stat = rest.get(4).copied().unwrap_or("Average").to_string();
+                            // Args after NAME are STAT and/or DIMS in any order.
+                            // The token containing `=` is dims (e.g.
+                            // `InstanceId=i-abc,Foo=bar`); the other is stat.
+                            // STAT defaults to Average; DIMS defaults to the
+                            // env-scoped dimension (resolved at fetch time).
+                            let (stat, dimensions) = parse_metric_extra_args(&rest[4..]);
                             self.custom_metrics.insert(
                                 label.to_string(),
                                 crate::state::CustomMetricSpec {
                                     namespace: namespace.to_string(),
                                     name: name.to_string(),
                                     stat,
+                                    dimensions,
                                 },
                             );
                             self.persist_state();
@@ -6469,7 +6606,7 @@ impl App {
                         }
                         _ => {
                             self.error_message = Some(
-                                "usage: :metric add LABEL NAMESPACE NAME [STAT]  (charts are scoped to EnvironmentName; metrics needing other dimensions like InstanceId or LoadBalancer won't return data yet)".into(),
+                                "usage: :metric add LABEL NAMESPACE NAME [STAT] [DIM=VAL,DIM=VAL]  (dimensions default to EnvironmentName=<env>; pass overrides for AWS/EC2 InstanceId, AWS/ApplicationELB LoadBalancer, etc.)".into(),
                             );
                         }
                     },
@@ -8876,6 +9013,44 @@ pub fn format_env_vars(vars: &[(String, String)]) -> String {
     out
 }
 
+/// Parse the optional trailing args of `:metric add LABEL NS NAME ...`.
+/// Args after `NAME` are either a stat name (`Average`, `Sum`, ...) or a
+/// dimension list (`InstanceId=i-abc,Foo=bar`). Any token containing `=`
+/// is treated as dims; the other is stat. Returns `(stat, dims)` with
+/// `stat` defaulting to `Average` and `dims` to empty when absent. Pure.
+pub fn parse_metric_extra_args(args: &[&str]) -> (String, Vec<(String, String)>) {
+    let mut stat: Option<String> = None;
+    let mut dims: Vec<(String, String)> = Vec::new();
+    for tok in args {
+        if tok.contains('=') {
+            for kv in tok.split(',') {
+                if let Some((k, v)) = kv.split_once('=') {
+                    let k = k.trim();
+                    let v = v.trim();
+                    if !k.is_empty() && !v.is_empty() {
+                        dims.push((k.to_string(), v.to_string()));
+                    }
+                }
+            }
+        } else if stat.is_none() {
+            stat = Some(tok.to_string());
+        }
+    }
+    (stat.unwrap_or_else(|| "Average".into()), dims)
+}
+
+/// Parse an `s3://bucket/key/with/slashes` URL into a `(bucket, key)`
+/// tuple. Returns `None` if the input isn't an `s3://` URL or the bucket
+/// or key is empty. Pure.
+pub fn parse_s3_url(raw: &str) -> Option<(String, String)> {
+    let rest = raw.strip_prefix("s3://")?;
+    let (bucket, key) = rest.split_once('/')?;
+    if bucket.is_empty() || key.is_empty() {
+        return None;
+    }
+    Some((bucket.to_string(), key.to_string()))
+}
+
 /// Expand a leading `~/` to `$HOME/`. Other tilde forms (e.g. `~user`) are
 /// left as-is; the operator gets a clear "can't read" error if they pass
 /// something obscure. Pure for ease of testing.
@@ -9761,6 +9936,60 @@ mod tests {
             super::delta_toast_key("  ▲10 Green").as_deref(),
             Some("Green")
         );
+    }
+
+    #[test]
+    fn parse_s3_url_extracts_bucket_and_key() {
+        let (b, k) = super::parse_s3_url("s3://my-bucket/path/to/bundle.zip").unwrap();
+        assert_eq!(b, "my-bucket");
+        assert_eq!(k, "path/to/bundle.zip");
+    }
+
+    #[test]
+    fn parse_s3_url_rejects_malformed() {
+        assert!(super::parse_s3_url("/local/path.zip").is_none());
+        assert!(super::parse_s3_url("s3://").is_none());
+        assert!(super::parse_s3_url("s3://bucket").is_none());
+        assert!(super::parse_s3_url("s3://bucket/").is_none());
+        assert!(super::parse_s3_url("s3:///key").is_none());
+    }
+
+    #[test]
+    fn parse_metric_extra_args_defaults_to_average() {
+        let (stat, dims) = super::parse_metric_extra_args(&[]);
+        assert_eq!(stat, "Average");
+        assert!(dims.is_empty());
+    }
+
+    #[test]
+    fn parse_metric_extra_args_picks_stat_first() {
+        let (stat, dims) = super::parse_metric_extra_args(&["Sum"]);
+        assert_eq!(stat, "Sum");
+        assert!(dims.is_empty());
+    }
+
+    #[test]
+    fn parse_metric_extra_args_picks_dims_when_present() {
+        let (stat, dims) = super::parse_metric_extra_args(&["InstanceId=i-abc"]);
+        assert_eq!(stat, "Average");
+        assert_eq!(dims, vec![("InstanceId".into(), "i-abc".into())]);
+    }
+
+    #[test]
+    fn parse_metric_extra_args_supports_both_in_any_order() {
+        let (stat, dims) = super::parse_metric_extra_args(&["Sum", "InstanceId=i-abc,Tier=web"]);
+        assert_eq!(stat, "Sum");
+        assert_eq!(
+            dims,
+            vec![
+                ("InstanceId".into(), "i-abc".into()),
+                ("Tier".into(), "web".into()),
+            ]
+        );
+        // Reversed order: dims first.
+        let (stat, dims) = super::parse_metric_extra_args(&["InstanceId=i-abc", "Sum"]);
+        assert_eq!(stat, "Sum");
+        assert_eq!(dims, vec![("InstanceId".into(), "i-abc".into())]);
     }
 
     #[test]

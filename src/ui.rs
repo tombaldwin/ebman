@@ -1857,6 +1857,7 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App) {
         help_line(":plugins  /  :NAME", "list / invoke plugin commands defined in commands.toml"),
         help_line("[ / ] (Metrics tab)", "decrease / increase metric range (15m → 24h)"),
         help_line("(Logs tab) ^R", "request tail logs (takes ~10–20s while EB samples instances)"),
+        help_line("(Logs tab) s", "open CW Logs streaming overlay (live tail; needs `:logs-stream on`)"),
         help_line("(Logs tab) /", "regex-filter the visible log lines"),
         Line::from(""),
         Line::from(Span::styled(
@@ -3610,6 +3611,10 @@ fn draw_help_detail(f: &mut Frame, popup: Rect, app: &App) {
         Line::from(""),
         Line::from(Span::styled("Logs tab", Style::default().fg(Color::Cyan))),
         help_line("^R", "request tail logs (10-20s wait for instance samples)"),
+        help_line(
+            "s",
+            "open CW Logs streaming overlay (requires `:logs-stream on`)",
+        ),
         help_line("/", "regex filter visible lines"),
         Line::from(""),
         Line::from(Span::styled(
