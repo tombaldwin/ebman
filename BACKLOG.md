@@ -222,6 +222,9 @@ Living list of done / pending / dropped work. New entries get added at the botto
 - **`ebman action <rebuild|restart|terminate> --env NAME [--yes]`** dispatches an action without entering the TUI. Terminate requires `--yes`.
 - `--help` updated to document subcommands; `--version`, `-h`, `-V`, `--read-only` flags continue to work.
 
+### CW Logs auto-discovery on Detail open (2026-05-19)
+- **Discovery on Detail open** — `discover_env_log_groups` fires once when the user opens an env (alongside tags / env-vars / instances). Result stored on `DetailState.cw_log_groups`. Logs-tab idle hint now renders one of three tailored strings (groups present → "press s to live-stream", groups absent → "CW Logs not configured (`:logs-stream on` to enable)", still loading → "checking…"). No auto-open of the streaming overlay — that's still triggered by `s`. Discovery errors swallowed silently and fall back to the "checking" hint, so a missing IAM perm on `logs:DescribeLogGroups` doesn't surface as a toast.
+
 ### More per-option commands (2026-05-19)
 - **`:deployment-policy POLICY`** — sets `aws:elasticbeanstalk:command.DeploymentPolicy`. Accepts canonical names (AllAtOnce, Rolling, RollingWithAdditionalBatch, Immutable, TrafficSplitting) and lower-case aliases.
 - **`:rolling-update on|off`** — toggles `aws:autoscaling:updatepolicy:rollingupdate.RollingUpdateEnabled`.
@@ -366,7 +369,7 @@ Items list `Depends on:` only when another backlog or done item is a real prereq
 The three things still keeping users in the AWS console day-to-day. Highest-leverage backlog block; ordered by impact.
 
 - [ ] **Option settings editor (non-env-var namespaces)** — env vars are now done via `:env set/unset/list`. The remaining namespaces (`aws:autoscaling:asg` for min/max, `aws:autoscaling:launchconfiguration` for instance type/key pair/security groups, etc.) still need either a modal form or per-namespace commands. The shared `spawn_option_settings_update` helper already exists; what's missing is the UX. Modal-form abstraction (label + input + validation) would also unlock the Capacity / Network / Security gaps below.
-- [ ] **Auto-detect CW Logs on Detail Logs tab open** — `s` keybind shipped (opens the streaming overlay manually); the next step is auto-detection on tab open (call `discover_env_log_groups`; if non-empty, switch to streaming view by default). Snapshot path stays for envs that don't ship to CW Logs.
+- [ ] **Auto-open the streaming overlay on Logs-tab navigation** — discovery now runs on Detail open and the Logs-tab idle hint reflects whether CW Logs are configured. The remaining piece is auto-opening the streaming overlay (instead of showing the snapshot path) when groups are present. Operator preference signal — current behaviour is explicit (press `s`); auto-open is convenience.
 - [ ] **`:deploy --from` multipart upload** — `:deploy --from PATH` and `:deploy --from s3://bucket/key` both shipped. Bundles >5 GiB still need multipart on the local-upload path; the s3:// path already sidesteps the limit. Whole bundle held in memory during upload is the other follow-on (stream from disk).
 
 ### Refactors — structural cleanup remaining
