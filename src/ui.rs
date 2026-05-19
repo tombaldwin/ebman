@@ -222,6 +222,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             Overlay::TextDump { title, body } => {
                 draw_text_dump_overlay(f, f.area(), app, &title, &body)
             }
+            Overlay::LogTail { .. } => draw_log_tail_overlay(f, f.area(), app),
         }
     }
     if app.mode == Mode::Palette {
@@ -501,6 +502,98 @@ pub fn visible_window(cursor: usize, total: usize, budget: usize) -> (usize, usi
     let start = cursor.saturating_sub(half);
     let start = start.min(total - budget);
     (start, start + budget)
+}
+
+fn draw_log_tail_overlay(f: &mut Frame, area: Rect, app: &App) {
+    let Some(crate::app::Overlay::LogTail {
+        log_group,
+        env_name,
+        events,
+        scroll,
+        following,
+        filter_input,
+        filter_active,
+        filter_pattern,
+        last_err,
+        ..
+    }) = app.current_overlay.as_ref()
+    else {
+        return;
+    };
+    let popup = centered_rect(85, 80, area);
+    f.render_widget(Clear, popup);
+    let theme = &app.theme;
+    // Format each event as `HH:MM:SS  STREAM_TAIL  message`. Stream names
+    // are EB instance ids — keep just the last 8 chars so the line stays
+    // scannable.
+    let mut lines: Vec<Line> = Vec::with_capacity(events.len());
+    for ev in events.iter() {
+        if let Some(pat) = filter_pattern.as_ref() {
+            if !pat.is_match(&ev.message) {
+                continue;
+            }
+        }
+        let dt = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ev.timestamp_ms)
+            .unwrap_or_else(chrono::Utc::now);
+        let stream_tail: String = ev
+            .stream
+            .chars()
+            .rev()
+            .take(8)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        let ts_style = Style::default().fg(theme.muted);
+        let stream_style = Style::default().fg(theme.title_alt);
+        let msg_style = Style::default().fg(theme.text);
+        lines.push(Line::from(vec![
+            Span::styled(format!("{}  ", dt.format("%H:%M:%S")), ts_style),
+            Span::styled(format!("{stream_tail}  "), stream_style),
+            Span::styled(ev.message.clone(), msg_style),
+        ]));
+    }
+    // popup.height minus borders/padding/title/footer (≈6). Slice the tail
+    // when following; otherwise honour `scroll`.
+    let body_rows = popup.height.saturating_sub(6) as usize;
+    let total = lines.len();
+    let start = if *following {
+        total.saturating_sub(body_rows)
+    } else {
+        let max_start = total.saturating_sub(body_rows);
+        max_start.saturating_sub(*scroll as usize)
+    };
+    let visible_lines: Vec<Line> = lines.into_iter().skip(start).take(body_rows).collect();
+    let title_text = format!(
+        "logs-tail — {env_name} · {} · {} lines{}",
+        log_group.rsplit('/').next().unwrap_or(log_group.as_str()),
+        events.len(),
+        if *following {
+            " · following"
+        } else {
+            " · paused (G to follow)"
+        }
+    );
+    let footer_text = if *filter_active {
+        format!(" filter: {filter_input}_ (esc cancel)")
+    } else if let Some(err) = last_err {
+        format!(" ⚠ {err}")
+    } else {
+        " j/k scroll · g/G top/follow · / filter · n clear-filter · esc / q close".to_string()
+    };
+    let mut paragraph_lines = visible_lines;
+    paragraph_lines.push(Line::raw(""));
+    paragraph_lines.push(Line::from(Span::styled(
+        footer_text,
+        Style::default().fg(theme.muted),
+    )));
+    let p = Paragraph::new(paragraph_lines)
+        .wrap(Wrap { trim: false })
+        .block(
+            titled_block(&app.theme, &title_text, true, app.theme.title)
+                .padding(Padding::uniform(1)),
+        );
+    f.render_widget(p, popup);
 }
 
 fn draw_text_dump_overlay(f: &mut Frame, area: Rect, app: &App, title: &str, text: &str) {

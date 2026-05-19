@@ -222,6 +222,15 @@ Living list of done / pending / dropped work. New entries get added at the botto
 - **`ebman action <rebuild|restart|terminate> --env NAME [--yes]`** dispatches an action without entering the TUI. Terminate requires `--yes`.
 - `--help` updated to document subcommands; `--version`, `-h`, `-V`, `--read-only` flags continue to work.
 
+### CloudWatch Logs `tail -f` (2026-05-19)
+The biggest remaining Tier-1 blocker, shipped. Tests: `pick_default_log_group_*` × 3.
+
+- **`:logs-tail [LOG_GROUP]`** opens a streaming overlay that polls `cloudwatch:FilterLogEvents` every 2s and appends events. If no group specified, discovers groups under `/aws/elasticbeanstalk/{env}/` and auto-picks the most useful (web.stdout.log preferred, then eb-engine.log / eb-hooks.log / nginx access).
+- New `Overlay::LogTail` variant with cap of 2000 events (oldest dropped), `following` auto-tail mode, regex filter (`/` activates, `n` clears), j/k scroll, G snap-to-tail, g jump-to-top.
+- Polling task lifecycle: aborted on overlay close, on a second `:logs-tail` call, and on profile/region switch via `apply_rebuild`. Session id bumped at every teardown so late `LogTailOpened` messages from the aborted task can't re-open the overlay (abort + channel-send race).
+- Pure `pick_default_log_group` helper for the default-group selection. Render gracefully handles plane-1 chars in messages via ratatui's existing Wrap.
+- Late `LogTailEvents` arriving during a `?`-help round-trip route into `pre_help_overlay` so events aren't lost while reading help.
+
 ### Per-option commands + generic option escape hatch (2026-05-19)
 Fills the Network + Security + miscellaneous-option gap without the modal-form abstraction. The new generic commands cover anything we don't have a friendly name for.
 
@@ -327,7 +336,7 @@ Items list `Depends on:` only when another backlog or done item is a real prereq
 The three things still keeping users in the AWS console day-to-day. Highest-leverage backlog block; ordered by impact.
 
 - [ ] **Option settings editor (non-env-var namespaces)** — env vars are now done via `:env set/unset/list`. The remaining namespaces (`aws:autoscaling:asg` for min/max, `aws:autoscaling:launchconfiguration` for instance type/key pair/security groups, etc.) still need either a modal form or per-namespace commands. The shared `spawn_option_settings_update` helper already exists; what's missing is the UX. Modal-form abstraction (label + input + validation) would also unlock the Capacity / Network / Security gaps below.
-- [ ] **CloudWatch Logs streaming (real `tail -f`)** — the current Logs tab is a one-shot `RequestEnvironmentInfo("tail")` snapshot. Switch to `cloudwatch:GetLogEvents` against the env's log groups with `start_from_head=false` and a polling tick; falls back to the existing snapshot path when the env doesn't ship logs to CloudWatch. Regex filter reused from the snapshot path.
+- [ ] **Auto-detect CW Logs in the Detail's Logs tab** — `:logs-tail` ships a real streaming overlay with FilterLogEvents polling, but the existing Detail Logs tab still uses the one-shot snapshot path. Either auto-detect on tab open (call `discover_env_log_groups`; if non-empty, switch to streaming) or add a key (`s` for stream) to toggle. Snapshot path stays as the fallback for envs that don't ship to CW Logs.
 - [ ] **Deploy from local path / S3** — `:deploy --from ./build.zip` or `:deploy --from s3://bucket/key`: upload to the env's storage location (`CreateStorageLocation` + S3 PutObject), `CreateApplicationVersion`, then `UpdateEnvironment(version_label)`. Covers the actual deploy story; the current `:deploy <label>` only ships existing versions.
 
 ### Refactors — structural cleanup remaining
