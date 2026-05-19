@@ -141,6 +141,7 @@ Type `:` to open the command bar. Tab-completion is not implemented, but `Ctrl-K
 - `:history` — recent status / error log.
 - `:pending` / `:in-flight` — overlay of dispatched actions + outcomes.
 - `:whatsnew` — embedded changelog.
+- `:settings` — interactive form to edit `~/.config/ebman/config.toml`; writes back on submit and live-applies theme / icons / refresh interval.
 
 ### Write — env state
 
@@ -214,8 +215,10 @@ extra_regions = ""
 # Theme: "dark" (default), "light", or "high-contrast".
 theme = "dark"
 
-# Glyph set: "unicode" (default), "ascii" for low-feature terminals, or
-# "powerline" (alias "nerd") for Powerline-patched / Nerd Fonts.
+# Glyph set: "unicode" (default), "ascii" for low-feature terminals,
+# "powerline" (alias "nerd") for Powerline-patched / Nerd Fonts, or
+# "auto" to probe the terminal at startup and pick powerline if its
+# support is detected (one-cell U+E0B0 advance), unicode otherwise.
 icons = "unicode"
 
 # Start with these toggles on (state.toml takes precedence after first run).

@@ -128,6 +128,7 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "platforms",
     "update",
     "capacity",
+    "settings",
 ];
 
 /// Which on-screen panel is "focused" — i.e. which one j/k/Enter target. The
@@ -991,6 +992,10 @@ pub struct App {
     /// Webhook URL invoked once per env that transitions into Red on refresh.
     /// `None` disables the feature.
     pub webhook_url: Option<String>,
+    /// The raw `icons = …` string from `config.toml` (before resolution to
+    /// [`crate::theme::IconStyle`]). Kept verbatim so `:settings` can round-trip
+    /// values like `"auto"` without flattening them to the resolved style.
+    pub cfg_icons_raw: String,
     pub newly_red: HashSet<String>,
     /// Delta in counts vs. the previous refresh, e.g. {"Red" → +1, "Yellow" → -1}.
     pub health_delta: Vec<(String, i32)>,
@@ -1418,6 +1423,7 @@ impl App {
             notify_bell: config.notify_bell,
             required_tags: config.required_tags,
             webhook_url: config.webhook_url,
+            cfg_icons_raw: config.icons.clone(),
             newly_red: HashSet::new(),
             health_delta: Vec::new(),
             status_delta: Vec::new(),
@@ -3904,7 +3910,17 @@ impl App {
     /// `DescribeConfigurationSettings` fetch to pre-fill values, and flips
     /// to `Mode::Form`. The form stays in `FormState::Loading` until the
     /// `FormPrefilled` AppMsg lands.
-    fn open_form(&mut self, form: crate::form::Form) {
+    fn open_form(&mut self, mut form: crate::form::Form) {
+        // LocalConfig forms don't need an AWS pre-fill — the caller has
+        // already populated the field values from the live `App` state.
+        // Skip the DescribeConfigurationSettings round-trip and go straight
+        // to Ready so the user can type immediately.
+        if matches!(form.submit, crate::form::FormSubmit::LocalConfig) {
+            form.state = crate::form::FormState::Ready;
+            self.form = Some(form);
+            self.mode = Mode::Form;
+            return;
+        }
         let env_name = form.env_name.clone();
         // Look up the env's application from the live env list. We need it
         // for DescribeConfigurationSettings; the form itself only knows the
@@ -4051,6 +4067,12 @@ impl App {
             form.cursor = failing[0];
             return;
         }
+        // LocalConfig submits write `config.toml` and apply changes live to
+        // the running App. No AWS round-trip, so close out immediately.
+        if matches!(form.submit, crate::form::FormSubmit::LocalConfig) {
+            self.submit_local_config();
+            return;
+        }
         let env_name = form.env_name.clone();
         let summary = form.summary.clone();
         let (to_set, to_remove) = form.to_option_settings();
@@ -4115,6 +4137,239 @@ impl App {
         // OptionSettingsUpdate handler will fire a toast on completion.
         self.form = None;
         self.mode = Mode::Normal;
+    }
+
+    /// Apply a [`crate::form::FormSubmit::LocalConfig`] submit: render the
+    /// form values back into a [`Config`], write it to disk, and update the
+    /// live `App` state so theme / icons / refresh interval changes take
+    /// effect immediately. Other fields (notify_bell, required_tags,
+    /// webhook_url, redact, grouped, extra_regions) are updated in place but
+    /// only take effect on the next refresh / restart depending on what
+    /// reads them — see the field docs.
+    fn submit_local_config(&mut self) {
+        let Some(form) = self.form.as_ref() else {
+            return;
+        };
+        let snapshot = self.current_config_snapshot();
+        let updated = form.apply_to_config(&snapshot);
+        match crate::config::save(&updated) {
+            Ok(()) => {
+                let path = crate::config::config_path();
+                self.apply_config_live(&updated);
+                self.pin_status(format!("settings saved → {}", path.display()));
+            }
+            Err(e) => {
+                self.error_message = Some(format!("settings save failed: {e}"));
+            }
+        }
+        self.form = None;
+        self.mode = Mode::Normal;
+    }
+
+    /// Build the `:settings` form pre-filled from the live App state and
+    /// open it. Submit writes `config.toml` and live-applies any field
+    /// that can change at runtime (see [`App::apply_config_live`]).
+    fn open_settings_form(&mut self) {
+        use crate::form::{Form, FormField, FormSubmit};
+        let snapshot = self.current_config_snapshot();
+        let bool_select = vec!["true".to_string(), "false".to_string()];
+        let triple_select = vec!["auto".to_string(), "true".to_string(), "false".to_string()];
+        let mut fields: Vec<FormField> = Vec::new();
+        // Theme — present the known names as a select; user can still
+        // type-edit via the value field if they prefer a wider list later.
+        let theme_options = vec![
+            "dark".to_string(),
+            "light".to_string(),
+            "high-contrast".to_string(),
+        ];
+        let mut theme_field = FormField::select(
+            "theme",
+            "Theme",
+            theme_options.clone(),
+            Some::<String>("dark / light / high-contrast".into()),
+        );
+        // Pre-fill from current Config. Theme name is always one of the
+        // known options at this point — App::new normalises unknown names
+        // back to `dark`. Fall back to the first option defensively in
+        // case a future theme is added without updating this list.
+        theme_field.value = if theme_options.iter().any(|o| o == &snapshot.theme) {
+            snapshot.theme.clone()
+        } else {
+            theme_options[0].clone()
+        };
+        fields.push(theme_field);
+
+        let icons_options = vec![
+            "unicode".to_string(),
+            "ascii".to_string(),
+            "powerline".to_string(),
+            "auto".to_string(),
+        ];
+        let mut icons_field = FormField::select(
+            "icons",
+            "Icons",
+            icons_options.clone(),
+            Some::<String>("auto = probe the terminal at startup".into()),
+        );
+        icons_field.value = if icons_options
+            .iter()
+            .any(|o| o.eq_ignore_ascii_case(&snapshot.icons))
+        {
+            snapshot.icons.to_ascii_lowercase()
+        } else {
+            "unicode".to_string()
+        };
+        fields.push(icons_field);
+
+        let mut refresh_field = FormField::integer(
+            "refresh_interval_secs",
+            "Refresh interval (s)",
+            Some("How often the env list reloads from AWS"),
+            Some(5),
+            Some(600),
+            false,
+        );
+        refresh_field.value = snapshot.refresh_interval.as_secs().to_string();
+        fields.push(refresh_field);
+
+        // redact_default and grouped_default are Option<bool> → use a
+        // three-way select.
+        let mut redact_field = FormField::select(
+            "redact_default",
+            "Redact by default",
+            triple_select.clone(),
+            Some::<String>("auto leaves the toggle to per-session state".into()),
+        );
+        redact_field.value = match snapshot.redact_default {
+            None => "auto".into(),
+            Some(true) => "true".into(),
+            Some(false) => "false".into(),
+        };
+        fields.push(redact_field);
+
+        let mut grouped_field = FormField::select(
+            "grouped_default",
+            "Group by app by default",
+            triple_select,
+            Some::<String>("auto leaves the toggle to per-session state".into()),
+        );
+        grouped_field.value = match snapshot.grouped_default {
+            None => "auto".into(),
+            Some(true) => "true".into(),
+            Some(false) => "false".into(),
+        };
+        fields.push(grouped_field);
+
+        let mut notify_field = FormField::select(
+            "notify_bell",
+            "Bell on new Red",
+            bool_select,
+            Some::<String>("ring BEL when an env transitions into Red".into()),
+        );
+        notify_field.value = if snapshot.notify_bell {
+            "true".into()
+        } else {
+            "false".into()
+        };
+        fields.push(notify_field);
+
+        let mut tags_field = FormField::text(
+            "required_tags",
+            "Required tags",
+            Some::<String>("comma-separated; surfaced in :report".into()),
+        );
+        tags_field.value = snapshot.required_tags.join(",");
+        fields.push(tags_field);
+
+        let mut regions_field = FormField::text(
+            "extra_regions",
+            "Extra regions",
+            Some::<String>("comma-separated; appended to :region picker".into()),
+        );
+        regions_field.value = snapshot.extra_regions.join(",");
+        fields.push(regions_field);
+
+        let mut webhook_field = FormField::text(
+            "webhook_url",
+            "Webhook URL",
+            Some::<String>("POSTed on Red transitions; blank = disabled".into()),
+        );
+        webhook_field.value = snapshot.webhook_url.clone().unwrap_or_default();
+        fields.push(webhook_field);
+
+        let form = Form::loading(
+            "settings",
+            String::new(),
+            "settings".to_string(),
+            fields,
+            FormSubmit::LocalConfig,
+        );
+        self.open_form(form);
+    }
+
+    /// Build a [`Config`] from the App's current state. Used by the
+    /// `:settings` form for pre-fill and as the base the form's edited
+    /// fields are merged onto before writing back to disk.
+    fn current_config_snapshot(&self) -> Config {
+        Config {
+            refresh_interval: self.refresh_interval,
+            extra_regions: self.extra_regions.clone(),
+            redact_default: Some(self.redact),
+            grouped_default: Some(self.grouped),
+            theme: self.theme.name.to_string(),
+            icons: self.cfg_icons_raw.clone(),
+            notify_bell: self.notify_bell,
+            required_tags: self.required_tags.clone(),
+            webhook_url: self.webhook_url.clone(),
+        }
+    }
+
+    /// Apply a saved [`Config`] to the running App. Mirrors the assignments
+    /// in [`App::new`] for the slots that can change at runtime; fields not
+    /// listed here only take effect on restart.
+    fn apply_config_live(&mut self, cfg: &Config) {
+        // Theme + icons are stored on an `Arc<Theme>`; rebuild it from the
+        // resolved values so renderers pick up the new palette/icon style
+        // on the next draw.
+        let (mut t, warning) = Theme::resolve(&cfg.theme);
+        if let Some(w) = warning {
+            tracing::warn!("{w}");
+        }
+        // Resolve `icons = "auto"` again — the form may have set it. We
+        // can't run the probe from inside the TUI (alt-screen swallows the
+        // cursor query), so "auto" falls back to whatever the previous
+        // resolution chose. Operators who want a fresh probe should restart.
+        let icons_raw = cfg.icons.clone();
+        let resolved_icons = if icons_raw.eq_ignore_ascii_case("auto") {
+            // Keep the previous resolved style on the running theme;
+            // restart picks up a fresh probe.
+            self.theme.icons
+        } else {
+            match icons_raw.trim().to_ascii_lowercase().as_str() {
+                "ascii" => IconStyle::Ascii,
+                "powerline" | "nerd" | "nerdfont" => IconStyle::Powerline,
+                _ => IconStyle::Unicode,
+            }
+        };
+        t.icons = resolved_icons;
+        self.theme = Arc::new(t);
+        self.cfg_icons_raw = icons_raw;
+        // Refresh interval — the ticker reads `self.refresh_interval` on
+        // each tick boundary, so the new value applies on the next cycle.
+        self.refresh_interval = cfg.refresh_interval;
+        // Defaults that flow through the persisted-state overlay: don't
+        // overwrite the live toggles (the user may have flipped them with
+        // `:redact` / `:group`), only the *_default fields in cfg get
+        // written back. Reflecting those onto the running view would
+        // surprise the operator.
+        self.extra_regions = cfg.extra_regions.clone();
+        self.notify_bell = cfg.notify_bell;
+        self.required_tags = cfg.required_tags.clone();
+        self.webhook_url = cfg.webhook_url.clone();
+        // Theme swap invalidates the cached per-app colour assignments —
+        // those store final `Color` values, not palette indices, so they'd
+        // otherwise carry the old palette into the new theme's rendering.
+        self.rebuild_view();
     }
 
     fn handle_action_key(&mut self, key: KeyEvent) {
@@ -6105,6 +6360,9 @@ impl App {
                 None => self.error_message = Some("usage: :alias-drop <env-name>".into()),
             },
             "whatsnew" => self.open_whatsnew(),
+            "settings" => {
+                self.open_settings_form();
+            }
             "capacity" => {
                 // Modal form to edit the env's capacity profile:
                 // MinSize/MaxSize on the ASG, InstanceType on the launch
@@ -8427,6 +8685,12 @@ impl App {
                             crate::form::FormSubmit::OptionSettings { mappings } => {
                                 mappings.clone()
                             }
+                            // LocalConfig forms skip the AWS pre-fill in
+                            // `open_form` so the FormPrefilled msg never
+                            // fires for them — drop the result if one
+                            // arrives anyway (stale message after the user
+                            // switched form types).
+                            crate::form::FormSubmit::LocalConfig => return,
                         };
                         for (key, ns, opt) in mappings {
                             if let Some(value) = lookup.get(&(ns, opt)) {
@@ -9468,6 +9732,10 @@ fn build_palette_items(app: &App) -> Vec<PaletteItem> {
         (
             "capacity",
             "modal form: edit ASG min/max + instance type + cooldown",
+        ),
+        (
+            "settings",
+            "modal form: theme / icons / refresh / redact / grouped / webhook",
         ),
         ("alarms", "CloudWatch alarms for selected env"),
         ("saved-configs", "EB saved configuration templates"),

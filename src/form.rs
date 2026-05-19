@@ -90,6 +90,11 @@ pub enum FormSubmit {
         /// preserved when building the to_set vec.
         mappings: Vec<(String, String, String)>,
     },
+    /// Writes back to `~/.config/ebman/config.toml` and updates the live
+    /// `App.cfg` in place. Field `key`s must match `Config` field names so
+    /// the submit handler can update the right slots without per-field
+    /// branching. No AWS round-trip.
+    LocalConfig,
 }
 
 impl Form {
@@ -162,6 +167,7 @@ impl Form {
     pub fn to_option_settings(&self) -> (Vec<(String, String, String)>, Vec<(String, String)>) {
         let mappings = match &self.submit {
             FormSubmit::OptionSettings { mappings } => mappings,
+            FormSubmit::LocalConfig => return (Vec::new(), Vec::new()),
         };
         let mut to_set: Vec<(String, String, String)> = Vec::new();
         // No field kind currently maps to "remove this setting"; the field's
@@ -184,6 +190,72 @@ impl Form {
             to_set.push((ns.clone(), opt.clone(), field.value.clone()));
         }
         (to_set, to_remove)
+    }
+
+    /// Apply the form's field values onto a [`crate::config::Config`]. Field
+    /// keys are matched to config slots by string; unknown keys are silently
+    /// ignored so callers can carry extra UI-only fields without breaking
+    /// this. Pure — does not touch disk. Pre-validation is the caller's
+    /// responsibility.
+    ///
+    /// Comma-separated list fields (`extra_regions`, `required_tags`) split
+    /// on commas and trim each entry; empty entries are dropped.
+    pub fn apply_to_config(&self, base: &crate::config::Config) -> crate::config::Config {
+        let mut cfg = base.clone();
+        for field in &self.fields {
+            let value = field.value.trim();
+            match field.key.as_str() {
+                "theme" => cfg.theme = value.to_string(),
+                "icons" => cfg.icons = value.to_string(),
+                "refresh_interval_secs" => {
+                    if let Ok(n) = value.parse::<u64>() {
+                        if n > 0 {
+                            cfg.refresh_interval = std::time::Duration::from_secs(n);
+                        }
+                    }
+                }
+                "redact_default" => {
+                    cfg.redact_default = match value {
+                        "true" => Some(true),
+                        "false" => Some(false),
+                        _ => None,
+                    };
+                }
+                "grouped_default" => {
+                    cfg.grouped_default = match value {
+                        "true" => Some(true),
+                        "false" => Some(false),
+                        _ => None,
+                    };
+                }
+                "notify_bell" => {
+                    cfg.notify_bell = matches!(value, "true");
+                }
+                "required_tags" => {
+                    cfg.required_tags = value
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                }
+                "extra_regions" => {
+                    cfg.extra_regions = value
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                }
+                "webhook_url" => {
+                    cfg.webhook_url = if value.is_empty() {
+                        None
+                    } else {
+                        Some(value.to_string())
+                    };
+                }
+                _ => {}
+            }
+        }
+        cfg
     }
 }
 
@@ -241,7 +313,6 @@ impl FormField {
         }
     }
 
-    #[allow(dead_code)]
     pub fn select(
         key: impl Into<String>,
         label: impl Into<String>,
@@ -454,6 +525,141 @@ mod tests {
         assert_eq!(err, vec![1]);
         assert!(f.fields[0].error.is_none());
         assert!(f.fields[1].error.is_some());
+    }
+
+    #[test]
+    fn apply_to_config_updates_known_fields() {
+        use crate::config::Config;
+        let base = Config::default();
+        let f = Form {
+            title: "settings".into(),
+            fields: vec![
+                FormField {
+                    key: "theme".into(),
+                    label: "Theme".into(),
+                    value: "high-contrast".into(),
+                    kind: FieldKind::Text,
+                    help: None,
+                    error: None,
+                },
+                FormField {
+                    key: "icons".into(),
+                    label: "Icons".into(),
+                    value: "powerline".into(),
+                    kind: FieldKind::Text,
+                    help: None,
+                    error: None,
+                },
+                FormField {
+                    key: "refresh_interval_secs".into(),
+                    label: "Refresh".into(),
+                    value: "20".into(),
+                    kind: FieldKind::Integer {
+                        min: Some(1),
+                        max: Some(600),
+                        allow_empty: false,
+                    },
+                    help: None,
+                    error: None,
+                },
+                FormField {
+                    key: "redact_default".into(),
+                    label: "Redact".into(),
+                    value: "true".into(),
+                    kind: FieldKind::Text,
+                    help: None,
+                    error: None,
+                },
+                FormField {
+                    key: "notify_bell".into(),
+                    label: "Bell".into(),
+                    value: "true".into(),
+                    kind: FieldKind::Boolean,
+                    help: None,
+                    error: None,
+                },
+                FormField {
+                    key: "required_tags".into(),
+                    label: "Tags".into(),
+                    value: "Owner, Env".into(),
+                    kind: FieldKind::Text,
+                    help: None,
+                    error: None,
+                },
+                FormField {
+                    key: "extra_regions".into(),
+                    label: "Regions".into(),
+                    value: "".into(),
+                    kind: FieldKind::Text,
+                    help: None,
+                    error: None,
+                },
+                FormField {
+                    key: "webhook_url".into(),
+                    label: "Webhook".into(),
+                    value: "  ".into(),
+                    kind: FieldKind::Text,
+                    help: None,
+                    error: None,
+                },
+            ],
+            cursor: 0,
+            state: FormState::Ready,
+            submit: FormSubmit::LocalConfig,
+            summary: "settings update".into(),
+            env_name: "".into(),
+        };
+        let updated = f.apply_to_config(&base);
+        assert_eq!(updated.theme, "high-contrast");
+        assert_eq!(updated.icons, "powerline");
+        assert_eq!(updated.refresh_interval, std::time::Duration::from_secs(20));
+        assert_eq!(updated.redact_default, Some(true));
+        assert!(updated.notify_bell);
+        assert_eq!(updated.required_tags, vec!["Owner", "Env"]);
+        assert!(updated.extra_regions.is_empty());
+        // Whitespace-only webhook → None.
+        assert!(updated.webhook_url.is_none());
+    }
+
+    #[test]
+    fn apply_to_config_unknown_keys_are_ignored() {
+        use crate::config::Config;
+        let base = Config::default();
+        let f = Form {
+            title: "x".into(),
+            fields: vec![FormField {
+                key: "this-field-does-not-map".into(),
+                label: "x".into(),
+                value: "ignored".into(),
+                kind: FieldKind::Text,
+                help: None,
+                error: None,
+            }],
+            cursor: 0,
+            state: FormState::Ready,
+            submit: FormSubmit::LocalConfig,
+            summary: "x".into(),
+            env_name: "".into(),
+        };
+        let updated = f.apply_to_config(&base);
+        assert_eq!(updated.theme, base.theme);
+        assert_eq!(updated.icons, base.icons);
+    }
+
+    #[test]
+    fn local_config_submit_yields_no_option_settings() {
+        let f = Form {
+            title: "x".into(),
+            fields: vec![],
+            cursor: 0,
+            state: FormState::Ready,
+            submit: FormSubmit::LocalConfig,
+            summary: "x".into(),
+            env_name: "".into(),
+        };
+        let (set, remove) = f.to_option_settings();
+        assert!(set.is_empty());
+        assert!(remove.is_empty());
     }
 
     #[test]
