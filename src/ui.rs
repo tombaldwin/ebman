@@ -3346,6 +3346,50 @@ fn draw_detail_config(
         }
     }
 
+    // Env vars section — same layout pattern as tags. Operators read them
+    // often (debugging, change verification); shown read-only here, edited
+    // via `:env set` / `:env unset`.
+    lines.push(Line::raw(""));
+    if detail.loading_env_vars && detail.env_vars.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "Env vars      loading…",
+            Style::default().fg(theme.muted),
+        )));
+    } else if detail.env_vars.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "Env vars      (none — set with `:env set KEY VAL`)",
+            Style::default().fg(theme.muted),
+        )));
+    } else {
+        lines.push(Line::from(Span::styled(
+            format!("Env vars      ({} total)", detail.env_vars.len()),
+            Style::default().fg(theme.muted),
+        )));
+        let max_key_width: usize = detail
+            .env_vars
+            .iter()
+            .map(|(k, _)| k.chars().count())
+            .max()
+            .unwrap_or(0)
+            .clamp(12, 40);
+        for (k, v) in &detail.env_vars {
+            let key_len = k.chars().count();
+            let key_text = if key_len <= max_key_width {
+                format!("  {k:<width$}", width = max_key_width)
+            } else {
+                format!("  {k}\n  {pad:<width$}", pad = "", width = max_key_width)
+            };
+            // Render empty value as `""` so operators can distinguish
+            // "explicitly empty" from "not set" (mirrors `:env list`).
+            let value = if v.is_empty() { "\"\"" } else { v.as_str() };
+            lines.push(Line::from(vec![
+                Span::styled(key_text, Style::default().fg(theme.app_palette[1])),
+                Span::raw("  "),
+                Span::styled(value.to_string(), Style::default().fg(theme.text)),
+            ]));
+        }
+    }
+
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 

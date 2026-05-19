@@ -665,11 +665,16 @@ pub struct DetailState {
     pub events_scroll: u16,
     pub instances_scroll: u16,
     pub tags: Vec<(String, String)>,
+    /// Env vars pulled from `DescribeConfigurationSettings` filtered to
+    /// `aws:elasticbeanstalk:application:environment`. Surfaced in the
+    /// Config tab so operators don't need `:env list` for the common case.
+    pub env_vars: Vec<(String, String)>,
     pub loading_events: bool,
     pub loading_instances: bool,
     pub loading_queues: bool,
     pub loading_metrics: bool,
     pub loading_tags: bool,
+    pub loading_env_vars: bool,
     pub error: Option<String>,
     /// Tail-log state, populated when the user visits the Logs tab.
     pub log_tail: LogTail,
@@ -983,6 +988,14 @@ enum AppMsg {
         result: Result<Vec<MetricSeries>, String>,
     },
     DetailTags {
+        gen: u64,
+        env_name: String,
+        result: Result<Vec<(String, String)>, String>,
+    },
+    /// Env vars for the Config tab — same shape as DetailTags but pulled
+    /// from `DescribeConfigurationSettings` filtered to the app:environment
+    /// namespace.
+    DetailEnvVars {
         gen: u64,
         env_name: String,
         result: Result<Vec<(String, String)>, String>,
@@ -2861,11 +2874,13 @@ impl App {
             events_scroll: 0,
             instances_scroll: 0,
             tags: Vec::new(),
+            env_vars: Vec::new(),
             loading_events: false,
             loading_instances: false,
             loading_queues: false,
             loading_metrics: false,
             loading_tags: false,
+            loading_env_vars: false,
             error: None,
             log_tail: LogTail::default(),
             queue_cursor: 0,
@@ -2880,10 +2895,36 @@ impl App {
         // Tags & instances load eagerly so the Config tab (tags + cost
         // annotation) is populated without the user having to switch tabs.
         self.spawn_detail_tags();
+        self.spawn_detail_env_vars();
         if let Some(d) = self.detail.as_ref() {
             let env_name = d.env_name.clone();
             self.spawn_detail_instances(env_name);
         }
+    }
+
+    fn spawn_detail_env_vars(&mut self) {
+        let Some(d) = self.detail.as_ref() else {
+            return;
+        };
+        let app_name = d.env_snapshot.application.clone();
+        let env_name = d.env_name.clone();
+        if let Some(d) = self.detail.as_mut() {
+            d.loading_env_vars = true;
+        }
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        tokio::spawn(async move {
+            let result = aws
+                .fetch_env_vars(&app_name, &env_name)
+                .await
+                .map_err(|e| flatten_err("fetch_env_vars", e));
+            let _ = tx.send(AppMsg::DetailEnvVars {
+                gen,
+                env_name,
+                result,
+            });
+        });
     }
 
     fn spawn_detail_tags(&mut self) {
@@ -6789,6 +6830,26 @@ impl App {
                     Err(msg) => tracing::warn!(error = %msg, "tags fetch failed"),
                 }
             }
+            AppMsg::DetailEnvVars {
+                gen,
+                env_name,
+                result,
+            } => {
+                if gen != self.generation {
+                    return;
+                }
+                let Some(detail) = self.detail.as_mut() else {
+                    return;
+                };
+                if detail.env_name != env_name {
+                    return;
+                }
+                detail.loading_env_vars = false;
+                match result {
+                    Ok(vars) => detail.env_vars = vars,
+                    Err(msg) => tracing::warn!(error = %msg, "env vars fetch failed"),
+                }
+            }
             AppMsg::OptionSettingsUpdate {
                 gen,
                 env_name,
@@ -6806,6 +6867,17 @@ impl App {
                 match result {
                     Ok(()) => {
                         self.push_toast(ToastKind::Info, format!("{summary} → {env_name}"));
+                        // If it was an env-var set/unset and the Detail view
+                        // is open on the same env, refresh the Config tab's
+                        // env vars so the change reflects without waiting
+                        // for the next 15s tick.
+                        if summary.starts_with("env set ") || summary.starts_with("env unset ") {
+                            if let Some(d) = self.detail.as_ref() {
+                                if d.env_name == env_name {
+                                    self.spawn_detail_env_vars();
+                                }
+                            }
+                        }
                     }
                     Err(msg) => {
                         self.push_toast(
