@@ -612,6 +612,42 @@ impl AwsClient {
         Ok(())
     }
 
+    /// Fetch the current env vars for an environment from
+    /// `DescribeConfigurationSettings` filtered to the
+    /// `aws:elasticbeanstalk:application:environment` namespace. Returns
+    /// sorted `(KEY, VALUE)` pairs.
+    pub async fn fetch_env_vars(
+        &self,
+        application_name: &str,
+        env_name: &str,
+    ) -> Result<Vec<(String, String)>> {
+        let resp = self
+            .client
+            .describe_configuration_settings()
+            .application_name(application_name)
+            .environment_name(env_name)
+            .send()
+            .await
+            .map_err(|e| eyre!("DescribeConfigurationSettings(env) failed: {e}"))?;
+        let mut out: Vec<(String, String)> = resp
+            .configuration_settings
+            .unwrap_or_default()
+            .into_iter()
+            .flat_map(|c| c.option_settings.unwrap_or_default())
+            .filter(|o| {
+                o.namespace.as_deref() == Some("aws:elasticbeanstalk:application:environment")
+            })
+            .map(|o| {
+                (
+                    o.option_name.unwrap_or_default(),
+                    o.value.unwrap_or_default(),
+                )
+            })
+            .collect();
+        out.sort();
+        Ok(out)
+    }
+
     /// Update an env's option settings — `to_set` is `(namespace, option_name,
     /// value)` triples to add or overwrite; `to_remove` is `(namespace,
     /// option_name)` pairs to clear back to defaults. EB applies the change

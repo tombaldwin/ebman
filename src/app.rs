@@ -86,6 +86,7 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "logs-stream",
     "notify",
     "managed-window",
+    "env",
     "versions",
     "deploy",
     "upgrade",
@@ -5629,6 +5630,71 @@ impl App {
                     });
                 }
             },
+            "env" => {
+                // `:env list` dumps current env vars; `:env set KEY VAL...`
+                // upserts a single var (VAL tokens joined with single spaces,
+                // same convention as `:tag`); `:env unset KEY` clears it back
+                // to the default. Triggers an app-server restart per EB.
+                let ns = "aws:elasticbeanstalk:application:environment";
+                let sub = rest.first().copied();
+                match sub {
+                    Some("list") | Some("ls") | None => {
+                        let Some(env) = self.selected_env().cloned() else {
+                            self.error_message = Some("no environment selected".into());
+                            return;
+                        };
+                        let app_name = env.application.clone();
+                        let env_name = env.name.clone();
+                        let aws = self.aws.clone();
+                        let tx = self.msg_tx.clone();
+                        let gen = self.generation;
+                        let title = format!("env vars — {env_name}");
+                        self.status_message = Some(format!("fetching env vars for {env_name}…"));
+                        tokio::spawn(async move {
+                            let body = match aws.fetch_env_vars(&app_name, &env_name).await {
+                                Ok(vars) if vars.is_empty() => {
+                                    "(no env vars set on this environment)".to_string()
+                                }
+                                Ok(vars) => format_env_vars(&vars),
+                                Err(e) => format!("error: {}", flatten_err("fetch_env_vars", e)),
+                            };
+                            let _ = tx.send(AppMsg::TextOverlay { gen, title, body });
+                        });
+                    }
+                    Some("set") => match (rest.get(1).copied(), rest.get(2).copied()) {
+                        (Some(key), Some(_)) => {
+                            let value = rest[2..].join(" ");
+                            self.spawn_option_settings_update(
+                                format!("env set {key}"),
+                                vec![(ns.into(), key.to_string(), value)],
+                                vec![],
+                            );
+                        }
+                        _ => {
+                            self.error_message = Some(
+                                "usage: :env set KEY VALUE  (VALUE tokens joined with single spaces; triggers app-server restart)".into(),
+                            );
+                        }
+                    },
+                    Some("unset") | Some("rm") | Some("delete") => match rest.get(1).copied() {
+                        None => {
+                            self.error_message = Some("usage: :env unset KEY".into());
+                        }
+                        Some(key) => {
+                            self.spawn_option_settings_update(
+                                format!("env unset {key}"),
+                                vec![],
+                                vec![(ns.into(), key.to_string())],
+                            );
+                        }
+                    },
+                    Some(other) => {
+                        self.error_message = Some(format!(
+                            "unknown subcommand '{other}'  (use: list | set KEY VAL | unset KEY)"
+                        ));
+                    }
+                }
+            }
             "logs-stream" => {
                 // `:logs-stream on [--retention N]` enables CW Logs streaming
                 // for the env's platform/app logs; `:logs-stream off` clears
@@ -7680,6 +7746,10 @@ fn build_palette_items(app: &App) -> Vec<PaletteItem> {
             "managed-window ",
             "set maintenance window: DAY HOUR | off (e.g. Sun 4)",
         ),
+        (
+            "env ",
+            "env vars: list | set KEY VAL | unset KEY (triggers restart)",
+        ),
     ];
     for (prefix, desc) in prefill_cmds {
         out.push(PaletteItem {
@@ -7786,6 +7856,31 @@ where
             }
         })
         .collect()
+}
+
+/// Render env vars as `KEY=VALUE` lines, aligned on the `=` for easy scan.
+/// Empty values render as `""` so operators can distinguish "explicitly
+/// empty" from "not set". Pure.
+pub fn format_env_vars(vars: &[(String, String)]) -> String {
+    if vars.is_empty() {
+        return "(no env vars set)".into();
+    }
+    let key_width = vars
+        .iter()
+        .map(|(k, _)| k.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(8, 40);
+    let mut out = String::new();
+    for (k, v) in vars {
+        let rendered = if v.is_empty() {
+            "\"\"".to_string()
+        } else {
+            v.clone()
+        };
+        out.push_str(&format!("{k:<key_width$} = {rendered}\n"));
+    }
+    out
 }
 
 /// Pull a `--flag VALUE` style named argument out of a `:command` `rest`
@@ -8582,6 +8677,25 @@ mod tests {
             super::delta_toast_key("  ▲10 Green").as_deref(),
             Some("Green")
         );
+    }
+
+    #[test]
+    fn format_env_vars_aligns_on_equals() {
+        let vars = vec![
+            ("DEBUG".into(), "1".into()),
+            ("DATABASE_URL".into(), "postgres://x".into()),
+        ];
+        let out = super::format_env_vars(&vars);
+        assert!(out.contains("DEBUG"));
+        assert!(out.contains("= 1"));
+        assert!(out.contains("DATABASE_URL"));
+        let vars = vec![("EMPTY".into(), "".into())];
+        assert!(super::format_env_vars(&vars).contains("\"\""));
+    }
+
+    #[test]
+    fn format_env_vars_handles_empty_input() {
+        assert_eq!(super::format_env_vars(&[]), "(no env vars set)");
     }
 
     #[test]
