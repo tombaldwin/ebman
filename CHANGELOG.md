@@ -69,7 +69,8 @@ Initial public release. Headline surface:
 ### Distribution
 - GitHub Actions CI (Linux + macOS, fmt / clippy / MSRV gate).
 - Release workflow attaches binaries for `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`, `x86_64-apple-darwin` to draft GH releases on `v*` tags.
-- Homebrew formula template at `Formula/ebman.rb`.
+- Published to crates.io as `ebman`.
+- Homebrew tap at `tombaldwin/homebrew-tap`.
 
 [Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.1.1...HEAD
 [0.1.1]: https://github.com/tombaldwin/ebman/compare/v0.1.0...v0.1.1
