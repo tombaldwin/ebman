@@ -222,6 +222,9 @@ Living list of done / pending / dropped work. New entries get added at the botto
 - **`ebman action <rebuild|restart|terminate> --env NAME [--yes]`** dispatches an action without entering the TUI. Terminate requires `--yes`.
 - `--help` updated to document subcommands; `--version`, `-h`, `-V`, `--read-only` flags continue to work.
 
+### Write-path batch (2026-05-19)
+- **Tags editor** — `aws::update_tags` wraps `UpdateTagsForResource`; `:tag KEY VALUE` adds/updates a tag and `:untag KEY` removes one. Read-only mode blocks both; ARN-missing on the selected env errors out; the call writes a dispatched + completed audit entry; on success a toast fires and the Config-tab tags refresh automatically. Pure helper `parse_tag_args` handles the "value tokens joined with spaces" convention; tested for happy path, multi-token join, and rejection of missing-value input.
+
 ### Operator-feedback batch (2026-05-19)
 - **Pending-actions panel** — `PendingAction { label, target, started, completed }` queue (cap 20, completed entries expire after 60s); wired into `spawn_action` / `spawn_batch_action` / `spawn_terminate_instance` and the `AppMsg::ActionResult` handler. Header chip `⏳ N` while any are in flight; `:pending` / `:in-flight` / `:inflight` overlay lists label, target, age, and outcome.
 - **Per-context help** — new `HelpTopic` enum (Global / Detail / Dlq / Action / Shell) on `App`; `?` in Detail / Dlq / Action modes scopes the help overlay to just the keys relevant to that screen, with a footer pointer back to the global keymap. Implemented as `draw_help_detail` / `_dlq` / `_action` / `_shell` helpers in `ui.rs`. Shell topic kept reachable-shaped but currently unreachable since `?` is forwarded to the subprocess.
@@ -288,7 +291,6 @@ The three things still keeping users in the AWS console day-to-day. Highest-leve
 - (moved) Deploy from local path / S3 → see "Console-replacement gap" above.
 
 ### Write-path completeness — currently read-only surfaces
-- [ ] **Tags editor** — `update_tags_for_resource` to add / remove env tags. Currently the Config tab shows tags read-only.
 - [ ] **Application-version management** — list versions across an app, delete old ones (`DeleteApplicationVersion`), force-delete with source-bundle removal. Currently only "deploy an existing label".
 - [ ] **Saved-configuration overlay → editable** — `:saved-configs` already lists; add inline create/apply/delete keybindings (`c` create from selected env, `a` apply to selected env, `x` delete).
 

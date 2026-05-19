@@ -93,6 +93,8 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "pending",
     "in-flight",
     "inflight",
+    "tag",
+    "untag",
     "rebuild",
     "restart",
     "terminate",
@@ -996,6 +998,15 @@ enum AppMsg {
     /// nag the user. We don't carry a generation — the message is anchored
     /// to the process, not a particular AWS context.
     UpdateCheck(Option<crate::update_check::LatestRelease>),
+    /// Result of an `UpdateTagsForResource` call from `:tag` / `:untag`.
+    /// On success we re-issue the Config-tab tag fetch so the UI reflects
+    /// the new state immediately.
+    TagUpdate {
+        gen: u64,
+        env_name: String,
+        summary: String,
+        result: Result<(), String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -3756,6 +3767,81 @@ impl App {
         }
     }
 
+    /// Dispatch an `UpdateTagsForResource` for the selected env. `to_add`
+    /// and `to_remove` follow EB semantics: the API allows both in a single
+    /// call; we surface a summary toast either way.
+    fn spawn_tag_update(&mut self, to_add: Vec<(String, String)>, to_remove: Vec<String>) {
+        if self.read_only {
+            self.error_message = Some("read-only mode — tag edits disabled".into());
+            return;
+        }
+        let Some(env) = self.selected_env().cloned() else {
+            self.error_message = Some("no environment selected".into());
+            return;
+        };
+        let Some(arn) = env.arn.clone() else {
+            self.error_message = Some(format!("env {} has no ARN — re-fetch and retry", env.name));
+            return;
+        };
+        if to_add.is_empty() && to_remove.is_empty() {
+            self.error_message =
+                Some("nothing to do — provide tags to add or keys to remove".into());
+            return;
+        }
+        let summary = if !to_add.is_empty() {
+            let keys: Vec<String> = to_add.iter().map(|(k, _)| k.clone()).collect();
+            format!("tag {}", keys.join(","))
+        } else {
+            format!("untag {}", to_remove.join(","))
+        };
+        let detail = format!(
+            "stage=dispatched action=UpdateTags target={} {}",
+            env.name, summary
+        );
+        write_audit_line(
+            self.context.account_id.as_deref(),
+            self.context.profile.as_deref(),
+            &self.context.region,
+            &detail,
+        );
+        self.status_message = Some(format!("{summary} → {}…", env.name));
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let env_name = env.name.clone();
+        let summary_for_msg = summary.clone();
+        let account = self.context.account_id.clone();
+        let profile = self.context.profile.clone();
+        let region = self.context.region.clone();
+        tokio::spawn(async move {
+            let result = aws
+                .update_tags(&arn, &to_add, &to_remove)
+                .await
+                .map_err(|e| flatten_err("update_tags", e));
+            let outcome_detail = match &result {
+                Ok(()) => {
+                    format!("stage=completed action=UpdateTags target={env_name} {summary} ok")
+                }
+                Err(e) => format!(
+                    "stage=completed action=UpdateTags target={env_name} {summary} err=\"{}\"",
+                    e.replace('"', "'"),
+                ),
+            };
+            write_audit_line(
+                account.as_deref(),
+                profile.as_deref(),
+                &region,
+                &outcome_detail,
+            );
+            let _ = tx.send(AppMsg::TagUpdate {
+                gen,
+                env_name,
+                summary: summary_for_msg,
+                result,
+            });
+        });
+    }
+
     fn spawn_preflight_events(&mut self, env_name: String) {
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
@@ -4866,6 +4952,25 @@ impl App {
                     self.current_overlay = Some(Overlay::SavedConfigs(lines.join("\n")));
                 }
             }
+            "tag" => match parse_tag_args(&rest) {
+                None => {
+                    self.error_message = Some(
+                        "usage: :tag KEY VALUE  (VALUE may contain spaces; tokens are joined)"
+                            .into(),
+                    );
+                }
+                Some((key, value)) => {
+                    self.spawn_tag_update(vec![(key, value)], vec![]);
+                }
+            },
+            "untag" => match rest.first().copied() {
+                None => {
+                    self.error_message = Some("usage: :untag KEY".into());
+                }
+                Some(key) => {
+                    self.spawn_tag_update(vec![], vec![key.to_string()]);
+                }
+            },
             "resources" | "res" => {
                 let Some(env) = self.selected_env().cloned() else {
                     self.error_message = Some("no environment selected".into());
@@ -5765,6 +5870,32 @@ impl App {
                     Err(msg) => tracing::warn!(error = %msg, "tags fetch failed"),
                 }
             }
+            AppMsg::TagUpdate {
+                gen,
+                env_name,
+                summary,
+                result,
+            } => {
+                if gen != self.generation {
+                    return;
+                }
+                match result {
+                    Ok(()) => {
+                        self.push_toast(ToastKind::Info, format!("{summary} on {env_name}"));
+                        if let Some(d) = self.detail.as_ref() {
+                            if d.env_name == env_name {
+                                self.spawn_detail_tags();
+                            }
+                        }
+                    }
+                    Err(msg) => {
+                        self.push_toast(
+                            ToastKind::Error,
+                            format!("{summary} on {env_name} failed: {msg}"),
+                        );
+                    }
+                }
+            }
             AppMsg::DetailQueues {
                 gen,
                 env_name,
@@ -6462,6 +6593,22 @@ pub fn humanize_short_age(d: Duration) -> String {
     }
 }
 
+/// Parse a `:tag KEY [value tokens…]` argument list. Returns `Some((key,
+/// value))` when there's at least a key and one value token. Value tokens
+/// are joined with a single space — there's no shell-style quoting, since
+/// we trust the operator and want the command bar to stay typeable.
+pub fn parse_tag_args(rest: &[&str]) -> Option<(String, String)> {
+    let key = (*rest.first()?).to_string();
+    if rest.len() < 2 {
+        return None;
+    }
+    let value = rest[1..].join(" ");
+    if key.is_empty() || value.is_empty() {
+        return None;
+    }
+    Some((key, value))
+}
+
 /// Extract a "delta toast key" from text shaped like `▲2 Red` / `▼1 Yellow`.
 /// Returns `Some(bucket_name)` when the text is a status-delta toast and we
 /// want subsequent updates for the same bucket to replace rather than stack.
@@ -6599,6 +6746,8 @@ fn build_palette_items(app: &App) -> Vec<PaletteItem> {
             "set tracing filter (trace/debug/info/warn/error)",
         ),
         ("readonly ", "toggle read-only (on/off)"),
+        ("tag ", "add or update env tag: KEY VALUE"),
+        ("untag ", "remove env tag: KEY"),
     ];
     for (prefix, desc) in prefill_cmds {
         out.push(PaletteItem {
@@ -7431,6 +7580,32 @@ mod tests {
             super::delta_toast_key("  ▲10 Green").as_deref(),
             Some("Green")
         );
+    }
+
+    #[test]
+    fn parse_tag_args_happy_path() {
+        let v: Vec<&str> = vec!["Owner", "platform-team"];
+        let (k, v) = super::parse_tag_args(&v).unwrap();
+        assert_eq!(k, "Owner");
+        assert_eq!(v, "platform-team");
+    }
+
+    #[test]
+    fn parse_tag_args_joins_value_tokens_with_spaces() {
+        let v: Vec<&str> = vec!["Description", "owned", "by", "platform"];
+        let (k, v) = super::parse_tag_args(&v).unwrap();
+        assert_eq!(k, "Description");
+        assert_eq!(v, "owned by platform");
+    }
+
+    #[test]
+    fn parse_tag_args_rejects_missing_value() {
+        // Bare key with no value tokens.
+        let v: Vec<&str> = vec!["Owner"];
+        assert!(super::parse_tag_args(&v).is_none());
+        // Empty input.
+        let v: Vec<&str> = vec![];
+        assert!(super::parse_tag_args(&v).is_none());
     }
 
     #[test]
