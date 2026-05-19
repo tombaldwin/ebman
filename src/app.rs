@@ -127,6 +127,7 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "custom-platforms",
     "platforms",
     "update",
+    "capacity",
 ];
 
 /// Which on-screen panel is "focused" — i.e. which one j/k/Enter target. The
@@ -401,6 +402,9 @@ pub enum Mode {
     /// subprocess's PTY rather than dispatched as ebman key bindings.
     /// F12 detaches back to `shell_return_mode`.
     Shell,
+    /// Modal multi-field form (e.g. `:capacity`). Tab navigates fields,
+    /// per-field input handlers below; `Esc` cancels, `^S` submits.
+    Form,
 }
 
 #[derive(Debug, Clone)]
@@ -949,6 +953,9 @@ pub struct App {
     /// before overlays in the z-order so we have to stash and restore the
     /// overlay around the help round-trip.
     pub pre_help_overlay: Option<Overlay>,
+    /// Active modal-form session (`:capacity`, future `:network`, etc.).
+    /// Populated by `open_form`; cleared on cancel / submit completion.
+    pub form: Option<crate::form::Form>,
     /// Handle to the `:logs-tail` polling task. Stored so we can `abort()`
     /// it when the overlay closes or the user switches context. None when
     /// no tail session is active.
@@ -1064,6 +1071,15 @@ enum AppMsg {
         gen: u64,
         env_name: String,
         groups: Vec<String>,
+    },
+    /// Pre-fill values for an open modal form. The handler walks the form's
+    /// `(field_key, namespace, option_name)` mappings and populates each
+    /// field's `value` from `settings`. Late messages (stale form / context
+    /// switch) are dropped.
+    FormPrefilled {
+        gen: u64,
+        env_name: String,
+        settings: Result<Vec<(String, String, String)>, String>,
     },
     /// Result of a `:deploy --from PATH` chain (upload → create version →
     /// optional deploy). `summary` is the same label used in the pending
@@ -1390,6 +1406,7 @@ impl App {
             help_topic: HelpTopic::Global,
             pre_help_mode: None,
             pre_help_overlay: None,
+            form: None,
             log_tail_task: None,
             log_tail_session: 0,
             update_available: None,
@@ -2413,6 +2430,7 @@ impl App {
                     self.handle_dlq_key(key);
                 }
             }
+            Mode::Form => self.handle_form_key(key),
             Mode::Normal => {
                 // Custom keybindings — checked first so a user-bound key
                 // overrides any built-in fallthrough. Only F1-F12 and
@@ -3879,6 +3897,224 @@ impl App {
         } else {
             self.mode = Mode::Normal;
         }
+    }
+
+    /// Open a modal form. Captures the env at open-time (so later main-table
+    /// cursor moves don't redirect the submit), spawns a
+    /// `DescribeConfigurationSettings` fetch to pre-fill values, and flips
+    /// to `Mode::Form`. The form stays in `FormState::Loading` until the
+    /// `FormPrefilled` AppMsg lands.
+    fn open_form(&mut self, form: crate::form::Form) {
+        let env_name = form.env_name.clone();
+        // Look up the env's application from the live env list. We need it
+        // for DescribeConfigurationSettings; the form itself only knows the
+        // env name.
+        let app_name = match self.environments.iter().find(|e| e.name == env_name) {
+            Some(e) => e.application.clone(),
+            None => {
+                self.error_message = Some(format!("env '{env_name}' not in current list"));
+                return;
+            }
+        };
+        self.form = Some(form);
+        self.mode = Mode::Form;
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let env_for_msg = env_name.clone();
+        tokio::spawn(async move {
+            let settings = aws
+                .fetch_env_option_settings(&app_name, &env_for_msg)
+                .await
+                .map_err(|e| flatten_err("fetch_env_option_settings", e));
+            let _ = tx.send(AppMsg::FormPrefilled {
+                gen,
+                env_name: env_for_msg,
+                settings,
+            });
+        });
+    }
+
+    /// Key handler for `Mode::Form`. Loading-state forms ignore input
+    /// (operator waits for the pre-fill); Ready forms route through Tab /
+    /// arrow nav + per-field input; Submitting forms ignore input (waiting
+    /// for the AppMsg::OptionSettingsUpdate that lands the result).
+    fn handle_form_key(&mut self, key: KeyEvent) {
+        use crate::form::{FieldKind, FormState};
+        // Resolve current state before borrowing the form mutably so the
+        // submit branch can dispatch through self.
+        let state = self.form.as_ref().map(|f| f.state.clone());
+        let cursor_kind = self
+            .form
+            .as_ref()
+            .and_then(|f| f.current_field().map(|fld| fld.kind.clone()));
+        match state {
+            None => return,
+            Some(FormState::Loading) | Some(FormState::Submitting) => {
+                if matches!(key.code, KeyCode::Esc) {
+                    self.form = None;
+                    self.mode = Mode::Normal;
+                }
+                return;
+            }
+            Some(FormState::Ready) => {}
+        }
+        // Submit shortcut works regardless of focused-field kind.
+        if matches!(key.code, KeyCode::Char('s')) && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.submit_form();
+            return;
+        }
+        if matches!(key.code, KeyCode::Esc) {
+            self.form = None;
+            self.mode = Mode::Normal;
+            return;
+        }
+        // Field navigation that's always available: Tab, Shift-Tab, Up, Down.
+        // Up/Down would conflict with vim-style j/k inside text input — we
+        // don't bind j/k for nav inside the form.
+        let nav = match key.code {
+            KeyCode::Tab => Some(1),
+            KeyCode::BackTab => Some(-1),
+            KeyCode::Up => Some(-1),
+            KeyCode::Down => Some(1),
+            _ => None,
+        };
+        if let Some(delta) = nav {
+            if let Some(form) = self.form.as_mut() {
+                form.move_cursor(delta);
+            }
+            return;
+        }
+        // Per-kind editing on the focused field.
+        let Some(form) = self.form.as_mut() else {
+            return;
+        };
+        let Some(field) = form.current_field_mut() else {
+            return;
+        };
+        // Live-revalidate after every edit so the inline error clears as the
+        // operator fixes it.
+        match (cursor_kind.unwrap_or(FieldKind::Text), key.code) {
+            (FieldKind::Text, KeyCode::Backspace) => {
+                field.value.pop();
+            }
+            (FieldKind::Text, KeyCode::Char(c)) if is_text_input(&key) => {
+                field.value.push(c);
+            }
+            (FieldKind::Integer { .. }, KeyCode::Backspace) => {
+                field.value.pop();
+            }
+            (FieldKind::Integer { .. }, KeyCode::Char(c))
+                if c.is_ascii_digit() || (c == '-' && field.value.is_empty()) =>
+            {
+                field.value.push(c);
+            }
+            (FieldKind::Boolean, KeyCode::Char(' ')) => {
+                field.value = if field.value == "true" {
+                    "false".into()
+                } else {
+                    "true".into()
+                };
+            }
+            (FieldKind::Boolean, KeyCode::Char('t')) => {
+                field.value = "true".into();
+            }
+            (FieldKind::Boolean, KeyCode::Char('f')) => {
+                field.value = "false".into();
+            }
+            (FieldKind::Select { options }, KeyCode::Left)
+            | (FieldKind::Select { options }, KeyCode::Char('h')) => {
+                let i = options.iter().position(|o| o == &field.value).unwrap_or(0);
+                let next = (i + options.len() - 1) % options.len();
+                field.value = options[next].clone();
+            }
+            (FieldKind::Select { options }, KeyCode::Right)
+            | (FieldKind::Select { options }, KeyCode::Char('l')) => {
+                let i = options.iter().position(|o| o == &field.value).unwrap_or(0);
+                let next = (i + 1) % options.len();
+                field.value = options[next].clone();
+            }
+            _ => {}
+        }
+        // Clear stale error on this field after any edit.
+        let _ = crate::form::validate_field(&field.value, &field.kind).map(|_| field.error = None);
+    }
+
+    /// Validate the form; if good, dispatch via the existing option-settings
+    /// helper and switch to Submitting. Failures keep the form open with
+    /// per-field error messages.
+    fn submit_form(&mut self) {
+        let Some(form) = self.form.as_mut() else {
+            return;
+        };
+        if let Err(failing) = form.validate() {
+            form.cursor = failing[0];
+            return;
+        }
+        let env_name = form.env_name.clone();
+        let summary = form.summary.clone();
+        let (to_set, to_remove) = form.to_option_settings();
+        form.state = crate::form::FormState::Submitting;
+        // We can't reuse spawn_option_settings_update directly because it
+        // reads self.selected_env() for the env_name; the form captured its
+        // env at open time so we dispatch by-value here. Inlining keeps the
+        // form's env binding authoritative.
+        if self.read_only {
+            self.error_message = Some("read-only mode — form submit disabled".into());
+            self.form = None;
+            self.mode = Mode::Normal;
+            return;
+        }
+        if to_set.is_empty() && to_remove.is_empty() {
+            self.status_message = Some("no changes to apply".into());
+            self.form = None;
+            self.mode = Mode::Normal;
+            return;
+        }
+        write_audit_line(
+            self.context.account_id.as_deref(),
+            self.context.profile.as_deref(),
+            &self.context.region,
+            &format!(
+                "stage=dispatched action=UpdateOptionSettings target={env_name} summary=\"{summary}\""
+            ),
+        );
+        self.push_pending(summary.clone(), env_name.clone());
+        self.status_message = Some(format!("{summary} → {env_name}…"));
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let env_for_msg = env_name.clone();
+        let summary_for_msg = summary.clone();
+        let account = self.context.account_id.clone();
+        let profile = self.context.profile.clone();
+        let region = self.context.region.clone();
+        tokio::spawn(async move {
+            let result = aws
+                .update_env_option_settings(&env_for_msg, &to_set, &to_remove)
+                .await
+                .map_err(|e| flatten_err("update_env_option_settings", e));
+            let outcome = match &result {
+                Ok(()) => format!(
+                    "stage=completed action=UpdateOptionSettings target={env_for_msg} summary=\"{summary_for_msg}\" ok"
+                ),
+                Err(e) => format!(
+                    "stage=completed action=UpdateOptionSettings target={env_for_msg} summary=\"{summary_for_msg}\" err=\"{}\"",
+                    e.replace('"', "'")
+                ),
+            };
+            write_audit_line(account.as_deref(), profile.as_deref(), &region, &outcome);
+            let _ = tx.send(AppMsg::OptionSettingsUpdate {
+                gen,
+                env_name: env_for_msg,
+                summary: summary_for_msg,
+                result,
+            });
+        });
+        // Close the form so the user returns to wherever they were.
+        // OptionSettingsUpdate handler will fire a toast on completion.
+        self.form = None;
+        self.mode = Mode::Normal;
     }
 
     fn handle_action_key(&mut self, key: KeyEvent) {
@@ -5869,6 +6105,70 @@ impl App {
                 None => self.error_message = Some("usage: :alias-drop <env-name>".into()),
             },
             "whatsnew" => self.open_whatsnew(),
+            "capacity" => {
+                // Modal form to edit the env's capacity profile:
+                // MinSize/MaxSize on the ASG, InstanceType on the launch
+                // config, and Cooldown (optional). Pre-fills from
+                // DescribeConfigurationSettings.
+                let Some(env) = self.selected_env().cloned() else {
+                    self.error_message = Some("no environment selected".into());
+                    return;
+                };
+                let fields = vec![
+                    crate::form::FormField::integer(
+                        "min",
+                        "Min size",
+                        Some("Minimum ASG size (≥ 1)"),
+                        Some(1),
+                        Some(10_000),
+                        false,
+                    ),
+                    crate::form::FormField::integer(
+                        "max",
+                        "Max size",
+                        Some("Maximum ASG size (≥ min)"),
+                        Some(1),
+                        Some(10_000),
+                        false,
+                    ),
+                    crate::form::FormField::text(
+                        "instance_type",
+                        "Instance type",
+                        Some("e.g. t3.medium, m6g.large"),
+                    ),
+                    crate::form::FormField::integer(
+                        "cooldown",
+                        "Cooldown (s)",
+                        Some("Scaling cooldown in seconds (blank = leave as-is)"),
+                        Some(0),
+                        Some(86_400),
+                        true,
+                    ),
+                ];
+                let form = crate::form::Form::loading(
+                    format!("capacity — {}", env.name),
+                    env.name.clone(),
+                    "capacity update".to_string(),
+                    fields,
+                    crate::form::FormSubmit::OptionSettings {
+                        mappings: vec![
+                            ("min".into(), "aws:autoscaling:asg".into(), "MinSize".into()),
+                            ("max".into(), "aws:autoscaling:asg".into(), "MaxSize".into()),
+                            (
+                                "instance_type".into(),
+                                "aws:autoscaling:launchconfiguration".into(),
+                                "InstanceType".into(),
+                            ),
+                            (
+                                "cooldown".into(),
+                                "aws:autoscaling:asg".into(),
+                                "Cooldown".into(),
+                            ),
+                        ],
+                    },
+                );
+                self.open_form(form);
+            }
             "update" => {
                 // Surface the upgrade command for whichever install channel
                 // looks live. Doesn't actually upgrade — operators on
@@ -8091,6 +8391,54 @@ impl App {
                 }
                 detail.cw_log_groups = Some(groups);
             }
+            AppMsg::FormPrefilled {
+                gen,
+                env_name,
+                settings,
+            } => {
+                if gen != self.generation {
+                    return;
+                }
+                let Some(form) = self.form.as_mut() else {
+                    return;
+                };
+                if form.env_name != env_name {
+                    return;
+                }
+                match settings {
+                    Err(msg) => {
+                        // Surface the fetch failure on the form's first
+                        // field as a global error; operator can dismiss or
+                        // fill values manually.
+                        if let Some(first) = form.fields.first_mut() {
+                            first.error = Some(format!("pre-fill failed: {msg}"));
+                        }
+                        form.state = crate::form::FormState::Ready;
+                    }
+                    Ok(rows) => {
+                        // Build a (ns, name) -> value lookup; populate the
+                        // form's fields using the mappings stored on submit.
+                        use std::collections::HashMap;
+                        let lookup: HashMap<(String, String), String> = rows
+                            .into_iter()
+                            .map(|(ns, name, value)| ((ns, name), value))
+                            .collect();
+                        let mappings = match &form.submit {
+                            crate::form::FormSubmit::OptionSettings { mappings } => {
+                                mappings.clone()
+                            }
+                        };
+                        for (key, ns, opt) in mappings {
+                            if let Some(value) = lookup.get(&(ns, opt)) {
+                                if let Some(field) = form.fields.iter_mut().find(|f| f.key == key) {
+                                    field.value = value.clone();
+                                }
+                            }
+                        }
+                        form.state = crate::form::FormState::Ready;
+                    }
+                }
+            }
             AppMsg::DetailEnvVars {
                 gen,
                 env_name,
@@ -9117,6 +9465,10 @@ fn build_palette_items(app: &App) -> Vec<PaletteItem> {
         ("history", "recent status / error messages"),
         ("whatsnew", "embedded changelog"),
         ("update", "show upgrade command (copies to clipboard)"),
+        (
+            "capacity",
+            "modal form: edit ASG min/max + instance type + cooldown",
+        ),
         ("alarms", "CloudWatch alarms for selected env"),
         ("saved-configs", "EB saved configuration templates"),
         ("plugins", "list user plugin commands"),
