@@ -344,6 +344,26 @@ Items from the drive-the-app review, shipped together because they share state. 
 - **`:settings` modal form** — interactive editor for `~/.config/ebman/config.toml`. Pre-fills nine fields from the live `App` state (theme, icons, refresh interval, redact-default, grouped-default, notification bell, required tags, extra regions, webhook URL). Submit writes the file back via the new `config::serialize` round-trip and live-applies theme / icons / refresh interval. `extra_regions`, `notify_bell`, `required_tags`, `webhook_url` update in place and take effect on the next refresh / event. Routed through the existing modal-form abstraction via new `FormSubmit::LocalConfig` variant; `open_form` short-circuits the AWS pre-fill for local-config forms; `submit_form` branches to a new `submit_local_config` path. Pure `Form::apply_to_config` helper merges form values onto a baseline `Config`; pure `config::serialize` round-trips through `config::parse`. Tests: `parse_icons_auto_is_preserved`, `serialize_round_trips_full_config`, `serialize_round_trips_default_config`, `apply_to_config_updates_known_fields`, `apply_to_config_unknown_keys_are_ignored`, `local_config_submit_yields_no_option_settings`.
 - **`icons = "auto"` config value + cell-width probe** — new `src/font_probe.rs` writes a single Powerline triangle (`U+E0B0`) at startup, reads the cursor column back via `crossterm::cursor::position`, and resolves to `"powerline"` on a one-cell advance / `"unicode"` otherwise. Probe runs before `enter_tui()` so the glyph never reaches user scrollback; raw mode is enabled briefly via a `Drop`-based guard and torn down regardless of outcome. Pure `classify_advance` + `resolve_icons_setting` helpers keep the probe testable. Non-TTY stdout short-circuits to `false`. Tests: `classify_one_cell_advance_is_supported`, `classify_other_advances_are_unsupported`, `resolve_passes_through_non_auto_values`.
 
+### Powerline polish pass (2026-05-20)
+- **Lead-in arrow shape fix** — `pill_chain` and `render_tabs` switched the leading edge from `U+E0B0` (right-pointing) to `U+E0B2` (left-pointing) so the pill's coloured base sits flush with the body, mirroring the trailing `U+E0B0`. Previously the leading wedge read as much smaller than the trailing one (terminal-bg cell + tiny pink point vs. solid pink rectangle + pink wedge). Per-app group banner row picks up the same treatment so it reads as a symmetric `◀{app}▶` ribbon. Tests: `pill_chain_uses_left_wedge_for_lead_in_in_powerline_mode`, `pill_chain_no_powerline_glyphs_in_unicode_mode`.
+- **Header pill-chain spacing** — two leading spaces injected before the chain in Powerline mode so the wedge has visual breathing room from the preceding `Sort: ...` text.
+- **Loading-indicator linger fix** — refreshes whose round-trip lands just past the 300 ms display threshold no longer flash the spinner on and off in a single frame. New `LOADING_INDICATOR_LINGER` (500 ms) keeps the `loading…` indicator visible after completion if it became visible during the load. Pure `compute_loading_linger_target` helper; tests `loading_linger_target_none_when_no_load`, `loading_linger_target_none_when_under_threshold`, `loading_linger_target_arms_past_threshold`. Anim ticker condition includes the linger window so the spinner keeps advancing.
+- **Theme-correct colours (~100 sites)** — removed every hardcoded `Color::Yellow/Cyan/Gray/Red/White` foreground in the footer, breadcrumb, kv() helper, DLQ overlay, action menu, confirm modal, Detail tabs (Events/Instances/Queue), and all six help screens. `help_line()` now takes a `&Theme` argument; ~106 call sites updated. Light + high-contrast themes finally render footer / help / DLQ correctly.
+- **Breadcrumb separator** switches to `U+E0B1` (thin Powerline divider) in Powerline mode, matching the rest of the header chain. Falls back to ASCII `/` otherwise.
+- **Powerline filter chips** — saved-filter chip bar in the header renders as a `pill_chain` ribbon (active chip in `title_alt`, inactive in `row_alt_bg`) in Powerline mode. Plain pill+bullet style preserved for unicode/ascii.
+- **README font section** — Install section gained a "Fonts (optional)" subsection with `brew install font-meslo-lg-nerd-font` / `font-jetbrains-mono-nerd-font`, terminal-font setup paths (iTerm2 / Terminal.app / Ghostty / Alacritty / WezTerm / VS Code), and the `icons = "auto"` follow-up.
+
+### UI polish pass 2 (2026-05-20)
+- **Cursor row marker** — new `cursor_marker(theme)` helper. Powerline mode picks up `U+E0B0` as the highlight glyph; unicode/ascii keep the half-block `▌`. Applied to all 5 ratatui List/Table `highlight_symbol` sites (palette, env table, scope table, DLQ list, action menu). Test: `cursor_marker_swaps_per_icon_style`.
+- **Empty-state polish** — when no envs match, the centred hint echoes the live filter text back (`no environments match \`prod-\``) so the operator can see what's hiding their rows. Heading in `title_alt` for contrast, properly centred horizontally and vertically. Three copy variants: empty-account, filter-hides-everything, saved-view-hides-everything.
+- **Detail-header pills** — env-header line now renders Status as a coloured pill via new `status_pill` helper (extracted from `status_cell`) and Health as `health_dot` + label, matching the main env table aesthetic. Name + Application stay as kv text.
+- **Toast notification glyphs** — info / ok / error toasts gained a leading severity glyph in both title and body. Glyph set varies by icon style: Powerline gets Nerd Font (`F05A` / `F058` / `F057`), unicode gets `ⓘ` / `✓` / `✗`, ascii falls back to `i` / `+` / `!`.
+- **Splash minimum** bumped from 1 s to 2 s so the gradient pass has time to land before the table replaces it.
+- **Region persistence fix** — `persist_state` was writing `override_region`, which is `None` when the user never explicitly `:region`-ed (they were on the AWS_REGION env default). Result: state.toml had no `region =` line and the next restart followed whatever the shell env pointed at *now*, feeling like ebman "forgot" the previous region. Switched to persisting the *effective* `context.region` (and analogously the effective profile). Restart now returns to the last-seen region regardless of how the user got there.
+- **Frame consistency (G)** — every overlay border now flows through `rounded_block()`. Action confirm modal, action running modal, Detail Events/Instances/Queue/Logs tab outer frames, embedded shell pane, and the minimap previously used raw `Block::default().borders(Borders::ALL)` without rounded corners.
+- **Caret glyph upgrade (H)** — new `caret_glyph(theme)` helper. Unicode + Powerline modes pick up `U+258E` (a thin vertical block that reads as a real terminal cursor) in place of the underscore. ASCII keeps `_`. Applied to all 10 blinking-cursor sites: command bar, filter bar, quick-jump bar, palette input, picker prompt, Detail Events search, DLQ purge confirm, action swap-target picker, Detail Logs filter, type-name terminate confirm. Test: `caret_glyph_falls_back_to_underscore_on_ascii`.
+- **Toast accent stripe (F)** — every toast now gets a chunky `▎` severity-coloured stripe on the left edge of the body, Slack / VS Code notification-card style. Truncation budget bumped by 1 cell.
+
 ### Distribution + remaining bits
 - **Custom Platforms list**: `:custom-platforms` (alias `:platforms`) fetches `ListPlatformVersions` filtered to `PlatformOwner=self` and surfaces ARN / branch / version / status / lifecycle in an overlay.
 - **GitHub Actions release workflow**: `.github/workflows/release.yml` triggers on `v*` tags, builds `x86_64-unknown-linux-gnu` / `aarch64-apple-darwin` / `x86_64-apple-darwin` release binaries, tarballs each with README + LICENSE files, attaches them + SHA-256 checksums to a draft GitHub Release.
@@ -372,9 +392,9 @@ Items list `Depends on:` only when another backlog or done item is a real prereq
 
 The three things still keeping users in the AWS console day-to-day. Highest-leverage backlog block; ordered by impact.
 
-- [ ] **Option settings editor (non-env-var namespaces)** — env vars are now done via `:env set/unset/list`. The remaining namespaces (`aws:autoscaling:asg` for min/max, `aws:autoscaling:launchconfiguration` for instance type/key pair/security groups, etc.) still need either a modal form or per-namespace commands. The shared `spawn_option_settings_update` helper already exists; what's missing is the UX. Modal-form abstraction (label + input + validation) would also unlock the Capacity / Network / Security gaps below.
+- [ ] **Multi-select pickers for subnets / security-groups** — `:set-option` works as an escape hatch but the operator has to know IDs and namespace strings. A multi-select picker (similar to the existing region picker but allowing space-toggle) would close the remaining Network + Security gaps. Modal-form abstraction is in; needs a new `FieldKind::MultiSelect`.
 - [ ] **Auto-open the streaming overlay on Logs-tab navigation** — discovery now runs on Detail open and the Logs-tab idle hint reflects whether CW Logs are configured. The remaining piece is auto-opening the streaming overlay (instead of showing the snapshot path) when groups are present. Operator preference signal — current behaviour is explicit (press `s`); auto-open is convenience.
-- [ ] **`:deploy --from` multipart upload** — `:deploy --from PATH` and `:deploy --from s3://bucket/key` both shipped. Bundles >5 GiB still need multipart on the local-upload path; the s3:// path already sidesteps the limit. Whole bundle held in memory during upload is the other follow-on (stream from disk).
+- [ ] **`:deploy --from` multipart upload + streaming** — `:deploy --from PATH` and `:deploy --from s3://bucket/key` both shipped. Bundles >5 GiB still need multipart on the local-upload path; the s3:// path already sidesteps the limit. Whole bundle held in memory during upload is the other follow-on (stream from disk).
 
 ### Refactors — structural cleanup remaining
 
@@ -391,17 +411,26 @@ Findings from walking through the surface as a daily operator. Ranked by likelih
 **Low — polish**
 - [ ] **Powerline tab-icon glyphs (U+F048B …) are plane-1 codepoints** — Nerd-Font terminals render them width-1; some terminals or fallback fonts may render width-0 (no advance, overlap) or width-2 (double-width, misalignment). Tab strip will misalign silently. Add a startup probe (cell-width sanity check) or a config-time warning encouraging the user to verify in their terminal. `src/ui.rs:tab_icon`.
 
+### UI polish — deferred candidates (2026-05-20)
+
+Proposed during the Powerline-aesthetic pass but skipped because the cost / payoff was marginal vs. the rest of the surface. Easy to pick up if the visual surface gets another pass.
+
+- [ ] **TIER / STATUS pill caps in env table (option A)** — every row's pills get a Powerline trailing wedge so they read as ribbon-style tags. Blocker: TIER column is `Constraint::Length(7)` and the existing `" Worker "` pill is already 8 cells; STATUS column is 10 and `" Terminating "` is 13. Caps would overflow more rows. Revisit if/when the table column widths get widened — or render the cap *only* when the cell has room.
+- [ ] **Refresh-time format in header** — `21:46:27 (every 15s)` could shorten to a relative `12s ago · next 3s` (Grafana-style). Cheaper visual scan; signals when the next refresh is due.
+- [ ] **Group-separator glyph in non-Powerline mode** — currently the per-app banner row is `─xi────` (dashes in app colour). Could mix in a thin glyph like `─ ▶ ─` mid-banner to break up the dash run.
+- [ ] **Age-column colour tinting** — old envs (>30d since last update?) render `age` in muted; fresh ones in normal text. Visual recency without an explicit sort. Pure helper + 2 tests.
+- [ ] **Pending pill inline summary** — `⏳ 3` could become `⏳ rebuild, deploy ×2` (truncated to ~25 chars) so the operator sees *what's* in flight without opening `:pending`. Update on every `push_pending` / `complete_pending`.
+
 ### Tier 0 — distribution & hygiene
 - [ ] **README screenshots / demo gif** — text README shipped; capturing screenshots requires running the TUI in a real terminal (not this shell).
 - [ ] **`cargo install ebman` smoke test** — verify the binary installs cleanly from a stock toolchain. (Local-only verification possible; full smoke test needs a crates.io publish.)
 - [ ] **Homebrew formula / GitHub Releases with binaries** — macOS users won't `cargo install`. Depends on CI building release artefacts.
 
 ### Tier 1 — operator killer features (the daily-driver gap)
-- (moved) Option settings editor → see "Console-replacement gap" above.
-- (moved) CloudWatch Logs streaming → see "Console-replacement gap" above.
-- (moved) Deploy from local path / S3 → see "Console-replacement gap" above.
-
-### Write-path completeness — currently read-only surfaces
+All previously listed Tier 1 items are now shipped:
+- Option settings editor — `:env`, `:set-option`, plus per-namespace commands (`:capacity`, `:instance-type`, `:keypair`, `:public-ip`, `:elb-scheme`, `:service-role`, `:instance-profile`, `:deployment-policy`, `:rolling-update`, `:health-check-url`, `:logs-stream`, `:notify`, `:managed-window`).
+- CloudWatch Logs streaming — `:logs-tail` overlay with regex filter + auto-tail.
+- Deploy from local path / S3 — `:deploy --from PATH` and `:deploy --from s3://bucket/key`.
 
 ### Console parity — write-side gaps (operators currently open the console for these)
 
@@ -413,9 +442,6 @@ Gaps surfaced during the 2026-05-19 console-vs-ebman comparison. Each entry is a
 - [ ] **Network / VPC editor (subnet picker)** — common cases (`:public-ip`, `:elb-scheme`) shipped as per-option commands. Subnet selection (EC2 subnets + ELB subnets) is the remaining gap — needs a multi-select picker since envs typically use 2-3 subnets across AZs. Plain `:set-option aws:ec2:vpc Subnets "subnet-a,subnet-b"` works as an escape hatch today.
 - [ ] **Security tab — EC2 security groups picker** — service role, instance profile, and key pair shipped as per-option commands (`:service-role`, `:instance-profile`, `:keypair`). Security-group list is the remaining gap — similar multi-select shape as the subnet picker. `:set-option aws:autoscaling:launchconfiguration SecurityGroups "sg-a,sg-b"` works today.
 - [ ] **Custom platforms — create** — delete shipped as `:custom-platform-delete <arn>`. Create still missing: console offers a wizard that builds a new custom AMI from a Packer template (slow — minutes — needs polling); ours would be `:custom-platform-create <packer-config>` via `elasticbeanstalk:CreatePlatformVersion`. Niche but a real gap for operators who maintain in-house base AMIs.
-
-### Console parity — read-side gaps
-
 
 ### Tier 4 — multi-account / org
 - [ ] **Account switcher with sts:AssumeRole** — the current `:account NAME` is a `:profile NAME` alias. A proper assume-role flow needs an `[accounts]` config schema in `config.toml` with role ARNs, an AssumeRole call, and credentials injection into the SDK. Deferred.
