@@ -85,6 +85,7 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "alarm-delete",
     "logs-stream",
     "logs-tail",
+    "metric",
     "notify",
     "managed-window",
     "env",
@@ -895,6 +896,10 @@ pub struct App {
     pub aliases: BTreeMap<String, String>,
     pub saved_views: BTreeMap<String, String>,
     pub hidden_cols: BTreeSet<String>,
+    /// User-defined extra metric charts for the Metrics tab. Keyed by the
+    /// operator-chosen display label so re-adding the same label updates
+    /// in place. Persisted in `state.toml` under `metric.LABEL`.
+    pub custom_metrics: BTreeMap<String, crate::state::CustomMetricSpec>,
     pub log_reload: Option<crate::LogReloadHandle>,
     pub log_directive: String,
     pub plugins: BTreeMap<String, crate::plugins::Plugin>,
@@ -1333,6 +1338,7 @@ impl App {
             aliases: persisted.aliases,
             saved_views: persisted.saved_views,
             hidden_cols: persisted.hidden_cols,
+            custom_metrics: persisted.custom_metrics,
             log_reload: None,
             log_directive: std::env::var("RUST_LOG")
                 .unwrap_or_else(|_| "info,aws=warn,hyper=warn".to_string()),
@@ -3236,15 +3242,42 @@ impl App {
             d.loading_metrics = true;
             d.error = None;
         }
+        // Snapshot the custom-metrics spec list at spawn time so concurrent
+        // `:metric add`s don't race with the in-flight fetch.
+        let custom: Vec<(String, String, String, String)> = self
+            .custom_metrics
+            .iter()
+            .map(|(label, spec)| {
+                (
+                    label.clone(),
+                    spec.namespace.clone(),
+                    spec.name.clone(),
+                    spec.stat.clone(),
+                )
+            })
+            .collect();
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let name = env_name.clone();
         tokio::spawn(async move {
-            let result = aws
-                .fetch_env_metrics(&name, range)
-                .await
-                .map_err(|e| flatten_err("fetch_env_metrics", e));
+            // Fire both queries concurrently; combine into one ordered series
+            // list. Built-ins come first, then user metrics in add-order so
+            // the operator sees their additions appended to the familiar
+            // four.
+            let (builtin, user) = tokio::join!(
+                aws.fetch_env_metrics(&name, range),
+                aws.fetch_custom_env_metrics(&name, range, &custom),
+            );
+            let result = match builtin {
+                Ok(mut series) => {
+                    if let Ok(extra) = user {
+                        series.extend(extra);
+                    }
+                    Ok(series)
+                }
+                Err(e) => Err(flatten_err("fetch_env_metrics", e)),
+            };
             let _ = tx.send(AppMsg::DetailMetrics {
                 gen,
                 env_name,
@@ -6180,6 +6213,98 @@ impl App {
                     }
                 }
             }
+            "metric" => {
+                // `:metric add LABEL NAMESPACE NAME [STAT]` upserts a custom
+                // metric chart for the Metrics tab; `:metric remove LABEL`
+                // drops it; `:metric list` dumps the table. STAT defaults to
+                // Average. Persists to state.toml automatically via
+                // persist_state.
+                let sub = rest.first().copied();
+                match sub {
+                    Some("list") | Some("ls") | None => {
+                        if self.custom_metrics.is_empty() {
+                            self.status_message = Some(
+                                "no custom metrics — add with `:metric add LABEL NAMESPACE NAME [STAT]`".into(),
+                            );
+                        } else {
+                            let mut lines = String::new();
+                            for (label, spec) in &self.custom_metrics {
+                                lines.push_str(&format!(
+                                    "{label:<24}  {:<32}  {:<32}  {}\n",
+                                    spec.namespace, spec.name, spec.stat
+                                ));
+                            }
+                            self.current_overlay = Some(Overlay::TextDump {
+                                title: format!(
+                                    "custom metrics ({} total)",
+                                    self.custom_metrics.len()
+                                ),
+                                body: lines,
+                            });
+                        }
+                    }
+                    Some("add") => match (
+                        rest.get(1).copied(),
+                        rest.get(2).copied(),
+                        rest.get(3).copied(),
+                    ) {
+                        (Some(label), Some(namespace), Some(name)) => {
+                            let stat = rest.get(4).copied().unwrap_or("Average").to_string();
+                            self.custom_metrics.insert(
+                                label.to_string(),
+                                crate::state::CustomMetricSpec {
+                                    namespace: namespace.to_string(),
+                                    name: name.to_string(),
+                                    stat,
+                                },
+                            );
+                            self.persist_state();
+                            self.status_message = Some(format!(
+                                "custom metric '{label}' added — re-open Detail/Metrics to see"
+                            ));
+                            // If we're on the Metrics tab, refetch so the
+                            // chart appears without the user toggling tabs.
+                            if let Some(d) = self.detail.as_ref() {
+                                if d.tab() == DetailTab::Metrics {
+                                    let env_name = d.env_name.clone();
+                                    self.spawn_detail_metrics(env_name);
+                                }
+                            }
+                        }
+                        _ => {
+                            self.error_message = Some(
+                                "usage: :metric add LABEL NAMESPACE NAME [STAT]  (charts are scoped to EnvironmentName; metrics needing other dimensions like InstanceId or LoadBalancer won't return data yet)".into(),
+                            );
+                        }
+                    },
+                    Some("remove") | Some("rm") | Some("delete") => match rest.get(1).copied() {
+                        None => {
+                            self.error_message = Some("usage: :metric remove LABEL".into());
+                        }
+                        Some(label) => {
+                            if self.custom_metrics.remove(label).is_some() {
+                                self.persist_state();
+                                self.status_message =
+                                    Some(format!("custom metric '{label}' removed"));
+                                if let Some(d) = self.detail.as_ref() {
+                                    if d.tab() == DetailTab::Metrics {
+                                        let env_name = d.env_name.clone();
+                                        self.spawn_detail_metrics(env_name);
+                                    }
+                                }
+                            } else {
+                                self.error_message =
+                                    Some(format!("no custom metric named '{label}'"));
+                            }
+                        }
+                    },
+                    Some(other) => {
+                        self.error_message = Some(format!(
+                            "unknown subcommand '{other}'  (use: list | add LABEL NS NAME [STAT] | remove LABEL)"
+                        ));
+                    }
+                }
+            }
             "logs-tail" => {
                 // `:logs-tail [LOG_GROUP]` — stream a CW Logs group for the
                 // selected env. If no group given, discover groups for the
@@ -6604,6 +6729,7 @@ impl App {
             aliases: self.aliases.clone(),
             saved_views: self.saved_views.clone(),
             hidden_cols: self.hidden_cols.clone(),
+            custom_metrics: self.custom_metrics.clone(),
         });
     }
 
@@ -8355,6 +8481,10 @@ fn build_palette_items(app: &App) -> Vec<PaletteItem> {
         (
             "logs-tail ",
             "stream a CW Logs group for the selected env (auto-picks the best group)",
+        ),
+        (
+            "metric ",
+            "custom metric chart: list | add LABEL NS NAME [STAT] | remove LABEL",
         ),
         (
             "notify ",

@@ -20,6 +20,45 @@ pub struct PersistedState {
     pub aliases: BTreeMap<String, String>,
     pub saved_views: BTreeMap<String, String>,
     pub hidden_cols: BTreeSet<String>,
+    /// User-defined extra metric charts for the Metrics tab. Keyed by the
+    /// operator-chosen display label; value is `"namespace|name|stat"`.
+    pub custom_metrics: BTreeMap<String, CustomMetricSpec>,
+}
+
+/// Parsed shape of a user-defined Metrics-tab chart. Stored line-oriented
+/// in state.toml as `metric.LABEL = "namespace|name|stat"`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CustomMetricSpec {
+    pub namespace: String,
+    pub name: String,
+    pub stat: String,
+}
+
+impl CustomMetricSpec {
+    /// Parse the `"namespace|name|stat"` form. Returns None on malformed
+    /// input (wrong field count or empty parts) so the loader silently
+    /// drops bad lines instead of aborting startup.
+    pub fn parse(raw: &str) -> Option<Self> {
+        let parts: Vec<&str> = raw.split('|').collect();
+        if parts.len() != 3 {
+            return None;
+        }
+        let ns = parts[0].trim();
+        let name = parts[1].trim();
+        let stat = parts[2].trim();
+        if ns.is_empty() || name.is_empty() || stat.is_empty() {
+            return None;
+        }
+        Some(Self {
+            namespace: ns.into(),
+            name: name.into(),
+            stat: stat.into(),
+        })
+    }
+
+    pub fn serialize(&self) -> String {
+        format!("{}|{}|{}", self.namespace, self.name, self.stat)
+    }
 }
 
 pub fn load() -> PersistedState {
@@ -77,6 +116,15 @@ pub fn parse(text: &str) -> PersistedState {
                 let name = k.trim_start_matches("view.").trim().to_string();
                 if !name.is_empty() {
                     state.saved_views.insert(name, value);
+                }
+            }
+            _ if k.starts_with("metric.") => {
+                let label = k.trim_start_matches("metric.").trim().to_string();
+                if label.is_empty() {
+                    continue;
+                }
+                if let Some(spec) = CustomMetricSpec::parse(&value) {
+                    state.custom_metrics.insert(label, spec);
                 }
             }
             "hidden_cols" => {
@@ -140,6 +188,9 @@ pub fn save(state: &PersistedState) {
     }
     for (name, value) in &state.saved_views {
         out.push_str(&format!("view.{name} = \"{value}\"\n"));
+    }
+    for (label, spec) in &state.custom_metrics {
+        out.push_str(&format!("metric.{label} = \"{}\"\n", spec.serialize()));
     }
     if !state.hidden_cols.is_empty() {
         let joined: Vec<&str> = state.hidden_cols.iter().map(String::as_str).collect();
@@ -218,6 +269,45 @@ hidden_cols = "TREND,PLATFORM"
         assert!(s.saved_views.contains_key("dev"));
         assert!(s.hidden_cols.contains("TREND"));
         assert!(s.hidden_cols.contains("PLATFORM"));
+    }
+
+    #[test]
+    fn parse_custom_metrics() {
+        let text = r#"
+metric.cpu = "AWS/EC2|CPUUtilization|Average"
+metric.disk = "AWS/EC2|DiskReadOps|Sum"
+"#;
+        let s = parse(text);
+        let cpu = s.custom_metrics.get("cpu").expect("cpu metric");
+        assert_eq!(cpu.namespace, "AWS/EC2");
+        assert_eq!(cpu.name, "CPUUtilization");
+        assert_eq!(cpu.stat, "Average");
+        assert!(s.custom_metrics.contains_key("disk"));
+    }
+
+    #[test]
+    fn parse_custom_metric_drops_malformed_value() {
+        // Wrong field count: silently dropped, no panic.
+        let text = "metric.bad = \"only|two\"\n";
+        let s = parse(text);
+        assert!(s.custom_metrics.is_empty());
+        // Empty field: also dropped.
+        let text = "metric.bad = \"AWS/EC2||Average\"\n";
+        let s = parse(text);
+        assert!(s.custom_metrics.is_empty());
+    }
+
+    #[test]
+    fn custom_metric_spec_round_trips() {
+        let spec = CustomMetricSpec {
+            namespace: "AWS/ApplicationELB".into(),
+            name: "RequestCount".into(),
+            stat: "Sum".into(),
+        };
+        assert_eq!(
+            CustomMetricSpec::parse(&spec.serialize()).as_ref(),
+            Some(&spec)
+        );
     }
 
     #[test]

@@ -222,6 +222,15 @@ Living list of done / pending / dropped work. New entries get added at the botto
 - **`ebman action <rebuild|restart|terminate> --env NAME [--yes]`** dispatches an action without entering the TUI. Terminate requires `--yes`.
 - `--help` updated to document subcommands; `--version`, `-h`, `-V`, `--read-only` flags continue to work.
 
+### Custom metric selection (2026-05-19)
+Operator-defined extra charts in the Metrics tab. Tests: `parse_custom_metrics`, `parse_custom_metric_drops_malformed_value`, `custom_metric_spec_round_trips`.
+
+- **`:metric add LABEL NAMESPACE NAME [STAT]`** upserts a custom-metric chart; STAT defaults to Average. Persists to `state.toml` under `metric.LABEL = "namespace|name|stat"`. Auto-refreshes the Metrics tab if it's currently open.
+- **`:metric remove LABEL`** drops the entry + persists + refreshes.
+- **`:metric list`** dumps the table into a TextOverlay.
+- `aws::fetch_custom_env_metrics` generalises the existing GetMetricData path; runs concurrently with the built-in fetch via `tokio::join!`. Results append to the fixed 4-chart set in operator-add order.
+- Known limitation (in backlog): charts hard-scope to `EnvironmentName` dimension, so anything outside `AWS/ElasticBeanstalk` namespace returns empty until we support custom dimensions.
+
 ### CloudWatch Logs `tail -f` (2026-05-19)
 The biggest remaining Tier-1 blocker, shipped. Tests: `pick_default_log_group_*` × 3.
 
@@ -379,7 +388,7 @@ Gaps surfaced during the 2026-05-19 console-vs-ebman comparison. Each entry is a
 
 ### Console parity — read-side gaps
 
-- [ ] **Custom metric selection in Monitoring** — our Metrics tab renders a fixed 4-chart set (EnvHealth / 4xx / 5xx / latency-p90). Console's Monitoring tab lets you pick any CloudWatch metric available on the env (full ASG / ALB / EB enhanced-health metric set). Add `:metric add NAMESPACE NAME [stat]` / `:metric remove N` persisted in `state.toml`; reuse the existing chart widget.
+- [ ] **Custom metric dimensions** — `:metric add` shipped, but charts are hard-scoped to `EnvironmentName=<env>` which only works for the `AWS/ElasticBeanstalk` namespace. Metrics living in `AWS/EC2` (InstanceId), `AWS/ApplicationELB` (LoadBalancer), `AWS/AutoScaling` (AutoScalingGroupName) etc. need their own dimension lookup. Extend the command to accept `DIM_NAME=DIM_VALUE` overrides, or auto-resolve via `DescribeEnvironmentResources` when the user names a known dimension.
 
 ### Tier 4 — multi-account / org
 - [ ] **Account switcher with sts:AssumeRole** — the current `:account NAME` is a `:profile NAME` alias. A proper assume-role flow needs an `[accounts]` config schema in `config.toml` with role ARNs, an AssumeRole call, and credentials injection into the SDK. Deferred.

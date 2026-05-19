@@ -878,6 +878,82 @@ impl AwsClient {
         Ok(order.iter().filter_map(|id| by_id.remove(*id)).collect())
     }
 
+    /// Fetch user-defined metric series for one env. Each `(label, namespace,
+    /// name, stat)` tuple becomes a separate `GetMetricData` query;
+    /// dimensions default to `EnvironmentName=env_name` since that's how EB's
+    /// auto-scoped metrics live. Returns the series in the same order as
+    /// `specs` (i.e. operator-add order). Unknown statistics or namespaces
+    /// surface as empty series rather than aborting the whole call so a
+    /// stale custom-metric line in `state.toml` doesn't break the tab.
+    pub async fn fetch_custom_env_metrics(
+        &self,
+        env_name: &str,
+        range_secs: i64,
+        specs: &[(String, String, String, String)],
+    ) -> Result<Vec<MetricSeries>> {
+        use aws_sdk_cloudwatch::types::{Dimension, Metric, MetricDataQuery, MetricStat};
+        if specs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let end = Utc::now();
+        let start = end - chrono::Duration::seconds(range_secs);
+        let dim = Dimension::builder()
+            .name("EnvironmentName")
+            .value(env_name)
+            .build();
+
+        let mut req = self
+            .cw
+            .get_metric_data()
+            .start_time(to_smithy(start))
+            .end_time(to_smithy(end));
+        // CloudWatch's GetMetricData requires the `id` field to be a valid
+        // metric reference (lowercase alpha + numeric + underscore, starts
+        // with a letter). We use `m{i}` to dodge label-vs-id concerns.
+        let mut id_to_label: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for (i, (label, namespace, name, stat)) in specs.iter().enumerate() {
+            let id = format!("m{i}");
+            let metric = Metric::builder()
+                .namespace(namespace)
+                .metric_name(name)
+                .dimensions(dim.clone())
+                .build();
+            let ms = MetricStat::builder()
+                .metric(metric)
+                .period(60)
+                .stat(stat)
+                .build();
+            id_to_label.insert(id.clone(), label.clone());
+            req =
+                req.metric_data_queries(MetricDataQuery::builder().id(id).metric_stat(ms).build());
+        }
+
+        let resp = req.send().await?;
+        let mut by_id: std::collections::HashMap<String, MetricSeries> =
+            std::collections::HashMap::new();
+        for r in resp.metric_data_results.unwrap_or_default() {
+            let id = r.id.unwrap_or_default();
+            let label = id_to_label.get(&id).cloned().unwrap_or_else(|| id.clone());
+            let timestamps = r.timestamps.unwrap_or_default();
+            let values = r.values.unwrap_or_default();
+            let mut points: Vec<(DateTime<Utc>, f64)> = timestamps
+                .iter()
+                .zip(values.iter())
+                .filter_map(|(ts, v)| {
+                    DateTime::<Utc>::from_timestamp(ts.secs(), ts.subsec_nanos()).map(|t| (t, *v))
+                })
+                .collect();
+            points.sort_by_key(|(t, _)| *t);
+            by_id.insert(id.clone(), MetricSeries { id, label, points });
+        }
+        // Return in the spec order so operators see the charts in the order
+        // they added them.
+        Ok((0..specs.len())
+            .filter_map(|i| by_id.remove(&format!("m{i}")))
+            .collect())
+    }
+
     pub async fn purge_queue(&self, queue_url: &str) -> Result<()> {
         self.sqs.purge_queue().queue_url(queue_url).send().await?;
         Ok(())
