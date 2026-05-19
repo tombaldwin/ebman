@@ -13,3 +13,6 @@
 # Local caches and crash reports (ebman writes to ~/.cache; safety net for any in-tree runs)
 *.log
 crash-*.log
+
+# Claude Code working directory
+.claude/

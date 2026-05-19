@@ -3,10 +3,12 @@ name = "ebman"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.91"
+authors = ["Tom Baldwin <tom@polymorphism.co.uk>"]
 description = "k9s-style TUI for AWS Elastic Beanstalk"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/tombaldwin/ebman"
+homepage = "https://github.com/tombaldwin/ebman"
 keywords = ["aws", "elasticbeanstalk", "tui", "ratatui"]
 categories = ["command-line-utilities"]
 
