@@ -219,6 +219,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 cursor,
                 confirm_delete,
             } => draw_saved_configs_interactive(f, f.area(), app, &items, cursor, confirm_delete),
+            Overlay::TextDump { title, body } => {
+                draw_text_dump_overlay(f, f.area(), app, &title, &body)
+            }
         }
     }
     if app.mode == Mode::Palette {
@@ -379,12 +382,6 @@ fn draw_saved_configs_interactive(
         .selected_env()
         .map(|e| e.name.clone())
         .unwrap_or_else(|| "—".into());
-    let max_app_width = items
-        .iter()
-        .map(|(a, _)| a.chars().count())
-        .max()
-        .unwrap_or(0)
-        .clamp(8, 32);
     // popup.height includes the title row + border. Subtract those + uniform
     // padding (1) + the 2 banner lines + the footer line. The remainder is
     // how many item rows we can show before clipping; if items overflow,
@@ -416,14 +413,32 @@ fn draw_saved_configs_interactive(
     } else {
         lines.push(Line::from(""));
     }
+    // Group rows under app-name headers as the cursor walks the visible
+    // window. Header lines aren't selectable so the cursor index still
+    // maps 1:1 to `items`.
+    let mut prev_app: Option<&str> = None;
+    // If the first visible item isn't index 0, look back to figure out
+    // whether to print its app header. We always emit a header when the
+    // current item's app differs from the previous *visible* row.
+    if visible_start > 0 {
+        prev_app = items.get(visible_start - 1).map(|(a, _)| a.as_str());
+    }
     for (i, (app_name, tmpl)) in items
         .iter()
         .enumerate()
         .skip(visible_start)
         .take(visible_end - visible_start)
     {
-        let marker = if i == cursor { "▶ " } else { "  " };
-        let app_col = format!("{app_name:<width$}", width = max_app_width);
+        if Some(app_name.as_str()) != prev_app {
+            lines.push(Line::from(Span::styled(
+                app_name.clone(),
+                Style::default()
+                    .fg(theme.title_alt)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            prev_app = Some(app_name.as_str());
+        }
+        let marker = if i == cursor { " ▶ " } else { "   " };
         let style = if i == cursor {
             let bg = if confirm_delete {
                 theme.row_red_bg
@@ -439,8 +454,6 @@ fn draw_saved_configs_interactive(
         };
         let line = Line::from(vec![
             Span::styled(marker.to_string(), Style::default().fg(theme.accent)),
-            Span::styled(app_col, Style::default().fg(theme.title_alt)),
-            Span::styled("  /  ", Style::default().fg(theme.muted)),
             Span::styled(tmpl.clone(), style),
         ]);
         lines.push(line);
@@ -488,6 +501,26 @@ pub fn visible_window(cursor: usize, total: usize, budget: usize) -> (usize, usi
     let start = cursor.saturating_sub(half);
     let start = start.min(total - budget);
     (start, start + budget)
+}
+
+fn draw_text_dump_overlay(f: &mut Frame, area: Rect, app: &App, title: &str, text: &str) {
+    let popup = centered_rect(70, 70, area);
+    f.render_widget(Clear, popup);
+    let theme = &app.theme;
+    let lines: Vec<Line> = text
+        .lines()
+        .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(theme.text))))
+        .collect();
+    let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        titled_block(
+            &app.theme,
+            &format!("{title} — esc / q to close"),
+            true,
+            app.theme.title,
+        )
+        .padding(Padding::uniform(1)),
+    );
+    f.render_widget(p, popup);
 }
 
 fn draw_saved_configs_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {

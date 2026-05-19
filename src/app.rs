@@ -188,11 +188,15 @@ pub enum Overlay {
     Alarms { env_name: String, body: String },
     /// Side-by-side env comparison shown via `:diff NAME`.
     Diff(String),
-    /// EB saved-configuration templates per app shown via `:saved-configs`.
-    /// Also reused for ad-hoc text overlays (`:pending`, `:resources`,
-    /// `:find-env` results) — anything that wants a scrollable text dump in a
-    /// popup. Not interactive.
+    /// Fallback for the `:saved-configs` command when no templates exist.
+    /// Renders the styled `Application: foo / ▸ template` text; for the
+    /// generic-text-dump cases use `TextDump` instead.
     SavedConfigs(String),
+    /// Generic scrollable text overlay with a custom title. Used by
+    /// `:pending`, `:resources`, `:find-env`, `:org-health`, `:versions`,
+    /// etc. — anywhere we want to show a multi-line result without
+    /// inventing a structured overlay.
+    TextDump { title: String, body: String },
     /// Interactive variant of `:saved-configs` — cursor over (app, template)
     /// pairs, with `a` (apply to selected env), `x` (delete), `c` (prefill
     /// :config-save in the command bar). Distinct from `SavedConfigs(String)`
@@ -1021,9 +1025,15 @@ enum AppMsg {
         env_name: String,
         result: Result<Vec<(String, String)>, String>,
     },
-    /// Cross-account search payload from `:find-env`. Surfaced in an overlay.
-    CrossAccountSearch {
+    /// Generic text overlay payload. Used by several commands that all
+    /// finish on a background task and want to render the result as a
+    /// scrollable text dump (`:find-env`, `:resources`, `:org-health`,
+    /// `:upgrade`, `:custom-platforms`). `title` shows in the overlay block
+    /// header; previous variants reused the SavedConfigs styling and
+    /// inherited its title which lied about the content.
+    TextOverlay {
         gen: u64,
+        title: String,
         body: String,
     },
     /// Application versions listing for the env's app, fetched via `:versions`.
@@ -4388,7 +4398,11 @@ impl App {
                 }
                 Err(e) => format!("upgrade list failed: {e}\n\nesc / q to close"),
             };
-            let _ = tx.send(AppMsg::CrossAccountSearch { gen, body });
+            let _ = tx.send(AppMsg::TextOverlay {
+                gen,
+                title: format!("compatible platforms — {env_for_msg}"),
+                body,
+            });
         });
     }
 
@@ -4493,7 +4507,29 @@ impl App {
         match cmd {
             "q" | "quit" => self.quit = true,
             "refresh" => self.manual_refresh(),
-            "help" | "?" => self.mode = Mode::Help,
+            "help" | "?" => {
+                // Mirror the `?` keybind: scope help to the screen the user
+                // was on before opening the command bar. The Command-mode
+                // transition doesn't leave a breadcrumb, so we infer from
+                // what's currently set (Detail view live, action flow open,
+                // DLQ open, interactive overlay open).
+                self.help_topic = if self.detail.is_some() {
+                    HelpTopic::Detail
+                } else if self.action_flow.is_some() {
+                    HelpTopic::Action
+                } else if self.dlq.is_some() {
+                    HelpTopic::Dlq
+                } else if matches!(
+                    self.current_overlay,
+                    Some(Overlay::SavedConfigsInteractive { .. })
+                ) {
+                    HelpTopic::SavedConfigs
+                } else {
+                    HelpTopic::Global
+                };
+                self.pre_help_mode = Some(self.mode);
+                self.mode = Mode::Help;
+            }
             "region" | "r" => match rest.first().copied() {
                 Some("all") => {
                     let mut regions = self.extra_regions.clone();
@@ -4563,7 +4599,11 @@ impl App {
                         }
                         Err(e) => format!("custom platforms: {e}\n\nesc / q to close"),
                     };
-                    let _ = tx.send(AppMsg::CrossAccountSearch { gen, body });
+                    let _ = tx.send(AppMsg::TextOverlay {
+                        gen,
+                        title: "custom platforms".into(),
+                        body,
+                    });
                 });
             }
             "org-health" => {
@@ -4621,8 +4661,9 @@ impl App {
                         "Total: {total} envs, {total_red} in Red across all profiles"
                     ));
                     lines.push("esc / q to close".into());
-                    let _ = tx.send(AppMsg::CrossAccountSearch {
+                    let _ = tx.send(AppMsg::TextOverlay {
                         gen,
+                        title: "org health".into(),
                         body: lines.join("\n"),
                     });
                 });
@@ -4696,7 +4737,11 @@ impl App {
                                 format!("Errors:\n{}", errs.join("\n"))
                             },
                         );
-                        let _ = tx.send(AppMsg::CrossAccountSearch { gen, body });
+                        let _ = tx.send(AppMsg::TextOverlay {
+                            gen,
+                            title: format!("cross-account search — {needle}"),
+                            body,
+                        });
                     });
                 }
             },
@@ -5202,11 +5247,7 @@ impl App {
                     self.status_message = Some("no actions in flight or recently completed".into());
                 } else {
                     let now = Instant::now();
-                    let mut lines: Vec<String> = vec![
-                        "In-flight + recently-completed actions".into(),
-                        "──────────────────────────────────────".into(),
-                        String::new(),
-                    ];
+                    let mut lines: Vec<String> = Vec::with_capacity(self.pending_actions.len() + 2);
                     for entry in self.pending_actions.iter().rev() {
                         let age = humanize_short_age(now.duration_since(entry.started));
                         let status = match &entry.completed {
@@ -5226,15 +5267,16 @@ impl App {
                             entry.label, entry.target, age, status
                         ));
                     }
-                    lines.push(String::new());
-                    lines.push("esc / q to close".into());
-                    self.current_overlay = Some(Overlay::SavedConfigs(lines.join("\n")));
+                    self.current_overlay = Some(Overlay::TextDump {
+                        title: "in-flight + recently-completed actions".into(),
+                        body: lines.join("\n"),
+                    });
                 }
             }
             "tag" => match parse_tag_args(&rest) {
                 None => {
                     self.error_message = Some(
-                        "usage: :tag KEY VALUE  (VALUE may contain spaces; tokens are joined)"
+                        "usage: :tag KEY VALUE  (value tokens joined with single spaces; no shell quoting — use a separate call to set values with literal multi-spaces)"
                             .into(),
                     );
                 }
@@ -5260,6 +5302,7 @@ impl App {
                 let gen = self.generation;
                 let env_name = env.name.clone();
                 self.status_message = Some(format!("fetching env resources for {env_name}…"));
+                let env_name_for_title = env_name.clone();
                 tokio::spawn(async move {
                     let result = aws
                         .describe_env_resources(&env_name)
@@ -5269,7 +5312,11 @@ impl App {
                         Ok(text) => text,
                         Err(e) => format!("resources: {e}\n\nesc / q to close"),
                     };
-                    let _ = tx.send(AppMsg::CrossAccountSearch { gen, body });
+                    let _ = tx.send(AppMsg::TextOverlay {
+                        gen,
+                        title: format!("resources — {env_name_for_title}"),
+                        body,
+                    });
                 });
             }
             "rebuild" => {
@@ -6057,11 +6104,11 @@ impl App {
                     }
                 }
             }
-            AppMsg::CrossAccountSearch { gen, body } => {
+            AppMsg::TextOverlay { gen, title, body } => {
                 if gen != self.generation {
                     return;
                 }
-                self.current_overlay = Some(Overlay::SavedConfigs(body));
+                self.current_overlay = Some(Overlay::TextDump { title, body });
             }
             AppMsg::AppVersions {
                 gen,
@@ -6077,18 +6124,18 @@ impl App {
                             Some(format!("no application versions for {application}"));
                     }
                     Ok(versions) => {
-                        let summary = versions
+                        let body = versions
                             .iter()
                             .take(20)
                             .map(|v| format!("{} ({})", v.label, v.description))
                             .collect::<Vec<_>>()
                             .join("\n");
-                        self.current_overlay = Some(Overlay::SavedConfigs(format!(
-                            "Application versions: {application}\n\
-                             ────────────────────────────────────\n\
-                             {summary}\n\n\
-                             Use `:deploy <label>` to ship one to the selected env.\nesc / q to close"
-                        )));
+                        self.current_overlay = Some(Overlay::TextDump {
+                            title: format!("application versions — {application}"),
+                            body: format!(
+                                "{body}\n\nUse `:deploy <label>` to ship one to the selected env."
+                            ),
+                        });
                     }
                     Err(msg) => self.error_message = Some(msg),
                 }
@@ -6215,6 +6262,30 @@ impl App {
                             ToastKind::Info,
                             format!("deleted {application}/{label}{force_str}"),
                         );
+                        // If the user has the matching `:versions` overlay
+                        // open, re-fetch so the deleted entry disappears
+                        // instead of lingering as stale text.
+                        let want_title = format!("application versions — {application}");
+                        if matches!(
+                            self.current_overlay.as_ref(),
+                            Some(Overlay::TextDump { title, .. }) if title == &want_title
+                        ) {
+                            let aws = self.aws.clone();
+                            let tx = self.msg_tx.clone();
+                            let gen = self.generation;
+                            let app_name = application.clone();
+                            tokio::spawn(async move {
+                                let result = aws
+                                    .list_application_versions(&app_name)
+                                    .await
+                                    .map_err(|e| flatten_err("list_application_versions", e));
+                                let _ = tx.send(AppMsg::AppVersions {
+                                    gen,
+                                    application: app_name,
+                                    result,
+                                });
+                            });
+                        }
                     }
                     Err(msg) => {
                         self.push_toast(
