@@ -916,6 +916,12 @@ pub struct App {
     /// match this snapshot, so user-initiated status set between kickoff and
     /// apply (e.g. pressing `s` to sort during the round-trip) is preserved.
     pub status_snapshot_at_refresh: Option<(Option<String>, Option<String>)>,
+    /// `true` when `status_message` was set by a user-facing command (e.g.
+    /// `:pending`, `:metric add`) rather than a background spawn helper.
+    /// Refresh-time auto-clear only touches non-pinned messages — without
+    /// this, every 15s tick wipes out informational results the user just
+    /// invoked.
+    pub status_message_pinned: bool,
     /// When set, the next ticker firing skips `spawn_refresh` until this
     /// instant has passed. Driven by exponential backoff in response to
     /// AWS throttling responses; the user can still force a refresh with
@@ -1147,9 +1153,13 @@ enum AppMsg {
         body: String,
     },
     /// Application versions listing for the env's app, fetched via `:versions`.
+    /// `deployed_label` is the env's current version_label so the overlay
+    /// can mark which row is "the live one" — common operator pain when
+    /// rolling back.
     AppVersions {
         gen: u64,
         application: String,
+        deployed_label: Option<String>,
         result: Result<Vec<AppVersion>, String>,
     },
     /// Result of the startup update-check. `None` means "no newer release"
@@ -1371,6 +1381,7 @@ impl App {
                 .unwrap_or_else(|_| "info,aws=warn,hyper=warn".to_string()),
             plugins: plugins_loaded.plugins,
             status_snapshot_at_refresh: None,
+            status_message_pinned: false,
             throttle_until: None,
             consecutive_throttles: 0,
             sso_expiry: crate::sso::latest_session_expiry(),
@@ -1742,6 +1753,16 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    /// Set a status message that survives the next refresh tick. Use this
+    /// for one-shot informational results the operator just asked for
+    /// (e.g. `:pending` outcome, `:metric add` ack); plain
+    /// `self.status_message = Some(...)` writes are still ephemeral and
+    /// get auto-cleared by `apply_refresh`.
+    pub fn pin_status(&mut self, msg: impl Into<String>) {
+        self.status_message = Some(msg.into());
+        self.status_message_pinned = true;
     }
 
     fn push_toast(&mut self, kind: ToastKind, text: String) {
@@ -4188,6 +4209,102 @@ impl App {
         }
     }
 
+    /// Dispatch `UpdateEnvironment(template_name)`. Used by both the typed
+    /// `:config-apply TEMPLATE` command and the `a`/enter key in the
+    /// interactive saved-configs overlay. Reads template + env directly
+    /// so callers can pass strings with embedded spaces (the typed-command
+    /// parser joins rest with single spaces; the overlay passes the raw
+    /// template name).
+    fn spawn_config_apply_template(&mut self, env_name: String, template: String) {
+        if self.read_only {
+            self.error_message = Some("read-only mode — config-apply disabled".into());
+            return;
+        }
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        self.status_message = Some(format!("applying template '{template}' to {env_name}…"));
+        write_audit_line(
+            self.context.account_id.as_deref(),
+            self.context.profile.as_deref(),
+            &self.context.region,
+            &format!("stage=dispatched action=ConfigApply target={env_name} template={template}"),
+        );
+        self.push_pending(Action::ConfigApply.label(), env_name.clone());
+        let env_for_msg = env_name.clone();
+        tokio::spawn(async move {
+            let result = aws
+                .apply_config_template(&env_for_msg, &template)
+                .await
+                .map_err(|e| flatten_err("apply_config_template", e));
+            let _ = tx.send(AppMsg::ActionResult {
+                gen,
+                action: Action::ConfigApply,
+                env_name: env_for_msg,
+                result,
+            });
+        });
+    }
+
+    /// Dispatch `DeleteConfigurationTemplate`. Same shape as
+    /// `spawn_config_apply_template`; bypasses the typed-command parser so
+    /// the overlay can pass template names with embedded spaces.
+    fn spawn_config_delete_template(&mut self, app_name: String, template: String) {
+        if self.read_only {
+            self.error_message = Some("read-only mode — config-delete disabled".into());
+            return;
+        }
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let target = format!("{app_name}/{template}");
+        self.status_message = Some(format!(
+            "deleting template '{template}' from app '{app_name}'…"
+        ));
+        write_audit_line(
+            self.context.account_id.as_deref(),
+            self.context.profile.as_deref(),
+            &self.context.region,
+            &format!("stage=dispatched action=ConfigDelete target={target}"),
+        );
+        self.push_pending(Action::ConfigDelete.label(), target.clone());
+        let template_for_msg = template.clone();
+        tokio::spawn(async move {
+            let result = aws
+                .delete_config_template(&app_name, &template)
+                .await
+                .map_err(|e| flatten_err("delete_config_template", e))
+                .map_err(|e| format!("config-delete '{template_for_msg}': {e}"));
+            let _ = tx.send(AppMsg::ActionResult {
+                gen,
+                action: Action::ConfigDelete,
+                env_name: target,
+                result,
+            });
+        });
+    }
+
+    /// Fetch a template's option settings and surface them as a TextOverlay.
+    /// Read-only — no read-only-mode gate. Called by `:config-inspect` and
+    /// by the `i` keybind in the interactive saved-configs overlay.
+    fn spawn_config_inspect_template(&mut self, app_name: String, template: String) {
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let title = format!("template — {app_name}/{template}");
+        self.status_message = Some(format!("fetching template {app_name}/{template}…"));
+        tokio::spawn(async move {
+            let body = match aws.describe_template_settings(&app_name, &template).await {
+                Ok(settings) if settings.is_empty() => {
+                    "(template has no option settings)".to_string()
+                }
+                Ok(settings) => format_template_settings(&settings),
+                Err(e) => format!("error: {}", flatten_err("describe_template_settings", e)),
+            };
+            let _ = tx.send(AppMsg::TextOverlay { gen, title, body });
+        });
+    }
+
     /// Open a streaming CW Logs view for `env_name`. If `explicit_group` is
     /// `None`, discovers the env's log groups and picks the most useful one
     /// via `pick_default_log_group`. Aborts any active log-tail task before
@@ -4764,14 +4881,20 @@ impl App {
             KeyCode::Char('a') | KeyCode::Enter if !confirm_delete => {
                 if let Some((_app, template)) = selected {
                     self.current_overlay = None;
-                    self.execute_command(&format!("config-apply {template}"));
+                    let Some(env) = self.selected_env().cloned() else {
+                        self.error_message = Some("no environment selected".into());
+                        return;
+                    };
+                    // Direct call bypasses execute_command's whitespace
+                    // split so template names with spaces work.
+                    self.spawn_config_apply_template(env.name, template);
                 }
             }
             // y/Y/enter under armed-confirm dispatches the delete.
             KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter if confirm_delete => {
                 if let Some((app_name, template)) = selected {
                     self.current_overlay = None;
-                    self.execute_command(&format!("config-delete {app_name} {template}"));
+                    self.spawn_config_delete_template(app_name, template);
                 }
             }
             KeyCode::Char('c') => {
@@ -4781,12 +4904,12 @@ impl App {
             }
             KeyCode::Char('i') => {
                 // Inspect: close the interactive overlay and dispatch
-                // :config-inspect, which renders the template's option
-                // settings as a TextDump. The overlay is closed because the
-                // TextDump replaces it; user re-opens with :saved-configs.
+                // config-inspect directly. Template name may contain spaces
+                // (e.g. "Dev config pre-redis") — direct method call avoids
+                // execute_command's whitespace-split parser.
                 if let Some((app_name, template)) = selected {
                     self.current_overlay = None;
-                    self.execute_command(&format!("config-inspect {app_name} {template}"));
+                    self.spawn_config_inspect_template(app_name, template);
                 }
             }
             KeyCode::Char('?') => {
@@ -5909,6 +6032,13 @@ impl App {
                     return;
                 };
                 let app_name = env.application.clone();
+                // Capture the env's current label at dispatch time so the
+                // resulting overlay can mark "this is what's deployed".
+                let deployed_label = if env.version_label.is_empty() {
+                    None
+                } else {
+                    Some(env.version_label.clone())
+                };
                 let aws = self.aws.clone();
                 let tx = self.msg_tx.clone();
                 let gen = self.generation;
@@ -5922,6 +6052,7 @@ impl App {
                     let _ = tx.send(AppMsg::AppVersions {
                         gen,
                         application: app_name,
+                        deployed_label,
                         result,
                     });
                 });
@@ -6053,7 +6184,7 @@ impl App {
             }
             "pending" | "in-flight" | "inflight" => {
                 if self.pending_actions.is_empty() {
-                    self.status_message = Some("no actions in flight or recently completed".into());
+                    self.pin_status("no actions in flight or recently completed");
                 } else {
                     let now = Instant::now();
                     let mut lines: Vec<String> = Vec::with_capacity(self.pending_actions.len() + 2);
@@ -6248,41 +6379,12 @@ impl App {
                 }
             },
             "config-delete" => match (rest.first().copied(), rest.get(1).copied()) {
-                (Some(app_name), Some(template)) => {
-                    if self.read_only {
-                        self.error_message = Some("read-only mode — config-delete disabled".into());
-                        return;
-                    }
-                    let aws = self.aws.clone();
-                    let tx = self.msg_tx.clone();
-                    let gen = self.generation;
-                    let template = template.to_string();
-                    let app_name = app_name.to_string();
-                    self.status_message = Some(format!(
-                        "deleting template '{template}' from app '{app_name}'…"
-                    ));
-                    let template_for_msg = template.clone();
-                    let target = format!("{app_name}/{template}");
-                    write_audit_line(
-                        self.context.account_id.as_deref(),
-                        self.context.profile.as_deref(),
-                        &self.context.region,
-                        &format!("stage=dispatched action=ConfigDelete target={target}"),
-                    );
-                    self.push_pending(Action::ConfigDelete.label(), target.clone());
-                    tokio::spawn(async move {
-                        let result = aws
-                            .delete_config_template(&app_name, &template)
-                            .await
-                            .map_err(|e| flatten_err("delete_config_template", e))
-                            .map_err(|e| format!("config-delete '{template_for_msg}': {e}"));
-                        let _ = tx.send(AppMsg::ActionResult {
-                            gen,
-                            action: Action::ConfigDelete,
-                            env_name: target,
-                            result,
-                        });
-                    });
+                (Some(app_name), Some(_)) => {
+                    // Template names can contain spaces — join everything
+                    // after the app name so :config-delete app "Dev config
+                    // pre-redis" works as typed.
+                    let template = rest[1..].join(" ");
+                    self.spawn_config_delete_template(app_name.to_string(), template);
                 }
                 _ => {
                     self.error_message =
@@ -6292,46 +6394,19 @@ impl App {
             "config-apply" => match rest.first().copied() {
                 None => {
                     self.error_message = Some(
-                        "usage: :config-apply <template-name>  (applies to selected env)".into(),
+                        "usage: :config-apply <template-name>  (applies to selected env; template name may contain spaces)".into(),
                     );
                 }
-                Some(template) => {
-                    if self.read_only {
-                        self.error_message = Some("read-only mode — config-apply disabled".into());
-                        return;
-                    }
+                Some(_) => {
+                    // Join all rest tokens so multi-word template names work
+                    // as typed. The overlay's `a`/enter keys bypass this
+                    // parser and call spawn_config_apply_template directly.
+                    let template = rest.join(" ");
                     let Some(env) = self.selected_env().cloned() else {
                         self.error_message = Some("no environment selected".into());
                         return;
                     };
-                    let template = template.to_string();
-                    let aws = self.aws.clone();
-                    let tx = self.msg_tx.clone();
-                    let gen = self.generation;
-                    let env_name = env.name.clone();
-                    self.status_message =
-                        Some(format!("applying template '{template}' to {env_name}…"));
-                    write_audit_line(
-                        self.context.account_id.as_deref(),
-                        self.context.profile.as_deref(),
-                        &self.context.region,
-                        &format!(
-                            "stage=dispatched action=ConfigApply target={env_name} template={template}"
-                        ),
-                    );
-                    self.push_pending(Action::ConfigApply.label(), env_name.clone());
-                    tokio::spawn(async move {
-                        let result = aws
-                            .apply_config_template(&env_name, &template)
-                            .await
-                            .map_err(|e| flatten_err("apply_config_template", e));
-                        let _ = tx.send(AppMsg::ActionResult {
-                            gen,
-                            action: Action::ConfigApply,
-                            env_name,
-                            result,
-                        });
-                    });
+                    self.spawn_config_apply_template(env.name.clone(), template);
                 }
             },
             "deployment-policy" => match rest.first().copied() {
@@ -7042,45 +7117,23 @@ impl App {
                 }
             },
             "config-inspect" => {
-                // Single-arg `:config-inspect TEMPLATE` uses the selected env's
-                // application; two-arg `:config-inspect APP TEMPLATE` is for
-                // operators inspecting a template they're not currently sitting
-                // next to. Surfaces the option settings as a sorted text dump.
-                let (app_name, template) = match (rest.first().copied(), rest.get(1).copied()) {
-                    (Some(t), None) => {
-                        let Some(env) = self.selected_env().cloned() else {
-                            self.error_message =
-                                Some("usage: :config-inspect APP TEMPLATE  (no env selected to default APP from)".into());
-                            return;
-                        };
-                        (env.application, t.to_string())
-                    }
-                    (Some(a), Some(t)) => (a.to_string(), t.to_string()),
-                    _ => {
-                        self.error_message = Some(
-                            "usage: :config-inspect [APP] TEMPLATE  (APP defaults to selected env)"
-                                .into(),
-                        );
-                        return;
-                    }
+                // Single-arg form: `:config-inspect TEMPLATE` (template name
+                // may contain spaces). Uses the selected env's application.
+                // Two-arg form with whitespace is ambiguous with multi-word
+                // template names, so the overlay's `i` keybind is the right
+                // path for cross-app inspection.
+                if rest.is_empty() {
+                    self.error_message = Some(
+                        "usage: :config-inspect TEMPLATE  (uses selected env's app; use `i` in :saved-configs for cross-app inspect)".into(),
+                    );
+                    return;
+                }
+                let template = rest.join(" ");
+                let Some(env) = self.selected_env().cloned() else {
+                    self.error_message = Some("no environment selected".into());
+                    return;
                 };
-                let aws = self.aws.clone();
-                let tx = self.msg_tx.clone();
-                let gen = self.generation;
-                let title = format!("template — {app_name}/{template}");
-                self.status_message = Some(format!("fetching template {app_name}/{template}…"));
-                tokio::spawn(async move {
-                    let body = match aws.describe_template_settings(&app_name, &template).await {
-                        Ok(settings) if settings.is_empty() => {
-                            "(template has no option settings)".to_string()
-                        }
-                        Ok(settings) => format_template_settings(&settings),
-                        Err(e) => {
-                            format!("error: {}", flatten_err("describe_template_settings", e))
-                        }
-                    };
-                    let _ = tx.send(AppMsg::TextOverlay { gen, title, body });
-                });
+                self.spawn_config_inspect_template(env.application, template);
             }
             "minimap" => {
                 self.show_minimap = parse_toggle(rest.first().copied(), self.show_minimap);
@@ -7671,6 +7724,7 @@ impl App {
             AppMsg::AppVersions {
                 gen,
                 application,
+                deployed_label,
                 result,
             } => {
                 if gen != self.generation {
@@ -7682,17 +7736,9 @@ impl App {
                             Some(format!("no application versions for {application}"));
                     }
                     Ok(versions) => {
-                        let body = versions
-                            .iter()
-                            .take(20)
-                            .map(|v| format!("{} ({})", v.label, v.description))
-                            .collect::<Vec<_>>()
-                            .join("\n");
                         self.current_overlay = Some(Overlay::TextDump {
                             title: format!("application versions — {application}"),
-                            body: format!(
-                                "{body}\n\nUse `:deploy <label>` to ship one to the selected env."
-                            ),
+                            body: format_app_versions(&versions, deployed_label.as_deref(), 20),
                         });
                     }
                     Err(msg) => self.error_message = Some(msg),
@@ -8049,6 +8095,17 @@ impl App {
                             let tx = self.msg_tx.clone();
                             let gen = self.generation;
                             let app_name = application.clone();
+                            // Look up the env's currently-deployed version
+                            // to re-mark it after the refresh. Picks the
+                            // first env in this application — single-env
+                            // case is the norm; multi-env case is rare and
+                            // the marker is best-effort anyway.
+                            let deployed_label = self
+                                .environments
+                                .iter()
+                                .find(|e| e.application == application)
+                                .filter(|e| !e.version_label.is_empty())
+                                .map(|e| e.version_label.clone());
                             tokio::spawn(async move {
                                 let result = aws
                                     .list_application_versions(&app_name)
@@ -8057,6 +8114,7 @@ impl App {
                                 let _ = tx.send(AppMsg::AppVersions {
                                     gen,
                                     application: app_name,
+                                    deployed_label,
                                     result,
                                 });
                             });
@@ -8457,16 +8515,24 @@ impl App {
                 // during the refresh round-trip. Otherwise their action message
                 // (sort change, alias set, …) would get clobbered here.
                 if let Some((prev_status, prev_error)) = self.status_snapshot_at_refresh.take() {
-                    if self.status_message == prev_status {
+                    // Don't auto-clear user-pinned messages — those are
+                    // results the operator just asked for and would lose
+                    // every 15s otherwise.
+                    if !self.status_message_pinned && self.status_message == prev_status {
                         self.status_message = None;
                     }
                     if self.error_message == prev_error {
                         self.error_message = None;
                     }
-                } else {
+                } else if !self.status_message_pinned {
                     self.status_message = None;
                     self.error_message = None;
                 }
+                // Pin lasts one refresh cycle. After that the message
+                // survives in the slot but the next ephemeral write (e.g.
+                // a spawn helper's "fetching…") gets normal auto-clear
+                // semantics again.
+                self.status_message_pinned = false;
                 self.restore_or_clamp_selection();
             }
             Err(msg) => {
@@ -9294,6 +9360,53 @@ pub fn parse_named_arg<T: std::str::FromStr>(rest: &[&str], flag: &str) -> Optio
     rest.get(pos + 1).and_then(|v| v.parse().ok())
 }
 
+/// Render the `:versions` overlay body. Marks the currently-deployed
+/// version with `◀ deployed`; trims the redundant
+/// "Application version created from " prefix that every CI-pipeline
+/// description tends to carry; shows "showing N of M (newest first)"
+/// when the list was truncated. `limit` caps the visible rows.
+pub fn format_app_versions(
+    versions: &[crate::aws::AppVersion],
+    deployed_label: Option<&str>,
+    limit: usize,
+) -> String {
+    let mut out = String::new();
+    let total = versions.len();
+    let shown = total.min(limit);
+    if total > limit {
+        out.push_str(&format!(
+            "showing {shown} of {total} (newest first; deploy older with `:deploy LABEL`)\n\n",
+        ));
+    }
+    for v in versions.iter().take(limit) {
+        // Drop the standard EB CI-pipeline prefix. The rest (usually a
+        // pipeline URL) still distinguishes versions but consumes much less
+        // horizontal width.
+        let desc = v
+            .description
+            .strip_prefix("Application version created from ")
+            .unwrap_or(&v.description);
+        let marker = if deployed_label == Some(v.label.as_str()) {
+            "▶ "
+        } else {
+            "  "
+        };
+        let suffix = if deployed_label == Some(v.label.as_str()) {
+            "  ◀ deployed"
+        } else {
+            ""
+        };
+        if desc.is_empty() {
+            out.push_str(&format!("{marker}{}{}\n", v.label, suffix));
+        } else {
+            out.push_str(&format!("{marker}{}  {desc}{}\n", v.label, suffix));
+        }
+    }
+    out.push('\n');
+    out.push_str("Use `:deploy <label>` to ship one to the selected env.");
+    out
+}
+
 /// Map a friendly env-metric "kind" to a `(metric_name, default_op, default_stat)`
 /// triple. The user can override the operator on the CLI but the defaults
 /// reflect "what you'd reasonably alarm on for this metric" — e.g. drop in
@@ -9461,13 +9574,83 @@ fn format_alarms(result: Result<Vec<CwAlarm>, String>) -> String {
                     a.state, a.name, a.namespace, a.metric_name,
                 ));
                 if !a.state_reason.is_empty() {
-                    out.push_str(&format!("           ↳ {}\n", a.state_reason));
+                    // Pre-wrap the reason at a conservative column width
+                    // with a hanging indent so continuation lines stay
+                    // aligned. Avoids ratatui's auto-wrap dropping to
+                    // column 0 which looks broken.
+                    let lead = "           ↳ ";
+                    let cont = "             ";
+                    out.push_str(&wrap_with_hanging_indent(&a.state_reason, 100, lead, cont));
+                    out.push('\n');
                 }
                 out.push('\n');
             }
             out
         }
     }
+}
+
+/// Wrap `text` at `width` columns, prefixing the first line with `lead` and
+/// subsequent lines with `cont` so continuation visually flows under the
+/// leader (e.g. `"↳ "` followed by aligned continuation). Greedy
+/// word-wrap; falls back to hard-break inside a word that won't fit on its
+/// own line. Pure for testability.
+pub fn wrap_with_hanging_indent(text: &str, width: usize, lead: &str, cont: &str) -> String {
+    if text.is_empty() {
+        return lead.to_string();
+    }
+    let body_width = width.saturating_sub(lead.chars().count()).max(1);
+    let mut out = String::new();
+    let mut first = true;
+    let mut current = String::new();
+    let prefix = |first: bool| if first { lead } else { cont };
+    for word in text.split_whitespace() {
+        // If a single word is longer than the body width, hard-break it.
+        if word.chars().count() > body_width {
+            if !current.is_empty() {
+                out.push_str(prefix(first));
+                out.push_str(&current);
+                out.push('\n');
+                first = false;
+                current.clear();
+            }
+            let mut chars = word.chars();
+            loop {
+                let chunk: String = (&mut chars).take(body_width).collect();
+                if chunk.is_empty() {
+                    break;
+                }
+                out.push_str(prefix(first));
+                out.push_str(&chunk);
+                out.push('\n');
+                first = false;
+            }
+            continue;
+        }
+        let candidate_len = if current.is_empty() {
+            word.chars().count()
+        } else {
+            current.chars().count() + 1 + word.chars().count()
+        };
+        if candidate_len > body_width {
+            out.push_str(prefix(first));
+            out.push_str(&current);
+            out.push('\n');
+            first = false;
+            current.clear();
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+    }
+    if !current.is_empty() {
+        out.push_str(prefix(first));
+        out.push_str(&current);
+        out.push('\n');
+    }
+    out.pop(); // remove trailing newline (caller adds its own)
+    out
 }
 
 fn encode_view(app: &App) -> String {
@@ -10079,6 +10262,82 @@ mod tests {
             super::delta_toast_key("  ▲10 Green").as_deref(),
             Some("Green")
         );
+    }
+
+    #[test]
+    fn format_app_versions_marks_deployed_and_shows_total_when_truncated() {
+        use crate::aws::AppVersion;
+        let mk = |label: &str, desc: &str| AppVersion {
+            label: label.into(),
+            description: desc.into(),
+            created: None,
+        };
+        let versions: Vec<AppVersion> = (1..=30)
+            .map(|i| {
+                mk(
+                    &format!("build-{i}"),
+                    &format!(
+                        "Application version created from https://example.com/build/{i}"
+                    ),
+                )
+            })
+            .rev()
+            .collect();
+        // build-5 is outside the top 20 (which is build-30 down to build-11
+        // after the rev). Lets us check the truncation banner without the
+        // deployed marker showing up.
+        let out = super::format_app_versions(&versions, Some("build-5"), 20);
+        assert!(out.contains("showing 20 of 30"));
+        assert!(!out.contains("◀ deployed"));
+        // Description prefix stripped.
+        assert!(out.contains("https://example.com/build/"));
+        assert!(!out.contains("Application version created from "));
+    }
+
+    #[test]
+    fn format_app_versions_marks_deployed_when_present() {
+        use crate::aws::AppVersion;
+        let versions = vec![
+            AppVersion {
+                label: "build-3".into(),
+                description: String::new(),
+                created: None,
+            },
+            AppVersion {
+                label: "build-2".into(),
+                description: String::new(),
+                created: None,
+            },
+        ];
+        let out = super::format_app_versions(&versions, Some("build-2"), 20);
+        assert!(out.contains("◀ deployed"));
+        // No truncation banner when total <= limit.
+        assert!(!out.contains("showing "));
+    }
+
+    #[test]
+    fn wrap_with_hanging_indent_first_line_keeps_lead_marker() {
+        let out = super::wrap_with_hanging_indent(
+            "Threshold Crossed: alarm details continue",
+            30,
+            "  ↳ ",
+            "    ",
+        );
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(lines[0].starts_with("  ↳ "));
+        // Continuation line uses the cont prefix.
+        if lines.len() > 1 {
+            assert!(lines[1].starts_with("    "));
+        }
+    }
+
+    #[test]
+    fn wrap_with_hanging_indent_hard_breaks_oversize_words() {
+        // A single 50-char word at width 20 + 4-char lead → body width 16.
+        let big_word = "x".repeat(50);
+        let out = super::wrap_with_hanging_indent(&big_word, 20, "    ", "    ");
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(lines.len() >= 3);
     }
 
     #[test]
