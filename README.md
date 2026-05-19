@@ -21,11 +21,26 @@ Browse environments, drill into events / instances / metrics / queue / config, s
 
 ## Install
 
+**Homebrew (macOS / Linux):**
+
 ```bash
-cargo install --path .
+brew tap tombaldwin/tap
+brew install ebman
 ```
 
-Tested on Rust 1.91+. macOS and Linux. AWS SDK uses the standard credentials chain (`AWS_PROFILE` / `AWS_REGION` env, `~/.aws/credentials`, instance role, etc.). Pre-built tarballs are attached to each GitHub Release; a Homebrew formula stub lives in `Formula/ebman.rb`.
+**Pre-built binary:**
+
+Download the tarball for your platform from the [GitHub Releases page](https://github.com/tombaldwin/ebman/releases), verify the `*.sha256` next to it, extract, and put `ebman` on your `PATH`.
+
+**Cargo:**
+
+```bash
+cargo install --path .
+# or, once published to crates.io:
+cargo install ebman
+```
+
+Tested on Rust 1.91+. macOS (Apple Silicon + Intel) and Linux x86_64. AWS SDK uses the standard credentials chain (`AWS_PROFILE` / `AWS_REGION` env, `~/.aws/credentials`, instance role, etc.).
 
 ## Quickstart
 
@@ -274,7 +289,7 @@ Useful for integration tests, screenshot capture, scripted workflows.
 
 - **Cargo**: `cargo install --path .` (publish to crates.io is maintainer-driven).
 - **GitHub Releases**: tagging `v<X.Y.Z>` triggers `.github/workflows/release.yml`, which builds release binaries for `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`, and `x86_64-apple-darwin` and attaches tarballs + SHA-256 checksums to a draft release.
-- **Homebrew**: `Formula/ebman.rb` is a template; `sha256` fields need bumping per release.
+- **Homebrew**: tap lives at [`tombaldwin/homebrew-tap`](https://github.com/tombaldwin/homebrew-tap). Per-release: bump the version + 3 platform SHAs in `Formula/ebman.rb` in both this repo (for `brew install --formula PATH`) and the tap.
 
 ## Development
 
