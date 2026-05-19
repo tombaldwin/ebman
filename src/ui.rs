@@ -235,10 +235,142 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.mode == Mode::Palette {
         draw_palette(f, f.area(), app);
     }
+    if app.mode == Mode::Form {
+        draw_form(f, f.area(), app);
+    }
     // Toasts render last so they overlay everything else.
     if !app.toasts.is_empty() {
         draw_toasts(f, f.area(), app);
     }
+}
+
+fn draw_form(f: &mut Frame, area: Rect, app: &App) {
+    use crate::form::{FieldKind, FormState};
+    let Some(form) = app.form.as_ref() else {
+        return;
+    };
+    let popup = centered_rect(60, 70, area);
+    f.render_widget(Clear, popup);
+    let theme = &app.theme;
+    let outer = titled_block(theme, &form.title, true, theme.title_alt);
+    let inner = outer.inner(popup);
+    f.render_widget(outer, popup);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // env target banner
+            Constraint::Length(1), // separator
+            Constraint::Min(1),    // fields
+            Constraint::Length(1), // footer hint
+        ])
+        .split(inner);
+
+    let banner = format!(" target: {}", form.env_name);
+    f.render_widget(
+        Paragraph::new(Span::styled(banner, Style::default().fg(theme.muted))),
+        chunks[0],
+    );
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            "─".repeat(inner.width as usize),
+            Style::default().fg(theme.muted),
+        )),
+        chunks[1],
+    );
+
+    if form.state == FormState::Loading {
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                "  loading current values from AWS…",
+                Style::default().fg(theme.muted),
+            )),
+            chunks[2],
+        );
+    } else {
+        // Build the field rows. Each field takes 2-3 lines: label/value
+        // row, optional help, optional error.
+        let max_label = form
+            .fields
+            .iter()
+            .map(|fld| fld.label.chars().count())
+            .max()
+            .unwrap_or(0)
+            .clamp(8, 32);
+        let mut lines: Vec<Line> = Vec::new();
+        for (i, fld) in form.fields.iter().enumerate() {
+            let is_cursor = i == form.cursor;
+            let pointer = if is_cursor { "▶ " } else { "  " };
+            let label_style = if is_cursor {
+                Style::default()
+                    .fg(theme.title_alt)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.text)
+            };
+            let value_style = if is_cursor {
+                Style::default().fg(theme.text).bg(theme.row_selected_bg)
+            } else {
+                Style::default().fg(theme.text)
+            };
+            // Render the value per kind.
+            let value_text: String = match &fld.kind {
+                FieldKind::Text | FieldKind::Integer { .. } => {
+                    if is_cursor {
+                        format!("{}_", fld.value)
+                    } else {
+                        fld.value.clone()
+                    }
+                }
+                FieldKind::Boolean => {
+                    if fld.value == "true" {
+                        "[x] true".to_string()
+                    } else {
+                        "[ ] false".to_string()
+                    }
+                }
+                FieldKind::Select { options } => {
+                    // ◀ value ▶ when focused; just value otherwise.
+                    let _ = options; // currently unused; keeps the type
+                    if is_cursor {
+                        format!("◀ {} ▶", fld.value)
+                    } else {
+                        fld.value.clone()
+                    }
+                }
+            };
+            lines.push(Line::from(vec![
+                Span::styled(pointer.to_string(), Style::default().fg(theme.accent)),
+                Span::styled(
+                    format!("{:<width$}  ", fld.label, width = max_label),
+                    label_style,
+                ),
+                Span::styled(value_text, value_style),
+            ]));
+            if let Some(help) = &fld.help {
+                lines.push(Line::from(Span::styled(
+                    format!("     {help}"),
+                    Style::default().fg(theme.muted),
+                )));
+            }
+            if let Some(err) = &fld.error {
+                lines.push(Line::from(Span::styled(
+                    format!("     ⚠ {err}"),
+                    Style::default().fg(theme.health_red),
+                )));
+            }
+        }
+        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), chunks[2]);
+    }
+    let footer = match form.state {
+        FormState::Loading => " esc to cancel",
+        FormState::Submitting => " submitting…",
+        FormState::Ready => " tab/↓↑ field · type to edit · space toggle bool · ←→ cycle select · ^S submit · esc cancel",
+    };
+    f.render_widget(
+        Paragraph::new(Span::styled(footer, Style::default().fg(theme.muted))),
+        chunks[3],
+    );
 }
 
 fn draw_palette(f: &mut Frame, area: Rect, app: &App) {
@@ -1822,6 +1954,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
             // Keystrokes are forwarded to the subprocess; F12 detaches.
             " SHELL  keys → subprocess  ·  F12 detach back to ebman  ·  ^D / exit closes".into()
         }
+        Mode::Form => " FORM  tab/↓↑ field  type to edit  ^S submit  esc cancel".into(),
     };
     // No Wrap — the strip is intentionally compact; longer mode-specific
     // strips that exceed one row get a horizontal scroll bar visually

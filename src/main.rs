@@ -2,6 +2,7 @@ mod app;
 mod aws;
 mod config;
 mod control;
+mod form;
 mod keys;
 mod plugins;
 mod profiles;

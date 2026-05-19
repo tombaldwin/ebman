@@ -639,6 +639,39 @@ impl AwsClient {
     /// `DescribeConfigurationSettings` filtered to the
     /// `aws:elasticbeanstalk:application:environment` namespace. Returns
     /// sorted `(KEY, VALUE)` pairs.
+    /// Fetch every option setting for a live env. Used by the modal-form
+    /// pre-fill: callers filter the result down to the `(namespace, option_name)`
+    /// pairs their form cares about. Returns `(namespace, option_name, value)`
+    /// triples.
+    pub async fn fetch_env_option_settings(
+        &self,
+        application_name: &str,
+        env_name: &str,
+    ) -> Result<Vec<(String, String, String)>> {
+        let resp = self
+            .client
+            .describe_configuration_settings()
+            .application_name(application_name)
+            .environment_name(env_name)
+            .send()
+            .await
+            .map_err(|e| eyre!("DescribeConfigurationSettings(env) failed: {e}"))?;
+        let out = resp
+            .configuration_settings
+            .unwrap_or_default()
+            .into_iter()
+            .flat_map(|c| c.option_settings.unwrap_or_default())
+            .map(|o| {
+                (
+                    o.namespace.unwrap_or_default(),
+                    o.option_name.unwrap_or_default(),
+                    o.value.unwrap_or_default(),
+                )
+            })
+            .collect();
+        Ok(out)
+    }
+
     pub async fn fetch_env_vars(
         &self,
         application_name: &str,
