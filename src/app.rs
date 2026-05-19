@@ -126,6 +126,7 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "org-health",
     "custom-platforms",
     "platforms",
+    "update",
 ];
 
 /// Which on-screen panel is "focused" — i.e. which one j/k/Enter target. The
@@ -5868,6 +5869,32 @@ impl App {
                 None => self.error_message = Some("usage: :alias-drop <env-name>".into()),
             },
             "whatsnew" => self.open_whatsnew(),
+            "update" => {
+                // Surface the upgrade command for whichever install channel
+                // looks live. Doesn't actually upgrade — operators on
+                // AWS-touching tools prefer conscious upgrades, and
+                // self-replacing the binary across Cellar / cargo-bin /
+                // tarball layouts has too many platform footguns.
+                let channel = crate::update_check::detect_install_channel();
+                let cmd = channel.upgrade_command();
+                let current = env!("CARGO_PKG_VERSION");
+                let msg = match self.update_available.as_ref() {
+                    Some(release) => format!(
+                        "update available: {current} → {}.  run: {cmd}",
+                        release.version
+                    ),
+                    None => {
+                        format!("already on the latest ({current}).  to force-reinstall: {cmd}")
+                    }
+                };
+                // Best-effort yank to the clipboard so the operator can
+                // paste the upgrade command directly. Silent if the
+                // clipboard isn't reachable.
+                if let Ok(mut cb) = arboard::Clipboard::new() {
+                    let _ = cb.set_text(cmd.to_string());
+                }
+                self.pin_status(msg);
+            }
             "history" => {
                 self.current_overlay = Some(Overlay::History(self.format_message_log()));
             }
@@ -9089,6 +9116,7 @@ fn build_palette_items(app: &App) -> Vec<PaletteItem> {
         ("report", "yank filtered view as Markdown"),
         ("history", "recent status / error messages"),
         ("whatsnew", "embedded changelog"),
+        ("update", "show upgrade command (copies to clipboard)"),
         ("alarms", "CloudWatch alarms for selected env"),
         ("saved-configs", "EB saved configuration templates"),
         ("plugins", "list user plugin commands"),
