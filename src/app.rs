@@ -3858,7 +3858,10 @@ impl App {
         };
         match flow {
             ActionFlow::Menu { list_state } => match key.code {
-                KeyCode::Esc => self.close_action_flow(),
+                // Menu has j/k cursor + Enter to pick — no text input, so
+                // `q` as close is unambiguous and matches every other
+                // overlay's pattern.
+                KeyCode::Esc | KeyCode::Char('q') => self.close_action_flow(),
                 KeyCode::Char('j') | KeyCode::Down => {
                     let cur = list_state.selected().unwrap_or(0);
                     let next = (cur + 1) % ACTIONS.len();
@@ -3940,6 +3943,10 @@ impl App {
             },
             ActionFlow::Confirm(modal) => match (key.code, modal.kind) {
                 (KeyCode::Esc, _) => self.close_action_flow(),
+                // `q` cancels Y/N confirms (n / esc are the others). TypeName
+                // confirms intentionally don't bind q since the user is
+                // typing the env name and `q` might be part of it.
+                (KeyCode::Char('q'), ConfirmKind::YesNo) => self.close_action_flow(),
                 (KeyCode::Char('y'), ConfirmKind::YesNo) | (KeyCode::Enter, ConfirmKind::YesNo) => {
                     let m = modal.clone();
                     self.action_flow = Some(ActionFlow::Running {
