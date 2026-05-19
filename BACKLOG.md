@@ -222,6 +222,13 @@ Living list of done / pending / dropped work. New entries get added at the botto
 - **`ebman action <rebuild|restart|terminate> --env NAME [--yes]`** dispatches an action without entering the TUI. Terminate requires `--yes`.
 - `--help` updated to document subcommands; `--version`, `-h`, `-V`, `--read-only` flags continue to work.
 
+### UX punch list batch B (2026-05-19)
+- **`Overlay::SavedConfigs(String)`-as-generic-text-dump refactor** — new `Overlay::TextDump { title, body }` variant and matching `AppMsg::TextOverlay { gen, title, body }` (renamed from the misleading `CrossAccountSearch`). Every callsite passes its own title; `:pending`, `:resources`, `:find-env`, `:org-health`, `:upgrade`, `:custom-platforms`, `:versions` all surface accurate block titles instead of "saved configurations".
+- **`:help` now opens the context-scoped help** — Command-mode `:help` infers `help_topic` from app state (Detail view live → Detail; action flow open → Action; DLQ open → Dlq; SavedConfigs overlay open → SavedConfigs; otherwise Global). Matches the `?` keybinding's behaviour so the two routes don't disagree.
+- **`:tag` usage error documents the value-joining convention** — "value tokens joined with single spaces; no shell quoting — use a separate call to set values with literal multi-spaces". Tag editing without surprise.
+- **`:delete-version` invalidates the `:versions` overlay** — on a successful delete the handler checks whether the current overlay is the matching `application versions — {app}` text dump and re-fetches if so. No more stale entries after a destructive op.
+- **Interactive saved-configs overlay groups by application** — rows render under bold app-name headers instead of a flat `app/template` list. Cursor still indexes items, not headers.
+
 ### UX punch list batch A (2026-05-19)
 Items from the drive-the-app review, shipped together because they share state. Tests added: `action_labels_are_distinct_and_non_empty`, `visible_window_anchors_to_top_when_items_fit`, `visible_window_slides_to_keep_cursor_visible`, `visible_window_handles_empty_and_zero_budget`.
 - **Audit log + toast labelling fixed for `:config-*` and `terminate-instance`** — new `Action::ConfigSave / ConfigDelete / ConfigApply / TerminateInstance` variants with proper labels. Replaces the `Action::Rebuild`-as-placeholder reuse; audit entries now record the real action name. Added `stage=dispatched` audit lines for all three config-* commands (previously only stage=completed was written).
@@ -297,18 +304,11 @@ The three things still keeping users in the AWS console day-to-day. Highest-leve
 
 Findings from walking through the surface as a daily operator. Ranked by likelihood of biting a real user. Cross-referenced with file:line so the next session can pick targets without re-discovering them.
 
-**High — real bugs / accidental destruction risk**
-- [ ] **`:pending` / `:resources` / `:find-env` overlays show title "saved configurations — esc / q to close"** — they reuse `Overlay::SavedConfigs(String)` as a generic text-dump escape hatch and inherit the wrong block title. Rename the variant to `Overlay::TextDump { title, body }` and pass the title at the call site. `src/ui.rs:446`, `src/app.rs:~5031, ~5072, ~5826`.
-
 **Medium — discoverability / consistency**
 - [ ] **`status_message` overwrites on rapid dispatch** — back-to-back `:tag` / `:delete-version` calls each clobber the previous footer message. Pending panel + toasts cover the gap now that those ops are tracked, but the footer-strip is still misleading mid-flight when N>1 ops are racing. Either drop status_message in favour of the pending chip + toasts, or queue messages and cycle them every ~1s. `src/app.rs` (multiple spawn helpers).
-- [ ] **`:help` from the command bar always opens *global* help even if the user is paused mid-Detail/Action/DLQ** — `?` already opens the contextual one (and now returns to the original screen via `pre_help_mode`); `:help` does not consult `app.mode` at all. Cheap fix: in the `"help"` arm of `execute_command`, set `help_topic` from the current mode just like the `?` keybindings do. `src/app.rs:execute_command "help" case`.
 
 **Low — polish**
-- [ ] **`:tag` joins value tokens with single space, silently** — no way to encode literal multi-space values; the convention isn't surfaced anywhere a user would see. Either document it in the usage error string, or add a quoted-string parser (`:tag KEY "foo  bar"`).
 - [ ] **Powerline tab-icon glyphs (U+F048B …) are plane-1 codepoints** — Nerd-Font terminals render them width-1; some terminals or fallback fonts may render width-0 (no advance, overlap) or width-2 (double-width, misalignment). Tab strip will misalign silently. Add a startup probe (cell-width sanity check) or a config-time warning encouraging the user to verify in their terminal. `src/ui.rs:tab_icon`.
-- [ ] **`:delete-version` doesn't invalidate `:versions` overlay** — if the user has `:versions` open and deletes one, the overlay still lists the deleted entry until the next overlay reopen. Either invalidate-and-refresh `:versions` on `AppMsg::DeleteAppVersion` success, or note "(stale — re-open to refresh)" in the footer when an op has fired since the overlay opened. `src/app.rs:AppMsg::DeleteAppVersion handler`.
-- [ ] **Interactive saved-configs overlay omits per-app grouping** — items are flat "app  /  template" rows. With many apps the user can't quickly group by "what's in app X". Add app-name headers (like the old text-dump had) or a `Tab` keybinding to collapse/expand by app. `src/ui.rs:draw_saved_configs_interactive`.
 
 ### Tier 0 — distribution & hygiene
 - [ ] **README screenshots / demo gif** — text README shipped; capturing screenshots requires running the TUI in a real terminal (not this shell).
