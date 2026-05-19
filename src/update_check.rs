@@ -85,9 +85,65 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
     false
 }
 
+/// Channel the running binary was installed through, inferred from its path
+/// on disk. The notice in the header always says "an upgrade exists"; this
+/// is how we tell the operator *what to run* to apply it. None of the
+/// patterns are bulletproof — we lean on the most-common defaults and fall
+/// back to a "download from releases page" hint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstallChannel {
+    /// `/<prefix>/Cellar/ebman/<ver>/bin/ebman` — Homebrew. `brew upgrade ebman`.
+    Homebrew,
+    /// `~/.cargo/bin/ebman` — `cargo install ebman`.
+    Cargo,
+    /// Anywhere else (downloaded tarball on $PATH, `cargo install --path .`
+    /// from a checkout, custom layout). Suggest the GH releases page.
+    Standalone,
+}
+
+impl InstallChannel {
+    /// Classify a binary path. Pure for testability.
+    pub fn from_path(path: &std::path::Path) -> Self {
+        let s = path.to_string_lossy();
+        if s.contains("/Cellar/ebman/") {
+            return InstallChannel::Homebrew;
+        }
+        // Cargo's default install dir is $CARGO_HOME/bin (often ~/.cargo/bin).
+        // Look for the `.cargo/bin/` segment — covers default + custom
+        // $CARGO_HOME layouts.
+        if s.contains("/.cargo/bin/") || s.contains("/cargo/bin/") {
+            return InstallChannel::Cargo;
+        }
+        InstallChannel::Standalone
+    }
+
+    /// Shell command that upgrades the binary in-place for this channel.
+    /// Returned as a single-line string suitable for the operator to copy.
+    pub fn upgrade_command(self) -> &'static str {
+        match self {
+            InstallChannel::Homebrew => "brew upgrade ebman",
+            InstallChannel::Cargo => "cargo install ebman --force",
+            // Tarball install — no in-place upgrade; point at the latest
+            // release page. Operator downloads + verifies + replaces.
+            InstallChannel::Standalone => {
+                "download the latest binary from https://github.com/tombaldwin/ebman/releases/latest"
+            }
+        }
+    }
+}
+
+/// Detect the running binary's install channel. Best-effort; returns
+/// `Standalone` if we can't read our own path.
+pub fn detect_install_channel() -> InstallChannel {
+    std::env::current_exe()
+        .map(|p| InstallChannel::from_path(&p))
+        .unwrap_or(InstallChannel::Standalone)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{extract_max_stable_version, is_newer};
+    use super::{extract_max_stable_version, is_newer, InstallChannel};
+    use std::path::Path;
 
     #[test]
     fn is_newer_compares_dotted_semver() {
@@ -114,5 +170,43 @@ mod tests {
     #[test]
     fn extract_max_stable_version_missing_returns_none() {
         assert!(extract_max_stable_version(r#"{"foo":"bar"}"#).is_none());
+    }
+
+    #[test]
+    fn install_channel_detects_homebrew_cellar() {
+        let p = Path::new("/opt/homebrew/Cellar/ebman/0.1.1/bin/ebman");
+        assert_eq!(InstallChannel::from_path(p), InstallChannel::Homebrew);
+        let p = Path::new("/usr/local/Cellar/ebman/0.1.1/bin/ebman");
+        assert_eq!(InstallChannel::from_path(p), InstallChannel::Homebrew);
+    }
+
+    #[test]
+    fn install_channel_detects_cargo_bin() {
+        let p = Path::new("/Users/tom/.cargo/bin/ebman");
+        assert_eq!(InstallChannel::from_path(p), InstallChannel::Cargo);
+        // Alternative CARGO_HOME outside the home dir.
+        let p = Path::new("/var/lib/cargo/bin/ebman");
+        assert_eq!(InstallChannel::from_path(p), InstallChannel::Cargo);
+    }
+
+    #[test]
+    fn install_channel_falls_back_to_standalone() {
+        let p = Path::new("/usr/local/bin/ebman");
+        assert_eq!(InstallChannel::from_path(p), InstallChannel::Standalone);
+        let p = Path::new("/home/tom/Downloads/ebman");
+        assert_eq!(InstallChannel::from_path(p), InstallChannel::Standalone);
+    }
+
+    #[test]
+    fn upgrade_command_is_concrete_per_channel() {
+        assert!(InstallChannel::Homebrew
+            .upgrade_command()
+            .contains("brew upgrade"));
+        assert!(InstallChannel::Cargo
+            .upgrade_command()
+            .contains("cargo install"));
+        assert!(InstallChannel::Standalone
+            .upgrade_command()
+            .contains("releases/latest"));
     }
 }

@@ -981,7 +981,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     if let Some(release) = app.update_available.as_ref() {
         line2.push(sep(theme));
         line2.push(pill(
-            &format!("UPDATE {}", release.version),
+            &format!("UPDATE {} (:update)", release.version),
             Color::Black,
             theme.title_alt,
         ));
