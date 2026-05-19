@@ -87,6 +87,8 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "notify",
     "managed-window",
     "env",
+    "instance-type",
+    "custom-platform-delete",
     "versions",
     "deploy",
     "upgrade",
@@ -5630,6 +5632,77 @@ impl App {
                     });
                 }
             },
+            "instance-type" => match rest.first().copied() {
+                None => {
+                    self.error_message = Some(
+                        "usage: :instance-type TYPE  (e.g. t3.medium; triggers rolling launch-config replacement)".into(),
+                    );
+                }
+                Some(t) => {
+                    let ns = "aws:autoscaling:launchconfiguration";
+                    self.spawn_option_settings_update(
+                        format!("instance-type {t}"),
+                        vec![(ns.into(), "InstanceType".into(), t.to_string())],
+                        vec![],
+                    );
+                }
+            },
+            "custom-platform-delete" => match rest.first().copied() {
+                None => {
+                    self.error_message = Some(
+                        "usage: :custom-platform-delete <platform-arn>  (fails if any env still uses it)".into(),
+                    );
+                }
+                Some(arn) => {
+                    if self.read_only {
+                        self.error_message =
+                            Some("read-only mode — custom-platform-delete disabled".into());
+                        return;
+                    }
+                    let arn = arn.to_string();
+                    write_audit_line(
+                        self.context.account_id.as_deref(),
+                        self.context.profile.as_deref(),
+                        &self.context.region,
+                        &format!("stage=dispatched action=DeleteCustomPlatform target={arn}"),
+                    );
+                    self.push_pending("Delete custom platform", arn.clone());
+                    self.status_message = Some(format!("deleting custom platform {arn}…"));
+                    let aws = self.aws.clone();
+                    let tx = self.msg_tx.clone();
+                    let gen = self.generation;
+                    let arn_for_msg = arn.clone();
+                    let account = self.context.account_id.clone();
+                    let profile = self.context.profile.clone();
+                    let region = self.context.region.clone();
+                    tokio::spawn(async move {
+                        let result = aws
+                            .delete_custom_platform(&arn_for_msg)
+                            .await
+                            .map_err(|e| flatten_err("delete_custom_platform", e));
+                        let outcome = match &result {
+                            Ok(()) => format!(
+                                "stage=completed action=DeleteCustomPlatform target={arn_for_msg} ok"
+                            ),
+                            Err(e) => format!(
+                                "stage=completed action=DeleteCustomPlatform target={arn_for_msg} err=\"{}\"",
+                                e.replace('"', "'")
+                            ),
+                        };
+                        write_audit_line(account.as_deref(), profile.as_deref(), &region, &outcome);
+                        // Reuse OptionSettingsUpdate's plumbing so the pending
+                        // row is closed and a toast fires — the variant's
+                        // shape (env_name + summary) maps cleanly to
+                        // (target_arn + summary).
+                        let _ = tx.send(AppMsg::OptionSettingsUpdate {
+                            gen,
+                            env_name: arn_for_msg,
+                            summary: "Delete custom platform".into(),
+                            result,
+                        });
+                    });
+                }
+            },
             "env" => {
                 // `:env list` dumps current env vars; `:env set KEY VAL...`
                 // upserts a single var (VAL tokens joined with single spaces,
@@ -7750,6 +7823,11 @@ fn build_palette_items(app: &App) -> Vec<PaletteItem> {
             "env ",
             "env vars: list | set KEY VAL | unset KEY (triggers restart)",
         ),
+        (
+            "instance-type ",
+            "set EC2 instance type for the env's ASG (e.g. t3.medium)",
+        ),
+        ("custom-platform-delete ", "delete a custom platform by ARN"),
     ];
     for (prefix, desc) in prefill_cmds {
         out.push(PaletteItem {

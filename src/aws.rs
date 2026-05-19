@@ -1147,6 +1147,19 @@ impl AwsClient {
         Ok(out)
     }
 
+    /// Delete a custom platform by ARN. EB returns success immediately even
+    /// though the underlying AMI / EBS cleanup runs async. Will fail if any
+    /// envs are still using the platform.
+    pub async fn delete_custom_platform(&self, platform_arn: &str) -> Result<()> {
+        self.client
+            .delete_platform_version()
+            .platform_arn(platform_arn)
+            .send()
+            .await
+            .map_err(|e| eyre!("DeletePlatformVersion failed: {e}"))?;
+        Ok(())
+    }
+
     /// List application versions for `application_name`, sorted newest-first
     /// by `date_created`. Each entry carries the version label and the
     /// optional description text shown in the EB console.
