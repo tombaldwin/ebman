@@ -551,6 +551,120 @@ impl AwsClient {
         Ok(out)
     }
 
+    /// Create or update a CloudWatch metric alarm in the
+    /// `AWS/ElasticBeanstalk` namespace, dimensioned by `EnvironmentName`.
+    /// `metric_name` should be one of the env-scoped metrics already in our
+    /// Metrics tab (EnvironmentHealth / ApplicationRequests4xx /
+    /// ApplicationRequests5xx / ApplicationLatencyP90) — anything else and
+    /// the alarm will be created with no datapoints. No alarm actions are
+    /// attached; operators can wire SNS via the console or CLI later.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn put_env_metric_alarm(
+        &self,
+        alarm_name: &str,
+        env_name: &str,
+        metric_name: &str,
+        threshold: f64,
+        comparison_operator: &str,
+        period_secs: i32,
+        evaluation_periods: i32,
+        statistic: &str,
+    ) -> Result<()> {
+        use aws_sdk_cloudwatch::types::{ComparisonOperator, Dimension, Statistic};
+        // The smithy enums round-trip "unknown" inputs through their Unknown
+        // variant; checking `as_str()` against the original input is the
+        // documented way to detect that case without matching on the
+        // deprecated variant.
+        let op = ComparisonOperator::from(comparison_operator);
+        if op.as_str() != comparison_operator {
+            return Err(eyre!(
+                "unknown comparison operator '{comparison_operator}' \
+                 (valid: GreaterThanThreshold, GreaterThanOrEqualToThreshold, \
+                 LessThanThreshold, LessThanOrEqualToThreshold)"
+            ));
+        }
+        let stat = Statistic::from(statistic);
+        if stat.as_str() != statistic {
+            return Err(eyre!(
+                "unknown statistic '{statistic}' (valid: Average, Sum, Maximum, Minimum, SampleCount)"
+            ));
+        }
+        let dim = Dimension::builder()
+            .name("EnvironmentName")
+            .value(env_name)
+            .build();
+        self.cw
+            .put_metric_alarm()
+            .alarm_name(alarm_name)
+            .alarm_description(format!("ebman: {metric_name} alarm on {env_name}"))
+            .namespace("AWS/ElasticBeanstalk")
+            .metric_name(metric_name)
+            .dimensions(dim)
+            .comparison_operator(op)
+            .threshold(threshold)
+            .period(period_secs)
+            .evaluation_periods(evaluation_periods)
+            .statistic(stat)
+            .treat_missing_data("notBreaching")
+            .send()
+            .await
+            .map_err(|e| eyre!("PutMetricAlarm failed: {e}"))?;
+        Ok(())
+    }
+
+    /// Update an env's option settings — `to_set` is `(namespace, option_name,
+    /// value)` triples to add or overwrite; `to_remove` is `(namespace,
+    /// option_name)` pairs to clear back to defaults. EB applies the change
+    /// as a rolling update (or instantly for non-disruptive options).
+    pub async fn update_env_option_settings(
+        &self,
+        env_name: &str,
+        to_set: &[(String, String, String)],
+        to_remove: &[(String, String)],
+    ) -> Result<()> {
+        use aws_sdk_elasticbeanstalk::types::{ConfigurationOptionSetting, OptionSpecification};
+        if to_set.is_empty() && to_remove.is_empty() {
+            return Err(eyre!("update_env_option_settings: nothing to do"));
+        }
+        let mut req = self.client.update_environment().environment_name(env_name);
+        for (ns, name, value) in to_set {
+            req = req.option_settings(
+                ConfigurationOptionSetting::builder()
+                    .namespace(ns)
+                    .option_name(name)
+                    .value(value)
+                    .build(),
+            );
+        }
+        for (ns, name) in to_remove {
+            req = req.options_to_remove(
+                OptionSpecification::builder()
+                    .namespace(ns)
+                    .option_name(name)
+                    .build(),
+            );
+        }
+        req.send()
+            .await
+            .map_err(|e| eyre!("UpdateEnvironment(option_settings) failed: {e}"))?;
+        Ok(())
+    }
+
+    /// Delete one or more CloudWatch alarms by name.
+    pub async fn delete_alarms(&self, names: &[String]) -> Result<()> {
+        if names.is_empty() {
+            return Ok(());
+        }
+        let mut req = self.cw.delete_alarms();
+        for n in names {
+            req = req.alarm_names(n);
+        }
+        req.send()
+            .await
+            .map_err(|e| eyre!("DeleteAlarms failed: {e}"))?;
+        Ok(())
+    }
+
     /// Pull a handful of useful EB metrics for one env, from CloudWatch.
     /// Returns an empty Vec for queries the API filtered out.
     pub async fn fetch_env_metrics(
@@ -1061,6 +1175,42 @@ impl AwsClient {
             .await
             .map_err(|e| eyre!("UpdateEnvironment(version_label) failed: {e}"))?;
         Ok(())
+    }
+
+    /// Fetch the option settings stored in a saved configuration template.
+    /// Returns a sorted `(namespace, option_name, value)` vector — sort makes
+    /// the overlay output stable and diffable across runs. Empty values are
+    /// preserved (operators sometimes care that a setting is explicitly
+    /// empty vs. unset; the call only returns settings the template actually
+    /// defines, so "missing" already means "use platform default").
+    pub async fn describe_template_settings(
+        &self,
+        application_name: &str,
+        template_name: &str,
+    ) -> Result<Vec<(String, String, String)>> {
+        let resp = self
+            .client
+            .describe_configuration_settings()
+            .application_name(application_name)
+            .template_name(template_name)
+            .send()
+            .await
+            .map_err(|e| eyre!("DescribeConfigurationSettings(template) failed: {e}"))?;
+        let mut out: Vec<(String, String, String)> = resp
+            .configuration_settings
+            .unwrap_or_default()
+            .into_iter()
+            .flat_map(|c| c.option_settings.unwrap_or_default())
+            .map(|o| {
+                (
+                    o.namespace.unwrap_or_default(),
+                    o.option_name.unwrap_or_default(),
+                    o.value.unwrap_or_default(),
+                )
+            })
+            .collect();
+        out.sort();
+        Ok(out)
     }
 
     /// Apply a saved configuration template to an existing env via

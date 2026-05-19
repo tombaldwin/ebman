@@ -80,6 +80,12 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "config-save",
     "config-delete",
     "config-apply",
+    "config-inspect",
+    "alarm-create",
+    "alarm-delete",
+    "logs-stream",
+    "notify",
+    "managed-window",
     "versions",
     "deploy",
     "upgrade",
@@ -1054,6 +1060,26 @@ enum AppMsg {
         gen: u64,
         env_name: String,
         summary: String,
+        result: Result<(), String>,
+    },
+    /// Result of an `UpdateEnvironment(option_settings)` call from any of
+    /// the small option-settings commands (`:logs-stream`, `:notify`,
+    /// `:managed-window`). `summary` is the same human-readable label that
+    /// went into the pending panel so `complete_pending` can match.
+    OptionSettingsUpdate {
+        gen: u64,
+        env_name: String,
+        summary: String,
+        result: Result<(), String>,
+    },
+    /// Result of a CloudWatch alarm create / delete via `:alarm-create` /
+    /// `:alarm-delete`. `verb` is "create" or "delete" so the toast can use
+    /// the correct tense.
+    AlarmOp {
+        gen: u64,
+        verb: &'static str,
+        alarm_name: String,
+        env_name: String,
         result: Result<(), String>,
     },
     /// Result of a `DeleteApplicationVersion` call from `:delete-version`.
@@ -3848,6 +3874,74 @@ impl App {
         }
     }
 
+    /// Dispatch an `UpdateEnvironment(option_settings)` call. Used by the
+    /// three "tweak one or two settings" commands (`:logs-stream`, `:notify`,
+    /// `:managed-window`); each pushes its own pending row + audit entry
+    /// then funnels through here. `summary` is the human-readable label
+    /// that ends up in the toast and the pending panel.
+    fn spawn_option_settings_update(
+        &mut self,
+        summary: String,
+        to_set: Vec<(String, String, String)>,
+        to_remove: Vec<(String, String)>,
+    ) {
+        if self.read_only {
+            self.error_message = Some(format!("read-only mode — {summary} disabled"));
+            return;
+        }
+        let Some(env) = self.selected_env().cloned() else {
+            self.error_message = Some("no environment selected".into());
+            return;
+        };
+        if to_set.is_empty() && to_remove.is_empty() {
+            self.error_message = Some(format!(
+                "{summary}: nothing to do (no options to set or remove)"
+            ));
+            return;
+        }
+        let env_name = env.name.clone();
+        write_audit_line(
+            self.context.account_id.as_deref(),
+            self.context.profile.as_deref(),
+            &self.context.region,
+            &format!(
+                "stage=dispatched action=UpdateOptionSettings target={env_name} summary=\"{summary}\""
+            ),
+        );
+        self.push_pending(summary.clone(), env_name.clone());
+        self.status_message = Some(format!("{summary} → {env_name}…"));
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let env_for_msg = env_name.clone();
+        let summary_for_msg = summary.clone();
+        let account = self.context.account_id.clone();
+        let profile = self.context.profile.clone();
+        let region = self.context.region.clone();
+        tokio::spawn(async move {
+            let result = aws
+                .update_env_option_settings(&env_for_msg, &to_set, &to_remove)
+                .await
+                .map_err(|e| flatten_err("update_env_option_settings", e));
+            let outcome = match &result {
+                Ok(()) => format!(
+                    "stage=completed action=UpdateOptionSettings target={env_for_msg} summary=\"{summary_for_msg}\" ok"
+                ),
+                Err(e) => format!(
+                    "stage=completed action=UpdateOptionSettings target={env_for_msg} summary=\"{summary_for_msg}\" err=\"{}\"",
+                    e.replace('"', "'")
+                ),
+            };
+            write_audit_line(account.as_deref(), profile.as_deref(), &region, &outcome);
+            let _ = tx.send(AppMsg::OptionSettingsUpdate {
+                gen,
+                env_name: env_for_msg,
+                summary: summary_for_msg,
+                result,
+            });
+        });
+    }
+
     /// Dispatch a `DeleteApplicationVersion` for the selected env's app.
     /// `force` also requests `DeleteSourceBundle=true` so the underlying
     /// `.zip` is removed from the env's storage bucket.
@@ -4009,6 +4103,16 @@ impl App {
                 self.current_overlay = None;
                 self.command_input = "config-save ".into();
                 self.mode = Mode::Command;
+            }
+            KeyCode::Char('i') => {
+                // Inspect: close the interactive overlay and dispatch
+                // :config-inspect, which renders the template's option
+                // settings as a TextDump. The overlay is closed because the
+                // TextDump replaces it; user re-opens with :saved-configs.
+                if let Some((app_name, template)) = selected {
+                    self.current_overlay = None;
+                    self.execute_command(&format!("config-inspect {app_name} {template}"));
+                }
             }
             KeyCode::Char('?') => {
                 self.pre_help_overlay = self.current_overlay.take();
@@ -5525,6 +5629,318 @@ impl App {
                     });
                 }
             },
+            "logs-stream" => {
+                // `:logs-stream on [--retention N]` enables CW Logs streaming
+                // for the env's platform/app logs; `:logs-stream off` clears
+                // the StreamLogs setting (DeleteOnTerminate + RetentionInDays
+                // come along for the ride so the operator gets predictable
+                // behaviour either way).
+                let on = match rest.first().copied() {
+                    Some("on") | Some("true") | Some("enable") => true,
+                    Some("off") | Some("false") | Some("disable") => false,
+                    _ => {
+                        self.error_message = Some(
+                            "usage: :logs-stream on|off [--retention DAYS]  (defaults: retention=7 days, delete-on-terminate=false)".into(),
+                        );
+                        return;
+                    }
+                };
+                if on {
+                    let retention = parse_named_arg::<i32>(&rest, "--retention").unwrap_or(7);
+                    let ns = "aws:elasticbeanstalk:cloudwatch:logs";
+                    self.spawn_option_settings_update(
+                        format!("logs-stream on (retention={retention}d)"),
+                        vec![
+                            (ns.into(), "StreamLogs".into(), "true".into()),
+                            (ns.into(), "DeleteOnTerminate".into(), "false".into()),
+                            (ns.into(), "RetentionInDays".into(), retention.to_string()),
+                        ],
+                        vec![],
+                    );
+                } else {
+                    let ns = "aws:elasticbeanstalk:cloudwatch:logs";
+                    self.spawn_option_settings_update(
+                        "logs-stream off".into(),
+                        vec![(ns.into(), "StreamLogs".into(), "false".into())],
+                        vec![],
+                    );
+                }
+            }
+            "notify" => match rest.first().copied() {
+                None => {
+                    self.error_message = Some(
+                        "usage: :notify EMAIL_OR_SNS_ARN | off  (EB creates a topic for emails; ARN attaches an existing topic)".into(),
+                    );
+                }
+                Some("off") => {
+                    let ns = "aws:elasticbeanstalk:sns:topics";
+                    self.spawn_option_settings_update(
+                        "notify off".into(),
+                        vec![],
+                        vec![(ns.into(), "Notification Endpoint".into())],
+                    );
+                }
+                Some(endpoint) => {
+                    let ns = "aws:elasticbeanstalk:sns:topics";
+                    self.spawn_option_settings_update(
+                        format!("notify {endpoint}"),
+                        vec![(
+                            ns.into(),
+                            "Notification Endpoint".into(),
+                            endpoint.to_string(),
+                        )],
+                        vec![],
+                    );
+                }
+            },
+            "managed-window" => {
+                // `:managed-window DAY HOUR` (e.g. Sun 04) or `:managed-window off`.
+                // EB uses cron-like `Mon:14:00` syntax for PreferredStartTime.
+                match (rest.first().copied(), rest.get(1).copied()) {
+                    (Some("off"), _) => {
+                        let ns = "aws:elasticbeanstalk:managedactions";
+                        self.spawn_option_settings_update(
+                            "managed-window off".into(),
+                            vec![(ns.into(), "ManagedActionsEnabled".into(), "false".into())],
+                            vec![],
+                        );
+                    }
+                    (Some(day), Some(hour)) => {
+                        let canonical_day = match day.to_lowercase().as_str() {
+                            "mon" | "monday" => "Mon",
+                            "tue" | "tuesday" => "Tue",
+                            "wed" | "wednesday" => "Wed",
+                            "thu" | "thursday" => "Thu",
+                            "fri" | "friday" => "Fri",
+                            "sat" | "saturday" => "Sat",
+                            "sun" | "sunday" => "Sun",
+                            _ => {
+                                self.error_message = Some(format!(
+                                    "unknown day '{day}'  (use Mon/Tue/Wed/Thu/Fri/Sat/Sun)"
+                                ));
+                                return;
+                            }
+                        };
+                        let Ok(hour_n) = hour.parse::<u8>() else {
+                            self.error_message = Some(format!("hour '{hour}' is not 0-23"));
+                            return;
+                        };
+                        if hour_n > 23 {
+                            self.error_message = Some(format!("hour {hour_n} out of range (0-23)"));
+                            return;
+                        }
+                        let start = format!("{canonical_day}:{hour_n:02}:00");
+                        let ns = "aws:elasticbeanstalk:managedactions";
+                        self.spawn_option_settings_update(
+                            format!("managed-window {start}"),
+                            vec![
+                                (ns.into(), "ManagedActionsEnabled".into(), "true".into()),
+                                (ns.into(), "PreferredStartTime".into(), start),
+                            ],
+                            vec![],
+                        );
+                    }
+                    _ => {
+                        self.error_message = Some(
+                            "usage: :managed-window DAY HOUR | off  (DAY: Mon/Tue/.../Sun; HOUR: 0-23)".into(),
+                        );
+                    }
+                }
+            }
+            "alarm-create" => {
+                // `:alarm-create NAME KIND THRESHOLD [op]` — KIND maps to one
+                // of the env-scoped metrics we already chart (health / 4xx
+                // / 5xx / latency). Operator can override the comparison
+                // operator as a 4th arg; period defaults to 300s and 1
+                // evaluation period for a 5-min trigger.
+                let (name, kind, threshold_raw, op_override) = match (
+                    rest.first().copied(),
+                    rest.get(1).copied(),
+                    rest.get(2).copied(),
+                    rest.get(3).copied(),
+                ) {
+                    (Some(n), Some(k), Some(t), op) => (n, k, t, op),
+                    _ => {
+                        self.error_message = Some(
+                            "usage: :alarm-create NAME KIND THRESHOLD [OP]  (KIND: health|4xx|5xx|latency; OP defaults match the kind; no SNS action wired)".into(),
+                        );
+                        return;
+                    }
+                };
+                if self.read_only {
+                    self.error_message = Some("read-only mode — alarm-create disabled".into());
+                    return;
+                }
+                let Some((metric_name, default_op, stat)) = alarm_kind_to_metric(kind) else {
+                    self.error_message = Some(format!(
+                        "unknown KIND '{kind}'  (valid: health, 4xx, 5xx, latency)"
+                    ));
+                    return;
+                };
+                let Ok(threshold) = threshold_raw.parse::<f64>() else {
+                    self.error_message =
+                        Some(format!("threshold '{threshold_raw}' is not a number"));
+                    return;
+                };
+                let op = op_override.unwrap_or(default_op);
+                let Some(env) = self.selected_env().cloned() else {
+                    self.error_message = Some("no environment selected".into());
+                    return;
+                };
+                let env_name = env.name.clone();
+                let alarm_name = name.to_string();
+                let metric_name = metric_name.to_string();
+                let op_str = op.to_string();
+                let stat_str = stat.to_string();
+                let target = format!("{env_name}/{alarm_name}");
+                write_audit_line(
+                    self.context.account_id.as_deref(),
+                    self.context.profile.as_deref(),
+                    &self.context.region,
+                    &format!(
+                        "stage=dispatched action=AlarmCreate target={target} metric={metric_name} threshold={threshold} op={op_str}"
+                    ),
+                );
+                self.push_pending("Create alarm", target.clone());
+                self.status_message = Some(format!(
+                    "creating alarm '{alarm_name}' on {env_name}/{metric_name} {op_str} {threshold}…"
+                ));
+                let aws = self.aws.clone();
+                let tx = self.msg_tx.clone();
+                let gen = self.generation;
+                let env_for_msg = env_name.clone();
+                let alarm_for_msg = alarm_name.clone();
+                let account = self.context.account_id.clone();
+                let profile = self.context.profile.clone();
+                let region = self.context.region.clone();
+                tokio::spawn(async move {
+                    let result = aws
+                        .put_env_metric_alarm(
+                            &alarm_for_msg,
+                            &env_for_msg,
+                            &metric_name,
+                            threshold,
+                            &op_str,
+                            300,
+                            1,
+                            &stat_str,
+                        )
+                        .await
+                        .map_err(|e| flatten_err("put_metric_alarm", e));
+                    let outcome = match &result {
+                        Ok(()) => format!("stage=completed action=AlarmCreate target={target} ok"),
+                        Err(e) => format!(
+                            "stage=completed action=AlarmCreate target={target} err=\"{}\"",
+                            e.replace('"', "'")
+                        ),
+                    };
+                    write_audit_line(account.as_deref(), profile.as_deref(), &region, &outcome);
+                    let _ = tx.send(AppMsg::AlarmOp {
+                        gen,
+                        verb: "create",
+                        alarm_name: alarm_for_msg,
+                        env_name: env_for_msg,
+                        result,
+                    });
+                });
+            }
+            "alarm-delete" => match rest.first().copied() {
+                None => {
+                    self.error_message = Some("usage: :alarm-delete NAME".into());
+                }
+                Some(name) => {
+                    if self.read_only {
+                        self.error_message = Some("read-only mode — alarm-delete disabled".into());
+                        return;
+                    }
+                    let alarm_name = name.to_string();
+                    let env_name = self
+                        .selected_env()
+                        .map(|e| e.name.clone())
+                        .unwrap_or_else(|| "?".into());
+                    let target = format!("{env_name}/{alarm_name}");
+                    write_audit_line(
+                        self.context.account_id.as_deref(),
+                        self.context.profile.as_deref(),
+                        &self.context.region,
+                        &format!("stage=dispatched action=AlarmDelete target={target}"),
+                    );
+                    self.push_pending("Delete alarm", target.clone());
+                    self.status_message = Some(format!("deleting alarm '{alarm_name}'…"));
+                    let aws = self.aws.clone();
+                    let tx = self.msg_tx.clone();
+                    let gen = self.generation;
+                    let alarm_for_msg = alarm_name.clone();
+                    let env_for_msg = env_name.clone();
+                    let account = self.context.account_id.clone();
+                    let profile = self.context.profile.clone();
+                    let region = self.context.region.clone();
+                    tokio::spawn(async move {
+                        let result = aws
+                            .delete_alarms(std::slice::from_ref(&alarm_for_msg))
+                            .await
+                            .map_err(|e| flatten_err("delete_alarms", e));
+                        let outcome = match &result {
+                            Ok(()) => {
+                                format!("stage=completed action=AlarmDelete target={target} ok")
+                            }
+                            Err(e) => format!(
+                                "stage=completed action=AlarmDelete target={target} err=\"{}\"",
+                                e.replace('"', "'")
+                            ),
+                        };
+                        write_audit_line(account.as_deref(), profile.as_deref(), &region, &outcome);
+                        let _ = tx.send(AppMsg::AlarmOp {
+                            gen,
+                            verb: "delete",
+                            alarm_name: alarm_for_msg,
+                            env_name: env_for_msg,
+                            result,
+                        });
+                    });
+                }
+            },
+            "config-inspect" => {
+                // Single-arg `:config-inspect TEMPLATE` uses the selected env's
+                // application; two-arg `:config-inspect APP TEMPLATE` is for
+                // operators inspecting a template they're not currently sitting
+                // next to. Surfaces the option settings as a sorted text dump.
+                let (app_name, template) = match (rest.first().copied(), rest.get(1).copied()) {
+                    (Some(t), None) => {
+                        let Some(env) = self.selected_env().cloned() else {
+                            self.error_message =
+                                Some("usage: :config-inspect APP TEMPLATE  (no env selected to default APP from)".into());
+                            return;
+                        };
+                        (env.application, t.to_string())
+                    }
+                    (Some(a), Some(t)) => (a.to_string(), t.to_string()),
+                    _ => {
+                        self.error_message = Some(
+                            "usage: :config-inspect [APP] TEMPLATE  (APP defaults to selected env)"
+                                .into(),
+                        );
+                        return;
+                    }
+                };
+                let aws = self.aws.clone();
+                let tx = self.msg_tx.clone();
+                let gen = self.generation;
+                let title = format!("template — {app_name}/{template}");
+                self.status_message = Some(format!("fetching template {app_name}/{template}…"));
+                tokio::spawn(async move {
+                    let body = match aws.describe_template_settings(&app_name, &template).await {
+                        Ok(settings) if settings.is_empty() => {
+                            "(template has no option settings)".to_string()
+                        }
+                        Ok(settings) => format_template_settings(&settings),
+                        Err(e) => {
+                            format!("error: {}", flatten_err("describe_template_settings", e))
+                        }
+                    };
+                    let _ = tx.send(AppMsg::TextOverlay { gen, title, body });
+                });
+            }
             "minimap" => {
                 self.show_minimap = parse_toggle(rest.first().copied(), self.show_minimap);
                 self.status_message = Some(if self.show_minimap {
@@ -6232,6 +6648,70 @@ impl App {
                 match result {
                     Ok(tags) => detail.tags = tags,
                     Err(msg) => tracing::warn!(error = %msg, "tags fetch failed"),
+                }
+            }
+            AppMsg::OptionSettingsUpdate {
+                gen,
+                env_name,
+                summary,
+                result,
+            } => {
+                if gen != self.generation {
+                    return;
+                }
+                self.complete_pending(
+                    &summary,
+                    &env_name,
+                    result.as_ref().map(|_| ()).map_err(|e| e.clone()),
+                );
+                match result {
+                    Ok(()) => {
+                        self.push_toast(ToastKind::Info, format!("{summary} → {env_name}"));
+                    }
+                    Err(msg) => {
+                        self.push_toast(
+                            ToastKind::Error,
+                            format!("{summary} on {env_name} failed: {msg}"),
+                        );
+                    }
+                }
+            }
+            AppMsg::AlarmOp {
+                gen,
+                verb,
+                alarm_name,
+                env_name,
+                result,
+            } => {
+                if gen != self.generation {
+                    return;
+                }
+                let label = match verb {
+                    "create" => "Create alarm",
+                    "delete" => "Delete alarm",
+                    _ => "Alarm op",
+                };
+                let target = format!("{env_name}/{alarm_name}");
+                self.complete_pending(
+                    label,
+                    &target,
+                    result.as_ref().map(|_| ()).map_err(|e| e.clone()),
+                );
+                match result {
+                    Ok(()) => {
+                        let past = if verb == "create" {
+                            "created"
+                        } else {
+                            "deleted"
+                        };
+                        self.push_toast(ToastKind::Info, format!("alarm '{alarm_name}' {past}"));
+                    }
+                    Err(msg) => {
+                        self.push_toast(
+                            ToastKind::Error,
+                            format!("alarm '{alarm_name}' {verb} failed: {msg}"),
+                        );
+                    }
                 }
             }
             AppMsg::DeleteAppVersion {
@@ -7179,6 +7659,27 @@ fn build_palette_items(app: &App) -> Vec<PaletteItem> {
         ("tag ", "add or update env tag: KEY VALUE"),
         ("untag ", "remove env tag: KEY"),
         ("delete-version ", "delete app version: LABEL [--force]"),
+        (
+            "config-inspect ",
+            "inspect saved config template: [APP] TEMPLATE",
+        ),
+        (
+            "alarm-create ",
+            "create CW alarm: NAME KIND THRESHOLD (KIND: health|4xx|5xx|latency)",
+        ),
+        ("alarm-delete ", "delete CW alarm by NAME"),
+        (
+            "logs-stream ",
+            "toggle CW Logs streaming: on|off [--retention DAYS]",
+        ),
+        (
+            "notify ",
+            "set notification endpoint: EMAIL_OR_SNS_ARN | off",
+        ),
+        (
+            "managed-window ",
+            "set maintenance window: DAY HOUR | off (e.g. Sun 4)",
+        ),
     ];
     for (prefix, desc) in prefill_cmds {
         out.push(PaletteItem {
@@ -7285,6 +7786,63 @@ where
             }
         })
         .collect()
+}
+
+/// Pull a `--flag VALUE` style named argument out of a `:command` `rest`
+/// slice and parse it. Returns `None` if the flag is absent, the value is
+/// missing, or parsing fails. Used by commands like `:logs-stream` that
+/// take optional flags alongside their positional args. Pure.
+pub fn parse_named_arg<T: std::str::FromStr>(rest: &[&str], flag: &str) -> Option<T> {
+    let pos = rest.iter().position(|s| *s == flag)?;
+    rest.get(pos + 1).and_then(|v| v.parse().ok())
+}
+
+/// Map a friendly env-metric "kind" to a `(metric_name, default_op, default_stat)`
+/// triple. The user can override the operator on the CLI but the defaults
+/// reflect "what you'd reasonably alarm on for this metric" — e.g. drop in
+/// health (LE) vs spike in 5xx (GT). Pure so the unit tests don't need
+/// AWS.
+pub fn alarm_kind_to_metric(kind: &str) -> Option<(&'static str, &'static str, &'static str)> {
+    match kind {
+        "health" => Some(("EnvironmentHealth", "LessThanOrEqualToThreshold", "Maximum")),
+        "4xx" | "req4xx" => Some(("ApplicationRequests4xx", "GreaterThanThreshold", "Sum")),
+        "5xx" | "req5xx" => Some(("ApplicationRequests5xx", "GreaterThanThreshold", "Sum")),
+        "latency" | "p90" => Some(("ApplicationLatencyP90", "GreaterThanThreshold", "Average")),
+        _ => None,
+    }
+}
+
+/// Render a sorted `(namespace, option_name, value)` list as an aligned
+/// text block grouped by namespace. Empty values render as `""` so the
+/// reader can distinguish "explicitly empty" from "not present".
+pub fn format_template_settings(settings: &[(String, String, String)]) -> String {
+    if settings.is_empty() {
+        return "(no option settings)".into();
+    }
+    let key_width = settings
+        .iter()
+        .map(|(_, name, _)| name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(16, 40);
+    let mut out = String::new();
+    let mut prev_ns: Option<&str> = None;
+    for (ns, name, value) in settings {
+        if Some(ns.as_str()) != prev_ns {
+            if prev_ns.is_some() {
+                out.push('\n');
+            }
+            out.push_str(&format!("[{ns}]\n"));
+            prev_ns = Some(ns.as_str());
+        }
+        let rendered = if value.is_empty() {
+            "\"\"".to_string()
+        } else {
+            value.clone()
+        };
+        out.push_str(&format!("  {name:<key_width$} = {rendered}\n"));
+    }
+    out
 }
 
 /// Flatten the per-application configuration_templates lists into a single
@@ -8024,6 +8582,77 @@ mod tests {
             super::delta_toast_key("  ▲10 Green").as_deref(),
             Some("Green")
         );
+    }
+
+    #[test]
+    fn parse_named_arg_picks_up_value_after_flag() {
+        let rest: Vec<&str> = vec!["on", "--retention", "14"];
+        assert_eq!(
+            super::parse_named_arg::<i32>(&rest, "--retention"),
+            Some(14)
+        );
+        // Flag absent.
+        assert_eq!(super::parse_named_arg::<i32>(&["on"], "--retention"), None);
+        // Flag present but no following value.
+        assert_eq!(
+            super::parse_named_arg::<i32>(&["on", "--retention"], "--retention"),
+            None
+        );
+        // Following value doesn't parse.
+        assert_eq!(
+            super::parse_named_arg::<i32>(&["on", "--retention", "abc"], "--retention"),
+            None
+        );
+    }
+
+    #[test]
+    fn alarm_kind_to_metric_covers_known_kinds() {
+        use crate::app::alarm_kind_to_metric;
+        let (m, op, _) = alarm_kind_to_metric("health").unwrap();
+        assert_eq!(m, "EnvironmentHealth");
+        // Health is "drop below" → LessThanOrEqualToThreshold.
+        assert_eq!(op, "LessThanOrEqualToThreshold");
+        let (m, op, _) = alarm_kind_to_metric("5xx").unwrap();
+        assert_eq!(m, "ApplicationRequests5xx");
+        assert_eq!(op, "GreaterThanThreshold");
+        // Aliases.
+        assert_eq!(alarm_kind_to_metric("req5xx"), alarm_kind_to_metric("5xx"));
+        assert_eq!(alarm_kind_to_metric("p90"), alarm_kind_to_metric("latency"));
+        // Unknown.
+        assert!(alarm_kind_to_metric("cpu").is_none());
+        assert!(alarm_kind_to_metric("").is_none());
+    }
+
+    #[test]
+    fn format_template_settings_groups_by_namespace() {
+        let s = vec![
+            (
+                "aws:elasticbeanstalk:environment".into(),
+                "EnvironmentType".into(),
+                "LoadBalanced".into(),
+            ),
+            ("aws:autoscaling:asg".into(), "MinSize".into(), "2".into()),
+            ("aws:autoscaling:asg".into(), "MaxSize".into(), "8".into()),
+        ];
+        let out = super::format_template_settings(&s);
+        assert!(out.contains("[aws:autoscaling:asg]"));
+        assert!(out.contains("[aws:elasticbeanstalk:environment]"));
+        assert!(out.contains("MinSize"));
+        assert!(out.contains("= 2"));
+        // Empty value renders as the literal "" so operators can tell empty
+        // from unset.
+        let s = vec![(
+            "aws:elasticbeanstalk:application:environment".into(),
+            "DEBUG".into(),
+            String::new(),
+        )];
+        assert!(super::format_template_settings(&s).contains("DEBUG"));
+        assert!(super::format_template_settings(&s).contains("\"\""));
+    }
+
+    #[test]
+    fn format_template_settings_handles_empty_input() {
+        assert_eq!(super::format_template_settings(&[]), "(no option settings)");
     }
 
     #[test]

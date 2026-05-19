@@ -469,7 +469,7 @@ fn draw_saved_configs_interactive(
     let footer = if confirm_delete {
         " Y confirm • N / esc cancel "
     } else {
-        " j/k move • enter/a apply • c create • x delete • ? help • esc close "
+        " j/k move • enter/a apply • i inspect • c create • x delete • ? help • esc close "
     };
     lines.push(Line::from(Span::styled(
         footer,
@@ -3576,12 +3576,16 @@ fn draw_help_saved_configs(f: &mut Frame, popup: Rect, app: &App) {
             "apply selected template to the currently-selected env",
         ),
         help_line(
+            "i",
+            "inspect template — open its option settings as a sorted text dump",
+        ),
+        help_line(
             "c",
             "close overlay + prefill `:config-save ` to save current env as a new template",
         ),
         help_line(
             "x",
-            "delete selected template (no confirm — config templates are recreatable)",
+            "delete selected template (Y/N confirm — config templates are recreatable)",
         ),
         help_line("?", "this help"),
         help_line("esc / q", "close overlay"),
