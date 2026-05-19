@@ -222,6 +222,10 @@ Living list of done / pending / dropped work. New entries get added at the botto
 - **`ebman action <rebuild|restart|terminate> --env NAME [--yes]`** dispatches an action without entering the TUI. Terminate requires `--yes`.
 - `--help` updated to document subcommands; `--version`, `-h`, `-V`, `--read-only` flags continue to work.
 
+### Instance-type + custom-platform-delete (2026-05-19)
+- **`:instance-type TYPE`** — first slice of the "capacity profile beyond min/max" gap; sets `aws:autoscaling:launchconfiguration.InstanceType` via the shared option-settings helper. EB triggers a rolling launch-config replacement. Other capacity settings (spot %, scaling triggers, scheduled scaling) still need either a modal form or per-option commands.
+- **`:custom-platform-delete <arn>`** — closes the create/delete loop for the `:custom-platforms` listing. EB rejects with a clear error if any env still uses the platform; otherwise async cleanup proceeds. Create still on backlog (slow Packer-build flow).
+
 ### Env-var editor (2026-05-19)
 Console's most-used edit surface (env var changes), now reachable without leaving ebman or opening a modal form. Tests: `format_env_vars_aligns_on_equals`, `format_env_vars_handles_empty_input`.
 
@@ -343,10 +347,10 @@ Gaps surfaced during the 2026-05-19 console-vs-ebman comparison. Each entry is a
 
 - [ ] **Attach / detach RDS database** — console exposes a Database tab where you can attach a new RDS instance to an env (creates the security-group + IAM linkage automatically) or detach an existing one. Needs `UpdateEnvironment(option_settings: aws:rds:dbinstance.*)` for create/attach, and a different code path for the post-creation "decouple" workflow (since EB-created RDS instances are pinned to the env's lifecycle by default).
 - [ ] **ALB listener + TLS cert config** — list and edit ALB listeners (port, protocol, default action, attached cert) for the env's ALB. Adds an "LB" tab in Detail. Needs `aws:elbv2:listener.*` option settings + an ACM cert picker. Web-tier-only.
-- [ ] **Capacity profile beyond min/max** — `:scale N` only sets ASG min=max=N. Console exposes the full Capacity tab: fleet composition (instance types list, on-demand base + spot %), scaling triggers (custom CW metric / threshold / cooldown), scheduled scaling actions. New `:capacity` command opening a modal-form (depends on the option-settings editor abstraction from Tier 1).
+- [ ] **Capacity profile beyond min/max + instance type** — `:scale N` sets min=max; `:instance-type TYPE` sets the launch-config InstanceType. Console exposes a full Capacity tab with fleet composition (multi-instance-type list, on-demand base + spot %), scaling triggers (custom CW metric / threshold / cooldown), and scheduled scaling actions. New `:capacity` command opening a modal-form (depends on the option-settings editor abstraction from Tier 1) — or per-option commands like `:trigger metric LATENCY threshold 0.5`.
 - [ ] **Network / VPC editor** — console's Network tab lets you change VPC, EC2 subnets, ELB subnets, public-IP toggle, and ELB visibility (internal vs public). All via `aws:ec2:vpc.*` option settings. Operators rarely need this mid-day but when they do, current ebman forces a console trip.
 - [ ] **Security tab — IAM service role + instance profile + EC2 key pair + EC2 security groups** — currently visible read-only in the Config tab. Console lets you swap roles and key pairs without recreating the env (under controlled rolling updates). Needs `aws:elasticbeanstalk:environment.ServiceRole` + `aws:autoscaling:launchconfiguration.IamInstanceProfile / EC2KeyName / SecurityGroups`.
-- [ ] **Custom platforms — create / delete** — we list (`:custom-platforms`) but can't create or delete. Console offers a wizard that builds a new custom AMI from a Packer template. Ours: `:platform-create <packer-config>` via `elasticbeanstalk:CreatePlatformVersion` (slow — minutes — needs polling) and `:platform-delete <arn>` via `DeletePlatformVersion`. Niche but a real gap for operators who maintain in-house base AMIs.
+- [ ] **Custom platforms — create** — delete shipped as `:custom-platform-delete <arn>`. Create still missing: console offers a wizard that builds a new custom AMI from a Packer template (slow — minutes — needs polling); ours would be `:custom-platform-create <packer-config>` via `elasticbeanstalk:CreatePlatformVersion`. Niche but a real gap for operators who maintain in-house base AMIs.
 
 ### Console parity — read-side gaps
 
