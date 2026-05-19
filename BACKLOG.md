@@ -222,6 +222,16 @@ Living list of done / pending / dropped work. New entries get added at the botto
 - **`ebman action <rebuild|restart|terminate> --env NAME [--yes]`** dispatches an action without entering the TUI. Terminate requires `--yes`.
 - `--help` updated to document subcommands; `--version`, `-h`, `-V`, `--read-only` flags continue to work.
 
+### Deploy from local path (2026-05-19)
+Last remaining Tier 1 blocker, shipped. Tests: `derive_version_label_*` × 3, `expand_tilde_only_replaces_leading`.
+
+- **`:deploy --from PATH [--label LABEL] [--describe DESC] [--no-deploy]`** uploads a local `.zip`, creates an EB application version, and (by default) immediately deploys it to the selected env. Existing `:deploy LABEL` shape preserved for shipping known labels.
+- New `aws::create_storage_location` / `put_application_bundle` / `create_app_version` helpers. S3 client added to `AwsClient`.
+- Bundle uploaded to EB's managed bucket under `applications/<app>/<label>`; `CreateApplicationVersion` references it via `S3Location`.
+- Pure helpers + tests: `derive_version_label` (filename stem + unix ts, sanitised to EB's `[A-Za-z0-9_.-]` charset); `expand_tilde` (only the leading `~/` form).
+- Pre-validation in the synchronous path: file exists, non-empty, read into memory. Multi-stage errors surface with stage prefix (`storage-location:`, `s3-put:`, `create-version:`, `deploy:`) so operators know where the chain broke.
+- Known limitations (now on backlog): no `s3://bucket/key` source yet; no multipart upload (5 GiB ceiling); whole bundle held in memory during upload.
+
 ### Custom metric selection (2026-05-19)
 Operator-defined extra charts in the Metrics tab. Tests: `parse_custom_metrics`, `parse_custom_metric_drops_malformed_value`, `custom_metric_spec_round_trips`.
 
@@ -346,7 +356,7 @@ The three things still keeping users in the AWS console day-to-day. Highest-leve
 
 - [ ] **Option settings editor (non-env-var namespaces)** — env vars are now done via `:env set/unset/list`. The remaining namespaces (`aws:autoscaling:asg` for min/max, `aws:autoscaling:launchconfiguration` for instance type/key pair/security groups, etc.) still need either a modal form or per-namespace commands. The shared `spawn_option_settings_update` helper already exists; what's missing is the UX. Modal-form abstraction (label + input + validation) would also unlock the Capacity / Network / Security gaps below.
 - [ ] **Auto-detect CW Logs in the Detail's Logs tab** — `:logs-tail` ships a real streaming overlay with FilterLogEvents polling, but the existing Detail Logs tab still uses the one-shot snapshot path. Either auto-detect on tab open (call `discover_env_log_groups`; if non-empty, switch to streaming) or add a key (`s` for stream) to toggle. Snapshot path stays as the fallback for envs that don't ship to CW Logs.
-- [ ] **Deploy from local path / S3** — `:deploy --from ./build.zip` or `:deploy --from s3://bucket/key`: upload to the env's storage location (`CreateStorageLocation` + S3 PutObject), `CreateApplicationVersion`, then `UpdateEnvironment(version_label)`. Covers the actual deploy story; the current `:deploy <label>` only ships existing versions.
+- [ ] **Deploy from S3 source** — `:deploy --from PATH` shipped for local files; `s3://bucket/key` form still pending and would just need a small URL parser + skip the upload step. Multipart upload for bundles >5GB is a separate follow-on (current single-shot PutObject covers the vast majority of bundles).
 
 ### Refactors — structural cleanup remaining
 

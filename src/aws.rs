@@ -3,6 +3,7 @@ use aws_sdk_cloudwatch::Client as CwClient;
 use aws_sdk_cloudwatchlogs::Client as CwLogsClient;
 use aws_sdk_ec2::Client as Ec2Client;
 use aws_sdk_elasticbeanstalk::Client;
+use aws_sdk_s3::Client as S3Client;
 use aws_sdk_sqs::Client as SqsClient;
 use aws_sdk_sts::Client as StsClient;
 use chrono::{DateTime, Utc};
@@ -143,6 +144,7 @@ pub struct AwsClient {
     sqs: SqsClient,
     cw: CwClient,
     cw_logs: CwLogsClient,
+    s3: S3Client,
     ec2: Ec2Client,
     config: SdkConfig,
     pub context: AwsContext,
@@ -169,6 +171,7 @@ impl AwsClient {
         let sqs = SqsClient::new(&config);
         let cw = CwClient::new(&config);
         let cw_logs = CwLogsClient::new(&config);
+        let s3 = S3Client::new(&config);
         let ec2 = Ec2Client::new(&config);
 
         Ok(Self {
@@ -176,6 +179,7 @@ impl AwsClient {
             sqs,
             cw,
             cw_logs,
+            s3,
             ec2,
             config,
             context: AwsContext {
@@ -1381,6 +1385,76 @@ impl AwsClient {
     }
 
     /// Deploy a specific application-version label to an existing env via
+    /// Ask EB for its managed S3 bucket — same bucket EB uses for its own
+    /// uploads. We push application bundles into a known prefix here so
+    /// `CreateApplicationVersion` can reference an `S3Location`. EB
+    /// auto-creates the bucket on first call; subsequent calls return the
+    /// same name.
+    pub async fn create_storage_location(&self) -> Result<String> {
+        let resp = self
+            .client
+            .create_storage_location()
+            .send()
+            .await
+            .map_err(|e| eyre!("CreateStorageLocation failed: {e}"))?;
+        resp.s3_bucket
+            .ok_or_else(|| eyre!("CreateStorageLocation returned no S3Bucket"))
+    }
+
+    /// Single-shot S3 PutObject for an application bundle. The 5 GiB API
+    /// ceiling covers the vast majority of EB source bundles; bundles
+    /// larger than that need multipart upload, which is a follow-on.
+    /// `bytes` carries the whole file; caller is responsible for reading.
+    pub async fn put_application_bundle(
+        &self,
+        bucket: &str,
+        key: &str,
+        bytes: Vec<u8>,
+    ) -> Result<()> {
+        use aws_sdk_s3::primitives::ByteStream;
+        self.s3
+            .put_object()
+            .bucket(bucket)
+            .key(key)
+            .body(ByteStream::from(bytes))
+            .send()
+            .await
+            .map_err(|e| eyre!("S3 PutObject {bucket}/{key} failed: {e}"))?;
+        Ok(())
+    }
+
+    /// Register a new application version pointing at an S3 source bundle.
+    /// `auto_create_app` is `false` because we only create versions for
+    /// existing applications; the env's application is the source of truth.
+    pub async fn create_app_version(
+        &self,
+        application_name: &str,
+        version_label: &str,
+        description: Option<&str>,
+        s3_bucket: &str,
+        s3_key: &str,
+    ) -> Result<()> {
+        use aws_sdk_elasticbeanstalk::types::S3Location;
+        let source = S3Location::builder()
+            .s3_bucket(s3_bucket)
+            .s3_key(s3_key)
+            .build();
+        let mut req = self
+            .client
+            .create_application_version()
+            .application_name(application_name)
+            .version_label(version_label)
+            .source_bundle(source)
+            .auto_create_application(false);
+        if let Some(d) = description {
+            req = req.description(d);
+        }
+        req.send()
+            .await
+            .map_err(|e| eyre!("CreateApplicationVersion failed: {e}"))?;
+        Ok(())
+    }
+
     /// `UpdateEnvironment(version_label)`. Returns immediately — the env
     /// will mutate in the background.
     pub async fn deploy_version(&self, env_name: &str, version_label: &str) -> Result<()> {

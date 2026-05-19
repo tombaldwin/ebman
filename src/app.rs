@@ -1042,6 +1042,17 @@ enum AppMsg {
         env_name: String,
         result: Result<Vec<(String, String)>, String>,
     },
+    /// Result of a `:deploy --from PATH` chain (upload → create version →
+    /// optional deploy). `summary` is the same label used in the pending
+    /// row so `complete_pending` can match. On success we also surface the
+    /// new version label in the toast.
+    DeployFromLocal {
+        gen: u64,
+        env_name: String,
+        label: String,
+        summary: String,
+        result: Result<(), String>,
+    },
     /// Sent once at the start of a `:logs-tail` session after the log
     /// group is resolved (via discovery or user-supplied). Tells the App
     /// handler to install the `Overlay::LogTail` with the resolved group.
@@ -4278,6 +4289,167 @@ impl App {
         });
     }
 
+    /// Upload a local bundle to EB's managed S3 storage, register a new
+    /// application version pointing at it, and optionally deploy it to the
+    /// selected env. The chain runs serially in one spawned task; failures
+    /// at any stage surface as a single error toast with the stage name.
+    fn spawn_deploy_from_local(
+        &mut self,
+        path: String,
+        explicit_label: Option<String>,
+        description: Option<String>,
+        and_deploy: bool,
+    ) {
+        if self.read_only {
+            self.error_message = Some("read-only mode — deploy-from-local disabled".into());
+            return;
+        }
+        let Some(env) = self.selected_env().cloned() else {
+            self.error_message = Some("no environment selected".into());
+            return;
+        };
+        // Path resolution: ~ expansion + check file exists + read bytes.
+        let resolved = expand_tilde(&path);
+        let bytes = match std::fs::read(&resolved) {
+            Ok(b) => b,
+            Err(e) => {
+                self.error_message = Some(format!("can't read {resolved}: {e}"));
+                return;
+            }
+        };
+        if bytes.is_empty() {
+            self.error_message = Some(format!("{resolved} is empty"));
+            return;
+        }
+        // Derive label if the operator didn't pin one. We use the filename
+        // basename + a unix timestamp so re-deploys don't collide.
+        let label = explicit_label
+            .unwrap_or_else(|| derive_version_label(&resolved, chrono::Utc::now().timestamp()));
+        let env_name = env.name.clone();
+        let app_name = env.application.clone();
+        let summary = if and_deploy {
+            format!("deploy-from-local {label}")
+        } else {
+            format!("upload-version {label}")
+        };
+        write_audit_line(
+            self.context.account_id.as_deref(),
+            self.context.profile.as_deref(),
+            &self.context.region,
+            &format!(
+                "stage=dispatched action=DeployFromLocal target={env_name} label={label} bytes={} and_deploy={and_deploy}",
+                bytes.len()
+            ),
+        );
+        self.push_pending(summary.clone(), env_name.clone());
+        self.status_message = Some(format!("uploading {} bytes for {label}…", bytes.len()));
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let env_for_msg = env_name.clone();
+        let label_for_msg = label.clone();
+        let summary_for_msg = summary.clone();
+        let account = self.context.account_id.clone();
+        let profile = self.context.profile.clone();
+        let region = self.context.region.clone();
+        let description_owned = description;
+        tokio::spawn(async move {
+            // Three (or four) stages: bucket → put → create version → (deploy).
+            // We surface the stage name in any error so the operator knows
+            // where it failed.
+            let bucket = match aws.create_storage_location().await {
+                Ok(b) => b,
+                Err(e) => {
+                    let err = format!(
+                        "storage-location: {}",
+                        flatten_err("create_storage_location", e)
+                    );
+                    finish_deploy_from_local(
+                        &tx,
+                        gen,
+                        env_for_msg,
+                        label_for_msg,
+                        summary_for_msg,
+                        account.as_deref(),
+                        profile.as_deref(),
+                        &region,
+                        Err(err),
+                    );
+                    return;
+                }
+            };
+            // Key: `applications/<app>/<label>` mirrors EB's own layout.
+            let key = format!("applications/{app_name}/{label_for_msg}");
+            if let Err(e) = aws.put_application_bundle(&bucket, &key, bytes).await {
+                let err = format!("s3-put: {}", flatten_err("put_application_bundle", e));
+                finish_deploy_from_local(
+                    &tx,
+                    gen,
+                    env_for_msg,
+                    label_for_msg,
+                    summary_for_msg,
+                    account.as_deref(),
+                    profile.as_deref(),
+                    &region,
+                    Err(err),
+                );
+                return;
+            }
+            if let Err(e) = aws
+                .create_app_version(
+                    &app_name,
+                    &label_for_msg,
+                    description_owned.as_deref(),
+                    &bucket,
+                    &key,
+                )
+                .await
+            {
+                let err = format!("create-version: {}", flatten_err("create_app_version", e));
+                finish_deploy_from_local(
+                    &tx,
+                    gen,
+                    env_for_msg,
+                    label_for_msg,
+                    summary_for_msg,
+                    account.as_deref(),
+                    profile.as_deref(),
+                    &region,
+                    Err(err),
+                );
+                return;
+            }
+            if and_deploy {
+                if let Err(e) = aws.deploy_version(&env_for_msg, &label_for_msg).await {
+                    let err = format!("deploy: {}", flatten_err("deploy_version", e));
+                    finish_deploy_from_local(
+                        &tx,
+                        gen,
+                        env_for_msg,
+                        label_for_msg,
+                        summary_for_msg,
+                        account.as_deref(),
+                        profile.as_deref(),
+                        &region,
+                        Err(err),
+                    );
+                    return;
+                }
+            }
+            finish_deploy_from_local(
+                &tx,
+                gen,
+                env_for_msg,
+                label_for_msg,
+                summary_for_msg,
+                account.as_deref(),
+                profile.as_deref(),
+                &region,
+                Ok(()),
+            );
+        });
+    }
+
     /// Dispatch a `DeleteApplicationVersion` for the selected env's app.
     /// `force` also requests `DeleteSourceBundle=true` so the underlying
     /// `.zip` is removed from the env's storage bucket.
@@ -5587,21 +5759,45 @@ impl App {
                     });
                 });
             }
-            "deploy" => match rest.first().copied() {
-                None => {
-                    self.error_message =
-                        Some("usage: :deploy <version-label>  (applies to selected env)".into());
+            "deploy" => {
+                // `:deploy LABEL` ships an existing version (legacy shape).
+                // `:deploy --from PATH [--label L] [--describe D] [--no-deploy]`
+                // uploads a new bundle, creates the version, and (by default)
+                // immediately deploys it. The two paths are disjoint — the
+                // first arg discriminates.
+                if rest.first().copied() == Some("--from") {
+                    let path = match rest.get(1).copied() {
+                        Some(p) => p.to_string(),
+                        None => {
+                            self.error_message = Some(
+                                "usage: :deploy --from PATH [--label LABEL] [--describe DESC] [--no-deploy]".into(),
+                            );
+                            return;
+                        }
+                    };
+                    let label = parse_named_arg::<String>(&rest, "--label");
+                    let description = parse_named_arg::<String>(&rest, "--describe");
+                    let no_deploy = rest.contains(&"--no-deploy");
+                    self.spawn_deploy_from_local(path, label, description, !no_deploy);
+                } else {
+                    match rest.first().copied() {
+                        None => {
+                            self.error_message = Some(
+                                "usage: :deploy LABEL  (existing version) | :deploy --from PATH [--label L] [--describe D] [--no-deploy]".into(),
+                            );
+                        }
+                        Some(version) => {
+                            self.open_parameterised_action(
+                                Action::Deploy,
+                                ParameterisedAction {
+                                    deploy_version: Some(version.to_string()),
+                                    ..Default::default()
+                                },
+                            );
+                        }
+                    }
                 }
-                Some(version) => {
-                    self.open_parameterised_action(
-                        Action::Deploy,
-                        ParameterisedAction {
-                            deploy_version: Some(version.to_string()),
-                            ..Default::default()
-                        },
-                    );
-                }
-            },
+            }
             "delete-version" => match rest.first().copied() {
                 None => {
                     self.error_message = Some(
@@ -7341,6 +7537,36 @@ impl App {
                     Err(msg) => tracing::warn!(error = %msg, "tags fetch failed"),
                 }
             }
+            AppMsg::DeployFromLocal {
+                gen,
+                env_name,
+                label,
+                summary,
+                result,
+            } => {
+                if gen != self.generation {
+                    return;
+                }
+                self.complete_pending(
+                    &summary,
+                    &env_name,
+                    result.as_ref().map(|_| ()).map_err(|e| e.clone()),
+                );
+                match result {
+                    Ok(()) => {
+                        self.push_toast(
+                            ToastKind::Info,
+                            format!("{summary} → {env_name} (version {label})"),
+                        );
+                    }
+                    Err(msg) => {
+                        self.push_toast(
+                            ToastKind::Error,
+                            format!("{summary} on {env_name} failed: {msg}"),
+                        );
+                    }
+                }
+            }
             AppMsg::LogTailOpened {
                 gen,
                 session_id,
@@ -8487,6 +8713,10 @@ fn build_palette_items(app: &App) -> Vec<PaletteItem> {
             "custom metric chart: list | add LABEL NS NAME [STAT] | remove LABEL",
         ),
         (
+            "deploy --from ",
+            "deploy a local .zip bundle: PATH [--label L] [--describe D] [--no-deploy]",
+        ),
+        (
             "notify ",
             "set notification endpoint: EMAIL_OR_SNS_ARN | off",
         ),
@@ -8644,6 +8874,77 @@ pub fn format_env_vars(vars: &[(String, String)]) -> String {
         out.push_str(&format!("{k:<key_width$} = {rendered}\n"));
     }
     out
+}
+
+/// Expand a leading `~/` to `$HOME/`. Other tilde forms (e.g. `~user`) are
+/// left as-is; the operator gets a clear "can't read" error if they pass
+/// something obscure. Pure for ease of testing.
+pub fn expand_tilde(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            let mut p = std::path::PathBuf::from(home);
+            p.push(rest);
+            return p.display().to_string();
+        }
+    }
+    path.to_string()
+}
+
+/// Derive a version label from a file path + a timestamp. Uses the
+/// filename stem (everything before the last `.`) so `./build.zip` becomes
+/// `build_1684512345`. Sanitises any chars EB rejects in version labels
+/// (anything outside `[A-Za-z0-9_.-]`). Pure for testability.
+pub fn derive_version_label(path: &str, unix_ts: i64) -> String {
+    let stem = std::path::Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("bundle");
+    let sanitised: String = stem
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{sanitised}_{unix_ts}")
+}
+
+/// Helper: write the outcome audit line and send the AppMsg in one place
+/// so each of the four early-return paths in `spawn_deploy_from_local`
+/// stays one line. Free function (not a method) so it can be called from
+/// the async closure without borrowing `self`.
+#[allow(clippy::too_many_arguments)]
+fn finish_deploy_from_local(
+    tx: &tokio::sync::mpsc::UnboundedSender<AppMsg>,
+    gen: u64,
+    env_name: String,
+    label: String,
+    summary: String,
+    account: Option<&str>,
+    profile: Option<&str>,
+    region: &str,
+    result: Result<(), String>,
+) {
+    let outcome = match &result {
+        Ok(()) => {
+            format!("stage=completed action=DeployFromLocal target={env_name} label={label} ok")
+        }
+        Err(e) => format!(
+            "stage=completed action=DeployFromLocal target={env_name} label={label} err=\"{}\"",
+            e.replace('"', "'")
+        ),
+    };
+    write_audit_line(account, profile, region, &outcome);
+    let _ = tx.send(AppMsg::DeployFromLocal {
+        gen,
+        env_name,
+        label,
+        summary,
+        result,
+    });
 }
 
 /// Pick the most useful CloudWatch Logs group for an env's `:logs-tail`
@@ -9460,6 +9761,56 @@ mod tests {
             super::delta_toast_key("  ▲10 Green").as_deref(),
             Some("Green")
         );
+    }
+
+    #[test]
+    fn derive_version_label_uses_filename_stem_and_timestamp() {
+        let l = super::derive_version_label("./build.zip", 1684512345);
+        assert_eq!(l, "build_1684512345");
+        let l = super::derive_version_label("/tmp/myapp-2.1.0.zip", 42);
+        assert_eq!(l, "myapp-2.1.0_42");
+    }
+
+    #[test]
+    fn derive_version_label_sanitises_disallowed_chars() {
+        // EB version labels don't allow spaces or weird punctuation; we
+        // replace them with `_` so the operator gets a valid label even from
+        // a goofy filename.
+        let l = super::derive_version_label("/tmp/build with spaces & specials!.zip", 1);
+        assert_eq!(l, "build_with_spaces___specials__1");
+    }
+
+    #[test]
+    fn derive_version_label_falls_back_to_bundle_on_pathological_input() {
+        // Bare `/` has no filename stem.
+        let l = super::derive_version_label("/", 9);
+        assert_eq!(l, "bundle_9");
+    }
+
+    #[test]
+    fn expand_tilde_only_replaces_leading() {
+        // Set HOME for the test.
+        let prev = std::env::var_os("HOME");
+        // SAFETY: tests run single-threaded by default; restore at the end.
+        unsafe {
+            std::env::set_var("HOME", "/Users/tester");
+        }
+        assert_eq!(super::expand_tilde("~/foo/bar"), "/Users/tester/foo/bar");
+        // No leading tilde → unchanged.
+        assert_eq!(super::expand_tilde("/abs/path"), "/abs/path");
+        // `~name` left alone (not supported).
+        assert_eq!(super::expand_tilde("~tom/foo"), "~tom/foo");
+        // Mid-path tilde left alone.
+        assert_eq!(super::expand_tilde("/foo/~/bar"), "/foo/~/bar");
+        if let Some(v) = prev {
+            unsafe {
+                std::env::set_var("HOME", v);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("HOME");
+            }
+        }
     }
 
     #[test]
