@@ -1811,7 +1811,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
             }
             _ => " tab/shift-tab switch  j/k scroll  a actions  ^R refresh  R auto-refresh  ? help  esc / q back".into(),
         },
-        Mode::Action => " j/k move  type to filter  enter confirm  ? help  esc cancel".into(),
+        Mode::Action => " j/k move  enter confirm  ? help  esc / q cancel".into(),
         Mode::Dlq => match app.dlq.as_ref().map(|d| d.viewing) {
             Some(crate::app::QueueView::Main) => {
                 " MAIN  j/k move  enter view body  x delete  m → DLQ  ^R refresh  ? help  esc / q back".into()
