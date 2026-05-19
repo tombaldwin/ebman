@@ -322,6 +322,26 @@ Findings from walking through the surface as a daily operator. Ranked by likelih
 
 ### Write-path completeness — currently read-only surfaces
 
+### Console parity — write-side gaps (operators currently open the console for these)
+
+Gaps surfaced during the 2026-05-19 console-vs-ebman comparison. Each entry is a console feature with no ebman equivalent. Ordered by daily-operator frequency.
+
+- [ ] **Attach / detach RDS database** — console exposes a Database tab where you can attach a new RDS instance to an env (creates the security-group + IAM linkage automatically) or detach an existing one. Needs `UpdateEnvironment(option_settings: aws:rds:dbinstance.*)` for create/attach, and a different code path for the post-creation "decouple" workflow (since EB-created RDS instances are pinned to the env's lifecycle by default).
+- [ ] **Configure CloudWatch Logs streaming** — toggle that ships EB platform logs (web server access, app stdout/stderr) to a CW Logs group, with a per-stream retention period. Console exposes this under Software → CloudWatch Logs. Implementation: `UpdateEnvironment(option_settings: aws:elasticbeanstalk:cloudwatch:logs.*)`. Prerequisite for our own backlog item "CloudWatch Logs streaming (real tail -f)" to actually have anything to tail.
+- [ ] **Create / delete CloudWatch alarms** — `:alarms` lists existing alarms read-only. Console's monitoring tab lets you create an alarm on any metric in one click. `:alarm-create <metric> threshold <N>` / `:alarm-delete <name>` via `cloudwatch:PutMetricAlarm` / `DeleteAlarms`. Most-asked-for follow-on after surfacing the existing list.
+- [ ] **Notifications (SNS topic for env events)** — console's Notifications field accepts an email; under the hood EB creates an SNS topic and subscribes the address. Ours: `UpdateEnvironment(option_settings: aws:elasticbeanstalk:sns:topics.Notification Endpoint)` and either accept an SNS topic ARN directly or auto-create one. Pre-req for any operator who wants out-of-band paging without setting up their own SNS.
+- [ ] **ALB listener + TLS cert config** — list and edit ALB listeners (port, protocol, default action, attached cert) for the env's ALB. Adds an "LB" tab in Detail. Needs `aws:elbv2:listener.*` option settings + an ACM cert picker. Web-tier-only.
+- [ ] **Capacity profile beyond min/max** — `:scale N` only sets ASG min=max=N. Console exposes the full Capacity tab: fleet composition (instance types list, on-demand base + spot %), scaling triggers (custom CW metric / threshold / cooldown), scheduled scaling actions. New `:capacity` command opening a modal-form (depends on the option-settings editor abstraction from Tier 1).
+- [ ] **Network / VPC editor** — console's Network tab lets you change VPC, EC2 subnets, ELB subnets, public-IP toggle, and ELB visibility (internal vs public). All via `aws:ec2:vpc.*` option settings. Operators rarely need this mid-day but when they do, current ebman forces a console trip.
+- [ ] **Security tab — IAM service role + instance profile + EC2 key pair + EC2 security groups** — currently visible read-only in the Config tab. Console lets you swap roles and key pairs without recreating the env (under controlled rolling updates). Needs `aws:elasticbeanstalk:environment.ServiceRole` + `aws:autoscaling:launchconfiguration.IamInstanceProfile / EC2KeyName / SecurityGroups`.
+- [ ] **Managed platform updates window** — console exposes a weekly maintenance window picker (day-of-week + hour) and a "preferred update level" (minor / patch). Ours: option settings under `aws:elasticbeanstalk:managedactions.*` + `aws:elasticbeanstalk:managedactions:platformupdate.*`. Compliance-driven envs need this.
+- [ ] **Custom platforms — create / delete** — we list (`:custom-platforms`) but can't create or delete. Console offers a wizard that builds a new custom AMI from a Packer template. Ours: `:platform-create <packer-config>` via `elasticbeanstalk:CreatePlatformVersion` (slow — minutes — needs polling) and `:platform-delete <arn>` via `DeletePlatformVersion`. Niche but a real gap for operators who maintain in-house base AMIs.
+
+### Console parity — read-side gaps
+
+- [ ] **View saved-configuration *contents*** — `:saved-configs` lists and applies, but operators can't audit "what would this template change?" without round-tripping through `DescribeConfigurationSettings`. New `i` keybinding in the interactive overlay (`i` inspect) opens a TextDump of the template's option settings as a sorted `namespace:OptionName = Value` list.
+- [ ] **Custom metric selection in Monitoring** — our Metrics tab renders a fixed 4-chart set (EnvHealth / 4xx / 5xx / latency-p90). Console's Monitoring tab lets you pick any CloudWatch metric available on the env (full ASG / ALB / EB enhanced-health metric set). Add `:metric add NAMESPACE NAME [stat]` / `:metric remove N` persisted in `state.toml`; reuse the existing chart widget.
+
 ### Tier 4 — multi-account / org
 - [ ] **Account switcher with sts:AssumeRole** — the current `:account NAME` is a `:profile NAME` alias. A proper assume-role flow needs an `[accounts]` config schema in `config.toml` with role ARNs, an AssumeRole call, and credentials injection into the SDK. Deferred.
 
@@ -330,6 +350,8 @@ Findings from walking through the surface as a daily operator. Ranked by likelih
 
 ### Tier 8 — maybe / unprioritised
 - [ ] **Snapshot at a point in time** — "what envs looked like 1h ago" (would need local history).
+- [ ] **Visual resource topology graph** — console shows a "Resources" graph linking ASG → EC2 instances → ELB → target groups. We have `:resources` as a text dump which most operators prefer; the graph is nice-to-have but rarely the reason someone opens the console.
+- [ ] **Route 53 / custom DNS integration** — console offers a one-click "set up custom domain" wizard tied to a Route 53 hosted zone. Niche and easy to do via AWS CLI or the Route 53 console directly.
 
 ### Trim candidates — built, but probably over-served
 Honest list of features that landed during expansion sprints but aren't earning their maintenance cost. Don't remove unilaterally; flag for review.
