@@ -476,7 +476,7 @@ fn draw_palette(f: &mut Frame, area: Rect, app: &App) {
         ),
         Span::styled(app.palette_input.clone(), Style::default().fg(theme.text)),
         Span::styled(
-            "_",
+            caret_glyph(theme),
             Style::default()
                 .fg(theme.title_alt)
                 .add_modifier(Modifier::SLOW_BLINK),
@@ -575,9 +575,7 @@ fn draw_toasts(f: &mut Frame, area: Rect, app: &App) {
             (ToastKind::Success, IconStyle::Ascii) => (theme.health_green, "ok", "+"),
             (ToastKind::Error, IconStyle::Ascii) => (theme.health_red, "error", "!"),
         };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
+        let block = rounded_block(theme, true)
             .border_style(Style::default().fg(border_color))
             .title(Span::styled(
                 format!(" {glyph} {label} "),
@@ -587,13 +585,22 @@ fn draw_toasts(f: &mut Frame, area: Rect, app: &App) {
             ));
         let mut text = t.text.clone();
         // Truncate so it fits one line inside the box. Leave room for the
-        // 2-char leading glyph + space.
-        let max = (width as usize).saturating_sub(6);
+        // left-edge severity stripe (▎) + leading glyph + space.
+        let max = (width as usize).saturating_sub(7);
         if text.chars().count() > max {
             text = text.chars().take(max.saturating_sub(1)).collect::<String>();
             text.push('…');
         }
+        // Chunky severity stripe on the left edge of the body. Reads as a
+        // notification-card accent bar the way Slack / VS Code toasts look,
+        // and keeps the severity signal even at the periphery of vision.
         let para = Paragraph::new(Line::from(vec![
+            Span::styled(
+                "▎",
+                Style::default()
+                    .fg(border_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(
                 format!(" {glyph} "),
                 Style::default()
@@ -1834,9 +1841,7 @@ fn draw_minimap(f: &mut Frame, area: Rect, app: &App) {
     };
     f.render_widget(Clear, map_rect);
     f.render_widget(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
+        rounded_block(theme, false)
             .border_style(Style::default().fg(theme.muted))
             .title(Span::styled(
                 " minimap ",
@@ -2023,7 +2028,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(theme.text),
             ));
             top.push(Span::styled(
-                "_",
+                caret_glyph(theme),
                 Style::default()
                     .fg(theme.health_yellow)
                     .add_modifier(Modifier::SLOW_BLINK),
@@ -2045,7 +2050,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(theme.text),
             ));
             top.push(Span::styled(
-                "_",
+                caret_glyph(theme),
                 Style::default()
                     .fg(theme.title)
                     .add_modifier(Modifier::SLOW_BLINK),
@@ -2068,7 +2073,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(app.theme.text),
             ));
             top.push(Span::styled(
-                "_",
+                caret_glyph(theme),
                 Style::default()
                     .fg(app.theme.accent)
                     .add_modifier(Modifier::SLOW_BLINK),
@@ -2387,7 +2392,7 @@ fn draw_dlq(f: &mut Frame, area: Rect, app: &mut App) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                "_",
+                caret_glyph(&theme),
                 Style::default()
                     .fg(theme.health_yellow)
                     .add_modifier(Modifier::SLOW_BLINK),
@@ -2480,7 +2485,7 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                 Span::raw(" "),
                 Span::styled(picker.filter.clone(), Style::default().fg(theme.text)),
                 Span::styled(
-                    "_",
+                    caret_glyph(&theme),
                     Style::default()
                         .fg(theme.health_yellow)
                         .add_modifier(Modifier::SLOW_BLINK),
@@ -2522,16 +2527,17 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
         ActionFlow::Confirm(modal) => {
             let popup = centered_rect(60, 35, area);
             f.render_widget(Clear, popup);
-            let block = Block::default().borders(Borders::ALL).title(Span::styled(
-                " confirm ",
-                Style::default()
-                    .fg(if modal.action.destructive() {
-                        theme.health_red
-                    } else {
-                        theme.title_alt
-                    })
-                    .add_modifier(Modifier::BOLD),
-            ));
+            let accent = if modal.action.destructive() {
+                theme.health_red
+            } else {
+                theme.title_alt
+            };
+            let block = rounded_block(&theme, true)
+                .border_style(Style::default().fg(accent))
+                .title(Span::styled(
+                    " confirm ",
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                ));
             let mut lines: Vec<Line> = Vec::new();
             let summary = match modal.action {
                 Action::Rebuild => format!(
@@ -2701,7 +2707,7 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(
-                            "_",
+                            caret_glyph(&theme),
                             Style::default()
                                 .fg(theme.health_yellow)
                                 .add_modifier(Modifier::SLOW_BLINK),
@@ -2743,12 +2749,14 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                     Style::default().fg(theme.muted),
                 )),
             ];
-            let block = Block::default().borders(Borders::ALL).title(Span::styled(
-                " running ",
-                Style::default()
-                    .fg(theme.health_yellow)
-                    .add_modifier(Modifier::BOLD),
-            ));
+            let block = rounded_block(&theme, true)
+                .border_style(Style::default().fg(theme.health_yellow))
+                .title(Span::styled(
+                    " running ",
+                    Style::default()
+                        .fg(theme.health_yellow)
+                        .add_modifier(Modifier::BOLD),
+                ));
             f.render_widget(Paragraph::new(lines).block(block), popup);
         }
     }
@@ -3013,8 +3021,7 @@ fn draw_detail_events(f: &mut Frame, area: Rect, detail: &crate::app::DetailStat
     } else {
         format!(" Events [{}] ", detail.events.len())
     };
-    let outer = Block::default()
-        .borders(Borders::ALL)
+    let outer = rounded_block(theme, true)
         .title(Span::styled(
             title,
             Style::default()
@@ -3051,7 +3058,7 @@ fn draw_detail_events(f: &mut Frame, area: Rect, detail: &crate::app::DetailStat
         ];
         if detail.search_active {
             spans.push(Span::styled(
-                "_",
+                caret_glyph(theme),
                 Style::default()
                     .fg(theme.health_yellow)
                     .add_modifier(Modifier::SLOW_BLINK),
@@ -3132,8 +3139,7 @@ fn draw_detail_instances(
     detail: &crate::app::DetailState,
     theme: &Theme,
 ) {
-    let block = Block::default()
-        .borders(Borders::ALL)
+    let block = rounded_block(theme, true)
         .title(Span::styled(
             format!(" Instances [{}] ", detail.instances.len()),
             Style::default()
@@ -3494,8 +3500,7 @@ fn draw_detail_queue(
     redact_on: bool,
     theme: &Theme,
 ) {
-    let block = Block::default()
-        .borders(Borders::ALL)
+    let block = rounded_block(theme, true)
         .title(Span::styled(
             " Queue ",
             Style::default()
@@ -3660,8 +3665,7 @@ fn draw_detail_logs(f: &mut Frame, area: Rect, detail: &crate::app::DetailState,
             tail.by_instance.len()
         )
     };
-    let outer = Block::default()
-        .borders(Borders::ALL)
+    let outer = rounded_block(theme, true)
         .title(Span::styled(
             title,
             Style::default()
@@ -3724,7 +3728,7 @@ fn draw_detail_logs(f: &mut Frame, area: Rect, detail: &crate::app::DetailState,
                 ];
                 if tail.search_active {
                     spans.push(Span::styled(
-                        "_",
+                        caret_glyph(theme),
                         Style::default()
                             .fg(theme.health_yellow)
                             .add_modifier(Modifier::SLOW_BLINK),
@@ -4015,7 +4019,7 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         Span::raw(" "),
         Span::styled(picker.filter.clone(), Style::default().fg(theme.text)),
         Span::styled(
-            "_",
+            caret_glyph(&theme),
             Style::default()
                 .fg(theme.health_yellow)
                 .add_modifier(Modifier::SLOW_BLINK),
@@ -4480,6 +4484,19 @@ fn cursor_marker(theme: &Theme) -> &'static str {
     }
 }
 
+/// Insertion-point caret glyph used as the blinking cursor in the command
+/// bar / filter bar / quick-jump bar / picker / typed-name confirm. ASCII
+/// stays on `_` (no Unicode needed in low-feature terminals); everything
+/// else uses U+258E (a thin vertical block) which actually reads as a
+/// terminal cursor rather than an underscore character.
+fn caret_glyph(theme: &Theme) -> &'static str {
+    if theme.icons == IconStyle::Ascii {
+        "_"
+    } else {
+        "\u{258e}"
+    }
+}
+
 fn sparkline_for(
     samples: Option<&std::collections::VecDeque<String>>,
     theme: &Theme,
@@ -4571,9 +4588,7 @@ fn draw_shell(f: &mut Frame, area: Rect, app: &mut App) {
     // and bottom, 1 col at left and right) and keeps the pane label
     // visible without crowding the first line of output.
     let title_text = format!(" ⌥ {}    F12 detach    ^D / exit close ", shell.label);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+    let block = rounded_block(theme, true)
         .border_style(Style::default().fg(theme.title))
         .title(Span::styled(
             title_text,
@@ -4865,6 +4880,17 @@ mod tests {
         assert_eq!(cursor_marker(&t), "▌ ");
         t.icons = IconStyle::Powerline;
         assert!(cursor_marker(&t).contains('\u{e0b0}'));
+    }
+
+    #[test]
+    fn caret_glyph_falls_back_to_underscore_on_ascii() {
+        let mut t = Theme::dark();
+        t.icons = IconStyle::Ascii;
+        assert_eq!(caret_glyph(&t), "_");
+        t.icons = IconStyle::Unicode;
+        assert_eq!(caret_glyph(&t), "\u{258e}");
+        t.icons = IconStyle::Powerline;
+        assert_eq!(caret_glyph(&t), "\u{258e}");
     }
 
     #[test]
