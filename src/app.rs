@@ -189,7 +189,18 @@ pub enum Overlay {
     /// Side-by-side env comparison shown via `:diff NAME`.
     Diff(String),
     /// EB saved-configuration templates per app shown via `:saved-configs`.
+    /// Also reused for ad-hoc text overlays (`:pending`, `:resources`,
+    /// `:find-env` results) — anything that wants a scrollable text dump in a
+    /// popup. Not interactive.
     SavedConfigs(String),
+    /// Interactive variant of `:saved-configs` — cursor over (app, template)
+    /// pairs, with `a` (apply to selected env), `x` (delete), `c` (prefill
+    /// :config-save in the command bar). Distinct from `SavedConfigs(String)`
+    /// because the latter is used as a generic text-dump escape hatch.
+    SavedConfigsInteractive {
+        items: Vec<(String, String)>,
+        cursor: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1769,6 +1780,15 @@ impl App {
         // Read-only popups overlay any mode and absorb all keys until dismissed.
         // Variant-specific extra dismiss keys (e.g. `D` re-toggles describe, `w`
         // re-toggles whatsnew) are honoured in addition to the universal Esc/q.
+        // The SavedConfigsInteractive variant is its own mini-mode — j/k cursor
+        // plus a/c/x dispatch — handled before the universal dismiss.
+        if matches!(
+            self.current_overlay.as_ref(),
+            Some(Overlay::SavedConfigsInteractive { .. })
+        ) {
+            self.handle_saved_configs_interactive_key(key);
+            return;
+        }
         if let Some(overlay) = self.current_overlay.as_ref() {
             let universal = matches!(key.code, KeyCode::Esc | KeyCode::Char('q'));
             let variant_extra = match overlay {
@@ -3835,6 +3855,79 @@ impl App {
         });
     }
 
+    /// Key handler for the interactive saved-configs overlay. Cursor moves
+    /// with j/k/arrows/g/G; `a` applies the selected template to the current
+    /// env (via `apply_config_template`); `x` deletes it; `c` closes the
+    /// overlay and prefills `:config-save ` so the user can type a name; `?`
+    /// surfaces the local keymap. Everything else falls through to dismiss.
+    fn handle_saved_configs_interactive_key(&mut self, key: KeyEvent) {
+        // Mutate cursor in-place for navigation keys, then return early; for
+        // dispatch keys (a/x/c) extract the selected pair, clear the overlay,
+        // and re-enter the existing command path so we inherit read-only
+        // gating + audit trail + ActionResult plumbing.
+        {
+            let Some(Overlay::SavedConfigsInteractive { items, cursor }) =
+                self.current_overlay.as_mut()
+            else {
+                return;
+            };
+            if items.is_empty() {
+                self.current_overlay = None;
+                return;
+            }
+            let len = items.len();
+            match key.code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    *cursor = (*cursor + 1).min(len.saturating_sub(1));
+                    return;
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    *cursor = cursor.saturating_sub(1);
+                    return;
+                }
+                KeyCode::Char('g') | KeyCode::Home => {
+                    *cursor = 0;
+                    return;
+                }
+                KeyCode::Char('G') | KeyCode::End => {
+                    *cursor = len.saturating_sub(1);
+                    return;
+                }
+                _ => {}
+            }
+        }
+        let Some(Overlay::SavedConfigsInteractive { items, cursor }) =
+            self.current_overlay.as_ref()
+        else {
+            return;
+        };
+        let cursor = *cursor;
+        let selected = items.get(cursor).cloned();
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.current_overlay = None;
+            }
+            KeyCode::Char('a') | KeyCode::Enter => {
+                if let Some((_app, template)) = selected {
+                    self.current_overlay = None;
+                    self.execute_command(&format!("config-apply {template}"));
+                }
+            }
+            KeyCode::Char('x') => {
+                if let Some((app_name, template)) = selected {
+                    self.current_overlay = None;
+                    self.execute_command(&format!("config-delete {app_name} {template}"));
+                }
+            }
+            KeyCode::Char('c') => {
+                self.current_overlay = None;
+                self.command_input = "config-save ".into();
+                self.mode = Mode::Command;
+            }
+            _ => {}
+        }
+    }
+
     /// Dispatch an `UpdateTagsForResource` for the selected env. `to_add`
     /// and `to_remove` follow EB semantics: the API allows both in a single
     /// call; we surface a summary toast either way.
@@ -4630,9 +4723,15 @@ impl App {
                 self.current_overlay = Some(Overlay::History(self.format_message_log()));
             }
             "saved-configs" | "configs" => {
-                self.current_overlay = Some(Overlay::SavedConfigs(format_saved_configs(
-                    &self.applications,
-                )));
+                let items = collect_saved_configs(&self.applications);
+                if items.is_empty() {
+                    self.current_overlay = Some(Overlay::SavedConfigs(format_saved_configs(
+                        &self.applications,
+                    )));
+                } else {
+                    self.current_overlay =
+                        Some(Overlay::SavedConfigsInteractive { items, cursor: 0 });
+                }
             }
             "plugins" => {
                 if self.plugins.is_empty() {
@@ -5140,6 +5239,11 @@ impl App {
                         Some("usage: :config-save <template-name>  (uses selected env)".into());
                 }
                 Some(template) => {
+                    if self.read_only {
+                        self.error_message =
+                            Some("read-only mode — config-save disabled".into());
+                        return;
+                    }
                     let Some(env) = self.selected_env().cloned() else {
                         self.error_message = Some("no environment selected".into());
                         return;
@@ -5180,6 +5284,11 @@ impl App {
             },
             "config-delete" => match (rest.first().copied(), rest.get(1).copied()) {
                 (Some(app_name), Some(template)) => {
+                    if self.read_only {
+                        self.error_message =
+                            Some("read-only mode — config-delete disabled".into());
+                        return;
+                    }
                     let aws = self.aws.clone();
                     let tx = self.msg_tx.clone();
                     let gen = self.generation;
@@ -5215,6 +5324,11 @@ impl App {
                     );
                 }
                 Some(template) => {
+                    if self.read_only {
+                        self.error_message =
+                            Some("read-only mode — config-apply disabled".into());
+                        return;
+                    }
                     let Some(env) = self.selected_env().cloned() else {
                         self.error_message = Some("no environment selected".into());
                         return;
@@ -6962,6 +7076,19 @@ where
         .collect()
 }
 
+/// Flatten the per-application configuration_templates lists into a single
+/// `(application, template)` vector, sorted by app then by template name so
+/// the overlay's cursor order is stable across refreshes. Pure so the unit
+/// tests don't need an AWS client.
+pub fn collect_saved_configs(apps: &[Application]) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = apps
+        .iter()
+        .flat_map(|a| a.templates.iter().map(|t| (a.name.clone(), t.clone())))
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    out
+}
+
 fn format_saved_configs(apps: &[Application]) -> String {
     if apps.is_empty() {
         return "no applications loaded — wait for first refresh or :region NAME".into();
@@ -7686,6 +7813,47 @@ mod tests {
             super::delta_toast_key("  ▲10 Green").as_deref(),
             Some("Green")
         );
+    }
+
+    #[test]
+    fn collect_saved_configs_flattens_and_sorts_stably() {
+        use crate::aws::Application;
+        let app = |name: &str, templates: Vec<String>| Application {
+            name: name.into(),
+            description: String::new(),
+            date_created: None,
+            date_updated: None,
+            version_count: 0,
+            templates,
+        };
+        let apps = vec![
+            app("beta", vec!["prod".into(), "canary".into()]),
+            app("alpha", vec![]),
+            app("alpha", vec!["staging".into()]),
+        ];
+        let out = super::collect_saved_configs(&apps);
+        assert_eq!(
+            out,
+            vec![
+                ("alpha".into(), "staging".into()),
+                ("beta".into(), "canary".into()),
+                ("beta".into(), "prod".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn collect_saved_configs_empty_when_no_templates() {
+        use crate::aws::Application;
+        let apps = vec![Application {
+            name: "alpha".into(),
+            description: String::new(),
+            date_created: None,
+            date_updated: None,
+            version_count: 0,
+            templates: vec![],
+        }];
+        assert!(super::collect_saved_configs(&apps).is_empty());
     }
 
     #[test]

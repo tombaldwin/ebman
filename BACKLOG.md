@@ -222,6 +222,9 @@ Living list of done / pending / dropped work. New entries get added at the botto
 - **`ebman action <rebuild|restart|terminate> --env NAME [--yes]`** dispatches an action without entering the TUI. Terminate requires `--yes`.
 - `--help` updated to document subcommands; `--version`, `-h`, `-V`, `--read-only` flags continue to work.
 
+### Write-path batch B (2026-05-19)
+- **Saved-configuration overlay → editable** — new `Overlay::SavedConfigsInteractive { items, cursor }` variant replaces the text-dump for `:saved-configs` when any templates exist (falls back to the dump when none do). j/k/g/G/up/down/home/end navigate; enter/a apply selected template to currently-selected env; x deletes; c closes the overlay and prefills `:config-save ` for the user to type a template name. All three dispatch through the existing `:config-apply` / `:config-delete` / `:config-save` paths so they share read-only gating and audit trail. Read-only gating was missing on the underlying commands too — fixed in the same pass. Pure `collect_saved_configs` helper sorts (app, template) pairs deterministically; tested for sort stability + empty-input.
+
 ### Write-path batch (2026-05-19)
 - **Tags editor** — `aws::update_tags` wraps `UpdateTagsForResource`; `:tag KEY VALUE` adds/updates a tag and `:untag KEY` removes one. Read-only mode blocks both; ARN-missing on the selected env errors out; the call writes a dispatched + completed audit entry; on success a toast fires and the Config-tab tags refresh automatically. Pure helper `parse_tag_args` handles the "value tokens joined with spaces" convention; tested for happy path, multi-token join, and rejection of missing-value input.
 - **Application-version delete** — `aws::delete_application_version` wraps `DeleteApplicationVersion`; `:delete-version <label> [--force]` dispatches against the selected env's app. `--force` (alias `-f`) sets `DeleteSourceBundle=true` so the S3 zip is also removed. Read-only mode blocks; dispatched + completed audit entries written; outcome surfaced as a toast. AWS still rejects deletes of versions currently deployed to an env — those bubble up in the error toast.
@@ -293,7 +296,6 @@ The three things still keeping users in the AWS console day-to-day. Highest-leve
 - (moved) Deploy from local path / S3 → see "Console-replacement gap" above.
 
 ### Write-path completeness — currently read-only surfaces
-- [ ] **Saved-configuration overlay → editable** — `:saved-configs` already lists; add inline create/apply/delete keybindings (`c` create from selected env, `a` apply to selected env, `x` delete).
 
 ### Tier 4 — multi-account / org
 - [ ] **Account switcher with sts:AssumeRole** — the current `:account NAME` is a `:profile NAME` alias. A proper assume-role flow needs an `[accounts]` config schema in `config.toml` with role ARNs, an AssumeRole call, and credentials injection into the SDK. Deferred.
