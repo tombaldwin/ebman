@@ -660,6 +660,30 @@ impl AwsClient {
         Ok(tags)
     }
 
+    /// UpdateTagsForResource — add/update tags listed in `to_add` and remove
+    /// keys listed in `to_remove`. Empty lists are allowed but at least one
+    /// side must be non-empty (the API rejects no-op calls).
+    pub async fn update_tags(
+        &self,
+        resource_arn: &str,
+        to_add: &[(String, String)],
+        to_remove: &[String],
+    ) -> Result<()> {
+        use aws_sdk_elasticbeanstalk::types::Tag;
+        let mut req = self
+            .client
+            .update_tags_for_resource()
+            .resource_arn(resource_arn);
+        for (k, v) in to_add {
+            req = req.tags_to_add(Tag::builder().key(k).value(v).build());
+        }
+        for k in to_remove {
+            req = req.tags_to_remove(k);
+        }
+        req.send().await?;
+        Ok(())
+    }
+
     pub async fn rebuild_env(&self, env_name: &str) -> Result<()> {
         self.client
             .rebuild_environment()
