@@ -26,21 +26,26 @@ pub struct PersistedState {
 }
 
 /// Parsed shape of a user-defined Metrics-tab chart. Stored line-oriented
-/// in state.toml as `metric.LABEL = "namespace|name|stat"`.
+/// in state.toml as `metric.LABEL = "namespace|name|stat[|dim=val;dim=val]"`.
+/// The fourth pipe-separated field is optional; when absent the app
+/// defaults to the env-scoped `EnvironmentName=<env>` dimension.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CustomMetricSpec {
     pub namespace: String,
     pub name: String,
     pub stat: String,
+    pub dimensions: Vec<(String, String)>,
 }
 
 impl CustomMetricSpec {
-    /// Parse the `"namespace|name|stat"` form. Returns None on malformed
-    /// input (wrong field count or empty parts) so the loader silently
-    /// drops bad lines instead of aborting startup.
+    /// Parse the `"namespace|name|stat[|k=v;k=v]"` form. Returns None on
+    /// malformed input (wrong field count or empty mandatory parts) so the
+    /// loader silently drops bad lines instead of aborting startup. A
+    /// missing 4th field means "use the env-scoped default dimension at
+    /// fetch time".
     pub fn parse(raw: &str) -> Option<Self> {
         let parts: Vec<&str> = raw.split('|').collect();
-        if parts.len() != 3 {
+        if !matches!(parts.len(), 3 | 4) {
             return None;
         }
         let ns = parts[0].trim();
@@ -49,15 +54,41 @@ impl CustomMetricSpec {
         if ns.is_empty() || name.is_empty() || stat.is_empty() {
             return None;
         }
+        let dimensions = if parts.len() == 4 {
+            parts[3]
+                .split(';')
+                .filter_map(|kv| {
+                    let (k, v) = kv.split_once('=')?;
+                    let k = k.trim();
+                    let v = v.trim();
+                    if k.is_empty() || v.is_empty() {
+                        return None;
+                    }
+                    Some((k.to_string(), v.to_string()))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         Some(Self {
             namespace: ns.into(),
             name: name.into(),
             stat: stat.into(),
+            dimensions,
         })
     }
 
     pub fn serialize(&self) -> String {
-        format!("{}|{}|{}", self.namespace, self.name, self.stat)
+        if self.dimensions.is_empty() {
+            return format!("{}|{}|{}", self.namespace, self.name, self.stat);
+        }
+        let dims = self
+            .dimensions
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join(";");
+        format!("{}|{}|{}|{dims}", self.namespace, self.name, self.stat)
     }
 }
 
@@ -303,11 +334,34 @@ metric.disk = "AWS/EC2|DiskReadOps|Sum"
             namespace: "AWS/ApplicationELB".into(),
             name: "RequestCount".into(),
             stat: "Sum".into(),
+            dimensions: Vec::new(),
         };
         assert_eq!(
             CustomMetricSpec::parse(&spec.serialize()).as_ref(),
             Some(&spec)
         );
+    }
+
+    #[test]
+    fn custom_metric_spec_round_trips_with_dimensions() {
+        let spec = CustomMetricSpec {
+            namespace: "AWS/EC2".into(),
+            name: "CPUUtilization".into(),
+            stat: "Average".into(),
+            dimensions: vec![("InstanceId".into(), "i-abc".into())],
+        };
+        let s = spec.serialize();
+        assert!(s.contains("|InstanceId=i-abc"));
+        assert_eq!(CustomMetricSpec::parse(&s).as_ref(), Some(&spec));
+    }
+
+    #[test]
+    fn custom_metric_spec_parse_drops_malformed_dimension_pairs() {
+        // The 'badkv' fragment is missing '='; the parser drops it but
+        // keeps the well-formed pair.
+        let s = "AWS/EC2|CPUUtilization|Average|InstanceId=i-abc;badkv";
+        let spec = CustomMetricSpec::parse(s).expect("parse");
+        assert_eq!(spec.dimensions, vec![("InstanceId".into(), "i-abc".into())]);
     }
 
     #[test]

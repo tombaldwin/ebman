@@ -123,6 +123,11 @@ pub struct AwsContext {
     pub caller_arn: Option<String>,
 }
 
+/// One row passed to `fetch_custom_env_metrics`. The shape is wide enough
+/// that clippy complains if used inline (`type_complexity` lint), so this
+/// alias keeps call-sites tidy.
+pub type CustomMetricQuery = (String, String, String, String, Vec<(String, String)>);
+
 /// One event from a CloudWatch Logs stream — server-side timestamp + the
 /// stream it came from + the raw message. `:logs-tail` builds these from
 /// FilterLogEvents and renders them in chronological order.
@@ -882,18 +887,17 @@ impl AwsClient {
         Ok(order.iter().filter_map(|id| by_id.remove(*id)).collect())
     }
 
-    /// Fetch user-defined metric series for one env. Each `(label, namespace,
-    /// name, stat)` tuple becomes a separate `GetMetricData` query;
-    /// dimensions default to `EnvironmentName=env_name` since that's how EB's
-    /// auto-scoped metrics live. Returns the series in the same order as
-    /// `specs` (i.e. operator-add order). Unknown statistics or namespaces
-    /// surface as empty series rather than aborting the whole call so a
-    /// stale custom-metric line in `state.toml` doesn't break the tab.
+    /// Fetch user-defined metric series for one env. Each spec is
+    /// `(label, namespace, name, stat, dimensions)` — `dimensions` are
+    /// explicit overrides; when empty the call falls back to the env-scoped
+    /// `EnvironmentName=env_name` dimension (the common case for
+    /// `AWS/ElasticBeanstalk` metrics). Returns the series in the same
+    /// order as `specs` so operators see their additions in add-order.
     pub async fn fetch_custom_env_metrics(
         &self,
         env_name: &str,
         range_secs: i64,
-        specs: &[(String, String, String, String)],
+        specs: &[CustomMetricQuery],
     ) -> Result<Vec<MetricSeries>> {
         use aws_sdk_cloudwatch::types::{Dimension, Metric, MetricDataQuery, MetricStat};
         if specs.is_empty() {
@@ -901,10 +905,6 @@ impl AwsClient {
         }
         let end = Utc::now();
         let start = end - chrono::Duration::seconds(range_secs);
-        let dim = Dimension::builder()
-            .name("EnvironmentName")
-            .value(env_name)
-            .build();
 
         let mut req = self
             .cw
@@ -916,15 +916,24 @@ impl AwsClient {
         // with a letter). We use `m{i}` to dodge label-vs-id concerns.
         let mut id_to_label: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
-        for (i, (label, namespace, name, stat)) in specs.iter().enumerate() {
+        for (i, (label, namespace, name, stat, dims)) in specs.iter().enumerate() {
             let id = format!("m{i}");
-            let metric = Metric::builder()
-                .namespace(namespace)
-                .metric_name(name)
-                .dimensions(dim.clone())
-                .build();
+            let mut metric_builder = Metric::builder().namespace(namespace).metric_name(name);
+            if dims.is_empty() {
+                metric_builder = metric_builder.dimensions(
+                    Dimension::builder()
+                        .name("EnvironmentName")
+                        .value(env_name)
+                        .build(),
+                );
+            } else {
+                for (k, v) in dims {
+                    metric_builder =
+                        metric_builder.dimensions(Dimension::builder().name(k).value(v).build());
+                }
+            }
             let ms = MetricStat::builder()
-                .metric(metric)
+                .metric(metric_builder.build())
                 .period(60)
                 .stat(stat)
                 .build();
