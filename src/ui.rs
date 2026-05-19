@@ -525,7 +525,7 @@ fn draw_palette(f: &mut Frame, area: Rect, app: &App) {
                 .bg(theme.row_selected_bg)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol("▌ ");
+        .highlight_symbol(cursor_marker(theme));
     let mut state = app.palette_state.clone();
     f.render_stateful_widget(list, layout[2], &mut state);
 
@@ -561,32 +561,47 @@ fn draw_toasts(f: &mut Frame, area: Rect, app: &App) {
             width,
             height: toast_h,
         };
-        let (border_color, label) = match t.kind {
-            ToastKind::Info => (theme.title, "info"),
-            ToastKind::Success => (theme.health_green, "ok"),
-            ToastKind::Error => (theme.health_red, "error"),
+        // Severity drives all three of: glyph, border colour, title text.
+        // Glyph picks vary by icon style so the toast stays readable when
+        // the user's font doesn't have Nerd / Powerline glyphs.
+        let (border_color, label, glyph) = match (t.kind, theme.icons) {
+            (ToastKind::Info, IconStyle::Powerline) => (theme.title, "info", "\u{f05a}"),
+            (ToastKind::Success, IconStyle::Powerline) => (theme.health_green, "ok", "\u{f058}"),
+            (ToastKind::Error, IconStyle::Powerline) => (theme.health_red, "error", "\u{f057}"),
+            (ToastKind::Info, IconStyle::Unicode) => (theme.title, "info", "ⓘ"),
+            (ToastKind::Success, IconStyle::Unicode) => (theme.health_green, "ok", "✓"),
+            (ToastKind::Error, IconStyle::Unicode) => (theme.health_red, "error", "✗"),
+            (ToastKind::Info, IconStyle::Ascii) => (theme.title, "info", "i"),
+            (ToastKind::Success, IconStyle::Ascii) => (theme.health_green, "ok", "+"),
+            (ToastKind::Error, IconStyle::Ascii) => (theme.health_red, "error", "!"),
         };
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(border_color))
             .title(Span::styled(
-                format!(" {label} "),
+                format!(" {glyph} {label} "),
                 Style::default()
                     .fg(border_color)
                     .add_modifier(Modifier::BOLD),
             ));
         let mut text = t.text.clone();
-        // Truncate so it fits one line inside the box.
-        let max = (width as usize).saturating_sub(4);
+        // Truncate so it fits one line inside the box. Leave room for the
+        // 2-char leading glyph + space.
+        let max = (width as usize).saturating_sub(6);
         if text.chars().count() > max {
             text = text.chars().take(max.saturating_sub(1)).collect::<String>();
             text.push('…');
         }
-        let para = Paragraph::new(Line::from(Span::styled(
-            text,
-            Style::default().fg(theme.text),
-        )))
+        let para = Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!(" {glyph} "),
+                Style::default()
+                    .fg(border_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(text, Style::default().fg(theme.text)),
+        ]))
         .block(block);
         f.render_widget(Clear, rect);
         f.render_widget(para, rect);
@@ -1362,7 +1377,7 @@ fn draw_apps_table(f: &mut Frame, area: Rect, app: &mut App) {
                 .bg(theme.row_selected_bg)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol("▌ ")
+        .highlight_symbol(cursor_marker(&theme))
         .block(
             titled_block(&theme, &title, !popup_open, theme.title).padding(Padding::horizontal(1)),
         );
@@ -1693,7 +1708,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                 .bg(theme.row_selected_bg)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol("▌ ")
+        .highlight_symbol(cursor_marker(&theme))
         .block(block);
 
     // Build the hover preview (if any) before the stateful render, because
@@ -1732,36 +1747,43 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
     f.render_stateful_widget(table, area, &mut app.table_state);
 
     // Empty-state overlay: friendly message when there are no envs at all,
-    // or when a filter has hidden everything.
+    // or when a filter has hidden everything. Echoes the live filter text
+    // back so the operator can see what's hiding their rows.
     if env_count_visible == 0 {
-        let (heading, hint) = if env_count_total == 0 {
-            (
-                "no environments in this account / region",
-                "try a different region (r) or profile (p), or check the AWS console (b)",
-            )
+        let heading: String;
+        let hint: String;
+        if env_count_total == 0 {
+            heading = "no environments in this account / region".to_string();
+            hint = "try a different region (r) or profile (p), or check the AWS console (b)"
+                .to_string();
+        } else if app.filter.is_empty() {
+            heading = "no environments match the active view".to_string();
+            hint = "press `views` to switch back to default, or `:filters` to drop a saved one"
+                .to_string();
         } else {
-            (
-                "no environments match the active filter",
-                "press / to edit, or Esc in filter mode to clear",
-            )
-        };
+            heading = format!("no environments match  `{}`", app.filter);
+            hint = "press / to edit, or Esc in filter mode to clear".to_string();
+        }
+        let block_height: u16 = 4;
         let inner = Rect {
             x: area.x + 2,
-            y: area.y + area.height / 2,
+            y: area
+                .y
+                .saturating_add(area.height.saturating_sub(block_height) / 2),
             width: area.width.saturating_sub(4),
-            height: 2,
+            height: block_height.min(area.height),
         };
         let lines = vec![
             Line::from(Span::styled(
-                format!("  ◌  {heading}"),
+                heading,
                 Style::default()
-                    .fg(theme.muted)
+                    .fg(theme.title_alt)
                     .add_modifier(Modifier::BOLD),
-            )),
-            Line::from(Span::styled(
-                format!("     {hint}"),
-                Style::default().fg(theme.muted),
-            )),
+            ))
+            .alignment(Alignment::Center),
+            Line::from(Span::raw("")),
+            Line::from(Span::styled(hint, Style::default().fg(theme.muted)))
+                .alignment(Alignment::Center),
         ];
         f.render_widget(Paragraph::new(lines), inner);
     }
@@ -1859,18 +1881,22 @@ fn tier_cell(tier: &str, theme: &Theme) -> Cell<'static> {
 }
 
 fn status_cell(status: &str, theme: &Theme) -> Cell<'static> {
+    Cell::from(status_pill(status, theme))
+}
+
+/// Render a status string as a coloured pill. Pulled out of `status_cell`
+/// so the Detail header (and any other non-table consumer) can drop the
+/// same pill into a Line without the Cell wrapper.
+fn status_pill(status: &str, theme: &Theme) -> Span<'static> {
     let lower = status.to_lowercase();
     if lower == "ready" {
-        Cell::from(pill("Ready", Color::Black, theme.status_ready))
+        pill("Ready", Color::Black, theme.status_ready)
     } else if matches!(lower.as_str(), "updating" | "launching") {
-        Cell::from(pill(status, Color::Black, theme.status_updating))
+        pill(status, Color::Black, theme.status_updating)
     } else if matches!(lower.as_str(), "terminating" | "terminated") {
-        Cell::from(pill(status, Color::White, theme.status_terminating))
+        pill(status, Color::White, theme.status_terminating)
     } else {
-        Cell::from(Span::styled(
-            status.to_string(),
-            Style::default().fg(theme.text),
-        ))
+        Span::styled(status.to_string(), Style::default().fg(theme.text))
     }
 }
 
@@ -2325,7 +2351,7 @@ fn draw_dlq(f: &mut Frame, area: Rect, app: &mut App) {
                     .bg(theme.row_selected_bg)
                     .add_modifier(Modifier::BOLD),
             )
-            .highlight_symbol("▌ ");
+            .highlight_symbol(cursor_marker(&theme));
         f.render_stateful_widget(list, chunks[1], &mut dlq.list_state);
     }
 
@@ -2421,7 +2447,7 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                         .bg(theme.row_selected_bg)
                         .add_modifier(Modifier::BOLD),
                 )
-                .highlight_symbol("▌ ");
+                .highlight_symbol(cursor_marker(&theme));
             f.render_stateful_widget(list, layout[0], list_state);
             f.render_widget(
                 Paragraph::new(Span::styled(
@@ -2745,14 +2771,21 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
         ])
         .split(area);
 
-    // Env header
+    // Env header. Status and health render as coloured pills so they pop
+    // out of the run of plain Name / Application text — same convention as
+    // the env table's STATUS column. Health gets its dot glyph too so the
+    // colour blind don't have to lean on hue alone.
     let theme = &app.theme;
     let mut h1 = kv("Name", &env.name, theme);
     h1.push(sep(theme));
     h1.extend(kv("Application", &env.application, theme));
     h1.push(sep(theme));
-    h1.extend(kv("Status", &env.status, theme));
+    h1.push(Span::styled("Status: ", Style::default().fg(theme.muted)));
+    h1.push(status_pill(&env.status, theme));
     h1.push(sep(theme));
+    h1.push(Span::styled("Health: ", Style::default().fg(theme.muted)));
+    h1.push(health_dot(&env.health, theme));
+    h1.push(Span::raw(" "));
     h1.push(Span::styled(
         env.health.clone(),
         health_style(&env.health, &app.theme),
@@ -4435,6 +4468,18 @@ fn sep(theme: &Theme) -> Span<'static> {
     Span::styled(glyph, Style::default().fg(theme.muted))
 }
 
+/// Cursor / row-selection marker prepended to highlighted rows in lists +
+/// tables. Powerline-mode users get the filled U+E0B0 right-triangle so
+/// the marker matches the rest of the ribbon aesthetic; everyone else gets
+/// the half-block ▌ that doesn't need a patched font.
+fn cursor_marker(theme: &Theme) -> &'static str {
+    if theme.icons == IconStyle::Powerline {
+        "\u{e0b0} "
+    } else {
+        "▌ "
+    }
+}
+
 fn sparkline_for(
     samples: Option<&std::collections::VecDeque<String>>,
     theme: &Theme,
@@ -4809,6 +4854,17 @@ mod tests {
         // Zero budget: degenerate but must not crash; treat as 1.
         let (s, e) = visible_window(3, 10, 0);
         assert!(s <= 3 && 3 < e);
+    }
+
+    #[test]
+    fn cursor_marker_swaps_per_icon_style() {
+        let mut t = Theme::dark();
+        t.icons = IconStyle::Unicode;
+        assert_eq!(cursor_marker(&t), "▌ ");
+        t.icons = IconStyle::Ascii;
+        assert_eq!(cursor_marker(&t), "▌ ");
+        t.icons = IconStyle::Powerline;
+        assert!(cursor_marker(&t).contains('\u{e0b0}'));
     }
 
     #[test]
