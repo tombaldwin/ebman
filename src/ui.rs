@@ -1196,13 +1196,18 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
             theme.health_red,
         ));
     }
-    let in_flight = app
+    let in_flight: Vec<&str> = app
         .pending_actions
         .iter()
         .filter(|e| e.completed.is_none())
-        .count();
-    if in_flight > 0 {
-        chain_pills.push((format!("⏳ {in_flight}"), Color::Black, theme.health_yellow));
+        .map(|e| e.label.as_str())
+        .collect();
+    if !in_flight.is_empty() {
+        chain_pills.push((
+            format!("⏳ {}", summarize_in_flight(&in_flight)),
+            Color::Black,
+            theme.health_yellow,
+        ));
     }
     if app.frozen {
         chain_pills.push(("FROZEN".into(), Color::Black, theme.health_grey));
@@ -2143,6 +2148,14 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
                 top.push(Span::styled(
                     format!(" filter: {}", app.filter),
                     Style::default().fg(theme.health_yellow),
+                ));
+            } else if let Some(hint) = context_hint(app) {
+                // Context-aware nudge — only fires when the status / error
+                // / filter slots are empty so it doesn't trample anything
+                // the user is actively reading.
+                top.push(Span::styled(
+                    format!(" 💡 {hint}"),
+                    Style::default().fg(theme.muted),
                 ));
             }
         }
@@ -4620,6 +4633,116 @@ fn short_caller(arn: &str) -> String {
     arn.splitn(6, ':').nth(5).unwrap_or(arn).to_string()
 }
 
+/// Pick a context-aware hint to surface in the footer when nothing else
+/// is competing for the slot. Reads only from `App` fields the hint
+/// cares about, returns the first matching nudge (priority order:
+/// alerts > pending > sso > filter-heavy > newly_added). Returns
+/// `None` when nothing's worth saying — keeps the footer quiet.
+fn context_hint(app: &App) -> Option<String> {
+    // Multiple Red envs — point at the alarms / org-health overlays.
+    if app.alerts >= 2 {
+        return Some(format!(
+            "{} envs alerting — try `:alarms` or `:org-health`",
+            app.alerts
+        ));
+    }
+    // In-flight pending actions — operators sometimes forget what they
+    // dispatched seconds ago. Surface that they can review them.
+    let in_flight = app
+        .pending_actions
+        .iter()
+        .filter(|p| p.completed.is_none())
+        .count();
+    if in_flight >= 3 {
+        return Some(format!(
+            "{in_flight} actions in flight — `:pending` to review"
+        ));
+    }
+    // SSO about to expire — re-login *before* the next refresh fails.
+    if let Some(exp) = app.sso_expiry {
+        let remaining = exp.signed_duration_since(chrono::Utc::now());
+        if remaining > chrono::Duration::zero() && remaining < chrono::Duration::minutes(15) {
+            return Some(format!(
+                "SSO expires in {}m — `aws sso login --profile {}`",
+                remaining.num_minutes().max(0),
+                app.context.profile.as_deref().unwrap_or("default")
+            ));
+        }
+    }
+    // New envs landed on this refresh — point at them so the operator
+    // sees the `+` marker isn't a glitch.
+    if !app.newly_added.is_empty() {
+        let n = app.newly_added.len();
+        let env_word = if n == 1 { "env" } else { "envs" };
+        return Some(format!("{n} new {env_word} this refresh (marked +)"));
+    }
+    None
+}
+
+/// Pure: render a compact summary of in-flight pending-action labels for
+/// the header `⏳` pill. Shape: `"rebuild ×2, deploy"`. Identical labels
+/// collapse into a `×N` suffix; output truncated to ~25 chars with `…`
+/// so the pill stays narrow. Empty input returns an empty string (caller
+/// should suppress the pill).
+fn summarize_in_flight(labels: &[&str]) -> String {
+    use std::collections::BTreeMap;
+    if labels.is_empty() {
+        return String::new();
+    }
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for l in labels {
+        // Normalise to a short stem so "Rebuild environment" /
+        // "Restart app server" / etc. read as one word in the pill.
+        let stem = l
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let entry = counts.entry(label_stem(&stem)).or_insert(0);
+        *entry += 1;
+    }
+    let mut parts: Vec<String> = counts
+        .iter()
+        .map(|(name, n)| {
+            if *n > 1 {
+                format!("{name} ×{n}")
+            } else {
+                (*name).to_string()
+            }
+        })
+        .collect();
+    parts.sort();
+    let mut joined = parts.join(", ");
+    const MAX: usize = 25;
+    if joined.chars().count() > MAX {
+        joined = joined.chars().take(MAX - 1).collect::<String>();
+        joined.push('…');
+    }
+    joined
+}
+
+/// Maps a normalised action-label first word to a stable static stem.
+/// Falls back to the input when the word is one we haven't catalogued —
+/// gives operators useful labels for plugin-defined actions without
+/// special-casing every variant.
+fn label_stem(word: &str) -> &'static str {
+    match word {
+        "rebuild" => "rebuild",
+        "restart" => "restart",
+        "swap" => "swap",
+        "terminate" => "terminate",
+        "deploy" => "deploy",
+        "upgrade" => "upgrade",
+        "clone" => "clone",
+        "scale" => "scale",
+        "abort" => "abort",
+        "save" => "config-save",
+        "delete" => "delete",
+        "apply" => "config-apply",
+        _ => "action",
+    }
+}
+
 /// Pure: render a one-line summary of a group of envs for the per-app
 /// banner row. Shape: `"3 envs · 2 web · 1 worker · 1 red"`. Health
 /// buckets only appear when non-zero so the summary doesn't include
@@ -5054,6 +5177,34 @@ mod tests {
         assert_eq!(cursor_marker(&t), "▌ ");
         t.icons = IconStyle::Powerline;
         assert!(cursor_marker(&t).contains('\u{e0b0}'));
+    }
+
+    #[test]
+    fn summarize_in_flight_collapses_duplicates() {
+        let s = summarize_in_flight(&["Rebuild env", "Rebuild env", "Deploy version"]);
+        assert!(s.contains("rebuild ×2"), "got {s:?}");
+        assert!(s.contains("deploy"), "got {s:?}");
+    }
+
+    #[test]
+    fn summarize_in_flight_truncates() {
+        let s = summarize_in_flight(&[
+            "Terminate env",
+            "Rebuild env",
+            "Restart env",
+            "Deploy version",
+            "Swap CNAMEs",
+        ]);
+        assert!(
+            s.chars().count() <= 25,
+            "got {} chars: {s:?}",
+            s.chars().count()
+        );
+    }
+
+    #[test]
+    fn summarize_in_flight_empty() {
+        assert_eq!(summarize_in_flight(&[]), "");
     }
 
     #[test]
