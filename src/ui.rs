@@ -627,7 +627,9 @@ fn draw_saved_configs_interactive(
             .unwrap_or_else(|| "?".into());
         Line::from(Span::styled(
             format!(" delete {cur_label}?  (Y/N)"),
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.health_red)
+                .add_modifier(Modifier::BOLD),
         ))
     } else {
         Line::from(Span::styled(
@@ -1091,14 +1093,14 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         app.redact,
     );
 
-    let mut line1 = kv("Account", &account);
+    let mut line1 = kv("Account", &account, theme);
     line1.push(sep(theme));
-    line1.extend(kv("Region", &app.context.region));
+    line1.extend(kv("Region", &app.context.region, theme));
     line1.push(sep(theme));
-    line1.extend(kv("Profile", &profile));
-    let mut line2 = kv("Caller", &caller);
+    line1.extend(kv("Profile", &profile, theme));
+    let mut line2 = kv("Caller", &caller, theme);
     line2.push(sep(theme));
-    line2.extend(kv("Envs", &env_count));
+    line2.extend(kv("Envs", &env_count, theme));
     // Health-bucket delta since the previous refresh, e.g. "▲1 Red ▼1 Yellow".
     for (bucket, delta) in app.health_delta.iter().chain(app.status_delta.iter()) {
         if *delta == 0 {
@@ -1120,14 +1122,14 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         ));
     }
     line2.push(sep(theme));
-    line2.extend(kv("Last", &last));
+    line2.extend(kv("Last", &last, theme));
     line2.push(sep(theme));
     line2.push(Span::raw("Status: "));
     line2.push(status);
     let sort_dir = if app.sort_desc { "↓" } else { "↑" };
     let sort_label = format!("{}{}", app.sort_key.label(), sort_dir);
     line2.push(sep(theme));
-    line2.extend(kv("Sort", &sort_label));
+    line2.extend(kv("Sort", &sort_label, theme));
     if !app.filter.is_empty() {
         line2.push(sep(theme));
         let filter_text = app.filter.clone();
@@ -1234,20 +1236,41 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     if !app.named_filters.is_empty() {
         let mut chips: Vec<Span> =
             vec![Span::styled("Filters: ", Style::default().fg(theme.muted))];
-        for (name, value) in app.named_filters.iter() {
-            let active = !app.filter.is_empty() && value == &app.filter;
-            chips.push(Span::styled(
-                format!(" {name} "),
-                if active {
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(theme.title_alt)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(theme.muted)
-                },
-            ));
-            chips.push(Span::raw(" "));
+        if theme.icons == IconStyle::Powerline {
+            // Powerline mode: render the chip bar as a ribbon. Active chip
+            // uses title_alt as its bg (the same colour the alerts pill
+            // uses for "selected"); inactive chips use row_alt_bg so they
+            // read as a faint trough behind the active one.
+            let pills: Vec<(String, Color, Color)> = app
+                .named_filters
+                .iter()
+                .map(|(name, value)| {
+                    let active = !app.filter.is_empty() && value == &app.filter;
+                    let (fg, bg) = if active {
+                        (Color::Black, theme.title_alt)
+                    } else {
+                        (theme.muted, theme.row_alt_bg)
+                    };
+                    (name.to_string(), fg, bg)
+                })
+                .collect();
+            chips.extend(pill_chain(&pills, theme));
+        } else {
+            for (name, value) in app.named_filters.iter() {
+                let active = !app.filter.is_empty() && value == &app.filter;
+                chips.push(Span::styled(
+                    format!(" {name} "),
+                    if active {
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(theme.title_alt)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme.muted)
+                    },
+                ));
+                chips.push(Span::raw(" "));
+            }
         }
         paragraph_lines.push(Line::from(chips));
     }
@@ -1598,7 +1621,8 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                 let count = columns.len();
                 if theme.icons == IconStyle::Powerline && !next_app_name.is_empty() {
                     // Per-app coloured ribbon banner. NAME cell holds a
-                    // pill+arrow so the next-app section starts with its
+                    // wedge-pill-wedge ribbon (left E0B2 cap + pill + right
+                    // E0B0 cap) so the next-app section starts with its
                     // name visible in its own colour. Remaining cells stay
                     // as dashes in the same colour for visual continuity.
                     let cells: Vec<Cell> = columns
@@ -1607,6 +1631,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                         .map(|(i, (label, _))| {
                             if i == 0 && *label == "NAME" {
                                 Cell::from(Line::from(vec![
+                                    Span::styled("\u{e0b2}", Style::default().fg(next_color)),
                                     Span::styled(
                                         format!(" {next_app_name} "),
                                         Style::default()
@@ -1957,50 +1982,51 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
 
     // Top row: contextual state (filter input, command input, active filter, status/error message, or blank).
     let mut top: Vec<Span> = Vec::new();
+    let theme = &app.theme;
     match app.mode {
         Mode::Filter => {
             top.push(Span::styled(
                 " /",
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(theme.health_yellow)
                     .add_modifier(Modifier::BOLD),
             ));
             top.push(Span::raw(" "));
             top.push(Span::styled(
                 app.filter.clone(),
-                Style::default().fg(Color::White),
+                Style::default().fg(theme.text),
             ));
             top.push(Span::styled(
                 "_",
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(theme.health_yellow)
                     .add_modifier(Modifier::SLOW_BLINK),
             ));
             top.push(Span::styled(
                 "  [enter] apply  [esc] cancel",
-                Style::default().fg(Color::Gray),
+                Style::default().fg(theme.muted),
             ));
         }
         Mode::Command => {
             top.push(Span::styled(
                 " :",
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme.title)
                     .add_modifier(Modifier::BOLD),
             ));
             top.push(Span::styled(
                 app.command_input.clone(),
-                Style::default().fg(Color::White),
+                Style::default().fg(theme.text),
             ));
             top.push(Span::styled(
                 "_",
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme.title)
                     .add_modifier(Modifier::SLOW_BLINK),
             ));
             top.push(Span::styled(
                 "   [enter] run  [esc] cancel",
-                Style::default().fg(Color::Gray),
+                Style::default().fg(theme.muted),
             ));
         }
         Mode::QuickJump => {
@@ -2030,17 +2056,17 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
             if let Some(msg) = &app.error_message {
                 top.push(Span::styled(
                     format!(" {msg}"),
-                    Style::default().fg(Color::Red),
+                    Style::default().fg(theme.health_red),
                 ));
             } else if let Some(msg) = &app.status_message {
                 top.push(Span::styled(
                     format!(" {msg}"),
-                    Style::default().fg(Color::Yellow),
+                    Style::default().fg(theme.health_yellow),
                 ));
             } else if !app.filter.is_empty() {
                 top.push(Span::styled(
                     format!(" filter: {}", app.filter),
-                    Style::default().fg(Color::Yellow),
+                    Style::default().fg(theme.health_yellow),
                 ));
             }
         }
@@ -2088,12 +2114,13 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
     // (truncation) rather than wrapping into the body region. Mode key
     // strips are kept ≤ ~150 chars to fit standard terminals.
     f.render_widget(
-        Paragraph::new(Span::styled(keys, Style::default().fg(Color::Gray))),
+        Paragraph::new(Span::styled(keys, Style::default().fg(theme.muted))),
         rows[1],
     );
 }
 
 fn draw_help(f: &mut Frame, area: Rect, app: &App) {
+    let theme = &app.theme;
     let popup = centered_rect(70, 70, area);
     f.render_widget(Clear, popup);
     // Per-context help: when the user pressed `?` inside Detail / DLQ /
@@ -2114,82 +2141,86 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App) {
     let lines = vec![
         Line::from(Span::styled(
             "ebman — keybindings",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(app.theme.title)
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        help_line("j / ↓ / wheel", "move selection down"),
-        help_line("k / ↑ / wheel", "move selection up"),
-        help_line("g / G", "jump to top / bottom"),
-        help_line("enter", "open drill-down view for the selected env"),
-        help_line("a", "open actions menu (rebuild / restart / swap / terminate)"),
-        help_line("b", "open selected env in the AWS console"),
-        help_line("D", "describe overlay (raw env dump as JSON)"),
-        help_line("f", "freeze / unfreeze auto-refresh"),
-        help_line("1 - 9", "jump to env at position 1-9 in the current view"),
-        help_line("'", "name-jump: type a prefix to move selection"),
-        help_line("Ctrl-W", "yank equivalent `aws elasticbeanstalk describe-environments` command"),
-        help_line("tab / shift-tab", "cycle scope (envs ↔ apps)"),
-        help_line("click", "select row"),
-        help_line("/", "filter rows (name, app, status, health)"),
-        help_line("s / S", "cycle sort key / toggle ascending"),
-        help_line("Ctrl-G", "toggle group-by-application"),
-        help_line("Ctrl-E", "toggle events panel"),
-        help_line("y / Y", "yank CNAME / name to clipboard"),
-        help_line("Ctrl-Y", "export filtered table as TSV to clipboard"),
-        help_line("r", "switch AWS region"),
-        help_line("p", "switch AWS profile"),
-        help_line("Ctrl-K", "command palette: fuzzy search across commands / envs / views / plugins"),
-        help_line("Ctrl-R / F5", "refresh now"),
-        help_line("Ctrl-X", "toggle redact mode (account id, ARN, CNAMEs)"),
-        help_line("?", "toggle this help"),
-        help_line("q / Ctrl-C", "quit"),
+        help_line("j / ↓ / wheel", "move selection down", theme),
+        help_line("k / ↑ / wheel", "move selection up", theme),
+        help_line("g / G", "jump to top / bottom", theme),
+        help_line("enter", "open drill-down view for the selected env", theme),
+        help_line("a", "open actions menu (rebuild / restart / swap / terminate)", theme),
+        help_line("b", "open selected env in the AWS console", theme),
+        help_line("D", "describe overlay (raw env dump as JSON)", theme),
+        help_line("f", "freeze / unfreeze auto-refresh", theme),
+        help_line("1 - 9", "jump to env at position 1-9 in the current view", theme),
+        help_line("'", "name-jump: type a prefix to move selection", theme),
+        help_line("Ctrl-W", "yank equivalent `aws elasticbeanstalk describe-environments` command", theme),
+        help_line("tab / shift-tab", "cycle scope (envs ↔ apps)", theme),
+        help_line("click", "select row", theme),
+        help_line("/", "filter rows (name, app, status, health)", theme),
+        help_line("s / S", "cycle sort key / toggle ascending", theme),
+        help_line("Ctrl-G", "toggle group-by-application", theme),
+        help_line("Ctrl-E", "toggle events panel", theme),
+        help_line("y / Y", "yank CNAME / name to clipboard", theme),
+        help_line("Ctrl-Y", "export filtered table as TSV to clipboard", theme),
+        help_line("r", "switch AWS region", theme),
+        help_line("p", "switch AWS profile", theme),
+        help_line("Ctrl-K", "command palette: fuzzy search across commands / envs / views / plugins", theme),
+        help_line("Ctrl-R / F5", "refresh now", theme),
+        help_line("Ctrl-X", "toggle redact mode (account id, ARN, CNAMEs)", theme),
+        help_line("?", "toggle this help", theme),
+        help_line("q / Ctrl-C", "quit", theme),
         Line::from(""),
         Line::from(Span::styled(
             "Command bar (press :)",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(app.theme.title)
+                .add_modifier(Modifier::BOLD),
         )),
-        help_line(":q", "quit"),
-        help_line(":region X", "switch AWS region"),
-        help_line(":profile X", "switch AWS profile"),
-        help_line(":sort KEY [desc]", "set sort (name/app/status/health/version/age)"),
-        help_line(":group on|off", "toggle grouping"),
-        help_line(":redact on|off", "toggle redact mode"),
-        help_line(":save NAME", "save current filter as NAME"),
-        help_line(":f NAME / :filter NAME", "recall a saved filter"),
-        help_line(":filters / :drop NAME", "list / remove saved filters"),
-        help_line(":events on|off", "toggle the events panel"),
-        help_line(":export / :json / :report", "copy filtered table (TSV / JSON / Markdown)"),
-        help_line(":refresh", "re-fetch the table immediately"),
-        help_line(":readonly on|off", "toggle destructive-action lockout"),
-        help_line(":alias NAME LABEL", "set or update a local env alias"),
-        help_line(":alias-drop NAME", "remove an alias"),
-        help_line(":pin", "pin / unpin the selected env (also `*`)"),
-        help_line(":whatsnew", "embedded changelog popup"),
-        help_line(":save-view NAME", "snapshot filter/sort/grouping/scope under NAME"),
-        help_line(":view NAME", "load a previously saved view"),
-        help_line(":views / :view-drop NAME", "list / remove saved views"),
-        help_line(":history", "show recent info/error messages"),
-        help_line(":cols", "list / hide / show / reset columns (e.g. :cols hide PLATFORM)"),
-        help_line(":diff NAME", "side-by-side comparison with another env"),
-        help_line(":alarms", "CloudWatch alarms list for selected env"),
-        help_line(":loglevel LEVEL", "live-reload tracing filter (trace/debug/info/warn/error)"),
-        help_line(":saved-configs", "list EB saved configuration templates per application"),
-        help_line(":plugins  /  :NAME", "list / invoke plugin commands defined in commands.toml"),
-        help_line("[ / ] (Metrics tab)", "decrease / increase metric range (15m → 24h)"),
-        help_line("(Logs tab) ^R", "request tail logs (takes ~10–20s while EB samples instances)"),
-        help_line("(Logs tab) s", "open CW Logs streaming overlay (live tail; needs `:logs-stream on`)"),
-        help_line("(Logs tab) /", "regex-filter the visible log lines"),
+        help_line(":q", "quit", theme),
+        help_line(":region X", "switch AWS region", theme),
+        help_line(":profile X", "switch AWS profile", theme),
+        help_line(":sort KEY [desc]", "set sort (name/app/status/health/version/age)", theme),
+        help_line(":group on|off", "toggle grouping", theme),
+        help_line(":redact on|off", "toggle redact mode", theme),
+        help_line(":save NAME", "save current filter as NAME", theme),
+        help_line(":f NAME / :filter NAME", "recall a saved filter", theme),
+        help_line(":filters / :drop NAME", "list / remove saved filters", theme),
+        help_line(":events on|off", "toggle the events panel", theme),
+        help_line(":export / :json / :report", "copy filtered table (TSV / JSON / Markdown)", theme),
+        help_line(":refresh", "re-fetch the table immediately", theme),
+        help_line(":readonly on|off", "toggle destructive-action lockout", theme),
+        help_line(":alias NAME LABEL", "set or update a local env alias", theme),
+        help_line(":alias-drop NAME", "remove an alias", theme),
+        help_line(":pin", "pin / unpin the selected env (also `*`)", theme),
+        help_line(":whatsnew", "embedded changelog popup", theme),
+        help_line(":save-view NAME", "snapshot filter/sort/grouping/scope under NAME", theme),
+        help_line(":view NAME", "load a previously saved view", theme),
+        help_line(":views / :view-drop NAME", "list / remove saved views", theme),
+        help_line(":history", "show recent info/error messages", theme),
+        help_line(":cols", "list / hide / show / reset columns (e.g. :cols hide PLATFORM)", theme),
+        help_line(":diff NAME", "side-by-side comparison with another env", theme),
+        help_line(":alarms", "CloudWatch alarms list for selected env", theme),
+        help_line(":loglevel LEVEL", "live-reload tracing filter (trace/debug/info/warn/error)", theme),
+        help_line(":saved-configs", "list EB saved configuration templates per application", theme),
+        help_line(":plugins  /  :NAME", "list / invoke plugin commands defined in commands.toml", theme),
+        help_line("[ / ] (Metrics tab)", "decrease / increase metric range (15m → 24h)", theme),
+        help_line("(Logs tab) ^R", "request tail logs (takes ~10–20s while EB samples instances)", theme),
+        help_line("(Logs tab) s", "open CW Logs streaming overlay (live tail; needs `:logs-stream on`)", theme),
+        help_line("(Logs tab) /", "regex-filter the visible log lines", theme),
         Line::from(""),
         Line::from(Span::styled(
             format!(
                 "Refresh runs automatically every {interval_secs}s. Theme: {}. Configurable in ~/.config/ebman/config.toml.",
                 app.theme.name
             ),
-            Style::default().fg(Color::Gray),
+            Style::default().fg(app.theme.muted),
         )),
         Line::from(Span::styled(
             "Region/profile come from the standard AWS env (AWS_REGION, AWS_PROFILE).",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(app.theme.muted),
         )),
     ];
     let help = Paragraph::new(lines)
@@ -2276,15 +2307,13 @@ fn draw_dlq(f: &mut Frame, area: Rect, app: &mut App) {
                 ListItem::new(Line::from(vec![
                     Span::styled(
                         format!(" {:<20} ", m.id),
-                        Style::default()
-                            .fg(Color::White)
-                            .add_modifier(Modifier::BOLD),
+                        Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
                         format!("recv:{:<3} ", m.receive_count),
-                        Style::default().fg(Color::Yellow),
+                        Style::default().fg(theme.health_yellow),
                     ),
-                    Span::styled(format!("{:>5} ", age), Style::default().fg(Color::Gray)),
+                    Span::styled(format!("{:>5} ", age), Style::default().fg(theme.muted)),
                     Span::raw(preview),
                 ]))
             })
@@ -2293,7 +2322,7 @@ fn draw_dlq(f: &mut Frame, area: Rect, app: &mut App) {
             .block(block)
             .highlight_style(
                 Style::default()
-                    .bg(Color::Rgb(40, 60, 90))
+                    .bg(theme.row_selected_bg)
                     .add_modifier(Modifier::BOLD),
             )
             .highlight_symbol("▌ ");
@@ -2305,32 +2334,36 @@ fn draw_dlq(f: &mut Frame, area: Rect, app: &mut App) {
         let line = Paragraph::new(Line::from(vec![
             Span::styled(
                 " PURGE DLQ — type ",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.health_red)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 dlq.env_name.clone(),
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(theme.health_yellow)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 " to confirm: ",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.health_red)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 dlq.purge_typed.clone(),
                 Style::default()
                     .fg(if dlq.purge_typed == dlq.env_name {
-                        Color::Green
+                        theme.health_green
                     } else {
-                        Color::White
+                        theme.text
                     })
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 "_",
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(theme.health_yellow)
                     .add_modifier(Modifier::SLOW_BLINK),
             ),
         ]));
@@ -2346,10 +2379,10 @@ fn draw_dlq(f: &mut Frame, area: Rect, app: &mut App) {
         };
         let footer = Paragraph::new(vec![
             Line::from(match &dlq.error {
-                Some(err) => Span::styled(format!(" {err}"), Style::default().fg(Color::Red)),
+                Some(err) => Span::styled(format!(" {err}"), Style::default().fg(theme.health_red)),
                 None => Span::raw(""),
             }),
-            Line::from(Span::styled(keys, Style::default().fg(Color::Gray))),
+            Line::from(Span::styled(keys, Style::default().fg(theme.muted))),
         ]);
         f.render_widget(footer, chunks[2]);
     }
@@ -2455,7 +2488,7 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
             f.render_widget(
                 Paragraph::new(Span::styled(
                     " j/k move   type to filter   [enter] confirm   [esc] cancel",
-                    Style::default().fg(Color::Gray),
+                    Style::default().fg(theme.muted),
                 )),
                 layout[2],
             );
@@ -2467,9 +2500,9 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                 " confirm ",
                 Style::default()
                     .fg(if modal.action.destructive() {
-                        Color::Red
+                        theme.health_red
                     } else {
-                        Color::Magenta
+                        theme.title_alt
                     })
                     .add_modifier(Modifier::BOLD),
             ));
@@ -2528,9 +2561,9 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                 format!("  {summary}"),
                 Style::default()
                     .fg(if modal.action.destructive() {
-                        Color::Red
+                        theme.health_red
                     } else {
-                        Color::White
+                        theme.text
                     })
                     .add_modifier(Modifier::BOLD),
             )));
@@ -2613,19 +2646,19 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                 ConfirmKind::YesNo => {
                     lines.push(Line::from(Span::styled(
                         "  [y] yes / [enter]    [n] no / [esc]",
-                        Style::default().fg(Color::Gray),
+                        Style::default().fg(theme.muted),
                     )));
                 }
                 ConfirmKind::TypeName => {
                     lines.push(Line::from(vec![
-                        Span::styled("  type ", Style::default().fg(Color::Gray)),
+                        Span::styled("  type ", Style::default().fg(theme.muted)),
                         Span::styled(
                             modal.target_env.clone(),
                             Style::default()
-                                .fg(Color::Yellow)
+                                .fg(theme.health_yellow)
                                 .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(" to confirm:", Style::default().fg(Color::Gray)),
+                        Span::styled(" to confirm:", Style::default().fg(theme.muted)),
                     ]));
                     lines.push(Line::from(""));
                     let matches = modal.typed == modal.target_env;
@@ -2634,13 +2667,17 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                         Span::styled(
                             modal.typed.clone(),
                             Style::default()
-                                .fg(if matches { Color::Green } else { Color::White })
+                                .fg(if matches {
+                                    theme.health_green
+                                } else {
+                                    theme.text
+                                })
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(
                             "_",
                             Style::default()
-                                .fg(Color::Yellow)
+                                .fg(theme.health_yellow)
                                 .add_modifier(Modifier::SLOW_BLINK),
                         ),
                     ]));
@@ -2651,7 +2688,7 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                         } else {
                             "  [esc] cancel"
                         },
-                        Style::default().fg(Color::Gray),
+                        Style::default().fg(theme.muted),
                     )));
                 }
             }
@@ -2671,19 +2708,19 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                 Line::from(Span::styled(
                     format!("  {} on {env}…", action.label()),
                     Style::default()
-                        .fg(Color::Yellow)
+                        .fg(theme.health_yellow)
                         .add_modifier(Modifier::BOLD),
                 )),
                 Line::from(""),
                 Line::from(Span::styled(
                     format!("  elapsed {elapsed}s"),
-                    Style::default().fg(Color::Gray),
+                    Style::default().fg(theme.muted),
                 )),
             ];
             let block = Block::default().borders(Borders::ALL).title(Span::styled(
                 " running ",
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(theme.health_yellow)
                     .add_modifier(Modifier::BOLD),
             ));
             f.render_widget(Paragraph::new(lines).block(block), popup);
@@ -2709,12 +2746,13 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
         .split(area);
 
     // Env header
-    let mut h1 = kv("Name", &env.name);
-    h1.push(sep(&app.theme));
-    h1.extend(kv("Application", &env.application));
-    h1.push(sep(&app.theme));
-    h1.extend(kv("Status", &env.status));
-    h1.push(sep(&app.theme));
+    let theme = &app.theme;
+    let mut h1 = kv("Name", &env.name, theme);
+    h1.push(sep(theme));
+    h1.extend(kv("Application", &env.application, theme));
+    h1.push(sep(theme));
+    h1.extend(kv("Status", &env.status, theme));
+    h1.push(sep(theme));
     h1.push(Span::styled(
         env.health.clone(),
         health_style(&env.health, &app.theme),
@@ -2730,11 +2768,11 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
     }
 
     let cname_text = redact(&env.cname, app.redact);
-    let mut h2 = kv("Platform", &env.platform);
-    h2.push(sep(&app.theme));
-    h2.extend(kv("Version", &env.version_label));
-    h2.push(sep(&app.theme));
-    h2.extend(kv("CNAME", &cname_text));
+    let mut h2 = kv("Platform", &env.platform, theme);
+    h2.push(sep(theme));
+    h2.extend(kv("Version", &env.version_label, theme));
+    h2.push(sep(theme));
+    h2.extend(kv("CNAME", &cname_text, theme));
     let header_title = format!("environment: {}", env.name);
     let header = Paragraph::new(vec![Line::from(h1), Line::from(h2), Line::raw("")]).block(
         titled_block(&app.theme, &header_title, true, app.theme.title),
@@ -2947,7 +2985,7 @@ fn draw_detail_events(f: &mut Frame, area: Rect, detail: &crate::app::DetailStat
         .title(Span::styled(
             title,
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme.title)
                 .add_modifier(Modifier::BOLD),
         ))
         .padding(Padding::horizontal(1));
@@ -2972,35 +3010,32 @@ fn draw_detail_events(f: &mut Frame, area: Rect, detail: &crate::app::DetailStat
             Span::styled(
                 "/",
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(theme.health_yellow)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" "),
-            Span::styled(
-                detail.search_input.clone(),
-                Style::default().fg(Color::White),
-            ),
+            Span::styled(detail.search_input.clone(), Style::default().fg(theme.text)),
         ];
         if detail.search_active {
             spans.push(Span::styled(
                 "_",
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(theme.health_yellow)
                     .add_modifier(Modifier::SLOW_BLINK),
             ));
             spans.push(Span::styled(
                 "  [enter] apply  [esc] cancel",
-                Style::default().fg(Color::Gray),
+                Style::default().fg(theme.muted),
             ));
         } else if let Some(err) = &detail.search_error {
             spans.push(Span::styled(
                 format!("  {err}"),
-                Style::default().fg(Color::Red),
+                Style::default().fg(theme.health_red),
             ));
         } else if detail.search_pattern.is_some() {
             spans.push(Span::styled(
                 "  n / N next/prev   / re-edit   esc clear",
-                Style::default().fg(Color::Gray),
+                Style::default().fg(theme.muted),
             ));
         }
         f.render_widget(Paragraph::new(Line::from(spans)), sa);
@@ -3069,7 +3104,7 @@ fn draw_detail_instances(
         .title(Span::styled(
             format!(" Instances [{}] ", detail.instances.len()),
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme.title)
                 .add_modifier(Modifier::BOLD),
         ))
         .padding(Padding::horizontal(1));
@@ -3141,9 +3176,7 @@ fn draw_detail_instances(
                 .fg(theme.title_alt)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(theme.text).add_modifier(Modifier::BOLD)
         });
         let head = vec![
             Span::styled(marker.to_string(), marker_style),
@@ -3154,22 +3187,22 @@ fn draw_detail_instances(
             ),
             Span::styled(
                 format!("{:<12} ", i.instance_type),
-                with_bg(Style::default().fg(Color::Gray)),
+                with_bg(Style::default().fg(theme.muted)),
             ),
             Span::styled(
                 format!("{:<14} ", i.availability_zone),
-                with_bg(Style::default().fg(Color::Gray)),
+                with_bg(Style::default().fg(theme.muted)),
             ),
             Span::styled(
                 format!("up {age}"),
-                with_bg(Style::default().fg(Color::Gray)),
+                with_bg(Style::default().fg(theme.muted)),
             ),
         ];
         lines.push(Line::from(head));
         for cause in &i.causes {
             lines.push(Line::from(Span::styled(
                 format!("      ↳ {cause}"),
-                with_bg(Style::default().fg(Color::Yellow)),
+                with_bg(Style::default().fg(theme.health_yellow)),
             )));
         }
     }
@@ -3433,7 +3466,7 @@ fn draw_detail_queue(
         .title(Span::styled(
             " Queue ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme.title)
                 .add_modifier(Modifier::BOLD),
         ))
         .padding(Padding::horizontal(2));
@@ -3555,13 +3588,13 @@ fn draw_detail_queue(
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "  j/k pick queue · enter view messages · d quick-open DLQ",
-        Style::default().fg(Color::Gray),
+        Style::default().fg(theme.muted),
     )));
     if detail.loading_queues {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "  loading queue stats…",
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(theme.health_yellow),
         )));
     }
     f.render_widget(Paragraph::new(lines).block(block), area);
@@ -3987,77 +4020,107 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
 
     let hint = Paragraph::new(Span::styled(
         " j/k move  type to filter  enter select  esc cancel",
-        Style::default().fg(Color::Gray),
+        Style::default().fg(theme.muted),
     ));
     f.render_widget(hint, layout[2]);
 }
 
 fn draw_help_detail(f: &mut Frame, popup: Rect, app: &App) {
+    let theme = &app.theme;
     let lines = vec![
         Line::from(Span::styled(
             "Detail view — keybindings",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(app.theme.title)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         help_line(
             "tab / l",
             "next tab (Events → Instances → Metrics → Queue → Logs → Config)",
+            theme,
         ),
-        help_line("shift-tab / h", "previous tab"),
+        help_line("shift-tab / h", "previous tab", theme),
         help_line(
             "j / k",
             "scroll within active tab (cursor on Instances / Queue tabs)",
+            theme,
         ),
-        help_line("^R", "re-fetch active tab's data"),
-        help_line("R", "toggle per-tab auto-refresh"),
-        help_line("a", "actions menu (rebuild / restart / deploy / …)"),
-        help_line("b", "open env in AWS console"),
-        help_line("D", "describe overlay (raw env dump as JSON)"),
-        help_line("d", "open DLQ for this env (Worker tier only)"),
-        help_line("*", "pin / unpin"),
+        help_line("^R", "re-fetch active tab's data", theme),
+        help_line("R", "toggle per-tab auto-refresh", theme),
+        help_line("a", "actions menu (rebuild / restart / deploy / …)", theme),
+        help_line("b", "open env in AWS console", theme),
+        help_line("D", "describe overlay (raw env dump as JSON)", theme),
+        help_line("d", "open DLQ for this env (Worker tier only)", theme),
+        help_line("*", "pin / unpin", theme),
         Line::from(""),
-        Line::from(Span::styled("Events tab", Style::default().fg(Color::Cyan))),
-        help_line("/", "regex filter event messages"),
-        help_line("n / N", "jump next / previous match"),
+        Line::from(Span::styled(
+            "Events tab",
+            Style::default().fg(app.theme.title),
+        )),
+        help_line("/", "regex filter event messages", theme),
+        help_line("n / N", "jump next / previous match", theme),
         Line::from(""),
         Line::from(Span::styled(
             "Metrics tab",
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(app.theme.title),
         )),
-        help_line("[ / ]", "decrease / increase metric range (15m → 24h)"),
-        help_line("mouse hover", "show metric value at cursor x-position"),
+        help_line(
+            "[ / ]",
+            "decrease / increase metric range (15m → 24h)",
+            theme,
+        ),
+        help_line(
+            "mouse hover",
+            "show metric value at cursor x-position",
+            theme,
+        ),
         Line::from(""),
         Line::from(Span::styled(
             "Instances tab",
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(app.theme.title),
         )),
         help_line(
             "enter / i",
             "open instance info overlay (id, type, AZ, health, causes)",
+            theme,
         ),
-        help_line("b", "open instance in EC2 console (browser)"),
-        help_line("s", "embedded SSM shell into selected instance"),
-        help_line("y", "yank instance ID"),
-        help_line("x", "terminate selected instance (Y/N; ASG replaces)"),
+        help_line("b", "open instance in EC2 console (browser)", theme),
+        help_line("s", "embedded SSM shell into selected instance", theme),
+        help_line("y", "yank instance ID", theme),
+        help_line(
+            "x",
+            "terminate selected instance (Y/N; ASG replaces)",
+            theme,
+        ),
         Line::from(""),
-        Line::from(Span::styled("Queue tab", Style::default().fg(Color::Cyan))),
-        help_line("j / k", "pick Main / DLQ"),
-        help_line("enter", "open queue viewer"),
-        help_line("d", "quick-open DLQ"),
+        Line::from(Span::styled(
+            "Queue tab",
+            Style::default().fg(app.theme.title),
+        )),
+        help_line("j / k", "pick Main / DLQ", theme),
+        help_line("enter", "open queue viewer", theme),
+        help_line("d", "quick-open DLQ", theme),
         Line::from(""),
-        Line::from(Span::styled("Logs tab", Style::default().fg(Color::Cyan))),
-        help_line("^R", "request tail logs (10-20s wait for instance samples)"),
+        Line::from(Span::styled(
+            "Logs tab",
+            Style::default().fg(app.theme.title),
+        )),
+        help_line(
+            "^R",
+            "request tail logs (10-20s wait for instance samples)",
+            theme,
+        ),
         help_line(
             "s",
             "open CW Logs streaming overlay (requires `:logs-stream on`)",
+            theme,
         ),
-        help_line("/", "regex filter visible lines"),
+        help_line("/", "regex filter visible lines", theme),
         Line::from(""),
         Line::from(Span::styled(
             "esc / q  to close help; from Normal mode `?` shows the full keymap",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme.muted),
         )),
     ];
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
@@ -4068,29 +4131,35 @@ fn draw_help_detail(f: &mut Frame, popup: Rect, app: &App) {
 }
 
 fn draw_help_dlq(f: &mut Frame, popup: Rect, app: &App) {
+    let theme = &app.theme;
     let lines = vec![
         Line::from(Span::styled(
             "Queue viewer — keybindings",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(app.theme.title)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        help_line("j / k", "move cursor"),
-        help_line("enter", "view full message body"),
-        help_line("r", "resend selected (DLQ → main) — DLQ view only"),
-        help_line("x", "delete selected message (Y/N confirm)"),
+        help_line("j / k", "move cursor", theme),
+        help_line("enter", "view full message body", theme),
+        help_line("r", "resend selected (DLQ → main) — DLQ view only", theme),
+        help_line("x", "delete selected message (Y/N confirm)", theme),
         help_line(
             "p",
             "purge queue (strict typed-name confirm) — DLQ view only",
+            theme,
         ),
-        help_line("m", "toggle Main ↔ DLQ"),
-        help_line("^R", "refetch messages (deeper peek with long-polling)"),
-        help_line("esc / q", "close viewer"),
+        help_line("m", "toggle Main ↔ DLQ", theme),
+        help_line(
+            "^R",
+            "refetch messages (deeper peek with long-polling)",
+            theme,
+        ),
+        help_line("esc / q", "close viewer", theme),
         Line::from(""),
         Line::from(Span::styled(
             "Resend and purge are disabled in Main view — too dangerous on a live queue.",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme.muted),
         )),
     ];
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
@@ -4101,36 +4170,42 @@ fn draw_help_dlq(f: &mut Frame, popup: Rect, app: &App) {
 }
 
 fn draw_help_action(f: &mut Frame, popup: Rect, app: &App) {
+    let theme = &app.theme;
     let lines = vec![
         Line::from(Span::styled(
             "Action menu — keybindings",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(app.theme.title)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        help_line("j / k", "move cursor between actions"),
-        help_line("enter", "select; opens confirm modal (or picker for Swap)"),
-        help_line("esc", "close menu"),
+        help_line("j / k", "move cursor between actions", theme),
+        help_line(
+            "enter",
+            "select; opens confirm modal (or picker for Swap)",
+            theme,
+        ),
+        help_line("esc", "close menu", theme),
         Line::from(""),
         Line::from(Span::styled(
             "Confirm modal",
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(app.theme.title),
         )),
-        help_line("y / enter", "confirm and dispatch"),
-        help_line("n / esc", "cancel"),
+        help_line("y / enter", "confirm and dispatch", theme),
+        help_line("n / esc", "cancel", theme),
         help_line(
             "(typing)",
             "TypeName confirm (Terminate) — must match env name exactly",
+            theme,
         ),
         Line::from(""),
         Line::from(Span::styled(
             "Parameterised actions (Deploy / Upgrade / Clone / Scale) close the menu",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme.muted),
         )),
         Line::from(Span::styled(
             "and prefill the command bar; type the arg and Enter to run.",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme.muted),
         )),
     ];
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
@@ -4141,38 +4216,43 @@ fn draw_help_action(f: &mut Frame, popup: Rect, app: &App) {
 }
 
 fn draw_help_saved_configs(f: &mut Frame, popup: Rect, app: &App) {
+    let theme = &app.theme;
     let lines = vec![
         Line::from(Span::styled(
             "Saved configurations — keybindings",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(app.theme.title)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        help_line("j / k / arrows", "move cursor up / down"),
-        help_line("g / G", "jump to top / bottom"),
+        help_line("j / k / arrows", "move cursor up / down", theme),
+        help_line("g / G", "jump to top / bottom", theme),
         help_line(
             "enter / a",
             "apply selected template to the currently-selected env",
+            theme,
         ),
         help_line(
             "i",
             "inspect template — open its option settings as a sorted text dump",
+            theme,
         ),
         help_line(
             "c",
             "close overlay + prefill `:config-save ` to save current env as a new template",
+            theme,
         ),
         help_line(
             "x",
             "delete selected template (Y/N confirm — config templates are recreatable)",
+            theme,
         ),
-        help_line("?", "this help"),
-        help_line("esc / q", "close overlay"),
+        help_line("?", "this help", theme),
+        help_line("esc / q", "close overlay", theme),
         Line::from(""),
         Line::from(Span::styled(
             "Apply target = whichever env the table cursor is on.",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme.muted),
         )),
     ];
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
@@ -4188,25 +4268,30 @@ fn draw_help_saved_configs(f: &mut Frame, popup: Rect, app: &App) {
 }
 
 fn draw_help_shell(f: &mut Frame, popup: Rect, app: &App) {
+    let theme = &app.theme;
     let lines = vec![
         Line::from(Span::styled(
             "Embedded shell — keybindings",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(app.theme.title)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(Span::styled(
             "Almost every key is forwarded to the subprocess. Exceptions:",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme.muted),
         )),
         Line::from(""),
-        help_line("F12", "detach back to ebman (subprocess keeps running)"),
-        help_line("^D / exit", "close the session"),
+        help_line(
+            "F12",
+            "detach back to ebman (subprocess keeps running)",
+            theme,
+        ),
+        help_line("^D / exit", "close the session", theme),
         Line::from(""),
         Line::from(Span::styled(
             "Open from Instances tab → s on a selected instance.",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme.muted),
         )),
     ];
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
@@ -4216,7 +4301,7 @@ fn draw_help_shell(f: &mut Frame, popup: Rect, app: &App) {
     f.render_widget(p, popup);
 }
 
-fn help_line<'a>(key: &'a str, desc: &'a str) -> Line<'a> {
+fn help_line<'a>(key: &'a str, desc: &'a str, theme: &Theme) -> Line<'a> {
     // Pad short keys to a 16-char column so descriptions line up, but if the
     // key itself is wider than the column always emit at least 2 spaces of
     // separator so it can't glue against the description.
@@ -4230,10 +4315,10 @@ fn help_line<'a>(key: &'a str, desc: &'a str) -> Line<'a> {
         Span::styled(
             formatted,
             Style::default()
-                .fg(Color::Yellow)
+                .fg(theme.health_yellow)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(desc, Style::default().fg(Color::White)),
+        Span::styled(desc, Style::default().fg(theme.text)),
     ])
 }
 
@@ -4284,6 +4369,15 @@ fn humanize_duration(secs: u64) -> String {
 
 fn breadcrumb_line(app: &App) -> Line<'static> {
     let theme = &app.theme;
+    // Powerline-style breadcrumb uses U+E0B1 (the same thin-separator glyph
+    // sep() emits) so the divider matches the header chain. Falls back to
+    // ASCII slash in unicode/ascii modes — the slash reads as a path
+    // separator without needing a Nerd Font.
+    let crumb_sep_glyph = if theme.icons == IconStyle::Powerline {
+        " \u{e0b1} "
+    } else {
+        " / "
+    };
     let region = app.context.region.clone();
     let mut spans: Vec<Span<'static>> = vec![Span::styled(
         region,
@@ -4298,14 +4392,20 @@ fn breadcrumb_line(app: &App) -> Line<'static> {
             .map(|e| (e.application.clone(), e.name.clone())),
     };
     if let Some((app_name, env_name)) = env {
-        spans.push(Span::styled(" / ", Style::default().fg(theme.muted)));
+        spans.push(Span::styled(
+            crumb_sep_glyph,
+            Style::default().fg(theme.muted),
+        ));
         spans.push(Span::styled(
             app_name,
             Style::default()
                 .fg(theme.title_alt)
                 .add_modifier(Modifier::BOLD),
         ));
-        spans.push(Span::styled(" / ", Style::default().fg(theme.muted)));
+        spans.push(Span::styled(
+            crumb_sep_glyph,
+            Style::default().fg(theme.muted),
+        ));
         spans.push(Span::styled(
             env_name,
             Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
@@ -4314,14 +4414,12 @@ fn breadcrumb_line(app: &App) -> Line<'static> {
     Line::from(spans)
 }
 
-fn kv<'a>(key: &'a str, value: &'a str) -> Vec<Span<'a>> {
+fn kv<'a>(key: &'a str, value: &'a str, theme: &Theme) -> Vec<Span<'a>> {
     vec![
-        Span::styled(format!("{key}: "), Style::default().fg(Color::Gray)),
+        Span::styled(format!("{key}: "), Style::default().fg(theme.muted)),
         Span::styled(
             value.to_string(),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
         ),
     ]
 }
@@ -4334,7 +4432,7 @@ fn sep(theme: &Theme) -> Span<'static> {
     } else {
         "  •  "
     };
-    Span::styled(glyph, Style::default().fg(Color::Gray))
+    Span::styled(glyph, Style::default().fg(theme.muted))
 }
 
 fn sparkline_for(
@@ -4711,6 +4809,42 @@ mod tests {
         // Zero budget: degenerate but must not crash; treat as 1.
         let (s, e) = visible_window(3, 10, 0);
         assert!(s <= 3 && 3 < e);
+    }
+
+    #[test]
+    fn pill_chain_uses_left_wedge_for_lead_in_in_powerline_mode() {
+        let mut t = Theme::dark();
+        t.icons = IconStyle::Powerline;
+        let pills = vec![("ALERT".to_string(), Color::White, Color::Red)];
+        let spans = pill_chain(&pills, &t);
+        // Expect: lead-in wedge (E0B2) + pill body + trailing wedge (E0B0).
+        let first_glyph: String = spans[0].content.to_string();
+        assert!(
+            first_glyph.contains('\u{e0b2}'),
+            "expected U+E0B2 left-pointing wedge as lead-in, got {first_glyph:?}"
+        );
+        // The trailing arrow at the end of the chain is still E0B0 (right-
+        // pointing), so the pill's outline is symmetric: ◀ ALERT ▶.
+        let last_glyph: String = spans.last().unwrap().content.to_string();
+        assert!(
+            last_glyph.contains('\u{e0b0}'),
+            "expected U+E0B0 right-pointing wedge as trail-out, got {last_glyph:?}"
+        );
+    }
+
+    #[test]
+    fn pill_chain_no_powerline_glyphs_in_unicode_mode() {
+        let mut t = Theme::dark();
+        t.icons = IconStyle::Unicode;
+        let pills = vec![("ALERT".to_string(), Color::White, Color::Red)];
+        let spans = pill_chain(&pills, &t);
+        for s in &spans {
+            let body = s.content.to_string();
+            assert!(
+                !body.contains('\u{e0b0}') && !body.contains('\u{e0b2}'),
+                "non-Powerline mode emitted a Powerline triangle: {body:?}"
+            );
+        }
     }
 
     #[test]
