@@ -55,6 +55,66 @@ fn pill(text: &str, fg: Color, bg: Color) -> Span<'static> {
     )
 }
 
+/// Render a chain of pills with Powerline-style triangular bridges in
+/// `IconStyle::Powerline`, or a plain pill+sep chain in other styles.
+///
+/// In Powerline mode each adjacent pair gets a U+E0B0 right-pointing
+/// triangle whose `fg` matches the left pill's bg and `bg` matches the
+/// right pill's bg — so the colours flow continuously, no gap visible.
+/// A trailing arrow with `bg=default` flows the ribbon back to the
+/// surrounding background.
+///
+/// The returned spans are intended to sit at the *end* of a Line; in
+/// non-Powerline mode the first sep is omitted so the caller controls the
+/// space between any preceding plain-text content and the chain head.
+fn pill_chain(items: &[(String, Color, Color)], theme: &Theme) -> Vec<Span<'static>> {
+    if items.is_empty() {
+        return Vec::new();
+    }
+    let powerline = theme.icons == IconStyle::Powerline;
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(items.len() * 2 + 1);
+    if powerline {
+        // Lead-in arrow: default bg → first pill's bg. Renders as a small
+        // coloured triangle pointing into the first pill, so the ribbon
+        // doesn't look like it's collided with the prior content.
+        let (_, _, first_bg) = items[0];
+        spans.push(Span::styled("\u{e0b0}", Style::default().fg(first_bg)));
+        for (i, (text, fg, bg)) in items.iter().enumerate() {
+            spans.push(Span::styled(
+                format!(" {text} "),
+                Style::default()
+                    .fg(*fg)
+                    .bg(*bg)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            // Bridge to next pill, or trailing arrow back to default bg.
+            let bridge_style = if let Some(next) = items.get(i + 1) {
+                Style::default().fg(*bg).bg(next.2)
+            } else {
+                Style::default().fg(*bg)
+            };
+            spans.push(Span::styled("\u{e0b0}", bridge_style));
+        }
+    } else {
+        // Non-Powerline: classic pill + bullet separator chain. Caller
+        // already injected a leading sep before the first pill — we just
+        // emit pills + interleaved separators.
+        for (i, (text, fg, bg)) in items.iter().enumerate() {
+            if i > 0 {
+                spans.push(sep(theme));
+            }
+            spans.push(Span::styled(
+                format!(" {text} "),
+                Style::default()
+                    .fg(*fg)
+                    .bg(*bg)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+    }
+    spans
+}
+
 fn health_dot(health: &str, theme: &Theme) -> Span<'static> {
     let c = match health.to_lowercase().as_str() {
         "green" | "ok" => theme.health_green,
@@ -1057,29 +1117,30 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ));
     }
+    // Collect every contextual pill into a single Vec, then emit them as a
+    // Powerline-style chain (triangular bridges flowing between pill bgs)
+    // or as classic pill+sep pairs in other icon styles. Building the chain
+    // up-front lets pill_chain compute the right-edge transition back to
+    // the default bg.
+    let mut chain_pills: Vec<(String, Color, Color)> = Vec::new();
     if app.grouped {
-        line2.push(sep(theme));
-        line2.push(pill("GROUPED", Color::Black, theme.title_alt));
+        chain_pills.push(("GROUPED".into(), Color::Black, theme.title_alt));
     }
     match app.view_mode {
         ViewMode::Compact => {
-            line2.push(sep(theme));
-            line2.push(pill("COMPACT", Color::Black, theme.accent));
+            chain_pills.push(("COMPACT".into(), Color::Black, theme.accent));
         }
         ViewMode::Spacious => {
-            line2.push(sep(theme));
-            line2.push(pill("SPACIOUS", Color::Black, theme.accent));
+            chain_pills.push(("SPACIOUS".into(), Color::Black, theme.accent));
         }
         ViewMode::Default => {}
     }
     if app.redact {
-        line2.push(sep(theme));
-        line2.push(pill("REDACT", Color::Black, theme.health_yellow));
+        chain_pills.push(("REDACT".into(), Color::Black, theme.health_yellow));
     }
     if app.alerts > 0 {
-        line2.push(sep(theme));
-        line2.push(pill(
-            &format!(
+        chain_pills.push((
+            format!(
                 "! {} alert{}",
                 app.alerts,
                 if app.alerts == 1 { "" } else { "s" }
@@ -1088,32 +1149,23 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
             theme.health_red,
         ));
     }
-    // In-flight action count — pulled from the pending-actions panel.
     let in_flight = app
         .pending_actions
         .iter()
         .filter(|e| e.completed.is_none())
         .count();
     if in_flight > 0 {
-        line2.push(sep(theme));
-        line2.push(pill(
-            &format!("⏳ {in_flight}"),
-            Color::Black,
-            theme.health_yellow,
-        ));
+        chain_pills.push((format!("⏳ {in_flight}"), Color::Black, theme.health_yellow));
     }
     if app.frozen {
-        line2.push(sep(theme));
-        line2.push(pill("FROZEN", Color::Black, theme.health_grey));
+        chain_pills.push(("FROZEN".into(), Color::Black, theme.health_grey));
     }
     if app.read_only {
-        line2.push(sep(theme));
-        line2.push(pill("READ-ONLY", Color::Black, theme.health_green));
+        chain_pills.push(("READ-ONLY".into(), Color::Black, theme.health_green));
     }
     if let Some(release) = app.update_available.as_ref() {
-        line2.push(sep(theme));
-        line2.push(pill(
-            &format!("UPDATE {} (:update)", release.version),
+        chain_pills.push((
+            format!("UPDATE {} (:update)", release.version),
             Color::Black,
             theme.title_alt,
         ));
@@ -1134,9 +1186,16 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
             } else {
                 theme.health_grey
             };
-            line2.push(sep(theme));
-            line2.push(pill(&label, Color::Black, bg));
+            chain_pills.push((label, Color::Black, bg));
         }
+    }
+    if !chain_pills.is_empty() {
+        // In non-Powerline modes pill_chain doesn't add a leading sep, so
+        // inject one here to space the chain from the preceding plain text.
+        if theme.icons != IconStyle::Powerline {
+            line2.push(sep(theme));
+        }
+        line2.extend(pill_chain(&chain_pills, theme));
     }
 
     // Breadcrumb: region / application / env — gives context at a glance.
@@ -1488,25 +1547,66 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                 Row::new(cells).style(style).height(row_height)
             }
             DisplayRow::Separator => {
-                let next_color = display
+                // Resolve the next app's name + color via the same
+                // look-ahead pattern; we use the name for the Powerline
+                // ribbon and the color for the dashed fill in other styles.
+                let (next_app_name, next_color) = display
                     .iter()
                     .skip(row_idx + 1)
                     .find_map(|r| match r {
                         DisplayRow::Env(i) => {
-                            app_colors.get(&app.environments[*i].application).copied()
+                            let env = &app.environments[*i];
+                            Some((
+                                env.application.clone(),
+                                app_colors
+                                    .get(&env.application)
+                                    .copied()
+                                    .unwrap_or(theme.muted),
+                            ))
                         }
                         _ => None,
                     })
-                    .unwrap_or(theme.muted);
+                    .unwrap_or_else(|| (String::new(), theme.muted));
                 let dashes = "─".repeat(DIVIDER_FILL_WIDTH);
                 let count = columns.len();
-                let cells = (0..count).map(|_| {
-                    Cell::from(Span::styled(
-                        dashes.clone(),
-                        Style::default().fg(next_color),
-                    ))
-                });
-                Row::new(cells)
+                if theme.icons == IconStyle::Powerline && !next_app_name.is_empty() {
+                    // Per-app coloured ribbon banner. NAME cell holds a
+                    // pill+arrow so the next-app section starts with its
+                    // name visible in its own colour. Remaining cells stay
+                    // as dashes in the same colour for visual continuity.
+                    let cells: Vec<Cell> = columns
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (label, _))| {
+                            if i == 0 && *label == "NAME" {
+                                Cell::from(Line::from(vec![
+                                    Span::styled(
+                                        format!(" {next_app_name} "),
+                                        Style::default()
+                                            .fg(Color::Black)
+                                            .bg(next_color)
+                                            .add_modifier(Modifier::BOLD),
+                                    ),
+                                    Span::styled("\u{e0b0}", Style::default().fg(next_color)),
+                                ]))
+                            } else {
+                                Cell::from(Span::styled(
+                                    dashes.clone(),
+                                    Style::default().fg(next_color),
+                                ))
+                            }
+                        })
+                        .collect();
+                    Row::new(cells)
+                } else {
+                    let cells = (0..count).map(|_| {
+                        Cell::from(Span::styled(
+                            dashes.clone(),
+                            Style::default().fg(next_color),
+                        ))
+                    });
+                    Row::new(cells)
+                }
             }
         })
         .collect();
@@ -2735,6 +2835,46 @@ struct DetailFooterState {
 }
 
 fn render_tabs(tabs: &[DetailTab], active: usize, theme: &Theme) -> Line<'static> {
+    // In Powerline mode each tab is a coloured segment with a U+E0B0
+    // triangle flowing into the next tab's bg, so the strip reads as one
+    // continuous ribbon. The active tab uses border_active (bright); the
+    // inactive tabs use a low-contrast muted bg so the ribbon is visible
+    // but doesn't compete with the active tab.
+    if theme.icons == IconStyle::Powerline {
+        let active_bg = theme.border_active;
+        let inactive_bg = theme.row_alt_bg;
+        let mut spans: Vec<Span> = Vec::with_capacity(tabs.len() * 2 + 2);
+        // Lead-in arrow flowing from default bg into the first tab.
+        let first_bg = if active == 0 { active_bg } else { inactive_bg };
+        spans.push(Span::styled("\u{e0b0}", Style::default().fg(first_bg)));
+        for (i, t) in tabs.iter().enumerate() {
+            let is_active = i == active;
+            let bg = if is_active { active_bg } else { inactive_bg };
+            let fg = if is_active { Color::Black } else { theme.muted };
+            let label = format!(" {} {} ", tab_icon(*t, theme.icons), t.title());
+            let mut style = Style::default().fg(fg).bg(bg);
+            if is_active {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            spans.push(Span::styled(label, style));
+            // Bridge: fg = this tab's bg, bg = next tab's bg (or default
+            // for the last tab).
+            let bridge_style =
+                if let Some(next_is_active) = tabs.get(i + 1).map(|_| i + 1 == active) {
+                    let next_bg = if next_is_active {
+                        active_bg
+                    } else {
+                        inactive_bg
+                    };
+                    Style::default().fg(bg).bg(next_bg)
+                } else {
+                    Style::default().fg(bg)
+                };
+            spans.push(Span::styled("\u{e0b0}", bridge_style));
+        }
+        return Line::from(spans);
+    }
+    // Non-Powerline: same as before, color-only differentiation.
     let mut spans: Vec<Span> = vec![Span::raw(" ")];
     for (i, t) in tabs.iter().enumerate() {
         if i > 0 {
