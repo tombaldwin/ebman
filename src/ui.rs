@@ -153,9 +153,16 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     // Background — Dlq / Detail use a full-screen alternative layout; otherwise
     // draw the main header + table + events + footer.
-    if app.mode == Mode::Dlq && app.dlq.is_some() {
+    //
+    // The mode check used to also gate this — meaning pressing `?` or `a` in
+    // Detail would temporarily render the main table behind the popup
+    // because mode transitioned to Help/Action. We now use the state-Option
+    // as the source of truth: if a Detail/Dlq view is open, that's the
+    // background, regardless of whether a help/action/overlay modal is on
+    // top of it.
+    if app.dlq.is_some() {
         draw_dlq(f, f.area(), app);
-    } else if app.mode == Mode::Detail && app.detail.is_some() {
+    } else if app.detail.is_some() {
         draw_detail(f, f.area(), app);
     } else {
         let events_height: u16 = if app.events_visible {
@@ -238,16 +245,24 @@ fn draw_palette(f: &mut Frame, area: Rect, app: &App) {
     let popup = centered_rect(60, 70, area);
     f.render_widget(Clear, popup);
     let theme = &app.theme;
+    // Single frame around the whole palette (input + list + footer). The
+    // inner layout splits the interior with no internal borders, so the
+    // popup reads as one visually-unified widget rather than three stacked
+    // boxes.
+    let outer = titled_block(theme, "palette", true, theme.title_alt);
+    let inner = outer.inner(popup);
+    f.render_widget(outer, popup);
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
-            Constraint::Min(3),
-            Constraint::Length(1),
+            Constraint::Length(1), // input
+            Constraint::Length(1), // separator
+            Constraint::Min(1),    // list
+            Constraint::Length(1), // hint
         ])
-        .split(popup);
+        .split(inner);
 
-    // Input bar
+    // Input bar (no border — drawn directly inside the outer frame).
     let input = Paragraph::new(Line::from(vec![
         Span::styled(
             " ❯ ",
@@ -262,9 +277,17 @@ fn draw_palette(f: &mut Frame, area: Rect, app: &App) {
                 .fg(theme.title_alt)
                 .add_modifier(Modifier::SLOW_BLINK),
         ),
-    ]))
-    .block(titled_block(theme, "palette", true, theme.title_alt));
+    ]));
     f.render_widget(input, layout[0]);
+
+    // Thin horizontal rule between input and list.
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            "─".repeat(inner.width as usize),
+            Style::default().fg(theme.muted),
+        )),
+        layout[1],
+    );
 
     // Item list
     let items: Vec<ListItem> = app
@@ -293,7 +316,6 @@ fn draw_palette(f: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
     let list = List::new(items)
-        .block(rounded_block(theme, true))
         .highlight_style(
             Style::default()
                 .bg(theme.row_selected_bg)
@@ -301,7 +323,7 @@ fn draw_palette(f: &mut Frame, area: Rect, app: &App) {
         )
         .highlight_symbol("▌ ");
     let mut state = app.palette_state.clone();
-    f.render_stateful_widget(list, layout[1], &mut state);
+    f.render_stateful_widget(list, layout[2], &mut state);
 
     // Hint footer
     let hint_count = app.palette_filtered.len();
@@ -313,7 +335,7 @@ fn draw_palette(f: &mut Frame, area: Rect, app: &App) {
         ),
         Style::default().fg(theme.muted),
     ));
-    f.render_widget(hint, layout[2]);
+    f.render_widget(hint, layout[3]);
 }
 
 fn draw_toasts(f: &mut Frame, area: Rect, app: &App) {
@@ -383,6 +405,10 @@ fn draw_saved_configs_interactive(
         .selected_env()
         .map(|e| e.name.clone())
         .unwrap_or_else(|| "—".into());
+    // App of the apply-target env. Templates from a different app can't be
+    // applied (EB rejects cross-app), so we dim those rows + add a marker
+    // so the operator knows before pressing enter.
+    let target_app = app.selected_env().map(|e| e.application.clone());
     // popup.height includes the title row + border. Subtract those + uniform
     // padding (1) + the 2 banner lines + the footer line. The remainder is
     // how many item rows we can show before clipping; if items overflow,
@@ -439,6 +465,10 @@ fn draw_saved_configs_interactive(
             )));
             prev_app = Some(app_name.as_str());
         }
+        let cross_app = target_app
+            .as_ref()
+            .map(|ta| ta != app_name)
+            .unwrap_or(false);
         let marker = if i == cursor { " ▶ " } else { "   " };
         let style = if i == cursor {
             let bg = if confirm_delete {
@@ -450,12 +480,23 @@ fn draw_saved_configs_interactive(
                 .fg(theme.text)
                 .bg(bg)
                 .add_modifier(Modifier::BOLD)
+        } else if cross_app {
+            // Cross-app templates dimmed — EB rejects applying a template
+            // from a different application, so the operator should see
+            // before pressing enter that this row isn't a valid apply.
+            Style::default().fg(theme.muted)
         } else {
             Style::default().fg(theme.text)
+        };
+        let suffix = if cross_app {
+            "  (different app — apply will fail)"
+        } else {
+            ""
         };
         let line = Line::from(vec![
             Span::styled(marker.to_string(), Style::default().fg(theme.accent)),
             Span::styled(tmpl.clone(), style),
+            Span::styled(suffix.to_string(), Style::default().fg(theme.health_yellow)),
         ]);
         lines.push(line);
     }
@@ -604,23 +645,34 @@ fn draw_text_dump_overlay(f: &mut Frame, area: Rect, app: &App, title: &str, tex
         .lines()
         .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(theme.text))))
         .collect();
-    let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
-        titled_block(
-            &app.theme,
-            &format!("{title} — esc / q to close"),
-            true,
-            app.theme.title,
-        )
-        .padding(Padding::uniform(1)),
+    // Pin the close-hint to the bottom row of the popup so it stays
+    // visible even when the body overflows. Body region + 1-row footer
+    // both render inside the same titled block.
+    let outer = titled_block(&app.theme, title, true, app.theme.title);
+    let inner = outer.inner(popup);
+    f.render_widget(outer, popup);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+    f.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        chunks[0],
     );
-    f.render_widget(p, popup);
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            " esc / q to close",
+            Style::default().fg(theme.muted),
+        )),
+        chunks[1],
+    );
 }
 
 fn draw_saved_configs_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
     let popup = centered_rect(60, 70, area);
     f.render_widget(Clear, popup);
     let theme = &app.theme;
-    let lines: Vec<Line> = text
+    let mut lines: Vec<Line> = text
         .lines()
         .map(|l| {
             let style = if l.starts_with("Application:") {
@@ -637,23 +689,29 @@ fn draw_saved_configs_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) 
             Line::from(Span::styled(l.to_string(), style))
         })
         .collect();
+    push_close_hint(&mut lines, &app.theme);
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
-        titled_block(
-            &app.theme,
-            "saved configurations — esc / q to close",
-            true,
-            app.theme.title,
-        )
-        .padding(Padding::uniform(1)),
+        titled_block(&app.theme, "saved configurations", true, app.theme.title)
+            .padding(Padding::uniform(1)),
     );
     f.render_widget(p, popup);
+}
+
+/// Append a one-line `esc / q to close` hint to an overlay's body so the
+/// title bar can stay clean. Pushes a blank separator first.
+fn push_close_hint(lines: &mut Vec<Line<'static>>, theme: &Theme) {
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " esc / q to close",
+        Style::default().fg(theme.muted),
+    )));
 }
 
 fn draw_diff_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
     let popup = centered_rect(80, 70, area);
     f.render_widget(Clear, popup);
     let theme = &app.theme;
-    let lines: Vec<Line> = text
+    let mut lines: Vec<Line> = text
         .lines()
         .map(|l| {
             let style = if l.starts_with('≠') {
@@ -668,9 +726,9 @@ fn draw_diff_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
             Line::from(Span::styled(l.to_string(), style))
         })
         .collect();
+    push_close_hint(&mut lines, &app.theme);
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
-        titled_block(&app.theme, "diff — esc / q to close", true, app.theme.title)
-            .padding(Padding::uniform(1)),
+        titled_block(&app.theme, "diff", true, app.theme.title).padding(Padding::uniform(1)),
     );
     f.render_widget(p, popup);
 }
@@ -679,7 +737,7 @@ fn draw_alarms_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
     let popup = centered_rect(70, 70, area);
     f.render_widget(Clear, popup);
     let theme = &app.theme;
-    let lines: Vec<Line> = text
+    let mut lines: Vec<Line> = text
         .lines()
         .map(|l| {
             // Highlight alarm state at the start of each line.
@@ -697,14 +755,9 @@ fn draw_alarms_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
             Line::from(Span::styled(l.to_string(), style))
         })
         .collect();
+    push_close_hint(&mut lines, &app.theme);
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
-        titled_block(
-            &app.theme,
-            "alarms — esc / q to close",
-            true,
-            app.theme.title,
-        )
-        .padding(Padding::uniform(1)),
+        titled_block(&app.theme, "alarms", true, app.theme.title).padding(Padding::uniform(1)),
     );
     f.render_widget(p, popup);
 }
@@ -712,7 +765,7 @@ fn draw_alarms_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
 fn draw_history_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
     let popup = centered_rect(60, 70, area);
     f.render_widget(Clear, popup);
-    let lines: Vec<Line> = text
+    let mut lines: Vec<Line> = text
         .lines()
         .map(|l| {
             Line::from(Span::styled(
@@ -721,14 +774,9 @@ fn draw_history_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
             ))
         })
         .collect();
+    push_close_hint(&mut lines, &app.theme);
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
-        titled_block(
-            &app.theme,
-            "history — esc / q to close",
-            true,
-            app.theme.title,
-        )
-        .padding(Padding::uniform(1)),
+        titled_block(&app.theme, "history", true, app.theme.title).padding(Padding::uniform(1)),
     );
     f.render_widget(p, popup);
 }
@@ -1757,7 +1805,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
                 crate::app::Focus::Events if app.events_visible => {
                     " EVENTS  j/k cursor   y yank line   ^] back to table   ^E hide   esc / q".into()
                 }
-                _ => " j/k move  1-9 jump  ' name-jump  g/G top/bottom  tab scope  enter drill  b console  D describe  space multi  * pin  / filter  : command  ^K palette  s/S sort  ^G group  ^E events  ^] focus  f freeze  y/Y yank  ^Y export  ^W cli  r region  p profile  ^R refresh  ^X redact  ? help  q quit".into(),
+                _ => " j/k move  enter drill  a actions  / filter  : command  ^K palette  r region  p profile  ^R refresh  ? help  q quit".into(),
             }
         }
         Mode::Detail => match app.detail.as_ref().map(|d| d.tab()) {
@@ -1778,6 +1826,10 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
             " SHELL  keys → subprocess  ·  F12 detach back to ebman  ·  ^D / exit closes".into()
         }
     };
+    // No Wrap — the strip is intentionally compact; longer mode-specific
+    // strips that exceed one row get a horizontal scroll bar visually
+    // (truncation) rather than wrapping into the body region. Mode key
+    // strips are kept ≤ ~150 chars to fit standard terminals.
     f.render_widget(
         Paragraph::new(Span::styled(keys, Style::default().fg(Color::Gray))),
         rows[1],
@@ -2277,7 +2329,8 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                             Some(t) => humanize_age(now.signed_duration_since(t)),
                             None => "—".into(),
                         };
-                        let msg = e.message.chars().take(70).collect::<String>();
+                        // Full message — the modal wraps now, so we no
+                        // longer truncate mid-word.
                         lines.push(Line::from(vec![
                             Span::styled(
                                 format!("    {when:>4}  "),
@@ -2287,7 +2340,7 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                                 format!("{:<5}  ", e.severity),
                                 severity_style(&e.severity, &theme),
                             ),
-                            Span::styled(msg, Style::default().fg(theme.text)),
+                            Span::styled(e.message.clone(), Style::default().fg(theme.text)),
                         ]));
                     }
                 }
@@ -2345,7 +2398,12 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                     )));
                 }
             }
-            f.render_widget(Paragraph::new(lines).block(block), popup);
+            f.render_widget(
+                Paragraph::new(lines)
+                    .wrap(Wrap { trim: false })
+                    .block(block),
+                popup,
+            );
         }
         ActionFlow::Running { action, env, since } => {
             let popup = centered_rect(50, 25, area);
@@ -2528,10 +2586,12 @@ fn render_tabs(tabs: &[DetailTab], active: usize, theme: &Theme) -> Line<'static
         }
         let label = format!(" {} {} ", tab_icon(*t, theme.icons), t.title());
         let style = if i == active {
+            // Underline + bold + bg highlight — three signals so the active
+            // tab is visible even in low-contrast / colorblind terminals.
             Style::default()
                 .fg(Color::Black)
                 .bg(theme.border_active)
-                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
         } else {
             Style::default().fg(theme.muted)
         };
@@ -2845,27 +2905,36 @@ fn draw_detail_metrics(f: &mut Frame, area: Rect, detail: &crate::app::DetailSta
             .metrics_hover_col
             .and_then(|col| hover_index(col, inner, values.len()))
             .and_then(|idx| values.get(idx).copied());
-        let mut title_spans: Vec<Span<'static>> = vec![
-            Span::styled(
-                format!("{:<26} ", series.label),
-                Style::default()
-                    .fg(series_color)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
+        let mut title_spans: Vec<Span<'static>> = vec![Span::styled(
+            format!("{:<26} ", series.label),
+            Style::default()
+                .fg(series_color)
+                .add_modifier(Modifier::BOLD),
+        )];
+        if values.is_empty() {
+            // CW returned no datapoints in the window. "now 0 max 0 min 0
+            // Δ flat" reads like "the metric IS 0" which is misleading;
+            // surface "(no data)" instead so operators know the metric
+            // isn't being populated.
+            title_spans.push(Span::styled(
+                "(no data in window)",
+                Style::default().fg(theme.muted),
+            ));
+        } else {
+            title_spans.push(Span::styled(
                 format!("now {}  ", format_metric(&series.id, last)),
                 Style::default().fg(theme.text),
-            ),
-            Span::styled(
+            ));
+            title_spans.push(Span::styled(
                 format!("max {}  ", format_metric(&series.id, max)),
                 Style::default().fg(theme.muted),
-            ),
-            Span::styled(
+            ));
+            title_spans.push(Span::styled(
                 format!("min {}  ", format_metric(&series.id, min)),
                 Style::default().fg(theme.muted),
-            ),
-            delta_span(delta, &series.id, theme),
-        ];
+            ));
+            title_spans.push(delta_span(delta, &series.id, theme));
+        }
         if let Some(label) = anomaly {
             title_spans.push(Span::raw("  "));
             title_spans.push(Span::styled(
