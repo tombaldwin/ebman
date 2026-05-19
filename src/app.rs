@@ -97,6 +97,9 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "instance-profile",
     "set-option",
     "unset-option",
+    "deployment-policy",
+    "rolling-update",
+    "health-check-url",
     "custom-platform-delete",
     "versions",
     "deploy",
@@ -6292,6 +6295,82 @@ impl App {
                     });
                 }
             },
+            "deployment-policy" => match rest.first().copied() {
+                None => {
+                    self.error_message = Some(
+                        "usage: :deployment-policy POLICY  (POLICY: AllAtOnce | Rolling | RollingWithAdditionalBatch | Immutable | TrafficSplitting)".into(),
+                    );
+                }
+                Some(raw) => {
+                    let canonical = match raw {
+                        "AllAtOnce" | "all" | "all-at-once" => "AllAtOnce",
+                        "Rolling" | "rolling" => "Rolling",
+                        "RollingWithAdditionalBatch"
+                        | "rolling-batch"
+                        | "rolling-with-additional-batch" => "RollingWithAdditionalBatch",
+                        "Immutable" | "immutable" => "Immutable",
+                        "TrafficSplitting" | "traffic-split" | "traffic-splitting" => {
+                            "TrafficSplitting"
+                        }
+                        _ => {
+                            self.error_message = Some(format!(
+                                "unknown deployment policy '{raw}'  (valid: AllAtOnce, Rolling, RollingWithAdditionalBatch, Immutable, TrafficSplitting)"
+                            ));
+                            return;
+                        }
+                    };
+                    let ns = "aws:elasticbeanstalk:command";
+                    self.spawn_option_settings_update(
+                        format!("deployment-policy {canonical}"),
+                        vec![(ns.into(), "DeploymentPolicy".into(), canonical.into())],
+                        vec![],
+                    );
+                }
+            },
+            "rolling-update" => match rest.first().copied() {
+                Some("on") | Some("true") | Some("enable") => {
+                    let ns = "aws:autoscaling:updatepolicy:rollingupdate";
+                    self.spawn_option_settings_update(
+                        "rolling-update on".into(),
+                        vec![(ns.into(), "RollingUpdateEnabled".into(), "true".into())],
+                        vec![],
+                    );
+                }
+                Some("off") | Some("false") | Some("disable") => {
+                    let ns = "aws:autoscaling:updatepolicy:rollingupdate";
+                    self.spawn_option_settings_update(
+                        "rolling-update off".into(),
+                        vec![(ns.into(), "RollingUpdateEnabled".into(), "false".into())],
+                        vec![],
+                    );
+                }
+                _ => {
+                    self.error_message = Some(
+                        "usage: :rolling-update on|off  (configures the ASG rolling-update policy)"
+                            .into(),
+                    );
+                }
+            },
+            "health-check-url" => match rest.first().copied() {
+                None => {
+                    self.error_message = Some(
+                        "usage: :health-check-url /path  (path probed for HTTP 200; default '/')"
+                            .into(),
+                    );
+                }
+                Some(url) => {
+                    let ns = "aws:elasticbeanstalk:application";
+                    self.spawn_option_settings_update(
+                        format!("health-check-url {url}"),
+                        vec![(
+                            ns.into(),
+                            "Application Healthcheck URL".into(),
+                            url.to_string(),
+                        )],
+                        vec![],
+                    );
+                }
+            },
             "keypair" => match rest.first().copied() {
                 None => {
                     self.error_message =
@@ -8879,6 +8958,15 @@ fn build_palette_items(app: &App) -> Vec<PaletteItem> {
         ),
         ("set-option ", "generic option set: NAMESPACE OPTION VALUE"),
         ("unset-option ", "generic option clear: NAMESPACE OPTION"),
+        (
+            "deployment-policy ",
+            "set deploy policy: AllAtOnce | Rolling | Immutable | TrafficSplitting | RollingWithAdditionalBatch",
+        ),
+        ("rolling-update ", "ASG rolling-update policy: on|off"),
+        (
+            "health-check-url ",
+            "set HTTP health-check path (e.g. /health)",
+        ),
         ("custom-platform-delete ", "delete a custom platform by ARN"),
     ];
     for (prefix, desc) in prefill_cmds {

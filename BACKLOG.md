@@ -222,6 +222,12 @@ Living list of done / pending / dropped work. New entries get added at the botto
 - **`ebman action <rebuild|restart|terminate> --env NAME [--yes]`** dispatches an action without entering the TUI. Terminate requires `--yes`.
 - `--help` updated to document subcommands; `--version`, `-h`, `-V`, `--read-only` flags continue to work.
 
+### More per-option commands (2026-05-19)
+- **`:deployment-policy POLICY`** — sets `aws:elasticbeanstalk:command.DeploymentPolicy`. Accepts canonical names (AllAtOnce, Rolling, RollingWithAdditionalBatch, Immutable, TrafficSplitting) and lower-case aliases.
+- **`:rolling-update on|off`** — toggles `aws:autoscaling:updatepolicy:rollingupdate.RollingUpdateEnabled`.
+- **`:health-check-url /path`** — sets `aws:elasticbeanstalk:application.Application Healthcheck URL` (the path the ALB target group probes for HTTP 200).
+- **Logs tab idle-state hint** — "press ^R for one-shot snapshot · s to live-stream CW Logs (needs `:logs-stream on`)" replaces the prior single-line hint so operators discover the streaming path without reading help.
+
 ### Follow-ons (2026-05-19)
 - **`:deploy --from s3://bucket/key`** — sidesteps the local-read + upload steps; goes straight to `CreateApplicationVersion` against the existing S3 object. Pure `parse_s3_url` helper with happy-path + 4 malformed-input tests. `spawn_deploy_from_s3` shares the same audit/pending/finish plumbing as the local path.
 - **`s` keybind on the Detail Logs tab** opens the CW Logs streaming overlay (`spawn_logs_tail`) over the existing snapshot view. One-keypress upgrade; closing the overlay returns to the snapshot. Updated global + per-context help.
