@@ -197,9 +197,12 @@ pub enum Overlay {
     /// pairs, with `a` (apply to selected env), `x` (delete), `c` (prefill
     /// :config-save in the command bar). Distinct from `SavedConfigs(String)`
     /// because the latter is used as a generic text-dump escape hatch.
+    /// `confirm_delete` armed when the user presses `x` — next y/Y/enter
+    /// dispatches; n/N/esc cancels back to navigation.
     SavedConfigsInteractive {
         items: Vec<(String, String)>,
         cursor: usize,
+        confirm_delete: bool,
     },
 }
 
@@ -413,6 +416,15 @@ pub enum Action {
     Scale,
     /// Cancel an in-flight environment update.
     AbortUpdate,
+    /// `CreateConfigurationTemplate` from the selected env.
+    ConfigSave,
+    /// `DeleteConfigurationTemplate`.
+    ConfigDelete,
+    /// `UpdateEnvironment(template_name)` — apply a saved template.
+    ConfigApply,
+    /// `ec2:TerminateInstances` against a single instance picked from the
+    /// Instances tab. ASG replaces it; not env-level.
+    TerminateInstance,
 }
 
 impl Action {
@@ -427,6 +439,10 @@ impl Action {
             Self::Clone => "Clone environment",
             Self::Scale => "Scale (min/max)",
             Self::AbortUpdate => "Abort current update",
+            Self::ConfigSave => "Save configuration template",
+            Self::ConfigDelete => "Delete configuration template",
+            Self::ConfigApply => "Apply configuration template",
+            Self::TerminateInstance => "Terminate instance",
         }
     }
     pub fn destructive(self) -> bool {
@@ -523,6 +539,9 @@ pub enum HelpTopic {
     Dlq,
     Action,
     Shell,
+    /// Help for the interactive `:saved-configs` overlay (j/k cursor +
+    /// a/c/x dispatch keys).
+    SavedConfigs,
 }
 
 /// Cap on the in-flight + recently-completed list. Older entries fall off
@@ -854,6 +873,14 @@ pub struct App {
     /// Current scope of the help overlay. Determines which keymap subset
     /// `draw_help` renders. Set whenever `?` opens Help.
     pub help_topic: HelpTopic,
+    /// The mode the user was in before they opened the help overlay. Restored
+    /// when help closes so pressing `?` from Detail / Action / Dlq doesn't
+    /// drop the user back to Normal and lose the active screen.
+    pub pre_help_mode: Option<Mode>,
+    /// Overlay (if any) the user had open before pressing `?`. Help renders
+    /// before overlays in the z-order so we have to stash and restore the
+    /// overlay around the help round-trip.
+    pub pre_help_overlay: Option<Overlay>,
     /// Newer ebman release advertised by crates.io, if any. Populated by the
     /// fire-and-forget update-check task that runs once at startup.
     pub update_available: Option<crate::update_check::LatestRelease>,
@@ -1208,6 +1235,8 @@ impl App {
             sso_expiry: crate::sso::latest_session_expiry(),
             pending_actions: std::collections::VecDeque::with_capacity(PENDING_CAP),
             help_topic: HelpTopic::Global,
+            pre_help_mode: None,
+            pre_help_overlay: None,
             update_available: None,
             reload_requested: false,
             pending_shell_target: None,
@@ -1822,7 +1851,14 @@ impl App {
             },
             Mode::Help => match key.code {
                 KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
-                    self.mode = Mode::Normal;
+                    // Restore the screen the user was on before opening
+                    // help. `pre_help_mode` is set at every `?` keypress; if
+                    // somehow missing, fall back to Normal so we don't get
+                    // stuck in Help.
+                    self.mode = self.pre_help_mode.take().unwrap_or(Mode::Normal);
+                    if let Some(overlay) = self.pre_help_overlay.take() {
+                        self.current_overlay = Some(overlay);
+                    }
                     self.help_scroll = 0;
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
@@ -1991,6 +2027,7 @@ impl App {
                     }
                     KeyCode::Char('?') => {
                         self.help_topic = HelpTopic::Detail;
+                        self.pre_help_mode = Some(Mode::Detail);
                         self.mode = Mode::Help;
                     }
                     KeyCode::Char('a') => self.open_action_menu(),
@@ -2123,6 +2160,7 @@ impl App {
             Mode::Action => {
                 if key.code == KeyCode::Char('?') {
                     self.help_topic = HelpTopic::Action;
+                    self.pre_help_mode = Some(Mode::Action);
                     self.mode = Mode::Help;
                 } else {
                     self.handle_action_key(key);
@@ -2131,6 +2169,7 @@ impl App {
             Mode::Dlq => {
                 if key.code == KeyCode::Char('?') {
                     self.help_topic = HelpTopic::Dlq;
+                    self.pre_help_mode = Some(Mode::Dlq);
                     self.mode = Mode::Help;
                 } else {
                     self.handle_dlq_key(key);
@@ -2307,6 +2346,7 @@ impl App {
                     KeyCode::Char(c @ '1'..='9') => self.quick_jump((c as u8 - b'0') as usize),
                     KeyCode::Char('?') => {
                         self.help_topic = HelpTopic::Global;
+                        self.pre_help_mode = Some(Mode::Normal);
                         self.mode = Mode::Help;
                     }
                     KeyCode::Char(':') => {
@@ -3822,6 +3862,13 @@ impl App {
             &detail,
         );
         self.status_message = Some(format!("deleting {application}/{label}{force_str}…"));
+        let pending_label = if force {
+            "Delete app version (+source)"
+        } else {
+            "Delete app version"
+        };
+        let pending_target = format!("{application}/{label}");
+        self.push_pending(pending_label, pending_target);
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
@@ -3859,15 +3906,19 @@ impl App {
     /// with j/k/arrows/g/G; `a` applies the selected template to the current
     /// env (via `apply_config_template`); `x` deletes it; `c` closes the
     /// overlay and prefills `:config-save ` so the user can type a name; `?`
-    /// surfaces the local keymap. Everything else falls through to dismiss.
+    /// stashes the overlay and surfaces the SavedConfigs help topic — closing
+    /// help restores the overlay.
     fn handle_saved_configs_interactive_key(&mut self, key: KeyEvent) {
         // Mutate cursor in-place for navigation keys, then return early; for
         // dispatch keys (a/x/c) extract the selected pair, clear the overlay,
         // and re-enter the existing command path so we inherit read-only
         // gating + audit trail + ActionResult plumbing.
         {
-            let Some(Overlay::SavedConfigsInteractive { items, cursor }) =
-                self.current_overlay.as_mut()
+            let Some(Overlay::SavedConfigsInteractive {
+                items,
+                cursor,
+                confirm_delete,
+            }) = self.current_overlay.as_mut()
             else {
                 return;
             };
@@ -3876,44 +3927,69 @@ impl App {
                 return;
             }
             let len = items.len();
-            match key.code {
-                KeyCode::Char('j') | KeyCode::Down => {
-                    *cursor = (*cursor + 1).min(len.saturating_sub(1));
-                    return;
+            // When the delete confirm is armed, only y/Y/enter and n/N/esc do
+            // anything — navigation keys are inert so a stray j/k doesn't
+            // discard the confirm state and reset the cursor.
+            if *confirm_delete {
+                match key.code {
+                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                        *confirm_delete = false;
+                        return;
+                    }
+                    KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                        // Fall through to the dispatch block below.
+                    }
+                    _ => return,
                 }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    *cursor = cursor.saturating_sub(1);
-                    return;
+            } else {
+                match key.code {
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        *cursor = (*cursor + 1).min(len.saturating_sub(1));
+                        return;
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        *cursor = cursor.saturating_sub(1);
+                        return;
+                    }
+                    KeyCode::Char('g') | KeyCode::Home => {
+                        *cursor = 0;
+                        return;
+                    }
+                    KeyCode::Char('G') | KeyCode::End => {
+                        *cursor = len.saturating_sub(1);
+                        return;
+                    }
+                    KeyCode::Char('x') => {
+                        *confirm_delete = true;
+                        return;
+                    }
+                    _ => {}
                 }
-                KeyCode::Char('g') | KeyCode::Home => {
-                    *cursor = 0;
-                    return;
-                }
-                KeyCode::Char('G') | KeyCode::End => {
-                    *cursor = len.saturating_sub(1);
-                    return;
-                }
-                _ => {}
             }
         }
-        let Some(Overlay::SavedConfigsInteractive { items, cursor }) =
-            self.current_overlay.as_ref()
+        let Some(Overlay::SavedConfigsInteractive {
+            items,
+            cursor,
+            confirm_delete,
+        }) = self.current_overlay.as_ref()
         else {
             return;
         };
         let cursor = *cursor;
+        let confirm_delete = *confirm_delete;
         let selected = items.get(cursor).cloned();
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.current_overlay = None;
             }
-            KeyCode::Char('a') | KeyCode::Enter => {
+            KeyCode::Char('a') | KeyCode::Enter if !confirm_delete => {
                 if let Some((_app, template)) = selected {
                     self.current_overlay = None;
                     self.execute_command(&format!("config-apply {template}"));
                 }
             }
-            KeyCode::Char('x') => {
+            // y/Y/enter under armed-confirm dispatches the delete.
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter if confirm_delete => {
                 if let Some((app_name, template)) = selected {
                     self.current_overlay = None;
                     self.execute_command(&format!("config-delete {app_name} {template}"));
@@ -3923,6 +3999,12 @@ impl App {
                 self.current_overlay = None;
                 self.command_input = "config-save ".into();
                 self.mode = Mode::Command;
+            }
+            KeyCode::Char('?') => {
+                self.pre_help_overlay = self.current_overlay.take();
+                self.pre_help_mode = Some(self.mode);
+                self.help_topic = HelpTopic::SavedConfigs;
+                self.mode = Mode::Help;
             }
             _ => {}
         }
@@ -3966,6 +4048,9 @@ impl App {
             &detail,
         );
         self.status_message = Some(format!("{summary} → {}…", env.name));
+        // Label intentionally carries the operation (`tag …` / `untag …`) so
+        // the pending panel distinguishes simultaneous edits.
+        self.push_pending(summary.clone(), env.name.clone());
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
@@ -4151,9 +4236,12 @@ impl App {
             &self.context.region,
             &format!("stage=dispatched action=TerminateInstance target={env_name} instance={id}"),
         );
-        // Pending entry under the env name (where the action effect shows up)
-        // labelled by instance id so the operator can tell terminations apart.
-        self.push_pending(format!("Terminate instance {id}"), env_name.clone());
+        // Pending target carries env + instance id so the operator can tell
+        // simultaneous terminations apart. Label must match
+        // `Action::TerminateInstance.label()` exactly so the AppMsg handler's
+        // `complete_pending` finds the row.
+        let target = format!("{env_name}/{id}");
+        self.push_pending(Action::TerminateInstance.label(), target.clone());
         self.status_message = Some(format!("terminating instance {id}…"));
         tokio::spawn(async move {
             let result = aws
@@ -4162,8 +4250,8 @@ impl App {
                 .map_err(|e| flatten_err("terminate_instance", e));
             let _ = tx.send(AppMsg::ActionResult {
                 gen,
-                action: Action::Rebuild, // reused — we just need the result path
-                env_name,
+                action: Action::TerminateInstance,
+                env_name: target,
                 result,
             });
         });
@@ -4351,6 +4439,16 @@ impl App {
                     _ => Err(color_eyre::eyre::eyre!("scale min/max missing")),
                 },
                 Action::AbortUpdate => aws.abort_environment_update(&env).await,
+                // The Config* and TerminateInstance variants are dispatched
+                // through dedicated spawn paths, not through `spawn_action`'s
+                // ConfirmModal. They should never reach this branch.
+                Action::ConfigSave
+                | Action::ConfigDelete
+                | Action::ConfigApply
+                | Action::TerminateInstance => Err(color_eyre::eyre::eyre!(
+                    "internal: {} dispatched through spawn_action path",
+                    action.label()
+                )),
             }
             .map_err(|e| flatten_err("action", e));
             let _ = tx.send(AppMsg::ActionResult {
@@ -4729,8 +4827,11 @@ impl App {
                         &self.applications,
                     )));
                 } else {
-                    self.current_overlay =
-                        Some(Overlay::SavedConfigsInteractive { items, cursor: 0 });
+                    self.current_overlay = Some(Overlay::SavedConfigsInteractive {
+                        items,
+                        cursor: 0,
+                        confirm_delete: false,
+                    });
                 }
             }
             "plugins" => {
@@ -5240,8 +5341,7 @@ impl App {
                 }
                 Some(template) => {
                     if self.read_only {
-                        self.error_message =
-                            Some("read-only mode — config-save disabled".into());
+                        self.error_message = Some("read-only mode — config-save disabled".into());
                         return;
                     }
                     let Some(env) = self.selected_env().cloned() else {
@@ -5262,9 +5362,18 @@ impl App {
                         "saving config from {} as template '{template}'…",
                         env.name
                     ));
-                    let action = Action::Rebuild; // placeholder; we reuse ActionResult for outcome
+                    let action = Action::ConfigSave;
                     let display_env = env.name.clone();
                     let template_for_msg = template.clone();
+                    write_audit_line(
+                        self.context.account_id.as_deref(),
+                        self.context.profile.as_deref(),
+                        &self.context.region,
+                        &format!(
+                            "stage=dispatched action={action:?} target={display_env} template={template}"
+                        ),
+                    );
+                    self.push_pending(action.label(), display_env.clone());
                     tokio::spawn(async move {
                         let result = aws
                             .create_config_template(&app_name, &template, &env_id)
@@ -5285,8 +5394,7 @@ impl App {
             "config-delete" => match (rest.first().copied(), rest.get(1).copied()) {
                 (Some(app_name), Some(template)) => {
                     if self.read_only {
-                        self.error_message =
-                            Some("read-only mode — config-delete disabled".into());
+                        self.error_message = Some("read-only mode — config-delete disabled".into());
                         return;
                     }
                     let aws = self.aws.clone();
@@ -5298,6 +5406,14 @@ impl App {
                         "deleting template '{template}' from app '{app_name}'…"
                     ));
                     let template_for_msg = template.clone();
+                    let target = format!("{app_name}/{template}");
+                    write_audit_line(
+                        self.context.account_id.as_deref(),
+                        self.context.profile.as_deref(),
+                        &self.context.region,
+                        &format!("stage=dispatched action=ConfigDelete target={target}"),
+                    );
+                    self.push_pending(Action::ConfigDelete.label(), target.clone());
                     tokio::spawn(async move {
                         let result = aws
                             .delete_config_template(&app_name, &template)
@@ -5306,8 +5422,8 @@ impl App {
                             .map_err(|e| format!("config-delete '{template_for_msg}': {e}"));
                         let _ = tx.send(AppMsg::ActionResult {
                             gen,
-                            action: Action::Rebuild,
-                            env_name: template_for_msg,
+                            action: Action::ConfigDelete,
+                            env_name: target,
                             result,
                         });
                     });
@@ -5325,8 +5441,7 @@ impl App {
                 }
                 Some(template) => {
                     if self.read_only {
-                        self.error_message =
-                            Some("read-only mode — config-apply disabled".into());
+                        self.error_message = Some("read-only mode — config-apply disabled".into());
                         return;
                     }
                     let Some(env) = self.selected_env().cloned() else {
@@ -5340,6 +5455,15 @@ impl App {
                     let env_name = env.name.clone();
                     self.status_message =
                         Some(format!("applying template '{template}' to {env_name}…"));
+                    write_audit_line(
+                        self.context.account_id.as_deref(),
+                        self.context.profile.as_deref(),
+                        &self.context.region,
+                        &format!(
+                            "stage=dispatched action=ConfigApply target={env_name} template={template}"
+                        ),
+                    );
+                    self.push_pending(Action::ConfigApply.label(), env_name.clone());
                     tokio::spawn(async move {
                         let result = aws
                             .apply_config_template(&env_name, &template)
@@ -5347,7 +5471,7 @@ impl App {
                             .map_err(|e| flatten_err("apply_config_template", e));
                         let _ = tx.send(AppMsg::ActionResult {
                             gen,
-                            action: Action::Rebuild,
+                            action: Action::ConfigApply,
                             env_name,
                             result,
                         });
@@ -6074,6 +6198,17 @@ impl App {
                     return;
                 }
                 let force_str = if force { " (+source bundle)" } else { "" };
+                let pending_label = if force {
+                    "Delete app version (+source)"
+                } else {
+                    "Delete app version"
+                };
+                let pending_target = format!("{application}/{label}");
+                self.complete_pending(
+                    pending_label,
+                    &pending_target,
+                    result.as_ref().map(|_| ()).map_err(|e| e.clone()),
+                );
                 match result {
                     Ok(()) => {
                         self.push_toast(
@@ -6098,6 +6233,11 @@ impl App {
                 if gen != self.generation {
                     return;
                 }
+                self.complete_pending(
+                    &summary,
+                    &env_name,
+                    result.as_ref().map(|_| ()).map_err(|e| e.clone()),
+                );
                 match result {
                     Ok(()) => {
                         self.push_toast(ToastKind::Info, format!("{summary} on {env_name}"));
@@ -7813,6 +7953,36 @@ mod tests {
             super::delta_toast_key("  ▲10 Green").as_deref(),
             Some("Green")
         );
+    }
+
+    #[test]
+    fn action_labels_are_distinct_and_non_empty() {
+        // Catches accidental "placeholder Action::Rebuild" reuses — every
+        // variant must carry its own label so audit logs + toasts reflect
+        // what was actually dispatched.
+        use crate::app::Action;
+        use std::collections::HashSet;
+        let all = [
+            Action::Rebuild,
+            Action::RestartAppServer,
+            Action::SwapCnames,
+            Action::Terminate,
+            Action::Deploy,
+            Action::UpgradePlatform,
+            Action::Clone,
+            Action::Scale,
+            Action::AbortUpdate,
+            Action::ConfigSave,
+            Action::ConfigDelete,
+            Action::ConfigApply,
+            Action::TerminateInstance,
+        ];
+        let mut labels = HashSet::new();
+        for a in all {
+            let l = a.label();
+            assert!(!l.is_empty(), "{a:?} has empty label");
+            assert!(labels.insert(l), "{a:?} reuses label {l:?}");
+        }
     }
 
     #[test]

@@ -214,9 +214,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             Overlay::Alarms { body, .. } => draw_alarms_overlay(f, f.area(), app, &body),
             Overlay::Diff(text) => draw_diff_overlay(f, f.area(), app, &text),
             Overlay::SavedConfigs(text) => draw_saved_configs_overlay(f, f.area(), app, &text),
-            Overlay::SavedConfigsInteractive { items, cursor } => {
-                draw_saved_configs_interactive(f, f.area(), app, &items, cursor)
-            }
+            Overlay::SavedConfigsInteractive {
+                items,
+                cursor,
+                confirm_delete,
+            } => draw_saved_configs_interactive(f, f.area(), app, &items, cursor, confirm_delete),
         }
     }
     if app.mode == Mode::Palette {
@@ -368,6 +370,7 @@ fn draw_saved_configs_interactive(
     app: &App,
     items: &[(String, String)],
     cursor: usize,
+    confirm_delete: bool,
 ) {
     let popup = centered_rect(60, 70, area);
     f.render_widget(Clear, popup);
@@ -382,19 +385,54 @@ fn draw_saved_configs_interactive(
         .max()
         .unwrap_or(0)
         .clamp(8, 32);
-    let mut lines: Vec<Line> = Vec::with_capacity(items.len() + 4);
-    lines.push(Line::from(Span::styled(
-        format!(" apply target: {target}"),
-        Style::default().fg(theme.muted),
-    )));
-    lines.push(Line::from(""));
-    for (i, (app_name, tmpl)) in items.iter().enumerate() {
+    // popup.height includes the title row + border. Subtract those + uniform
+    // padding (1) + the 2 banner lines + the footer line. The remainder is
+    // how many item rows we can show before clipping; if items overflow,
+    // window them around the cursor.
+    let row_budget = popup.height.saturating_sub(8) as usize;
+    let (visible_start, visible_end) = visible_window(cursor, items.len(), row_budget);
+    let mut lines: Vec<Line> = Vec::with_capacity(row_budget + 6);
+    let banner = if confirm_delete {
+        let cur_label = items
+            .get(cursor)
+            .map(|(a, t)| format!("{a}/{t}"))
+            .unwrap_or_else(|| "?".into());
+        Line::from(Span::styled(
+            format!(" delete {cur_label}?  (Y/N)"),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ))
+    } else {
+        Line::from(Span::styled(
+            format!(" apply target: {target}"),
+            Style::default().fg(theme.muted),
+        ))
+    };
+    lines.push(banner);
+    if visible_start > 0 {
+        lines.push(Line::from(Span::styled(
+            format!(" ↑ {visible_start} more above"),
+            Style::default().fg(theme.muted),
+        )));
+    } else {
+        lines.push(Line::from(""));
+    }
+    for (i, (app_name, tmpl)) in items
+        .iter()
+        .enumerate()
+        .skip(visible_start)
+        .take(visible_end - visible_start)
+    {
         let marker = if i == cursor { "▶ " } else { "  " };
         let app_col = format!("{app_name:<width$}", width = max_app_width);
         let style = if i == cursor {
+            let bg = if confirm_delete {
+                theme.row_red_bg
+            } else {
+                theme.row_selected_bg
+            };
             Style::default()
                 .fg(theme.text)
-                .bg(theme.row_selected_bg)
+                .bg(bg)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.text)
@@ -407,9 +445,21 @@ fn draw_saved_configs_interactive(
         ]);
         lines.push(line);
     }
+    if visible_end < items.len() {
+        let more = items.len() - visible_end;
+        lines.push(Line::from(Span::styled(
+            format!(" ↓ {more} more below"),
+            Style::default().fg(theme.muted),
+        )));
+    }
     lines.push(Line::from(""));
+    let footer = if confirm_delete {
+        " Y confirm • N / esc cancel "
+    } else {
+        " j/k move • enter/a apply • c create • x delete • ? help • esc close "
+    };
     lines.push(Line::from(Span::styled(
-        " j/k move • enter/a apply • c create • x delete • esc close ",
+        footer,
         Style::default().fg(theme.muted),
     )));
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
@@ -417,6 +467,27 @@ fn draw_saved_configs_interactive(
             .padding(Padding::uniform(1)),
     );
     f.render_widget(p, popup);
+}
+
+/// Pure helper: pick a (start, end) window of indices to render such that
+/// `cursor` is inside `[start, end)` and `end - start <= budget`. Window
+/// stays as low as possible (anchor to top when items fit, slide down only
+/// when the cursor passes the visible area). Used by the saved-configs
+/// overlay's scroll logic and tested directly.
+pub fn visible_window(cursor: usize, total: usize, budget: usize) -> (usize, usize) {
+    if total == 0 {
+        return (0, 0);
+    }
+    let budget = budget.max(1).min(total);
+    if total <= budget {
+        return (0, total);
+    }
+    // Slide so the cursor stays inside. If cursor is in the upper portion,
+    // anchor to 0; if in the lower portion, end at total; otherwise centre.
+    let half = budget / 2;
+    let start = cursor.saturating_sub(half);
+    let start = start.min(total - budget);
+    (start, start + budget)
 }
 
 fn draw_saved_configs_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
@@ -1554,16 +1625,16 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         }
         Mode::Detail => match app.detail.as_ref().map(|d| d.tab()) {
             Some(crate::app::DetailTab::Instances) => {
-                " INSTANCES  j/k move  enter console  s ssm shell  y yank id  x terminate  a actions  ^R refresh  esc / q back".into()
+                " INSTANCES  j/k move  enter console  s ssm shell  y yank id  x terminate  a actions  ^R refresh  ? help  esc / q back".into()
             }
-            _ => " tab/shift-tab switch  j/k scroll  a actions  ^R refresh  R auto-refresh  esc / q back".into(),
+            _ => " tab/shift-tab switch  j/k scroll  a actions  ^R refresh  R auto-refresh  ? help  esc / q back".into(),
         },
-        Mode::Action => " j/k move  type to filter  enter confirm  esc cancel".into(),
+        Mode::Action => " j/k move  type to filter  enter confirm  ? help  esc cancel".into(),
         Mode::Dlq => match app.dlq.as_ref().map(|d| d.viewing) {
             Some(crate::app::QueueView::Main) => {
-                " MAIN  j/k move  enter view body  x delete  m → DLQ  ^R refresh  esc / q back".into()
+                " MAIN  j/k move  enter view body  x delete  m → DLQ  ^R refresh  ? help  esc / q back".into()
             }
-            _ => " DLQ  j/k move  enter view body  r resend  x delete  p purge  m → MAIN  ^R refresh  esc / q back".into(),
+            _ => " DLQ  j/k move  enter view body  r resend  x delete  p purge  m → MAIN  ^R refresh  ? help  esc / q back".into(),
         },
         Mode::Shell => {
             // Keystrokes are forwarded to the subprocess; F12 detaches.
@@ -1587,6 +1658,9 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App) {
         crate::app::HelpTopic::Dlq => return draw_help_dlq(f, popup, app),
         crate::app::HelpTopic::Action => return draw_help_action(f, popup, app),
         crate::app::HelpTopic::Shell => return draw_help_shell(f, popup, app),
+        crate::app::HelpTopic::SavedConfigs => {
+            return draw_help_saved_configs(f, popup, app);
+        }
         crate::app::HelpTopic::Global => {}
     }
 
@@ -1992,6 +2066,15 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                     modal.scale_max.unwrap_or(0)
                 ),
                 Action::AbortUpdate => format!("Abort current update on '{}'?", modal.target_env),
+                // These variants never reach the ConfirmModal — they're
+                // dispatched directly from command paths. Placeholder copy
+                // keeps the match exhaustive without dead UI.
+                Action::ConfigSave
+                | Action::ConfigDelete
+                | Action::ConfigApply
+                | Action::TerminateInstance => {
+                    format!("{} on '{}'", modal.action.label(), modal.target_env)
+                }
             };
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
@@ -3444,6 +3527,49 @@ fn draw_help_action(f: &mut Frame, popup: Rect, app: &App) {
     f.render_widget(p, popup);
 }
 
+fn draw_help_saved_configs(f: &mut Frame, popup: Rect, app: &App) {
+    let lines = vec![
+        Line::from(Span::styled(
+            "Saved configurations — keybindings",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        help_line("j / k / arrows", "move cursor up / down"),
+        help_line("g / G", "jump to top / bottom"),
+        help_line(
+            "enter / a",
+            "apply selected template to the currently-selected env",
+        ),
+        help_line(
+            "c",
+            "close overlay + prefill `:config-save ` to save current env as a new template",
+        ),
+        help_line(
+            "x",
+            "delete selected template (no confirm — config templates are recreatable)",
+        ),
+        help_line("?", "this help"),
+        help_line("esc / q", "close overlay"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Apply target = whichever env the table cursor is on.",
+            Style::default().fg(Color::Gray),
+        )),
+    ];
+    let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        titled_block(
+            &app.theme,
+            "help — Saved Configs",
+            true,
+            app.theme.title_alt,
+        )
+        .padding(Padding::uniform(1)),
+    );
+    f.render_widget(p, popup);
+}
+
 fn draw_help_shell(f: &mut Frame, popup: Rect, app: &App) {
     let lines = vec![
         Line::from(Span::styled(
@@ -3940,6 +4066,34 @@ mod tests {
         assert!(SPINNER_FRAMES.contains(&a));
         let ascii = spinner(0, IconStyle::Ascii);
         assert!(ASCII_SPINNER.contains(&ascii));
+    }
+
+    #[test]
+    fn visible_window_anchors_to_top_when_items_fit() {
+        // Items <= budget → window covers everything from 0.
+        assert_eq!(visible_window(0, 5, 10), (0, 5));
+        assert_eq!(visible_window(4, 5, 10), (0, 5));
+    }
+
+    #[test]
+    fn visible_window_slides_to_keep_cursor_visible() {
+        // 20 items, budget 5: cursor near top anchors to 0.
+        assert_eq!(visible_window(0, 20, 5), (0, 5));
+        assert_eq!(visible_window(1, 20, 5), (0, 5));
+        // Cursor in middle centres.
+        let (s, e) = visible_window(10, 20, 5);
+        assert!(s <= 10 && 10 < e, "expected cursor 10 inside [{s},{e})");
+        assert_eq!(e - s, 5);
+        // Cursor at end clamps so the window doesn't run off.
+        assert_eq!(visible_window(19, 20, 5), (15, 20));
+    }
+
+    #[test]
+    fn visible_window_handles_empty_and_zero_budget() {
+        assert_eq!(visible_window(0, 0, 10), (0, 0));
+        // Zero budget: degenerate but must not crash; treat as 1.
+        let (s, e) = visible_window(3, 10, 0);
+        assert!(s <= 3 && 3 < e);
     }
 
     #[test]
