@@ -1444,6 +1444,18 @@ impl App {
         // PTY output renders promptly. Idle-gated below.
         let mut shell_tick = tokio::time::interval(Duration::from_millis(30));
         shell_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Listen for OS termination signals (SIGINT from terminal Ctrl-C,
+        // SIGTERM from cargo-watch / process supervisors). Default handlers
+        // would kill us abruptly without running `leave_tui` — leaving the
+        // terminal in raw mode and breaking the user's shell. Catching them
+        // lets us set `quit = true` and break the loop, which the main
+        // entrypoint follows with a proper terminal restore.
+        let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+            .map_err(|e| color_eyre::eyre::eyre!("install SIGINT handler: {e}"))?;
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .map_err(|e| color_eyre::eyre::eyre!("install SIGTERM handler: {e}"))?;
+        let mut sighup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+            .map_err(|e| color_eyre::eyre::eyre!("install SIGHUP handler: {e}"))?;
         // Track mode across iterations so we can clear the terminal when
         // entering or leaving Shell mode (avoids the prior view bleeding
         // around the new pane / shell content lingering after exit).
@@ -1482,6 +1494,23 @@ impl App {
             let prev_error = self.error_message.clone();
 
             tokio::select! {
+                // Termination signals — set the quit flag and break so the
+                // main entrypoint's `leave_tui` runs and the terminal is
+                // restored. Without these the default OS handler kills the
+                // process abruptly, leaving the terminal in raw mode + alt-
+                // screen for the parent shell to deal with.
+                _ = sigint.recv() => {
+                    tracing::info!(target: "ebman", "received SIGINT, shutting down gracefully");
+                    self.quit = true;
+                }
+                _ = sigterm.recv() => {
+                    tracing::info!(target: "ebman", "received SIGTERM, shutting down gracefully");
+                    self.quit = true;
+                }
+                _ = sighup.recv() => {
+                    tracing::info!(target: "ebman", "received SIGHUP, shutting down gracefully");
+                    self.quit = true;
+                }
                 maybe_event = events.next() => {
                     match maybe_event {
                         Some(Ok(event)) => self.handle_event(event),
