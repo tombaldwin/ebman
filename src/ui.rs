@@ -34,10 +34,13 @@ fn rounded_block(theme: &Theme, active: bool) -> Block<'static> {
 
 fn titled_block(theme: &Theme, raw_title: &str, active: bool, accent: Color) -> Block<'static> {
     let trimmed = raw_title.trim();
-    let decorated = if theme.icons == IconStyle::Ascii {
-        format!("[ {trimmed} ]")
-    } else {
-        format!("[ ◆ {trimmed} ◆ ]")
+    let decorated = match theme.icons {
+        IconStyle::Ascii => format!("[ {trimmed} ]"),
+        // U+E0B6 / U+E0B4: rounded powerline left/right caps frame the title
+        // like a tab on a folder. Renders as boxes when the font isn't
+        // installed; documented in the config description.
+        IconStyle::Powerline => format!(" {trimmed} "),
+        IconStyle::Unicode => format!("[ ◆ {trimmed} ◆ ]"),
     };
     rounded_block(theme, active).title(Span::styled(
         decorated,
@@ -60,17 +63,25 @@ fn health_dot(health: &str, theme: &Theme) -> Span<'static> {
         "grey" | "gray" | "info" | "no data" | "pending" => theme.health_grey,
         _ => theme.text,
     };
-    let glyph = if theme.icons == IconStyle::Ascii {
-        "*"
-    } else {
-        "●"
+    let glyph = match theme.icons {
+        IconStyle::Ascii => "*",
+        // U+F111 Nerd-Font solid circle reads identically to U+25CF in
+        // Powerline-patched fonts but is part of the Nerd Font set, which
+        // gives a tiny consistency win when the rest of the chrome uses
+        // private-use glyphs.
+        IconStyle::Powerline => "\u{f111}",
+        IconStyle::Unicode => "●",
     };
     Span::styled(glyph, Style::default().fg(c).add_modifier(Modifier::BOLD))
 }
 
 fn spinner(elapsed_ms: u128, icons: IconStyle) -> &'static str {
     match icons {
-        IconStyle::Unicode => SPINNER_FRAMES[(elapsed_ms / 100) as usize % SPINNER_FRAMES.len()],
+        // Powerline-targeted fonts include the braille range, so the same
+        // animation reads well without needing a separate frame set.
+        IconStyle::Unicode | IconStyle::Powerline => {
+            SPINNER_FRAMES[(elapsed_ms / 100) as usize % SPINNER_FRAMES.len()]
+        }
         IconStyle::Ascii => ASCII_SPINNER[(elapsed_ms / 100) as usize % ASCII_SPINNER.len()],
     }
 }
@@ -83,6 +94,15 @@ fn tab_icon(t: DetailTab, icons: IconStyle) -> &'static str {
         (IconStyle::Unicode, DetailTab::Queue) => "✉",
         (IconStyle::Unicode, DetailTab::Logs) => "≣",
         (IconStyle::Unicode, DetailTab::Config) => "⚙",
+        // Powerline / Nerd Font Material Design glyphs. Each is distinct so
+        // the tab strip remains readable even when icons collapse onto a
+        // single line in the boot splash / detail header.
+        (IconStyle::Powerline, DetailTab::Events) => "\u{f0e7}", // flash
+        (IconStyle::Powerline, DetailTab::Instances) => "\u{f048b}", // server
+        (IconStyle::Powerline, DetailTab::Metrics) => "\u{f0680}", // chart-line
+        (IconStyle::Powerline, DetailTab::Queue) => "\u{f01ee}", // email-outline
+        (IconStyle::Powerline, DetailTab::Logs) => "\u{f021a}",  // text-box
+        (IconStyle::Powerline, DetailTab::Config) => "\u{f0493}", // cog
         // ASCII fallbacks: one letter per tab so each is distinguishable.
         (IconStyle::Ascii, DetailTab::Events) => "E",
         (IconStyle::Ascii, DetailTab::Instances) => "I",
@@ -556,12 +576,12 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     );
 
     let mut line1 = kv("Account", &account);
-    line1.push(sep());
+    line1.push(sep(theme));
     line1.extend(kv("Region", &app.context.region));
-    line1.push(sep());
+    line1.push(sep(theme));
     line1.extend(kv("Profile", &profile));
     let mut line2 = kv("Caller", &caller);
-    line2.push(sep());
+    line2.push(sep(theme));
     line2.extend(kv("Envs", &env_count));
     // Health-bucket delta since the previous refresh, e.g. "▲1 Red ▼1 Yellow".
     for (bucket, delta) in app.health_delta.iter().chain(app.status_delta.iter()) {
@@ -583,17 +603,17 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ));
     }
-    line2.push(sep());
+    line2.push(sep(theme));
     line2.extend(kv("Last", &last));
-    line2.push(sep());
+    line2.push(sep(theme));
     line2.push(Span::raw("Status: "));
     line2.push(status);
     let sort_dir = if app.sort_desc { "↓" } else { "↑" };
     let sort_label = format!("{}{}", app.sort_key.label(), sort_dir);
-    line2.push(sep());
+    line2.push(sep(theme));
     line2.extend(kv("Sort", &sort_label));
     if !app.filter.is_empty() {
-        line2.push(sep());
+        line2.push(sep(theme));
         let filter_text = app.filter.clone();
         line2.push(Span::styled("Filter: ", Style::default().fg(theme.muted)));
         line2.push(Span::styled(
@@ -604,26 +624,26 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         ));
     }
     if app.grouped {
-        line2.push(sep());
+        line2.push(sep(theme));
         line2.push(pill("GROUPED", Color::Black, theme.title_alt));
     }
     match app.view_mode {
         ViewMode::Compact => {
-            line2.push(sep());
+            line2.push(sep(theme));
             line2.push(pill("COMPACT", Color::Black, theme.accent));
         }
         ViewMode::Spacious => {
-            line2.push(sep());
+            line2.push(sep(theme));
             line2.push(pill("SPACIOUS", Color::Black, theme.accent));
         }
         ViewMode::Default => {}
     }
     if app.redact {
-        line2.push(sep());
+        line2.push(sep(theme));
         line2.push(pill("REDACT", Color::Black, theme.health_yellow));
     }
     if app.alerts > 0 {
-        line2.push(sep());
+        line2.push(sep(theme));
         line2.push(pill(
             &format!(
                 "! {} alert{}",
@@ -641,7 +661,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         .filter(|e| e.completed.is_none())
         .count();
     if in_flight > 0 {
-        line2.push(sep());
+        line2.push(sep(theme));
         line2.push(pill(
             &format!("⏳ {in_flight}"),
             Color::Black,
@@ -649,15 +669,15 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         ));
     }
     if app.frozen {
-        line2.push(sep());
+        line2.push(sep(theme));
         line2.push(pill("FROZEN", Color::Black, theme.health_grey));
     }
     if app.read_only {
-        line2.push(sep());
+        line2.push(sep(theme));
         line2.push(pill("READ-ONLY", Color::Black, theme.health_green));
     }
     if let Some(release) = app.update_available.as_ref() {
-        line2.push(sep());
+        line2.push(sep(theme));
         line2.push(pill(
             &format!("UPDATE {}", release.version),
             Color::Black,
@@ -680,7 +700,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
             } else {
                 theme.health_grey
             };
-            line2.push(sep());
+            line2.push(sep(theme));
             line2.push(pill(&label, Color::Black, bg));
         }
     }
@@ -2094,11 +2114,11 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
 
     // Env header
     let mut h1 = kv("Name", &env.name);
-    h1.push(sep());
+    h1.push(sep(&app.theme));
     h1.extend(kv("Application", &env.application));
-    h1.push(sep());
+    h1.push(sep(&app.theme));
     h1.extend(kv("Status", &env.status));
-    h1.push(sep());
+    h1.push(sep(&app.theme));
     h1.push(Span::styled(
         env.health.clone(),
         health_style(&env.health, &app.theme),
@@ -2115,9 +2135,9 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
 
     let cname_text = redact(&env.cname, app.redact);
     let mut h2 = kv("Platform", &env.platform);
-    h2.push(sep());
+    h2.push(sep(&app.theme));
     h2.extend(kv("Version", &env.version_label));
-    h2.push(sep());
+    h2.push(sep(&app.theme));
     h2.extend(kv("CNAME", &cname_text));
     let header_title = format!("environment: {}", env.name);
     let header = Paragraph::new(vec![Line::from(h1), Line::from(h2), Line::raw("")]).block(
@@ -3503,8 +3523,15 @@ fn kv<'a>(key: &'a str, value: &'a str) -> Vec<Span<'a>> {
     ]
 }
 
-fn sep() -> Span<'static> {
-    Span::styled("  •  ", Style::default().fg(Color::Gray))
+fn sep(theme: &Theme) -> Span<'static> {
+    // U+E0B1 — thin powerline separator — reads as a real divider in
+    // Powerline-patched fonts and falls back to a tofu box otherwise.
+    let glyph = if theme.icons == IconStyle::Powerline {
+        "  \u{e0b1}  "
+    } else {
+        "  •  "
+    };
+    Span::styled(glyph, Style::default().fg(Color::Gray))
 }
 
 fn sparkline_for(
@@ -3856,8 +3883,26 @@ mod tests {
     }
 
     #[test]
+    fn sep_uses_powerline_glyph_when_opted_in() {
+        let mut t = Theme::dark();
+        t.icons = IconStyle::Unicode;
+        let unicode_sep = sep(&t).content.to_string();
+        assert!(unicode_sep.contains('•'));
+        t.icons = IconStyle::Powerline;
+        let pl_sep = sep(&t).content.to_string();
+        assert!(
+            pl_sep.contains('\u{e0b1}'),
+            "expected U+E0B1 thin separator, got {pl_sep:?}"
+        );
+        // ASCII path stays on the bullet — opting *out* of unicode shouldn't
+        // accidentally trigger a powerline glyph.
+        t.icons = IconStyle::Ascii;
+        assert!(sep(&t).content.to_string().contains('•'));
+    }
+
+    #[test]
     fn tab_icon_is_distinct_per_tab() {
-        for icons in [IconStyle::Unicode, IconStyle::Ascii] {
+        for icons in [IconStyle::Unicode, IconStyle::Ascii, IconStyle::Powerline] {
             use std::collections::HashSet;
             let tabs = [
                 DetailTab::Events,

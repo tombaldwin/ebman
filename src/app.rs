@@ -95,6 +95,7 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "inflight",
     "tag",
     "untag",
+    "delete-version",
     "rebuild",
     "restart",
     "terminate",
@@ -1007,6 +1008,14 @@ enum AppMsg {
         summary: String,
         result: Result<(), String>,
     },
+    /// Result of a `DeleteApplicationVersion` call from `:delete-version`.
+    DeleteAppVersion {
+        gen: u64,
+        application: String,
+        label: String,
+        force: bool,
+        result: Result<(), String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -1153,8 +1162,10 @@ impl App {
                 if let Some(w) = warning {
                     tracing::warn!("{w}");
                 }
-                if config.icons.trim().eq_ignore_ascii_case("ascii") {
-                    t.icons = IconStyle::Ascii;
+                match config.icons.trim().to_ascii_lowercase().as_str() {
+                    "ascii" => t.icons = IconStyle::Ascii,
+                    "powerline" | "nerd" | "nerdfont" => t.icons = IconStyle::Powerline,
+                    _ => {}
                 }
                 Arc::new(t)
             },
@@ -3767,6 +3778,63 @@ impl App {
         }
     }
 
+    /// Dispatch a `DeleteApplicationVersion` for the selected env's app.
+    /// `force` also requests `DeleteSourceBundle=true` so the underlying
+    /// `.zip` is removed from the env's storage bucket.
+    fn spawn_delete_app_version(&mut self, label: String, force: bool) {
+        if self.read_only {
+            self.error_message = Some("read-only mode — delete-version disabled".into());
+            return;
+        }
+        let Some(env) = self.selected_env().cloned() else {
+            self.error_message = Some("no environment selected".into());
+            return;
+        };
+        let application = env.application.clone();
+        let force_str = if force { " (+source bundle)" } else { "" };
+        let detail = format!(
+            "stage=dispatched action=DeleteAppVersion target={application}/{label}{force_str}"
+        );
+        write_audit_line(
+            self.context.account_id.as_deref(),
+            self.context.profile.as_deref(),
+            &self.context.region,
+            &detail,
+        );
+        self.status_message = Some(format!("deleting {application}/{label}{force_str}…"));
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let account = self.context.account_id.clone();
+        let profile = self.context.profile.clone();
+        let region = self.context.region.clone();
+        let app_for_msg = application.clone();
+        let label_for_msg = label.clone();
+        tokio::spawn(async move {
+            let result = aws
+                .delete_application_version(&application, &label, force)
+                .await
+                .map_err(|e| flatten_err("delete_application_version", e));
+            let outcome = match &result {
+                Ok(()) => format!(
+                    "stage=completed action=DeleteAppVersion target={application}/{label}{force_str} ok"
+                ),
+                Err(e) => format!(
+                    "stage=completed action=DeleteAppVersion target={application}/{label}{force_str} err=\"{}\"",
+                    e.replace('"', "'")
+                ),
+            };
+            write_audit_line(account.as_deref(), profile.as_deref(), &region, &outcome);
+            let _ = tx.send(AppMsg::DeleteAppVersion {
+                gen,
+                application: app_for_msg,
+                label: label_for_msg,
+                force,
+                result,
+            });
+        });
+    }
+
     /// Dispatch an `UpdateTagsForResource` for the selected env. `to_add`
     /// and `to_remove` follow EB semantics: the API allows both in a single
     /// call; we surface a summary toast either way.
@@ -4849,6 +4917,17 @@ impl App {
                     );
                 }
             },
+            "delete-version" => match rest.first().copied() {
+                None => {
+                    self.error_message = Some(
+                        "usage: :delete-version <label> [--force]  (selected env's app; --force also removes the S3 source bundle)".into(),
+                    );
+                }
+                Some(label) => {
+                    let force = rest.iter().skip(1).any(|s| *s == "--force" || *s == "-f");
+                    self.spawn_delete_app_version(label.to_string(), force);
+                }
+            },
             "upgrade" => match rest.first().copied() {
                 None => {
                     // No ARN given — open an overlay listing newer versions
@@ -5870,6 +5949,32 @@ impl App {
                     Err(msg) => tracing::warn!(error = %msg, "tags fetch failed"),
                 }
             }
+            AppMsg::DeleteAppVersion {
+                gen,
+                application,
+                label,
+                force,
+                result,
+            } => {
+                if gen != self.generation {
+                    return;
+                }
+                let force_str = if force { " (+source bundle)" } else { "" };
+                match result {
+                    Ok(()) => {
+                        self.push_toast(
+                            ToastKind::Info,
+                            format!("deleted {application}/{label}{force_str}"),
+                        );
+                    }
+                    Err(msg) => {
+                        self.push_toast(
+                            ToastKind::Error,
+                            format!("delete {application}/{label}{force_str} failed: {msg}"),
+                        );
+                    }
+                }
+            }
             AppMsg::TagUpdate {
                 gen,
                 env_name,
@@ -6748,6 +6853,7 @@ fn build_palette_items(app: &App) -> Vec<PaletteItem> {
         ("readonly ", "toggle read-only (on/off)"),
         ("tag ", "add or update env tag: KEY VALUE"),
         ("untag ", "remove env tag: KEY"),
+        ("delete-version ", "delete app version: LABEL [--force]"),
     ];
     for (prefix, desc) in prefill_cmds {
         out.push(PaletteItem {

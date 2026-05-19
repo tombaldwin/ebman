@@ -42,6 +42,12 @@ pub struct Theme {
 pub enum IconStyle {
     Unicode,
     Ascii,
+    /// Opt-in glyph set for terminals using a Powerline-patched or Nerd Font.
+    /// Uses U+E0B0+ separators in headers/breadcrumbs/footers; otherwise
+    /// behaves like Unicode for icons whose Powerline equivalent isn't a
+    /// clear win. When the font isn't installed the user sees unknown-glyph
+    /// boxes — opting in is explicit so that's acceptable.
+    Powerline,
 }
 
 impl Default for Theme {
