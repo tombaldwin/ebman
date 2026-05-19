@@ -3187,7 +3187,7 @@ fn draw_detail_logs(f: &mut Frame, area: Rect, detail: &crate::app::DetailState,
     // Stage line + search bar at the top.
     let stage_line: Line<'static> = match tail.stage {
         LogTailStage::Idle => Line::from(Span::styled(
-            " press ^R to start log tail",
+            " press ^R for one-shot snapshot · s to live-stream CW Logs (needs `:logs-stream on`)",
             Style::default().fg(theme.muted),
         )),
         LogTailStage::Requesting => Line::from(Span::styled(
