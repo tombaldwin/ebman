@@ -90,6 +90,9 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "abort",
     "resources",
     "res",
+    "pending",
+    "in-flight",
+    "inflight",
     "rebuild",
     "restart",
     "terminate",
@@ -476,6 +479,45 @@ pub struct ParameterisedAction {
     pub scale_max: Option<i32>,
 }
 
+/// One in-flight or recently-completed action. `label` is the human-readable
+/// verb (e.g. "Rebuild environment"), `target` the env or instance the
+/// action was dispatched against. `completed` lands when `AppMsg::ActionResult`
+/// arrives; until then the entry counts as in-flight and the user can see it
+/// in the `:pending` overlay + header chip.
+#[derive(Debug, Clone)]
+pub struct PendingAction {
+    pub label: String,
+    pub target: String,
+    pub started: Instant,
+    pub completed: Option<(Instant, Result<(), String>)>,
+}
+
+/// Help overlay scope. `Global` shows the full keymap; the per-mode topics
+/// surface only the keys relevant to where the user just pressed `?`,
+/// avoiding the "wall of help" problem when the user just needs a reminder
+/// about the screen they're on. Set when entering `Mode::Help`.
+///
+/// `Shell` is currently unreachable — `?` in the embedded shell is a
+/// legitimate character to forward to the subprocess (e.g. globbing) — but
+/// kept here for symmetry in case we later bind a separate detach-and-help
+/// combo (e.g. F11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum HelpTopic {
+    Global,
+    Detail,
+    Dlq,
+    Action,
+    Shell,
+}
+
+/// Cap on the in-flight + recently-completed list. Older entries fall off
+/// the front when this is reached.
+pub const PENDING_CAP: usize = 20;
+/// Completed entries linger for this long so the user has time to see the
+/// outcome before the panel clears.
+pub const PENDING_COMPLETED_TTL: Duration = Duration::from_secs(60);
+
 #[derive(Clone, Debug)]
 pub struct DryRunInfo {
     pub instance_count: usize,
@@ -792,6 +834,12 @@ pub struct App {
     /// Recomputed on every ticker tick — the file is cheap to read and the
     /// user may `aws sso login` from another shell while ebman is open.
     pub sso_expiry: Option<chrono::DateTime<chrono::Utc>>,
+    /// Rolling list of in-flight + recently-completed action dispatches.
+    /// See `PendingAction`. Surfaced as a header chip + `:pending` overlay.
+    pub pending_actions: std::collections::VecDeque<PendingAction>,
+    /// Current scope of the help overlay. Determines which keymap subset
+    /// `draw_help` renders. Set whenever `?` opens Help.
+    pub help_topic: HelpTopic,
     /// Newer ebman release advertised by crates.io, if any. Populated by the
     /// fire-and-forget update-check task that runs once at startup.
     pub update_available: Option<crate::update_check::LatestRelease>,
@@ -1125,6 +1173,8 @@ impl App {
             throttle_until: None,
             consecutive_throttles: 0,
             sso_expiry: crate::sso::latest_session_expiry(),
+            pending_actions: std::collections::VecDeque::with_capacity(PENDING_CAP),
+            help_topic: HelpTopic::Global,
             update_available: None,
             reload_requested: false,
             pending_shell_target: None,
@@ -1293,6 +1343,8 @@ impl App {
             {
                 self.toasts.pop_front();
             }
+            // Drop pending-actions entries that completed > PENDING_COMPLETED_TTL ago.
+            self.expire_pending();
             // Pending embedded shell — allocate a PTY and switch mode.
             if let Some(target) = self.pending_shell_target.take() {
                 self.open_embedded_shell(terminal, &target)?;
@@ -1895,6 +1947,10 @@ impl App {
                             self.status_message = Some(msg.into());
                         }
                     }
+                    KeyCode::Char('?') => {
+                        self.help_topic = HelpTopic::Detail;
+                        self.mode = Mode::Help;
+                    }
                     KeyCode::Char('a') => self.open_action_menu(),
                     KeyCode::Char('b') => self.open_in_console(),
                     KeyCode::Char('*') => self.toggle_pin_selected(),
@@ -2022,8 +2078,22 @@ impl App {
                     _ => {}
                 }
             }
-            Mode::Action => self.handle_action_key(key),
-            Mode::Dlq => self.handle_dlq_key(key),
+            Mode::Action => {
+                if key.code == KeyCode::Char('?') {
+                    self.help_topic = HelpTopic::Action;
+                    self.mode = Mode::Help;
+                } else {
+                    self.handle_action_key(key);
+                }
+            }
+            Mode::Dlq => {
+                if key.code == KeyCode::Char('?') {
+                    self.help_topic = HelpTopic::Dlq;
+                    self.mode = Mode::Help;
+                } else {
+                    self.handle_dlq_key(key);
+                }
+            }
             Mode::Normal => {
                 // Custom keybindings — checked first so a user-bound key
                 // overrides any built-in fallthrough. Only F1-F12 and
@@ -2193,7 +2263,10 @@ impl App {
                         });
                     }
                     KeyCode::Char(c @ '1'..='9') => self.quick_jump((c as u8 - b'0') as usize),
-                    KeyCode::Char('?') => self.mode = Mode::Help,
+                    KeyCode::Char('?') => {
+                        self.help_topic = HelpTopic::Global;
+                        self.mode = Mode::Help;
+                    }
                     KeyCode::Char(':') => {
                         self.command_input.clear();
                         self.mode = Mode::Command;
@@ -3733,6 +3806,7 @@ impl App {
             &env,
             None,
         );
+        self.push_pending(action.label(), env.clone());
         let env_for_msg = env.clone();
         tokio::spawn(async move {
             let result = match action {
@@ -3830,6 +3904,9 @@ impl App {
             &self.context.region,
             &format!("stage=dispatched action=TerminateInstance target={env_name} instance={id}"),
         );
+        // Pending entry under the env name (where the action effect shows up)
+        // labelled by instance id so the operator can tell terminations apart.
+        self.push_pending(format!("Terminate instance {id}"), env_name.clone());
         self.status_message = Some(format!("terminating instance {id}…"));
         tokio::spawn(async move {
             let result = aws
@@ -3842,6 +3919,48 @@ impl App {
                 env_name,
                 result,
             });
+        });
+    }
+
+    /// Add a row to the pending-actions panel before dispatching. Callers
+    /// follow with a `tokio::spawn` that sends an `AppMsg::ActionResult`;
+    /// the result handler finds the first matching unfinished row and
+    /// stamps it with the outcome. Caps the list at `PENDING_CAP`.
+    pub fn push_pending(&mut self, label: impl Into<String>, target: impl Into<String>) {
+        if self.pending_actions.len() >= PENDING_CAP {
+            self.pending_actions.pop_front();
+        }
+        self.pending_actions.push_back(PendingAction {
+            label: label.into(),
+            target: target.into(),
+            started: Instant::now(),
+            completed: None,
+        });
+    }
+
+    /// Resolve a pending entry against an arriving `ActionResult`. Picks
+    /// the oldest unfinished entry whose `(label, target)` match — the
+    /// dispatch order is preserved so this is correct without IDs as long
+    /// as we don't have two concurrent dispatches of the same action to the
+    /// same target (a deliberate operator wouldn't do that).
+    pub fn complete_pending(&mut self, label: &str, target: &str, result: Result<(), String>) {
+        if let Some(entry) = self
+            .pending_actions
+            .iter_mut()
+            .find(|e| e.completed.is_none() && e.label == label && e.target == target)
+        {
+            entry.completed = Some((Instant::now(), result));
+        }
+    }
+
+    /// Drop completed entries older than `PENDING_COMPLETED_TTL`. Called
+    /// from the run loop's per-frame housekeeping so the panel quietens
+    /// after a minute of inactivity.
+    pub fn expire_pending(&mut self) {
+        let now = Instant::now();
+        self.pending_actions.retain(|e| match e.completed {
+            Some((c, _)) => now.duration_since(c) < PENDING_COMPLETED_TTL,
+            None => true,
         });
     }
 
@@ -3958,6 +4077,7 @@ impl App {
             &env,
             swap_with.as_deref(),
         );
+        self.push_pending(action.label(), env.clone());
         tokio::spawn(async move {
             let result = match action {
                 Action::Rebuild => aws.rebuild_env(&env).await,
@@ -4712,6 +4832,40 @@ impl App {
             "abort" => {
                 self.open_parameterised_action(Action::AbortUpdate, ParameterisedAction::default())
             }
+            "pending" | "in-flight" | "inflight" => {
+                if self.pending_actions.is_empty() {
+                    self.status_message = Some("no actions in flight or recently completed".into());
+                } else {
+                    let now = Instant::now();
+                    let mut lines: Vec<String> = vec![
+                        "In-flight + recently-completed actions".into(),
+                        "──────────────────────────────────────".into(),
+                        String::new(),
+                    ];
+                    for entry in self.pending_actions.iter().rev() {
+                        let age = humanize_short_age(now.duration_since(entry.started));
+                        let status = match &entry.completed {
+                            None => " ⏳ in flight".to_string(),
+                            Some((c, Ok(()))) => format!(
+                                " ✓ ok ({} ago)",
+                                humanize_short_age(now.duration_since(*c))
+                            ),
+                            Some((c, Err(e))) => format!(
+                                " ✗ err ({} ago): {}",
+                                humanize_short_age(now.duration_since(*c)),
+                                e.chars().take(80).collect::<String>()
+                            ),
+                        };
+                        lines.push(format!(
+                            "  {} → {}  ({} ago){}",
+                            entry.label, entry.target, age, status
+                        ));
+                    }
+                    lines.push(String::new());
+                    lines.push("esc / q to close".into());
+                    self.current_overlay = Some(Overlay::SavedConfigs(lines.join("\n")));
+                }
+            }
             "resources" | "res" => {
                 let Some(env) = self.selected_env().cloned() else {
                     self.error_message = Some("no environment selected".into());
@@ -5365,6 +5519,13 @@ impl App {
                     action,
                     &env_name,
                     result.as_ref().map(|_| ()).map_err(|e| e.as_str()),
+                );
+                // Stamp the matching pending-actions entry with the outcome
+                // so the panel shows ✓ / ✗ instead of "in flight".
+                self.complete_pending(
+                    action.label(),
+                    &env_name,
+                    result.as_ref().map(|_| ()).map_err(|e| e.clone()),
                 );
                 match result {
                     Ok(()) => {
@@ -6283,6 +6444,21 @@ impl App {
             }
             Err(e) => self.error_message = Some(format!("clipboard error: {e}")),
         }
+    }
+}
+
+/// Compact age formatter — "3s", "12s", "2m", "1h", "4d". Used for the
+/// pending-actions overlay so ages stay short and uniform.
+pub fn humanize_short_age(d: Duration) -> String {
+    let secs = d.as_secs();
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h", secs / 3600)
+    } else {
+        format!("{}d", secs / 86_400)
     }
 }
 

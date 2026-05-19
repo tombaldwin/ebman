@@ -222,6 +222,10 @@ Living list of done / pending / dropped work. New entries get added at the botto
 - **`ebman action <rebuild|restart|terminate> --env NAME [--yes]`** dispatches an action without entering the TUI. Terminate requires `--yes`.
 - `--help` updated to document subcommands; `--version`, `-h`, `-V`, `--read-only` flags continue to work.
 
+### Operator-feedback batch (2026-05-19)
+- **Pending-actions panel** — `PendingAction { label, target, started, completed }` queue (cap 20, completed entries expire after 60s); wired into `spawn_action` / `spawn_batch_action` / `spawn_terminate_instance` and the `AppMsg::ActionResult` handler. Header chip `⏳ N` while any are in flight; `:pending` / `:in-flight` / `:inflight` overlay lists label, target, age, and outcome.
+- **Per-context help** — new `HelpTopic` enum (Global / Detail / Dlq / Action / Shell) on `App`; `?` in Detail / Dlq / Action modes scopes the help overlay to just the keys relevant to that screen, with a footer pointer back to the global keymap. Implemented as `draw_help_detail` / `_dlq` / `_action` / `_shell` helpers in `ui.rs`. Shell topic kept reachable-shaped but currently unreachable since `?` is forwarded to the subprocess.
+
 ### Small-wins batch (2026-05-19)
 - **Dry-run preview for Deploy / Scale / Clone** — parameterised actions now run the same `spawn_dry_run` + `spawn_preflight_events` pre-flight that Rebuild/Terminate have, so the confirm modal shows the instance / AZ impact and last 3 events before the operator authorises.
 - **`:resources` overlay** (`:resources` / `:res`) — `DescribeEnvironmentResources` dump (ASGs, instances, LCs, LTs, LBs, triggers, queues) in a single overlay. Useful "what's actually in this env" view; also caught the WorkerQueueURL-is-empty bug originally.
@@ -271,8 +275,6 @@ The three things still keeping users in the AWS console day-to-day. Highest-leve
 - [ ] **Mocked-AWS test coverage** — currently only pure helpers are tested. Two real regressions this week were caught only by the user (DescribeConfigurationSettings returning empty WorkerQueueURL when EB autocreates the queue; peek_messages returning <max without long-polling and a loop). Adopt `aws-smithy-mocks` (or hand-rolled `ReplayingClient`) to assert on observed request shapes and exercise response variants. Foundation for confidently changing aws.rs without breaking silently.
 
 ### Polish + correctness — small wins
-- [ ] **Pending-actions panel** — actions are fire-and-forget; we only know they were dispatched. A small "in-flight" panel listing recent dispatches with timestamps + outcome (once the result arrives) would replace having to monitor the Events panel for completion.
-- [ ] **Per-context help** — the global `?` overlay is a single wall of text. Pressing `?` inside the DLQ viewer / action confirm / detail tab should surface only the keys relevant to that mode (using the existing per-mode footer hint material as the source of truth).
 - [ ] **Powerline-font glyph set (config opt-in)** — add `icons = "powerline"` alongside the existing `unicode` / `ascii` values in `config.toml`. Render tab strip, header pills, breadcrumb, and footer segment separators using powerline glyphs (`` `` ``, `` `` ``, `` `` ``, `` `` ``). Routed through the existing `IconStyle` enum + `tab_icon` / `spinner` helpers; falls back cleanly when the font isn't installed (it'll render as unknown-glyph placeholders, which is acceptable since opting in is explicit).
 
 ### Tier 0 — distribution & hygiene

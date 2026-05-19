@@ -634,6 +634,20 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
             theme.health_red,
         ));
     }
+    // In-flight action count — pulled from the pending-actions panel.
+    let in_flight = app
+        .pending_actions
+        .iter()
+        .filter(|e| e.completed.is_none())
+        .count();
+    if in_flight > 0 {
+        line2.push(sep());
+        line2.push(pill(
+            &format!("⏳ {in_flight}"),
+            Color::Black,
+            theme.health_yellow,
+        ));
+    }
     if app.frozen {
         line2.push(sep());
         line2.push(pill("FROZEN", Color::Black, theme.health_grey));
@@ -1485,6 +1499,16 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
 fn draw_help(f: &mut Frame, area: Rect, app: &App) {
     let popup = centered_rect(70, 70, area);
     f.render_widget(Clear, popup);
+    // Per-context help: when the user pressed `?` inside Detail / DLQ /
+    // Action / Shell, show only the keys relevant to that screen. The
+    // global keymap is still available via `?` from Normal mode.
+    match app.help_topic {
+        crate::app::HelpTopic::Detail => return draw_help_detail(f, popup, app),
+        crate::app::HelpTopic::Dlq => return draw_help_dlq(f, popup, app),
+        crate::app::HelpTopic::Action => return draw_help_action(f, popup, app),
+        crate::app::HelpTopic::Shell => return draw_help_shell(f, popup, app),
+        crate::app::HelpTopic::Global => {}
+    }
 
     let interval_secs = app.refresh_interval.as_secs();
     let lines = vec![
@@ -3198,6 +3222,175 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         Style::default().fg(Color::Gray),
     ));
     f.render_widget(hint, layout[2]);
+}
+
+fn draw_help_detail(f: &mut Frame, popup: Rect, app: &App) {
+    let lines = vec![
+        Line::from(Span::styled(
+            "Detail view — keybindings",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        help_line(
+            "tab / l",
+            "next tab (Events → Instances → Metrics → Queue → Logs → Config)",
+        ),
+        help_line("shift-tab / h", "previous tab"),
+        help_line(
+            "j / k",
+            "scroll within active tab (cursor on Instances / Queue tabs)",
+        ),
+        help_line("^R", "re-fetch active tab's data"),
+        help_line("R", "toggle per-tab auto-refresh"),
+        help_line("a", "actions menu (rebuild / restart / deploy / …)"),
+        help_line("b", "open env in AWS console"),
+        help_line("D", "describe overlay (raw env dump as JSON)"),
+        help_line("d", "open DLQ for this env (Worker tier only)"),
+        help_line("*", "pin / unpin"),
+        Line::from(""),
+        Line::from(Span::styled("Events tab", Style::default().fg(Color::Cyan))),
+        help_line("/", "regex filter event messages"),
+        help_line("n / N", "jump next / previous match"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Metrics tab",
+            Style::default().fg(Color::Cyan),
+        )),
+        help_line("[ / ]", "decrease / increase metric range (15m → 24h)"),
+        help_line("mouse hover", "show metric value at cursor x-position"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Instances tab",
+            Style::default().fg(Color::Cyan),
+        )),
+        help_line("enter", "open instance in EC2 console"),
+        help_line("s", "embedded SSM shell into selected instance"),
+        help_line("y", "yank instance ID"),
+        help_line("x", "terminate selected instance (Y/N; ASG replaces)"),
+        Line::from(""),
+        Line::from(Span::styled("Queue tab", Style::default().fg(Color::Cyan))),
+        help_line("j / k", "pick Main / DLQ"),
+        help_line("enter", "open queue viewer"),
+        help_line("d", "quick-open DLQ"),
+        Line::from(""),
+        Line::from(Span::styled("Logs tab", Style::default().fg(Color::Cyan))),
+        help_line("^R", "request tail logs (10-20s wait for instance samples)"),
+        help_line("/", "regex filter visible lines"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "esc / q  to close help; from Normal mode `?` shows the full keymap",
+            Style::default().fg(Color::Gray),
+        )),
+    ];
+    let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        titled_block(&app.theme, "help — Detail", true, app.theme.title_alt)
+            .padding(Padding::uniform(1)),
+    );
+    f.render_widget(p, popup);
+}
+
+fn draw_help_dlq(f: &mut Frame, popup: Rect, app: &App) {
+    let lines = vec![
+        Line::from(Span::styled(
+            "Queue viewer — keybindings",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        help_line("j / k", "move cursor"),
+        help_line("enter", "view full message body"),
+        help_line("r", "resend selected (DLQ → main) — DLQ view only"),
+        help_line("x", "delete selected message (Y/N confirm)"),
+        help_line(
+            "p",
+            "purge queue (strict typed-name confirm) — DLQ view only",
+        ),
+        help_line("m", "toggle Main ↔ DLQ"),
+        help_line("^R", "refetch messages (deeper peek with long-polling)"),
+        help_line("esc / q", "close viewer"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Resend and purge are disabled in Main view — too dangerous on a live queue.",
+            Style::default().fg(Color::Gray),
+        )),
+    ];
+    let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        titled_block(&app.theme, "help — Queue", true, app.theme.title_alt)
+            .padding(Padding::uniform(1)),
+    );
+    f.render_widget(p, popup);
+}
+
+fn draw_help_action(f: &mut Frame, popup: Rect, app: &App) {
+    let lines = vec![
+        Line::from(Span::styled(
+            "Action menu — keybindings",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        help_line("j / k", "move cursor between actions"),
+        help_line("enter", "select; opens confirm modal (or picker for Swap)"),
+        help_line("esc", "close menu"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Confirm modal",
+            Style::default().fg(Color::Cyan),
+        )),
+        help_line("y / enter", "confirm and dispatch"),
+        help_line("n / esc", "cancel"),
+        help_line(
+            "(typing)",
+            "TypeName confirm (Terminate) — must match env name exactly",
+        ),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Parameterised actions (Deploy / Upgrade / Clone / Scale) close the menu",
+            Style::default().fg(Color::Gray),
+        )),
+        Line::from(Span::styled(
+            "and prefill the command bar; type the arg and Enter to run.",
+            Style::default().fg(Color::Gray),
+        )),
+    ];
+    let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        titled_block(&app.theme, "help — Action", true, app.theme.title_alt)
+            .padding(Padding::uniform(1)),
+    );
+    f.render_widget(p, popup);
+}
+
+fn draw_help_shell(f: &mut Frame, popup: Rect, app: &App) {
+    let lines = vec![
+        Line::from(Span::styled(
+            "Embedded shell — keybindings",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Almost every key is forwarded to the subprocess. Exceptions:",
+            Style::default().fg(Color::Gray),
+        )),
+        Line::from(""),
+        help_line("F12", "detach back to ebman (subprocess keeps running)"),
+        help_line("^D / exit", "close the session"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Open from Instances tab → s on a selected instance.",
+            Style::default().fg(Color::Gray),
+        )),
+    ];
+    let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        titled_block(&app.theme, "help — Shell", true, app.theme.title_alt)
+            .padding(Padding::uniform(1)),
+    );
+    f.render_widget(p, popup);
 }
 
 fn help_line<'a>(key: &'a str, desc: &'a str) -> Line<'a> {
