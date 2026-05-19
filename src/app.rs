@@ -513,6 +513,59 @@ impl Action {
     pub fn destructive(self) -> bool {
         matches!(self, Self::Terminate)
     }
+
+    /// Per-icon-style glyph for the action menu. Powerline mode draws
+    /// recognisable Nerd Font icons (refresh / power / swap / trash / …)
+    /// next to the label; unicode falls back to short emoji-ish glyphs;
+    /// ASCII gets a single-letter tag so the column stays aligned.
+    pub fn glyph(self, icons: crate::theme::IconStyle) -> &'static str {
+        use crate::theme::IconStyle;
+        match (icons, self) {
+            // Powerline / Nerd Font Material Design glyphs.
+            (IconStyle::Powerline, Self::Rebuild) => "\u{f0450}", // refresh
+            (IconStyle::Powerline, Self::RestartAppServer) => "\u{f0709}", // restart
+            (IconStyle::Powerline, Self::SwapCnames) => "\u{f0521}", // swap-horizontal
+            (IconStyle::Powerline, Self::Terminate) => "\u{f01b4}", // delete / trash
+            (IconStyle::Powerline, Self::Deploy) => "\u{f01da}",  // upload
+            (IconStyle::Powerline, Self::UpgradePlatform) => "\u{f0140}", // upgrade arrow
+            (IconStyle::Powerline, Self::Clone) => "\u{f018f}",   // content-copy
+            (IconStyle::Powerline, Self::Scale) => "\u{f0566}",   // resize / arrow-expand
+            (IconStyle::Powerline, Self::AbortUpdate) => "\u{f0156}", // cancel
+            (IconStyle::Powerline, Self::ConfigSave) => "\u{f0193}", // content-save
+            (IconStyle::Powerline, Self::ConfigDelete) => "\u{f01b4}", // delete
+            (IconStyle::Powerline, Self::ConfigApply) => "\u{f00e2}", // check
+            (IconStyle::Powerline, Self::TerminateInstance) => "\u{f01b4}", // delete
+            // Unicode fallbacks — common monospaced glyphs that render in
+            // most modern terminals without a patched font.
+            (IconStyle::Unicode, Self::Rebuild) => "↻",
+            (IconStyle::Unicode, Self::RestartAppServer) => "⟳",
+            (IconStyle::Unicode, Self::SwapCnames) => "⇄",
+            (IconStyle::Unicode, Self::Terminate) => "✗",
+            (IconStyle::Unicode, Self::Deploy) => "↑",
+            (IconStyle::Unicode, Self::UpgradePlatform) => "▲",
+            (IconStyle::Unicode, Self::Clone) => "❐",
+            (IconStyle::Unicode, Self::Scale) => "↔",
+            (IconStyle::Unicode, Self::AbortUpdate) => "■",
+            (IconStyle::Unicode, Self::ConfigSave) => "✎",
+            (IconStyle::Unicode, Self::ConfigDelete) => "✗",
+            (IconStyle::Unicode, Self::ConfigApply) => "✓",
+            (IconStyle::Unicode, Self::TerminateInstance) => "✗",
+            // ASCII: single-letter tags so the menu column stays fixed-width.
+            (IconStyle::Ascii, Self::Rebuild) => "R",
+            (IconStyle::Ascii, Self::RestartAppServer) => "r",
+            (IconStyle::Ascii, Self::SwapCnames) => "S",
+            (IconStyle::Ascii, Self::Terminate) => "X",
+            (IconStyle::Ascii, Self::Deploy) => "D",
+            (IconStyle::Ascii, Self::UpgradePlatform) => "U",
+            (IconStyle::Ascii, Self::Clone) => "C",
+            (IconStyle::Ascii, Self::Scale) => "N",
+            (IconStyle::Ascii, Self::AbortUpdate) => "A",
+            (IconStyle::Ascii, Self::ConfigSave) => "s",
+            (IconStyle::Ascii, Self::ConfigDelete) => "d",
+            (IconStyle::Ascii, Self::ConfigApply) => "a",
+            (IconStyle::Ascii, Self::TerminateInstance) => "x",
+        }
+    }
 }
 
 pub enum ActionFlow {
