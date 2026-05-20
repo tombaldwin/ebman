@@ -340,6 +340,11 @@ Items from the drive-the-app review, shipped together because they share state. 
 - **`--control-socket PATH`** — when set, ebman opens a Unix socket at PATH with 0600 perms and accepts one-shot requests: `SCREEN` (plain-text dump of the current frame from the ratatui back-buffer), `KEY <spec>` (synthesised key event injected via `handle_event`; spec supports Ctrl/Shift/Alt + arrows / Enter / F1-12 / single chars / `Char(x)`), `CMD <text>` (runs a `:` command), `STATE` (flat JSON with mode / profile / region / account / envs / selected / load / sort / grouped / redact / focus).
 - **`ebman ctl <op>` subcommand** — one-shot client; defaults to `~/.cache/ebman/control.sock`; override with `--socket PATH`. Examples: `ebman ctl screen`, `ebman ctl key Down`, `ebman ctl key Ctrl+R`, `ebman ctl cmd ":region eu-west-2"`, `ebman ctl state`.
 
+### Mocked-AWS coverage: write path + error path (2026-05-20)
+- **`update_env_option_settings_builds_correct_request_shape`** — pins the load-bearing write path used by `:capacity`, `:env`, `:tag`, `:subnets`, `:elb-subnets`, `:security-groups`, and every `:set-option`. Asserts environment_name + each option_setting tuple (namespace / name / value, in caller order) + options_to_remove all land on the UpdateEnvironment request. Uses `match_requests` as the assertion vehicle — a request shape that diverges fails the rule match and surfaces as a test error.
+- **`update_env_option_settings_rejects_empty_input_before_dispatch`** — the "nothing to do" guard must short-circuit before any AWS call. Test mocks a tripwire rule and asserts `num_calls() == 0` after the guard fires.
+- **`update_env_option_settings_surfaces_aws_errors`** — `then_error` returns `InsufficientPrivilegesException`; assert the wrapped error string carries the contextual prefix so the log is actionable.
+
 ### ELB-subnets picker (2026-05-20)
 - **`:elb-subnets`** — sibling to `:subnets`, targets `aws:ec2:vpc.ELBSubnets` so the ELB attaches to a different subnet set than the instances. Web-tier-only. Added `MultiSelectFlavour::ElbSubnets` variant; `load_multi_select` reuses the existing `list_subnets_in_vpc` call but pulls the initial selection from the new `EnvVpcContext.elb_subnets` field. `fetch_env_vpc_context` extended to parse `ELBSubnets` from option settings; test updated to assert all three subnet/SG fields populate in one round-trip.
 
@@ -429,7 +434,7 @@ The three things still keeping users in the AWS console day-to-day. Highest-leve
 ### Refactors — structural cleanup remaining
 
 - [ ] **Split `src/app.rs` (6000+ lines, 60+ fields)** — `handle_key` is a flat dispatch across 10+ modes; the file is past the point where one branch can be changed confidently without reading the others. Extract per-mode handlers into their own modules (`mode_detail.rs`, `mode_dlq.rs`, `mode_action.rs`, …); action-flow state machine into `action.rs`; DLQ state machine into `dlq.rs`; persistence / `rebuild_view` into `view.rs`. Stop-conditioned in autonomous mode; needs a focused session.
-- [ ] **Mocked-AWS test coverage — expansion** — foundation shipped (`aws-smithy-mocks` wired, `AwsClient::for_tests`, 4 tests pinning the two known regressions plus a happy path). Worth adding: error-path coverage (throttling backoff, expired tokens, no perms); `update_env_option_settings` request-shape assertions (the option-settings dispatch is the load-bearing write path); `:deploy --from` multi-stage flow (CreateStorageLocation → S3 PutObject → CreateApplicationVersion → UpdateEnvironment); CloudWatch metric query batching.
+- [ ] **Mocked-AWS test coverage — further expansion** — foundation + write-path + InsufficientPrivileges error path now covered (9 mocked-AWS tests in `aws.rs`). Remaining gaps worth chipping at when surfaces regress: throttling backoff (asserts the `is_throttling_error` predicate fires the expected response), expired-token surfacing, `:deploy --from` multi-stage flow (CreateStorageLocation → S3 PutObject → CreateApplicationVersion → UpdateEnvironment) since it's the most multi-step pure-AWS code path, CloudWatch metric query batching.
 
 ### UX punch list — drive-the-app review (2026-05-19)
 
