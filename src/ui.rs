@@ -1681,8 +1681,31 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                             &theme,
                             app.newly_red.contains(&e.name),
                         )),
-                        "PLATFORM" => Cell::from(Span::raw(e.platform.as_str()))
-                            .style(Style::default().fg(theme.muted)),
+                        "PLATFORM" => {
+                            // Devicons icon is Powerline-only (PUA
+                            // codepoints tofu without a Nerd Font);
+                            // colour-coding applies in every icon mode
+                            // so unicode / ASCII users still get the
+                            // visual differentiation between platforms.
+                            let style = platform_style(&e.platform);
+                            let colour = style
+                                .as_ref()
+                                .and_then(|s| theme.app_palette.get(s.palette_idx).copied())
+                                .unwrap_or(theme.muted);
+                            let icon = if theme.icons == IconStyle::Powerline {
+                                style.as_ref().map(|s| s.icon)
+                            } else {
+                                None
+                            };
+                            match icon {
+                                Some(g) => Cell::from(Line::from(vec![
+                                    Span::styled(format!("{g} "), Style::default().fg(colour)),
+                                    Span::styled(e.platform.as_str(), Style::default().fg(colour)),
+                                ])),
+                                None => Cell::from(Span::raw(e.platform.as_str()))
+                                    .style(Style::default().fg(colour)),
+                            }
+                        }
                         "VERSION" => Cell::from(format_version_label(
                             &e.version_label,
                             theme.app_palette[0],
@@ -2044,6 +2067,55 @@ fn tier_cell(tier: &str, theme: &Theme) -> Cell<'static> {
             Style::default().fg(theme.muted),
         )),
     }
+}
+
+/// Per-platform render style: icon + colour palette slot. `None` ⇒
+/// "unrecognised, render plain". The palette index is an offset into
+/// `theme.app_palette` so the colour automatically adapts to the
+/// active theme without a per-theme mapping.
+struct PlatformStyle {
+    icon: &'static str,
+    palette_idx: usize,
+}
+
+/// Pure: pick a Devicons glyph + theme palette colour for the env's
+/// platform family. The icon is rendered Powerline-only (Devicons
+/// codepoints live in the PUA range and tofu without a Nerd Font);
+/// the colour applies in every icon mode so unicode / ASCII users
+/// still get the visual differentiation.
+///
+/// Palette indices are stable, low slots so each language sticks to
+/// the same hue across refreshes (rather than drifting with the app-
+/// colour cache).
+///
+/// **Caveat:** Devicons codepoints have been stable since Nerd Fonts
+/// 1.x, but if any render wrong in the wild (the MDI block burned us
+/// before), the fix is to either update the codepoint or return
+/// `None` for that family.
+fn platform_style(family: &str) -> Option<PlatformStyle> {
+    let lc = family.to_ascii_lowercase();
+    // Match longest / most-specific tokens first so e.g. "Corretto" is
+    // recognised as Java even though it doesn't mention Java.
+    let (icon, palette_idx) = if lc.contains("node") {
+        ("\u{e718}", 2) // green-teal slot for Node's brand green
+    } else if lc.contains("java") || lc.contains("tomcat") || lc.contains("corretto") {
+        ("\u{e738}", 3) // tan/orange for Java's coffee
+    } else if lc.contains("python") {
+        ("\u{e73c}", 0) // blue for Python
+    } else if lc.contains("ruby") {
+        ("\u{e791}", 5) // pink-red for Ruby
+    } else if lc.contains("php") {
+        ("\u{e73d}", 6) // purple for PHP
+    } else if lc.contains(".net") || lc.contains("iis") {
+        ("\u{e77f}", 1) // mauve for .NET
+    } else if lc.contains("docker") {
+        ("\u{e7b0}", 7) // pale blue for Docker
+    } else if lc.contains("go ") || lc.ends_with(" go") || lc == "go" {
+        ("\u{e626}", 9) // mint for Go
+    } else {
+        return None;
+    };
+    Some(PlatformStyle { icon, palette_idx })
 }
 
 /// Returns `(web_icon, worker_icon)` for the given icon style. Picks
