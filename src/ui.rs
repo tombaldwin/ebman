@@ -2003,9 +2003,15 @@ fn draw_minimap(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn tier_cell(tier: &str, theme: &Theme) -> Cell<'static> {
+    // Both tiers render as same-shape pills so the column reads as one
+    // consistent label kind, not "one quiet word vs. one alarming
+    // box". Worker keeps the accent (yellow) bg since it's the
+    // less-common tier and the colour still calls it out; Web sits in
+    // a muted-bg pill so it's still clearly a tier label rather than
+    // free text but doesn't compete with Worker visually.
     match tier {
         "Worker" => Cell::from(pill("Worker", Color::Black, theme.accent)),
-        "Web" => Cell::from(Span::styled("Web", Style::default().fg(theme.muted))),
+        "Web" => Cell::from(pill("Web", theme.text, theme.row_alt_bg)),
         other => Cell::from(Span::styled(
             other.to_string(),
             Style::default().fg(theme.muted),
@@ -4993,8 +4999,8 @@ fn summarize_group(envs: &[&Environment]) -> String {
     let env_word = if total == 1 { "env" } else { "envs" };
     let mut parts: Vec<String> = vec![format!("{total} {env_word}")];
     if web > 0 && worker > 0 {
-        parts.push(format!("{web} web"));
-        parts.push(format!("{worker} worker"));
+        parts.push(format!("{web} Web"));
+        parts.push(format!("{worker} Worker"));
     }
     if red > 0 {
         parts.push(format!("{red} red"));
@@ -5491,7 +5497,7 @@ mod tests {
         // appear. Tier split omitted because everyone is web.
         assert!(s.contains("3 envs"));
         assert!(s.contains("1 red"));
-        assert!(!s.contains("worker"));
+        assert!(!s.contains("Worker"));
         assert!(!s.contains("yellow"));
     }
 
@@ -5516,8 +5522,8 @@ mod tests {
         let envs = [e("Web", "Green"), e("Worker", "Yellow"), e("Worker", "Red")];
         let refs: Vec<&Environment> = envs.iter().collect();
         let s = summarize_group(&refs);
-        assert!(s.contains("1 web"));
-        assert!(s.contains("2 worker"));
+        assert!(s.contains("1 Web"));
+        assert!(s.contains("2 Worker"));
         assert!(s.contains("1 red"));
         assert!(s.contains("1 yellow"));
     }
