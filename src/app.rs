@@ -272,7 +272,6 @@ pub enum Overlay {
 pub const LOG_TAIL_MAX_LINES: usize = 2000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // Success reserved for future success-specific toasts.
 pub enum ToastKind {
     Info,
     Success,
@@ -1851,9 +1850,14 @@ impl App {
         self.mode = self.shell_return_mode;
     }
 
-    /// Legacy inline-subprocess path. Kept for the case where the user
-    /// wants to drop straight out of the TUI rather than embed; currently
-    /// unused but documented for future toggling.
+    /// Legacy inline-subprocess path: drops out of the TUI, runs
+    /// `aws ssm start-session` against the terminal directly, and
+    /// returns when the subprocess exits. **Not the active code path** —
+    /// `open_embedded_shell` is the live SSM entry point and embeds the
+    /// session inside a Mode::Shell pane (preserving the table behind
+    /// it). Kept as a reference for any future "drop out fully" toggle;
+    /// do not call from new code without confirming the embedded path
+    /// genuinely can't serve the operator's use case.
     #[allow(dead_code)]
     fn run_inline_ssm(&mut self, terminal: &mut Tui, instance_id: &str) -> Result<()> {
         use crossterm::{
@@ -8514,6 +8518,35 @@ impl App {
         }
     }
 
+    /// Apply a Detail-tab AppMsg payload. Handles the boilerplate every
+    /// `Detail*` variant shares: drop on stale generation, drop when no
+    /// Detail view is open, drop when the user switched to a different
+    /// env mid-fetch. The closure then runs against `&mut DetailState`
+    /// + the raw `Result<T, String>` so the caller chooses its own
+    /// success / error behaviour — most clear `detail.error` on the Ok
+    /// branch, but tags / env-vars use `tracing::warn!` instead since
+    /// their failures shouldn't tint the whole tab red.
+    fn apply_detail_msg<T, F>(
+        &mut self,
+        gen: u64,
+        env_name: &str,
+        result: Result<T, String>,
+        apply: F,
+    ) where
+        F: FnOnce(&mut DetailState, Result<T, String>),
+    {
+        if gen != self.generation {
+            return;
+        }
+        let Some(detail) = self.detail.as_mut() else {
+            return;
+        };
+        if detail.env_name != env_name {
+            return;
+        }
+        apply(detail, result);
+    }
+
     fn handle_msg(&mut self, msg: AppMsg) {
         match msg {
             AppMsg::Refresh { gen, result } => {
@@ -8574,23 +8607,16 @@ impl App {
                 env_name,
                 result,
             } => {
-                if gen != self.generation {
-                    return;
-                }
-                let Some(detail) = self.detail.as_mut() else {
-                    return;
-                };
-                if detail.env_name != env_name {
-                    return; // user switched to a different env meanwhile
-                }
-                detail.loading_events = false;
-                match result {
-                    Ok(events) => {
-                        detail.events = events;
-                        detail.error = None;
+                self.apply_detail_msg(gen, &env_name, result, |d, r| {
+                    d.loading_events = false;
+                    match r {
+                        Ok(events) => {
+                            d.events = events;
+                            d.error = None;
+                        }
+                        Err(msg) => d.error = Some(msg),
                     }
-                    Err(msg) => detail.error = Some(msg),
-                }
+                });
             }
             AppMsg::ActionResult {
                 gen,
@@ -8637,46 +8663,32 @@ impl App {
                 env_name,
                 result,
             } => {
-                if gen != self.generation {
-                    return;
-                }
-                let Some(detail) = self.detail.as_mut() else {
-                    return;
-                };
-                if detail.env_name != env_name {
-                    return;
-                }
-                detail.loading_instances = false;
-                match result {
-                    Ok(instances) => {
-                        detail.instances = instances;
-                        detail.error = None;
+                self.apply_detail_msg(gen, &env_name, result, |d, r| {
+                    d.loading_instances = false;
+                    match r {
+                        Ok(instances) => {
+                            d.instances = instances;
+                            d.error = None;
+                        }
+                        Err(msg) => d.error = Some(msg),
                     }
-                    Err(msg) => detail.error = Some(msg),
-                }
+                });
             }
             AppMsg::DetailMetrics {
                 gen,
                 env_name,
                 result,
             } => {
-                if gen != self.generation {
-                    return;
-                }
-                let Some(detail) = self.detail.as_mut() else {
-                    return;
-                };
-                if detail.env_name != env_name {
-                    return;
-                }
-                detail.loading_metrics = false;
-                match result {
-                    Ok(metrics) => {
-                        detail.metrics = metrics;
-                        detail.error = None;
+                self.apply_detail_msg(gen, &env_name, result, |d, r| {
+                    d.loading_metrics = false;
+                    match r {
+                        Ok(metrics) => {
+                            d.metrics = metrics;
+                            d.error = None;
+                        }
+                        Err(msg) => d.error = Some(msg),
                     }
-                    Err(msg) => detail.error = Some(msg),
-                }
+                });
             }
             AppMsg::DetailLogsProgress {
                 gen,
@@ -8832,20 +8844,13 @@ impl App {
                 env_name,
                 result,
             } => {
-                if gen != self.generation {
-                    return;
-                }
-                let Some(detail) = self.detail.as_mut() else {
-                    return;
-                };
-                if detail.env_name != env_name {
-                    return;
-                }
-                detail.loading_tags = false;
-                match result {
-                    Ok(tags) => detail.tags = tags,
-                    Err(msg) => tracing::warn!(error = %msg, "tags fetch failed"),
-                }
+                self.apply_detail_msg(gen, &env_name, result, |d, r| {
+                    d.loading_tags = false;
+                    match r {
+                        Ok(tags) => d.tags = tags,
+                        Err(msg) => tracing::warn!(error = %msg, "tags fetch failed"),
+                    }
+                });
             }
             AppMsg::DeployFromLocal {
                 gen,
@@ -9072,20 +9077,13 @@ impl App {
                 env_name,
                 result,
             } => {
-                if gen != self.generation {
-                    return;
-                }
-                let Some(detail) = self.detail.as_mut() else {
-                    return;
-                };
-                if detail.env_name != env_name {
-                    return;
-                }
-                detail.loading_env_vars = false;
-                match result {
-                    Ok(vars) => detail.env_vars = vars,
-                    Err(msg) => tracing::warn!(error = %msg, "env vars fetch failed"),
-                }
+                self.apply_detail_msg(gen, &env_name, result, |d, r| {
+                    d.loading_env_vars = false;
+                    match r {
+                        Ok(vars) => d.env_vars = vars,
+                        Err(msg) => tracing::warn!(error = %msg, "env vars fetch failed"),
+                    }
+                });
             }
             AppMsg::OptionSettingsUpdate {
                 gen,
@@ -9103,7 +9101,7 @@ impl App {
                 );
                 match result {
                     Ok(()) => {
-                        self.push_toast(ToastKind::Info, format!("{summary} → {env_name}"));
+                        self.push_toast(ToastKind::Success, format!("{summary} → {env_name}"));
                         // If it was an env-var set/unset and the Detail view
                         // is open on the same env, refresh the Config tab's
                         // env vars so the change reflects without waiting
@@ -9152,7 +9150,7 @@ impl App {
                         } else {
                             "deleted"
                         };
-                        self.push_toast(ToastKind::Info, format!("alarm '{alarm_name}' {past}"));
+                        self.push_toast(ToastKind::Success, format!("alarm '{alarm_name}' {past}"));
                     }
                     Err(msg) => {
                         self.push_toast(
@@ -9271,23 +9269,16 @@ impl App {
                 env_name,
                 result,
             } => {
-                if gen != self.generation {
-                    return;
-                }
-                let Some(detail) = self.detail.as_mut() else {
-                    return;
-                };
-                if detail.env_name != env_name {
-                    return;
-                }
-                detail.loading_queues = false;
-                match result {
-                    Ok(queues) => {
-                        detail.queues = queues;
-                        detail.error = None;
+                self.apply_detail_msg(gen, &env_name, result, |d, r| {
+                    d.loading_queues = false;
+                    match r {
+                        Ok(queues) => {
+                            d.queues = queues;
+                            d.error = None;
+                        }
+                        Err(msg) => d.error = Some(msg),
                     }
-                    Err(msg) => detail.error = Some(msg),
-                }
+                });
             }
             AppMsg::DlqMessages {
                 gen,
