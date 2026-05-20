@@ -95,6 +95,10 @@ async fn main() -> Result<()> {
     // glyph never reaches the user's scrollback. Any non-auto value is
     // passed through untouched.
     cfg.icons = font_probe::resolve_icons_setting(&cfg.icons);
+    // Capture the resolved icons setting before `cfg` is consumed by
+    // `App::new` — `draw_splash` needs it to pick between the plain-text
+    // tagline and the Powerline rounded-cap pill variant.
+    let splash_icons = cfg.icons.clone();
     let mut terminal = enter_tui()?;
 
     // Animate the splash while App::new resolves (config load + STS + first
@@ -114,7 +118,7 @@ async fn main() -> Result<()> {
                 app_ready = Some(res?);
             }
             _ = interval.tick() => {
-                draw_splash(&mut terminal, splash_frame)?;
+                draw_splash(&mut terminal, splash_frame, &splash_icons)?;
                 splash_frame = splash_frame.wrapping_add(1);
                 if app_ready.is_some() && splash_started.elapsed() >= SPLASH_MIN_DURATION {
                     break app_ready
@@ -362,10 +366,10 @@ const SPLASH_LOGO: &[&str] = &[
     "██      ██   ██ ████  ████ ██   ██ ████   ██",
     "█████   ██████  ██ ████ ██ ███████ ██ ██  ██",
     "██      ██   ██ ██  ██  ██ ██   ██ ██  ██ ██",
-    "███████ ██████  ██      ██ ██   ██ ██   ██ ██",
+    "███████ ██████  ██      ██ ██   ██ ██   ████",
 ];
 
-fn draw_splash(terminal: &mut Tui, frame: u64) -> Result<()> {
+fn draw_splash(terminal: &mut Tui, frame: u64, icons: &str) -> Result<()> {
     use ratatui::layout::{Alignment, Constraint, Direction, Layout};
     use ratatui::style::{Color, Modifier, Style};
     use ratatui::text::{Line, Span};
@@ -394,6 +398,7 @@ fn draw_splash(terminal: &mut Tui, frame: u64) -> Result<()> {
         lines.push(Line::from(""));
         // Per-character hue-shift gives a horizontal gradient that scrolls
         // through cool tones (cyan → blue → purple → magenta) as `frame` advances.
+        let powerline = icons == "powerline";
         for row in SPLASH_LOGO {
             let spans: Vec<Span> = row
                 .chars()
@@ -425,20 +430,57 @@ fn draw_splash(terminal: &mut Tui, frame: u64) -> Result<()> {
             lines.push(Line::from(spans).alignment(Alignment::Center));
         }
         lines.push(Line::from(""));
-        lines.push(
-            Line::from(Span::styled(
-                "k9s-style TUI for AWS Elastic Beanstalk",
-                Style::default().fg(Color::Rgb(150, 155, 170)),
-            ))
-            .alignment(Alignment::Center),
-        );
-        lines.push(
-            Line::from(Span::styled(
-                "by Tom Baldwin · Polymorphism Ltd",
-                Style::default().fg(Color::Rgb(180, 140, 230)),
-            ))
-            .alignment(Alignment::Center),
-        );
+        // In Powerline mode (resolved by `font_probe` before this runs, so
+        // the PUA glyphs are guaranteed to render here), wrap the tagline +
+        // byline in rounded-cap pills and lead the tagline with a Nerd Font
+        // cloud icon so the bottom half of the splash card carries the
+        // same Powerline aesthetic as the rest of the app. Falls back to
+        // plain text in Unicode / ASCII so users without a Nerd Font don't
+        // get tofu on first launch.
+        if powerline {
+            let tag_bg = Color::Rgb(35, 45, 60);
+            let tag_fg = Color::Rgb(170, 180, 200);
+            let cloud = "\u{f0c2}"; // fa-cloud, stable across Nerd Font releases
+            lines.push(
+                Line::from(vec![
+                    Span::styled("\u{e0b6}", Style::default().fg(tag_bg)),
+                    Span::styled(
+                        format!(" {cloud}  k9s-style TUI for AWS Elastic Beanstalk "),
+                        Style::default().fg(tag_fg).bg(tag_bg),
+                    ),
+                    Span::styled("\u{e0b4}", Style::default().fg(tag_bg)),
+                ])
+                .alignment(Alignment::Center),
+            );
+            let by_bg = Color::Rgb(50, 40, 75);
+            let by_fg = Color::Rgb(220, 195, 245);
+            lines.push(
+                Line::from(vec![
+                    Span::styled("\u{e0b6}", Style::default().fg(by_bg)),
+                    Span::styled(
+                        " by Tom Baldwin · Polymorphism Ltd ",
+                        Style::default().fg(by_fg).bg(by_bg),
+                    ),
+                    Span::styled("\u{e0b4}", Style::default().fg(by_bg)),
+                ])
+                .alignment(Alignment::Center),
+            );
+        } else {
+            lines.push(
+                Line::from(Span::styled(
+                    "k9s-style TUI for AWS Elastic Beanstalk",
+                    Style::default().fg(Color::Rgb(150, 155, 170)),
+                ))
+                .alignment(Alignment::Center),
+            );
+            lines.push(
+                Line::from(Span::styled(
+                    "by Tom Baldwin · Polymorphism Ltd",
+                    Style::default().fg(Color::Rgb(180, 140, 230)),
+                ))
+                .alignment(Alignment::Center),
+            );
+        }
         lines.push(Line::from(""));
         // Spinner + dot-cycle so "connecting" feels alive even when the SDK is
         // taking its time.
@@ -468,10 +510,31 @@ fn draw_splash(terminal: &mut Tui, frame: u64) -> Result<()> {
         };
         let border_hue = 180.0 + border_glow * 120.0;
         let (br, bg, bb) = hsl_to_rgb(border_hue, 0.60, 0.65);
-        let block = Block::default()
+        let mut block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(Color::Rgb(br, bg, bb)));
+        // In Powerline mode, embed a `v{VERSION}` pill on the top border so
+        // the card reads as a labelled tab. Pill bg sits on top of the
+        // border line; rounded caps complete the tab shape. Falls back to
+        // no title in Unicode / ASCII to avoid PUA glyph tofu.
+        if powerline {
+            let tab_bg = Color::Rgb(60, 50, 80);
+            let tab_fg = Color::Rgb(220, 200, 250);
+            let version = format!(" v{} ", env!("CARGO_PKG_VERSION"));
+            let title = Line::from(vec![
+                Span::styled("\u{e0b6}", Style::default().fg(tab_bg)),
+                Span::styled(
+                    version,
+                    Style::default()
+                        .fg(tab_fg)
+                        .bg(tab_bg)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("\u{e0b4}", Style::default().fg(tab_bg)),
+            ]);
+            block = block.title(title).title_alignment(Alignment::Center);
+        }
         f.render_widget(Paragraph::new(lines).block(block), h[1]);
     })?;
     Ok(())

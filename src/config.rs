@@ -20,6 +20,34 @@ pub struct Config {
     /// into Red health. Use anything that accepts a webhook (Slack, Discord,
     /// custom collector). Disabled when unset.
     pub webhook_url: Option<String>,
+    /// Per-profile theme override. Key = AWS profile name, value = theme
+    /// name (matches the same names `theme = …` accepts). Lets the
+    /// operator pin a high-contrast / dark / light theme to a specific
+    /// profile so the visual cue says "you're in prod" without reading
+    /// the breadcrumb. Most prod incidents start with "I thought I was
+    /// in staging."
+    pub profile_themes: std::collections::HashMap<String, String>,
+    /// Named accounts reachable via `sts:AssumeRole`. Key = the friendly
+    /// name the operator uses with `:account NAME`; value is the full
+    /// AssumeRole spec — `role_arn`, `source_profile`, optional
+    /// `external_id`, optional `region` override. Lines in `config.toml`
+    /// use the form `accounts.NAME.field = "value"`, mirroring the
+    /// `metric.LABEL.field` shape that the rest of the config uses.
+    pub accounts: std::collections::HashMap<String, AccountSpec>,
+}
+
+/// A named `sts:AssumeRole` target. The operator typically pins one of
+/// these per child account and switches between them via `:account
+/// NAME`. `source_profile` carries the base creds (so chained role
+/// hops still resolve), `external_id` is optional but required by some
+/// trust policies, `region` is optional (falls back to the source
+/// profile's / env default).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AccountSpec {
+    pub role_arn: String,
+    pub source_profile: Option<String>,
+    pub external_id: Option<String>,
+    pub region: Option<String>,
 }
 
 impl Default for Config {
@@ -34,6 +62,8 @@ impl Default for Config {
             notify_bell: false,
             required_tags: Vec::new(),
             webhook_url: None,
+            profile_themes: std::collections::HashMap::new(),
+            accounts: std::collections::HashMap::new(),
         }
     }
 }
@@ -97,6 +127,32 @@ pub fn parse(text: &str) -> Config {
                     Some(v.to_string())
                 };
             }
+            "profile_themes" => {
+                // Format: `prod:high-contrast,staging:dark,default:light`.
+                // Whitespace around tokens is tolerated; entries without a
+                // `:` separator are skipped. Empty profile / empty theme
+                // are skipped so a stray trailing comma can't smuggle in
+                // a `"" → ""` mapping.
+                cfg.profile_themes = parse_profile_themes(&value);
+            }
+            other if other.starts_with("accounts.") => {
+                // `accounts.NAME.field = "value"`. Split on the dots so
+                // multi-line specs accumulate into one HashMap entry per
+                // NAME. Unknown fields are ignored so a future field
+                // addition can degrade gracefully on older binaries.
+                let rest = other.trim_start_matches("accounts.");
+                let Some((name, field)) = rest.split_once('.') else {
+                    continue;
+                };
+                let entry = cfg.accounts.entry(name.to_string()).or_default();
+                match field.trim() {
+                    "role_arn" => entry.role_arn = value,
+                    "source_profile" => entry.source_profile = Some(value),
+                    "external_id" => entry.external_id = Some(value),
+                    "region" => entry.region = Some(value),
+                    _ => {}
+                }
+            }
             _ => {}
         }
     }
@@ -148,6 +204,38 @@ pub fn serialize(cfg: &Config) -> String {
     if let Some(url) = &cfg.webhook_url {
         out.push_str(&format!("webhook_url = \"{url}\"\n"));
     }
+    if !cfg.profile_themes.is_empty() {
+        // Sort entries so repeated serialize cycles don't churn the file
+        // when the HashMap iteration order shuffles.
+        let mut pairs: Vec<(&String, &String)> = cfg.profile_themes.iter().collect();
+        pairs.sort_by(|a, b| a.0.cmp(b.0));
+        let joined = pairs
+            .iter()
+            .map(|(k, v)| format!("{k}:{v}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        out.push_str(&format!("profile_themes = \"{joined}\"\n"));
+    }
+    out
+}
+
+/// Pure: parse a `prof:theme,prof:theme` string into a map. Empty / `:`
+/// -free / blank-key / blank-value tokens are skipped. Whitespace around
+/// each side of the colon is trimmed so the operator can format it for
+/// readability.
+pub fn parse_profile_themes(raw: &str) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    for token in raw.split(',') {
+        let Some((k, v)) = token.split_once(':') else {
+            continue;
+        };
+        let key = k.trim();
+        let val = v.trim();
+        if key.is_empty() || val.is_empty() {
+            continue;
+        }
+        out.insert(key.to_string(), val.to_string());
+    }
     out
 }
 
@@ -174,6 +262,79 @@ grouped_default = false
     }
 
     #[test]
+    fn parse_profile_themes_happy_path() {
+        let map = parse_profile_themes("prod:high-contrast,staging:dark,default:light");
+        assert_eq!(map.get("prod"), Some(&"high-contrast".to_string()));
+        assert_eq!(map.get("staging"), Some(&"dark".to_string()));
+        assert_eq!(map.get("default"), Some(&"light".to_string()));
+        assert_eq!(map.len(), 3);
+    }
+
+    #[test]
+    fn parse_profile_themes_trims_whitespace_and_skips_malformed() {
+        // Trailing comma, missing colon, blank key, blank value all
+        // produce no entries rather than panicking or yielding ""→"".
+        let map = parse_profile_themes(
+            "  prod : high-contrast , noseparator , :empty-key , empty-value: , ",
+        );
+        assert_eq!(map.get("prod"), Some(&"high-contrast".to_string()));
+        assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn parse_profile_themes_empty_returns_empty_map() {
+        assert!(parse_profile_themes("").is_empty());
+    }
+
+    #[test]
+    fn parse_accounts_collects_multiline_specs() {
+        let text = r#"
+accounts.prod.role_arn = "arn:aws:iam::111122223333:role/EbmanReadOnly"
+accounts.prod.source_profile = "default"
+accounts.prod.region = "eu-west-2"
+accounts.staging.role_arn = "arn:aws:iam::555555555555:role/EbmanReadOnly"
+accounts.staging.external_id = "abc-xyz"
+"#;
+        let cfg = parse(text);
+        assert_eq!(cfg.accounts.len(), 2);
+        let prod = cfg.accounts.get("prod").expect("prod entry");
+        assert_eq!(
+            prod.role_arn,
+            "arn:aws:iam::111122223333:role/EbmanReadOnly"
+        );
+        assert_eq!(prod.source_profile.as_deref(), Some("default"));
+        assert_eq!(prod.region.as_deref(), Some("eu-west-2"));
+        assert_eq!(prod.external_id, None);
+        let staging = cfg.accounts.get("staging").expect("staging entry");
+        assert_eq!(staging.external_id.as_deref(), Some("abc-xyz"));
+        assert_eq!(staging.source_profile, None);
+    }
+
+    #[test]
+    fn parse_accounts_ignores_unknown_field() {
+        // Future-compat: a field we don't recognise should be ignored
+        // rather than dropping the whole entry.
+        let cfg = parse(
+            "accounts.prod.role_arn = \"arn:…\"\n\
+             accounts.prod.future_field = \"whatever\"\n",
+        );
+        let prod = cfg.accounts.get("prod").expect("prod entry");
+        assert_eq!(prod.role_arn, "arn:…");
+    }
+
+    #[test]
+    fn parse_writes_profile_themes_into_config() {
+        // End-to-end check: a config file with `profile_themes = "..."`
+        // ends up in cfg.profile_themes correctly.
+        let cfg = parse("profile_themes = \"prod:high-contrast,staging:dark\"\n");
+        assert_eq!(cfg.profile_themes.len(), 2);
+        assert_eq!(
+            cfg.profile_themes.get("prod"),
+            Some(&"high-contrast".to_string())
+        );
+    }
+
+    #[test]
     fn parse_ignores_zero_interval() {
         let cfg = parse("refresh_interval_secs = 0\n");
         assert_eq!(cfg.refresh_interval, Duration::from_secs(15));
@@ -195,6 +356,9 @@ grouped_default = false
 
     #[test]
     fn serialize_round_trips_full_config() {
+        let mut profile_themes = std::collections::HashMap::new();
+        profile_themes.insert("prod".into(), "high-contrast".into());
+        profile_themes.insert("staging".into(), "dark".into());
         let cfg = Config {
             refresh_interval: Duration::from_secs(45),
             extra_regions: vec!["eu-south-2".into(), "ap-southeast-4".into()],
@@ -205,6 +369,8 @@ grouped_default = false
             notify_bell: true,
             required_tags: vec!["Owner".into(), "Env".into()],
             webhook_url: Some("https://hooks.example/abc".into()),
+            profile_themes,
+            accounts: std::collections::HashMap::new(),
         };
 
         let body = serialize(&cfg);
@@ -218,6 +384,7 @@ grouped_default = false
         assert_eq!(reparsed.notify_bell, cfg.notify_bell);
         assert_eq!(reparsed.required_tags, cfg.required_tags);
         assert_eq!(reparsed.webhook_url, cfg.webhook_url);
+        assert_eq!(reparsed.profile_themes, cfg.profile_themes);
     }
 
     #[test]
