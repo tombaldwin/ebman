@@ -121,6 +121,160 @@ fn pill_chain(items: &[(String, Color, Color)], theme: &Theme) -> Vec<Span<'stat
     spans
 }
 
+/// Builds the contextual pill chain — group/view/redact/alerts/in-flight/
+/// frozen/read-only/update/sso — that sits in the header. Pure: same
+/// inputs → same chain, no time/IO except the SSO countdown which reads
+/// `Utc::now()`.
+fn build_chain_pills(app: &App) -> Vec<(String, Color, Color)> {
+    let theme = &app.theme;
+    let mut chain: Vec<(String, Color, Color)> = Vec::new();
+    if app.grouped {
+        chain.push(("GROUPED".into(), Color::Black, theme.title_alt));
+    }
+    match app.view_mode {
+        ViewMode::Compact => chain.push(("COMPACT".into(), Color::Black, theme.accent)),
+        ViewMode::Spacious => chain.push(("SPACIOUS".into(), Color::Black, theme.accent)),
+        ViewMode::Default => {}
+    }
+    if app.redact {
+        chain.push(("REDACT".into(), Color::Black, theme.health_yellow));
+    }
+    if app.alerts > 0 {
+        chain.push((
+            format!(
+                "! {} alert{}",
+                app.alerts,
+                if app.alerts == 1 { "" } else { "s" }
+            ),
+            Color::White,
+            theme.health_red,
+        ));
+    }
+    let in_flight: Vec<&str> = app
+        .pending_actions
+        .iter()
+        .filter(|e| e.completed.is_none())
+        .map(|e| e.label.as_str())
+        .collect();
+    if !in_flight.is_empty() {
+        chain.push((
+            format!("⏳ {}", summarize_in_flight(&in_flight)),
+            Color::Black,
+            theme.health_yellow,
+        ));
+    }
+    if app.frozen {
+        chain.push(("FROZEN".into(), Color::Black, theme.health_grey));
+    }
+    if app.read_only {
+        chain.push(("READ-ONLY".into(), Color::Black, theme.health_green));
+    }
+    if let Some(release) = app.update_available.as_ref() {
+        chain.push((
+            format!("UPDATE {} (:update)", release.version),
+            Color::Black,
+            theme.title_alt,
+        ));
+    }
+    if let Some(exp) = app.sso_expiry {
+        let remaining = exp.signed_duration_since(chrono::Utc::now());
+        if remaining > chrono::Duration::seconds(0) {
+            let mins = remaining.num_minutes();
+            let label = if mins >= 60 {
+                format!("SSO {}h", remaining.num_hours())
+            } else {
+                format!("SSO {mins}m")
+            };
+            let bg = if mins < 15 {
+                theme.health_red
+            } else if mins < 60 {
+                theme.health_yellow
+            } else {
+                theme.health_grey
+            };
+            chain.push((label, Color::Black, bg));
+        }
+    }
+    chain
+}
+
+/// Decides the header's vertical footprint and whether the contextual pill
+/// chain fits on the info row (`line2`) at this terminal width. When the
+/// chain fits, the dedicated 4th row is dropped to save vertical space.
+///
+/// Returns `(header_rows, merge_pills)`.
+fn header_layout(app: &App, area_width: u16) -> (u16, bool) {
+    // Header's left column is Constraint::Percentage(60) of `area`; the
+    // titled_block adds one column of padding on each side.
+    let col0 = (area_width as u32 * 60 / 100) as u16;
+    let inner = col0.saturating_sub(2) as usize;
+
+    let pills = build_chain_pills(app);
+    let chain_spans = pill_chain(&pills, &app.theme);
+    let chain_w: usize = chain_spans.iter().map(|s| s.width()).sum();
+    let info_w = estimated_info_row_width(app);
+
+    header_dimensions(info_w, chain_w, inner, !app.named_filters.is_empty())
+}
+
+/// Pure width math behind `header_layout`. Given the rendered width of the
+/// info row, the rendered width of the pill chain (0 when no pills are
+/// active), the inner column width, and whether the saved-filter chip bar
+/// is shown, returns `(header_rows, merge_pills)`.
+fn header_dimensions(
+    info_row_w: usize,
+    chain_w: usize,
+    inner_w: usize,
+    has_filters: bool,
+) -> (u16, bool) {
+    // Two-space gap between info row and pill chain on the merged line.
+    let gap = 2usize;
+    let pills_present = chain_w > 0;
+    let merge_pills = pills_present && info_row_w + gap + chain_w <= inner_w;
+    let pill_row = pills_present && !merge_pills;
+    // 2 block borders + crumb + line1 + line2 + optional pill + optional filter
+    let rows = 2 + 3 + (if pill_row { 1 } else { 0 }) + (if has_filters { 1 } else { 0 });
+    (rows as u16, merge_pills)
+}
+
+/// Estimates the rendered width of the info row (`line2`) — Sort · Status ·
+/// Envs · Last · Caller · (Filter). Mirrors the construction in
+/// `draw_header`; the status spinner is fixed at `STATUS_SLOT` columns so
+/// width is stable across spinner phases.
+fn estimated_info_row_width(app: &App) -> usize {
+    const STATUS_SLOT: usize = 10;
+    let sep_w = 5; // both "  •  " and "  ❘  " render at 5 cols
+    let sort_dir = if app.sort_desc { "↓" } else { "↑" };
+    let sort_label = format!("{}{}", app.sort_key.label(), sort_dir);
+    let env_count = app.environments.len().to_string();
+    let caller = redact(
+        &app.context
+            .caller_arn
+            .as_deref()
+            .map(short_caller)
+            .unwrap_or_else(|| "—".into()),
+        app.redact,
+    );
+    let last = format_refresh_label(app.last_refresh, chrono::Utc::now(), app.refresh_interval);
+
+    let mut w = "Sort: ".chars().count() + sort_label.chars().count();
+    w += sep_w + "Status: ".chars().count() + STATUS_SLOT;
+    w += sep_w + "Envs: ".chars().count() + env_count.chars().count();
+    for (bucket, delta) in app.health_delta.iter().chain(app.status_delta.iter()) {
+        if *delta == 0 {
+            continue;
+        }
+        // " ▲N Bucket"
+        w += 1 + 1 + delta.abs().to_string().chars().count() + 1 + bucket.chars().count();
+    }
+    w += sep_w + "Last: ".chars().count() + last.chars().count();
+    w += sep_w + "Caller: ".chars().count() + caller.chars().count();
+    if !app.filter.is_empty() {
+        w += sep_w + "Filter: ".chars().count() + app.filter.chars().count();
+    }
+    w
+}
+
 fn health_dot(health: &str, theme: &Theme) -> Span<'static> {
     let c = health_color(health, theme);
     let glyph = match theme.icons {
@@ -148,6 +302,7 @@ fn spinner(elapsed_ms: u128, icons: IconStyle) -> &'static str {
 
 fn tab_icon(t: DetailTab, icons: IconStyle) -> &'static str {
     match (icons, t) {
+        (IconStyle::Unicode, DetailTab::Health) => "♥",
         (IconStyle::Unicode, DetailTab::Events) => "⚡",
         (IconStyle::Unicode, DetailTab::Instances) => "▣",
         (IconStyle::Unicode, DetailTab::Metrics) => "▆",
@@ -157,13 +312,15 @@ fn tab_icon(t: DetailTab, icons: IconStyle) -> &'static str {
         // Powerline / Nerd Font Material Design glyphs. Each is distinct so
         // the tab strip remains readable even when icons collapse onto a
         // single line in the boot splash / detail header.
-        (IconStyle::Powerline, DetailTab::Events) => "\u{f0e7}", // flash
+        (IconStyle::Powerline, DetailTab::Health) => "\u{f02d1}", // heart-pulse
+        (IconStyle::Powerline, DetailTab::Events) => "\u{f0e7}",  // flash
         (IconStyle::Powerline, DetailTab::Instances) => "\u{f048b}", // server
         (IconStyle::Powerline, DetailTab::Metrics) => "\u{f0680}", // chart-line
-        (IconStyle::Powerline, DetailTab::Queue) => "\u{f01ee}", // email-outline
-        (IconStyle::Powerline, DetailTab::Logs) => "\u{f021a}",  // text-box
+        (IconStyle::Powerline, DetailTab::Queue) => "\u{f01ee}",  // email-outline
+        (IconStyle::Powerline, DetailTab::Logs) => "\u{f021a}",   // text-box
         (IconStyle::Powerline, DetailTab::Config) => "\u{f0493}", // cog
         // ASCII fallbacks: one letter per tab so each is distinguishable.
+        (IconStyle::Ascii, DetailTab::Health) => "H",
         (IconStyle::Ascii, DetailTab::Events) => "E",
         (IconStyle::Ascii, DetailTab::Instances) => "I",
         (IconStyle::Ascii, DetailTab::Metrics) => "M",
@@ -231,13 +388,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             0
         };
         // Header rows: crumb + line1 (Account/Region/Profile) + line2
-        // (Caller/Envs/Last/Status/Sort) + chain (alerts/redact/sso/etc.)
-        // + optional filter-chip row. The chain lives on its own row so
-        // pills never clip the alert / SSO / update signals; in practice
-        // almost every session has at least one pill active (compact
-        // view / SSO expiry / etc.), so reserving the row by default
-        // doesn't waste meaningful vertical space.
-        let header_height: u16 = if app.named_filters.is_empty() { 6 } else { 7 };
+        // (Sort/Status/Envs/Last/Caller/Filter) + chain (alerts/redact/sso/
+        // etc.) + optional filter-chip row. At wide-enough terminals the
+        // chain merges onto line2 — `header_layout` decides per-frame.
+        let (header_height, merge_pills) = header_layout(app, f.area().width);
         let mut constraints: Vec<Constraint> =
             vec![Constraint::Length(header_height), Constraint::Min(3)];
         if events_height > 0 {
@@ -250,7 +404,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             .constraints(constraints)
             .split(f.area());
 
-        draw_header(f, chunks[0], app);
+        draw_header(f, chunks[0], app, merge_pills);
         match app.scope {
             Scope::Envs => draw_table(f, chunks[1], app),
             Scope::Apps => draw_apps_table(f, chunks[1], app),
@@ -298,6 +452,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 draw_text_dump_overlay(f, f.area(), app, &title, &body)
             }
             Overlay::LogTail { .. } => draw_log_tail_overlay(f, f.area(), app),
+            Overlay::WhyRed { .. } => draw_why_red_overlay(f, f.area(), app),
         }
     }
     if app.mode == Mode::Palette {
@@ -907,7 +1062,7 @@ fn draw_log_tail_overlay(f: &mut Frame, area: Rect, app: &App) {
     } else if let Some(err) = last_err {
         format!(" ⚠ {err}")
     } else {
-        " j/k scroll · g/G top/follow · / filter · n clear-filter · esc / q close".to_string()
+        " j/k scroll · g/G top/follow · / filter · n clear-filter · Tab change group · esc / q close".to_string()
     };
     let mut paragraph_lines = visible_lines;
     paragraph_lines.push(Line::raw(""));
@@ -1046,6 +1201,330 @@ fn draw_alarms_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
     f.render_widget(p, popup);
 }
 
+fn draw_why_red_overlay(f: &mut Frame, area: Rect, app: &App) {
+    let Some(crate::app::Overlay::WhyRed {
+        env_name,
+        tier,
+        events,
+        alarms,
+        instances,
+        deploys,
+        queues,
+        dlq_messages,
+        ..
+    }) = app.current_overlay.as_ref()
+    else {
+        return;
+    };
+    let is_worker = tier.eq_ignore_ascii_case("Worker");
+    let popup = centered_rect(78, 80, area);
+    f.render_widget(Clear, popup);
+    let theme = &app.theme;
+    let now = chrono::Utc::now();
+    let mut lines: Vec<Line> = Vec::new();
+    let section = |title: &str| -> Line<'static> {
+        Line::from(Span::styled(
+            format!("─── {title} "),
+            Style::default()
+                .fg(theme.title_alt)
+                .add_modifier(Modifier::BOLD),
+        ))
+    };
+    let blank = || Line::raw("");
+    let muted = |s: String| -> Line<'static> {
+        Line::from(Span::styled(s, Style::default().fg(theme.muted)))
+    };
+
+    // 1. RECENT EVENTS (last 30 minutes — the window where "what went
+    // wrong" usually shows up; older events are noise during triage).
+    lines.push(section("recent events (last 30 min)"));
+    match events {
+        None => lines.push(muted(" fetching events…".into())),
+        Some(Err(e)) => lines.push(Line::from(Span::styled(
+            format!(" error: {e}"),
+            Style::default().fg(theme.health_red),
+        ))),
+        Some(Ok(evs)) => {
+            let cutoff = now - chrono::Duration::minutes(30);
+            let recent: Vec<&crate::aws::Event> = evs
+                .iter()
+                .filter(|e| e.at.map(|t| t >= cutoff).unwrap_or(true))
+                .take(15)
+                .collect();
+            if recent.is_empty() {
+                lines.push(muted(" (no events in the last 30 min)".into()));
+            } else {
+                for e in recent {
+                    let when =
+                        e.at.map(|t| t.with_timezone(&chrono::Local).format("%H:%M").to_string())
+                            .unwrap_or_else(|| "??:??".into());
+                    let sev_style = match e.severity.to_uppercase().as_str() {
+                        "ERROR" => Style::default().fg(theme.health_red),
+                        "WARN" => Style::default().fg(theme.health_yellow),
+                        _ => Style::default().fg(theme.muted),
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(format!(" {when}  "), Style::default().fg(theme.muted)),
+                        Span::styled(format!("{:<5}", e.severity), sev_style),
+                        Span::raw("  "),
+                        Span::styled(e.message.clone(), Style::default().fg(theme.text)),
+                    ]));
+                }
+            }
+        }
+    }
+    lines.push(blank());
+
+    // 2. ALARMS — ALARM-state ones first (red), then INSUFFICIENT_DATA
+    // (yellow), then OK (green/muted). Operator wants to scan for active
+    // alarms; OK alarms confirm what *isn't* the problem.
+    lines.push(section("alarms"));
+    match alarms {
+        None => lines.push(muted(" fetching alarms…".into())),
+        Some(Err(e)) => lines.push(Line::from(Span::styled(
+            format!(" error: {e}"),
+            Style::default().fg(theme.health_red),
+        ))),
+        Some(Ok(als)) => {
+            if als.is_empty() {
+                lines.push(muted(" (no CloudWatch alarms attached to this env)".into()));
+            } else {
+                // Active first
+                let mut sorted: Vec<&crate::aws::CwAlarm> = als.iter().collect();
+                sorted.sort_by_key(|a| match a.state.as_str() {
+                    "ALARM" => 0,
+                    "INSUFFICIENT_DATA" => 1,
+                    _ => 2,
+                });
+                for a in sorted.iter().take(10) {
+                    let (tag, style) = match a.state.as_str() {
+                        "ALARM" => (
+                            "ALARM",
+                            Style::default()
+                                .fg(theme.health_red)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        "OK" => ("OK   ", Style::default().fg(theme.health_green)),
+                        _ => ("INS  ", Style::default().fg(theme.muted)),
+                    };
+                    lines.push(Line::from(vec![
+                        Span::raw(" "),
+                        Span::styled(tag.to_string(), style),
+                        Span::raw("  "),
+                        Span::styled(
+                            a.name.clone(),
+                            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!("  ({}/{})", a.namespace, a.metric_name),
+                            Style::default().fg(theme.muted),
+                        ),
+                    ]));
+                    if !a.state_reason.is_empty() && a.state == "ALARM" {
+                        lines.push(Line::from(Span::styled(
+                            format!("   ↳ {}", a.state_reason),
+                            Style::default().fg(theme.muted),
+                        )));
+                    }
+                }
+            }
+        }
+    }
+    lines.push(blank());
+
+    // 2.5 WORKER QUEUES — only rendered for Worker-tier envs. Surfaces
+    // main + DLQ depths and a peek of DLQ message bodies so the operator
+    // sees why the row went Red without leaving the overlay. Hidden
+    // entirely for Web envs.
+    if is_worker {
+        lines.push(section("worker queues"));
+        match queues {
+            None => lines.push(muted(" fetching queue depths…".into())),
+            Some(Err(e)) => lines.push(Line::from(Span::styled(
+                format!(" error: {e}"),
+                Style::default().fg(theme.health_red),
+            ))),
+            Some(Ok(q)) => {
+                let main_line = match q.main_stats.as_ref() {
+                    Some(s) => format!(
+                        " main:  visible={}  in-flight={}  delayed={}",
+                        s.visible, s.in_flight, s.delayed
+                    ),
+                    None => " main:  (queue URL not resolved)".to_string(),
+                };
+                let main_style = match q.main_stats.as_ref().map(|s| s.visible).unwrap_or(0) {
+                    n if n > 100 => Style::default().fg(theme.health_yellow),
+                    _ => Style::default().fg(theme.text),
+                };
+                lines.push(Line::from(Span::styled(main_line, main_style)));
+                let dlq_visible = q.dlq_stats.as_ref().map(|s| s.visible).unwrap_or(0);
+                let dlq_line = match q.dlq_stats.as_ref() {
+                    Some(s) => format!(
+                        " dlq:   visible={}  in-flight={}  delayed={}",
+                        s.visible, s.in_flight, s.delayed
+                    ),
+                    None => " dlq:   (queue URL not resolved)".to_string(),
+                };
+                let dlq_style = if dlq_visible > 0 {
+                    Style::default()
+                        .fg(theme.health_red)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.text)
+                };
+                lines.push(Line::from(Span::styled(dlq_line, dlq_style)));
+                // DLQ peek — only renders when there's something to peek
+                // at. Empty result = "DLQ is clean" (no header line);
+                // non-empty = bodies truncated to one screen-line each.
+                if dlq_visible > 0 {
+                    match dlq_messages {
+                        None => lines.push(muted(" peeking dlq messages…".into())),
+                        Some(Err(e)) => lines.push(Line::from(Span::styled(
+                            format!(" dlq peek error: {e}"),
+                            Style::default().fg(theme.health_red),
+                        ))),
+                        Some(Ok(msgs)) if msgs.is_empty() => {
+                            // DLQ has visible messages but the peek
+                            // returned empty — likely the messages are
+                            // mid-visibility-timeout from another peek.
+                            lines.push(muted(
+                                " dlq peek returned no bodies (try again in a few seconds)".into(),
+                            ));
+                        }
+                        Some(Ok(msgs)) => {
+                            lines.push(Line::from(Span::styled(
+                                format!(" dlq message peek ({} of {dlq_visible}):", msgs.len()),
+                                Style::default().fg(theme.muted),
+                            )));
+                            for (i, m) in msgs.iter().enumerate() {
+                                let when = m
+                                    .sent_at
+                                    .map(|t| humanize_age(now.signed_duration_since(t)))
+                                    .unwrap_or_else(|| "—".into());
+                                lines.push(Line::from(vec![
+                                    Span::styled(
+                                        format!("   {}.", i + 1),
+                                        Style::default().fg(theme.muted),
+                                    ),
+                                    Span::styled(
+                                        format!(" sent {when} ago"),
+                                        Style::default().fg(theme.muted),
+                                    ),
+                                    Span::styled(
+                                        format!("  · received {}×", m.receive_count),
+                                        Style::default().fg(theme.muted),
+                                    ),
+                                ]));
+                                lines.push(Line::from(Span::styled(
+                                    format!("      {}", truncate_for_display(&m.body, 100)),
+                                    Style::default().fg(theme.text),
+                                )));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        lines.push(blank());
+    }
+
+    // 3. INSTANCE HEALTH — list each instance with its health colour +
+    // causes. Severe / Warning rows pull the operator's eye first.
+    lines.push(section("instance health"));
+    match instances {
+        None => lines.push(muted(" fetching instance health…".into())),
+        Some(Err(e)) => lines.push(Line::from(Span::styled(
+            format!(" error: {e}"),
+            Style::default().fg(theme.health_red),
+        ))),
+        Some(Ok(insts)) => {
+            if insts.is_empty() {
+                lines.push(muted(" (no instances reported)".into()));
+            } else {
+                for i in insts {
+                    let style = match i.color.as_str() {
+                        "Red" => Style::default().fg(theme.health_red),
+                        "Yellow" => Style::default().fg(theme.health_yellow),
+                        "Green" => Style::default().fg(theme.health_green),
+                        _ => Style::default().fg(theme.muted),
+                    };
+                    lines.push(Line::from(vec![
+                        Span::raw(" "),
+                        Span::styled(i.id.clone(), Style::default().fg(theme.text)),
+                        Span::raw("  "),
+                        Span::styled(format!("{:<8}", i.health), style),
+                        Span::styled(
+                            format!("  {}  {}", i.instance_type, i.availability_zone),
+                            Style::default().fg(theme.muted),
+                        ),
+                    ]));
+                    for cause in i.causes.iter().take(3) {
+                        lines.push(Line::from(Span::styled(
+                            format!("   ↳ {cause}"),
+                            Style::default().fg(theme.muted),
+                        )));
+                    }
+                }
+            }
+        }
+    }
+    lines.push(blank());
+
+    // 4. RECENT DEPLOYS — top 3 versions, newest first. The most-recent
+    // deploy is the prime suspect when health flips Red right after.
+    lines.push(section("recent deploys"));
+    match deploys {
+        None => lines.push(muted(" fetching deploys…".into())),
+        Some(Err(e)) => lines.push(Line::from(Span::styled(
+            format!(" error: {e}"),
+            Style::default().fg(theme.health_red),
+        ))),
+        Some(Ok(vers)) => {
+            if vers.is_empty() {
+                lines.push(muted(" (no versions registered yet)".into()));
+            } else {
+                for v in vers.iter().take(5) {
+                    let when = v
+                        .created
+                        .map(|t| humanize_age(now.signed_duration_since(t)))
+                        .unwrap_or_else(|| "—".into());
+                    let when_style = Style::default().fg(age_color(v.created, now, theme));
+                    let mut spans = vec![
+                        Span::raw(" "),
+                        Span::styled(
+                            v.label.clone(),
+                            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(format!("  {when} ago"), when_style),
+                    ];
+                    if !v.description.is_empty() {
+                        spans.push(Span::styled(
+                            format!("  — {}", truncate_for_display(&v.description, 60)),
+                            Style::default().fg(theme.muted),
+                        ));
+                    }
+                    lines.push(Line::from(spans));
+                }
+            }
+        }
+    }
+    push_close_hint(&mut lines, theme);
+
+    let title = format!("why is {env_name} red?");
+    let p = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .block(titled_block(theme, &title, true, theme.title).padding(Padding::uniform(1)));
+    f.render_widget(p, popup);
+}
+
+fn truncate_for_display(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let prefix: String = s.chars().take(max.saturating_sub(1)).collect();
+    format!("{prefix}…")
+}
+
 fn draw_history_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
     let popup = centered_rect(60, 70, area);
     f.render_widget(Clear, popup);
@@ -1113,7 +1592,7 @@ fn draw_describe(f: &mut Frame, area: Rect, app: &App, text: &str) {
     f.render_widget(p, popup);
 }
 
-fn draw_header(f: &mut Frame, area: Rect, app: &App) {
+fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: bool) {
     let theme = &app.theme;
     let cols = Layout::default()
         .direction(Direction::Horizontal)
@@ -1237,96 +1716,24 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ));
     }
-    // Collect every contextual pill into a single Vec, then emit them as a
-    // Powerline-style chain (triangular bridges flowing between pill bgs)
-    // or as classic pill+sep pairs in other icon styles. Building the chain
-    // up-front lets pill_chain compute the right-edge transition back to
-    // the default bg.
-    let mut chain_pills: Vec<(String, Color, Color)> = Vec::new();
-    if app.grouped {
-        chain_pills.push(("GROUPED".into(), Color::Black, theme.title_alt));
+    // Contextual pill chain — built via `build_chain_pills` so the layout
+    // pass (which sizes the header height) can predict whether the chain
+    // fits on the info row at this width.
+    let chain_pills = build_chain_pills(app);
+    if merge_pills && !chain_pills.is_empty() {
+        // Wide window: pills tail the info row. Two-space gap so they
+        // don't butt up against the last field (or the Powerline lead-in
+        // wedge — see `pill_chain`).
+        line2.push(Span::raw("  "));
+        line2.extend(pill_chain(&chain_pills, theme));
     }
-    match app.view_mode {
-        ViewMode::Compact => {
-            chain_pills.push(("COMPACT".into(), Color::Black, theme.accent));
-        }
-        ViewMode::Spacious => {
-            chain_pills.push(("SPACIOUS".into(), Color::Black, theme.accent));
-        }
-        ViewMode::Default => {}
-    }
-    if app.redact {
-        chain_pills.push(("REDACT".into(), Color::Black, theme.health_yellow));
-    }
-    if app.alerts > 0 {
-        chain_pills.push((
-            format!(
-                "! {} alert{}",
-                app.alerts,
-                if app.alerts == 1 { "" } else { "s" }
-            ),
-            Color::White,
-            theme.health_red,
-        ));
-    }
-    let in_flight: Vec<&str> = app
-        .pending_actions
-        .iter()
-        .filter(|e| e.completed.is_none())
-        .map(|e| e.label.as_str())
-        .collect();
-    if !in_flight.is_empty() {
-        chain_pills.push((
-            format!("⏳ {}", summarize_in_flight(&in_flight)),
-            Color::Black,
-            theme.health_yellow,
-        ));
-    }
-    if app.frozen {
-        chain_pills.push(("FROZEN".into(), Color::Black, theme.health_grey));
-    }
-    if app.read_only {
-        chain_pills.push(("READ-ONLY".into(), Color::Black, theme.health_green));
-    }
-    if let Some(release) = app.update_available.as_ref() {
-        chain_pills.push((
-            format!("UPDATE {} (:update)", release.version),
-            Color::Black,
-            theme.title_alt,
-        ));
-    }
-    if let Some(exp) = app.sso_expiry {
-        let remaining = exp.signed_duration_since(chrono::Utc::now());
-        if remaining > chrono::Duration::seconds(0) {
-            let mins = remaining.num_minutes();
-            let label = if mins >= 60 {
-                format!("SSO {}h", remaining.num_hours())
-            } else {
-                format!("SSO {mins}m")
-            };
-            let bg = if mins < 15 {
-                theme.health_red
-            } else if mins < 60 {
-                theme.health_yellow
-            } else {
-                theme.health_grey
-            };
-            chain_pills.push((label, Color::Black, bg));
-        }
-    }
-    // Pill chain lives on its own dedicated line below the info row.
-    // The info row (Caller / Envs / Last / Status / Sort) is already
-    // long enough at typical terminal widths that appending the chain
-    // here would clip pills off the right edge — the alert pill
-    // squashes to `▶!` mid-stream because ratatui truncates the Paragraph
-    // at the column boundary. Giving the chain its own line keeps every
-    // signal visible regardless of width.
-    let pill_line: Option<Line<'static>> = if chain_pills.is_empty() {
+    let pill_line: Option<Line<'static>> = if merge_pills || chain_pills.is_empty() {
         None
     } else {
+        // Narrow window: dedicated row so the chain doesn't get clipped
+        // off the right edge — the alert pill would squash mid-stream
+        // because ratatui truncates the Paragraph at the column boundary.
         let mut spans: Vec<Span<'static>> = Vec::new();
-        // Lead-in: a small indent so the chain doesn't butt against the
-        // titled-block's inner padding.
         spans.push(Span::raw("  "));
         spans.extend(pill_chain(&chain_pills, theme));
         Some(Line::from(spans))
@@ -1413,7 +1820,15 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
 fn draw_apps_table(f: &mut Frame, area: Rect, app: &mut App) {
     let theme = app.theme.clone();
     let header = Row::new(
-        ["NAME", "VERSIONS", "CREATED", "UPDATED", "DESCRIPTION"].map(|h| {
+        [
+            "NAME",
+            "VERSIONS",
+            "CREATED",
+            "UPDATED",
+            "LATEST",
+            "DESCRIPTION",
+        ]
+        .map(|h| {
             Cell::from(h).style(
                 Style::default()
                     .fg(theme.title)
@@ -1433,13 +1848,44 @@ fn draw_apps_table(f: &mut Frame, area: Rect, app: &mut App) {
                 d.map(|t| humanize_age(now.signed_duration_since(t)))
                     .unwrap_or_else(|| "—".into())
             };
+            // LATEST = "label · 2h ago" once `latest_version_label` lands
+            // from the post-Applications fan-out. Until then, show "—" so
+            // the column is obviously still loading rather than blank.
+            // Age suffix gets the same three-bucket tint as the envs-table
+            // AGE column so fresh/stale signals read consistently.
+            let latest_cell = match (a.latest_version_label.as_deref(), a.latest_version_created) {
+                (Some(label), Some(created)) => Cell::from(Line::from(vec![
+                    Span::styled(
+                        label.to_string(),
+                        Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("  {}", humanize_age(now.signed_duration_since(created))),
+                        Style::default().fg(age_color(Some(created), now, &theme)),
+                    ),
+                ])),
+                (Some(label), None) => Cell::from(Span::styled(
+                    label.to_string(),
+                    Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+                )),
+                _ => Cell::from(Span::styled("—", Style::default().fg(theme.muted))),
+            };
             let r = Row::new(vec![
                 Cell::from(a.name.clone())
                     .style(Style::default().fg(theme.text).add_modifier(Modifier::BOLD)),
                 Cell::from(a.version_count.to_string())
                     .style(Style::default().fg(theme.app_palette[0])),
-                Cell::from(age(a.date_created)).style(Style::default().fg(theme.muted)),
-                Cell::from(age(a.date_updated)).style(Style::default().fg(theme.muted)),
+                Cell::from(age(a.date_created)).style(Style::default().fg(age_color(
+                    a.date_created,
+                    now,
+                    &theme,
+                ))),
+                Cell::from(age(a.date_updated)).style(Style::default().fg(age_color(
+                    a.date_updated,
+                    now,
+                    &theme,
+                ))),
+                latest_cell,
                 Cell::from(a.description.clone()).style(Style::default().fg(theme.text)),
             ]);
             // Selection bg is layered on by Table::row_highlight_style; only
@@ -1453,11 +1899,12 @@ fn draw_apps_table(f: &mut Frame, area: Rect, app: &mut App) {
         .collect();
     let title = format!("Applications  {}", app.applications.len());
     let widths = [
+        Constraint::Percentage(20),
+        Constraint::Length(8),
+        Constraint::Length(8),
+        Constraint::Length(8),
         Constraint::Percentage(22),
-        Constraint::Length(8),
-        Constraint::Length(8),
-        Constraint::Length(8),
-        Constraint::Percentage(50),
+        Constraint::Percentage(35),
     ];
     let popup_open = matches!(
         app.mode,
@@ -1466,9 +1913,9 @@ fn draw_apps_table(f: &mut Frame, area: Rect, app: &mut App) {
     let table = Table::new(rows, widths)
         .header(header)
         .row_highlight_style(
-            Style::default()
-                .bg(theme.row_selected_bg)
-                .add_modifier(Modifier::BOLD),
+            // See `draw_table` row_highlight_style — REVERSED preserves
+            // pill contrast better than a flat bg override.
+            Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
         )
         .highlight_symbol(cursor_marker(&theme))
         .block(
@@ -1683,7 +2130,43 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                         "APPLICATION" => Cell::from(Span::raw(e.application.as_str()))
                             .style(Style::default().fg(color).add_modifier(Modifier::BOLD)),
                         "TIER" => tier_cell(&e.tier, &theme),
-                        "STATUS" => status_cell(&e.status, &theme),
+                        "STATUS" => {
+                            // For Worker envs with DLQ messages, append a
+                            // small `⚠N` suffix to the status pill so the
+                            // operator can spot the reason a Green-EB row
+                            // is tinted red. STATUS column is 10 cells;
+                            // " Ready " pill takes 7, leaving room for
+                            // " ⚠N" (3 cells). Larger DLQ counts clip
+                            // gracefully — the row tint is the primary
+                            // signal anyway.
+                            let dlq = if e.tier.eq_ignore_ascii_case("Worker") {
+                                app.worker_dlq_depths.get(&e.name).copied().unwrap_or(0)
+                            } else {
+                                0
+                            };
+                            // When the env is otherwise alerting (Red /
+                            // Severe health, or worker with DLQ > 0), mute
+                            // the `Ready` pill — `Ready` means "no
+                            // lifecycle op in flight", NOT "everything's
+                            // fine". A bright green pill on a Red-tinted
+                            // row competes with the actual alert signals.
+                            let alerting = dlq > 0
+                                || e.health.eq_ignore_ascii_case("Red")
+                                || e.health.eq_ignore_ascii_case("Severe");
+                            if dlq > 0 {
+                                Cell::from(Line::from(vec![
+                                    status_pill_for(&e.status, &theme, alerting),
+                                    Span::styled(
+                                        format!(" ⚠{dlq}"),
+                                        Style::default()
+                                            .fg(theme.health_red)
+                                            .add_modifier(Modifier::BOLD),
+                                    ),
+                                ]))
+                            } else {
+                                Cell::from(status_pill_for(&e.status, &theme, alerting))
+                            }
+                        }
                         "HEALTH" => Cell::from(health_dot(&e.health, &theme)),
                         "TREND" => Cell::from(sparkline_for(
                             app.history.get(&e.name),
@@ -1728,7 +2211,8 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                         // operationally but adds bookkeeping. Leave the
                         // single per-row clone here as the cheapest
                         // honest option for now.
-                        "AGE" => Cell::from(age.clone()).style(Style::default().fg(theme.muted)),
+                        "AGE" => Cell::from(age.clone())
+                            .style(Style::default().fg(age_color(e.updated, now, &theme))),
                         "REGION" => Cell::from(Span::raw(e.region.as_deref().unwrap_or_default()))
                             .style(Style::default().fg(theme.accent)),
                         _ => Cell::from(""),
@@ -1738,7 +2222,14 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                 // Row tint priority: severity > hover > zebra. Selection is
                 // handled by Table::row_highlight_style so it overlays cleanly.
                 let is_hover = hover == Some(row_idx);
-                let bg = if e.health.eq_ignore_ascii_case("Red")
+                // Worker envs with DLQ messages tint the row Red even
+                // when EB reports Green/Yellow — failed jobs sitting in
+                // the dead-letter queue are an operational red flag the
+                // EB health check doesn't model.
+                let dlq_red = e.tier.eq_ignore_ascii_case("Worker")
+                    && app.worker_dlq_depths.get(&e.name).copied().unwrap_or(0) > 0;
+                let bg = if dlq_red
+                    || e.health.eq_ignore_ascii_case("Red")
                     || e.health.eq_ignore_ascii_case("Severe")
                 {
                     Some(theme.row_red_bg)
@@ -1834,6 +2325,56 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                         })
                         .collect();
                     Row::new(cells)
+                } else if !next_app_name.is_empty() {
+                    // Non-Powerline path: previously rendered every cell as
+                    // dashes (200×─), so the banner read as a homogeneous
+                    // line with no app name and no break. Now: NAME cell
+                    // gets `── ▶ app ──`, second cell carries the summary,
+                    // remaining cells stay as the dash fill so the row
+                    // still scans as a visible group divider.
+                    let glyph = separator_glyph(theme.icons);
+                    let summary_text = summary.clone();
+                    let cells: Vec<Cell> = columns
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (label, _))| {
+                            if i == 0 && *label == "NAME" {
+                                Cell::from(Line::from(vec![
+                                    Span::styled(
+                                        "── ".to_string(),
+                                        Style::default().fg(theme.muted),
+                                    ),
+                                    Span::styled(
+                                        format!("{glyph} "),
+                                        Style::default()
+                                            .fg(next_color)
+                                            .add_modifier(Modifier::BOLD),
+                                    ),
+                                    Span::styled(
+                                        next_app_name.clone(),
+                                        Style::default()
+                                            .fg(next_color)
+                                            .add_modifier(Modifier::BOLD),
+                                    ),
+                                    Span::styled(
+                                        " ──".to_string(),
+                                        Style::default().fg(theme.muted),
+                                    ),
+                                ]))
+                            } else if i == 1 {
+                                Cell::from(Span::styled(
+                                    format!(" {summary_text} "),
+                                    Style::default().fg(theme.muted),
+                                ))
+                            } else {
+                                Cell::from(Span::styled(
+                                    dashes.clone(),
+                                    Style::default().fg(next_color),
+                                ))
+                            }
+                        })
+                        .collect();
+                    Row::new(cells)
                 } else {
                     let cells = (0..count).map(|_| {
                         Cell::from(Span::styled(
@@ -1878,9 +2419,13 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
     let table = Table::new(rows, widths)
         .header(header)
         .row_highlight_style(
-            Style::default()
-                .bg(theme.row_selected_bg)
-                .add_modifier(Modifier::BOLD),
+            // REVERSED swaps fg/bg per terminal cell at render time. This
+            // preserves pill contrast on the selected row — pill cells
+            // (black fg on yellow/green bg) flip to (yellow/green fg on
+            // black bg), which is still readable, whereas overriding bg
+            // would mask the pill colour and leave the black fg sitting
+            // on the dark row_selected_bg (low contrast).
+            Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
         )
         .highlight_symbol(cursor_marker(&theme))
         .block(block);
@@ -2142,20 +2687,45 @@ fn tier_icons(icons: IconStyle) -> (&'static str, &'static str) {
     }
 }
 
-fn status_cell(status: &str, theme: &Theme) -> Cell<'static> {
-    Cell::from(status_pill(status, theme))
+/// Render a status string as a coloured pill. Wrapper around
+/// [`status_pill_for`] for callers that don't care about the alerting
+/// distinction (Detail header, etc.).
+fn status_pill(status: &str, theme: &Theme) -> Span<'static> {
+    status_pill_for(status, theme, false)
 }
 
-/// Render a status string as a coloured pill. Pulled out of `status_cell`
-/// so the Detail header (and any other non-table consumer) can drop the
-/// same pill into a Line without the Cell wrapper.
-fn status_pill(status: &str, theme: &Theme) -> Span<'static> {
+/// Variant of [`status_pill`] that knows whether the env is otherwise
+/// alerting (Red health or worker with DLQ > 0). When `muted` is true,
+/// the `Ready` pill renders in a dim muted style instead of bright green
+/// — `Ready` means "no lifecycle op in flight" per EB, NOT "everything
+/// is fine". Muting it stops the green pill from competing with the
+/// health-dot / row-tint / `⚠N` chip when the env is actually alerting.
+/// Other statuses (Updating / Terminating) are unaffected — they
+/// already signal "something happening" and the operator wants the full
+/// colour cue.
+fn status_pill_for(status: &str, theme: &Theme, muted: bool) -> Span<'static> {
     // Case-insensitive match without allocating a lowercase copy per
     // call — the table renderer hits this once per env-row per frame.
     if status.eq_ignore_ascii_case("ready") {
-        pill("Ready", Color::Black, theme.status_ready)
+        if muted {
+            // Dimmed text rather than a coloured pill so the eye lands
+            // on the alert signals instead of the green pill.
+            Span::styled(" Ready ", Style::default().fg(theme.muted))
+        } else {
+            pill("Ready", Color::Black, theme.status_ready)
+        }
     } else if ieq_any(status, &["updating", "launching"]) {
-        pill(status, Color::Black, theme.status_updating)
+        // Slow blink draws the eye to in-flight lifecycle ops without
+        // changing the pill width or colour. Modern terminals (iTerm2,
+        // Alacritty, Ghostty, etc.) support it; legacy ones silently
+        // ignore the modifier and fall back to a static pill.
+        Span::styled(
+            format!(" {status} "),
+            Style::default()
+                .fg(Color::Black)
+                .bg(theme.status_updating)
+                .add_modifier(Modifier::BOLD | Modifier::SLOW_BLINK),
+        )
     } else if ieq_any(status, &["terminating", "terminated"]) {
         pill(status, Color::White, theme.status_terminating)
     } else {
@@ -2450,6 +3020,7 @@ fn draw_help(f: &mut Frame, area: Rect, app: &mut App) {
         help_line("a", "open actions menu (rebuild / restart / swap / terminate)", theme),
         help_line("b", "open selected env in the AWS console", theme),
         help_line("D", "describe overlay (raw env dump as JSON)", theme),
+        help_line("!", "diagnose selected env (events + alarms + instances + recent deploys)", theme),
         help_line("f", "freeze / unfreeze auto-refresh", theme),
         help_line("1 - 9", "jump to env at position 1-9 in the current view", theme),
         help_line("'", "name-jump: type a prefix to move selection", theme),
@@ -2500,6 +3071,8 @@ fn draw_help(f: &mut Frame, area: Rect, app: &mut App) {
         help_line(":cols", "list / hide / show / reset columns (e.g. :cols hide PLATFORM)", theme),
         help_line(":diff NAME", "side-by-side comparison with another env", theme),
         help_line(":alarms", "CloudWatch alarms list for selected env", theme),
+        help_line(":why", "diagnostic overlay — events + alarms + instances + recent deploys for the selected env", theme),
+        help_line("space + :batch-*", "multi-select envs with space, then :batch-rebuild / :batch-restart / :batch-deploy LABEL / :batch-tag KEY VAL / :batch-set-option NS NAME VAL", theme),
         help_line(":loglevel LEVEL", "live-reload tracing filter (trace/debug/info/warn/error)", theme),
         help_line(":saved-configs", "list EB saved configuration templates per application", theme),
         help_line(":plugins  /  :NAME", "list / invoke plugin commands defined in commands.toml", theme),
@@ -2507,6 +3080,7 @@ fn draw_help(f: &mut Frame, area: Rect, app: &mut App) {
         help_line("(Logs tab) ^R", "request tail logs (takes ~10–20s while EB samples instances)", theme),
         help_line("(Logs tab) s", "open CW Logs streaming overlay (live tail; needs `:logs-stream on`)", theme),
         help_line("(Logs tab) /", "regex-filter the visible log lines", theme),
+        help_line("(Logs overlay) Tab", "switch tailed log group via picker (over the env's discovered groups)", theme),
         Line::from(""),
         Line::from(Span::styled(
             format!(
@@ -3200,6 +3774,7 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
     let body_area = chunks[2];
     let active_tab = detail.tab();
     match active_tab {
+        DetailTab::Health => draw_detail_health(f, body_area, detail, app),
         DetailTab::Events => draw_detail_events(f, body_area, detail, &app.theme),
         DetailTab::Instances => draw_detail_instances(f, body_area, detail, &app.theme),
         DetailTab::Metrics => draw_detail_metrics(f, body_area, detail, &app.theme),
@@ -3280,6 +3855,9 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
 /// stay across all of them.
 fn detail_tab_keystrip(tab: DetailTab) -> &'static str {
     match tab {
+        DetailTab::Health => {
+            " HEALTH  j/k move  enter drill  tab→ Events  a actions  ^R refresh  ? help  esc back"
+        }
         DetailTab::Instances => {
             " INSTANCES  j/k cursor  s ssm shell  i info  y yank id  x terminate  tab→ Metrics  a actions  ^R refresh  ? help  esc back"
         }
@@ -3375,6 +3953,281 @@ fn render_tabs(tabs: &[DetailTab], active: usize, theme: &Theme) -> Line<'static
         spans.push(Span::styled(label, style));
     }
     Line::from(spans)
+}
+
+/// Health rollup tab — the operator-first landing page when they Enter
+/// on an env. Synthesises the same triage info as `:why` (recent events,
+/// instance summary, worker DLQ depth) but inline as a tab, so the
+/// operator can dwell on it without an overlay obscuring the rest of
+/// the Detail chrome.
+fn draw_detail_health(f: &mut Frame, area: Rect, detail: &crate::app::DetailState, app: &App) {
+    let theme = &app.theme;
+    let env = &detail.env_snapshot;
+    let now = chrono::Utc::now();
+    let mut lines: Vec<Line> = Vec::new();
+    let section = |title: &str| -> Line<'static> {
+        Line::from(Span::styled(
+            format!("─── {title} "),
+            Style::default()
+                .fg(theme.title_alt)
+                .add_modifier(Modifier::BOLD),
+        ))
+    };
+    let muted = |s: String| -> Line<'static> {
+        Line::from(Span::styled(s, Style::default().fg(theme.muted)))
+    };
+    // Build the navigable items + resolve the active one so the
+    // renderer can prefix interactive rows with the cursor marker.
+    let items = crate::app::health_items(detail, now);
+    let active_item: Option<crate::app::HealthItem> = items.get(detail.health_cursor).copied();
+    let cursor_glyph = cursor_marker(theme);
+    // Two-cell-wide prefix so cursor/non-cursor rows align.
+    let item_prefix = |is_active: bool| -> Span<'static> {
+        if is_active {
+            Span::styled(
+                cursor_glyph.to_string(),
+                Style::default()
+                    .fg(theme.title_alt)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::raw("  ")
+        }
+    };
+
+    // STATUS line — pill + health dot + worker DLQ chip when relevant.
+    let mut status_line: Vec<Span<'static>> = vec![
+        Span::styled(" status: ", Style::default().fg(theme.muted)),
+        status_pill(&env.status, theme),
+        Span::raw("  "),
+        Span::styled("health: ", Style::default().fg(theme.muted)),
+        health_dot(&env.health, theme),
+        Span::raw(" "),
+        Span::styled(
+            env.health.clone(),
+            Style::default()
+                .fg(health_color(&env.health, theme))
+                .add_modifier(Modifier::BOLD),
+        ),
+    ];
+    let is_worker = env.tier.eq_ignore_ascii_case("Worker");
+    let dlq_depth = if is_worker {
+        app.worker_dlq_depths.get(&env.name).copied().unwrap_or(0)
+    } else {
+        0
+    };
+    if dlq_depth > 0 {
+        status_line.push(Span::raw("   "));
+        status_line.push(Span::styled(
+            format!("⚠ DLQ:{dlq_depth}"),
+            Style::default()
+                .fg(theme.health_red)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    // Updating-kind annotation: when EB reports `Updating` we can usually
+    // infer what's actually happening from the most recent event. Render
+    // a "→ deploying build-142" / "→ config change" / etc. suffix when
+    // detail.events have populated and the env is mid-update.
+    if env.status.eq_ignore_ascii_case("Updating") {
+        use crate::app::UpdateKind;
+        let kind_label: Option<String> = match crate::app::classify_update_kind(&detail.events) {
+            UpdateKind::Deploy {
+                version_label: Some(label),
+            } => Some(format!("deploying {label}")),
+            UpdateKind::Deploy {
+                version_label: None,
+            } => Some("deploying a new version".into()),
+            UpdateKind::Config => Some("config change".into()),
+            UpdateKind::Scale => Some("scaling instances".into()),
+            UpdateKind::Platform => Some("platform update".into()),
+            // Generic = either no events loaded yet or no recognised
+            // pattern. Skip the suffix in that case rather than guessing.
+            UpdateKind::Generic => None,
+        };
+        if let Some(label) = kind_label {
+            status_line.push(Span::raw("   "));
+            status_line.push(Span::styled(
+                format!("→ {label}"),
+                Style::default()
+                    .fg(theme.status_updating)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+    }
+    lines.push(Line::from(status_line));
+    lines.push(Line::raw(""));
+
+    // 1. Recent significant events (ERROR / WARN in last 30m). Falls
+    // back to "no recent events" rather than dumping noise.
+    lines.push(section("recent events (last 30 min · errors + warnings)"));
+    if detail.loading_events && detail.events.is_empty() {
+        lines.push(muted(" fetching events…".into()));
+    } else {
+        let cutoff = now - chrono::Duration::minutes(30);
+        // Filter with the source index so the cursor prefix can match
+        // against `HealthItem::Event { event_idx }` later.
+        let recent: Vec<(usize, &crate::aws::Event)> = detail
+            .events
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| {
+                let sev = e.severity.to_uppercase();
+                sev == "ERROR" || sev == "WARN"
+            })
+            .filter(|(_, e)| e.at.map(|t| t >= cutoff).unwrap_or(true))
+            .take(10)
+            .collect();
+        if recent.is_empty() {
+            lines.push(muted(
+                " (no error / warning events in the last 30 min)".into(),
+            ));
+        } else {
+            for (idx, e) in recent {
+                let when =
+                    e.at.map(|t| t.with_timezone(&chrono::Local).format("%H:%M").to_string())
+                        .unwrap_or_else(|| "??:??".into());
+                let sev_style = match e.severity.to_uppercase().as_str() {
+                    "ERROR" => Style::default().fg(theme.health_red),
+                    "WARN" => Style::default().fg(theme.health_yellow),
+                    _ => Style::default().fg(theme.muted),
+                };
+                let is_active =
+                    active_item == Some(crate::app::HealthItem::Event { event_idx: idx });
+                lines.push(Line::from(vec![
+                    item_prefix(is_active),
+                    Span::styled(format!("{when}  "), Style::default().fg(theme.muted)),
+                    Span::styled(format!("{:<5}", e.severity), sev_style),
+                    Span::raw("  "),
+                    Span::styled(e.message.clone(), Style::default().fg(theme.text)),
+                ]));
+            }
+        }
+    }
+    lines.push(Line::raw(""));
+
+    // 2. Instance health summary — counts by colour. Severe instances
+    // get a "(see Instances tab)" pointer so the operator knows where
+    // to drill in.
+    lines.push(section("instances"));
+    if detail.loading_instances && detail.instances.is_empty() {
+        lines.push(muted(" fetching instances…".into()));
+    } else if detail.instances.is_empty() {
+        lines.push(muted(" (no instances reported)".into()));
+    } else {
+        let mut buckets: std::collections::BTreeMap<String, u32> =
+            std::collections::BTreeMap::new();
+        for i in &detail.instances {
+            *buckets.entry(i.color.clone()).or_default() += 1;
+        }
+        let total = detail.instances.len();
+        let mut summary_spans = vec![Span::styled(
+            format!(" {total} instance(s) · "),
+            Style::default().fg(theme.muted),
+        )];
+        for (color, count) in &buckets {
+            let style = match color.as_str() {
+                "Red" => Style::default().fg(theme.health_red),
+                "Yellow" => Style::default().fg(theme.health_yellow),
+                "Green" => Style::default().fg(theme.health_green),
+                _ => Style::default().fg(theme.muted),
+            };
+            summary_spans.push(Span::styled(format!("{count} {color}  "), style));
+        }
+        lines.push(Line::from(summary_spans));
+        // Surface Severe instances inline so the operator doesn't need
+        // to switch tabs to see WHICH instance is unhealthy. Iterate
+        // with source index so the cursor can match by `instance_idx`.
+        let mut shown = 0;
+        for (idx, i) in detail.instances.iter().enumerate() {
+            if shown >= 3 {
+                break;
+            }
+            let red =
+                i.color.eq_ignore_ascii_case("Red") || i.health.eq_ignore_ascii_case("Severe");
+            if !red {
+                continue;
+            }
+            shown += 1;
+            let is_active =
+                active_item == Some(crate::app::HealthItem::Instance { instance_idx: idx });
+            lines.push(Line::from(vec![
+                item_prefix(is_active),
+                Span::styled(i.id.clone(), Style::default().fg(theme.text)),
+                Span::raw("  "),
+                Span::styled(
+                    i.health.clone(),
+                    Style::default()
+                        .fg(theme.health_red)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            for cause in i.causes.iter().take(2) {
+                lines.push(Line::from(Span::styled(
+                    format!("    ↳ {cause}"),
+                    Style::default().fg(theme.muted),
+                )));
+            }
+        }
+    }
+    lines.push(Line::raw(""));
+
+    // 3. Worker queues — only for Worker envs. Reuses the queues data
+    // populated by `detail_refresh_active_tab`'s `spawn_detail_queues`.
+    if is_worker {
+        lines.push(section("worker queues"));
+        if detail.loading_queues {
+            lines.push(muted(" fetching queue depths…".into()));
+        } else {
+            let q = &detail.queues;
+            // Main queue row.
+            let main_text = match q.main_stats.as_ref() {
+                Some(s) => format!(
+                    "main:  visible={}  in-flight={}  delayed={}",
+                    s.visible, s.in_flight, s.delayed
+                ),
+                None => "main:  (queue URL not resolved)".to_string(),
+            };
+            let main_active = active_item == Some(crate::app::HealthItem::MainQueue);
+            lines.push(Line::from(vec![
+                item_prefix(main_active),
+                Span::styled(main_text, Style::default().fg(theme.text)),
+            ]));
+            // DLQ row.
+            let dlq_visible = q.dlq_stats.as_ref().map(|s| s.visible).unwrap_or(0);
+            let dlq_text = match q.dlq_stats.as_ref() {
+                Some(s) => format!(
+                    "dlq:   visible={}  in-flight={}  delayed={}",
+                    s.visible, s.in_flight, s.delayed
+                ),
+                None => "dlq:   (queue URL not resolved)".to_string(),
+            };
+            let dlq_style = if dlq_visible > 0 {
+                Style::default()
+                    .fg(theme.health_red)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.text)
+            };
+            let dlq_active = active_item == Some(crate::app::HealthItem::Dlq);
+            lines.push(Line::from(vec![
+                item_prefix(dlq_active),
+                Span::styled(dlq_text, dlq_style),
+            ]));
+        }
+        lines.push(Line::raw(""));
+    }
+
+    // 4. Drill-in hint — explicit pointer to the other tabs.
+    lines.push(muted(
+        " ── tab → drill into Events / Instances / Metrics / Queue / Logs / Config ──".into(),
+    ));
+
+    let block = rounded_block(theme, false).padding(Padding::horizontal(1));
+    let p = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .block(block);
+    f.render_widget(p, area);
 }
 
 fn draw_detail_events(f: &mut Frame, area: Rect, detail: &crate::app::DetailState, theme: &Theme) {
@@ -4877,6 +5730,20 @@ fn caret_glyph(theme: &Theme) -> &'static str {
     }
 }
 
+/// Pure: chevron used in the non-Powerline group-banner row to mark the
+/// start of an app section (`── ▶ app-name ──`). Powerline mode renders
+/// its own ribbon and never calls this — but we return a sensible glyph
+/// anyway so the helper is total.
+fn separator_glyph(icons: IconStyle) -> &'static str {
+    match icons {
+        IconStyle::Ascii => ">",
+        // U+25B6 BLACK RIGHT-POINTING TRIANGLE — BMP, single-cell in every
+        // standard monospace font. Mirrors the Powerline E0B0 wedge in
+        // intent (forward direction, calls attention to the section break).
+        _ => "▶",
+    }
+}
+
 fn sparkline_for(
     samples: Option<&std::collections::VecDeque<String>>,
     theme: &Theme,
@@ -4895,23 +5762,51 @@ fn sparkline_for(
     let visible_len = visible.len();
     for (i, h) in visible.iter().enumerate() {
         let color = health_color(h, theme);
-        // Fade older samples: leftmost 1/3 are dim.
-        let mut style = Style::default().fg(color);
-        if visible_len > 3 && i < visible_len / 3 {
-            style = style.add_modifier(Modifier::DIM);
-        }
-        // Pulse the rightmost cell when the caller flagged a fresh health
-        // transition — swap the block to a full-height `█` and bold it so
-        // the change visually pops on the refresh that landed it.
-        let glyph = if pulse_last && i + 1 == visible_len {
-            style = style.add_modifier(Modifier::BOLD | Modifier::SLOW_BLINK);
-            "█"
+        // Two-tone styling so the cell reads as a coloured bar under
+        // the row-highlight's `Modifier::REVERSED`. fg=full bright,
+        // bg=darker shade — the swap flips to (darker fg, bright bg)
+        // on the selected row, painting the bar in the darker shade.
+        // Bar shape: `▇` is the lower 7/8 block, so the top 1/8 sliver
+        // shows the bg colour as a darker cap (or a brighter cap on
+        // the inverted highlighted row). Uniform across the bar — the
+        // earlier dim-leading-third gradient added confusion without
+        // operational signal (everything inside a 5-min window is
+        // "recent" enough).
+        let darker = scale_rgb(color, 0.6);
+        let style = Style::default().fg(color).bg(darker);
+        // Pulse the rightmost cell when the caller flagged a fresh
+        // health transition — swap the block to a full-height `█` and
+        // bold it so the change visually pops on the refresh that
+        // landed it.
+        let (glyph, style) = if pulse_last && i + 1 == visible_len {
+            (
+                "█",
+                style.add_modifier(Modifier::BOLD | Modifier::SLOW_BLINK),
+            )
         } else {
-            "▇"
+            ("▇", style)
         };
         spans.push(Span::styled(glyph, style));
     }
     Line::from(spans)
+}
+
+/// Pure: scale an `Rgb` colour towards black by `factor` (clamped 0..=1).
+/// Non-RGB inputs (e.g. terminal-named `Color::Red`) pass through unchanged
+/// because there's no portable "darken by N%" for those. Used by the
+/// sparkline two-tone styling so fg+bg pairs read as distinct shades on
+/// both highlighted and unhighlighted rows.
+fn scale_rgb(color: Color, factor: f32) -> Color {
+    let factor = factor.clamp(0.0, 1.0);
+    if let Color::Rgb(r, g, b) = color {
+        Color::Rgb(
+            (r as f32 * factor) as u8,
+            (g as f32 * factor) as u8,
+            (b as f32 * factor) as u8,
+        )
+    } else {
+        color
+    }
 }
 
 fn health_style(health: &str, theme: &Theme) -> Style {
@@ -5171,6 +6066,33 @@ fn humanize_age(d: chrono::Duration) -> String {
     }
 }
 
+/// Pure: pick a theme colour for the AGE column based on how recently the
+/// env was updated. Three buckets:
+///
+/// - `< 24h` → `title_alt` (just-deployed; pairs with the `◆` drift glyph)
+/// - `24h – 30d` → `text` (actively maintained)
+/// - `> 30d` or missing → `muted` (sleeping / no signal)
+///
+/// Negative durations (clock skew) are treated as 0 so the call doesn't
+/// flip into the >30d bucket on a tiny future timestamp.
+fn age_color(
+    updated: Option<chrono::DateTime<chrono::Utc>>,
+    now: chrono::DateTime<chrono::Utc>,
+    theme: &Theme,
+) -> Color {
+    let Some(u) = updated else {
+        return theme.muted;
+    };
+    let dur = now.signed_duration_since(u);
+    if dur < chrono::Duration::zero() || dur < chrono::Duration::hours(24) {
+        theme.title_alt
+    } else if dur > chrono::Duration::days(30) {
+        theme.muted
+    } else {
+        theme.text
+    }
+}
+
 /// Render an embedded shell pane: a 1-row title at the top, a 1-row footer
 /// hint at the bottom, and the vt100 screen contents filling the middle.
 /// We resize the PTY to match the available space and iterate the parser's
@@ -5345,6 +6267,57 @@ mod tests {
     fn series_anomaly_handles_short_series() {
         let v = vec![1.0, 9.0];
         assert!(super::series_anomaly_label("req5xx", &v).is_none());
+    }
+
+    #[test]
+    fn age_color_fresh_uses_title_alt() {
+        let t = Theme::dark();
+        let now = chrono::Utc::now();
+        let updated = now - chrono::Duration::hours(2);
+        assert_eq!(super::age_color(Some(updated), now, &t), t.title_alt);
+    }
+
+    #[test]
+    fn age_color_normal_uses_text() {
+        let t = Theme::dark();
+        let now = chrono::Utc::now();
+        let updated = now - chrono::Duration::days(5);
+        assert_eq!(super::age_color(Some(updated), now, &t), t.text);
+    }
+
+    #[test]
+    fn age_color_stale_uses_muted() {
+        let t = Theme::dark();
+        let now = chrono::Utc::now();
+        let updated = now - chrono::Duration::days(45);
+        assert_eq!(super::age_color(Some(updated), now, &t), t.muted);
+    }
+
+    #[test]
+    fn age_color_missing_uses_muted() {
+        let t = Theme::dark();
+        let now = chrono::Utc::now();
+        assert_eq!(super::age_color(None, now, &t), t.muted);
+    }
+
+    #[test]
+    fn age_color_future_clock_skew_is_fresh_not_stale() {
+        // If `updated` is slightly in the future (clock drift between EB
+        // and the local box), don't classify it as >30d — that would flip
+        // the colour straight to muted on a brand-new env.
+        let t = Theme::dark();
+        let now = chrono::Utc::now();
+        let updated = now + chrono::Duration::seconds(30);
+        assert_eq!(super::age_color(Some(updated), now, &t), t.title_alt);
+    }
+
+    #[test]
+    fn age_color_boundary_at_24h_is_normal() {
+        // Exactly 24h: dur < 24h is false, dur > 30d is false → normal (text).
+        let t = Theme::dark();
+        let now = chrono::Utc::now();
+        let updated = now - chrono::Duration::hours(24);
+        assert_eq!(super::age_color(Some(updated), now, &t), t.text);
     }
 
     #[test]
@@ -5671,6 +6644,56 @@ mod tests {
     }
 
     #[test]
+    fn scale_rgb_darkens_proportionally_and_passes_through_named() {
+        // 0.5 of (200, 100, 50) → (100, 50, 25). Truncating float → u8 cast.
+        assert_eq!(
+            super::scale_rgb(Color::Rgb(200, 100, 50), 0.5),
+            Color::Rgb(100, 50, 25)
+        );
+        // Factor 1.0 is identity.
+        assert_eq!(
+            super::scale_rgb(Color::Rgb(200, 100, 50), 1.0),
+            Color::Rgb(200, 100, 50)
+        );
+        // Factor 0.0 → black.
+        assert_eq!(
+            super::scale_rgb(Color::Rgb(255, 255, 255), 0.0),
+            Color::Rgb(0, 0, 0)
+        );
+        // Factor clamps to [0, 1] — overflowing values don't yield > 255.
+        assert_eq!(
+            super::scale_rgb(Color::Rgb(200, 100, 50), 2.0),
+            Color::Rgb(200, 100, 50)
+        );
+        // Non-RGB colours pass through unchanged (no portable darken).
+        assert_eq!(super::scale_rgb(Color::Red, 0.5), Color::Red);
+    }
+
+    #[test]
+    fn truncate_for_display_handles_short_long_and_multibyte() {
+        // No truncation when under the cap.
+        assert_eq!(super::truncate_for_display("hello", 10), "hello");
+        // Exactly at the cap — also untouched.
+        assert_eq!(super::truncate_for_display("0123456789", 10), "0123456789");
+        // Over the cap — drops chars to fit `…`. max=5 means 4 chars + `…`.
+        assert_eq!(super::truncate_for_display("0123456789", 5), "0123…");
+        // Multi-byte (each char width 1 in unicode-width terms here) —
+        // count by chars, not bytes.
+        assert_eq!(super::truncate_for_display("éééééééé", 4), "ééé…");
+    }
+
+    #[test]
+    fn separator_glyph_falls_back_to_ascii_chevron() {
+        assert_eq!(super::separator_glyph(IconStyle::Ascii), ">");
+        assert_eq!(super::separator_glyph(IconStyle::Unicode), "▶");
+        // Powerline mode never reaches the non-Powerline banner path in
+        // practice (it has its own ribbon renderer) — but the glyph
+        // should still be a sensible BMP chevron rather than panicking
+        // or returning empty.
+        assert_eq!(super::separator_glyph(IconStyle::Powerline), "▶");
+    }
+
+    #[test]
     fn pill_chain_uses_left_wedge_for_lead_in_in_powerline_mode() {
         let mut t = Theme::dark();
         t.icons = IconStyle::Powerline;
@@ -5777,6 +6800,50 @@ mod tests {
         t.icons = IconStyle::Ascii;
         let dot = health_dot("green", &t);
         assert_eq!(dot.content.as_ref(), "*");
+    }
+
+    #[test]
+    fn header_dimensions_merges_pills_when_room_to_spare() {
+        // Info row 60w + 2 gap + 20w chain = 82, well inside 120w column.
+        let (rows, merge) = header_dimensions(60, 20, 120, false);
+        assert!(merge, "wide window should merge pills onto info row");
+        assert_eq!(rows, 5, "merged layout uses 5 rows (2 borders + 3 content)");
+    }
+
+    #[test]
+    fn header_dimensions_keeps_pill_row_when_too_narrow() {
+        // Info row 60w + 2 gap + 30w chain = 92 > 80w column — has to wrap.
+        let (rows, merge) = header_dimensions(60, 30, 80, false);
+        assert!(!merge, "narrow window should keep pills on their own row");
+        assert_eq!(rows, 6, "split layout adds one row for the pill chain");
+    }
+
+    #[test]
+    fn header_dimensions_with_no_pills_uses_compact_layout() {
+        // No pills present (chain_w == 0): never merges, never reserves a pill row.
+        let (rows, merge) = header_dimensions(60, 0, 80, false);
+        assert!(!merge);
+        assert_eq!(rows, 5);
+    }
+
+    #[test]
+    fn header_dimensions_adds_row_for_saved_filters() {
+        let (rows, _) = header_dimensions(60, 0, 200, true);
+        assert_eq!(rows, 6, "saved-filter chip bar adds one row");
+
+        let (rows_with_pills, merged) = header_dimensions(60, 20, 200, true);
+        assert!(merged);
+        assert_eq!(rows_with_pills, 6, "merged + filters = 5 + 1");
+    }
+
+    #[test]
+    fn header_dimensions_boundary_is_inclusive() {
+        // info(50) + gap(2) + chain(48) == inner(100) → should merge (≤).
+        let (_, merge) = header_dimensions(50, 48, 100, false);
+        assert!(merge);
+        // One column over → no longer merges.
+        let (_, merge) = header_dimensions(50, 49, 100, false);
+        assert!(!merge);
     }
 
     fn buffer_to_string(buf: &ratatui::buffer::Buffer) -> String {

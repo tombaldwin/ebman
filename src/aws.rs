@@ -3,11 +3,12 @@ use aws_sdk_cloudwatch::Client as CwClient;
 use aws_sdk_cloudwatchlogs::Client as CwLogsClient;
 use aws_sdk_ec2::Client as Ec2Client;
 use aws_sdk_elasticbeanstalk::Client;
+use aws_sdk_organizations::Client as OrgClient;
 use aws_sdk_s3::Client as S3Client;
 use aws_sdk_sqs::Client as SqsClient;
 use aws_sdk_sts::Client as StsClient;
 use chrono::{DateTime, Utc};
-use color_eyre::eyre::{eyre, Result};
+use color_eyre::eyre::{eyre, Result, WrapErr};
 
 #[derive(Clone, Debug)]
 pub struct Event {
@@ -77,6 +78,14 @@ pub struct Application {
     pub date_updated: Option<DateTime<Utc>>,
     pub version_count: usize,
     pub templates: Vec<String>,
+    /// Newest application version's label (from `DescribeApplicationVersions`,
+    /// sorted by date_created desc). Populated by a follow-up fetch after
+    /// `list_applications` — `None` while still loading or if the app has
+    /// no versions yet. The EB-console "latest deployed version" matches
+    /// this field, not the application-level `date_updated`.
+    pub latest_version_label: Option<String>,
+    /// `date_created` of the newest application version.
+    pub latest_version_created: Option<DateTime<Utc>>,
 }
 
 /// Result of `fetch_env_vpc_context` — the env's VPC plus the option-
@@ -185,8 +194,26 @@ pub struct AwsClient {
     cw_logs: CwLogsClient,
     s3: S3Client,
     ec2: Ec2Client,
+    org: OrgClient,
     config: SdkConfig,
     pub context: AwsContext,
+}
+
+/// One row in the `:accounts` overlay — an AWS Organizations child
+/// account (or the management account itself). Sourced from
+/// `organizations:ListAccounts`.
+#[derive(Clone, Debug)]
+pub struct OrgAccount {
+    /// 12-digit account ID.
+    pub id: String,
+    /// Friendly name set when the account joined the org.
+    pub name: String,
+    /// Root user's email address (often the only way to spot ownership
+    /// when account names are terse).
+    pub email: Option<String>,
+    /// `ACTIVE` / `SUSPENDED` / `PENDING_CLOSURE` — capitalised verbatim
+    /// from the API.
+    pub status: String,
 }
 
 impl AwsClient {
@@ -212,6 +239,7 @@ impl AwsClient {
         let cw_logs = CwLogsClient::new(&config);
         let s3 = S3Client::new(&config);
         let ec2 = Ec2Client::new(&config);
+        let org = OrgClient::new(&config);
 
         Ok(Self {
             client,
@@ -220,6 +248,7 @@ impl AwsClient {
             cw_logs,
             s3,
             ec2,
+            org,
             config,
             context: AwsContext {
                 region,
@@ -236,6 +265,117 @@ impl AwsClient {
     /// Tests should not assume any of the sub-clients can talk to a real
     /// endpoint — the default ones will fail if a non-mocked code path is
     /// reached, which is exactly the signal we want.
+    /// Build an `AwsClient` by `sts:AssumeRole`-ing into a target role
+    /// using `source_profile`'s creds as the base identity. Pinned to
+    /// `target_region` when supplied (falls back to the source profile's
+    /// region / env default). Returned client carries the assumed
+    /// session's caller_arn / account_id once `verify_identity` runs.
+    ///
+    /// Session lifetime defaults to AWS's 1h cap; the caller is
+    /// expected to swap clients again before expiry. We don't implement
+    /// background refresh here — the operator's refresh tick will
+    /// re-invoke this when the session dies.
+    pub async fn assume_role(target_name: &str, spec: &crate::config::AccountSpec) -> Result<Self> {
+        // Stage 1: load the source-profile creds + region.
+        let mut builder = aws_config::defaults(aws_config::BehaviorVersion::latest());
+        if let Some(p) = spec.source_profile.as_ref() {
+            builder = builder.profile_name(p.clone());
+        }
+        if let Some(r) = spec.region.clone() {
+            builder = builder.region(Region::new(r));
+        }
+        let base_config = builder.load().await;
+
+        // Stage 2: STS:AssumeRole against the configured role.
+        let sts = StsClient::new(&base_config);
+        let session_name = format!("ebman-{target_name}");
+        let mut req = sts
+            .assume_role()
+            .role_arn(spec.role_arn.clone())
+            .role_session_name(session_name);
+        if let Some(eid) = spec.external_id.as_ref() {
+            req = req.external_id(eid.clone());
+        }
+        let resp = req.send().await.wrap_err("sts:AssumeRole failed")?;
+        let creds = resp
+            .credentials
+            .ok_or_else(|| eyre!("sts:AssumeRole returned no credentials"))?;
+        let access_key = creds.access_key_id;
+        let secret_key = creds.secret_access_key;
+        let session_token = creds.session_token;
+        let aws_creds = aws_credential_types::Credentials::new(
+            access_key,
+            secret_key,
+            Some(session_token),
+            // Expiry: aws_smithy_types::DateTime → SystemTime via secs.
+            std::time::SystemTime::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(
+                creds.expiration.secs() as u64,
+            )),
+            "ebman-assume-role",
+        );
+
+        // Stage 3: build the final SdkConfig with the assumed creds.
+        // We rebuild from scratch (rather than mutating base_config) so
+        // the resulting config carries ONLY the assumed-role identity —
+        // no leaked source-profile creds, no cross-region surprises.
+        let mut builder = aws_config::defaults(aws_config::BehaviorVersion::latest());
+        builder = builder.credentials_provider(aws_creds);
+        if let Some(r) = spec.region.clone() {
+            builder = builder.region(Region::new(r));
+        } else if let Some(r) = base_config.region().cloned() {
+            builder = builder.region(r);
+        }
+        let config = builder.load().await;
+        let region = config
+            .region()
+            .map(|r| r.as_ref().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        Ok(Self {
+            client: Client::new(&config),
+            sqs: SqsClient::new(&config),
+            cw: CwClient::new(&config),
+            cw_logs: CwLogsClient::new(&config),
+            s3: S3Client::new(&config),
+            ec2: Ec2Client::new(&config),
+            org: OrgClient::new(&config),
+            config,
+            context: AwsContext {
+                region,
+                // Track the friendly account name as the "profile"
+                // breadcrumb so the header reads `account=prod` rather
+                // than the source profile name (which is just the
+                // launchpad, not the destination).
+                profile: Some(target_name.to_string()),
+                account_id: None,
+                caller_arn: None,
+            },
+        })
+    }
+
+    /// Build an `AwsClient` with default (un-mocked) sub-clients. For
+    /// tests that exercise non-AWS code paths (keyboard flow, render,
+    /// pure-helper composition) and don't care which AWS surface is
+    /// reachable. Any AWS call against the returned client will fail
+    /// loudly, which is the desired signal for "test accidentally hit
+    /// the network". Pair with `App::for_tests` to drive `handle_event`
+    /// without spinning up a real session.
+    #[cfg(test)]
+    pub fn stub() -> Self {
+        let cfg = aws_config::SdkConfig::builder()
+            .region(Region::new("us-east-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        Self::for_tests(
+            Client::new(&cfg),
+            SqsClient::new(&cfg),
+            CwClient::new(&cfg),
+            CwLogsClient::new(&cfg),
+            S3Client::new(&cfg),
+            Ec2Client::new(&cfg),
+        )
+    }
+
     #[cfg(test)]
     pub fn for_tests(
         client: Client,
@@ -252,6 +392,10 @@ impl AwsClient {
             .region(Region::new("us-east-1"))
             .behavior_version(aws_config::BehaviorVersion::latest())
             .build();
+        // Org client is created here from default config because no
+        // existing test exercises it; mocked-org tests can use a
+        // dedicated helper if added.
+        let org = OrgClient::new(&config);
         Self {
             client,
             sqs,
@@ -259,6 +403,7 @@ impl AwsClient {
             cw_logs,
             s3,
             ec2,
+            org,
             config,
             context: AwsContext {
                 region: "us-east-1".to_string(),
@@ -276,7 +421,7 @@ impl AwsClient {
             .get_caller_identity()
             .send()
             .await
-            .map_err(|e| eyre!("sts get-caller-identity failed: {e}"))?;
+            .wrap_err("sts get-caller-identity failed")?;
         Ok(Identity {
             account_id: ident.account,
             caller_arn: ident.arn,
@@ -330,7 +475,7 @@ impl AwsClient {
             .environment_name(env_name)
             .send()
             .await
-            .map_err(|e| eyre!("DescribeEnvironmentResources failed: {e}"))?;
+            .wrap_err("DescribeEnvironmentResources failed")?;
         let res = resp
             .environment_resources
             .ok_or_else(|| eyre!("no environment_resources in response"))?;
@@ -552,7 +697,7 @@ impl AwsClient {
                 .message_system_attribute_names(M::SentTimestamp)
                 .send()
                 .await
-                .map_err(|e| eyre!("ReceiveMessage failed: {e}"))?;
+                .wrap_err("ReceiveMessage failed")?;
             let batch = resp.messages.unwrap_or_default();
             if batch.is_empty() {
                 empty_in_a_row += 1;
@@ -622,10 +767,7 @@ impl AwsClient {
             if let Some(t) = next_token.take() {
                 req = req.next_token(t);
             }
-            let resp = req
-                .send()
-                .await
-                .map_err(|e| eyre!("DescribeAlarms failed: {e}"))?;
+            let resp = req.send().await.wrap_err("DescribeAlarms failed")?;
             for a in resp.metric_alarms.unwrap_or_default() {
                 let dims = a.dimensions.clone().unwrap_or_default();
                 let touches = dims.iter().any(|d| d.value.as_deref() == Some(env_name));
@@ -708,7 +850,7 @@ impl AwsClient {
             .treat_missing_data("notBreaching")
             .send()
             .await
-            .map_err(|e| eyre!("PutMetricAlarm failed: {e}"))?;
+            .wrap_err("PutMetricAlarm failed")?;
         Ok(())
     }
 
@@ -732,7 +874,7 @@ impl AwsClient {
             .environment_name(env_name)
             .send()
             .await
-            .map_err(|e| eyre!("DescribeConfigurationSettings(env) failed: {e}"))?;
+            .wrap_err("DescribeConfigurationSettings(env) failed")?;
         let out = resp
             .configuration_settings
             .unwrap_or_default()
@@ -766,7 +908,7 @@ impl AwsClient {
             .environment_name(env_name)
             .send()
             .await
-            .map_err(|e| eyre!("DescribeConfigurationSettings(env) failed: {e}"))?;
+            .wrap_err("DescribeConfigurationSettings(env) failed")?;
         let mut ctx = EnvVpcContext::default();
         for setting in resp.configuration_settings.unwrap_or_default() {
             for opt in setting.option_settings.unwrap_or_default() {
@@ -811,7 +953,7 @@ impl AwsClient {
             )
             .send()
             .await
-            .map_err(|e| eyre!("DescribeSubnets failed: {e}"))?;
+            .wrap_err("DescribeSubnets failed")?;
         let mut out: Vec<SubnetInfo> = resp
             .subnets
             .unwrap_or_default()
@@ -856,7 +998,7 @@ impl AwsClient {
             )
             .send()
             .await
-            .map_err(|e| eyre!("DescribeSecurityGroups failed: {e}"))?;
+            .wrap_err("DescribeSecurityGroups failed")?;
         let mut out: Vec<SecurityGroupInfo> = resp
             .security_groups
             .unwrap_or_default()
@@ -883,7 +1025,7 @@ impl AwsClient {
             .environment_name(env_name)
             .send()
             .await
-            .map_err(|e| eyre!("DescribeConfigurationSettings(env) failed: {e}"))?;
+            .wrap_err("DescribeConfigurationSettings(env) failed")?;
         let mut out: Vec<(String, String)> = resp
             .configuration_settings
             .unwrap_or_default()
@@ -937,7 +1079,7 @@ impl AwsClient {
         }
         req.send()
             .await
-            .map_err(|e| eyre!("UpdateEnvironment(option_settings) failed: {e}"))?;
+            .wrap_err("UpdateEnvironment(option_settings) failed")?;
         Ok(())
     }
 
@@ -957,10 +1099,7 @@ impl AwsClient {
             if let Some(t) = next_token.take() {
                 req = req.next_token(t);
             }
-            let resp = req
-                .send()
-                .await
-                .map_err(|e| eyre!("DescribeLogGroups failed: {e}"))?;
+            let resp = req.send().await.wrap_err("DescribeLogGroups failed")?;
             for g in resp.log_groups.unwrap_or_default() {
                 if let Some(name) = g.log_group_name {
                     out.push(name);
@@ -995,7 +1134,7 @@ impl AwsClient {
             .limit(limit)
             .send()
             .await
-            .map_err(|e| eyre!("FilterLogEvents failed: {e}"))?;
+            .wrap_err("FilterLogEvents failed")?;
         let mut out: Vec<LogEvent> = Vec::new();
         let mut max_ts = since_ms;
         for e in resp.events.unwrap_or_default() {
@@ -1028,9 +1167,7 @@ impl AwsClient {
         for n in names {
             req = req.alarm_names(n);
         }
-        req.send()
-            .await
-            .map_err(|e| eyre!("DeleteAlarms failed: {e}"))?;
+        req.send().await.wrap_err("DeleteAlarms failed")?;
         Ok(())
     }
 
@@ -1291,7 +1428,7 @@ impl AwsClient {
             .environment_id(source_env_name)
             .send()
             .await
-            .map_err(|e| eyre!("CreateConfigurationTemplate failed: {e}"))?;
+            .wrap_err("CreateConfigurationTemplate failed")?;
         Ok(())
     }
 
@@ -1308,7 +1445,7 @@ impl AwsClient {
             .template_name(template_name)
             .send()
             .await
-            .map_err(|e| eyre!("DeleteConfigurationTemplate failed: {e}"))?;
+            .wrap_err("DeleteConfigurationTemplate failed")?;
         Ok(())
     }
 
@@ -1325,7 +1462,7 @@ impl AwsClient {
             .environment_names(env_name)
             .send()
             .await
-            .map_err(|e| eyre!("DescribeEnvironments failed: {e}"))?;
+            .wrap_err("DescribeEnvironments failed")?;
         let env = desc
             .environments
             .unwrap_or_default()
@@ -1363,10 +1500,7 @@ impl AwsClient {
             if let Some(t) = next_token.clone() {
                 req = req.next_token(t);
             }
-            let resp = req
-                .send()
-                .await
-                .map_err(|e| eyre!("ListPlatformVersions failed: {e}"))?;
+            let resp = req.send().await.wrap_err("ListPlatformVersions failed")?;
             for p in resp.platform_summary_list.unwrap_or_default() {
                 out.push(CustomPlatform {
                     arn: p.platform_arn.unwrap_or_default(),
@@ -1399,7 +1533,7 @@ impl AwsClient {
             .platform_arn(platform_arn)
             .send()
             .await
-            .map_err(|e| eyre!("UpdateEnvironment(platform_arn) failed: {e}"))?;
+            .wrap_err("UpdateEnvironment(platform_arn) failed")?;
         Ok(())
     }
 
@@ -1415,7 +1549,7 @@ impl AwsClient {
             .environment_names(source_env_name)
             .send()
             .await
-            .map_err(|e| eyre!("DescribeEnvironments failed: {e}"))?;
+            .wrap_err("DescribeEnvironments failed")?;
         let env = desc
             .environments
             .unwrap_or_default()
@@ -1442,7 +1576,7 @@ impl AwsClient {
             .environment_id(&env_id)
             .send()
             .await
-            .map_err(|e| eyre!("CreateConfigurationTemplate failed: {e}"))?;
+            .wrap_err("CreateConfigurationTemplate failed")?;
         // Best-effort cleanup even if create_environment fails — we don't
         // want to leave debris.
         let create_result = self
@@ -1460,7 +1594,7 @@ impl AwsClient {
             .template_name(&template)
             .send()
             .await;
-        create_result.map_err(|e| eyre!("CreateEnvironment failed: {e}"))?;
+        create_result.wrap_err("CreateEnvironment failed")?;
         Ok(())
     }
 
@@ -1488,7 +1622,7 @@ impl AwsClient {
             .set_option_settings(Some(opts))
             .send()
             .await
-            .map_err(|e| eyre!("UpdateEnvironment(asg) failed: {e}"))?;
+            .wrap_err("UpdateEnvironment(asg) failed")?;
         Ok(())
     }
 
@@ -1502,7 +1636,7 @@ impl AwsClient {
             .instance_ids(instance_id)
             .send()
             .await
-            .map_err(|e| eyre!("ec2:TerminateInstances failed: {e}"))?;
+            .wrap_err("ec2:TerminateInstances failed")?;
         Ok(())
     }
 
@@ -1514,7 +1648,7 @@ impl AwsClient {
             .environment_name(env_name)
             .send()
             .await
-            .map_err(|e| eyre!("AbortEnvironmentUpdate failed: {e}"))?;
+            .wrap_err("AbortEnvironmentUpdate failed")?;
         Ok(())
     }
 
@@ -1536,10 +1670,7 @@ impl AwsClient {
             if let Some(t) = next_token.clone() {
                 req = req.next_token(t);
             }
-            let resp = req
-                .send()
-                .await
-                .map_err(|e| eyre!("ListPlatformVersions failed: {e}"))?;
+            let resp = req.send().await.wrap_err("ListPlatformVersions failed")?;
             for p in resp.platform_summary_list.unwrap_or_default() {
                 out.push(CustomPlatform {
                     arn: p.platform_arn.unwrap_or_default(),
@@ -1569,7 +1700,7 @@ impl AwsClient {
             .platform_arn(platform_arn)
             .send()
             .await
-            .map_err(|e| eyre!("DeletePlatformVersion failed: {e}"))?;
+            .wrap_err("DeletePlatformVersion failed")?;
         Ok(())
     }
 
@@ -1586,7 +1717,7 @@ impl AwsClient {
             .application_name(application_name)
             .send()
             .await
-            .map_err(|e| eyre!("DescribeApplicationVersions failed: {e}"))?;
+            .wrap_err("DescribeApplicationVersions failed")?;
         let mut out: Vec<AppVersion> = resp
             .application_versions
             .unwrap_or_default()
@@ -1621,7 +1752,7 @@ impl AwsClient {
             .delete_source_bundle(delete_source_bundle)
             .send()
             .await
-            .map_err(|e| eyre!("DeleteApplicationVersion failed: {e}"))?;
+            .wrap_err("DeleteApplicationVersion failed")?;
         Ok(())
     }
 
@@ -1637,7 +1768,7 @@ impl AwsClient {
             .create_storage_location()
             .send()
             .await
-            .map_err(|e| eyre!("CreateStorageLocation failed: {e}"))?;
+            .wrap_err("CreateStorageLocation failed")?;
         resp.s3_bucket
             .ok_or_else(|| eyre!("CreateStorageLocation returned no S3Bucket"))
     }
@@ -1660,7 +1791,7 @@ impl AwsClient {
             .body(ByteStream::from(bytes))
             .send()
             .await
-            .map_err(|e| eyre!("S3 PutObject {bucket}/{key} failed: {e}"))?;
+            .wrap_err_with(|| format!("S3 PutObject {bucket}/{key} failed"))?;
         Ok(())
     }
 
@@ -1692,7 +1823,7 @@ impl AwsClient {
         }
         req.send()
             .await
-            .map_err(|e| eyre!("CreateApplicationVersion failed: {e}"))?;
+            .wrap_err("CreateApplicationVersion failed")?;
         Ok(())
     }
 
@@ -1705,7 +1836,7 @@ impl AwsClient {
             .version_label(version_label)
             .send()
             .await
-            .map_err(|e| eyre!("UpdateEnvironment(version_label) failed: {e}"))?;
+            .wrap_err("UpdateEnvironment(version_label) failed")?;
         Ok(())
     }
 
@@ -1727,7 +1858,7 @@ impl AwsClient {
             .template_name(template_name)
             .send()
             .await
-            .map_err(|e| eyre!("DescribeConfigurationSettings(template) failed: {e}"))?;
+            .wrap_err("DescribeConfigurationSettings(template) failed")?;
         let mut out: Vec<(String, String, String)> = resp
             .configuration_settings
             .unwrap_or_default()
@@ -1755,7 +1886,7 @@ impl AwsClient {
             .template_name(template_name)
             .send()
             .await
-            .map_err(|e| eyre!("UpdateEnvironment(template_name) failed: {e}"))?;
+            .wrap_err("UpdateEnvironment(template_name) failed")?;
         Ok(())
     }
 
@@ -1779,7 +1910,7 @@ impl AwsClient {
             .info_type(EnvironmentInfoType::Tail)
             .send()
             .await
-            .map_err(|e| eyre!("RequestEnvironmentInfo failed: {e}"))?;
+            .wrap_err("RequestEnvironmentInfo failed")?;
         Ok(())
     }
 
@@ -1795,7 +1926,7 @@ impl AwsClient {
             .info_type(EnvironmentInfoType::Tail)
             .send()
             .await
-            .map_err(|e| eyre!("RetrieveEnvironmentInfo failed: {e}"))?;
+            .wrap_err("RetrieveEnvironmentInfo failed")?;
         let mut out = Vec::new();
         for info in resp.environment_info.unwrap_or_default() {
             if let (Some(id), Some(url)) = (info.ec2_instance_id, info.message) {
@@ -1822,7 +1953,7 @@ impl AwsClient {
             .arg(url)
             .output()
             .await
-            .map_err(|e| eyre!("could not invoke curl (is it installed?): {e}"))?;
+            .wrap_err("could not invoke curl (is it installed?)")?;
         if !out.status.success() {
             return Err(eyre!(
                 "curl exit {}: {}",
@@ -1860,6 +1991,46 @@ impl AwsClient {
         Ok(instances)
     }
 
+    /// `organizations:ListAccounts`, paginated. Returns every active +
+    /// suspended account the active credentials can see (i.e. the
+    /// caller is in the mgmt account or a delegated administrator).
+    /// Surfaces the API's `AccessDenied` cleanly so the `:accounts`
+    /// overlay can render a "no org access" hint rather than an opaque
+    /// stack trace.
+    pub async fn list_org_accounts(&self) -> Result<Vec<OrgAccount>> {
+        let mut out: Vec<OrgAccount> = Vec::new();
+        let mut next_token: Option<String> = None;
+        loop {
+            let mut req = self.org.list_accounts();
+            if let Some(t) = next_token.take() {
+                req = req.next_token(t);
+            }
+            let resp = req
+                .send()
+                .await
+                .wrap_err("organizations:ListAccounts failed")?;
+            for a in resp.accounts.unwrap_or_default() {
+                out.push(OrgAccount {
+                    id: a.id.unwrap_or_default(),
+                    name: a.name.unwrap_or_default(),
+                    email: a.email,
+                    status: a.status.map(|s| s.as_str().to_string()).unwrap_or_default(),
+                });
+            }
+            match resp.next_token {
+                Some(t) if !t.is_empty() => next_token = Some(t),
+                _ => break,
+            }
+        }
+        // Stable display order: status (Active first), then name.
+        out.sort_by(|a, b| {
+            let sa = (a.status != "ACTIVE", a.name.to_lowercase());
+            let sb = (b.status != "ACTIVE", b.name.to_lowercase());
+            sa.cmp(&sb)
+        });
+        Ok(out)
+    }
+
     pub async fn list_applications(&self) -> Result<Vec<Application>> {
         let resp = self.client.describe_applications().send().await?;
         let apps = resp
@@ -1877,6 +2048,9 @@ impl AwsClient {
                     .and_then(|d| DateTime::from_timestamp(d.secs(), d.subsec_nanos())),
                 version_count: a.versions.map(|v| v.len()).unwrap_or(0),
                 templates: a.configuration_templates.unwrap_or_default(),
+                // Filled in by a follow-up `list_application_versions` fan-out.
+                latest_version_label: None,
+                latest_version_created: None,
             })
             .collect();
         Ok(apps)
@@ -1890,10 +2064,7 @@ impl AwsClient {
             if let Some(t) = next_token.take() {
                 req = req.next_token(t);
             }
-            let resp = req
-                .send()
-                .await
-                .map_err(|e| eyre!("DescribeEnvironments failed: {e}"))?;
+            let resp = req.send().await.wrap_err("DescribeEnvironments failed")?;
             if let Some(envs) = resp.environments {
                 all.extend(envs.into_iter().map(map_env));
             }
@@ -2000,6 +2171,29 @@ pub async fn list_environments_in_region(
     let mut envs = client.list_environments().await?;
     for e in &mut envs {
         e.region = Some(region.clone());
+    }
+    Ok(envs)
+}
+
+/// Sibling of `list_environments_in_region` for the AssumeRole path:
+/// assumes into the named role, then lists envs. `region` overrides the
+/// AccountSpec's region when supplied; otherwise the spec's own region
+/// wins (or env default). Used by the multi-account fan-out in
+/// `:org-health` / `:find-env`.
+pub async fn list_environments_for_account(
+    name: &str,
+    spec: &crate::config::AccountSpec,
+    region: Option<String>,
+) -> Result<Vec<Environment>> {
+    let mut spec = spec.clone();
+    if region.is_some() {
+        spec.region = region.clone();
+    }
+    let client = AwsClient::assume_role(name, &spec).await?;
+    let resolved_region = client.context.region.clone();
+    let mut envs = client.list_environments().await?;
+    for e in &mut envs {
+        e.region = Some(resolved_region.clone());
     }
     Ok(envs)
 }
@@ -2153,6 +2347,36 @@ mod tests {
             CwClient::new(&cfg),
             CwLogsClient::new(&cfg),
             S3Client::new(&cfg),
+            Ec2Client::new(&cfg),
+        )
+    }
+
+    fn client_with_cw(cw: CwClient) -> AwsClient {
+        let cfg = aws_config::SdkConfig::builder()
+            .region(Region::new("us-east-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        AwsClient::for_tests(
+            Client::new(&cfg),
+            SqsClient::new(&cfg),
+            cw,
+            CwLogsClient::new(&cfg),
+            S3Client::new(&cfg),
+            Ec2Client::new(&cfg),
+        )
+    }
+
+    fn client_with_eb_and_s3(eb: Client, s3: S3Client) -> AwsClient {
+        let cfg = aws_config::SdkConfig::builder()
+            .region(Region::new("us-east-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        AwsClient::for_tests(
+            eb,
+            SqsClient::new(&cfg),
+            CwClient::new(&cfg),
+            CwLogsClient::new(&cfg),
+            s3,
             Ec2Client::new(&cfg),
         )
     }
@@ -2671,6 +2895,241 @@ mod tests {
     // refactors of these methods will trip a test if they accidentally
     // drop the `.map_err(|e| eyre!(...))?` prefix and start propagating
     // bare SDK errors.
+
+    #[tokio::test]
+    async fn list_environments_throttling_error_is_recognised_by_predicate() {
+        // End-to-end contract: when EB returns a Throttling-coded SDK error
+        // on DescribeEnvironments, the flattened error string we surface
+        // must trip `is_throttling_error` so the refresh loop installs a
+        // back-off horizon instead of treating it like a normal failure.
+        // Pinning this guards against an SDK / smithy change to the
+        // stringification format silently breaking back-off.
+        use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsError;
+        let rule = mock!(Client::describe_environments).then_error(|| {
+            DescribeEnvironmentsError::generic(
+                aws_smithy_types::error::ErrorMetadata::builder()
+                    .code("ThrottlingException")
+                    .message("Rate exceeded")
+                    .build(),
+            )
+        });
+        let eb = mock_client!(aws_sdk_elasticbeanstalk, [&rule]);
+        let client = client_with_eb(eb);
+
+        let err = client
+            .list_environments()
+            .await
+            .expect_err("expected throttling error to propagate");
+        // Production path: aws error → eyre::Report → flatten_err_to_string
+        // (peeks at the Debug form for SDK throttling tokens) → user-facing
+        // string → is_throttling_error. Pinning this contract means a future
+        // change to either end can't silently break refresh back-off.
+        let s = crate::app::flatten_err_to_string(&err);
+        assert!(
+            crate::app::is_throttling_error(&s),
+            "is_throttling_error should fire on the flattened SDK throttling string, got {s:?}"
+        );
+        // And the user-facing string stays readable — no Debug noise leaks.
+        assert!(
+            !s.contains("StatusCode") && !s.contains("Extensions"),
+            "throttling toast should be clean, got {s:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_environments_expired_token_surfaces_clean_user_message() {
+        // When credentials expire mid-session, the SDK returns an
+        // `ExpiredToken`-coded error. The toast should not leak Debug
+        // noise (HTTP status, headers, body bytes) and must not be
+        // misclassified as throttling. Pinning this guards against an
+        // SDK stringification change silently turning the toast into a
+        // wall of debug output or routing expired-token through the
+        // throttle back-off path.
+        use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsError;
+        let rule = mock!(Client::describe_environments).then_error(|| {
+            DescribeEnvironmentsError::generic(
+                aws_smithy_types::error::ErrorMetadata::builder()
+                    .code("ExpiredTokenException")
+                    .message("The security token included in the request is expired")
+                    .build(),
+            )
+        });
+        let eb = mock_client!(aws_sdk_elasticbeanstalk, [&rule]);
+        let client = client_with_eb(eb);
+
+        let err = client
+            .list_environments()
+            .await
+            .expect_err("expected expired-token error to propagate");
+        let s = crate::app::flatten_err_to_string(&err);
+        assert!(
+            !crate::app::is_throttling_error(&s),
+            "ExpiredToken should not fire the throttling predicate, got {s:?}"
+        );
+        assert!(
+            !s.contains("StatusCode") && !s.contains("Extensions") && !s.contains("SdkBody"),
+            "expired-token toast should be clean, got {s:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_env_metrics_batches_and_reorders_by_canonical_id() {
+        // CloudWatch `GetMetricData` accepts N queries in one round-trip;
+        // `fetch_env_metrics` always dispatches 4 (health / req4xx /
+        // req5xx / p90). The response can arrive in any order — the
+        // caller re-keys by `id` and returns the canonical order so the
+        // Metrics-tab renderer doesn't drift when AWS reorders results
+        // (which it has been known to do).
+        //
+        // Pinning: (a) one batched call, (b) all 4 ids requested, (c)
+        // returned series are in canonical order even when the mock
+        // shuffles them, (d) labels are mapped per-id.
+        use aws_sdk_cloudwatch::operation::get_metric_data::GetMetricDataOutput;
+        use aws_sdk_cloudwatch::types::MetricDataResult;
+        use aws_smithy_types::DateTime as SdkDateTime;
+
+        let ts = SdkDateTime::from_secs(1_700_000_000);
+        let mk_result = move |id: &str, value: f64| {
+            MetricDataResult::builder()
+                .id(id)
+                .timestamps(ts)
+                .values(value)
+                .build()
+        };
+        // Return in shuffled order so the test verifies reordering.
+        let rule = mock!(aws_sdk_cloudwatch::Client::get_metric_data)
+            .match_requests(|req| {
+                let ids: Vec<&str> = req
+                    .metric_data_queries()
+                    .iter()
+                    .filter_map(|q| q.id())
+                    .collect();
+                ids == ["health", "req4xx", "req5xx", "p90"]
+            })
+            .then_output(move || {
+                GetMetricDataOutput::builder()
+                    .metric_data_results(mk_result("req5xx", 12.0))
+                    .metric_data_results(mk_result("health", 25.0))
+                    .metric_data_results(mk_result("p90", 0.42))
+                    .metric_data_results(mk_result("req4xx", 3.0))
+                    .build()
+            });
+        let cw = mock_client!(aws_sdk_cloudwatch, [&rule]);
+        let client = client_with_cw(cw);
+
+        let series = client
+            .fetch_env_metrics("uflexi-prod", 900)
+            .await
+            .expect("metric fetch should succeed");
+
+        // Single batched call covered all 4 metrics — the function
+        // doesn't fan out 4 separate GetMetricData round-trips.
+        assert_eq!(rule.num_calls(), 1, "expected exactly one batched call");
+        // Canonical order is preserved regardless of response order.
+        let ids: Vec<&str> = series.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["health", "req4xx", "req5xx", "p90"]);
+        // Per-id label mapping holds — operator-facing labels not raw ids.
+        let by_id: std::collections::HashMap<&str, &str> = series
+            .iter()
+            .map(|s| (s.id.as_str(), s.label.as_str()))
+            .collect();
+        assert_eq!(by_id["health"], "Env Health (0–25)");
+        assert_eq!(by_id["req4xx"], "4xx Requests / min");
+        assert_eq!(by_id["req5xx"], "5xx Requests / min");
+        assert_eq!(by_id["p90"], "Latency P90");
+        // Timestamp/value zipping survived the shuffle.
+        let p90 = series.iter().find(|s| s.id == "p90").unwrap();
+        assert_eq!(p90.points.len(), 1);
+        assert!((p90.points[0].1 - 0.42).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn deploy_from_path_chain_dispatches_each_stage() {
+        // End-to-end pinning of the multi-stage `:deploy --from PATH` flow:
+        //   1. CreateStorageLocation (EB) → returns the managed bucket name
+        //   2. PutObject (S3)             → uploads the bundle bytes
+        //   3. CreateApplicationVersion   → registers the version
+        //   4. UpdateEnvironment          → deploys to the env
+        // Each mock asserts the input it receives matches what the previous
+        // stage produced, so a future refactor that reorders / drops a stage
+        // or rewires the bucket+key threading fails loud here. This is the
+        // most multi-step pure-AWS code path in the project and has no other
+        // automated coverage today.
+        use aws_sdk_elasticbeanstalk::operation::create_application_version::CreateApplicationVersionOutput;
+        use aws_sdk_elasticbeanstalk::operation::create_storage_location::CreateStorageLocationOutput;
+        use aws_sdk_elasticbeanstalk::operation::update_environment::UpdateEnvironmentOutput;
+        use aws_sdk_s3::operation::put_object::PutObjectOutput;
+
+        const BUCKET: &str = "elasticbeanstalk-us-east-1-123456789012";
+        const APP: &str = "uflexi-webapp";
+        const ENV: &str = "uflexi-prod";
+        const LABEL: &str = "build-2026-05-20-1234567890";
+        const KEY: &str = "applications/uflexi-webapp/build-2026-05-20-1234567890";
+        let bundle_bytes: Vec<u8> = b"PK\x03\x04 ... a real zip would start here".to_vec();
+
+        let csl_rule = mock!(Client::create_storage_location).then_output(|| {
+            CreateStorageLocationOutput::builder()
+                .s3_bucket(BUCKET)
+                .build()
+        });
+
+        // Match every PutObject; assert the bucket + key are exactly what
+        // we wired upstream (regression guard for the key-threading bug).
+        let put_rule = mock!(aws_sdk_s3::Client::put_object)
+            .match_requests(|req| req.bucket() == Some(BUCKET) && req.key() == Some(KEY))
+            .then_output(|| PutObjectOutput::builder().build());
+
+        let cav_rule = mock!(Client::create_application_version)
+            .match_requests(|req| {
+                req.application_name() == Some(APP)
+                    && req.version_label() == Some(LABEL)
+                    && req.source_bundle().and_then(|s| s.s3_bucket()) == Some(BUCKET)
+                    && req.source_bundle().and_then(|s| s.s3_key()) == Some(KEY)
+                    && req.auto_create_application() == Some(false)
+            })
+            .then_output(|| CreateApplicationVersionOutput::builder().build());
+
+        let upd_rule = mock!(Client::update_environment)
+            .match_requests(|req| {
+                req.environment_name() == Some(ENV) && req.version_label() == Some(LABEL)
+            })
+            .then_output(|| UpdateEnvironmentOutput::builder().build());
+
+        let eb = mock_client!(aws_sdk_elasticbeanstalk, [&csl_rule, &cav_rule, &upd_rule]);
+        let s3 = mock_client!(aws_sdk_s3, [&put_rule]);
+        let client = client_with_eb_and_s3(eb, s3);
+
+        // Stage 1
+        let bucket = client
+            .create_storage_location()
+            .await
+            .expect("CreateStorageLocation should return the managed bucket");
+        assert_eq!(bucket, BUCKET);
+
+        // Stage 2
+        client
+            .put_application_bundle(&bucket, KEY, bundle_bytes.clone())
+            .await
+            .expect("PutObject should succeed");
+
+        // Stage 3
+        client
+            .create_app_version(APP, LABEL, Some("test deploy"), &bucket, KEY)
+            .await
+            .expect("CreateApplicationVersion should succeed");
+
+        // Stage 4
+        client
+            .deploy_version(ENV, LABEL)
+            .await
+            .expect("UpdateEnvironment should succeed");
+
+        // Each rule should have fired exactly once.
+        assert_eq!(csl_rule.num_calls(), 1, "CreateStorageLocation");
+        assert_eq!(put_rule.num_calls(), 1, "S3 PutObject");
+        assert_eq!(cav_rule.num_calls(), 1, "CreateApplicationVersion");
+        assert_eq!(upd_rule.num_calls(), 1, "UpdateEnvironment");
+    }
 
     #[tokio::test]
     async fn list_environments_surfaces_aws_errors_with_op_context() {

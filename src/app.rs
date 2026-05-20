@@ -34,7 +34,30 @@ use crate::{
 pub use crate::mode_action::{
     Action, ActionFlow, ConfirmKind, ConfirmModal, DryRunInfo, ParameterisedAction, ACTIONS,
 };
-pub use crate::mode_detail::{DetailState, DetailTab, LogTail, LogTailStage};
+pub use crate::mode_detail::{
+    health_items, DetailState, DetailTab, HealthItem, LogTail, LogTailStage,
+};
+
+// Sub-modules: `execute_command` arms split by category. The
+// dispatch site below is now pure one-liner routing — every arm
+// body lives in one of these modules. Categories: lifecycle
+// actions (deploy/upgrade/clone/scale/...), alarm CRUD,
+// config-template CRUD, navigation (region/profile/sort/group/...),
+// option-settings setters, multi-account overlays
+// (accounts/org-health/find-env), per-env settings
+// (tag/env/capacity/...), view persistence (views/filters),
+// bulk-write commands (batch-action/batch-deploy/...), and the
+// remaining misc cluster (custom-platforms/versions/metric/...).
+mod cmd_action;
+mod cmd_alarms;
+mod cmd_config_template;
+mod cmd_misc;
+mod cmd_nav;
+mod cmd_option;
+mod cmd_overlay;
+mod cmd_settings;
+mod cmd_view;
+mod cmd_write;
 pub use crate::mode_dlq::{DlqState, QueueView};
 
 /// Names of all built-in `:commands`. Used to detect collisions when loading
@@ -83,6 +106,10 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "filters",
     "batch-rebuild",
     "batch-restart",
+    "batch-deploy",
+    "batch-tag",
+    "batch-untag",
+    "batch-set-option",
     "deselect",
     "select-clear",
     "minimap",
@@ -143,6 +170,9 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "security-groups",
     "about",
     "credits",
+    "why",
+    "diagnose",
+    "accounts",
 ];
 
 /// Which on-screen panel is "focused" — i.e. which one j/k/Enter target. The
@@ -257,6 +287,36 @@ pub enum Overlay {
         items: Vec<(String, String)>,
         cursor: usize,
         confirm_delete: bool,
+    },
+    /// Unified diagnostic overlay opened by `:why` — aggregates the four
+    /// pieces of context an operator needs when an env goes Red: recent
+    /// events, current alarm states, per-instance health, and the most-
+    /// recent deploy. Each section is fetched in parallel; rendered with
+    /// a "loading…" placeholder until the result lands. `session_id`
+    /// drops late results for a prior `:why` invocation (e.g. when the
+    /// operator opens it on env A, closes it, opens on env B before A's
+    /// fetchers finished).
+    WhyRed {
+        env_name: String,
+        /// Captured at open time so the renderer knows whether to show
+        /// the worker-only sections (queues, DLQ peek).
+        tier: String,
+        events: Option<Result<Vec<crate::aws::Event>, String>>,
+        alarms: Option<Result<Vec<crate::aws::CwAlarm>, String>>,
+        instances: Option<Result<Vec<crate::aws::Instance>, String>>,
+        deploys: Option<Result<Vec<crate::aws::AppVersion>, String>>,
+        /// Worker-only: main + DLQ stats. `None` while loading; `Some(Err)`
+        /// surfaced as a red error line. Non-Worker envs leave this as
+        /// `None` forever and the renderer hides the section.
+        queues: Option<Result<crate::aws::WorkerQueues, String>>,
+        /// Worker-only: peek of the first few DLQ messages, fetched as a
+        /// second-stage spawn once the queue stats land + DLQ is non-empty.
+        /// `None` until either (a) the queue stats came back empty, or
+        /// (b) the peek result lands. `Some(Ok(empty))` means "DLQ has
+        /// messages but the peek returned no bodies in the visibility
+        /// window we asked for".
+        dlq_messages: Option<Result<Vec<crate::aws::QueueMessage>, String>>,
+        session_id: u64,
     },
     /// Streaming CloudWatch Logs view opened by `:logs-tail`. Polling task
     /// pushes new events via `AppMsg::LogTailEvents` every ~2s; the buffer
@@ -509,6 +569,10 @@ pub const PENDING_COMPLETED_TTL: Duration = Duration::from_secs(60);
 pub enum PickerKind {
     Profile,
     Region,
+    /// Picker over the env's discovered CW log groups, opened from the
+    /// LogTail streaming overlay so the operator can switch the tailed
+    /// group without typing the full ARN.
+    LogGroup,
 }
 
 pub struct Picker {
@@ -549,6 +613,7 @@ impl Picker {
         match self.kind {
             PickerKind::Profile => " select profile ",
             PickerKind::Region => " select region ",
+            PickerKind::LogGroup => " select log group ",
         }
     }
 
@@ -675,7 +740,13 @@ pub struct App {
     pub help_max_scroll: u16,
     pub hover_row: Option<usize>,
     pub alerts: usize, // count of envs currently in Red, recomputed each refresh
-    pub frozen: bool,  // when true, auto-refresh ticker is no-op
+    /// Cached DLQ depth (`Visible` messages) for each Worker-tier env,
+    /// keyed by env name. Populated by a per-refresh fan-out of
+    /// `describe_worker_queues`. Used by the Red-alert calc + the table
+    /// render's `⚠ DLQ:N` chip on Worker rows. Missing entry = "not
+    /// checked yet" (don't fire an alert on cold state).
+    pub worker_dlq_depths: std::collections::HashMap<String, i64>,
+    pub frozen: bool, // when true, auto-refresh ticker is no-op
     /// The currently visible overlay popup, if any. See [`Overlay`].
     pub current_overlay: Option<Overlay>,
     pub message_log: VecDeque<(chrono::DateTime<chrono::Utc>, MsgKind, String)>,
@@ -743,6 +814,10 @@ pub struct App {
     /// Monotonically increasing id for `:logs-tail` sessions. Lets late
     /// `AppMsg::LogTailEvents` from a previous session be dropped on arrival.
     pub log_tail_session: u64,
+    /// Same pattern for `:why` diagnostic overlays. Late
+    /// `AppMsg::WhyRed{Events,Alarms,Instances,Deploys}` for a prior
+    /// invocation get dropped when this counter has moved on.
+    pub why_red_session: u64,
     /// Newer ebman release advertised by crates.io, if any. Populated by the
     /// fire-and-forget update-check task that runs once at startup.
     pub update_available: Option<crate::update_check::LatestRelease>,
@@ -775,6 +850,21 @@ pub struct App {
     /// [`crate::theme::IconStyle`]). Kept verbatim so `:settings` can round-trip
     /// values like `"auto"` without flattening them to the resolved style.
     pub cfg_icons_raw: String,
+    /// Per-profile theme overrides loaded from `config.toml`'s
+    /// `profile_themes` key. Empty when nothing is configured. Consulted
+    /// by `maybe_apply_profile_theme` on initial setup + every profile
+    /// switch through `apply_rebuild` so the visual cue follows the
+    /// active profile without restart.
+    pub profile_themes: std::collections::HashMap<String, String>,
+    /// Named AssumeRole accounts loaded from `config.toml`'s
+    /// `accounts.NAME.*` keys. `:account NAME` consults this map first;
+    /// if the name matches, builds an `AwsClient` via STS AssumeRole.
+    /// Otherwise falls back to the legacy `:profile NAME` aliasing.
+    pub accounts: std::collections::HashMap<String, crate::config::AccountSpec>,
+    /// Base theme name from `theme = …` — kept separate from the
+    /// running `theme` so a profile-themed session reverts cleanly when
+    /// the operator switches back to a profile with no override.
+    pub base_theme_name: String,
     pub newly_red: HashSet<String>,
     /// Env names that appeared for the first time on the most recent
     /// refresh (weren't in `prev_health` last cycle). Used by the env
@@ -811,6 +901,26 @@ enum AppMsg {
     Applications {
         gen: u64,
         result: Result<Vec<Application>, String>,
+    },
+    /// Per-app newest version, fanned out after `Applications` lands. Each
+    /// tuple is `(app_name, latest_version_label, latest_version_created)`;
+    /// apps that failed to fetch are simply absent from the results vec so
+    /// a transient error on one app doesn't blank the column for all.
+    AppLatestVersions {
+        gen: u64,
+        results: Vec<(
+            String,
+            Option<String>,
+            Option<chrono::DateTime<chrono::Utc>>,
+        )>,
+    },
+    /// Per-Worker-env DLQ depth, fanned out after `Refresh` lands. Each
+    /// tuple is `(env_name, dlq_visible_count)`; envs whose fetch failed
+    /// are absent so a transient SQS error doesn't blank the column for
+    /// all of them. Feeds into the Red-alert calc + the table render.
+    WorkerQueueCheck {
+        gen: u64,
+        results: Vec<(String, i64)>,
     },
     Rebuild(Result<Box<AwsClient>, String>),
     Identity {
@@ -912,6 +1022,43 @@ enum AppMsg {
         session_id: u64,
         next_since_ms: i64,
         result: Result<Vec<crate::aws::LogEvent>, String>,
+    },
+    /// One section's result for the `:why` diagnostic overlay. The session
+    /// id matches the `Overlay::WhyRed { session_id, .. }` active when the
+    /// fetcher was spawned; late results for stale sessions are dropped on
+    /// arrival.
+    WhyRedEvents {
+        gen: u64,
+        session_id: u64,
+        result: Result<Vec<crate::aws::Event>, String>,
+    },
+    WhyRedAlarms {
+        gen: u64,
+        session_id: u64,
+        result: Result<Vec<crate::aws::CwAlarm>, String>,
+    },
+    WhyRedInstances {
+        gen: u64,
+        session_id: u64,
+        result: Result<Vec<crate::aws::Instance>, String>,
+    },
+    WhyRedDeploys {
+        gen: u64,
+        session_id: u64,
+        result: Result<Vec<crate::aws::AppVersion>, String>,
+    },
+    /// Worker-only: main + DLQ queue stats for the `:why` overlay.
+    WhyRedQueues {
+        gen: u64,
+        session_id: u64,
+        result: Result<crate::aws::WorkerQueues, String>,
+    },
+    /// Worker-only: DLQ message peek (3 bodies). Fired by the queues
+    /// handler once the DLQ stats indicate non-zero depth.
+    WhyRedDlqMessages {
+        gen: u64,
+        session_id: u64,
+        result: Result<Vec<crate::aws::QueueMessage>, String>,
     },
     DryRunResult {
         gen: u64,
@@ -1197,6 +1344,7 @@ impl App {
             help_max_scroll: 0,
             hover_row: None,
             alerts: 0,
+            worker_dlq_depths: std::collections::HashMap::new(),
             frozen: false,
             current_overlay: None,
             message_log: VecDeque::with_capacity(MESSAGE_LOG_CAP),
@@ -1227,6 +1375,7 @@ impl App {
             form: None,
             log_tail_task: None,
             log_tail_session: 0,
+            why_red_session: 0,
             update_available: None,
             reload_requested: false,
             pending_shell_target: None,
@@ -1237,6 +1386,9 @@ impl App {
             required_tags: config.required_tags,
             webhook_url: config.webhook_url,
             cfg_icons_raw: config.icons.clone(),
+            profile_themes: config.profile_themes.clone(),
+            accounts: config.accounts.clone(),
+            base_theme_name: config.theme.clone(),
             newly_red: HashSet::new(),
             newly_added: HashSet::new(),
             health_delta: Vec::new(),
@@ -1265,7 +1417,152 @@ impl App {
         if is_first_run() {
             app.current_overlay = Some(Overlay::Whatsnew(WELCOME_OVERLAY.into()));
         }
+        // Swap to the per-profile theme override if one is configured for
+        // the resolved profile. Done here (after `context` is populated)
+        // so the initial frame already shows the right palette.
+        app.maybe_apply_profile_theme();
         Ok(app)
+    }
+
+    /// Synchronous test-only constructor. Skips `init_client` (no AWS
+    /// round-trip), `state::load` (no disk read — caller passes a fresh
+    /// empty state), and the spawn_identity / spawn_refresh kickoffs.
+    /// The caller is responsible for providing a pre-built `AwsClient`
+    /// (typically via `AwsClient::for_tests` with mocked sub-clients).
+    /// `msg_tx` / `msg_rx` are created here so `handle_event` can fire
+    /// spawn helpers that send AppMsg variants without panicking;
+    /// callers can drain `msg_rx` to inspect dispatched messages.
+    #[cfg(test)]
+    pub fn for_tests(aws: crate::aws::AwsClient, config: Config) -> Self {
+        let aws = Arc::new(aws);
+        let context = aws.context.clone();
+        let (msg_tx, msg_rx) = mpsc::unbounded_channel();
+        let mut table_state = TableState::default();
+        table_state.select(Some(0));
+        let mut app_table_state = TableState::default();
+        app_table_state.select(Some(0));
+        let mut app = Self {
+            context,
+            scope: Scope::Envs,
+            applications: Vec::new(),
+            app_table_state,
+            environments: Vec::new(),
+            table_state,
+            table_area: Rect::default(),
+            mode: Mode::Normal,
+            filter: String::new(),
+            load_state: LoadState::Idle,
+            loading_since: None,
+            refresh_interval: config.refresh_interval,
+            loading_visible_until: None,
+            last_refresh: None,
+            status_message: None,
+            error_message: None,
+            picker: None,
+            override_profile: None,
+            override_region: None,
+            history: HashMap::new(),
+            redact: config.redact_default.unwrap_or(false),
+            grouped: config.grouped_default.unwrap_or(false),
+            sort_key: SortKey::App,
+            sort_desc: false,
+            command_input: String::new(),
+            quickjump_input: String::new(),
+            named_filters: std::collections::BTreeMap::new(),
+            extra_regions: config.extra_regions.clone(),
+            events: Vec::new(),
+            events_visible: false,
+            events_for_env: None,
+            events_scroll: 0,
+            events_area: None,
+            events_drag_origin: None,
+            events_cursor: None,
+            multi_selected: BTreeSet::new(),
+            show_minimap: false,
+            focus: Focus::Table,
+            multi_regions: Vec::new(),
+            custom_keys: Default::default(),
+            detail: None,
+            action_flow: None,
+            dlq: None,
+            theme: {
+                let (mut t, _w) = Theme::resolve(&config.theme);
+                match config.icons.trim().to_ascii_lowercase().as_str() {
+                    "ascii" => t.icons = IconStyle::Ascii,
+                    "powerline" | "nerd" | "nerdfont" => t.icons = IconStyle::Powerline,
+                    _ => {}
+                }
+                Arc::new(t)
+            },
+            view_mode: ViewMode::Default,
+            events_panel_height: 10,
+            help_scroll: 0,
+            help_max_scroll: 0,
+            hover_row: None,
+            alerts: 0,
+            worker_dlq_depths: std::collections::HashMap::new(),
+            frozen: false,
+            current_overlay: None,
+            message_log: VecDeque::with_capacity(MESSAGE_LOG_CAP),
+            toasts: VecDeque::with_capacity(TOAST_CAP),
+            palette_input: String::new(),
+            palette_items: Vec::new(),
+            palette_filtered: Vec::new(),
+            palette_state: ListState::default(),
+            read_only: false,
+            pinned: BTreeSet::new(),
+            aliases: std::collections::BTreeMap::new(),
+            saved_views: std::collections::BTreeMap::new(),
+            hidden_cols: BTreeSet::new(),
+            custom_metrics: std::collections::BTreeMap::new(),
+            log_reload: None,
+            log_directive: "info".to_string(),
+            plugins: std::collections::BTreeMap::new(),
+            status_snapshot_at_refresh: None,
+            status_message_pinned: false,
+            throttle_until: None,
+            consecutive_throttles: 0,
+            sso_expiry: None,
+            pending_actions: std::collections::VecDeque::with_capacity(PENDING_CAP),
+            help_topic: HelpTopic::Global,
+            pre_help_mode: None,
+            pre_help_overlay: None,
+            form: None,
+            log_tail_task: None,
+            log_tail_session: 0,
+            why_red_session: 0,
+            update_available: None,
+            reload_requested: false,
+            pending_shell_target: None,
+            current_shell: None,
+            shell_return_mode: Mode::Normal,
+            last_rendered_buffer: None,
+            notify_bell: config.notify_bell,
+            required_tags: config.required_tags.clone(),
+            webhook_url: config.webhook_url.clone(),
+            cfg_icons_raw: config.icons.clone(),
+            profile_themes: config.profile_themes.clone(),
+            accounts: config.accounts.clone(),
+            base_theme_name: config.theme.clone(),
+            newly_red: HashSet::new(),
+            newly_added: HashSet::new(),
+            health_delta: Vec::new(),
+            status_delta: Vec::new(),
+            prev_alerts: 0,
+            prev_health: HashMap::new(),
+            prev_status: HashMap::new(),
+            cached_filtered: Vec::new(),
+            cached_display: Vec::new(),
+            cached_app_colors: HashMap::new(),
+            pending_select: None,
+            aws,
+            generation: 0,
+            msg_tx,
+            msg_rx,
+            quit: false,
+        };
+        app.rebuild_view();
+        app
     }
 
     pub async fn run(
@@ -1693,10 +1990,29 @@ impl App {
     }
 
     fn format_message_log(&self) -> String {
-        if self.message_log.is_empty() {
-            return "no messages yet".into();
-        }
         let mut out = String::new();
+        // Active-context header — useful when scanning recent messages
+        // across an `:account` / `:profile` / `:region` switch so the
+        // operator can see which account a given action targeted.
+        // Audit log on disk (`~/.cache/ebman/audit.log`) carries the
+        // full per-action `account=…` field; this header is the in-app
+        // shorthand reminder.
+        let account = self
+            .context
+            .account_id
+            .as_deref()
+            .map(|a| redact_for_log(a, self.redact))
+            .unwrap_or_else(|| "—".into());
+        let profile = self.context.profile.as_deref().unwrap_or("default");
+        out.push_str(&format!(
+            "context: account={account} · profile={profile} · region={}\n",
+            self.context.region
+        ));
+        if self.message_log.is_empty() {
+            out.push_str("─────────────────────────────────\n\n");
+            out.push_str("no messages yet\n");
+            return out;
+        }
         out.push_str("recent messages (most recent last)\n");
         out.push_str("─────────────────────────────────\n\n");
         for (when, kind, text) in &self.message_log {
@@ -1855,28 +2171,37 @@ impl App {
         // re-toggles whatsnew) are honoured in addition to the universal Esc/q.
         // The SavedConfigsInteractive variant is its own mini-mode — j/k cursor
         // plus a/c/x dispatch — handled before the universal dismiss.
-        if matches!(
-            self.current_overlay.as_ref(),
-            Some(Overlay::SavedConfigsInteractive { .. })
-        ) {
-            self.handle_saved_configs_interactive_key(key);
-            return;
-        }
-        if matches!(self.current_overlay.as_ref(), Some(Overlay::LogTail { .. })) {
-            self.handle_log_tail_key(key);
-            return;
-        }
-        if let Some(overlay) = self.current_overlay.as_ref() {
-            let universal = matches!(key.code, KeyCode::Esc | KeyCode::Char('q'));
-            let variant_extra = match overlay {
-                Overlay::Describe(_) => matches!(key.code, KeyCode::Char('d') | KeyCode::Char('D')),
-                Overlay::Whatsnew(_) => matches!(key.code, KeyCode::Char('w')),
-                _ => false,
-            };
-            if universal || variant_extra {
-                self.current_overlay = None;
+        // Mode::Picker short-circuits the overlay key handlers: when a
+        // picker is open on top of an overlay (e.g. LogTail's group switcher
+        // opened via Tab), the picker needs the keys, not the overlay.
+        // Falls through to the `match self.mode` block below where
+        // Mode::Picker has its own arm.
+        if !matches!(self.mode, Mode::Picker) {
+            if matches!(
+                self.current_overlay.as_ref(),
+                Some(Overlay::SavedConfigsInteractive { .. })
+            ) {
+                self.handle_saved_configs_interactive_key(key);
+                return;
             }
-            return;
+            if matches!(self.current_overlay.as_ref(), Some(Overlay::LogTail { .. })) {
+                self.handle_log_tail_key(key);
+                return;
+            }
+            if let Some(overlay) = self.current_overlay.as_ref() {
+                let universal = matches!(key.code, KeyCode::Esc | KeyCode::Char('q'));
+                let variant_extra = match overlay {
+                    Overlay::Describe(_) => {
+                        matches!(key.code, KeyCode::Char('d') | KeyCode::Char('D'))
+                    }
+                    Overlay::Whatsnew(_) => matches!(key.code, KeyCode::Char('w')),
+                    _ => false,
+                };
+                if universal || variant_extra {
+                    self.current_overlay = None;
+                }
+                return;
+            }
         }
 
         match self.mode {
@@ -2098,6 +2423,14 @@ impl App {
                     KeyCode::Enter
                         if matches!(
                             self.detail.as_ref().map(|d| d.tab()),
+                            Some(DetailTab::Health)
+                        ) =>
+                    {
+                        self.drill_health_item();
+                    }
+                    KeyCode::Enter
+                        if matches!(
+                            self.detail.as_ref().map(|d| d.tab()),
                             Some(DetailTab::Queue)
                         ) =>
                     {
@@ -2277,8 +2610,8 @@ impl App {
                 }
                 match key.code {
                     KeyCode::Char('q') => self.quit = true,
-                    KeyCode::Tab => self.scope = self.scope.next(),
-                    KeyCode::BackTab => self.scope = self.scope.prev(),
+                    KeyCode::Tab => self.set_scope(self.scope.next()),
+                    KeyCode::BackTab => self.set_scope(self.scope.prev()),
                     KeyCode::Enter if self.scope == Scope::Apps => self.drill_into_app(),
                     KeyCode::Enter => self.open_detail(),
                     KeyCode::Char('a') if self.scope == Scope::Envs => self.open_action_menu(),
@@ -2426,6 +2759,20 @@ impl App {
                     KeyCode::Char('b') if self.scope == Scope::Envs => self.open_in_console(),
                     KeyCode::Char('D') if self.scope == Scope::Envs => self.open_describe_overlay(),
                     KeyCode::Char('*') if self.scope == Scope::Envs => self.toggle_pin_selected(),
+                    KeyCode::Char('!') if self.scope == Scope::Envs => {
+                        // Diagnostic shortcut — opens `:why` for the
+                        // selected env. Works on any health (not just
+                        // Red) so the operator can pull up the same
+                        // four-section context any time, but the
+                        // mnemonic targets the Red-row triage case.
+                        if let Some(env) = self.selected_env() {
+                            let env_name = env.name.clone();
+                            let app_name = env.application.clone();
+                            self.open_why_red(env_name, app_name);
+                        } else {
+                            self.error_message = Some("no environment selected".into());
+                        }
+                    }
                     KeyCode::Char('f') if self.scope == Scope::Envs => {
                         self.frozen = !self.frozen;
                         self.status_message = Some(if self.frozen {
@@ -2578,6 +2925,156 @@ impl App {
             let _ = tx.send(AppMsg::Alarms {
                 gen,
                 env_name: name_for_msg,
+                result,
+            });
+        });
+    }
+
+    /// `:why` / `:diagnose` — open the unified diagnostic overlay for the
+    /// given env. Installs an empty `Overlay::WhyRed` immediately so the
+    /// user sees "fetching…" placeholders, then fans out four parallel
+    /// fetchers (events, alarms, instances, deploys). Each lands as its
+    /// own `AppMsg::WhyRed*` variant gated on `session_id`.
+    fn open_why_red(&mut self, env_name: String, app_name: String) {
+        self.why_red_session = self.why_red_session.wrapping_add(1);
+        let session_id = self.why_red_session;
+        // Tier captured up front so the renderer can hide the queue
+        // section for Web envs without consulting `self.environments`
+        // (which may have refreshed under us by the time the overlay
+        // renders).
+        let tier = self
+            .environments
+            .iter()
+            .find(|e| e.name == env_name)
+            .map(|e| e.tier.clone())
+            .unwrap_or_default();
+        let is_worker = tier.eq_ignore_ascii_case("Worker");
+        self.current_overlay = Some(Overlay::WhyRed {
+            env_name: env_name.clone(),
+            tier,
+            events: None,
+            alarms: None,
+            instances: None,
+            deploys: None,
+            // Web envs never get a queues entry — keep it None so the
+            // renderer omits the section entirely. Worker envs start at
+            // None and fill in via WhyRedQueues.
+            queues: None,
+            dlq_messages: None,
+            session_id,
+        });
+        self.spawn_why_red_events(env_name.clone(), session_id);
+        self.spawn_why_red_alarms(env_name.clone(), session_id);
+        self.spawn_why_red_instances(env_name.clone(), session_id);
+        self.spawn_why_red_deploys(app_name.clone(), session_id);
+        if is_worker {
+            self.spawn_why_red_queues(app_name, env_name, session_id);
+        }
+    }
+
+    fn spawn_why_red_queues(&self, app_name: String, env_name: String, session_id: u64) {
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        tokio::spawn(async move {
+            let result = aws
+                .describe_worker_queues(&app_name, &env_name)
+                .await
+                .map_err(|e| flatten_err("describe_worker_queues", e));
+            let _ = tx.send(AppMsg::WhyRedQueues {
+                gen,
+                session_id,
+                result,
+            });
+        });
+    }
+
+    /// Second-stage worker-queues fetch: once the queue stats land and
+    /// the DLQ has visible messages, peek a few bodies so the operator
+    /// sees what's failing without leaving the overlay. Uses the same
+    /// `peek_messages` (visibility_timeout=5s) as the DLQ overlay — the
+    /// brief invisibility is acceptable since the DLQ isn't being
+    /// consumed by anyone in normal operation.
+    fn spawn_why_red_dlq_peek(&self, dlq_url: String, session_id: u64) {
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        tokio::spawn(async move {
+            let result = aws
+                .peek_messages(&dlq_url, 3)
+                .await
+                .map_err(|e| flatten_err("peek_messages", e));
+            let _ = tx.send(AppMsg::WhyRedDlqMessages {
+                gen,
+                session_id,
+                result,
+            });
+        });
+    }
+
+    fn spawn_why_red_events(&self, env_name: String, session_id: u64) {
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        tokio::spawn(async move {
+            let result = aws
+                .list_events_for_env(&env_name, 50)
+                .await
+                .map_err(|e| flatten_err("list_events_for_env", e));
+            let _ = tx.send(AppMsg::WhyRedEvents {
+                gen,
+                session_id,
+                result,
+            });
+        });
+    }
+
+    fn spawn_why_red_alarms(&self, env_name: String, session_id: u64) {
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        tokio::spawn(async move {
+            let result = aws
+                .list_alarms_for_env(&env_name)
+                .await
+                .map_err(|e| flatten_err("list_alarms_for_env", e));
+            let _ = tx.send(AppMsg::WhyRedAlarms {
+                gen,
+                session_id,
+                result,
+            });
+        });
+    }
+
+    fn spawn_why_red_instances(&self, env_name: String, session_id: u64) {
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        tokio::spawn(async move {
+            let result = aws
+                .list_instances(&env_name)
+                .await
+                .map_err(|e| flatten_err("list_instances", e));
+            let _ = tx.send(AppMsg::WhyRedInstances {
+                gen,
+                session_id,
+                result,
+            });
+        });
+    }
+
+    fn spawn_why_red_deploys(&self, app_name: String, session_id: u64) {
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        tokio::spawn(async move {
+            let result = aws
+                .list_application_versions(&app_name)
+                .await
+                .map_err(|e| flatten_err("list_application_versions", e));
+            let _ = tx.send(AppMsg::WhyRedDeploys {
+                gen,
+                session_id,
                 result,
             });
         });
@@ -2914,7 +3411,12 @@ impl App {
             self.status_message = Some("no environment selected".into());
             return;
         };
-        let mut tabs = vec![DetailTab::Events, DetailTab::Instances, DetailTab::Metrics];
+        let mut tabs = vec![
+            DetailTab::Health,
+            DetailTab::Events,
+            DetailTab::Instances,
+            DetailTab::Metrics,
+        ];
         if env.tier == "Worker" {
             tabs.push(DetailTab::Queue);
         }
@@ -2951,6 +3453,7 @@ impl App {
             queue_cursor: 0,
             instances_cursor: 0,
             instance_terminate_confirm: None,
+            health_cursor: 0,
             metrics_hover_col: None,
             metrics_body_rect: None,
         };
@@ -3044,6 +3547,72 @@ impl App {
         });
     }
 
+    /// Enter handler for the Health tab — drills into whichever
+    /// `HealthItem` the `health_cursor` is currently on. Event → opens
+    /// the full message in a TextDump overlay (some EB events are
+    /// multi-line); Instance → switches to the Instances tab and
+    /// positions the cursor on that instance; Main/DLQ queue → switches
+    /// to the Queue tab and positions the queue cursor on the
+    /// corresponding row (operator then presses Enter again to open the
+    /// queue viewer).
+    fn drill_health_item(&mut self) {
+        let Some(detail) = self.detail.as_ref() else {
+            return;
+        };
+        let now = chrono::Utc::now();
+        let items = crate::app::health_items(detail, now);
+        let Some(item) = items.get(detail.health_cursor).copied() else {
+            return;
+        };
+        match item {
+            HealthItem::Event { event_idx } => {
+                let Some(ev) = detail.events.get(event_idx) else {
+                    return;
+                };
+                let when = ev
+                    .at
+                    .map(|t| t.with_timezone(&chrono::Local).to_string())
+                    .unwrap_or_else(|| "?".into());
+                let body = format!(
+                    "{when}\n[{}]  {}\n\n{}\n\nesc / q to close",
+                    ev.severity, ev.env, ev.message
+                );
+                self.current_overlay = Some(Overlay::TextDump {
+                    title: "event detail".into(),
+                    body,
+                });
+            }
+            HealthItem::Instance { instance_idx } => {
+                // Switch to the Instances tab and seat the cursor on
+                // the chosen instance. Then the operator can Enter
+                // again for the info overlay, `s` for SSM, etc.
+                let Some(d) = self.detail.as_mut() else {
+                    return;
+                };
+                if let Some(pos) = d.tabs.iter().position(|t| *t == DetailTab::Instances) {
+                    d.tab_idx = pos;
+                }
+                d.instances_cursor = instance_idx.min(d.instances.len().saturating_sub(1));
+                d.instances_scroll = (d.instances_cursor as u16).saturating_sub(3);
+                self.detail_refresh_active_tab();
+            }
+            HealthItem::MainQueue | HealthItem::Dlq => {
+                let Some(d) = self.detail.as_mut() else {
+                    return;
+                };
+                if let Some(pos) = d.tabs.iter().position(|t| *t == DetailTab::Queue) {
+                    d.tab_idx = pos;
+                }
+                d.queue_cursor = match item {
+                    HealthItem::MainQueue => 0,
+                    HealthItem::Dlq => 1,
+                    _ => 0,
+                };
+                self.detail_refresh_active_tab();
+            }
+        }
+    }
+
     fn detail_cycle_tab(&mut self, delta: i32) {
         let Some(detail) = self.detail.as_mut() else {
             return;
@@ -3051,24 +3620,13 @@ impl App {
         let n = detail.tabs.len() as i32;
         let next = (detail.tab_idx as i32 + delta).rem_euclid(n) as usize;
         detail.tab_idx = next;
-        // Capture state we need for the post-switch auto-open decision
-        // before `detail_refresh_active_tab` reborrows self.
-        let new_tab = detail.tab();
-        let groups_available = detail.cw_log_groups.as_ref().is_some_and(|g| !g.is_empty());
-        let env_for_tail = detail.env_name.clone();
         self.detail_refresh_active_tab();
-        // Auto-open the live CW Logs overlay on tab → Logs when groups
-        // were discovered. Manual `s` remains the way to re-open after
-        // closing. Skip when a tail is already in flight or an overlay
-        // is already up (don't trample whatever the operator just
-        // opened).
-        if new_tab == DetailTab::Logs
-            && groups_available
-            && self.log_tail_task.is_none()
-            && self.current_overlay.is_none()
-        {
-            self.spawn_logs_tail(env_for_tail, None);
-        }
+        // NB: an earlier iteration auto-spawned the CW Logs streaming
+        // overlay here when groups were discovered. Reverted because
+        // jumping into a popup obscures the Logs tab's own snapshot path
+        // (`^R`) and removes the explicit opt-in that `s` represents.
+        // Pressing `s` on the Logs tab is the way to open the stream;
+        // the in-overlay `g` keybind switches between discovered groups.
     }
 
     fn detail_scroll(&mut self, delta: i32) {
@@ -3100,6 +3658,20 @@ impl App {
                 let cur = detail.queue_cursor as i32;
                 detail.queue_cursor = (cur + delta).rem_euclid(n) as usize;
             }
+            DetailTab::Health => {
+                // Cursor wraps over the interactive items list; see
+                // `health_items` for the enumeration order.
+                let now = chrono::Utc::now();
+                let n = crate::app::health_items(detail, now).len() as i32;
+                if n == 0 {
+                    return;
+                }
+                let cur = detail.health_cursor as i32;
+                detail.health_cursor = (cur + delta).rem_euclid(n) as usize;
+            }
+            // Metrics / Config tabs have no scrollable cursor — they're
+            // either chart bodies that handle their own keyboard
+            // interactions or fixed-key-value summaries.
             DetailTab::Metrics | DetailTab::Config => {}
         }
     }
@@ -3110,8 +3682,24 @@ impl App {
         };
         let env_name = detail.env_name.clone();
         let app_name = detail.env_snapshot.application.clone();
+        let is_worker = detail.env_snapshot.tier.eq_ignore_ascii_case("Worker");
         let tab = detail.tab();
+        // Release the immutable borrow of `detail` before calling
+        // spawn_* methods which take `&mut self`.
+        let _ = detail;
         match tab {
+            // Health tab is a rollup — refresh events (for the recent-
+            // events list) and queues (for worker DLQ depth shown
+            // inline). Instances were eagerly fetched in `open_detail`
+            // and don't change often, so we don't refetch them here on
+            // every Health-tab visit; the eager fetch + periodic
+            // background refresh keeps the count fresh enough.
+            DetailTab::Health => {
+                self.spawn_detail_events(env_name.clone());
+                if is_worker {
+                    self.spawn_detail_queues(app_name, env_name);
+                }
+            }
             DetailTab::Events => self.spawn_detail_events(env_name),
             DetailTab::Instances => self.spawn_detail_instances(env_name),
             DetailTab::Queue => self.spawn_detail_queues(app_name, env_name),
@@ -4331,12 +4919,51 @@ impl App {
             extra_regions: self.extra_regions.clone(),
             redact_default: Some(self.redact),
             grouped_default: Some(self.grouped),
-            theme: self.theme.name.to_string(),
+            // Snapshot the BASE theme name, not the currently-applied one;
+            // otherwise a profile-overridden theme would persist as the
+            // new default and erase the operator's per-profile mapping.
+            theme: self.base_theme_name.clone(),
             icons: self.cfg_icons_raw.clone(),
             notify_bell: self.notify_bell,
             required_tags: self.required_tags.clone(),
             webhook_url: self.webhook_url.clone(),
+            profile_themes: self.profile_themes.clone(),
+            // Accounts live in config.toml only — :settings doesn't
+            // surface them in the form (the assume-role schema would
+            // need its own editor), so the snapshot just preserves
+            // whatever was loaded.
+            accounts: self.accounts.clone(),
         }
+    }
+
+    /// Per-profile theme override. Looks at the active profile (from
+    /// `self.context.profile`) and the configured `profile_themes` map;
+    /// swaps `self.theme` to the override if one exists, or back to the
+    /// base theme otherwise. Idempotent — calling repeatedly with the
+    /// same profile is a no-op.
+    fn maybe_apply_profile_theme(&mut self) {
+        let profile = self.context.profile.as_deref().unwrap_or("default");
+        let target_name = self
+            .profile_themes
+            .get(profile)
+            .cloned()
+            .unwrap_or_else(|| self.base_theme_name.clone());
+        // Avoid rebuilding the Arc<Theme> when nothing changed.
+        if self.theme.name == target_name {
+            return;
+        }
+        let (mut t, warning) = Theme::resolve(&target_name);
+        if let Some(w) = warning {
+            tracing::warn!("{w}");
+        }
+        // Preserve the live-resolved icon style across the swap — icons
+        // are a font-capability fact, not a theme preference, and the
+        // `auto` probe only runs once at startup.
+        t.icons = self.theme.icons;
+        self.theme = Arc::new(t);
+        // Theme swap invalidates the cached per-app colour assignments —
+        // same reason as `apply_config_live`.
+        self.cached_app_colors.clear();
     }
 
     /// Apply a saved [`Config`] to the running App. Mirrors the assignments
@@ -4676,6 +5303,21 @@ impl App {
     /// follow), / opens a regex filter, n clears it, esc/q closes the
     /// overlay and tears down the polling task.
     fn handle_log_tail_key(&mut self, key: KeyEvent) {
+        // Group-switcher: Tab opens a Picker over the env's discovered CW
+        // log groups. Handled up-front before the destructured borrow of
+        // `current_overlay` below so the picker open can re-borrow `self`.
+        if matches!(key.code, KeyCode::Tab)
+            && !matches!(
+                self.current_overlay.as_ref(),
+                Some(Overlay::LogTail {
+                    filter_active: true,
+                    ..
+                })
+            )
+        {
+            self.open_log_group_picker();
+            return;
+        }
         // Filter input mode swallows printable keys.
         {
             let Some(Overlay::LogTail {
@@ -4775,6 +5417,35 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Open a Picker over the env's discovered CW log groups so the operator
+    /// can switch the tailed group from inside the streaming overlay.
+    /// Pre-selects the currently-tailed group; no-op (with a status hint) if
+    /// no groups have been discovered for this env.
+    fn open_log_group_picker(&mut self) {
+        let Some(Overlay::LogTail { log_group, .. }) = self.current_overlay.as_ref() else {
+            return;
+        };
+        let current_group = log_group.clone();
+        let groups: Vec<String> = self
+            .detail
+            .as_ref()
+            .and_then(|d| d.cw_log_groups.clone())
+            .unwrap_or_default();
+        if groups.is_empty() {
+            self.status_message = Some(
+                "no CW log groups discovered for this env — try `:logs-tail <full-group-name>`"
+                    .into(),
+            );
+            return;
+        }
+        self.picker = Some(Picker::new(
+            PickerKind::LogGroup,
+            groups,
+            Some(current_group.as_str()),
+        ));
+        self.mode = Mode::Picker;
     }
 
     /// Dispatch `UpdateEnvironment(template_name)`. Used by both the typed
@@ -5148,6 +5819,37 @@ impl App {
     /// application version pointing at it, and optionally deploy it to the
     /// selected env. The chain runs serially in one spawned task; failures
     /// at any stage surface as a single error toast with the stage name.
+    /// Fetch the candidate version's metadata + the currently-deployed
+    /// version's metadata for the env's app, render a preview text, and
+    /// land it as a TextOverlay. EB application versions carry only a
+    /// label + description + source-bundle S3 pointer + created date;
+    /// there's no option-settings diff to surface (settings live on the
+    /// env, not the version). So the preview is "informed deploy" —
+    /// label, age, description, plus a warning when the candidate is
+    /// older than what's currently deployed.
+    fn spawn_deploy_preview(&self, env: crate::aws::Environment, label: String) {
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let app_name = env.application.clone();
+        let env_name = env.name.clone();
+        let current_label = env.version_label.clone();
+        tokio::spawn(async move {
+            let body = match aws.list_application_versions(&app_name).await {
+                Ok(versions) => format_deploy_preview(&env_name, &current_label, &label, &versions),
+                Err(e) => format!(
+                    "deploy preview — failed to fetch application versions:\n  {}\n",
+                    flatten_err_to_string(&e)
+                ),
+            };
+            let _ = tx.send(AppMsg::TextOverlay {
+                gen,
+                title: format!("deploy preview — {env_name} ← {label}"),
+                body,
+            });
+        });
+    }
+
     fn spawn_deploy_from_local(
         &mut self,
         path: String,
@@ -5644,6 +6346,124 @@ impl App {
         });
     }
 
+    /// Per-env deploy dispatch for `:batch-deploy`. Shares the pending
+    /// pill + audit + `ActionResult` plumbing with the existing single-env
+    /// `:deploy` path via `Action::Deploy`.
+    fn spawn_batch_deploy(&mut self, env: String, label: String) {
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        write_audit_line(
+            self.context.account_id.as_deref(),
+            self.context.profile.as_deref(),
+            &self.context.region,
+            &format!("stage=dispatched action=Deploy target={env} version={label}"),
+        );
+        self.push_pending(Action::Deploy.label(), env.clone());
+        let env_for_msg = env.clone();
+        tokio::spawn(async move {
+            let result = aws
+                .deploy_version(&env, &label)
+                .await
+                .map_err(|e| flatten_err("deploy_version", e));
+            let _ = tx.send(AppMsg::ActionResult {
+                gen,
+                action: Action::Deploy,
+                env_name: env_for_msg,
+                result,
+            });
+        });
+    }
+
+    /// Per-env tag / untag dispatch for `:batch-tag` / `:batch-untag`.
+    /// `value = Some(v)` adds the tag; `value = None` removes the key.
+    /// Audit + pending entries label the op so a query against the audit
+    /// log can distinguish tag from untag.
+    fn spawn_batch_tag(&mut self, env: String, arn: String, key: String, value: Option<String>) {
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let is_add = value.is_some();
+        let op_label = if is_add { "tag" } else { "untag" };
+        let detail = match &value {
+            Some(v) => {
+                format!("stage=dispatched action=Tag target={env} key={key} value={v}")
+            }
+            None => format!("stage=dispatched action=Untag target={env} key={key}"),
+        };
+        write_audit_line(
+            self.context.account_id.as_deref(),
+            self.context.profile.as_deref(),
+            &self.context.region,
+            &detail,
+        );
+        let pending_label = format!("{op_label} {key}");
+        self.push_pending(pending_label.clone(), env.clone());
+        let env_for_msg = env.clone();
+        tokio::spawn(async move {
+            let to_add: Vec<(String, String)> = match &value {
+                Some(v) => vec![(key.clone(), v.clone())],
+                None => Vec::new(),
+            };
+            let to_remove: Vec<String> = if value.is_none() {
+                vec![key.clone()]
+            } else {
+                Vec::new()
+            };
+            let result = aws
+                .update_tags(&arn, &to_add, &to_remove)
+                .await
+                .map_err(|e| flatten_err("update_tags", e));
+            let _ = tx.send(AppMsg::TagUpdate {
+                gen,
+                env_name: env_for_msg,
+                summary: pending_label,
+                result,
+            });
+        });
+    }
+
+    /// Per-env option-settings dispatch for `:batch-set-option`. Each env
+    /// is its own `UpdateEnvironment(option_settings)` call; the existing
+    /// `spawn_option_settings_update` is selected-env-only so this is a
+    /// parameterised parallel.
+    fn spawn_batch_set_option(
+        &mut self,
+        env: String,
+        namespace: String,
+        name: String,
+        value: String,
+    ) {
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let detail = format!(
+            "stage=dispatched action=SetOption target={env} ns={namespace} name={name} value={value}"
+        );
+        write_audit_line(
+            self.context.account_id.as_deref(),
+            self.context.profile.as_deref(),
+            &self.context.region,
+            &detail,
+        );
+        let pending_label = format!("set-option {namespace}.{name}");
+        self.push_pending(pending_label.clone(), env.clone());
+        let env_for_msg = env.clone();
+        tokio::spawn(async move {
+            let settings = vec![(namespace, name, value)];
+            let result = aws
+                .update_env_option_settings(&env, &settings, &[])
+                .await
+                .map_err(|e| flatten_err("update_env_option_settings", e));
+            let _ = tx.send(AppMsg::OptionSettingsUpdate {
+                gen,
+                env_name: env_for_msg,
+                summary: pending_label,
+                result,
+            });
+        });
+    }
+
     /// Open a confirm modal for an action that carries parameters (deploy
     /// version, clone target, scale min/max, …). Uses the same Y/N path as
     /// the existing Rebuild / Restart / Swap confirms so the operator sees
@@ -6050,277 +6870,24 @@ impl App {
                 self.pre_help_mode = Some(self.mode);
                 self.mode = Mode::Help;
             }
-            "region" | "r" => match rest.first().copied() {
-                Some("all") => {
-                    let mut regions = self.extra_regions.clone();
-                    if !regions.iter().any(|r| r == &self.context.region) {
-                        regions.push(self.context.region.clone());
-                    }
-                    if regions.is_empty() {
-                        self.error_message =
-                            Some("no regions configured — set extra_regions in config.toml".into());
-                        return;
-                    }
-                    regions.sort();
-                    regions.dedup();
-                    self.multi_regions = regions.clone();
-                    self.status_message = Some(format!(
-                        "multi-region: fanning across {} regions ({})",
-                        regions.len(),
-                        regions.join(", ")
-                    ));
-                    self.spawn_refresh();
-                }
-                Some("off") | Some("single") => {
-                    self.multi_regions.clear();
-                    self.status_message = Some("multi-region off".into());
-                    self.spawn_refresh();
-                }
-                Some(r) => self.apply_picker_choice(PickerKind::Region, r.to_string()),
-                None => self.error_message = Some("usage: :region <name> | all | off".into()),
-            },
-            "custom-platforms" | "platforms" => {
-                let aws = self.aws.clone();
-                let tx = self.msg_tx.clone();
-                let gen = self.generation;
-                self.status_message = Some("fetching custom platforms…".into());
-                tokio::spawn(async move {
-                    let result = aws
-                        .list_custom_platforms()
-                        .await
-                        .map_err(|e| flatten_err("list_custom_platforms", e));
-                    let body = match result {
-                        Ok(platforms) if platforms.is_empty() => "Custom platforms: none\n\n\
-                             This account hasn't built any custom EB platforms.\n\
-                             `eb platform create` is the usual CLI entry.\n\nesc / q to close"
-                            .to_string(),
-                        Ok(platforms) => {
-                            let lines: Vec<String> = platforms
-                                .iter()
-                                .map(|p| {
-                                    format!(
-                                        "  ▸ {} v{}\n      branch: {}\n      status: {} / lifecycle: {}\n      {}",
-                                        if p.branch.is_empty() { "(unnamed)" } else { &p.branch },
-                                        p.version,
-                                        p.branch,
-                                        p.status,
-                                        p.lifecycle,
-                                        p.arn
-                                    )
-                                })
-                                .collect();
-                            format!(
-                                "Custom platforms ({})\n\
-                                 ─────────────────────\n\n\
-                                 {}\n\nesc / q to close",
-                                platforms.len(),
-                                lines.join("\n\n")
-                            )
-                        }
-                        Err(e) => format!("custom platforms: {e}\n\nesc / q to close"),
-                    };
-                    let _ = tx.send(AppMsg::TextOverlay {
-                        gen,
-                        title: "custom platforms".into(),
-                        body,
-                    });
-                });
-            }
-            "org-health" => {
-                let profiles = crate::profiles::load_profiles();
-                let region = self.context.region.clone();
-                let tx = self.msg_tx.clone();
-                let gen = self.generation;
-                self.status_message = Some(format!(
-                    "scanning {} profile(s) in {region} for org health…",
-                    profiles.len()
-                ));
-                tokio::spawn(async move {
-                    use futures::future::join_all;
-                    let tasks = profiles.into_iter().map(|p| {
-                        let r = region.clone();
-                        async move {
-                            let res =
-                                crate::aws::list_environments_in_region(Some(p.clone()), r).await;
-                            (p, res)
-                        }
-                    });
-                    let results = join_all(tasks).await;
-                    let mut lines: Vec<String> = vec![
-                        "Org-wide health (one row per profile)".into(),
-                        "─────────────────────────────────────".into(),
-                        String::new(),
-                    ];
-                    let mut total = 0usize;
-                    let mut total_red = 0usize;
-                    for (profile, r) in results {
-                        match r {
-                            Ok(envs) => {
-                                let n = envs.len();
-                                total += n;
-                                let red = envs
-                                    .iter()
-                                    .filter(|e| {
-                                        e.health.eq_ignore_ascii_case("Red")
-                                            || e.health.eq_ignore_ascii_case("Severe")
-                                    })
-                                    .count();
-                                total_red += red;
-                                let warning = if red > 0 { " ⚠" } else { "" };
-                                lines.push(format!(
-                                    "  {profile:<20}  envs:{n:<4}  red:{red}{warning}"
-                                ));
-                            }
-                            Err(e) => {
-                                lines.push(format!("  {profile:<20}  ERROR: {e}"));
-                            }
-                        }
-                    }
-                    lines.push(String::new());
-                    lines.push(format!(
-                        "Total: {total} envs, {total_red} in Red across all profiles"
-                    ));
-                    lines.push("esc / q to close".into());
-                    let _ = tx.send(AppMsg::TextOverlay {
-                        gen,
-                        title: "org health".into(),
-                        body: lines.join("\n"),
-                    });
-                });
-            }
+            "region" | "r" => self.cmd_region(&rest),
+            "custom-platforms" | "platforms" => self.cmd_custom_platforms(),
+            "accounts" => self.cmd_accounts(),
+            "org-health" => self.cmd_org_health(),
             "find-env" => match rest.first().copied() {
                 None => {
-                    self.error_message =
-                        Some("usage: :find-env <name-substring>  (scans every AWS profile)".into());
-                }
-                Some(needle) => {
-                    let needle = needle.to_string();
-                    let profiles = crate::profiles::load_profiles();
-                    let region = self.context.region.clone();
-                    let tx = self.msg_tx.clone();
-                    let gen = self.generation;
-                    self.status_message = Some(format!(
-                        "searching '{needle}' across {} profile(s) in {region}…",
-                        profiles.len()
-                    ));
-                    tokio::spawn(async move {
-                        use futures::future::join_all;
-                        let needle_lc = needle.to_lowercase();
-                        let region_for_tasks = region.clone();
-                        let tasks = profiles.into_iter().map(|p| {
-                            let r = region_for_tasks.clone();
-                            let n = needle_lc.clone();
-                            async move {
-                                match crate::aws::list_environments_in_region(Some(p.clone()), r)
-                                    .await
-                                {
-                                    Ok(envs) => {
-                                        let hits: Vec<String> = envs
-                                            .into_iter()
-                                            .filter(|e| {
-                                                e.name.to_lowercase().contains(&n)
-                                                    || e.application.to_lowercase().contains(&n)
-                                            })
-                                            .map(|e| {
-                                                format!("  • {p}  / {} ({})", e.name, e.health)
-                                            })
-                                            .collect();
-                                        (p, Ok(hits))
-                                    }
-                                    Err(e) => (p, Err(format!("{e}"))),
-                                }
-                            }
-                        });
-                        let results = join_all(tasks).await;
-                        let mut hits: Vec<String> = Vec::new();
-                        let mut errs: Vec<String> = Vec::new();
-                        for (profile, r) in results {
-                            match r {
-                                Ok(mut h) if !h.is_empty() => hits.append(&mut h),
-                                Ok(_) => {}
-                                Err(e) => errs.push(format!("  {profile}: {e}")),
-                            }
-                        }
-                        let body = format!(
-                            "Cross-account search for '{needle}'\n\
-                             ─────────────────────────────────\n\n\
-                             {}\n\n\
-                             {}\n\nesc / q to close",
-                            if hits.is_empty() {
-                                "(no matches)".to_string()
-                            } else {
-                                hits.join("\n")
-                            },
-                            if errs.is_empty() {
-                                String::new()
-                            } else {
-                                format!("Errors:\n{}", errs.join("\n"))
-                            },
-                        );
-                        let _ = tx.send(AppMsg::TextOverlay {
-                            gen,
-                            title: format!("cross-account search — {needle}"),
-                            body,
-                        });
-                    });
-                }
-            },
-            "account" => match rest.first() {
-                // `:account NAME` is an alias for `:profile NAME`. The common
-                // AWS pattern is to have one profile per account (often with
-                // `role_arn` chained off a base profile), so switching profile
-                // is effectively switching account. A true sts:AssumeRole-based
-                // account model needs a separate config schema; left for a
-                // dedicated session.
-                Some(p) => self.apply_picker_choice(PickerKind::Profile, (*p).to_string()),
-                None => {
-                    self.error_message =
-                        Some("usage: :account <profile-name>  (alias for :profile)".into())
-                }
-            },
-            "profile" | "p" => match rest.first() {
-                Some(p) => self.apply_picker_choice(PickerKind::Profile, (*p).to_string()),
-                None => self.error_message = Some("usage: :profile <name>".into()),
-            },
-            "sort" => {
-                let Some(key) = rest.first() else {
                     self.error_message = Some(
-                        "usage: :sort <key> [asc|desc]  — keys: name app status health version age"
+                        "usage: :find-env <name-substring>  (scans every AWS profile + AssumeRole account)"
                             .into(),
                     );
-                    return;
-                };
-                match SortKey::parse(key) {
-                    Some(k) => {
-                        self.sort_key = k;
-                        self.sort_desc = matches!(rest.get(1), Some(&"desc"));
-                        self.resort_envs();
-                        self.status_message = Some(format!(
-                            "sort: {} ({})",
-                            self.sort_key.label(),
-                            if self.sort_desc { "desc" } else { "asc" }
-                        ));
-                    }
-                    None => self.error_message = Some(format!("unknown sort key: {key}")),
                 }
-            }
-            "group" => {
-                self.grouped = parse_toggle(rest.first().copied(), self.grouped);
-                self.rebuild_view();
-                self.status_message = Some(if self.grouped {
-                    "grouped by application".into()
-                } else {
-                    "ungrouped".into()
-                });
-            }
-            "redact" => {
-                self.redact = parse_toggle(rest.first().copied(), self.redact);
-                self.status_message = Some(if self.redact {
-                    "redact mode ON".into()
-                } else {
-                    "redact mode off".into()
-                });
-            }
+                Some(needle) => self.cmd_find_env(needle),
+            },
+            "account" => self.cmd_account(&rest),
+            "profile" | "p" => self.cmd_profile(&rest),
+            "sort" => self.cmd_sort(&rest),
+            "group" => self.cmd_group(&rest),
+            "redact" => self.cmd_redact(&rest),
             "events" => {
                 self.events_visible = parse_toggle(rest.first().copied(), self.events_visible);
                 if self.events_visible && self.events.is_empty() {
@@ -6386,70 +6953,7 @@ impl App {
             "settings" => {
                 self.open_settings_form();
             }
-            "capacity" => {
-                // Modal form to edit the env's capacity profile:
-                // MinSize/MaxSize on the ASG, InstanceType on the launch
-                // config, and Cooldown (optional). Pre-fills from
-                // DescribeConfigurationSettings.
-                let Some(env) = self.selected_env().cloned() else {
-                    self.error_message = Some("no environment selected".into());
-                    return;
-                };
-                let fields = vec![
-                    crate::form::FormField::integer(
-                        "min",
-                        "Min size",
-                        Some("Minimum ASG size (≥ 1)"),
-                        Some(1),
-                        Some(10_000),
-                        false,
-                    ),
-                    crate::form::FormField::integer(
-                        "max",
-                        "Max size",
-                        Some("Maximum ASG size (≥ min)"),
-                        Some(1),
-                        Some(10_000),
-                        false,
-                    ),
-                    crate::form::FormField::text(
-                        "instance_type",
-                        "Instance type",
-                        Some("e.g. t3.medium, m6g.large"),
-                    ),
-                    crate::form::FormField::integer(
-                        "cooldown",
-                        "Cooldown (s)",
-                        Some("Scaling cooldown in seconds (blank = leave as-is)"),
-                        Some(0),
-                        Some(86_400),
-                        true,
-                    ),
-                ];
-                let form = crate::form::Form::loading(
-                    format!("capacity — {}", env.name),
-                    env.name.clone(),
-                    "capacity update".to_string(),
-                    fields,
-                    crate::form::FormSubmit::OptionSettings {
-                        mappings: vec![
-                            ("min".into(), "aws:autoscaling:asg".into(), "MinSize".into()),
-                            ("max".into(), "aws:autoscaling:asg".into(), "MaxSize".into()),
-                            (
-                                "instance_type".into(),
-                                "aws:autoscaling:launchconfiguration".into(),
-                                "InstanceType".into(),
-                            ),
-                            (
-                                "cooldown".into(),
-                                "aws:autoscaling:asg".into(),
-                                "Cooldown".into(),
-                            ),
-                        ],
-                    },
-                );
-                self.open_form(form);
-            }
+            "capacity" => self.cmd_capacity(),
             "subnets" => self.open_subnets_form(),
             "elb-subnets" => self.open_elb_subnets_form(),
             "security-groups" => self.open_security_groups_form(),
@@ -6545,6 +7049,18 @@ impl App {
                     None => self.error_message = Some("no environment selected".into()),
                 }
             }
+            "why" | "diagnose" => {
+                let env_opt = if let Some(d) = self.detail.as_ref() {
+                    Some((d.env_name.clone(), d.env_snapshot.application.clone()))
+                } else {
+                    self.selected_env()
+                        .map(|e| (e.name.clone(), e.application.clone()))
+                };
+                match env_opt {
+                    Some((env_name, app_name)) => self.open_why_red(env_name, app_name),
+                    None => self.error_message = Some("no environment selected".into()),
+                }
+            }
             "loglevel" => match rest.first() {
                 None => {
                     self.status_message =
@@ -6554,998 +7070,55 @@ impl App {
                     self.set_log_level(level);
                 }
             },
-            "cols" => {
-                let known: &[&str] = &[
-                    "NAME",
-                    "APPLICATION",
-                    "TIER",
-                    "STATUS",
-                    "HEALTH",
-                    "TREND",
-                    "PLATFORM",
-                    "VERSION",
-                    "CNAME",
-                    "AGE",
-                ];
-                match rest.first().copied() {
-                    None | Some("list") => {
-                        let listing: Vec<String> = known
-                            .iter()
-                            .map(|c| {
-                                if self.hidden_cols.contains(*c) {
-                                    format!("{c} (hidden)")
-                                } else {
-                                    c.to_string()
-                                }
-                            })
-                            .collect();
-                        self.status_message = Some(format!("cols: {}", listing.join(", ")));
-                    }
-                    Some("hide") => match rest.get(1) {
-                        Some(name) => {
-                            let upper = name.to_uppercase();
-                            if upper == "NAME" {
-                                self.error_message = Some("NAME cannot be hidden".into());
-                            } else if !known.contains(&upper.as_str()) {
-                                self.error_message = Some(format!("unknown column '{name}'"));
-                            } else {
-                                self.hidden_cols.insert(upper.clone());
-                                self.persist_state();
-                                self.status_message = Some(format!("hid column {upper}"));
-                            }
-                        }
-                        None => self.error_message = Some("usage: :cols hide <name>".into()),
-                    },
-                    Some("show") => match rest.get(1) {
-                        Some(name) => {
-                            let upper = name.to_uppercase();
-                            if self.hidden_cols.remove(&upper) {
-                                self.persist_state();
-                                self.status_message = Some(format!("showed column {upper}"));
-                            } else {
-                                self.status_message = Some(format!("column {upper} already visible"));
-                            }
-                        }
-                        None => self.error_message = Some("usage: :cols show <name>".into()),
-                    },
-                    Some("reset") => {
-                        self.hidden_cols.clear();
-                        self.persist_state();
-                        self.status_message = Some("all columns visible".into());
-                    }
-                    Some(other) => self.error_message = Some(format!(
-                        "unknown :cols subcommand '{other}'  (try: list / hide NAME / show NAME / reset)"
-                    )),
-                }
-            }
-            "save-view" => match rest.first() {
-                Some(name) => {
-                    let snap = encode_view(self);
-                    self.saved_views.insert((*name).to_string(), snap.clone());
-                    self.persist_state();
-                    self.status_message = Some(format!("saved view '{name}'  ({snap})"));
-                }
-                None => self.error_message = Some("usage: :save-view <name>".into()),
-            },
-            "view" => match rest.first() {
-                None => {
-                    self.error_message = Some("usage: :view <name>  — see :views".into());
-                }
-                Some(name) => {
-                    if let Some(snap) = self.saved_views.get(*name).cloned() {
-                        apply_view(self, &snap);
-                        self.status_message = Some(format!("loaded view '{name}'"));
-                    } else {
-                        self.error_message = Some(format!("no view '{name}'"));
-                    }
-                }
-            },
-            "views" => {
-                if self.saved_views.is_empty() {
-                    self.status_message =
-                        Some("no saved views — :save-view <name> to create one".into());
-                } else {
-                    let listing: Vec<String> = self.saved_views.keys().cloned().collect();
-                    self.status_message = Some(format!("views: {}", listing.join(", ")));
-                }
-            }
-            "view-drop" => match rest.first() {
-                Some(name) => {
-                    if self.saved_views.remove(*name).is_some() {
-                        self.persist_state();
-                        self.status_message = Some(format!("dropped view '{name}'"));
-                    } else {
-                        self.error_message = Some(format!("no view '{name}'"));
-                    }
-                }
-                None => self.error_message = Some("usage: :view-drop <name>".into()),
-            },
-            "filter" | "f" => match rest.first() {
-                None => {
-                    self.filter.clear();
-                    self.rebuild_view();
-                    self.status_message = Some("filter cleared".into());
-                }
-                Some(name) if self.named_filters.contains_key(*name) => {
-                    self.filter = self.named_filters[*name].clone();
-                    self.rebuild_view();
-                    self.status_message = Some(format!("filter: {name} → \"{}\"", self.filter));
-                }
-                Some(name) => {
-                    self.error_message =
-                        Some(format!("no saved filter named '{name}' — try :filters"));
-                }
-            },
-            "save" => match rest.first() {
-                Some(name) => {
-                    if self.filter.is_empty() {
-                        self.error_message =
-                            Some("nothing to save — set a filter with / first".into());
-                    } else {
-                        self.named_filters
-                            .insert((*name).to_string(), self.filter.clone());
-                        self.status_message =
-                            Some(format!("saved filter '{name}' = \"{}\"", self.filter));
-                        self.persist_state();
-                    }
-                }
-                None => self.error_message = Some("usage: :save <name>".into()),
-            },
-            "drop" => match rest.first() {
-                Some(name) => {
-                    if self.named_filters.remove(*name).is_some() {
-                        self.status_message = Some(format!("dropped saved filter '{name}'"));
-                        self.persist_state();
-                    } else {
-                        self.error_message = Some(format!("no saved filter named '{name}'"));
-                    }
-                }
-                None => self.error_message = Some("usage: :drop <name>".into()),
-            },
-            "filters" => {
-                if self.named_filters.is_empty() {
-                    self.status_message =
-                        Some("no saved filters — :save <name> to create one".into());
-                } else {
-                    let listing: Vec<String> = self
-                        .named_filters
-                        .iter()
-                        .map(|(k, v)| format!("{k}=\"{v}\""))
-                        .collect();
-                    self.status_message = Some(format!("filters: {}", listing.join("  ")));
-                }
-            }
-            "batch-rebuild" | "batch-restart" => {
-                if self.read_only {
-                    self.error_message = Some("read-only mode — batch actions disabled".into());
-                    return;
-                }
-                if self.multi_selected.is_empty() {
-                    self.error_message =
-                        Some("no envs selected — press space to mark envs first".into());
-                    return;
-                }
-                let action = if cmd == "batch-rebuild" {
-                    Action::Rebuild
-                } else {
-                    Action::RestartAppServer
-                };
-                let names: Vec<String> = self.multi_selected.iter().cloned().collect();
-                let n = names.len();
-                for name in names {
-                    self.spawn_batch_action(action, name);
-                }
-                self.status_message = Some(format!(
-                    "dispatched {} to {n} env(s) — watch the events panel for outcomes",
-                    action.label()
-                ));
-                self.multi_selected.clear();
-            }
-            "versions" => {
-                let Some(env) = self.selected_env().cloned() else {
-                    self.error_message = Some("no environment selected".into());
-                    return;
-                };
-                let app_name = env.application.clone();
-                // Capture the env's current label at dispatch time so the
-                // resulting overlay can mark "this is what's deployed".
-                let deployed_label = if env.version_label.is_empty() {
-                    None
-                } else {
-                    Some(env.version_label.clone())
-                };
-                let aws = self.aws.clone();
-                let tx = self.msg_tx.clone();
-                let gen = self.generation;
-                self.status_message =
-                    Some(format!("fetching application versions for {app_name}…"));
-                tokio::spawn(async move {
-                    let result = aws
-                        .list_application_versions(&app_name)
-                        .await
-                        .map_err(|e| flatten_err("list_application_versions", e));
-                    let _ = tx.send(AppMsg::AppVersions {
-                        gen,
-                        application: app_name,
-                        deployed_label,
-                        result,
-                    });
-                });
-            }
-            "deploy" => {
-                // `:deploy LABEL` ships an existing version (legacy shape).
-                // `:deploy --from PATH [--label L] [--describe D] [--no-deploy]`
-                // uploads a new bundle, creates the version, and (by default)
-                // immediately deploys it. The two paths are disjoint — the
-                // first arg discriminates.
-                if rest.first().copied() == Some("--from") {
-                    let path = match rest.get(1).copied() {
-                        Some(p) => p.to_string(),
-                        None => {
-                            self.error_message = Some(
-                                "usage: :deploy --from PATH | s3://BUCKET/KEY [--label LABEL] [--describe DESC] [--no-deploy]".into(),
-                            );
-                            return;
-                        }
-                    };
-                    let label = parse_named_arg::<String>(&rest, "--label");
-                    let description = parse_named_arg::<String>(&rest, "--describe");
-                    let no_deploy = rest.contains(&"--no-deploy");
-                    // Path discriminator: `s3://` skips the upload step and
-                    // points CreateApplicationVersion at the existing object.
-                    if let Some((bucket, key)) = parse_s3_url(&path) {
-                        self.spawn_deploy_from_s3(bucket, key, label, description, !no_deploy);
-                    } else {
-                        self.spawn_deploy_from_local(path, label, description, !no_deploy);
-                    }
-                } else {
-                    match rest.first().copied() {
-                        None => {
-                            self.error_message = Some(
-                                "usage: :deploy LABEL  (existing version) | :deploy --from PATH [--label L] [--describe D] [--no-deploy]".into(),
-                            );
-                        }
-                        Some(version) => {
-                            self.open_parameterised_action(
-                                Action::Deploy,
-                                ParameterisedAction {
-                                    deploy_version: Some(version.to_string()),
-                                    ..Default::default()
-                                },
-                            );
-                        }
-                    }
-                }
-            }
-            "delete-version" => match rest.first().copied() {
-                None => {
-                    self.error_message = Some(
-                        "usage: :delete-version <label> [--force]  (selected env's app; --force also removes the S3 source bundle)".into(),
-                    );
-                }
-                Some(label) => {
-                    let force = rest.iter().skip(1).any(|s| *s == "--force" || *s == "-f");
-                    self.spawn_delete_app_version(label.to_string(), force);
-                }
-            },
-            "upgrade" => match rest.first().copied() {
-                None => {
-                    // No ARN given — open an overlay listing newer versions
-                    // for the env's platform branch so the user can copy one.
-                    let Some(env) = self.selected_env().cloned() else {
-                        self.error_message = Some("no environment selected".into());
-                        return;
-                    };
-                    self.spawn_list_compatible_platforms(env.name);
-                }
-                Some(arn) => {
-                    self.open_parameterised_action(
-                        Action::UpgradePlatform,
-                        ParameterisedAction {
-                            upgrade_platform_arn: Some(arn.to_string()),
-                            upgrade_platform_label: Some(arn.to_string()),
-                            ..Default::default()
-                        },
-                    );
-                }
-            },
-            "clone" => match rest.first().copied() {
-                None => {
-                    self.error_message =
-                        Some("usage: :clone <new-env-name>  (clones the selected env)".into());
-                }
-                Some(target) => {
-                    self.open_parameterised_action(
-                        Action::Clone,
-                        ParameterisedAction {
-                            clone_target: Some(target.to_string()),
-                            ..Default::default()
-                        },
-                    );
-                }
-            },
-            "scale" => match rest.first().copied().and_then(|s| s.parse::<i32>().ok()) {
-                Some(n) if n >= 0 => self.open_parameterised_action(
-                    Action::Scale,
-                    ParameterisedAction {
-                        scale_min: Some(n),
-                        scale_max: Some(n),
-                        ..Default::default()
-                    },
-                ),
-                _ => {
-                    self.error_message =
-                        Some("usage: :scale N  (sets min=max=N; use :stop for 0)".into());
-                }
-            },
-            "stop" => self.open_parameterised_action(
-                Action::Scale,
-                ParameterisedAction {
-                    scale_min: Some(0),
-                    scale_max: Some(0),
-                    ..Default::default()
-                },
-            ),
-            "start" => self.open_parameterised_action(
-                Action::Scale,
-                ParameterisedAction {
-                    scale_min: Some(1),
-                    scale_max: Some(1),
-                    ..Default::default()
-                },
-            ),
-            "abort" => {
-                self.open_parameterised_action(Action::AbortUpdate, ParameterisedAction::default())
-            }
-            "pending" | "in-flight" | "inflight" => {
-                if self.pending_actions.is_empty() {
-                    self.pin_status("no actions in flight or recently completed");
-                } else {
-                    let now = Instant::now();
-                    let mut lines: Vec<String> = Vec::with_capacity(self.pending_actions.len() + 2);
-                    for entry in self.pending_actions.iter().rev() {
-                        let age = humanize_short_age(now.duration_since(entry.started));
-                        let status = match &entry.completed {
-                            None => " ⏳ in flight".to_string(),
-                            Some((c, Ok(()))) => format!(
-                                " ✓ ok ({} ago)",
-                                humanize_short_age(now.duration_since(*c))
-                            ),
-                            Some((c, Err(e))) => format!(
-                                " ✗ err ({} ago): {}",
-                                humanize_short_age(now.duration_since(*c)),
-                                e.chars().take(80).collect::<String>()
-                            ),
-                        };
-                        lines.push(format!(
-                            "  {} → {}  ({} ago){}",
-                            entry.label, entry.target, age, status
-                        ));
-                    }
-                    self.current_overlay = Some(Overlay::TextDump {
-                        title: "in-flight + recently-completed actions".into(),
-                        body: lines.join("\n"),
-                    });
-                }
-            }
-            "tag" => match parse_tag_args(&rest) {
-                None => {
-                    self.error_message = Some(
-                        "usage: :tag KEY VALUE  (value tokens joined with single spaces; no shell quoting — use a separate call to set values with literal multi-spaces)"
-                            .into(),
-                    );
-                }
-                Some((key, value)) => {
-                    self.spawn_tag_update(vec![(key, value)], vec![]);
-                }
-            },
-            "untag" => match rest.first().copied() {
-                None => {
-                    self.error_message = Some("usage: :untag KEY".into());
-                }
-                Some(key) => {
-                    self.spawn_tag_update(vec![], vec![key.to_string()]);
-                }
-            },
-            "resources" | "res" => {
-                let Some(env) = self.selected_env().cloned() else {
-                    self.error_message = Some("no environment selected".into());
-                    return;
-                };
-                let aws = self.aws.clone();
-                let tx = self.msg_tx.clone();
-                let gen = self.generation;
-                let env_name = env.name.clone();
-                self.status_message = Some(format!("fetching env resources for {env_name}…"));
-                let env_name_for_title = env_name.clone();
-                tokio::spawn(async move {
-                    let result = aws
-                        .describe_env_resources(&env_name)
-                        .await
-                        .map_err(|e| flatten_err("describe_env_resources", e));
-                    let body = match result {
-                        Ok(text) => text,
-                        Err(e) => format!("resources: {e}\n\nesc / q to close"),
-                    };
-                    let _ = tx.send(AppMsg::TextOverlay {
-                        gen,
-                        title: format!("resources — {env_name_for_title}"),
-                        body,
-                    });
-                });
-            }
-            "rebuild" => {
-                self.open_parameterised_action(Action::Rebuild, ParameterisedAction::default())
-            }
-            "restart" => self.open_parameterised_action(
-                Action::RestartAppServer,
-                ParameterisedAction::default(),
-            ),
-            "terminate" => {
-                // Terminate keeps its strict-typed-name guard. Routes via the
-                // same `a` → menu → confirm path rather than open_parameterised_action,
-                // which defaults to a Y/N confirm.
-                self.open_action_menu();
-                self.advance_action_flow(Action::Terminate);
-            }
-            "swap" => match rest.first().copied() {
-                None => {
-                    self.error_message =
-                        Some("usage: :swap <target-env>  (must be in same application)".into());
-                }
-                Some(target) => {
-                    let Some(env) = self.selected_env().cloned() else {
-                        self.error_message = Some("no environment selected".into());
-                        return;
-                    };
-                    let target = target.to_string();
-                    // Verify target exists in same application before opening confirm.
-                    let target_exists = self
-                        .environments
-                        .iter()
-                        .any(|e| e.name == target && e.application == env.application);
-                    if !target_exists {
-                        self.error_message = Some(format!(
-                            "swap target '{target}' not found in app '{}'",
-                            env.application
-                        ));
-                        return;
-                    }
-                    if self.read_only {
-                        self.error_message = Some("read-only mode — swap disabled".into());
-                        return;
-                    }
-                    self.action_flow = Some(ActionFlow::Confirm(ConfirmModal {
-                        action: Action::SwapCnames,
-                        target_env: env.name.clone(),
-                        swap_with: Some(target),
-                        typed: String::new(),
-                        kind: ConfirmKind::YesNo,
-                        dryrun: None,
-                        loading_dryrun: false,
-                        recent_events: None,
-                        loading_events: false,
-                        traffic_warning: compute_traffic_warning(&env),
-                        deploy_version: None,
-                        upgrade_platform_arn: None,
-                        upgrade_platform_label: None,
-                        clone_target: None,
-                        scale_min: None,
-                        scale_max: None,
-                    }));
-                    self.mode = Mode::Action;
-                }
-            },
-            "config-save" => match rest.first().copied() {
-                None => {
-                    self.error_message =
-                        Some("usage: :config-save <template-name>  (uses selected env)".into());
-                }
-                Some(template) => {
-                    if self.read_only {
-                        self.error_message = Some("read-only mode — config-save disabled".into());
-                        return;
-                    }
-                    let Some(env) = self.selected_env().cloned() else {
-                        self.error_message = Some("no environment selected".into());
-                        return;
-                    };
-                    let Some(env_id) = env.id.clone() else {
-                        self.error_message =
-                            Some("env has no internal ID — refresh and retry".into());
-                        return;
-                    };
-                    let template = template.to_string();
-                    let app_name = env.application.clone();
-                    let aws = self.aws.clone();
-                    let tx = self.msg_tx.clone();
-                    let gen = self.generation;
-                    self.status_message = Some(format!(
-                        "saving config from {} as template '{template}'…",
-                        env.name
-                    ));
-                    let action = Action::ConfigSave;
-                    let display_env = env.name.clone();
-                    let template_for_msg = template.clone();
-                    write_audit_line(
-                        self.context.account_id.as_deref(),
-                        self.context.profile.as_deref(),
-                        &self.context.region,
-                        &format!(
-                            "stage=dispatched action={action:?} target={display_env} template={template}"
-                        ),
-                    );
-                    self.push_pending(action.label(), display_env.clone());
-                    tokio::spawn(async move {
-                        let result = aws
-                            .create_config_template(&app_name, &template, &env_id)
-                            .await
-                            .map_err(|e| flatten_err("create_config_template", e));
-                        let labelled = result
-                            .map(|_| ())
-                            .map_err(|e| format!("config-save '{template_for_msg}': {e}"));
-                        let _ = tx.send(AppMsg::ActionResult {
-                            gen,
-                            action,
-                            env_name: display_env,
-                            result: labelled,
-                        });
-                    });
-                }
-            },
-            "config-delete" => match (rest.first().copied(), rest.get(1).copied()) {
-                (Some(app_name), Some(_)) => {
-                    // Template names can contain spaces — join everything
-                    // after the app name so :config-delete app "Dev config
-                    // pre-redis" works as typed.
-                    let template = rest[1..].join(" ");
-                    self.spawn_config_delete_template(app_name.to_string(), template);
-                }
-                _ => {
-                    self.error_message =
-                        Some("usage: :config-delete <application> <template-name>".into());
-                }
-            },
-            "config-apply" => match rest.first().copied() {
-                None => {
-                    self.error_message = Some(
-                        "usage: :config-apply <template-name>  (applies to selected env; template name may contain spaces)".into(),
-                    );
-                }
-                Some(_) => {
-                    // Join all rest tokens so multi-word template names work
-                    // as typed. The overlay's `a`/enter keys bypass this
-                    // parser and call spawn_config_apply_template directly.
-                    let template = rest.join(" ");
-                    let Some(env) = self.selected_env().cloned() else {
-                        self.error_message = Some("no environment selected".into());
-                        return;
-                    };
-                    self.spawn_config_apply_template(env.name.clone(), template);
-                }
-            },
-            "deployment-policy" => match rest.first().copied() {
-                None => {
-                    self.error_message = Some(
-                        "usage: :deployment-policy POLICY  (POLICY: AllAtOnce | Rolling | RollingWithAdditionalBatch | Immutable | TrafficSplitting)".into(),
-                    );
-                }
-                Some(raw) => {
-                    let canonical = match raw {
-                        "AllAtOnce" | "all" | "all-at-once" => "AllAtOnce",
-                        "Rolling" | "rolling" => "Rolling",
-                        "RollingWithAdditionalBatch"
-                        | "rolling-batch"
-                        | "rolling-with-additional-batch" => "RollingWithAdditionalBatch",
-                        "Immutable" | "immutable" => "Immutable",
-                        "TrafficSplitting" | "traffic-split" | "traffic-splitting" => {
-                            "TrafficSplitting"
-                        }
-                        _ => {
-                            self.error_message = Some(format!(
-                                "unknown deployment policy '{raw}'  (valid: AllAtOnce, Rolling, RollingWithAdditionalBatch, Immutable, TrafficSplitting)"
-                            ));
-                            return;
-                        }
-                    };
-                    let ns = "aws:elasticbeanstalk:command";
-                    self.spawn_option_settings_update(
-                        format!("deployment-policy {canonical}"),
-                        vec![(ns.into(), "DeploymentPolicy".into(), canonical.into())],
-                        vec![],
-                    );
-                }
-            },
-            "rolling-update" => match rest.first().copied() {
-                Some("on") | Some("true") | Some("enable") => {
-                    let ns = "aws:autoscaling:updatepolicy:rollingupdate";
-                    self.spawn_option_settings_update(
-                        "rolling-update on".into(),
-                        vec![(ns.into(), "RollingUpdateEnabled".into(), "true".into())],
-                        vec![],
-                    );
-                }
-                Some("off") | Some("false") | Some("disable") => {
-                    let ns = "aws:autoscaling:updatepolicy:rollingupdate";
-                    self.spawn_option_settings_update(
-                        "rolling-update off".into(),
-                        vec![(ns.into(), "RollingUpdateEnabled".into(), "false".into())],
-                        vec![],
-                    );
-                }
-                _ => {
-                    self.error_message = Some(
-                        "usage: :rolling-update on|off  (configures the ASG rolling-update policy)"
-                            .into(),
-                    );
-                }
-            },
-            "health-check-url" => match rest.first().copied() {
-                None => {
-                    self.error_message = Some(
-                        "usage: :health-check-url /path  (path probed for HTTP 200; default '/')"
-                            .into(),
-                    );
-                }
-                Some(url) => {
-                    let ns = "aws:elasticbeanstalk:application";
-                    self.spawn_option_settings_update(
-                        format!("health-check-url {url}"),
-                        vec![(
-                            ns.into(),
-                            "Application Healthcheck URL".into(),
-                            url.to_string(),
-                        )],
-                        vec![],
-                    );
-                }
-            },
-            "keypair" => match rest.first().copied() {
-                None => {
-                    self.error_message =
-                        Some("usage: :keypair NAME  (existing EC2 key pair name; triggers rolling launch-config update)".into());
-                }
-                Some(name) => {
-                    let ns = "aws:autoscaling:launchconfiguration";
-                    self.spawn_option_settings_update(
-                        format!("keypair {name}"),
-                        vec![(ns.into(), "EC2KeyName".into(), name.to_string())],
-                        vec![],
-                    );
-                }
-            },
-            "service-role" => match rest.first().copied() {
-                None => {
-                    self.error_message = Some(
-                        "usage: :service-role ARN_OR_NAME  (IAM role EB itself assumes)".into(),
-                    );
-                }
-                Some(role) => {
-                    let ns = "aws:elasticbeanstalk:environment";
-                    self.spawn_option_settings_update(
-                        format!("service-role {role}"),
-                        vec![(ns.into(), "ServiceRole".into(), role.to_string())],
-                        vec![],
-                    );
-                }
-            },
-            "instance-profile" => match rest.first().copied() {
-                None => {
-                    self.error_message = Some(
-                        "usage: :instance-profile NAME  (IAM instance profile attached to EC2 instances)".into(),
-                    );
-                }
-                Some(name) => {
-                    let ns = "aws:autoscaling:launchconfiguration";
-                    self.spawn_option_settings_update(
-                        format!("instance-profile {name}"),
-                        vec![(ns.into(), "IamInstanceProfile".into(), name.to_string())],
-                        vec![],
-                    );
-                }
-            },
-            "public-ip" => match rest.first().copied() {
-                Some("on") | Some("true") | Some("enable") => {
-                    let ns = "aws:ec2:vpc";
-                    self.spawn_option_settings_update(
-                        "public-ip on".into(),
-                        vec![(ns.into(), "AssociatePublicIpAddress".into(), "true".into())],
-                        vec![],
-                    );
-                }
-                Some("off") | Some("false") | Some("disable") => {
-                    let ns = "aws:ec2:vpc";
-                    self.spawn_option_settings_update(
-                        "public-ip off".into(),
-                        vec![(ns.into(), "AssociatePublicIpAddress".into(), "false".into())],
-                        vec![],
-                    );
-                }
-                _ => {
-                    self.error_message = Some("usage: :public-ip on|off".into());
-                }
-            },
-            "elb-scheme" => match rest.first().copied() {
-                Some(s @ ("public" | "internal")) => {
-                    let value = if s == "public" { "public" } else { "internal" };
-                    let ns = "aws:ec2:vpc";
-                    self.spawn_option_settings_update(
-                        format!("elb-scheme {value}"),
-                        vec![(ns.into(), "ELBScheme".into(), value.into())],
-                        vec![],
-                    );
-                }
-                _ => {
-                    self.error_message = Some(
-                        "usage: :elb-scheme public|internal  (internal = VPC-only, public = internet-facing)".into(),
-                    );
-                }
-            },
-            "set-option" => match (
-                rest.first().copied(),
-                rest.get(1).copied(),
-                rest.get(2).copied(),
-            ) {
-                (Some(ns), Some(opt), Some(_)) => {
-                    let value = rest[2..].join(" ");
-                    self.spawn_option_settings_update(
-                        format!("set-option {ns}.{opt}"),
-                        vec![(ns.to_string(), opt.to_string(), value)],
-                        vec![],
-                    );
-                }
-                _ => {
-                    self.error_message = Some(
-                        "usage: :set-option NAMESPACE OPTION VALUE  (generic escape hatch; VALUE tokens joined with single spaces)".into(),
-                    );
-                }
-            },
-            "unset-option" => match (rest.first().copied(), rest.get(1).copied()) {
-                (Some(ns), Some(opt)) => {
-                    self.spawn_option_settings_update(
-                        format!("unset-option {ns}.{opt}"),
-                        vec![],
-                        vec![(ns.to_string(), opt.to_string())],
-                    );
-                }
-                _ => {
-                    self.error_message = Some("usage: :unset-option NAMESPACE OPTION".into());
-                }
-            },
-            "instance-type" => match rest.first().copied() {
-                None => {
-                    self.error_message = Some(
-                        "usage: :instance-type TYPE  (e.g. t3.medium; triggers rolling launch-config replacement)".into(),
-                    );
-                }
-                Some(t) => {
-                    let ns = "aws:autoscaling:launchconfiguration";
-                    self.spawn_option_settings_update(
-                        format!("instance-type {t}"),
-                        vec![(ns.into(), "InstanceType".into(), t.to_string())],
-                        vec![],
-                    );
-                }
-            },
-            "custom-platform-delete" => match rest.first().copied() {
-                None => {
-                    self.error_message = Some(
-                        "usage: :custom-platform-delete <platform-arn>  (fails if any env still uses it)".into(),
-                    );
-                }
-                Some(arn) => {
-                    if self.read_only {
-                        self.error_message =
-                            Some("read-only mode — custom-platform-delete disabled".into());
-                        return;
-                    }
-                    let arn = arn.to_string();
-                    write_audit_line(
-                        self.context.account_id.as_deref(),
-                        self.context.profile.as_deref(),
-                        &self.context.region,
-                        &format!("stage=dispatched action=DeleteCustomPlatform target={arn}"),
-                    );
-                    self.push_pending("Delete custom platform", arn.clone());
-                    // In-flight ack lives on the pending pill.
-                    let aws = self.aws.clone();
-                    let tx = self.msg_tx.clone();
-                    let gen = self.generation;
-                    let arn_for_msg = arn.clone();
-                    let account = self.context.account_id.clone();
-                    let profile = self.context.profile.clone();
-                    let region = self.context.region.clone();
-                    tokio::spawn(async move {
-                        let result = aws
-                            .delete_custom_platform(&arn_for_msg)
-                            .await
-                            .map_err(|e| flatten_err("delete_custom_platform", e));
-                        let outcome = match &result {
-                            Ok(()) => format!(
-                                "stage=completed action=DeleteCustomPlatform target={arn_for_msg} ok"
-                            ),
-                            Err(e) => format!(
-                                "stage=completed action=DeleteCustomPlatform target={arn_for_msg} err=\"{}\"",
-                                e.replace('"', "'")
-                            ),
-                        };
-                        write_audit_line(account.as_deref(), profile.as_deref(), &region, &outcome);
-                        // Reuse OptionSettingsUpdate's plumbing so the pending
-                        // row is closed and a toast fires — the variant's
-                        // shape (env_name + summary) maps cleanly to
-                        // (target_arn + summary).
-                        let _ = tx.send(AppMsg::OptionSettingsUpdate {
-                            gen,
-                            env_name: arn_for_msg,
-                            summary: "Delete custom platform".into(),
-                            result,
-                        });
-                    });
-                }
-            },
-            "env" => {
-                // `:env list` dumps current env vars; `:env set KEY VAL...`
-                // upserts a single var (VAL tokens joined with single spaces,
-                // same convention as `:tag`); `:env unset KEY` clears it back
-                // to the default. Triggers an app-server restart per EB.
-                let ns = "aws:elasticbeanstalk:application:environment";
-                let sub = rest.first().copied();
-                match sub {
-                    Some("list") | Some("ls") | None => {
-                        let Some(env) = self.selected_env().cloned() else {
-                            self.error_message = Some("no environment selected".into());
-                            return;
-                        };
-                        let app_name = env.application.clone();
-                        let env_name = env.name.clone();
-                        let aws = self.aws.clone();
-                        let tx = self.msg_tx.clone();
-                        let gen = self.generation;
-                        let title = format!("env vars — {env_name}");
-                        self.status_message = Some(format!("fetching env vars for {env_name}…"));
-                        tokio::spawn(async move {
-                            let body = match aws.fetch_env_vars(&app_name, &env_name).await {
-                                Ok(vars) if vars.is_empty() => {
-                                    "(no env vars set on this environment)".to_string()
-                                }
-                                Ok(vars) => format_env_vars(&vars),
-                                Err(e) => format!("error: {}", flatten_err("fetch_env_vars", e)),
-                            };
-                            let _ = tx.send(AppMsg::TextOverlay { gen, title, body });
-                        });
-                    }
-                    Some("set") => match (rest.get(1).copied(), rest.get(2).copied()) {
-                        (Some(key), Some(_)) => {
-                            let value = rest[2..].join(" ");
-                            self.spawn_option_settings_update(
-                                format!("env set {key}"),
-                                vec![(ns.into(), key.to_string(), value)],
-                                vec![],
-                            );
-                        }
-                        _ => {
-                            self.error_message = Some(
-                                "usage: :env set KEY VALUE  (VALUE tokens joined with single spaces; triggers app-server restart)".into(),
-                            );
-                        }
-                    },
-                    Some("unset") | Some("rm") | Some("delete") => match rest.get(1).copied() {
-                        None => {
-                            self.error_message = Some("usage: :env unset KEY".into());
-                        }
-                        Some(key) => {
-                            self.spawn_option_settings_update(
-                                format!("env unset {key}"),
-                                vec![],
-                                vec![(ns.into(), key.to_string())],
-                            );
-                        }
-                    },
-                    Some(other) => {
-                        self.error_message = Some(format!(
-                            "unknown subcommand '{other}'  (use: list | set KEY VAL | unset KEY)"
-                        ));
-                    }
-                }
-            }
-            "metric" => {
-                // `:metric add LABEL NAMESPACE NAME [STAT]` upserts a custom
-                // metric chart for the Metrics tab; `:metric remove LABEL`
-                // drops it; `:metric list` dumps the table. STAT defaults to
-                // Average. Persists to state.toml automatically via
-                // persist_state.
-                let sub = rest.first().copied();
-                match sub {
-                    Some("list") | Some("ls") | None => {
-                        if self.custom_metrics.is_empty() {
-                            self.status_message = Some(
-                                "no custom metrics — add with `:metric add LABEL NAMESPACE NAME [STAT]`".into(),
-                            );
-                        } else {
-                            let mut lines = String::new();
-                            for (label, spec) in &self.custom_metrics {
-                                lines.push_str(&format!(
-                                    "{label:<24}  {:<32}  {:<32}  {}\n",
-                                    spec.namespace, spec.name, spec.stat
-                                ));
-                            }
-                            self.current_overlay = Some(Overlay::TextDump {
-                                title: format!(
-                                    "custom metrics ({} total)",
-                                    self.custom_metrics.len()
-                                ),
-                                body: lines,
-                            });
-                        }
-                    }
-                    Some("add") => match (
-                        rest.get(1).copied(),
-                        rest.get(2).copied(),
-                        rest.get(3).copied(),
-                    ) {
-                        (Some(label), Some(namespace), Some(name)) => {
-                            // Args after NAME are STAT and/or DIMS in any order.
-                            // The token containing `=` is dims (e.g.
-                            // `InstanceId=i-abc,Foo=bar`); the other is stat.
-                            // STAT defaults to Average; DIMS defaults to the
-                            // env-scoped dimension (resolved at fetch time).
-                            let (stat, dimensions) = parse_metric_extra_args(&rest[4..]);
-                            self.custom_metrics.insert(
-                                label.to_string(),
-                                crate::state::CustomMetricSpec {
-                                    namespace: namespace.to_string(),
-                                    name: name.to_string(),
-                                    stat,
-                                    dimensions,
-                                },
-                            );
-                            self.persist_state();
-                            self.status_message = Some(format!(
-                                "custom metric '{label}' added — re-open Detail/Metrics to see"
-                            ));
-                            // If we're on the Metrics tab, refetch so the
-                            // chart appears without the user toggling tabs.
-                            if let Some(d) = self.detail.as_ref() {
-                                if d.tab() == DetailTab::Metrics {
-                                    let env_name = d.env_name.clone();
-                                    self.spawn_detail_metrics(env_name);
-                                }
-                            }
-                        }
-                        _ => {
-                            self.error_message = Some(
-                                "usage: :metric add LABEL NAMESPACE NAME [STAT] [DIM=VAL,DIM=VAL]  (dimensions default to EnvironmentName=<env>; pass overrides for AWS/EC2 InstanceId, AWS/ApplicationELB LoadBalancer, etc.)".into(),
-                            );
-                        }
-                    },
-                    Some("remove") | Some("rm") | Some("delete") => match rest.get(1).copied() {
-                        None => {
-                            self.error_message = Some("usage: :metric remove LABEL".into());
-                        }
-                        Some(label) => {
-                            if self.custom_metrics.remove(label).is_some() {
-                                self.persist_state();
-                                self.status_message =
-                                    Some(format!("custom metric '{label}' removed"));
-                                if let Some(d) = self.detail.as_ref() {
-                                    if d.tab() == DetailTab::Metrics {
-                                        let env_name = d.env_name.clone();
-                                        self.spawn_detail_metrics(env_name);
-                                    }
-                                }
-                            } else {
-                                self.error_message =
-                                    Some(format!("no custom metric named '{label}'"));
-                            }
-                        }
-                    },
-                    Some(other) => {
-                        self.error_message = Some(format!(
-                            "unknown subcommand '{other}'  (use: list | add LABEL NS NAME [STAT] | remove LABEL)"
-                        ));
-                    }
-                }
-            }
+            "cols" => self.cmd_cols(&rest),
+            "save-view" => self.cmd_save_view(&rest),
+            "view" => self.cmd_view(&rest),
+            "views" => self.cmd_views(),
+            "view-drop" => self.cmd_view_drop(&rest),
+            "filter" | "f" => self.cmd_filter_load(&rest),
+            "save" => self.cmd_save_filter(&rest),
+            "drop" => self.cmd_drop_filter(&rest),
+            "filters" => self.cmd_filters(),
+            "batch-rebuild" => self.cmd_batch_action(Action::Rebuild),
+            "batch-restart" => self.cmd_batch_action(Action::RestartAppServer),
+            "batch-deploy" => self.cmd_batch_deploy(&rest),
+            "batch-tag" => self.cmd_batch_tag_or_untag(true, &rest),
+            "batch-untag" => self.cmd_batch_tag_or_untag(false, &rest),
+            "batch-set-option" => self.cmd_batch_set_option(&rest),
+            "versions" => self.cmd_versions(),
+            "deploy" => self.cmd_deploy(&rest),
+            "delete-version" => self.cmd_delete_version(&rest),
+            "upgrade" => self.cmd_upgrade(&rest),
+            "clone" => self.cmd_clone(&rest),
+            "scale" => self.cmd_scale(&rest),
+            "stop" => self.cmd_stop(),
+            "start" => self.cmd_start(),
+            "abort" => self.cmd_abort(),
+            "pending" | "in-flight" | "inflight" => self.cmd_pending(),
+            "tag" => self.cmd_tag(&rest),
+            "untag" => self.cmd_untag(&rest),
+            "resources" | "res" => self.cmd_resources(),
+            "rebuild" => self.cmd_rebuild(),
+            "restart" => self.cmd_restart(),
+            "terminate" => self.cmd_terminate(),
+            "swap" => self.cmd_swap(&rest),
+            "config-save" => self.cmd_config_save(&rest),
+            "config-delete" => self.cmd_config_delete(&rest),
+            "config-apply" => self.cmd_config_apply(&rest),
+            "deployment-policy" => self.cmd_deployment_policy(&rest),
+            "rolling-update" => self.cmd_rolling_update(&rest),
+            "health-check-url" => self.cmd_health_check_url(&rest),
+            "keypair" => self.cmd_keypair(&rest),
+            "service-role" => self.cmd_service_role(&rest),
+            "instance-profile" => self.cmd_instance_profile(&rest),
+            "public-ip" => self.cmd_public_ip(&rest),
+            "elb-scheme" => self.cmd_elb_scheme(&rest),
+            "set-option" => self.cmd_set_option(&rest),
+            "unset-option" => self.cmd_unset_option(&rest),
+            "instance-type" => self.cmd_instance_type(&rest),
+            "custom-platform-delete" => self.cmd_custom_platform_delete(&rest),
+            "env" => self.cmd_env(&rest),
+            "metric" => self.cmd_metric(&rest),
             "logs-tail" => {
                 // `:logs-tail [LOG_GROUP]` — stream a CW Logs group for the
                 // selected env. If no group given, discover groups for the
@@ -7560,296 +7133,12 @@ impl App {
                 let explicit_group = rest.first().map(|s| s.to_string());
                 self.spawn_logs_tail(env.name.clone(), explicit_group);
             }
-            "logs-stream" => {
-                // `:logs-stream on [--retention N]` enables CW Logs streaming
-                // for the env's platform/app logs; `:logs-stream off` clears
-                // the StreamLogs setting (DeleteOnTerminate + RetentionInDays
-                // come along for the ride so the operator gets predictable
-                // behaviour either way).
-                let on = match rest.first().copied() {
-                    Some("on") | Some("true") | Some("enable") => true,
-                    Some("off") | Some("false") | Some("disable") => false,
-                    _ => {
-                        self.error_message = Some(
-                            "usage: :logs-stream on|off [--retention DAYS]  (defaults: retention=7 days, delete-on-terminate=false)".into(),
-                        );
-                        return;
-                    }
-                };
-                if on {
-                    let retention = parse_named_arg::<i32>(&rest, "--retention").unwrap_or(7);
-                    let ns = "aws:elasticbeanstalk:cloudwatch:logs";
-                    self.spawn_option_settings_update(
-                        format!("logs-stream on (retention={retention}d)"),
-                        vec![
-                            (ns.into(), "StreamLogs".into(), "true".into()),
-                            (ns.into(), "DeleteOnTerminate".into(), "false".into()),
-                            (ns.into(), "RetentionInDays".into(), retention.to_string()),
-                        ],
-                        vec![],
-                    );
-                } else {
-                    let ns = "aws:elasticbeanstalk:cloudwatch:logs";
-                    self.spawn_option_settings_update(
-                        "logs-stream off".into(),
-                        vec![(ns.into(), "StreamLogs".into(), "false".into())],
-                        vec![],
-                    );
-                }
-            }
-            "notify" => match rest.first().copied() {
-                None => {
-                    self.error_message = Some(
-                        "usage: :notify EMAIL_OR_SNS_ARN | off  (EB creates a topic for emails; ARN attaches an existing topic)".into(),
-                    );
-                }
-                Some("off") => {
-                    let ns = "aws:elasticbeanstalk:sns:topics";
-                    self.spawn_option_settings_update(
-                        "notify off".into(),
-                        vec![],
-                        vec![(ns.into(), "Notification Endpoint".into())],
-                    );
-                }
-                Some(endpoint) => {
-                    let ns = "aws:elasticbeanstalk:sns:topics";
-                    self.spawn_option_settings_update(
-                        format!("notify {endpoint}"),
-                        vec![(
-                            ns.into(),
-                            "Notification Endpoint".into(),
-                            endpoint.to_string(),
-                        )],
-                        vec![],
-                    );
-                }
-            },
-            "managed-window" => {
-                // `:managed-window DAY HOUR` (e.g. Sun 04) or `:managed-window off`.
-                // EB uses cron-like `Mon:14:00` syntax for PreferredStartTime.
-                match (rest.first().copied(), rest.get(1).copied()) {
-                    (Some("off"), _) => {
-                        let ns = "aws:elasticbeanstalk:managedactions";
-                        self.spawn_option_settings_update(
-                            "managed-window off".into(),
-                            vec![(ns.into(), "ManagedActionsEnabled".into(), "false".into())],
-                            vec![],
-                        );
-                    }
-                    (Some(day), Some(hour)) => {
-                        let canonical_day = match day.to_lowercase().as_str() {
-                            "mon" | "monday" => "Mon",
-                            "tue" | "tuesday" => "Tue",
-                            "wed" | "wednesday" => "Wed",
-                            "thu" | "thursday" => "Thu",
-                            "fri" | "friday" => "Fri",
-                            "sat" | "saturday" => "Sat",
-                            "sun" | "sunday" => "Sun",
-                            _ => {
-                                self.error_message = Some(format!(
-                                    "unknown day '{day}'  (use Mon/Tue/Wed/Thu/Fri/Sat/Sun)"
-                                ));
-                                return;
-                            }
-                        };
-                        let Ok(hour_n) = hour.parse::<u8>() else {
-                            self.error_message = Some(format!("hour '{hour}' is not 0-23"));
-                            return;
-                        };
-                        if hour_n > 23 {
-                            self.error_message = Some(format!("hour {hour_n} out of range (0-23)"));
-                            return;
-                        }
-                        let start = format!("{canonical_day}:{hour_n:02}:00");
-                        let ns = "aws:elasticbeanstalk:managedactions";
-                        self.spawn_option_settings_update(
-                            format!("managed-window {start}"),
-                            vec![
-                                (ns.into(), "ManagedActionsEnabled".into(), "true".into()),
-                                (ns.into(), "PreferredStartTime".into(), start),
-                            ],
-                            vec![],
-                        );
-                    }
-                    _ => {
-                        self.error_message = Some(
-                            "usage: :managed-window DAY HOUR | off  (DAY: Mon/Tue/.../Sun; HOUR: 0-23)".into(),
-                        );
-                    }
-                }
-            }
-            "alarm-create" => {
-                // `:alarm-create NAME KIND THRESHOLD [op]` — KIND maps to one
-                // of the env-scoped metrics we already chart (health / 4xx
-                // / 5xx / latency). Operator can override the comparison
-                // operator as a 4th arg; period defaults to 300s and 1
-                // evaluation period for a 5-min trigger.
-                let (name, kind, threshold_raw, op_override) = match (
-                    rest.first().copied(),
-                    rest.get(1).copied(),
-                    rest.get(2).copied(),
-                    rest.get(3).copied(),
-                ) {
-                    (Some(n), Some(k), Some(t), op) => (n, k, t, op),
-                    _ => {
-                        self.error_message = Some(
-                            "usage: :alarm-create NAME KIND THRESHOLD [OP]  (KIND: health|4xx|5xx|latency; OP defaults match the kind; no SNS action wired)".into(),
-                        );
-                        return;
-                    }
-                };
-                if self.read_only {
-                    self.error_message = Some("read-only mode — alarm-create disabled".into());
-                    return;
-                }
-                let Some((metric_name, default_op, stat)) = alarm_kind_to_metric(kind) else {
-                    self.error_message = Some(format!(
-                        "unknown KIND '{kind}'  (valid: health, 4xx, 5xx, latency)"
-                    ));
-                    return;
-                };
-                let Ok(threshold) = threshold_raw.parse::<f64>() else {
-                    self.error_message =
-                        Some(format!("threshold '{threshold_raw}' is not a number"));
-                    return;
-                };
-                let op = op_override.unwrap_or(default_op);
-                let Some(env) = self.selected_env().cloned() else {
-                    self.error_message = Some("no environment selected".into());
-                    return;
-                };
-                let env_name = env.name.clone();
-                let alarm_name = name.to_string();
-                let metric_name = metric_name.to_string();
-                let op_str = op.to_string();
-                let stat_str = stat.to_string();
-                let target = format!("{env_name}/{alarm_name}");
-                write_audit_line(
-                    self.context.account_id.as_deref(),
-                    self.context.profile.as_deref(),
-                    &self.context.region,
-                    &format!(
-                        "stage=dispatched action=AlarmCreate target={target} metric={metric_name} threshold={threshold} op={op_str}"
-                    ),
-                );
-                self.push_pending("Create alarm", target.clone());
-                self.status_message = Some(format!(
-                    "creating alarm '{alarm_name}' on {env_name}/{metric_name} {op_str} {threshold}…"
-                ));
-                let aws = self.aws.clone();
-                let tx = self.msg_tx.clone();
-                let gen = self.generation;
-                let env_for_msg = env_name.clone();
-                let alarm_for_msg = alarm_name.clone();
-                let account = self.context.account_id.clone();
-                let profile = self.context.profile.clone();
-                let region = self.context.region.clone();
-                tokio::spawn(async move {
-                    let result = aws
-                        .put_env_metric_alarm(
-                            &alarm_for_msg,
-                            &env_for_msg,
-                            &metric_name,
-                            threshold,
-                            &op_str,
-                            300,
-                            1,
-                            &stat_str,
-                        )
-                        .await
-                        .map_err(|e| flatten_err("put_metric_alarm", e));
-                    let outcome = match &result {
-                        Ok(()) => format!("stage=completed action=AlarmCreate target={target} ok"),
-                        Err(e) => format!(
-                            "stage=completed action=AlarmCreate target={target} err=\"{}\"",
-                            e.replace('"', "'")
-                        ),
-                    };
-                    write_audit_line(account.as_deref(), profile.as_deref(), &region, &outcome);
-                    let _ = tx.send(AppMsg::AlarmOp {
-                        gen,
-                        verb: "create",
-                        alarm_name: alarm_for_msg,
-                        env_name: env_for_msg,
-                        result,
-                    });
-                });
-            }
-            "alarm-delete" => match rest.first().copied() {
-                None => {
-                    self.error_message = Some("usage: :alarm-delete NAME".into());
-                }
-                Some(name) => {
-                    if self.read_only {
-                        self.error_message = Some("read-only mode — alarm-delete disabled".into());
-                        return;
-                    }
-                    let alarm_name = name.to_string();
-                    let env_name = self
-                        .selected_env()
-                        .map(|e| e.name.clone())
-                        .unwrap_or_else(|| "?".into());
-                    let target = format!("{env_name}/{alarm_name}");
-                    write_audit_line(
-                        self.context.account_id.as_deref(),
-                        self.context.profile.as_deref(),
-                        &self.context.region,
-                        &format!("stage=dispatched action=AlarmDelete target={target}"),
-                    );
-                    self.push_pending("Delete alarm", target.clone());
-                    self.status_message = Some(format!("deleting alarm '{alarm_name}'…"));
-                    let aws = self.aws.clone();
-                    let tx = self.msg_tx.clone();
-                    let gen = self.generation;
-                    let alarm_for_msg = alarm_name.clone();
-                    let env_for_msg = env_name.clone();
-                    let account = self.context.account_id.clone();
-                    let profile = self.context.profile.clone();
-                    let region = self.context.region.clone();
-                    tokio::spawn(async move {
-                        let result = aws
-                            .delete_alarms(std::slice::from_ref(&alarm_for_msg))
-                            .await
-                            .map_err(|e| flatten_err("delete_alarms", e));
-                        let outcome = match &result {
-                            Ok(()) => {
-                                format!("stage=completed action=AlarmDelete target={target} ok")
-                            }
-                            Err(e) => format!(
-                                "stage=completed action=AlarmDelete target={target} err=\"{}\"",
-                                e.replace('"', "'")
-                            ),
-                        };
-                        write_audit_line(account.as_deref(), profile.as_deref(), &region, &outcome);
-                        let _ = tx.send(AppMsg::AlarmOp {
-                            gen,
-                            verb: "delete",
-                            alarm_name: alarm_for_msg,
-                            env_name: env_for_msg,
-                            result,
-                        });
-                    });
-                }
-            },
-            "config-inspect" => {
-                // Single-arg form: `:config-inspect TEMPLATE` (template name
-                // may contain spaces). Uses the selected env's application.
-                // Two-arg form with whitespace is ambiguous with multi-word
-                // template names, so the overlay's `i` keybind is the right
-                // path for cross-app inspection.
-                if rest.is_empty() {
-                    self.error_message = Some(
-                        "usage: :config-inspect TEMPLATE  (uses selected env's app; use `i` in :saved-configs for cross-app inspect)".into(),
-                    );
-                    return;
-                }
-                let template = rest.join(" ");
-                let Some(env) = self.selected_env().cloned() else {
-                    self.error_message = Some("no environment selected".into());
-                    return;
-                };
-                self.spawn_config_inspect_template(env.application, template);
-            }
+            "logs-stream" => self.cmd_logs_stream(&rest),
+            "notify" => self.cmd_notify(&rest),
+            "managed-window" => self.cmd_managed_window(&rest),
+            "alarm-create" => self.cmd_alarm_create(&rest),
+            "alarm-delete" => self.cmd_alarm_delete(&rest),
+            "config-inspect" => self.cmd_config_inspect(&rest),
             "minimap" => {
                 self.show_minimap = parse_toggle(rest.first().copied(), self.show_minimap);
                 self.status_message = Some(if self.show_minimap {
@@ -7946,7 +7235,7 @@ impl App {
             .override_profile
             .clone()
             .or_else(|| self.context.profile.clone());
-        tracing::info!(
+        tracing::debug!(
             target: "ebman::state",
             override_region = ?self.override_region,
             context_region = %self.context.region,
@@ -8103,13 +7392,26 @@ impl App {
                 self.override_profile = Some(value.clone());
                 self.override_region = None;
                 self.status_message = Some(format!("switching to profile {value}…"));
+                self.spawn_rebuild();
             }
             PickerKind::Region => {
                 self.override_region = Some(value.clone());
                 self.status_message = Some(format!("switching to region {value}…"));
+                self.spawn_rebuild();
+            }
+            PickerKind::LogGroup => {
+                // Swap the streaming overlay's tailed group. Read the env
+                // from the currently-open LogTail overlay; `spawn_logs_tail`
+                // aborts the existing poller and opens a fresh one against
+                // the chosen group, replacing `current_overlay` via the
+                // resulting `AppMsg::LogTailOpened`.
+                let env = match self.current_overlay.as_ref() {
+                    Some(Overlay::LogTail { env_name, .. }) => env_name.clone(),
+                    _ => return,
+                };
+                self.spawn_logs_tail(env, Some(value));
             }
         }
-        self.spawn_rebuild();
     }
 
     fn spawn_rebuild(&mut self) {
@@ -8122,6 +7424,31 @@ impl App {
             let result = match AwsClient::with(profile, region).await {
                 Ok(c) => Ok(Box::new(c)),
                 Err(e) => Err(flatten_err("aws_client_with", e)),
+            };
+            let _ = tx.send(AppMsg::Rebuild(result));
+        });
+    }
+
+    /// Background task variant of `spawn_rebuild` for the AssumeRole
+    /// path. Calls `AwsClient::assume_role` with the operator's named
+    /// account spec; same `AppMsg::Rebuild` arrival point so the rest
+    /// of the swap (overlay tear-down, throttle reset, identity refresh)
+    /// flows through the existing `apply_rebuild` handler.
+    fn spawn_assume_role_switch(&mut self, account_name: String) {
+        let Some(spec) = self.accounts.get(&account_name).cloned() else {
+            self.error_message = Some(format!(
+                "no `accounts.{account_name}` in config.toml — add `accounts.{account_name}.role_arn = …`"
+            ));
+            return;
+        };
+        self.load_state = LoadState::Loading;
+        self.loading_since = Some(Instant::now());
+        self.status_message = Some(format!("assuming role for account '{account_name}'…"));
+        let tx = self.msg_tx.clone();
+        tokio::spawn(async move {
+            let result = match AwsClient::assume_role(&account_name, &spec).await {
+                Ok(c) => Ok(Box::new(c)),
+                Err(e) => Err(flatten_err("aws_client_assume_role", e)),
             };
             let _ = tx.send(AppMsg::Rebuild(result));
         });
@@ -8233,6 +7560,88 @@ impl App {
         });
     }
 
+    /// Set the active scope. Triggers the lazy `spawn_app_latest_versions`
+    /// fetch when transitioning to `Apps`, so the LATEST column populates
+    /// on entry rather than waiting for the next periodic refresh tick.
+    /// Idempotent — re-entering the same scope is a no-op.
+    fn set_scope(&mut self, new: Scope) {
+        let changed = self.scope != new;
+        self.scope = new;
+        if changed && new == Scope::Apps {
+            self.spawn_app_latest_versions();
+        }
+    }
+
+    /// Fan out `DescribeApplicationVersions` per app to compute the LATEST
+    /// column in the apps view. The AWS application-level `date_updated`
+    /// only changes on metadata edits (description / templates / lifecycle),
+    /// not on new version pushes — so operators expect this column to track
+    /// version `date_created` instead. Errors on individual apps drop that
+    /// row from the result rather than failing the batch.
+    fn spawn_app_latest_versions(&self) {
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let names: Vec<String> = self.applications.iter().map(|a| a.name.clone()).collect();
+        if names.is_empty() {
+            return;
+        }
+        tokio::spawn(async move {
+            use futures::future::join_all;
+            let futs = names.into_iter().map(|name| {
+                let aws = aws.clone();
+                async move {
+                    let res = aws.list_application_versions(&name).await;
+                    let head = res.ok().and_then(|mut v| v.drain(..).next());
+                    (
+                        name,
+                        head.as_ref().map(|h| h.label.clone()),
+                        head.and_then(|h| h.created),
+                    )
+                }
+            });
+            let results: Vec<(
+                String,
+                Option<String>,
+                Option<chrono::DateTime<chrono::Utc>>,
+            )> = join_all(futs).await;
+            let _ = tx.send(AppMsg::AppLatestVersions { gen, results });
+        });
+    }
+
+    /// Per-Worker-env DLQ depth fan-out. Fires once per refresh after
+    /// `list_environments` lands. Skips Web envs (no DLQ). Each env's
+    /// fetch is independent — a failure on one drops that entry from
+    /// the result rather than failing the batch.
+    fn spawn_worker_queue_check(&self) {
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let workers: Vec<(String, String)> = self
+            .environments
+            .iter()
+            .filter(|e| e.tier.eq_ignore_ascii_case("Worker"))
+            .map(|e| (e.name.clone(), e.application.clone()))
+            .collect();
+        if workers.is_empty() {
+            return;
+        }
+        tokio::spawn(async move {
+            use futures::future::join_all;
+            let futs = workers.into_iter().map(|(env, app)| {
+                let aws = aws.clone();
+                async move {
+                    aws.describe_worker_queues(&app, &env)
+                        .await
+                        .ok()
+                        .and_then(|q| q.dlq_stats.map(|s| (env, s.visible)))
+                }
+            });
+            let results: Vec<(String, i64)> = join_all(futs).await.into_iter().flatten().collect();
+            let _ = tx.send(AppMsg::WorkerQueueCheck { gen, results });
+        });
+    }
+
     fn spawn_events(&mut self) {
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
@@ -8329,6 +7738,10 @@ impl App {
                 match result {
                     Ok(mut apps) => {
                         apps.sort_by_key(|a| a.name.to_lowercase());
+                        // Preserve the previously-fetched LATEST values across
+                        // refreshes so the column doesn't flicker to "—" every
+                        // tick while the follow-up fan-out is in flight.
+                        merge_app_latest_versions(&self.applications, &mut apps);
                         self.applications = apps;
                         if self.applications.is_empty() {
                             self.app_table_state.select(None);
@@ -8340,9 +7753,52 @@ impl App {
                         {
                             self.app_table_state.select(Some(0));
                         }
+                        // Fan out latest-version fetches only when the
+                        // operator is actually looking at the apps view.
+                        // Otherwise we'd burn N DescribeApplicationVersions
+                        // calls on every refresh tick for users who live in
+                        // the envs view all day. Switching scope to Apps
+                        // (Tab / BackTab) kicks off the fetch on demand;
+                        // the periodic refresh then keeps it fresh.
+                        if self.scope == Scope::Apps {
+                            self.spawn_app_latest_versions();
+                        }
                     }
                     Err(msg) => tracing::warn!(error = %msg, "applications fetch failed"),
                 }
+            }
+            AppMsg::AppLatestVersions { gen, results } => {
+                if gen != self.generation {
+                    return;
+                }
+                let by_name: std::collections::HashMap<_, _> = results
+                    .into_iter()
+                    .map(|(name, label, created)| (name, (label, created)))
+                    .collect();
+                for app in self.applications.iter_mut() {
+                    if let Some((label, created)) = by_name.get(&app.name) {
+                        app.latest_version_label = label.clone();
+                        app.latest_version_created = *created;
+                    }
+                }
+            }
+            AppMsg::WorkerQueueCheck { gen, results } => {
+                if gen != self.generation {
+                    return;
+                }
+                // Rebuild the cache from scratch so workers whose DLQ
+                // drained back to zero are reflected. Missing entries =
+                // "fetch failed this tick"; we drop them so a transient
+                // SQS error doesn't blank the chip for everyone.
+                self.worker_dlq_depths.clear();
+                for (env_name, depth) in results {
+                    self.worker_dlq_depths.insert(env_name, depth);
+                }
+                // Recompute alerts now that the cache is fresh — the
+                // count set during apply_refresh used the *previous*
+                // tick's cache. Workers newly above DLQ=0 join the
+                // alert pill on the next draw.
+                self.alerts = compute_red_alerts(&self.environments, &self.worker_dlq_depths);
             }
             AppMsg::Events { gen, result } => {
                 if gen != self.generation {
@@ -8570,6 +8026,143 @@ impl App {
                         *body = format_alarms(result);
                     }
                     _ => (),
+                }
+            }
+            AppMsg::WhyRedEvents {
+                gen,
+                session_id,
+                result,
+            } => {
+                if gen != self.generation {
+                    return;
+                }
+                if let Some(Overlay::WhyRed {
+                    session_id: s,
+                    events,
+                    ..
+                }) = self.current_overlay.as_mut()
+                {
+                    if *s == session_id {
+                        *events = Some(result);
+                    }
+                }
+            }
+            AppMsg::WhyRedAlarms {
+                gen,
+                session_id,
+                result,
+            } => {
+                if gen != self.generation {
+                    return;
+                }
+                if let Some(Overlay::WhyRed {
+                    session_id: s,
+                    alarms,
+                    ..
+                }) = self.current_overlay.as_mut()
+                {
+                    if *s == session_id {
+                        *alarms = Some(result);
+                    }
+                }
+            }
+            AppMsg::WhyRedInstances {
+                gen,
+                session_id,
+                result,
+            } => {
+                if gen != self.generation {
+                    return;
+                }
+                if let Some(Overlay::WhyRed {
+                    session_id: s,
+                    instances,
+                    ..
+                }) = self.current_overlay.as_mut()
+                {
+                    if *s == session_id {
+                        *instances = Some(result);
+                    }
+                }
+            }
+            AppMsg::WhyRedDeploys {
+                gen,
+                session_id,
+                result,
+            } => {
+                if gen != self.generation {
+                    return;
+                }
+                if let Some(Overlay::WhyRed {
+                    session_id: s,
+                    deploys,
+                    ..
+                }) = self.current_overlay.as_mut()
+                {
+                    if *s == session_id {
+                        *deploys = Some(result);
+                    }
+                }
+            }
+            AppMsg::WhyRedQueues {
+                gen,
+                session_id,
+                result,
+            } => {
+                if gen != self.generation {
+                    return;
+                }
+                // Land the queues result, then kick the DLQ peek if the
+                // DLQ has visible messages. The peek is a second-stage
+                // fetch — it only fires when the first stage shows
+                // something worth peeking at, avoiding pointless SQS
+                // calls on healthy workers.
+                let mut dlq_url_to_peek: Option<String> = None;
+                if let Some(Overlay::WhyRed {
+                    session_id: s,
+                    queues,
+                    dlq_messages,
+                    ..
+                }) = self.current_overlay.as_mut()
+                {
+                    if *s == session_id {
+                        if let Ok(ref qs) = result {
+                            let dlq_visible = qs.dlq_stats.as_ref().map(|s| s.visible).unwrap_or(0);
+                            if dlq_visible > 0 {
+                                if let Some(url) = qs.dlq_url.clone() {
+                                    dlq_url_to_peek = Some(url);
+                                }
+                            } else {
+                                // Mark dlq_messages as resolved-empty so
+                                // the renderer doesn't show "loading…"
+                                // forever for a clean DLQ.
+                                *dlq_messages = Some(Ok(Vec::new()));
+                            }
+                        }
+                        *queues = Some(result);
+                    }
+                }
+                if let Some(url) = dlq_url_to_peek {
+                    self.spawn_why_red_dlq_peek(url, session_id);
+                }
+            }
+            AppMsg::WhyRedDlqMessages {
+                gen,
+                session_id,
+                result,
+            } => {
+                if gen != self.generation {
+                    return;
+                }
+                if let Some(Overlay::WhyRed {
+                    session_id: s,
+                    dlq_messages,
+                    ..
+                }) = self.current_overlay.as_mut()
+                {
+                    if *s == session_id {
+                        *dlq_messages = Some(result);
+                    }
                 }
             }
             AppMsg::PreflightEvents {
@@ -9092,6 +8685,7 @@ impl App {
                 self.generation = self.generation.wrapping_add(1);
                 self.context = client.context.clone();
                 self.aws = Arc::new(*client);
+                self.maybe_apply_profile_theme();
                 self.environments.clear();
                 self.events.clear();
                 self.events_scroll = 0;
@@ -9193,7 +8787,7 @@ impl App {
             return;
         };
         self.filter = name.clone();
-        self.scope = Scope::Envs;
+        self.set_scope(Scope::Envs);
         self.rebuild_view();
         self.status_message = Some(format!("filtered envs to application '{name}'"));
     }
@@ -9343,7 +8937,7 @@ impl App {
                     .map(|e| (e.name.clone(), e.status.clone()))
                     .collect();
 
-                let new_alerts = envs.iter().filter(|e| is_red(&e.health)).count();
+                let new_alerts = compute_red_alerts(&envs, &self.worker_dlq_depths);
                 if self.notify_bell && new_alerts > self.prev_alerts {
                     // BEL — write to stderr and flush so the terminal rings
                     // immediately even though we're in the alt screen.
@@ -9400,6 +8994,11 @@ impl App {
                 // semantics again.
                 self.status_message_pinned = false;
                 self.restore_or_clamp_selection();
+                // Fan out DLQ depth checks for Worker-tier envs. Result
+                // lands as `AppMsg::WorkerQueueCheck` and updates the
+                // alert count + the in-row `⚠ DLQ:N` chip on the next
+                // draw.
+                self.spawn_worker_queue_check();
             }
             Err(msg) => {
                 tracing::error!(error = %msg, "refresh failed");
@@ -9652,7 +9251,27 @@ pub fn build_webhook_payload(
 /// `ThrottlingException` code (EB, STS) or `RequestLimitExceeded` (older
 /// services). Match case-insensitively against the flattened error string so
 /// that exact framing of the message doesn't matter.
-fn is_throttling_error(msg: &str) -> bool {
+/// Pure: count "Red-equivalent" alerts across the env list. An env counts
+/// as alert-worthy when either (a) EB reports its health as Red / Severe,
+/// or (b) it's a Worker-tier env with `worker_dlq_depths.get(name) > 0`.
+/// The two predicates are disjoint per env, so a worker that's both
+/// EB-Red and DLQ-loaded is counted once.
+pub(crate) fn compute_red_alerts(
+    envs: &[crate::aws::Environment],
+    worker_dlq_depths: &std::collections::HashMap<String, i64>,
+) -> usize {
+    envs.iter()
+        .filter(|e| {
+            let eb_red =
+                e.health.eq_ignore_ascii_case("Red") || e.health.eq_ignore_ascii_case("Severe");
+            let dlq_red = e.tier.eq_ignore_ascii_case("Worker")
+                && worker_dlq_depths.get(&e.name).copied().unwrap_or(0) > 0;
+            eb_red || dlq_red
+        })
+        .count()
+}
+
+pub(crate) fn is_throttling_error(msg: &str) -> bool {
     let lower = msg.to_lowercase();
     [
         "throttling",
@@ -9895,9 +9514,158 @@ async fn load_multi_select(
     }
 }
 
+/// Pure: copy `latest_version_label` / `latest_version_created` from a
+/// previous `applications` snapshot onto the new one (matched by name) so
+/// the apps-view LATEST column doesn't flicker to "—" while the follow-up
+/// `DescribeApplicationVersions` fan-out is in flight after each refresh.
+///
+/// Only fills slots that are currently `None`. Today `list_applications`
+/// never populates those fields itself so the conditional is a no-op
+/// safety net — but it means a future caller that *does* pre-populate
+/// won't get silently overwritten with stale data.
+fn merge_app_latest_versions(prev: &[Application], next: &mut [Application]) {
+    let by_name: std::collections::HashMap<
+        &str,
+        (&Option<String>, &Option<chrono::DateTime<chrono::Utc>>),
+    > = prev
+        .iter()
+        .map(|a| {
+            (
+                a.name.as_str(),
+                (&a.latest_version_label, &a.latest_version_created),
+            )
+        })
+        .collect();
+    for app in next.iter_mut() {
+        let Some((label, created)) = by_name.get(app.name.as_str()) else {
+            continue;
+        };
+        if app.latest_version_label.is_none() {
+            app.latest_version_label = (*label).clone();
+        }
+        if app.latest_version_created.is_none() {
+            app.latest_version_created = **created;
+        }
+    }
+}
+
+/// Pure: redact a free-form string for display in the `:history` overlay
+/// context header. Matches the `redact` helper in `ui.rs` (full-block
+/// shaded chars preserving length) so the look is consistent — duplicated
+/// rather than imported because the ui module's `redact` is private.
+pub(crate) fn redact_for_log(value: &str, on: bool) -> String {
+    if !on || value.is_empty() || value == "—" {
+        return value.to_string();
+    }
+    "▓".repeat(value.chars().count())
+}
+
+/// Inferred kind of an `Updating` env's in-flight operation. EB's
+/// `status` field is generic ("Updating") regardless of cause, but the
+/// recent events expose what's actually happening. The Health tab uses
+/// this to render `Updating: deploying build-142` (or similar) instead
+/// of just the generic pill.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateKind {
+    /// `UpdateEnvironment(version_label)` — a version deploy in flight.
+    /// `version_label` is extracted from the event message when present.
+    Deploy { version_label: Option<String> },
+    /// `UpdateEnvironment(option_settings)` — configuration change in flight.
+    Config,
+    /// Auto-scaling activity — instances being added or removed.
+    Scale,
+    /// `UpdateEnvironment(platform_arn)` / managed platform update.
+    Platform,
+    /// Status is Updating but no recent event matches a known pattern.
+    /// Falls back to a generic "updating" label.
+    Generic,
+}
+
+/// Pure: classify an `Updating` env's in-flight op by looking at the
+/// most recent event whose message matches a known pattern. Events are
+/// expected newest-first (as the EB API returns them); returns the kind
+/// from the first matching event. Returns `Generic` when nothing
+/// matches.
+pub fn classify_update_kind(events: &[crate::aws::Event]) -> UpdateKind {
+    for e in events {
+        let lower = e.message.to_lowercase();
+        // Deploy comes first — "version label" is the unambiguous signal.
+        // The "version label" check catches both the dispatch event
+        // (`Updating environment to use version label 'X'`) and the
+        // completion event (`Environment update completed successfully
+        // … version 'X'`).
+        if lower.contains("version label") {
+            return UpdateKind::Deploy {
+                version_label: extract_quoted_after(&e.message, "version label"),
+            };
+        }
+        if lower.contains("deploying") && lower.contains("version") {
+            return UpdateKind::Deploy {
+                version_label: extract_quoted_after(&e.message, "version"),
+            };
+        }
+        // Platform updates have a distinctive "platform" + "updat" stem.
+        if lower.contains("platform") && (lower.contains("updat") || lower.contains("upgrad")) {
+            return UpdateKind::Platform;
+        }
+        // Config changes — option settings.
+        if lower.contains("configuration") && lower.contains("updat") {
+            return UpdateKind::Config;
+        }
+        // Auto-scaling — instances coming or going.
+        if (lower.contains("adding") || lower.contains("removing")) && lower.contains("instance") {
+            return UpdateKind::Scale;
+        }
+    }
+    UpdateKind::Generic
+}
+
+/// Pure: extract the first single-quoted string that appears after
+/// `needle` in `msg` (case-insensitive needle match). Returns None if
+/// the needle isn't found or there's no quoted substring after it. Used
+/// to pull `'build-142'` out of "Updating environment to use version
+/// label 'build-142'.".
+fn extract_quoted_after(msg: &str, needle: &str) -> Option<String> {
+    let lower = msg.to_lowercase();
+    let needle_lower = needle.to_lowercase();
+    let after = lower.find(&needle_lower)? + needle_lower.len();
+    let tail = msg.get(after..)?;
+    let start = tail.find('\'')?;
+    let body = &tail[start + 1..];
+    let end = body.find('\'')?;
+    Some(body[..end].to_string())
+}
+
 fn flatten_err(op: &str, e: color_eyre::eyre::Report) -> String {
     tracing::error!(target: "ebman::aws", op = op, error = ?e, "aws call failed");
-    format!("{e}")
+    flatten_err_to_string(&e)
+}
+
+/// Pure: convert an `eyre::Report` into the user-facing string we route into
+/// toasts and the refresh-error path. The SDK's `Display` impl returns
+/// generic strings like `"service error"` for throttling — the structured
+/// `ThrottlingException` code lives in the `Debug` form. To keep toasts
+/// clean *and* let downstream predicates like [`is_throttling_error`] do
+/// their job, we peek at the Debug dump for a small set of well-known
+/// rate-limit tokens and surface a clean `"ThrottlingException: ..."`
+/// prefix when matched. All other errors pass through with Display unchanged.
+pub(crate) fn flatten_err_to_string(e: &color_eyre::eyre::Report) -> String {
+    let display = e.to_string();
+    let dbg_lower = format!("{e:?}").to_lowercase();
+    // Same token set as `is_throttling_error` but searched against the
+    // Debug dump so SDK-level codes are reachable. Kept in sync with the
+    // predicate so the two can't drift.
+    const TOKENS: &[&str] = &[
+        "throttling",
+        "throttlingexception",
+        "requestlimitexceeded",
+        "too many requests",
+        "rate exceeded",
+    ];
+    if TOKENS.iter().any(|t| dbg_lower.contains(t)) {
+        return format!("ThrottlingException: {display}");
+    }
+    display
 }
 
 fn parse_sort(raw: Option<&str>) -> (SortKey, bool) {
@@ -9975,6 +9743,10 @@ fn build_palette_items(app: &App) -> Vec<PaletteItem> {
             "modal form: pick instance security groups (aws:autoscaling:launchconfiguration.SecurityGroups)",
         ),
         ("alarms", "CloudWatch alarms for selected env"),
+        (
+            "why",
+            "diagnose env — recent events + alarms + instance health + recent deploys",
+        ),
         ("saved-configs", "EB saved configuration templates"),
         ("plugins", "list user plugin commands"),
         ("views", "list saved views"),
@@ -10016,6 +9788,13 @@ fn build_palette_items(app: &App) -> Vec<PaletteItem> {
         ("readonly ", "toggle read-only (on/off)"),
         ("tag ", "add or update env tag: KEY VALUE"),
         ("untag ", "remove env tag: KEY"),
+        ("batch-deploy ", "deploy LABEL to all multi-selected envs (same app)"),
+        ("batch-tag ", "tag all multi-selected envs: KEY VALUE"),
+        ("batch-untag ", "untag all multi-selected envs: KEY"),
+        (
+            "batch-set-option ",
+            "set option on all multi-selected envs: NAMESPACE NAME VALUE",
+        ),
         ("delete-version ", "delete app version: LABEL [--force]"),
         (
             "config-inspect ",
@@ -10354,6 +10133,168 @@ pub fn parse_named_arg<T: std::str::FromStr>(rest: &[&str], flag: &str) -> Optio
 /// "Application version created from " prefix that every CI-pipeline
 /// description tends to carry; shows "showing N of M (newest first)"
 /// when the list was truncated. `limit` caps the visible rows.
+/// Pure: render the `:deploy LABEL --preview` body. Highlights the
+/// candidate version (label / age / description), the currently-deployed
+/// version's age for context, and warns if the candidate predates the
+/// current one (rolling back is intentional but worth flagging).
+///
+/// `versions` is the result of `list_application_versions` (already
+/// sorted newest-first by the aws layer). Missing labels surface as
+/// human-readable "not found" hints rather than blanks.
+/// Pure: render the `:accounts` overlay body. Rows are sorted ACTIVE-first
+/// then by name (the `list_org_accounts` helper does the sort on the AWS
+/// side); this just formats one row per account with a `(:account NAME)`
+/// hint when a matching `accounts.NAME` entry is configured in
+/// config.toml. Without that entry, the row is informational only — the
+/// operator must still configure a role_arn before AssumeRole works.
+///
+/// `configured` is the set of friendly names from `config.toml`'s
+/// `accounts.*` section; matching is name-or-id-suffix so an operator
+/// who names their entries by account-id still gets the hint.
+pub fn format_org_accounts(
+    accounts: &[crate::aws::OrgAccount],
+    configured: &std::collections::HashMap<String, String>,
+) -> String {
+    if accounts.is_empty() {
+        return "no accounts returned by organizations:ListAccounts\n\nesc / q to close".into();
+    }
+    let mut out = String::new();
+    out.push_str(&format!(
+        "Org accounts ({})\n────────────────────\n\n",
+        accounts.len()
+    ));
+    let max_name = accounts
+        .iter()
+        .map(|a| a.name.len())
+        .max()
+        .unwrap_or(0)
+        .min(28);
+    for a in accounts {
+        let switchable = configured
+            .keys()
+            .find(|n| {
+                n.eq_ignore_ascii_case(&a.name)
+                    || n.eq_ignore_ascii_case(&a.id)
+                    || n.eq_ignore_ascii_case(&format!("acct-{}", a.id))
+            })
+            .cloned();
+        let switch_hint = match switchable {
+            Some(n) => format!(" :account {n}"),
+            None => String::new(),
+        };
+        let status_marker = match a.status.as_str() {
+            "ACTIVE" => "●",
+            "SUSPENDED" => "⊘",
+            _ => "○",
+        };
+        out.push_str(&format!(
+            "  {status_marker} {name:<width$}  {id}  [{status}]{switch_hint}\n",
+            name = a.name,
+            width = max_name,
+            id = a.id,
+            status = a.status,
+        ));
+        if let Some(email) = a.email.as_ref() {
+            out.push_str(&format!(
+                "    {pad:<width$}  ↳ {email}\n",
+                pad = "",
+                width = max_name,
+            ));
+        }
+    }
+    out.push('\n');
+    out.push_str(
+        "To switch into an account, add `accounts.NAME.role_arn = …` to config.toml\n\
+         then use `:account NAME`. esc / q to close.",
+    );
+    out
+}
+
+pub fn format_deploy_preview(
+    env_name: &str,
+    current_label: &str,
+    candidate_label: &str,
+    versions: &[crate::aws::AppVersion],
+) -> String {
+    let now = chrono::Utc::now();
+    let humanize = |d: Option<chrono::DateTime<chrono::Utc>>| -> String {
+        d.map(|t| {
+            let dur = now.signed_duration_since(t);
+            let secs = dur.num_seconds().max(0);
+            if secs < 3600 {
+                format!("{}m ago", secs / 60)
+            } else if secs < 86_400 {
+                format!("{}h ago", secs / 3600)
+            } else {
+                format!("{}d ago", secs / 86_400)
+            }
+        })
+        .unwrap_or_else(|| "—".into())
+    };
+    let candidate = versions.iter().find(|v| v.label == candidate_label);
+    let current = if current_label.is_empty() {
+        None
+    } else {
+        versions.iter().find(|v| v.label == current_label)
+    };
+    let mut out = String::new();
+    out.push_str(&format!("env:        {env_name}\n"));
+    out.push_str(&format!(
+        "current:    {}{}\n",
+        if current_label.is_empty() {
+            "(none deployed)".to_string()
+        } else {
+            current_label.to_string()
+        },
+        match current.and_then(|v| v.created) {
+            Some(t) => format!("  ({})", humanize(Some(t))),
+            None => String::new(),
+        }
+    ));
+    out.push_str(&format!("candidate:  {candidate_label}"));
+    match candidate {
+        Some(v) => {
+            out.push_str(&format!("  ({})\n", humanize(v.created)));
+            if !v.description.is_empty() {
+                out.push_str(&format!("description: {}\n", v.description));
+            }
+        }
+        None => {
+            out.push_str("\n\n");
+            out.push_str(&format!(
+                "⚠ candidate label '{candidate_label}' not found in this app's version list — \
+                 deploy will fail. Run :versions to see available labels.\n"
+            ));
+            return out;
+        }
+    }
+    // Rollback warning — only fires when both timestamps are known and
+    // the candidate is older than current. Rolling back IS legitimate;
+    // the warning just gives the operator a beat to confirm intent.
+    if let (Some(cand), Some(curr)) = (
+        candidate.and_then(|v| v.created),
+        current.and_then(|v| v.created),
+    ) {
+        if cand < curr {
+            let secs = curr.signed_duration_since(cand).num_seconds().max(0) as u32;
+            let diff = if secs < 3600 {
+                format!("{}m", secs / 60)
+            } else if secs < 86_400 {
+                format!("{}h", secs / 3600)
+            } else {
+                format!("{}d", secs / 86_400)
+            };
+            out.push('\n');
+            out.push_str(&format!(
+                "⚠ candidate is {diff} older than the currently-deployed version — \
+                 looks like a rollback. Confirm intent.\n"
+            ));
+        }
+    }
+    out.push_str("\nrun :deploy without --preview to dispatch, or :versions for the full list.\n");
+    out
+}
+
 pub fn format_app_versions(
     versions: &[crate::aws::AppVersion],
     deployed_label: Option<&str>,
@@ -11644,6 +11585,8 @@ mod tests {
             date_updated: None,
             version_count: 0,
             templates,
+            latest_version_label: None,
+            latest_version_created: None,
         };
         let apps = vec![
             app("beta", vec!["prod".into(), "canary".into()]),
@@ -11671,8 +11614,394 @@ mod tests {
             date_updated: None,
             version_count: 0,
             templates: vec![],
+            latest_version_label: None,
+            latest_version_created: None,
         }];
         assert!(super::collect_saved_configs(&apps).is_empty());
+    }
+
+    #[test]
+    fn merge_app_latest_versions_carries_previous_values_by_name() {
+        use crate::aws::Application;
+        let mk = |name: &str,
+                  label: Option<&str>,
+                  created: Option<chrono::DateTime<chrono::Utc>>|
+         -> Application {
+            Application {
+                name: name.into(),
+                description: String::new(),
+                date_created: None,
+                date_updated: None,
+                version_count: 0,
+                templates: vec![],
+                latest_version_label: label.map(|s| s.into()),
+                latest_version_created: created,
+            }
+        };
+        let t0 = chrono::Utc::now();
+        let prev = vec![
+            mk("alpha", Some("build-1"), Some(t0)),
+            mk("beta", Some("build-9"), Some(t0)),
+        ];
+        // Fresh refresh: same apps, plus a new one, all with empty LATEST.
+        let mut next = vec![
+            mk("alpha", None, None),
+            mk("beta", None, None),
+            mk("gamma", None, None),
+        ];
+        super::merge_app_latest_versions(&prev, &mut next);
+        assert_eq!(next[0].latest_version_label.as_deref(), Some("build-1"));
+        assert_eq!(next[0].latest_version_created, Some(t0));
+        assert_eq!(next[1].latest_version_label.as_deref(), Some("build-9"));
+        // New app has no prior value; stays None.
+        assert_eq!(next[2].latest_version_label, None);
+        assert_eq!(next[2].latest_version_created, None);
+    }
+
+    #[test]
+    fn merge_app_latest_versions_does_not_overwrite_already_populated_slots() {
+        // Safety net: if a future caller pre-populates the LATEST fields on
+        // `next` (e.g. a faster fan-out lands before the apps-list does),
+        // the carry-forward must not stomp on fresher data.
+        use crate::aws::Application;
+        let mk = |name: &str, label: Option<&str>| -> Application {
+            Application {
+                name: name.into(),
+                description: String::new(),
+                date_created: None,
+                date_updated: None,
+                version_count: 0,
+                templates: vec![],
+                latest_version_label: label.map(|s| s.into()),
+                latest_version_created: None,
+            }
+        };
+        let prev = vec![mk("alpha", Some("OLD"))];
+        let mut next = vec![mk("alpha", Some("NEW"))];
+        super::merge_app_latest_versions(&prev, &mut next);
+        assert_eq!(next[0].latest_version_label.as_deref(), Some("NEW"));
+    }
+
+    #[test]
+    fn merge_app_latest_versions_handles_app_disappearance() {
+        // If an app is renamed / deleted between refreshes, its prev entry
+        // simply has no matching `next` and the carry-forward is a no-op.
+        use crate::aws::Application;
+        let mk = |name: &str, label: Option<&str>| -> Application {
+            Application {
+                name: name.into(),
+                description: String::new(),
+                date_created: None,
+                date_updated: None,
+                version_count: 0,
+                templates: vec![],
+                latest_version_label: label.map(|s| s.into()),
+                latest_version_created: None,
+            }
+        };
+        let prev = vec![mk("alpha", Some("build-old")), mk("beta", Some("build-2"))];
+        let mut next = vec![mk("beta", None)];
+        super::merge_app_latest_versions(&prev, &mut next);
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].latest_version_label.as_deref(), Some("build-2"));
+    }
+
+    #[test]
+    fn format_org_accounts_includes_switch_hint_when_configured() {
+        use crate::aws::OrgAccount;
+        let accounts = vec![
+            OrgAccount {
+                id: "111122223333".into(),
+                name: "prod".into(),
+                email: Some("prod@example.com".into()),
+                status: "ACTIVE".into(),
+            },
+            OrgAccount {
+                id: "444455556666".into(),
+                name: "sandbox".into(),
+                email: None,
+                status: "SUSPENDED".into(),
+            },
+        ];
+        let mut configured = std::collections::HashMap::new();
+        configured.insert("prod".to_string(), "prod".to_string());
+        let body = super::format_org_accounts(&accounts, &configured);
+        assert!(body.contains("● prod"));
+        assert!(body.contains("⊘ sandbox"));
+        assert!(body.contains("prod@example.com"));
+        // Switch hint only for the configured account.
+        assert!(body.contains(":account prod"));
+        assert!(!body.contains(":account sandbox"));
+    }
+
+    #[test]
+    fn format_org_accounts_empty_returns_hint() {
+        let body = super::format_org_accounts(&[], &std::collections::HashMap::new());
+        assert!(body.contains("no accounts returned"));
+    }
+
+    #[test]
+    fn format_org_accounts_matches_id_when_named_by_id() {
+        use crate::aws::OrgAccount;
+        let accounts = vec![OrgAccount {
+            id: "111122223333".into(),
+            name: "prod".into(),
+            email: None,
+            status: "ACTIVE".into(),
+        }];
+        // Operator named the AssumeRole entry by account-id rather
+        // than friendly name — still matches.
+        let mut configured = std::collections::HashMap::new();
+        configured.insert("111122223333".to_string(), "111122223333".to_string());
+        let body = super::format_org_accounts(&accounts, &configured);
+        assert!(body.contains(":account 111122223333"));
+    }
+
+    #[test]
+    fn format_deploy_preview_happy_path() {
+        use crate::aws::AppVersion;
+        let now = chrono::Utc::now();
+        let versions = vec![
+            AppVersion {
+                label: "build-142".into(),
+                description: "fix: idempotent retries".into(),
+                created: Some(now - chrono::Duration::hours(2)),
+            },
+            AppVersion {
+                label: "build-141".into(),
+                description: "feat: /metrics endpoint".into(),
+                created: Some(now - chrono::Duration::days(1)),
+            },
+        ];
+        let body = super::format_deploy_preview("uflexi-prod", "build-141", "build-142", &versions);
+        assert!(body.contains("env:        uflexi-prod"));
+        assert!(body.contains("current:    build-141"));
+        assert!(body.contains("candidate:  build-142"));
+        assert!(body.contains("fix: idempotent retries"));
+        // Newer candidate → no rollback warning.
+        assert!(!body.contains("rollback"));
+    }
+
+    #[test]
+    fn format_deploy_preview_rollback_warning_fires_when_older() {
+        use crate::aws::AppVersion;
+        let now = chrono::Utc::now();
+        let versions = vec![
+            AppVersion {
+                label: "build-old".into(),
+                description: String::new(),
+                created: Some(now - chrono::Duration::days(7)),
+            },
+            AppVersion {
+                label: "build-new".into(),
+                description: String::new(),
+                created: Some(now - chrono::Duration::hours(1)),
+            },
+        ];
+        // Deploying the OLDER version on top of the NEWER one → rollback.
+        let body = super::format_deploy_preview("uflexi-prod", "build-new", "build-old", &versions);
+        assert!(
+            body.contains("rollback"),
+            "expected rollback warning, got: {body}"
+        );
+    }
+
+    #[test]
+    fn format_deploy_preview_unknown_label_calls_out_the_gap() {
+        use crate::aws::AppVersion;
+        let versions = vec![AppVersion {
+            label: "build-141".into(),
+            description: String::new(),
+            created: Some(chrono::Utc::now()),
+        }];
+        let body = super::format_deploy_preview(
+            "uflexi-prod",
+            "build-141",
+            "build-DOES-NOT-EXIST",
+            &versions,
+        );
+        assert!(body.contains("not found"));
+        assert!(body.contains("build-DOES-NOT-EXIST"));
+    }
+
+    fn make_event(msg: &str) -> crate::aws::Event {
+        crate::aws::Event {
+            at: Some(chrono::Utc::now()),
+            env: "uflexi-prod".into(),
+            application: "uflexi".into(),
+            message: msg.into(),
+            severity: "INFO".into(),
+        }
+    }
+
+    #[test]
+    fn classify_update_kind_deploy_extracts_label() {
+        let evs = vec![make_event(
+            "Updating environment uflexi-prod to use version label 'build-142'.",
+        )];
+        match super::classify_update_kind(&evs) {
+            super::UpdateKind::Deploy { version_label } => {
+                assert_eq!(version_label.as_deref(), Some("build-142"));
+            }
+            other => panic!("expected Deploy, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_update_kind_deploy_without_label_still_classifies() {
+        let evs = vec![make_event("Deploying new version to instance i-abc123.")];
+        match super::classify_update_kind(&evs) {
+            super::UpdateKind::Deploy { version_label } => {
+                // Label can't be extracted from this message shape — that's
+                // fine, it's still a Deploy.
+                assert!(version_label.is_none());
+            }
+            other => panic!("expected Deploy, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_update_kind_platform_update() {
+        let evs = vec![make_event(
+            "Updating environment to use platform 'arn:aws:elasticbeanstalk:…:platform/Corretto 17'.",
+        )];
+        // Even though the message also contains 'platform', deploy
+        // pattern (`version label`) isn't matched, so we fall through
+        // to the platform branch.
+        assert_eq!(
+            super::classify_update_kind(&evs),
+            super::UpdateKind::Platform
+        );
+    }
+
+    #[test]
+    fn classify_update_kind_config_change() {
+        let evs = vec![make_event("Updating environment configuration completed.")];
+        assert_eq!(super::classify_update_kind(&evs), super::UpdateKind::Config);
+    }
+
+    #[test]
+    fn classify_update_kind_scale_event() {
+        let evs = vec![make_event("Adding instance 'i-abc123' to environment.")];
+        assert_eq!(super::classify_update_kind(&evs), super::UpdateKind::Scale);
+    }
+
+    #[test]
+    fn classify_update_kind_unknown_message_falls_through_to_generic() {
+        let evs = vec![make_event("Something cryptic happened.")];
+        assert_eq!(
+            super::classify_update_kind(&evs),
+            super::UpdateKind::Generic
+        );
+    }
+
+    #[test]
+    fn classify_update_kind_picks_most_recent_match() {
+        // Events are newest-first; the deploy event sits ahead of the
+        // older scale event, so Deploy wins.
+        let evs = vec![
+            make_event("Updating environment to use version label 'build-99'."),
+            make_event("Adding instance 'i-old' to environment."),
+        ];
+        match super::classify_update_kind(&evs) {
+            super::UpdateKind::Deploy { version_label } => {
+                assert_eq!(version_label.as_deref(), Some("build-99"));
+            }
+            other => panic!("expected Deploy from newest match, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_update_kind_empty_events_is_generic() {
+        assert_eq!(super::classify_update_kind(&[]), super::UpdateKind::Generic);
+    }
+
+    #[test]
+    fn compute_red_alerts_counts_eb_red_and_worker_dlq() {
+        use crate::aws::Environment;
+        let mk = |name: &str, tier: &str, health: &str| Environment {
+            name: name.into(),
+            application: "uflexi".into(),
+            status: "Ready".into(),
+            health: health.into(),
+            platform: "Java 17".into(),
+            tier: tier.into(),
+            cname: String::new(),
+            version_label: String::new(),
+            arn: None,
+            updated: None,
+            id: None,
+            region: None,
+        };
+        let envs = vec![
+            mk("web-prod", "Web", "Green"),
+            mk("web-red", "Web", "Red"),
+            mk("worker-green-dlq", "Worker", "Green"),
+            mk("worker-clean", "Worker", "Green"),
+            mk("worker-red", "Worker", "Severe"),
+        ];
+        let mut dlq = std::collections::HashMap::new();
+        dlq.insert("worker-green-dlq".to_string(), 3);
+        dlq.insert("worker-clean".to_string(), 0);
+        // EB-Red + DLQ-Red + EB-Red-on-worker = 3 alerts (worker-red counted once).
+        assert_eq!(super::compute_red_alerts(&envs, &dlq), 3);
+    }
+
+    #[test]
+    fn compute_red_alerts_ignores_dlq_for_web_tier() {
+        use crate::aws::Environment;
+        let env = Environment {
+            name: "web-prod".into(),
+            application: "uflexi".into(),
+            status: "Ready".into(),
+            health: "Green".into(),
+            platform: "Java 17".into(),
+            tier: "Web".into(),
+            cname: String::new(),
+            version_label: String::new(),
+            arn: None,
+            updated: None,
+            id: None,
+            region: None,
+        };
+        // Even with a spurious "web-prod" entry in dlq_depths, a Web env
+        // never counts as DLQ-red. Belt-and-braces against a stale cache
+        // entry surviving a tier change.
+        let mut dlq = std::collections::HashMap::new();
+        dlq.insert("web-prod".to_string(), 99);
+        assert_eq!(super::compute_red_alerts(&[env], &dlq), 0);
+    }
+
+    #[test]
+    fn compute_red_alerts_zero_dlq_is_not_alert_worthy() {
+        use crate::aws::Environment;
+        let env = Environment {
+            name: "worker-clean".into(),
+            application: "uflexi".into(),
+            status: "Ready".into(),
+            health: "Green".into(),
+            platform: "Java 17".into(),
+            tier: "Worker".into(),
+            cname: String::new(),
+            version_label: String::new(),
+            arn: None,
+            updated: None,
+            id: None,
+            region: None,
+        };
+        let mut dlq = std::collections::HashMap::new();
+        dlq.insert("worker-clean".to_string(), 0);
+        assert_eq!(super::compute_red_alerts(&[env], &dlq), 0);
+    }
+
+    #[test]
+    fn redact_for_log_preserves_length_with_block_chars() {
+        assert_eq!(super::redact_for_log("540847557034", true), "▓".repeat(12));
+        assert_eq!(super::redact_for_log("540847557034", false), "540847557034");
+        // Em-dash placeholder + empty stay readable so the context line
+        // doesn't render `▓` for "no account known yet".
+        assert_eq!(super::redact_for_log("—", true), "—");
+        assert_eq!(super::redact_for_log("", true), "");
     }
 
     #[test]
@@ -12001,6 +12330,7 @@ mod tests {
     fn detail_tab_titles_are_distinct() {
         use std::collections::HashSet;
         let titles: HashSet<&str> = [
+            DetailTab::Health,
             DetailTab::Events,
             DetailTab::Instances,
             DetailTab::Metrics,
@@ -12010,6 +12340,190 @@ mod tests {
         .iter()
         .map(|t| t.title())
         .collect();
-        assert_eq!(titles.len(), 5);
+        assert_eq!(titles.len(), 6);
+    }
+
+    // ── UI integration harness ──────────────────────────────────────
+    //
+    // These tests drive `crossterm::Event`s through `handle_event` and
+    // (optionally) render to a `ratatui::TestBackend`-backed Terminal
+    // to inspect the resulting buffer. The harness uses `App::for_tests`
+    // — synchronous, no AWS network, no disk reads — so each test starts
+    // from a known clean state.
+    //
+    // What this catches that the pure-helper tests don't:
+    //   - Mode-transition glitches (overlay closes correctly, Filter
+    //     mode swallows printable keys, etc.)
+    //   - Key-precedence regressions (Mode::Picker over LogTail
+    //     overlay, ESC routing, Tab cycling)
+    //   - Render-side state-dependent bugs (a field is None, the
+    //     renderer panics; an overlay shape changes, the dispatch
+    //     desyncs).
+    //
+    // Pattern:
+    //   1. `let mut app = test_app();` — clean App.
+    //   2. Mutate state as needed (push fake envs onto `app.environments`,
+    //      flip toggles, etc.). The struct is fully `pub` so tests can
+    //      seed any shape without going through async fetchers.
+    //   3. `press(&mut app, KeyCode::*, KeyModifiers::*)` — feed a key.
+    //   4. Assert on `app.<field>` — or render to a buffer string via
+    //      `render(&mut app, w, h)` and grep.
+
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+    /// Build a minimal App in a deterministic state. Useful for tests
+    /// that don't care about real AWS data — just keyboard flow + mode
+    /// transitions. Seed envs / overlays / detail state by mutating
+    /// the returned App directly.
+    fn test_app() -> App {
+        // Match the unicode/dark defaults so the renderer's per-theme
+        // branches are exercised on the common path.
+        let cfg = crate::config::Config {
+            theme: "dark".into(),
+            icons: "unicode".into(),
+            ..crate::config::Config::default()
+        };
+        App::for_tests(crate::aws::AwsClient::stub(), cfg)
+    }
+
+    /// Synthesize a `KeyEvent::Press` and dispatch it through
+    /// `handle_event`. Mirrors how `run()` feeds real terminal events.
+    fn press(app: &mut App, code: KeyCode, mods: KeyModifiers) {
+        app.handle_event(Event::Key(KeyEvent {
+            code,
+            modifiers: mods,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        }));
+    }
+
+    /// Render the App into a fixed-size `TestBackend` buffer and return
+    /// the flattened string (one row per line, joined with `\n`).
+    /// Useful for grep-style assertions on rendered output.
+    fn render(app: &mut App, w: u16, h: u16) -> String {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|f| crate::ui::draw(f, app)).expect("draw");
+        let buf = terminal.backend().buffer();
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    fn mk_env(name: &str, app: &str, tier: &str, health: &str) -> crate::aws::Environment {
+        crate::aws::Environment {
+            name: name.into(),
+            application: app.into(),
+            status: "Ready".into(),
+            health: health.into(),
+            platform: "Java 17".into(),
+            tier: tier.into(),
+            cname: format!("{name}.example.com"),
+            version_label: "build-1".into(),
+            arn: Some(format!("arn:aws:eb:us-east-1:0:env/{name}")),
+            updated: None,
+            id: None,
+            region: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn tab_cycles_scope_envs_to_apps_and_back() {
+        let mut app = test_app();
+        assert_eq!(app.scope, Scope::Envs);
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.scope, Scope::Apps);
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.scope, Scope::Envs);
+    }
+
+    #[tokio::test]
+    async fn question_mark_opens_help_and_escape_dismisses_it() {
+        let mut app = test_app();
+        assert_eq!(app.mode, Mode::Normal);
+        press(&mut app, KeyCode::Char('?'), KeyModifiers::NONE);
+        assert_eq!(app.mode, Mode::Help);
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[tokio::test]
+    async fn colon_enters_command_mode_and_esc_cancels() {
+        let mut app = test_app();
+        press(&mut app, KeyCode::Char(':'), KeyModifiers::NONE);
+        assert_eq!(app.mode, Mode::Command);
+        // Typed chars land in the command input buffer.
+        press(&mut app, KeyCode::Char('q'), KeyModifiers::NONE);
+        assert_eq!(app.command_input, "q");
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.mode, Mode::Normal);
+        // Input cleared on cancel.
+        assert!(app.command_input.is_empty());
+    }
+
+    #[tokio::test]
+    async fn slash_enters_filter_mode_and_text_lands() {
+        let mut app = test_app();
+        // Seed an env so filter has something to operate on.
+        app.environments = vec![
+            mk_env("prod-web", "uflexi", "Web", "Green"),
+            mk_env("staging-web", "uflexi", "Web", "Green"),
+        ];
+        app.rebuild_view();
+        press(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+        assert_eq!(app.mode, Mode::Filter);
+        for c in "prod".chars() {
+            press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        assert_eq!(app.filter, "prod");
+        // Esc clears the filter and returns to Normal.
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.filter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn enter_on_red_env_opens_why_via_bang_keybind() {
+        let mut app = test_app();
+        // Seed a Red env + select it.
+        app.environments = vec![mk_env("prod-web", "uflexi", "Web", "Red")];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        // `!` shortcut in Envs scope opens the :why overlay.
+        press(&mut app, KeyCode::Char('!'), KeyModifiers::NONE);
+        assert!(
+            matches!(app.current_overlay, Some(Overlay::WhyRed { .. })),
+            "expected WhyRed overlay, got {:?}",
+            app.current_overlay
+        );
+    }
+
+    #[tokio::test]
+    async fn render_main_table_includes_seeded_env_name() {
+        let mut app = test_app();
+        app.environments = vec![mk_env("api-prod-canary", "uflexi", "Web", "Green")];
+        app.rebuild_view();
+        let frame = render(&mut app, 160, 24);
+        assert!(
+            frame.contains("api-prod-canary"),
+            "rendered frame should show seeded env name; got:\n{frame}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ctrl_x_toggles_redact() {
+        let mut app = test_app();
+        assert!(!app.redact);
+        press(&mut app, KeyCode::Char('x'), KeyModifiers::CONTROL);
+        assert!(app.redact);
+        press(&mut app, KeyCode::Char('x'), KeyModifiers::CONTROL);
+        assert!(!app.redact);
     }
 }
