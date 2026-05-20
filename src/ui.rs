@@ -1121,14 +1121,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         .profile
         .clone()
         .unwrap_or_else(|| "default".into());
-    let last = match app.last_refresh {
-        Some(t) => format!(
-            "{} (every {}s)",
-            t.with_timezone(&chrono::Local).format("%H:%M:%S"),
-            app.refresh_interval.as_secs()
-        ),
-        None => format!("— (every {}s)", app.refresh_interval.as_secs()),
-    };
+    let last = format_refresh_label(app.last_refresh, chrono::Utc::now(), app.refresh_interval);
     let now = std::time::Instant::now();
     let live_load_visible = app
         .loading_since
@@ -5125,6 +5118,30 @@ fn summarize_group(envs: &[&Environment]) -> String {
     parts.join(" · ")
 }
 
+/// Pure: render the header "last refresh" label as Grafana-style
+/// relative time — `12s ago · next 3s`. Cheaper visual scan than the
+/// absolute `HH:MM:SS (every Ns)` it replaces. Returns the format
+/// untouched when `last_refresh` is `None` (haven't refreshed yet).
+///
+/// The `next` countdown can go negative when a refresh is overdue
+/// (throttled, network slow, frozen with `f`); we clamp it to `0s` and
+/// the operator sees the indicator continue to tick up the `… ago`.
+fn format_refresh_label(
+    last_refresh: Option<chrono::DateTime<chrono::Utc>>,
+    now: chrono::DateTime<chrono::Utc>,
+    refresh_interval: std::time::Duration,
+) -> String {
+    let interval_s = refresh_interval.as_secs() as i64;
+    match last_refresh {
+        Some(t) => {
+            let ago = now.signed_duration_since(t).num_seconds().max(0);
+            let until = (interval_s - ago).max(0);
+            format!("{}s ago · next {}s", ago, until)
+        }
+        None => format!("— · next {interval_s}s"),
+    }
+}
+
 fn humanize_age(d: chrono::Duration) -> String {
     let secs = d.num_seconds().max(0);
     if secs < 60 {
@@ -5595,6 +5612,35 @@ mod tests {
                 "too many action-glyph collisions in {icons:?}: {glyphs:?}"
             );
         }
+    }
+
+    #[test]
+    fn format_refresh_label_relative_with_recent_refresh() {
+        let interval = std::time::Duration::from_secs(15);
+        let last = chrono::Utc::now() - chrono::Duration::seconds(3);
+        let now = chrono::Utc::now();
+        let label = format_refresh_label(Some(last), now, interval);
+        // Tolerate ±1s clock jitter in the test.
+        assert!(label.starts_with("3s ago") || label.starts_with("2s ago"));
+        assert!(label.contains("next 1") || label.contains("next 12") || label.contains("next 13"));
+    }
+
+    #[test]
+    fn format_refresh_label_clamps_overdue_to_zero() {
+        // Refresh was 30s ago with a 15s interval — countdown should
+        // clamp to 0 not show a negative number.
+        let interval = std::time::Duration::from_secs(15);
+        let now = chrono::Utc::now();
+        let last = now - chrono::Duration::seconds(30);
+        let label = format_refresh_label(Some(last), now, interval);
+        assert!(label.contains("next 0s"), "got {label:?}");
+    }
+
+    #[test]
+    fn format_refresh_label_handles_no_prior_refresh() {
+        let label =
+            format_refresh_label(None, chrono::Utc::now(), std::time::Duration::from_secs(15));
+        assert_eq!(label, "— · next 15s");
     }
 
     #[test]

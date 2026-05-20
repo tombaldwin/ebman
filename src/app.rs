@@ -3051,7 +3051,24 @@ impl App {
         let n = detail.tabs.len() as i32;
         let next = (detail.tab_idx as i32 + delta).rem_euclid(n) as usize;
         detail.tab_idx = next;
+        // Capture state we need for the post-switch auto-open decision
+        // before `detail_refresh_active_tab` reborrows self.
+        let new_tab = detail.tab();
+        let groups_available = detail.cw_log_groups.as_ref().is_some_and(|g| !g.is_empty());
+        let env_for_tail = detail.env_name.clone();
         self.detail_refresh_active_tab();
+        // Auto-open the live CW Logs overlay on tab → Logs when groups
+        // were discovered. Manual `s` remains the way to re-open after
+        // closing. Skip when a tail is already in flight or an overlay
+        // is already up (don't trample whatever the operator just
+        // opened).
+        if new_tab == DetailTab::Logs
+            && groups_available
+            && self.log_tail_task.is_none()
+            && self.current_overlay.is_none()
+        {
+            self.spawn_logs_tail(env_for_tail, None);
+        }
     }
 
     fn detail_scroll(&mut self, delta: i32) {
@@ -3995,7 +4012,10 @@ impl App {
             ),
         );
         self.push_pending(summary.clone(), env_name.clone());
-        self.status_message = Some(format!("{summary} → {env_name}…"));
+        // No status_message ack here — the pending-actions pill in the
+        // header (`⏳ N`) is the truth-source for in-flight work, and a
+        // status_message ack would just race with whatever the operator
+        // last set there. Completion fires a Success / Error toast.
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
@@ -4771,7 +4791,7 @@ impl App {
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
-        self.status_message = Some(format!("applying template '{template}' to {env_name}…"));
+        // In-flight ack lives on the pending pill; completion toasts.
         write_audit_line(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
@@ -4840,7 +4860,7 @@ impl App {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let title = format!("template — {app_name}/{template}");
-        self.status_message = Some(format!("fetching template {app_name}/{template}…"));
+        // In-flight ack: pending pill. Inspect result lands as a TextOverlay.
         tokio::spawn(async move {
             let body = match aws.describe_template_settings(&app_name, &template).await {
                 Ok(settings) if settings.is_empty() => {
@@ -4871,7 +4891,7 @@ impl App {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_for_msg = env_name.clone();
-        self.status_message = Some(format!("opening log tail for {env_name}…"));
+        // In-flight ack: the LogTail overlay opens itself when data lands.
         let handle = tokio::spawn(async move {
             // Resolve the log group up front. If the user supplied one,
             // trust it (no DescribeLogGroups round-trip); otherwise discover.
@@ -4979,7 +4999,10 @@ impl App {
             ),
         );
         self.push_pending(summary.clone(), env_name.clone());
-        self.status_message = Some(format!("{summary} → {env_name}…"));
+        // No status_message ack here — the pending-actions pill in the
+        // header (`⏳ N`) is the truth-source for in-flight work, and a
+        // status_message ack would just race with whatever the operator
+        // last set there. Completion fires a Success / Error toast.
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
@@ -5054,7 +5077,7 @@ impl App {
             ),
         );
         self.push_pending(summary.clone(), env_name.clone());
-        self.status_message = Some(format!("registering {label} from s3://{bucket}/{key}…"));
+        // In-flight ack lives on the pending pill; completion toasts.
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
@@ -5174,7 +5197,8 @@ impl App {
             ),
         );
         self.push_pending(summary.clone(), env_name.clone());
-        self.status_message = Some(format!("uploading {} bytes for {label}…", bytes.len()));
+        // In-flight ack lives on the pending pill; completion toasts.
+        let _ = bytes.len(); // size already in pending row's summary
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
@@ -5305,7 +5329,8 @@ impl App {
             &self.context.region,
             &detail,
         );
-        self.status_message = Some(format!("deleting {application}/{label}{force_str}…"));
+        // In-flight ack lives on the pending pill; completion toasts.
+        let _ = force_str;
         let pending_label = if force {
             "Delete app version (+source)"
         } else {
@@ -5507,9 +5532,10 @@ impl App {
             &self.context.region,
             &detail,
         );
-        self.status_message = Some(format!("{summary} → {}…", env.name));
         // Label intentionally carries the operation (`tag …` / `untag …`) so
-        // the pending panel distinguishes simultaneous edits.
+        // the pending panel distinguishes simultaneous edits. The pending
+        // pill in the header is the in-flight truth-source; no
+        // status_message ack here (would race with the next operation).
         self.push_pending(summary.clone(), env.name.clone());
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
@@ -5745,7 +5771,8 @@ impl App {
         // `complete_pending` finds the row.
         let target = format!("{env_name}/{id}");
         self.push_pending(Action::TerminateInstance.label(), target.clone());
-        self.status_message = Some(format!("terminating instance {id}…"));
+        // In-flight ack lives on the pending pill; completion toasts.
+        let _ = id;
         tokio::spawn(async move {
             let result = aws
                 .terminate_instance(&id)
@@ -7320,7 +7347,7 @@ impl App {
                         &format!("stage=dispatched action=DeleteCustomPlatform target={arn}"),
                     );
                     self.push_pending("Delete custom platform", arn.clone());
-                    self.status_message = Some(format!("deleting custom platform {arn}…"));
+                    // In-flight ack lives on the pending pill.
                     let aws = self.aws.clone();
                     let tx = self.msg_tx.clone();
                     let gen = self.generation;
