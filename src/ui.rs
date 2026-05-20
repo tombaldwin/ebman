@@ -411,6 +411,12 @@ fn draw_form(f: &mut Frame, area: Rect, app: &App) {
                         fld.value.clone()
                     }
                 }
+                FieldKind::MultiSelect { options } => {
+                    // Value row shows a one-line summary; the full option
+                    // list is rendered below on its own lines.
+                    let n_selected = crate::form::parse_multi_value(&fld.value).len();
+                    format!("({n_selected} / {} selected)", options.len())
+                }
             };
             // Trailing in-line validation marker: a single ✗ glyph in
             // health_red next to the value when the field is invalid.
@@ -434,6 +440,30 @@ fn draw_form(f: &mut Frame, area: Rect, app: &App) {
                 ));
             }
             lines.push(Line::from(row_spans));
+            // MultiSelect: render the full option list below the value
+            // summary. Each row shows `[x] {opt}` or `[ ] {opt}`; the row
+            // at `option_cursor` gets the same row_selected_bg treatment
+            // the table uses for the focused row.
+            if let FieldKind::MultiSelect { options } = &fld.kind {
+                for (idx, opt) in options.iter().enumerate() {
+                    let selected = crate::form::is_multi_selected(&fld.value, opt);
+                    let marker = if selected { "[x]" } else { "[ ]" };
+                    let row_is_cursor = is_cursor && idx == fld.option_cursor;
+                    let row_style = if row_is_cursor {
+                        Style::default().fg(theme.text).bg(theme.row_selected_bg)
+                    } else if selected {
+                        Style::default()
+                            .fg(theme.title_alt)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme.text)
+                    };
+                    lines.push(Line::from(Span::styled(
+                        format!("     {marker} {opt}"),
+                        row_style,
+                    )));
+                }
+            }
             if let Some(help) = &fld.help {
                 lines.push(Line::from(Span::styled(
                     format!("     {help}"),
@@ -452,7 +482,7 @@ fn draw_form(f: &mut Frame, area: Rect, app: &App) {
     let footer = match form.state {
         FormState::Loading => " esc to cancel",
         FormState::Submitting => " submitting…",
-        FormState::Ready => " tab/↓↑ field · type to edit · space toggle bool · ←→ cycle select · ^S submit · esc cancel",
+        FormState::Ready => " tab field · ↓↑ field-or-option · type to edit · space toggle · ←→ cycle select · ^S submit · esc cancel",
     };
     f.render_widget(
         Paragraph::new(Span::styled(footer, Style::default().fg(theme.muted))),
