@@ -94,7 +94,7 @@ async fn main() -> Result<()> {
     // Animate the splash while App::new resolves (config load + STS + first
     // SDK setup). Keep the splash visible for at least SPLASH_MIN_DURATION even
     // if App::new returns sooner — gives the user a chance to actually see it.
-    const SPLASH_MIN_DURATION: std::time::Duration = std::time::Duration::from_secs(2);
+    const SPLASH_MIN_DURATION: std::time::Duration = std::time::Duration::from_secs(3);
 
     let splash_started = std::time::Instant::now();
     let mut splash_frame: u64 = 0;
