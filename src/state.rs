@@ -3,7 +3,7 @@ use std::{
     path::PathBuf,
 };
 
-use crate::util::{config_file, parse_bool};
+use crate::util::{config_file, parse_bool, write_atomic};
 
 #[derive(Debug, Default, Clone)]
 pub struct PersistedState {
@@ -173,12 +173,8 @@ pub fn parse(text: &str) -> PersistedState {
 
 pub fn save(state: &PersistedState) {
     let path = state_path();
-    if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            tracing::warn!(error = %e, "failed to create state dir");
-            return;
-        }
-    }
+    // Parent-dir creation is handled by `write_atomic`. We just build
+    // the body here and hand it off.
     let mut out = String::new();
     out.push_str("# ebman persisted state — managed by the app, edits will be overwritten\n");
     if let Some(p) = &state.profile {
@@ -227,7 +223,7 @@ pub fn save(state: &PersistedState) {
         let joined: Vec<&str> = state.hidden_cols.iter().map(String::as_str).collect();
         out.push_str(&format!("hidden_cols = \"{}\"\n", joined.join(",")));
     }
-    if let Err(e) = std::fs::write(&path, out) {
+    if let Err(e) = write_atomic(&path, &out) {
         tracing::warn!(error = %e, path = %path.display(), "failed to write state");
     }
 }

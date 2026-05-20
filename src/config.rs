@@ -109,13 +109,12 @@ pub fn config_path() -> PathBuf {
 
 /// Serialise the config back to disk. Round-trips the parse format and
 /// over-writes the user's existing file. Used by the `:settings` form.
+/// Atomic — writes to a sibling `.tmp` and renames into place so a
+/// crash mid-write can't truncate `config.toml`.
 pub fn save(cfg: &Config) -> std::io::Result<()> {
     let path = config_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     let body = serialize(cfg);
-    std::fs::write(&path, body)
+    crate::util::write_atomic(&path, &body)
 }
 
 /// Pure: render a `Config` into the TOML-ish line-oriented format the
