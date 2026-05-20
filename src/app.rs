@@ -34,6 +34,7 @@ use crate::{
 pub use crate::mode_action::{
     Action, ActionFlow, ConfirmKind, ConfirmModal, DryRunInfo, ParameterisedAction, ACTIONS,
 };
+pub use crate::mode_dlq::{DlqState, QueueView};
 
 /// Names of all built-in `:commands`. Used to detect collisions when loading
 /// user plugins from `commands.toml` — plugins that shadow a built-in are
@@ -449,30 +450,8 @@ pub struct PaletteItem {
     pub action: PaletteAction,
 }
 
-pub struct DlqState {
-    pub env_name: String,
-    pub main_queue_url: String,
-    pub dlq_url: String,
-    pub messages: Vec<QueueMessage>,
-    pub list_state: ListState,
-    pub loading: bool,
-    pub error: Option<String>,
-    pub confirm_purge: bool,
-    pub purge_typed: String,
-    /// Which queue is currently loaded — DLQ (default) or the main worker
-    /// queue. Toggled by `m`. The same UI surfaces both; resend / purge are
-    /// disabled in Main view because purging a working queue is too dangerous.
-    pub viewing: QueueView,
-    /// Pending single-message delete confirmation. Holds the index of the
-    /// message the user pressed `x` on; `y` confirms, anything else cancels.
-    pub confirm_delete_idx: Option<usize>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QueueView {
-    Dlq,
-    Main,
-}
+// `DlqState` / `QueueView` moved to `crate::mode_dlq` — re-exported
+// from app.rs above.
 
 // `ActionFlow` / `ConfirmModal` / `ParameterisedAction` / `DryRunInfo`
 // / `ConfirmKind` / `Action` / `ACTIONS` moved to `crate::mode_action`
