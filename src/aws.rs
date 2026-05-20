@@ -2483,6 +2483,134 @@ mod tests {
         assert!(subnets[1].name_tag.is_none());
     }
 
+    // ── Write-path coverage ──────────────────────────────────────────────
+    //
+    // `update_env_option_settings` is the load-bearing write path —
+    // every `:capacity`, `:env`, `:tag`, `:subnets`, `:set-option`, etc.
+    // ultimately funnels through it. Pin the request-shape contract and
+    // the empty-input guard.
+
+    #[tokio::test]
+    async fn update_env_option_settings_builds_correct_request_shape() {
+        use aws_sdk_elasticbeanstalk::operation::update_environment::UpdateEnvironmentOutput;
+        // `match_requests` runs the closure against every captured
+        // request; returning false means "no rule matched" and the
+        // SDK call returns an error, which the test would then trip on.
+        // So an assertion-style predicate doubles as the test body.
+        let rule = mock!(Client::update_environment)
+            .match_requests(|input| {
+                if input.environment_name.as_deref() != Some("api-prod") {
+                    return false;
+                }
+                let options = input.option_settings();
+                if options.len() != 2 {
+                    return false;
+                }
+                // Order is preserved from the caller's slice.
+                if options[0].namespace.as_deref() != Some("aws:autoscaling:asg")
+                    || options[0].option_name.as_deref() != Some("MinSize")
+                    || options[0].value.as_deref() != Some("2")
+                {
+                    return false;
+                }
+                if options[1].namespace.as_deref() != Some("aws:autoscaling:launchconfiguration")
+                    || options[1].option_name.as_deref() != Some("InstanceType")
+                    || options[1].value.as_deref() != Some("t3.medium")
+                {
+                    return false;
+                }
+                let removes = input.options_to_remove();
+                if removes.len() != 1 {
+                    return false;
+                }
+                removes[0].namespace.as_deref()
+                    == Some("aws:elasticbeanstalk:application:environment")
+                    && removes[0].option_name.as_deref() == Some("OLD_VAR")
+            })
+            .then_output(|| UpdateEnvironmentOutput::builder().build());
+        let eb = mock_client!(aws_sdk_elasticbeanstalk, [&rule]);
+        let client = client_with_eb(eb);
+
+        let to_set = vec![
+            (
+                "aws:autoscaling:asg".to_string(),
+                "MinSize".to_string(),
+                "2".to_string(),
+            ),
+            (
+                "aws:autoscaling:launchconfiguration".to_string(),
+                "InstanceType".to_string(),
+                "t3.medium".to_string(),
+            ),
+        ];
+        let to_remove = vec![(
+            "aws:elasticbeanstalk:application:environment".to_string(),
+            "OLD_VAR".to_string(),
+        )];
+        client
+            .update_env_option_settings("api-prod", &to_set, &to_remove)
+            .await
+            .expect("expected request shape to match");
+        assert_eq!(rule.num_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn update_env_option_settings_rejects_empty_input_before_dispatch() {
+        // If the guard fails we'd reach the mocked client, which has no
+        // rules — that would also error, but with a different message.
+        // The empty-input branch must short-circuit *before* any SDK call.
+        use aws_sdk_elasticbeanstalk::operation::update_environment::UpdateEnvironmentOutput;
+        let trip = mock!(Client::update_environment)
+            .then_output(|| UpdateEnvironmentOutput::builder().build());
+        let eb = mock_client!(aws_sdk_elasticbeanstalk, [&trip]);
+        let client = client_with_eb(eb);
+
+        let err = client
+            .update_env_option_settings("api-prod", &[], &[])
+            .await
+            .expect_err("expected guard to fire");
+        assert!(
+            err.to_string().contains("nothing to do"),
+            "expected nothing-to-do guard, got {err}"
+        );
+        assert_eq!(
+            trip.num_calls(),
+            0,
+            "guard should short-circuit before any SDK call"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_env_option_settings_surfaces_aws_errors() {
+        use aws_sdk_elasticbeanstalk::operation::update_environment::UpdateEnvironmentError;
+        use aws_sdk_elasticbeanstalk::types::error::InsufficientPrivilegesException;
+        let err_rule = mock!(Client::update_environment).then_error(|| {
+            UpdateEnvironmentError::InsufficientPrivilegesException(
+                InsufficientPrivilegesException::builder()
+                    .message("not authorized to call UpdateEnvironment")
+                    .build(),
+            )
+        });
+        let eb = mock_client!(aws_sdk_elasticbeanstalk, [&err_rule]);
+        let client = client_with_eb(eb);
+
+        let err = client
+            .update_env_option_settings(
+                "api-prod",
+                &[("aws:autoscaling:asg".into(), "MinSize".into(), "2".into())],
+                &[],
+            )
+            .await
+            .expect_err("expected AWS error to propagate");
+        // The flatten wraps the SDK error string; we just confirm the
+        // contextual prefix is present so logs are actionable.
+        assert!(
+            err.to_string()
+                .contains("UpdateEnvironment(option_settings)"),
+            "expected wrapped error context, got {err}"
+        );
+    }
+
     #[tokio::test]
     async fn list_security_groups_in_vpc_orders_by_name() {
         use aws_sdk_ec2::operation::describe_security_groups::DescribeSecurityGroupsOutput;
