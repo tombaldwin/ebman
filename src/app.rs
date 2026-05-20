@@ -8521,11 +8521,13 @@ impl App {
     /// Apply a Detail-tab AppMsg payload. Handles the boilerplate every
     /// `Detail*` variant shares: drop on stale generation, drop when no
     /// Detail view is open, drop when the user switched to a different
-    /// env mid-fetch. The closure then runs against `&mut DetailState`
-    /// + the raw `Result<T, String>` so the caller chooses its own
-    /// success / error behaviour — most clear `detail.error` on the Ok
-    /// branch, but tags / env-vars use `tracing::warn!` instead since
-    /// their failures shouldn't tint the whole tab red.
+    /// env mid-fetch.
+    ///
+    /// The closure runs against `&mut DetailState` + the raw
+    /// `Result<T, String>` so the caller picks its own success / error
+    /// behaviour — most clear `detail.error` on the Ok branch, but tags /
+    /// env-vars use `tracing::warn!` instead since their failures
+    /// shouldn't tint the whole tab red.
     fn apply_detail_msg<T, F>(
         &mut self,
         gen: u64,
