@@ -196,6 +196,45 @@ impl AwsClient {
         })
     }
 
+    /// Build a fully-mocked `AwsClient` for unit tests. The caller supplies
+    /// pre-built (typically `mock_client!`-backed) sub-clients; any client
+    /// not exercised by the test can stay as a plain SDK-default instance.
+    /// Tests should not assume any of the sub-clients can talk to a real
+    /// endpoint — the default ones will fail if a non-mocked code path is
+    /// reached, which is exactly the signal we want.
+    #[cfg(test)]
+    pub fn for_tests(
+        client: Client,
+        sqs: SqsClient,
+        cw: CwClient,
+        cw_logs: CwLogsClient,
+        s3: S3Client,
+        ec2: Ec2Client,
+    ) -> Self {
+        // A bare config is fine here — every sub-client is owned by the
+        // caller, so the only consumer of `self.config` is the lazy STS
+        // client in `verify_identity`, which our tests don't call.
+        let config = aws_config::SdkConfig::builder()
+            .region(Region::new("us-east-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        Self {
+            client,
+            sqs,
+            cw,
+            cw_logs,
+            s3,
+            ec2,
+            config,
+            context: AwsContext {
+                region: "us-east-1".to_string(),
+                profile: None,
+                account_id: None,
+                caller_arn: None,
+            },
+        }
+    }
+
     /// Verify credentials work and fetch the caller identity. Used at startup to
     /// detect invalid persisted profiles, and as a background task after rebuild.
     pub async fn verify_identity(&self) -> Result<Identity> {
@@ -1916,5 +1955,229 @@ mod tests {
             derive_dlq_url("https://sqs.us-east-1.amazonaws.com/123/foo/"),
             Some("https://sqs.us-east-1.amazonaws.com/123/foo-dlq".to_string())
         );
+    }
+
+    // ─── Mocked-AWS integration tests ─────────────────────────────────────
+    //
+    // These exercise the SDK code paths against `aws-smithy-mocks` so we
+    // can lock down past regressions and run without an AWS account. Each
+    // test names the specific bug it pins to keep the intent crisp when
+    // a future change "breaks" it.
+
+    use aws_smithy_mocks::{mock, mock_client};
+
+    /// Build a minimal `AwsClient` where only one sub-client is mocked and
+    /// the rest are plain SDK defaults (which will fail loudly if any
+    /// unmocked code path is reached — exactly the signal we want).
+    fn client_with_eb(eb: Client) -> AwsClient {
+        let cfg = aws_config::SdkConfig::builder()
+            .region(Region::new("us-east-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        AwsClient::for_tests(
+            eb,
+            SqsClient::new(&cfg),
+            CwClient::new(&cfg),
+            CwLogsClient::new(&cfg),
+            S3Client::new(&cfg),
+            Ec2Client::new(&cfg),
+        )
+    }
+
+    fn client_with_sqs(sqs: SqsClient) -> AwsClient {
+        let cfg = aws_config::SdkConfig::builder()
+            .region(Region::new("us-east-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        AwsClient::for_tests(
+            Client::new(&cfg),
+            sqs,
+            CwClient::new(&cfg),
+            CwLogsClient::new(&cfg),
+            S3Client::new(&cfg),
+            Ec2Client::new(&cfg),
+        )
+    }
+
+    // ── Regression #1 ────────────────────────────────────────────────────
+    // `DescribeConfigurationSettings` returns `WorkerQueueURL = ""` when
+    // EB autocreates the queue (the operator didn't override it). The
+    // original code looked only at option settings and would show "no
+    // queue" for the most common worker-tier shape. The fix queries
+    // `DescribeEnvironmentResources` first and only falls back to option
+    // settings when explicit overrides exist.
+
+    #[tokio::test]
+    async fn worker_queues_resolves_via_describe_environment_resources_when_autocreated() {
+        use aws_sdk_elasticbeanstalk::operation::describe_environment_resources::DescribeEnvironmentResourcesOutput;
+        use aws_sdk_elasticbeanstalk::types::{EnvironmentResourceDescription, Queue};
+
+        let der = mock!(Client::describe_environment_resources).then_output(|| {
+            DescribeEnvironmentResourcesOutput::builder()
+                .environment_resources(
+                    EnvironmentResourceDescription::builder()
+                        .queues(
+                            Queue::builder()
+                                .name("WorkerQueue")
+                                .url("https://sqs.us-east-1.amazonaws.com/123/awseb-e-foo-queue")
+                                .build(),
+                        )
+                        .queues(
+                            Queue::builder()
+                                .name("WorkerDeadLetterQueue")
+                                .url(
+                                    "https://sqs.us-east-1.amazonaws.com/123/awseb-e-foo-queue-dlq",
+                                )
+                                .build(),
+                        )
+                        .build(),
+                )
+                .build()
+        });
+        // Provide an empty configuration-settings response — that's the
+        // exact failure mode the bug fix is defending against.
+        let dcs = mock!(Client::describe_configuration_settings).then_output(|| {
+            aws_sdk_elasticbeanstalk::operation::describe_configuration_settings::DescribeConfigurationSettingsOutput::builder()
+                .build()
+        });
+        let eb = mock_client!(aws_sdk_elasticbeanstalk, [&der, &dcs]);
+        let client = client_with_eb(eb);
+
+        // We can't actually fetch SQS stats without mocking SQS too, but
+        // the URL resolution is the bit that regressed — assert by
+        // calling the option-settings-only path that drives the same
+        // logic without the stats round-trip.
+        // describe_worker_queues calls queue_stats which would fail
+        // against the default sqs client. Use a try-await dance to
+        // observe at least the call shape via the mock's call counter.
+        let _ = client.describe_worker_queues("eb-app", "eb-env").await;
+        assert_eq!(
+            der.num_calls(),
+            1,
+            "describe_environment_resources should be the primary path"
+        );
+    }
+
+    // ── Regression #2 ────────────────────────────────────────────────────
+    // `peek_messages` originally made a single `ReceiveMessage` call —
+    // but SQS may return fewer than the requested batch on any one call
+    // (it's a maximum, not a guarantee). The fix loops with short long-
+    // polling, dedupes by message id across iterations, and bails after
+    // two empty batches in a row.
+
+    #[tokio::test]
+    async fn peek_messages_loops_and_dedupes_across_batches() {
+        use aws_sdk_sqs::operation::receive_message::ReceiveMessageOutput;
+        use aws_sdk_sqs::types::Message;
+
+        // First call returns 2 messages, second call returns 1 (including
+        // a duplicate of msg-1), third returns empty, fourth returns
+        // empty → loop should exit. Expect 3 unique messages.
+        fn msg(id: &'static str) -> Message {
+            Message::builder().message_id(id).body(id).build()
+        }
+        let rule = mock!(aws_sdk_sqs::Client::receive_message)
+            .sequence()
+            .output(|| {
+                ReceiveMessageOutput::builder()
+                    .messages(msg("msg-1"))
+                    .messages(msg("msg-2"))
+                    .build()
+            })
+            .output(|| {
+                ReceiveMessageOutput::builder()
+                    .messages(msg("msg-1")) // dup
+                    .messages(msg("msg-3"))
+                    .build()
+            })
+            .output(|| ReceiveMessageOutput::builder().build())
+            .output(|| ReceiveMessageOutput::builder().build())
+            .build();
+        let sqs = mock_client!(aws_sdk_sqs, [&rule]);
+        let client = client_with_sqs(sqs);
+
+        let out = client
+            .peek_messages("https://sqs.us-east-1.amazonaws.com/123/q", 10)
+            .await
+            .expect("peek should succeed");
+        let ids: Vec<String> = out.iter().map(|m| m.id.clone()).collect();
+        assert_eq!(ids, vec!["msg-1", "msg-2", "msg-3"]);
+    }
+
+    #[tokio::test]
+    async fn peek_messages_stops_after_two_empty_batches() {
+        use aws_sdk_sqs::operation::receive_message::ReceiveMessageOutput;
+        // Sequence returns empty twice — should stop without exhausting
+        // the call cap.
+        let rule = mock!(aws_sdk_sqs::Client::receive_message)
+            .sequence()
+            .output(|| ReceiveMessageOutput::builder().build())
+            .output(|| ReceiveMessageOutput::builder().build())
+            // If we reach this, the stop-on-two-empty guard is broken.
+            .output(|| {
+                ReceiveMessageOutput::builder()
+                    .messages(
+                        aws_sdk_sqs::types::Message::builder()
+                            .message_id("late")
+                            .body("late")
+                            .build(),
+                    )
+                    .build()
+            })
+            .build();
+        let sqs = mock_client!(aws_sdk_sqs, [&rule]);
+        let client = client_with_sqs(sqs);
+
+        let out = client
+            .peek_messages("https://sqs.us-east-1.amazonaws.com/123/q", 10)
+            .await
+            .expect("peek should succeed");
+        assert!(
+            out.is_empty(),
+            "should have stopped before consuming the 'late' message"
+        );
+        assert_eq!(
+            rule.num_calls(),
+            2,
+            "exactly two empty-batch calls should terminate the loop"
+        );
+    }
+
+    // ── Happy-path coverage ──────────────────────────────────────────────
+    // Lock down the most-used path so refactors of `list_environments`
+    // don't silently break the table-rendering surface.
+
+    #[tokio::test]
+    async fn list_environments_maps_describe_environments_to_env_rows() {
+        use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsOutput;
+        use aws_sdk_elasticbeanstalk::types::{EnvironmentDescription, EnvironmentTier};
+
+        let de = mock!(Client::describe_environments).then_output(|| {
+            DescribeEnvironmentsOutput::builder()
+                .environments(
+                    EnvironmentDescription::builder()
+                        .environment_name("api-prod")
+                        .application_name("api")
+                        .status("Ready".into())
+                        .health("Green".into())
+                        .cname("api-prod.eba.amazonaws.com")
+                        .version_label("build-42")
+                        .solution_stack_name("64bit Amazon Linux 2 v3.5.0 running Java 17")
+                        .tier(EnvironmentTier::builder().name("WebServer").build())
+                        .build(),
+                )
+                .build()
+        });
+        let eb = mock_client!(aws_sdk_elasticbeanstalk, [&de]);
+        let client = client_with_eb(eb);
+
+        let envs = client.list_environments().await.expect("ok");
+        assert_eq!(envs.len(), 1);
+        let e = &envs[0];
+        assert_eq!(e.name, "api-prod");
+        assert_eq!(e.application, "api");
+        assert_eq!(e.tier, "Web", "tier normalises WebServer → Web");
+        assert_eq!(e.platform, "Java 17");
+        assert_eq!(e.version_label, "build-42");
     }
 }

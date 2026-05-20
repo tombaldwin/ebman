@@ -5342,7 +5342,7 @@ mod tests {
                 arn: None,
             }
         }
-        let envs = vec![e("Web", "Green"), e("Web", "Green"), e("Web", "Red")];
+        let envs = [e("Web", "Green"), e("Web", "Green"), e("Web", "Red")];
         let refs: Vec<&Environment> = envs.iter().collect();
         let s = summarize_group(&refs);
         // 3 envs, all web (no worker), 1 red — only the non-empty buckets
@@ -5371,7 +5371,7 @@ mod tests {
                 arn: None,
             }
         }
-        let envs = vec![e("Web", "Green"), e("Worker", "Yellow"), e("Worker", "Red")];
+        let envs = [e("Web", "Green"), e("Worker", "Yellow"), e("Worker", "Red")];
         let refs: Vec<&Environment> = envs.iter().collect();
         let s = summarize_group(&refs);
         assert!(s.contains("1 web"));

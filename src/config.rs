@@ -196,16 +196,17 @@ grouped_default = false
 
     #[test]
     fn serialize_round_trips_full_config() {
-        let mut cfg = Config::default();
-        cfg.refresh_interval = Duration::from_secs(45);
-        cfg.extra_regions = vec!["eu-south-2".into(), "ap-southeast-4".into()];
-        cfg.redact_default = Some(true);
-        cfg.grouped_default = Some(false);
-        cfg.theme = "high-contrast".into();
-        cfg.icons = "powerline".into();
-        cfg.notify_bell = true;
-        cfg.required_tags = vec!["Owner".into(), "Env".into()];
-        cfg.webhook_url = Some("https://hooks.example/abc".into());
+        let cfg = Config {
+            refresh_interval: Duration::from_secs(45),
+            extra_regions: vec!["eu-south-2".into(), "ap-southeast-4".into()],
+            redact_default: Some(true),
+            grouped_default: Some(false),
+            theme: "high-contrast".into(),
+            icons: "powerline".into(),
+            notify_bell: true,
+            required_tags: vec!["Owner".into(), "Env".into()],
+            webhook_url: Some("https://hooks.example/abc".into()),
+        };
 
         let body = serialize(&cfg);
         let reparsed = parse(&body);
