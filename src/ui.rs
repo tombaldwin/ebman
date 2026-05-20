@@ -2386,6 +2386,13 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App) {
             "Region/profile come from the standard AWS env (AWS_REGION, AWS_PROFILE).",
             Style::default().fg(app.theme.muted),
         )),
+        Line::from(Span::styled(
+            format!(
+                "ebman {} · built by Tom Baldwin / Polymorphism Ltd · `:about` for credits",
+                env!("CARGO_PKG_VERSION")
+            ),
+            Style::default().fg(app.theme.muted),
+        )),
     ];
     let help = Paragraph::new(lines)
         .wrap(Wrap { trim: false })
