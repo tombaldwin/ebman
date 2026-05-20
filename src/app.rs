@@ -7985,24 +7985,26 @@ impl App {
 
     fn persist_state(&self) {
         let selected = self.selected_env().map(|e| e.name.clone());
-        // Persist the *effective* profile / region, not just the override.
-        // Otherwise a user who never explicitly ran `:profile` / `:region`
-        // (they're on AWS_PROFILE / AWS_REGION env defaults) would have a
-        // state file with no profile/region — meaning the next restart
-        // follows whatever the shell env happens to point at, which feels
-        // like ebman "forgot" where the user was. Falling back to the
-        // override only when the effective value is missing keeps tests
-        // and edge cases (unresolved SDK config) sane.
-        let region = if !self.context.region.is_empty() && self.context.region != "unknown" {
-            Some(self.context.region.clone())
-        } else {
-            self.override_region.clone()
-        };
+        // Persist the operator's *intent* first, then fall back to the
+        // effective state. Override-wins matters when the user has
+        // dispatched `:region X` (so `override_region` is `Some(X)`) but
+        // the rebuild hasn't landed yet (so `context.region` is still the
+        // *previous* region). Quitting in that gap would otherwise
+        // persist the stale context and restore the user to the old
+        // region on next launch. Falling back to `context` when override
+        // is `None` covers the env-default case so we still remember
+        // where the user was even if they never explicitly switched.
+        let region = self.override_region.clone().or_else(|| {
+            if !self.context.region.is_empty() && self.context.region != "unknown" {
+                Some(self.context.region.clone())
+            } else {
+                None
+            }
+        });
         let profile = self
-            .context
-            .profile
+            .override_profile
             .clone()
-            .or_else(|| self.override_profile.clone());
+            .or_else(|| self.context.profile.clone());
         state::save(&PersistedState {
             profile,
             region,
