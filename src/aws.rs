@@ -621,7 +621,10 @@ impl AwsClient {
             if let Some(t) = next_token.take() {
                 req = req.next_token(t);
             }
-            let resp = req.send().await?;
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| eyre!("DescribeAlarms failed: {e}"))?;
             for a in resp.metric_alarms.unwrap_or_default() {
                 let dims = a.dimensions.clone().unwrap_or_default();
                 let touches = dims.iter().any(|d| d.value.as_deref() == Some(env_name));
