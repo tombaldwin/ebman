@@ -2047,16 +2047,20 @@ fn tier_cell(tier: &str, theme: &Theme) -> Cell<'static> {
 }
 
 /// Returns `(web_icon, worker_icon)` for the given icon style. Picks
-/// single-cell glyphs across all three styles so the pill widths stay
-/// predictable. Powerline mode uses Nerd Font MDI glyphs (web-asterisk
-/// + wrench); unicode mode uses common monospaced symbols; ASCII gets
-/// a letter tag so the column still aligns when no decoration is
-/// available.
+/// single-cell glyphs that render predictably without depending on
+/// Nerd Font MDI codepoint stability across font versions (an earlier
+/// version tried `\u{f0319}` / `\u{f0294}` and got an inbox-tray + an
+/// arrow-expand instead of web / wrench).
+///
+/// Web → `⊕` (circle-plus, reads as a globe/world stand-in); Worker
+/// → `⚒` (hammer-and-pick, the universal blue-collar glyph). Both
+/// are BMP unicode, single cell in standard monospaced + Powerline
+/// fonts. ASCII falls back to letter tags so the pill column still
+/// aligns when no decoration is available.
 fn tier_icons(icons: IconStyle) -> (&'static str, &'static str) {
     match icons {
-        IconStyle::Powerline => ("\u{f0319}", "\u{f0294}"), // web · wrench
-        IconStyle::Unicode => ("≡", "⚙"),
         IconStyle::Ascii => ("W", "K"),
+        _ => ("⊕", "⚒"),
     }
 }
 
