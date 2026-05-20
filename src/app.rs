@@ -1397,10 +1397,24 @@ async fn init_client(
 impl App {
     pub async fn new(config: Config) -> Result<Self> {
         let persisted = state::load();
+        tracing::info!(
+            target: "ebman::state",
+            persisted_profile = ?persisted.profile,
+            persisted_region = ?persisted.region,
+            "state::load"
+        );
         let (aws, override_profile, override_region, identity_warning) =
             init_client(persisted.profile.clone(), persisted.region.clone()).await?;
         let aws = Arc::new(aws);
         let context = aws.context.clone();
+        tracing::info!(
+            target: "ebman::state",
+            override_profile = ?override_profile,
+            override_region = ?override_region,
+            context_region = %context.region,
+            context_profile = ?context.profile,
+            "init_client returned"
+        );
         let (msg_tx, msg_rx) = mpsc::unbounded_channel();
         let mut table_state = TableState::default();
         table_state.select(Some(0));
@@ -8156,6 +8170,16 @@ impl App {
             .override_profile
             .clone()
             .or_else(|| self.context.profile.clone());
+        tracing::info!(
+            target: "ebman::state",
+            override_region = ?self.override_region,
+            context_region = %self.context.region,
+            persisted_region = ?region,
+            override_profile = ?self.override_profile,
+            context_profile = ?self.context.profile,
+            persisted_profile = ?profile,
+            "persist_state"
+        );
         state::save(&PersistedState {
             profile,
             region,
