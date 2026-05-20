@@ -433,7 +433,7 @@ The three things still keeping users in the AWS console day-to-day. Highest-leve
 
 ### Refactors — structural cleanup remaining
 
-- [ ] **Split `src/app.rs` (6000+ lines, 60+ fields)** — `handle_key` is a flat dispatch across 10+ modes; the file is past the point where one branch can be changed confidently without reading the others. Extract per-mode handlers into their own modules (`mode_detail.rs`, `mode_dlq.rs`, `mode_action.rs`, …); action-flow state machine into `action.rs`; DLQ state machine into `dlq.rs`; persistence / `rebuild_view` into `view.rs`. Stop-conditioned in autonomous mode; needs a focused session.
+- [ ] **Split `src/app.rs` (12,271 lines, 217 fields)** — Extract per-mode state machines into their own modules. Pick them up one at a time with manual verification between each (the keyboard / render flows aren't covered by the 220-test suite). Order: `mode_action.rs` (~150 lines, smallest blast radius), then `mode_dlq.rs` (~200), then `mode_detail.rs` (~250). Then `execute_command` (1724-line match) split by category into `cmd_navigation.rs` / `cmd_write_env.rs` / `cmd_overlay.rs` / `cmd_misc.rs`. CLAUDE.md stop condition in autonomous mode.
 - [ ] **Mocked-AWS test coverage — further expansion** — foundation + write-path + InsufficientPrivileges error path now covered (9 mocked-AWS tests in `aws.rs`). Remaining gaps worth chipping at when surfaces regress: throttling backoff (asserts the `is_throttling_error` predicate fires the expected response), expired-token surfacing, `:deploy --from` multi-stage flow (CreateStorageLocation → S3 PutObject → CreateApplicationVersion → UpdateEnvironment) since it's the most multi-step pure-AWS code path, CloudWatch metric query batching.
 
 ### UX punch list — drive-the-app review (2026-05-19)
