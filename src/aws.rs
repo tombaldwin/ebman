@@ -551,7 +551,8 @@ impl AwsClient {
                 .message_system_attribute_names(M::ApproximateReceiveCount)
                 .message_system_attribute_names(M::SentTimestamp)
                 .send()
-                .await?;
+                .await
+                .map_err(|e| eyre!("ReceiveMessage failed: {e}"))?;
             let batch = resp.messages.unwrap_or_default();
             if batch.is_empty() {
                 empty_in_a_row += 1;
@@ -1889,7 +1890,10 @@ impl AwsClient {
             if let Some(t) = next_token.take() {
                 req = req.next_token(t);
             }
-            let resp = req.send().await?;
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| eyre!("DescribeEnvironments failed: {e}"))?;
             if let Some(envs) = resp.environments {
                 all.extend(envs.into_iter().map(map_env));
             }
@@ -2658,5 +2662,107 @@ mod tests {
         assert_eq!(sgs.len(), 2);
         assert_eq!(sgs[0].group_name, "alpha");
         assert_eq!(sgs[1].group_name, "zeta");
+    }
+
+    // ── Error-path coverage for the load-bearing read methods ────────────
+    //
+    // Each of these mocks the SDK to return a typed error and asserts
+    // our wrapper preserves the operation-name context. Future
+    // refactors of these methods will trip a test if they accidentally
+    // drop the `.map_err(|e| eyre!(...))?` prefix and start propagating
+    // bare SDK errors.
+
+    #[tokio::test]
+    async fn list_environments_surfaces_aws_errors_with_op_context() {
+        use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsError;
+        let rule = mock!(Client::describe_environments).then_error(|| {
+            DescribeEnvironmentsError::generic(
+                aws_smithy_types::error::ErrorMetadata::builder()
+                    .code("InternalServerError")
+                    .message("retry later")
+                    .build(),
+            )
+        });
+        let eb = mock_client!(aws_sdk_elasticbeanstalk, [&rule]);
+        let client = client_with_eb(eb);
+
+        let err = client
+            .list_environments()
+            .await
+            .expect_err("expected AWS error to propagate");
+        assert!(
+            err.to_string().contains("DescribeEnvironments"),
+            "expected operation context, got {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn peek_messages_surfaces_sqs_errors_with_op_context() {
+        use aws_sdk_sqs::operation::receive_message::ReceiveMessageError;
+        let rule = mock!(aws_sdk_sqs::Client::receive_message).then_error(|| {
+            ReceiveMessageError::generic(
+                aws_smithy_types::error::ErrorMetadata::builder()
+                    .code("QueueDoesNotExist")
+                    .message("queue gone")
+                    .build(),
+            )
+        });
+        let sqs = mock_client!(aws_sdk_sqs, [&rule]);
+        let cfg = aws_config::SdkConfig::builder()
+            .region(Region::new("us-east-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        let client = AwsClient::for_tests(
+            Client::new(&cfg),
+            sqs,
+            CwClient::new(&cfg),
+            CwLogsClient::new(&cfg),
+            S3Client::new(&cfg),
+            Ec2Client::new(&cfg),
+        );
+
+        let err = client
+            .peek_messages("https://sqs.us-east-1.amazonaws.com/123/q", 5)
+            .await
+            .expect_err("expected SQS error to propagate");
+        assert!(
+            err.to_string().contains("ReceiveMessage"),
+            "expected operation context, got {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_subnets_in_vpc_surfaces_ec2_errors_with_op_context() {
+        use aws_sdk_ec2::operation::describe_subnets::DescribeSubnetsError;
+        let rule = mock!(aws_sdk_ec2::Client::describe_subnets).then_error(|| {
+            DescribeSubnetsError::generic(
+                aws_smithy_types::error::ErrorMetadata::builder()
+                    .code("InvalidVpcID.NotFound")
+                    .message("vpc-xxx not found")
+                    .build(),
+            )
+        });
+        let ec2 = mock_client!(aws_sdk_ec2, [&rule]);
+        let cfg = aws_config::SdkConfig::builder()
+            .region(Region::new("us-east-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        let client = AwsClient::for_tests(
+            Client::new(&cfg),
+            SqsClient::new(&cfg),
+            CwClient::new(&cfg),
+            CwLogsClient::new(&cfg),
+            S3Client::new(&cfg),
+            ec2,
+        );
+
+        let err = client
+            .list_subnets_in_vpc("vpc-xxx")
+            .await
+            .expect_err("expected EC2 error to propagate");
+        assert!(
+            err.to_string().contains("DescribeSubnets"),
+            "expected operation context, got {err}"
+        );
     }
 }
