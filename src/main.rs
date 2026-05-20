@@ -6,6 +6,7 @@ mod font_probe;
 mod form;
 mod keys;
 mod mode_action;
+mod mode_detail;
 mod mode_dlq;
 mod plugins;
 mod profiles;
