@@ -4072,17 +4072,51 @@ impl App {
         }
         // Field navigation that's always available: Tab, Shift-Tab, Up, Down.
         // Up/Down would conflict with vim-style j/k inside text input — we
-        // don't bind j/k for nav inside the form.
-        let nav = match key.code {
+        // don't bind j/k for nav inside the form. Exception: when the
+        // focused field is a MultiSelect, Up/Down (and j/k) move the
+        // *option cursor* within the field rather than between fields;
+        // Tab/Shift-Tab still leave the field.
+        let is_multi = matches!(cursor_kind.as_ref(), Some(FieldKind::MultiSelect { .. }));
+        let between_fields = match key.code {
             KeyCode::Tab => Some(1),
             KeyCode::BackTab => Some(-1),
-            KeyCode::Up => Some(-1),
-            KeyCode::Down => Some(1),
+            KeyCode::Up | KeyCode::Down if !is_multi => {
+                if matches!(key.code, KeyCode::Up) {
+                    Some(-1)
+                } else {
+                    Some(1)
+                }
+            }
             _ => None,
         };
-        if let Some(delta) = nav {
+        if let Some(delta) = between_fields {
             if let Some(form) = self.form.as_mut() {
                 form.move_cursor(delta);
+            }
+            return;
+        }
+        // In-field option-cursor movement for MultiSelect fields. Wraps
+        // around the option list both ways.
+        if is_multi
+            && matches!(
+                key.code,
+                KeyCode::Up | KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('k')
+            )
+        {
+            if let Some(form) = self.form.as_mut() {
+                if let Some(field) = form.current_field_mut() {
+                    if let FieldKind::MultiSelect { options } = &field.kind {
+                        let n = options.len();
+                        if n > 0 {
+                            let delta: isize =
+                                matches!(key.code, KeyCode::Down | KeyCode::Char('j')) as isize * 2
+                                    - 1;
+                            let cur = field.option_cursor as isize;
+                            let next = ((cur + delta) % n as isize + n as isize) % n as isize;
+                            field.option_cursor = next as usize;
+                        }
+                    }
+                }
             }
             return;
         }
@@ -4134,6 +4168,11 @@ impl App {
                 let i = options.iter().position(|o| o == &field.value).unwrap_or(0);
                 let next = (i + 1) % options.len();
                 field.value = options[next].clone();
+            }
+            (FieldKind::MultiSelect { options }, KeyCode::Char(' ')) => {
+                if let Some(opt) = options.get(field.option_cursor) {
+                    field.value = crate::form::toggle_multi(&field.value, opt);
+                }
             }
             _ => {}
         }

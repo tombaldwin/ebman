@@ -54,13 +54,18 @@ pub struct FormField {
     /// Set by [`Form::validate`] if the current value fails its constraints.
     /// Rendered in red under the field.
     pub error: Option<String>,
+    /// For [`FieldKind::MultiSelect`] only: which option row the in-field
+    /// cursor is on. Up / down arrows (or j / k) move this within the
+    /// field's option list; space toggles the option at this position.
+    /// Ignored for every other [`FieldKind`].
+    pub option_cursor: usize,
 }
 
-// Boolean + Select are reserved for forms that haven't shipped yet (the
-// :capacity MVP only uses Text + Integer). Suppress the dead-code lint
-// at the enum level; the variants are referenced by the renderer and key
-// handler match arms which gives them real call sites once a form uses
-// them.
+// Boolean is reserved for forms that haven't shipped yet (the
+// :capacity MVP only uses Text + Integer + Select). Suppress the dead-
+// code lint at the enum level; the Boolean variant is referenced by the
+// renderer and key handler match arms which gives them real call sites
+// once a form uses it.
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldKind {
@@ -77,6 +82,14 @@ pub enum FieldKind {
     /// Pick exactly one from a fixed list. Value is the selected option's
     /// string (so submit doesn't need to look the index back up).
     Select { options: Vec<String> },
+    /// Pick any subset from a fixed list. `value` is a comma-separated
+    /// list of selected option strings — matches EB's option-settings
+    /// format for subnet / security-group lists, so the form submit can
+    /// pass `value` straight through without further marshalling. Space
+    /// toggles the option at `option_cursor`; up / down (or j / k)
+    /// move the sub-cursor within the field; tab / shift-tab still
+    /// move between fields.
+    MultiSelect { options: Vec<String> },
 }
 
 /// What the form does on submit.
@@ -272,6 +285,7 @@ impl FormField {
             kind: FieldKind::Text,
             help: help.map(Into::into),
             error: None,
+            option_cursor: 0,
         }
     }
 
@@ -294,6 +308,7 @@ impl FormField {
             },
             help: help.map(Into::into),
             error: None,
+            option_cursor: 0,
         }
     }
 
@@ -310,6 +325,7 @@ impl FormField {
             kind: FieldKind::Boolean,
             help: help.map(Into::into),
             error: None,
+            option_cursor: 0,
         }
     }
 
@@ -327,8 +343,68 @@ impl FormField {
             kind: FieldKind::Select { options },
             help: help.map(Into::into),
             error: None,
+            option_cursor: 0,
         }
     }
+
+    /// Construct a multi-select field. Pre-selected options are passed as
+    /// the `initial` vec — they're filtered against `options` so a stale
+    /// pre-fill (option that no longer exists in the env's VPC, etc.)
+    /// doesn't end up persisted on submit.
+    // dead-code-allow lifted once `:subnets` / `:security-groups` ship as
+    // the first consumers in the next batch.
+    #[allow(dead_code)]
+    pub fn multi_select(
+        key: impl Into<String>,
+        label: impl Into<String>,
+        options: Vec<String>,
+        initial: Vec<String>,
+        help: Option<impl Into<String>>,
+    ) -> Self {
+        let selected: Vec<String> = initial
+            .into_iter()
+            .filter(|s| options.contains(s))
+            .collect();
+        Self {
+            key: key.into(),
+            label: label.into(),
+            value: selected.join(","),
+            kind: FieldKind::MultiSelect { options },
+            help: help.map(Into::into),
+            error: None,
+            option_cursor: 0,
+        }
+    }
+}
+
+/// Pure: parse a comma-separated multi-select value into a vec of
+/// trimmed, non-empty option strings. Round-trip with `join(",")`.
+pub fn parse_multi_value(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Pure: toggle `opt` in a comma-separated multi-select value. Returns
+/// the new comma-joined string. Preserves the original order of options
+/// that were already selected and appends a newly-added one at the end.
+pub fn toggle_multi(value: &str, opt: &str) -> String {
+    let mut current = parse_multi_value(value);
+    if let Some(pos) = current.iter().position(|s| s == opt) {
+        current.remove(pos);
+    } else {
+        current.push(opt.to_string());
+    }
+    current.join(",")
+}
+
+/// Pure: is `opt` currently selected in a comma-separated multi-select
+/// value? Trims options on both sides so whitespace variations don't
+/// produce a false negative.
+pub fn is_multi_selected(value: &str, opt: &str) -> bool {
+    parse_multi_value(value).iter().any(|s| s == opt)
 }
 
 /// Pure: returns `Ok(())` if `value` is acceptable for `kind`, else the
@@ -376,6 +452,18 @@ pub fn validate_field(value: &str, kind: &FieldKind) -> Result<(), String> {
             } else {
                 Err(format!("not in list: '{value}'"))
             }
+        }
+        FieldKind::MultiSelect { options } => {
+            // Every selected option must exist in the option list; rogue
+            // entries are a sign the operator hand-edited a value that
+            // EB will reject on UpdateEnvironment.
+            let selected = parse_multi_value(value);
+            for s in &selected {
+                if !options.iter().any(|o| o == s) {
+                    return Err(format!("not in list: '{s}'"));
+                }
+            }
+            Ok(())
         }
     }
 }
@@ -466,6 +554,65 @@ mod tests {
     }
 
     #[test]
+    fn parse_multi_value_splits_and_trims() {
+        assert_eq!(
+            parse_multi_value("subnet-a, subnet-b,  subnet-c"),
+            vec!["subnet-a", "subnet-b", "subnet-c"]
+        );
+        assert!(parse_multi_value("").is_empty());
+        assert!(parse_multi_value(", , ,").is_empty());
+    }
+
+    #[test]
+    fn toggle_multi_adds_and_removes() {
+        // Add to empty.
+        assert_eq!(toggle_multi("", "subnet-a"), "subnet-a");
+        // Add to existing list — appended at the end.
+        assert_eq!(toggle_multi("subnet-a", "subnet-b"), "subnet-a,subnet-b");
+        // Remove an existing option — preserves remaining order.
+        assert_eq!(
+            toggle_multi("subnet-a,subnet-b,subnet-c", "subnet-b"),
+            "subnet-a,subnet-c"
+        );
+        // Removing the last option yields an empty string.
+        assert_eq!(toggle_multi("subnet-a", "subnet-a"), "");
+    }
+
+    #[test]
+    fn is_multi_selected_handles_whitespace() {
+        assert!(is_multi_selected("subnet-a, subnet-b", "subnet-b"));
+        assert!(!is_multi_selected("subnet-a, subnet-b", "subnet-c"));
+        assert!(!is_multi_selected("", "subnet-a"));
+    }
+
+    #[test]
+    fn validate_multi_select_rejects_options_not_in_list() {
+        let kind = FieldKind::MultiSelect {
+            options: vec!["a".into(), "b".into(), "c".into()],
+        };
+        assert!(validate_field("a,b", &kind).is_ok());
+        assert!(
+            validate_field("", &kind).is_ok(),
+            "empty is valid (nothing selected)"
+        );
+        assert!(validate_field("a,rogue", &kind).is_err());
+    }
+
+    #[test]
+    fn multi_select_constructor_filters_stale_initial_values() {
+        let field = FormField::multi_select(
+            "subnets",
+            "Subnets",
+            vec!["subnet-a".into(), "subnet-b".into()],
+            // subnet-x is stale (no longer in the env's VPC) — should be dropped.
+            vec!["subnet-a".into(), "subnet-x".into()],
+            None::<String>,
+        );
+        assert_eq!(field.value, "subnet-a");
+        assert_eq!(field.option_cursor, 0);
+    }
+
+    #[test]
     fn form_move_cursor_wraps_both_directions() {
         let mut f = Form::loading(
             "t",
@@ -505,6 +652,7 @@ mod tests {
                     },
                     help: None,
                     error: None,
+                    option_cursor: 0,
                 },
                 FormField {
                     key: "b".into(),
@@ -517,6 +665,7 @@ mod tests {
                     },
                     help: None,
                     error: None,
+                    option_cursor: 0,
                 },
             ],
             FormSubmit::OptionSettings { mappings: vec![] },
@@ -541,6 +690,7 @@ mod tests {
                     kind: FieldKind::Text,
                     help: None,
                     error: None,
+                    option_cursor: 0,
                 },
                 FormField {
                     key: "icons".into(),
@@ -549,6 +699,7 @@ mod tests {
                     kind: FieldKind::Text,
                     help: None,
                     error: None,
+                    option_cursor: 0,
                 },
                 FormField {
                     key: "refresh_interval_secs".into(),
@@ -561,6 +712,7 @@ mod tests {
                     },
                     help: None,
                     error: None,
+                    option_cursor: 0,
                 },
                 FormField {
                     key: "redact_default".into(),
@@ -569,6 +721,7 @@ mod tests {
                     kind: FieldKind::Text,
                     help: None,
                     error: None,
+                    option_cursor: 0,
                 },
                 FormField {
                     key: "notify_bell".into(),
@@ -577,6 +730,7 @@ mod tests {
                     kind: FieldKind::Boolean,
                     help: None,
                     error: None,
+                    option_cursor: 0,
                 },
                 FormField {
                     key: "required_tags".into(),
@@ -585,6 +739,7 @@ mod tests {
                     kind: FieldKind::Text,
                     help: None,
                     error: None,
+                    option_cursor: 0,
                 },
                 FormField {
                     key: "extra_regions".into(),
@@ -593,6 +748,7 @@ mod tests {
                     kind: FieldKind::Text,
                     help: None,
                     error: None,
+                    option_cursor: 0,
                 },
                 FormField {
                     key: "webhook_url".into(),
@@ -601,6 +757,7 @@ mod tests {
                     kind: FieldKind::Text,
                     help: None,
                     error: None,
+                    option_cursor: 0,
                 },
             ],
             cursor: 0,
@@ -634,6 +791,7 @@ mod tests {
                 kind: FieldKind::Text,
                 help: None,
                 error: None,
+                option_cursor: 0,
             }],
             cursor: 0,
             state: FormState::Ready,
@@ -678,6 +836,7 @@ mod tests {
                     },
                     help: None,
                     error: None,
+                    option_cursor: 0,
                 },
                 FormField {
                     key: "cooldown".into(),
@@ -690,6 +849,7 @@ mod tests {
                     },
                     help: None,
                     error: None,
+                    option_cursor: 0,
                 },
                 FormField {
                     key: "type".into(),
@@ -698,6 +858,7 @@ mod tests {
                     kind: FieldKind::Text,
                     help: None,
                     error: None,
+                    option_cursor: 0,
                 },
             ],
             cursor: 0,
