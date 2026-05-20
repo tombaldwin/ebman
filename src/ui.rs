@@ -1107,13 +1107,30 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     } else {
         0
     };
-    let status: Span<'static> = match app.load_state {
-        LoadState::Error => Span::styled("error", Style::default().fg(theme.health_red)),
-        LoadState::Loading if show_loading => Span::styled(
+    // Fixed-width status slot so the rest of line 2 doesn't shift right
+    // when the indicator flips between `idle` and `⠋ loading…`. Slot is
+    // sized for the longest variant (spinner + " loading…" = ~10 cols);
+    // shorter values get left-aligned + space-padded.
+    const STATUS_SLOT: usize = 10;
+    // The linger window (LOADING_INDICATOR_LINGER) keeps `show_loading`
+    // true after the load completes; previously the match arm gated on
+    // `LoadState::Loading` so the linger had no visible effect — flipped
+    // straight from loading-yellow back to idle-green. Drive the
+    // selection off `show_loading` directly so the linger actually
+    // smooths over the transition.
+    let status: Span<'static> = if matches!(app.load_state, LoadState::Error) {
+        let label = format!("{:<width$}", "error", width = STATUS_SLOT);
+        Span::styled(label, Style::default().fg(theme.health_red))
+    } else if show_loading {
+        let label = format!(
+            "{:<width$}",
             format!("{} loading…", spinner(elapsed_ms, theme.icons)),
-            Style::default().fg(theme.health_yellow),
-        ),
-        _ => Span::styled("idle", Style::default().fg(theme.health_green)),
+            width = STATUS_SLOT
+        );
+        Span::styled(label, Style::default().fg(theme.health_yellow))
+    } else {
+        let label = format!("{:<width$}", "idle", width = STATUS_SLOT);
+        Span::styled(label, Style::default().fg(theme.health_green))
     };
 
     let env_count = app.environments.len().to_string();
