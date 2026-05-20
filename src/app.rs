@@ -668,6 +668,11 @@ pub struct App {
     pub view_mode: ViewMode,
     pub events_panel_height: u16,
     pub help_scroll: u16,
+    /// Last computed max scroll for the global help overlay. Written by
+    /// `draw_help` each frame, read by the j/k handler so an incremental
+    /// scroll past the bottom doesn't accumulate (which would otherwise
+    /// require N matching scroll-ups to bring content back into view).
+    pub help_max_scroll: u16,
     pub hover_row: Option<usize>,
     pub alerts: usize, // count of envs currently in Red, recomputed each refresh
     pub frozen: bool,  // when true, auto-refresh ticker is no-op
@@ -1189,6 +1194,7 @@ impl App {
             view_mode: ViewMode::Default,
             events_panel_height: 10,
             help_scroll: 0,
+            help_max_scroll: 0,
             hover_row: None,
             alerts: 0,
             frozen: false,
@@ -1904,7 +1910,9 @@ impl App {
                     self.help_scroll = 0;
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
-                    self.help_scroll = self.help_scroll.saturating_add(1);
+                    // Clamp to the last-known content bound so scrolling
+                    // past the end doesn't accumulate phantom offsets.
+                    self.help_scroll = self.help_scroll.saturating_add(1).min(self.help_max_scroll);
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
                     self.help_scroll = self.help_scroll.saturating_sub(1);
