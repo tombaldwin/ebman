@@ -8,11 +8,13 @@ Browse environments, drill into events / instances / metrics / queue / config, s
 
 ## Highlights
 
-- **Live env table** with sort, filter, group-by-app, health sparkline (trend window auto-labelled), severity tints, mouse support.
-- **Drill-down per env** — Events (regex-searchable), Instances (with health causes + embedded SSM shell), Metrics (CloudWatch line charts; custom metrics with arbitrary dimensions), Queue (Worker tier; main + DLQ stats with viewer), Logs (one-shot snapshot or real `tail -f` from CW Logs), Config (tags + env vars read-only, plus cost estimate).
-- **Daily-driver write surface** — env vars (`:env set/unset`), tags (`:tag`/`:untag`), version deploy from existing label or local zip / S3 (`:deploy --from`), saved-config CRUD, CloudWatch alarms CRUD, log streaming toggle, notifications endpoint, managed-update window, ALB scheme, instance type, key pair, IAM roles, deployment policy, rolling-update settings, health-check URL, plus a generic `:set-option NAMESPACE OPTION VALUE` escape hatch.
+- **Live env table** with sort, filter, group-by-app, health sparkline (trend window auto-labelled), severity tints, mouse support. `Tab` cycles between Envs and Apps scope.
+- **Drill-down per env** — opens to a **Health rollup tab** (drillable: `j`/`k` walks items, `Enter` jumps to source). Other tabs: Events (regex-searchable), Instances (with health causes + embedded SSM shell), Metrics (CloudWatch line charts; custom metrics with arbitrary dimensions), Queue (Worker tier; main + DLQ stats with viewer), Logs (one-shot snapshot or real `tail -f` from CW Logs), Config (tags + env vars read-only, plus cost estimate).
+- **Red-env triage** — `:why` (or `!` on the selected env) opens a four-section diagnostic overlay: recent events, alarms, instance health, recent deploys. Worker envs also get a main + DLQ peek. Updating envs are labelled with the *kind* of update in flight (deploy / config / scale); an env with active CW alarms no longer renders as plain green "Ready". Worker envs with a non-empty DLQ flip Red even when EB calls them healthy.
+- **Daily-driver write surface** — env vars (`:env set/unset`), tags (`:tag`/`:untag`), version deploy from existing label or local zip / S3 (`:deploy --from`, with `--preview` for a side-by-side current-vs-candidate overlay), saved-config CRUD, CloudWatch alarms CRUD, log streaming toggle, notifications endpoint, managed-update window, ALB scheme, instance type, key pair, IAM roles, deployment policy, rolling-update settings, health-check URL, capacity (`:capacity` — Min / Max / Instance type / Cooldown in one modal), plus a generic `:set-option NAMESPACE OPTION VALUE` escape hatch.
 - **Worker / SQS workflow** — DLQ viewer with per-message resend (`r`), strict-typed purge (`p`), bulk delete (`x`), peek-and-tail with long-polling.
-- **Multi-region / multi-profile** — `:region all` fans out to every configured region in parallel, `:find-env` searches across every AWS profile in `~/.aws/{config,credentials}`, `:org-health` aggregates env counts per profile.
+- **Multi-region / multi-account** — `:region all` fans across every configured region in parallel; `:account NAME` switches via `sts:AssumeRole` (configure `accounts.NAME` in `config.toml`); `:accounts` lists AWS-Organizations child accounts; `:find-env` and `:org-health` both fan across `~/.aws` profiles **and** configured AssumeRole accounts.
+- **Bulk ops** — `space` multi-selects; `:batch-rebuild`, `:batch-restart`, `:batch-deploy LABEL`, `:batch-tag KEY VALUE`, `:batch-untag KEY`, `:batch-set-option NAMESPACE OPTION VALUE` all fan out in parallel with per-env audit + pending pill rows.
 - **Safety** — `--read-only` CLI flag or `:readonly on` disables every write surface; destructive actions (Terminate, DLQ purge) require typed-name confirmation; pre-flight dry-run shows impact (N instances across M AZs) + last 3 events before authorising; recent-change / mid-deploy traffic warnings in the confirm modal.
 - **Audit log** — every dispatched action and its outcome are appended to `~/.cache/ebman/audit.log`; rotates at 1 MiB.
 - **Power-user ergonomics** — fuzzy command palette (`Ctrl-K`) across commands / envs / saved views / plugins, named filters + saved views, custom keybindings (`F1-F12` and uppercase letters via `~/.config/ebman/keys.toml`), plugin commands (`~/.config/ebman/commands.toml`), in-app `:loglevel` reload, `:diff` between envs.
@@ -100,6 +102,7 @@ Once running, press `?` for a per-context keymap (Detail, DLQ, Action menu, Save
 | `D` | Describe overlay (raw env JSON) |
 | `space` | Multi-select |
 | `*` | Pin / unpin |
+| `!` | `:why` overlay (Red-env diagnostic) |
 | `/` | Filter |
 | `:` | Command bar |
 | `^K` | Command palette |
@@ -124,6 +127,7 @@ Tabs cycle with `Tab` / `Shift-Tab` (or `l` / `h`). `^R` re-fetches the active t
 
 | Tab | Per-tab keys |
 |---|---|
+| Health (default) | `j`/`k` walk items, `Enter` drill into source tab (Events / Instances / Queue) |
 | Events | `/` filter, `n`/`N` next/prev match |
 | Instances | `Enter` / `i` info overlay, `b` EC2 console, `s` embedded SSM shell, `y` yank id, `x` terminate (Y/N) |
 | Metrics | `[` / `]` cycle range (15m → 24h), mouse hover for value-at-cursor |
@@ -143,7 +147,8 @@ Type `:` to open the command bar. Tab-completion is not implemented, but `Ctrl-K
 
 - `:region NAME` / `:region all` — switch region, or fan out across every configured region.
 - `:profile NAME` — switch AWS profile.
-- `:account NAME` — alias for `:profile`.
+- `:account NAME` — switch to a configured AssumeRole account (`accounts.NAME` in `config.toml`). Falls back to `:profile NAME` aliasing when no `accounts.` entry exists.
+- `:accounts` — list child accounts in the active AWS organization; rows matching a configured `accounts.NAME` get a `:account NAME` switch hint.
 - `:sort KEY [desc]` — set sort (name/app/status/health/version/age).
 - `:group on|off` — toggle group-by-application.
 - `:redact on|off` — toggle redact mode.
@@ -159,6 +164,7 @@ Type `:` to open the command bar. Tab-completion is not implemented, but `Ctrl-K
 
 ### Per-env inspection
 
+- `:why` — Red-env diagnostic overlay (recent events / alarms / instance health / recent deploys; main + DLQ peek for Worker envs). Bound to `!` on the env table.
 - `:diff NAME` — side-by-side env comparison.
 - `:resources` / `:res` — `DescribeEnvironmentResources` dump.
 - `:alarms` — CloudWatch alarms referencing the env.
@@ -169,16 +175,20 @@ Type `:` to open the command bar. Tab-completion is not implemented, but `Ctrl-K
 - `:history` — recent status / error log.
 - `:pending` / `:in-flight` — overlay of dispatched actions + outcomes.
 - `:whatsnew` — embedded changelog.
+- `:about` / `:credits` — version, license, attributions.
+- `:update` — show (and yank to clipboard) the upgrade command for whichever install channel (Homebrew / cargo-bin / tarball) ebman was installed from.
 - `:settings` — interactive form to edit `~/.config/ebman/config.toml`; writes back on submit and live-applies theme / icons / refresh interval.
 
 ### Write — env state
 
 - `:rebuild` / `:restart` / `:terminate` — action menu shortcuts (Terminate requires typed-name confirm).
 - `:deploy LABEL` — ship an existing application version to the selected env.
+- `:deploy LABEL --preview` — open a side-by-side overlay of the currently-deployed version vs the candidate (label, description, S3 source, timestamp + rollback / traffic warnings) without dispatching.
 - `:deploy --from PATH [--label L] [--describe D] [--no-deploy]` — upload a local `.zip` (or `--from s3://bucket/key`), register a new version, optionally deploy.
 - `:upgrade [ARN]` — list compatible platforms; with ARN, dispatch the migration.
 - `:clone NEWNAME` — clone the selected env.
 - `:scale N` / `:stop` / `:start` — set ASG min=max=N / 0 / 1.
+- `:capacity` — modal form to edit Min / Max / Instance type / Cooldown in one shot (pre-filled from `DescribeConfigurationSettings`).
 - `:swap TARGET` — swap CNAMEs (Y/N confirm).
 - `:abort` — abort an in-flight env update.
 
@@ -190,6 +200,7 @@ Type `:` to open the command bar. Tab-completion is not implemented, but `Ctrl-K
 - `:instance-type TYPE` — EC2 instance type (e.g. `t3.medium`).
 - `:keypair NAME` / `:service-role ARN` / `:instance-profile NAME` — security tab.
 - `:public-ip on|off` / `:elb-scheme public|internal` — network tab.
+- `:subnets` / `:elb-subnets` / `:security-groups` — MultiSelect picker forms pre-filled with the env's current selection (lists available subnets / SGs from the VPC).
 - `:deployment-policy AllAtOnce|Rolling|RollingWithAdditionalBatch|Immutable|TrafficSplitting` — deploy policy.
 - `:rolling-update on|off` — ASG rolling-update policy.
 - `:health-check-url /path` — HTTP health-check path.
@@ -210,13 +221,18 @@ Type `:` to open the command bar. Tab-completion is not implemented, but `Ctrl-K
 ### Multi-account / multi-region
 
 - `:region all` — fan across `extra_regions` + current.
-- `:find-env SUBSTRING` — scan every profile in `~/.aws/{config,credentials}`.
-- `:org-health` — aggregate env / red counts per profile.
+- `:account NAME` — switch to a configured AssumeRole account (see Configuration).
+- `:accounts` — list AWS-Organizations child accounts; switch hints rendered for those with a configured `accounts.NAME`.
+- `:find-env SUBSTRING` — scan every profile in `~/.aws/{config,credentials}` **and** every configured AssumeRole account in REGION.
+- `:org-health` — aggregate env / red counts per profile + per configured AssumeRole account.
 
 ### Multi-env
 
 - `space` — toggle multi-select.
 - `:batch-rebuild` / `:batch-restart` — dispatch a non-destructive action across the selection.
+- `:batch-deploy LABEL` — deploy the same version to every selected env in parallel.
+- `:batch-tag KEY VALUE` / `:batch-untag KEY` — fan a tag write across the selection.
+- `:batch-set-option NAMESPACE OPTION VALUE` — fan an option-settings write across the selection.
 - `:deselect` / `:select-clear` — clear selection.
 
 ### Output / yank
@@ -249,6 +265,11 @@ theme = "dark"
 # support is detected (one-cell U+E0B0 advance), unicode otherwise.
 icons = "unicode"
 
+# Per-profile theme override — pin a theme per AWS profile so the screen
+# itself says "you're in prod" without reading the breadcrumb. Format:
+# "PROFILE:THEME,PROFILE:THEME". Theme names match the `theme = ...` key.
+profile_themes = "prod:high-contrast,staging:dark"
+
 # Start with these toggles on (state.toml takes precedence after first run).
 redact_default = false
 grouped_default = false
@@ -261,6 +282,17 @@ required_tags = "Owner,Project"
 
 # Webhook URL to POST to when an env transitions to Red.
 webhook_url = ""
+
+# AssumeRole targets reachable via `:account NAME`. One stanza per
+# account. `source_profile` carries the base creds for the
+# sts:AssumeRole call. `external_id` and `region` are optional.
+# The temporary credentials build a fresh SdkConfig carrying only the
+# assumed-role identity — source-profile creds never leak into request
+# signing once the switch lands.
+accounts.prod.role_arn = "arn:aws:iam::111122223333:role/EbmanReadOnly"
+accounts.prod.source_profile = "default"
+accounts.prod.region = "eu-west-2"
+# accounts.prod.external_id = "..."
 ```
 
 `~/.config/ebman/keys.toml` (optional) — custom keybindings:
