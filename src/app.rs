@@ -130,6 +130,7 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "capacity",
     "settings",
     "subnets",
+    "elb-subnets",
     "security-groups",
 ];
 
@@ -4342,6 +4343,14 @@ impl App {
         self.open_multi_select_form(MultiSelectFlavour::Subnets);
     }
 
+    /// Open the `:elb-subnets` MultiSelect form. Same EC2 list call as
+    /// `:subnets` but targets `aws:ec2:vpc.ELBSubnets` — the option
+    /// setting that controls which subnets the env's ELB attaches to.
+    /// Web-tier only; worker-tier envs leave this empty.
+    fn open_elb_subnets_form(&mut self) {
+        self.open_multi_select_form(MultiSelectFlavour::ElbSubnets);
+    }
+
     /// Open the `:security-groups` MultiSelect form. Same shape as
     /// `:subnets` but lists security groups in the env's VPC and
     /// targets `aws:autoscaling:launchconfiguration.SecurityGroups`.
@@ -4370,6 +4379,14 @@ impl App {
                 "Subnets",
                 "aws:ec2:vpc",
                 "Subnets",
+            ),
+            MultiSelectFlavour::ElbSubnets => (
+                "elb-subnets",
+                "elb-subnets update",
+                "elb_subnets",
+                "ELB subnets",
+                "aws:ec2:vpc",
+                "ELBSubnets",
             ),
             MultiSelectFlavour::SecurityGroups => (
                 "security-groups",
@@ -6680,6 +6697,7 @@ impl App {
                 self.open_form(form);
             }
             "subnets" => self.open_subnets_form(),
+            "elb-subnets" => self.open_elb_subnets_form(),
             "security-groups" => self.open_security_groups_form(),
             "update" => {
                 // Surface the upgrade command for whichever install channel
@@ -10053,11 +10071,15 @@ fn yank(text: &str) -> std::result::Result<(), String> {
 /// records on `Report` — goes to `ebman.log` via `tracing::error!`. Without
 /// this the chain was lost both from the UI and the log.
 /// Which EC2 surface a MultiSelect form is pulling its option list from.
-/// Drives both the EC2 API call and the option-setting target so the two
+/// Drives both the EC2 API call and the option-setting target so the
 /// pickers share `open_multi_select_form` without conditional branches.
 #[derive(Copy, Clone, Debug)]
 enum MultiSelectFlavour {
     Subnets,
+    /// Subnets attached to the env's ELB (web tier). Same EC2 list call
+    /// as `Subnets` but writes to a different option setting and
+    /// pre-fills from a different field on the env's VPC context.
+    ElbSubnets,
     SecurityGroups,
 }
 
@@ -10078,7 +10100,7 @@ async fn load_multi_select(
         return Err("env has no VPC id in its option settings — using account-default VPC?".into());
     };
     match flavour {
-        MultiSelectFlavour::Subnets => {
+        MultiSelectFlavour::Subnets | MultiSelectFlavour::ElbSubnets => {
             let subnets = aws
                 .list_subnets_in_vpc(vpc_id)
                 .await
@@ -10095,10 +10117,14 @@ async fn load_multi_select(
                 annot.push(')');
                 annotations.push(annot);
             }
+            let initial = match flavour {
+                MultiSelectFlavour::ElbSubnets => ctx.elb_subnets,
+                _ => ctx.subnets,
+            };
             Ok(MultiSelectOptions {
                 options,
                 annotations,
-                initial: ctx.subnets,
+                initial,
             })
         }
         MultiSelectFlavour::SecurityGroups => {
@@ -10195,6 +10221,10 @@ fn build_palette_items(app: &App) -> Vec<PaletteItem> {
         (
             "subnets",
             "modal form: pick EC2 subnets (aws:ec2:vpc.Subnets)",
+        ),
+        (
+            "elb-subnets",
+            "modal form: pick ELB subnets (aws:ec2:vpc.ELBSubnets) — web-tier",
         ),
         (
             "security-groups",
