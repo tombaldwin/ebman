@@ -59,7 +59,10 @@ async fn main() -> Result<()> {
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--version" | "-V" => {
-                println!("ebman {}", env!("CARGO_PKG_VERSION"));
+                println!(
+                    "ebman {}\nby Tom Baldwin · Polymorphism Ltd · https://polymorphism.co.uk",
+                    env!("CARGO_PKG_VERSION")
+                );
                 return Ok(());
             }
             "--help" | "-h" => {

@@ -141,6 +141,8 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "subnets",
     "elb-subnets",
     "security-groups",
+    "about",
+    "credits",
 ];
 
 /// Which on-screen panel is "focused" — i.e. which one j/k/Enter target. The
@@ -2606,6 +2608,31 @@ impl App {
         // Embedded changelog text. Keep this short — full release notes live in
         // git history / GitHub releases. Update on every release.
         self.current_overlay = Some(Overlay::Whatsnew(WHATSNEW.into()));
+    }
+
+    /// `:about` / `:credits` — author + license + repo info. Discoverable
+    /// via the command palette but never pushed at the operator;
+    /// existence justifies removing the splash byline if anyone ever
+    /// objects to the 3-second introduction.
+    fn open_about_overlay(&mut self) {
+        let body = format!(
+            "ebman {version}\n\
+             k9s-style TUI for AWS Elastic Beanstalk.\n\n\
+             Built by Tom Baldwin · Polymorphism Ltd\n\
+             https://polymorphism.co.uk\n\n\
+             Source:    https://github.com/tombaldwin/ebman\n\
+             License:   MIT OR Apache-2.0\n\
+             Crates:    https://crates.io/crates/ebman\n\n\
+             Polymorphism Ltd builds operations tools for teams running\n\
+             EB / ECS / Lambda at scale. Hire us, fork the code, or just\n\
+             tell us what's missing — happy either way.\n\n\
+             esc / q to close.",
+            version = env!("CARGO_PKG_VERSION"),
+        );
+        self.current_overlay = Some(Overlay::TextDump {
+            title: "about ebman".to_string(),
+            body,
+        });
     }
 
     fn toggle_pin_selected(&mut self) {
@@ -6320,6 +6347,7 @@ impl App {
                 None => self.error_message = Some("usage: :alias-drop <env-name>".into()),
             },
             "whatsnew" => self.open_whatsnew(),
+            "about" | "credits" => self.open_about_overlay(),
             "settings" => {
                 self.open_settings_form();
             }
@@ -9889,6 +9917,7 @@ fn build_palette_items(app: &App) -> Vec<PaletteItem> {
         ("report", "yank filtered view as Markdown"),
         ("history", "recent status / error messages"),
         ("whatsnew", "embedded changelog"),
+        ("about", "author / license / repo info"),
         ("update", "show upgrade command (copies to clipboard)"),
         (
             "capacity",
