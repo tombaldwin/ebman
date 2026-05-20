@@ -1189,7 +1189,17 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     line1.extend(kv("Region", &app.context.region, theme));
     line1.push(sep(theme));
     line1.extend(kv("Profile", &profile, theme));
-    let mut line2 = kv("Caller", &caller, theme);
+    // Ordering on this row matters under width pressure: ratatui clips
+    // the right edge when content exceeds the column, so anything the
+    // operator needs ALWAYS visible (Sort, Status) goes first. Caller +
+    // Last get pushed right so they're the first to clip on narrow
+    // terminals — we'd rather lose "20s ago" than lose "↑app".
+    let sort_dir = if app.sort_desc { "↓" } else { "↑" };
+    let sort_label = format!("{}{}", app.sort_key.label(), sort_dir);
+    let mut line2 = kv("Sort", &sort_label, theme);
+    line2.push(sep(theme));
+    line2.push(Span::raw("Status: "));
+    line2.push(status);
     line2.push(sep(theme));
     line2.extend(kv("Envs", &env_count, theme));
     // Health-bucket delta since the previous refresh, e.g. "▲1 Red ▼1 Yellow".
@@ -1215,12 +1225,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     line2.push(sep(theme));
     line2.extend(kv("Last", &last, theme));
     line2.push(sep(theme));
-    line2.push(Span::raw("Status: "));
-    line2.push(status);
-    let sort_dir = if app.sort_desc { "↓" } else { "↑" };
-    let sort_label = format!("{}{}", app.sort_key.label(), sort_dir);
-    line2.push(sep(theme));
-    line2.extend(kv("Sort", &sort_label, theme));
+    line2.extend(kv("Caller", &caller, theme));
     if !app.filter.is_empty() {
         line2.push(sep(theme));
         let filter_text = app.filter.clone();
