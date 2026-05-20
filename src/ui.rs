@@ -2013,13 +2013,27 @@ fn tier_cell(tier: &str, theme: &Theme) -> Cell<'static> {
     // `theme.title` (the default-primary signal); Worker keeps the
     // accent (yellow) bg since it's the less-common tier and the
     // contrast still calls it out.
+    // Centre-pad both labels to the same inner width so the pill
+    // backgrounds are identical in size — otherwise "Web" reads as a
+    // shorter, less-confident tag than "Worker". `{:^6}` aligns within
+    // the longer label's character count; the outer `pill()` adds the
+    // surrounding ` … ` so the total bg width is 8 cells for both.
+    let label_width = "Worker".chars().count();
     match tier {
         "Worker" => Cell::from(Line::from(vec![
-            pill("Worker", Color::Black, theme.accent),
+            pill(
+                &format!("{:^width$}", "Worker", width = label_width),
+                Color::Black,
+                theme.accent,
+            ),
             Span::raw(" "),
         ])),
         "Web" => Cell::from(Line::from(vec![
-            pill("Web", Color::Black, theme.title),
+            pill(
+                &format!("{:^width$}", "Web", width = label_width),
+                Color::Black,
+                theme.title,
+            ),
             Span::raw(" "),
         ])),
         other => Cell::from(Span::styled(
