@@ -1824,7 +1824,10 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
         .map(|(label, _)| match *label {
             "NAME" => Constraint::Percentage(14),
             "APPLICATION" => Constraint::Percentage(12),
-            "TIER" => Constraint::Length(7),
+            // 9 fits `" Worker " + trailing breathing space` exactly;
+            // anything narrower clips the Worker pill into the STATUS
+            // column. Web is shorter so the spare cells just blank.
+            "TIER" => Constraint::Length(9),
             "STATUS" => Constraint::Length(10),
             "HEALTH" => Constraint::Length(3),
             "TREND" => Constraint::Length(22),
@@ -2003,15 +2006,22 @@ fn draw_minimap(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn tier_cell(tier: &str, theme: &Theme) -> Cell<'static> {
-    // Both tiers render as same-shape pills so the column reads as one
-    // consistent label kind, not "one quiet word vs. one alarming
-    // box". Worker keeps the accent (yellow) bg since it's the
-    // less-common tier and the colour still calls it out; Web sits in
-    // a muted-bg pill so it's still clearly a tier label rather than
-    // free text but doesn't compete with Worker visually.
+    // Both tiers render as same-shape pills with coloured backgrounds
+    // and a trailing un-coloured space so the bg ends *before* the
+    // STATUS column starts (otherwise the pill backgrounds bleed into
+    // the adjacent column boundary and look cramped). Web uses
+    // `theme.title` (the default-primary signal); Worker keeps the
+    // accent (yellow) bg since it's the less-common tier and the
+    // contrast still calls it out.
     match tier {
-        "Worker" => Cell::from(pill("Worker", Color::Black, theme.accent)),
-        "Web" => Cell::from(pill("Web", theme.text, theme.row_alt_bg)),
+        "Worker" => Cell::from(Line::from(vec![
+            pill("Worker", Color::Black, theme.accent),
+            Span::raw(" "),
+        ])),
+        "Web" => Cell::from(Line::from(vec![
+            pill("Web", Color::Black, theme.title),
+            Span::raw(" "),
+        ])),
         other => Cell::from(Span::styled(
             other.to_string(),
             Style::default().fg(theme.muted),
