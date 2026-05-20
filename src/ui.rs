@@ -122,13 +122,7 @@ fn pill_chain(items: &[(String, Color, Color)], theme: &Theme) -> Vec<Span<'stat
 }
 
 fn health_dot(health: &str, theme: &Theme) -> Span<'static> {
-    let c = match health.to_lowercase().as_str() {
-        "green" | "ok" => theme.health_green,
-        "yellow" | "warning" => theme.health_yellow,
-        "red" | "severe" | "degraded" => theme.health_red,
-        "grey" | "gray" | "info" | "no data" | "pending" => theme.health_grey,
-        _ => theme.text,
-    };
+    let c = health_color(health, theme);
     let glyph = match theme.icons {
         IconStyle::Ascii => "*",
         // U+F111 Nerd-Font solid circle reads identically to U+25CF in
@@ -1669,7 +1663,11 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                     .iter()
                     .map(|(label, _)| match *label {
                         "NAME" => name_cell.clone(),
-                        "APPLICATION" => Cell::from(e.application.clone())
+                        // Application / platform / region values live on
+                        // `app.environments[i]` which outlives the draw
+                        // call — borrow rather than clone so the per-row
+                        // hot path doesn't allocate 3+ Strings per frame.
+                        "APPLICATION" => Cell::from(Span::raw(e.application.as_str()))
                             .style(Style::default().fg(color).add_modifier(Modifier::BOLD)),
                         "TIER" => tier_cell(&e.tier, &theme),
                         "STATUS" => status_cell(&e.status, &theme),
@@ -1679,9 +1677,8 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                             &theme,
                             app.newly_red.contains(&e.name),
                         )),
-                        "PLATFORM" => {
-                            Cell::from(e.platform.clone()).style(Style::default().fg(theme.muted))
-                        }
+                        "PLATFORM" => Cell::from(Span::raw(e.platform.as_str()))
+                            .style(Style::default().fg(theme.muted)),
                         "VERSION" => Cell::from(format_version_label(
                             &e.version_label,
                             theme.app_palette[0],
@@ -1689,8 +1686,17 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                         )),
                         "CNAME" => Cell::from(redact(&e.cname, app.redact))
                             .style(Style::default().fg(theme.muted)),
+                        // `age` is built freshly per row inside this scope
+                        // and so can't be borrowed into the returned Cell.
+                        // Caching it on rebuild_view would let this be a
+                        // borrow too, but the age string changes per
+                        // minute boundary — a stale value would be
+                        // visible until the next refresh, which is fine
+                        // operationally but adds bookkeeping. Leave the
+                        // single per-row clone here as the cheapest
+                        // honest option for now.
                         "AGE" => Cell::from(age.clone()).style(Style::default().fg(theme.muted)),
-                        "REGION" => Cell::from(e.region.clone().unwrap_or_default())
+                        "REGION" => Cell::from(Span::raw(e.region.as_deref().unwrap_or_default()))
                             .style(Style::default().fg(theme.accent)),
                         _ => Cell::from(""),
                     })
@@ -1984,12 +1990,7 @@ fn draw_minimap(f: &mut Frame, area: Rect, app: &App) {
             width: 1,
             height: 1,
         };
-        let color = match e.health.to_lowercase().as_str() {
-            "green" | "ok" => theme.health_green,
-            "yellow" | "warning" => theme.health_yellow,
-            "red" | "severe" => theme.health_red,
-            _ => theme.health_grey,
-        };
+        let color = health_color(&e.health, theme);
         f.render_widget(
             Paragraph::new(Span::styled("█", Style::default().fg(color))),
             cell,
@@ -2016,12 +2017,13 @@ fn status_cell(status: &str, theme: &Theme) -> Cell<'static> {
 /// so the Detail header (and any other non-table consumer) can drop the
 /// same pill into a Line without the Cell wrapper.
 fn status_pill(status: &str, theme: &Theme) -> Span<'static> {
-    let lower = status.to_lowercase();
-    if lower == "ready" {
+    // Case-insensitive match without allocating a lowercase copy per
+    // call — the table renderer hits this once per env-row per frame.
+    if status.eq_ignore_ascii_case("ready") {
         pill("Ready", Color::Black, theme.status_ready)
-    } else if matches!(lower.as_str(), "updating" | "launching") {
+    } else if ieq_any(status, &["updating", "launching"]) {
         pill(status, Color::Black, theme.status_updating)
-    } else if matches!(lower.as_str(), "terminating" | "terminated") {
+    } else if ieq_any(status, &["terminating", "terminated"]) {
         pill(status, Color::White, theme.status_terminating)
     } else {
         Span::styled(status.to_string(), Style::default().fg(theme.text))
@@ -4629,6 +4631,15 @@ fn sep(theme: &Theme) -> Span<'static> {
     Span::styled(glyph, Style::default().fg(theme.muted))
 }
 
+/// Pure: ASCII-case-insensitive "is `s` any of these?" predicate. Cheap
+/// alternative to `s.to_lowercase().as_str()` matching against a fixed
+/// option list — saves a per-call `String` allocation in the table-row
+/// render hot path, where `health` / `status` strings come from AWS in
+/// known-case form anyway.
+fn ieq_any(s: &str, options: &[&str]) -> bool {
+    options.iter().any(|o| s.eq_ignore_ascii_case(o))
+}
+
 /// Cursor / row-selection marker prepended to highlighted rows in lists +
 /// tables. Powerline-mode users get the filled U+E0B0 right-triangle so
 /// the marker matches the rest of the ribbon aesthetic; everyone else gets
@@ -4671,13 +4682,7 @@ fn sparkline_for(
     let visible: Vec<&String> = samples.iter().skip(start).collect();
     let visible_len = visible.len();
     for (i, h) in visible.iter().enumerate() {
-        let color = match h.to_lowercase().as_str() {
-            "green" | "ok" => theme.health_green,
-            "yellow" | "warning" => theme.health_yellow,
-            "red" | "severe" | "degraded" => theme.health_red,
-            "grey" | "gray" | "info" | "no data" | "pending" => theme.health_grey,
-            _ => theme.text,
-        };
+        let color = health_color(h, theme);
         // Fade older samples: leftmost 1/3 are dim.
         let mut style = Style::default().fg(color);
         if visible_len > 3 && i < visible_len / 3 {
@@ -4698,14 +4703,26 @@ fn sparkline_for(
 }
 
 fn health_style(health: &str, theme: &Theme) -> Style {
-    let color = match health.to_lowercase().as_str() {
-        "green" | "ok" => theme.health_green,
-        "yellow" | "warning" => theme.health_yellow,
-        "red" | "severe" | "degraded" => theme.health_red,
-        "grey" | "gray" | "info" | "no data" | "pending" => theme.health_grey,
-        _ => theme.text,
-    };
-    Style::default().fg(color).add_modifier(Modifier::BOLD)
+    Style::default()
+        .fg(health_color(health, theme))
+        .add_modifier(Modifier::BOLD)
+}
+
+/// Pure: map an EB health bucket name (any case) to the theme's
+/// corresponding palette colour. Allocation-free — extracted so the
+/// per-row hot path doesn't pay a `to_lowercase` per cell.
+fn health_color(health: &str, theme: &Theme) -> Color {
+    if ieq_any(health, &["green", "ok"]) {
+        theme.health_green
+    } else if ieq_any(health, &["yellow", "warning"]) {
+        theme.health_yellow
+    } else if ieq_any(health, &["red", "severe", "degraded"]) {
+        theme.health_red
+    } else if ieq_any(health, &["grey", "gray", "info", "no data", "pending"]) {
+        theme.health_grey
+    } else {
+        theme.text
+    }
 }
 
 fn redact(value: &str, on: bool) -> String {
