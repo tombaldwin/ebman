@@ -2386,14 +2386,17 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App) {
             "Region/profile come from the standard AWS env (AWS_REGION, AWS_PROFILE).",
             Style::default().fg(app.theme.muted),
         )),
-        Line::from(Span::styled(
-            format!(
-                "ebman {} · built by Tom Baldwin / Polymorphism Ltd · `:about` for credits",
-                env!("CARGO_PKG_VERSION")
-            ),
-            Style::default().fg(app.theme.muted),
-        )),
     ];
+    // Split the popup into a scrollable body + a sticky 1-row footer at
+    // the bottom inside the border, so the byline credit + `:about`
+    // hint stay visible no matter how far the operator scrolls.
+    let body_height = popup.height.saturating_sub(2); // -2 for top + bottom border
+    let footer_row = Rect {
+        x: popup.x + 1,
+        y: popup.y + body_height.saturating_sub(1).max(1),
+        width: popup.width.saturating_sub(2),
+        height: 1,
+    };
     let help = Paragraph::new(lines)
         .wrap(Wrap { trim: false })
         .scroll((app.help_scroll, 0))
@@ -2402,6 +2405,18 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App) {
                 .padding(Padding::uniform(1)),
         );
     f.render_widget(help, popup);
+    // Render the byline after the help body so it overlays the last row
+    // and remains visible regardless of scroll position.
+    let credit = Paragraph::new(Line::from(Span::styled(
+        format!(
+            "ebman {} · built by Tom Baldwin / Polymorphism Ltd · :about",
+            env!("CARGO_PKG_VERSION")
+        ),
+        Style::default()
+            .fg(app.theme.muted)
+            .add_modifier(Modifier::ITALIC),
+    )));
+    f.render_widget(credit, footer_row);
 }
 
 fn draw_dlq(f: &mut Frame, area: Rect, app: &mut App) {
