@@ -59,6 +59,14 @@ pub struct FormField {
     /// field's option list; space toggles the option at this position.
     /// Ignored for every other [`FieldKind`].
     pub option_cursor: usize,
+    /// For [`FieldKind::MultiSelect`] only: optional per-option display
+    /// annotation parallel to the field's `options`. Lets callers attach
+    /// metadata (`subnet-abc … (us-east-1a · 10.0.1.0/24)`) without
+    /// bloating the bare option string the field's `value` round-trips
+    /// to EB. The renderer suffixes each option row with its annotation
+    /// when set. Length must match `options` — mismatched lists are
+    /// dropped in [`Self::multi_select`] / [`Self::with_annotations`].
+    pub option_annotations: Option<Vec<String>>,
 }
 
 // Boolean is reserved for forms that haven't shipped yet (the
@@ -286,6 +294,7 @@ impl FormField {
             help: help.map(Into::into),
             error: None,
             option_cursor: 0,
+            option_annotations: None,
         }
     }
 
@@ -309,6 +318,7 @@ impl FormField {
             help: help.map(Into::into),
             error: None,
             option_cursor: 0,
+            option_annotations: None,
         }
     }
 
@@ -326,6 +336,7 @@ impl FormField {
             help: help.map(Into::into),
             error: None,
             option_cursor: 0,
+            option_annotations: None,
         }
     }
 
@@ -344,6 +355,7 @@ impl FormField {
             help: help.map(Into::into),
             error: None,
             option_cursor: 0,
+            option_annotations: None,
         }
     }
 
@@ -351,9 +363,6 @@ impl FormField {
     /// the `initial` vec — they're filtered against `options` so a stale
     /// pre-fill (option that no longer exists in the env's VPC, etc.)
     /// doesn't end up persisted on submit.
-    // dead-code-allow lifted once `:subnets` / `:security-groups` ship as
-    // the first consumers in the next batch.
-    #[allow(dead_code)]
     pub fn multi_select(
         key: impl Into<String>,
         label: impl Into<String>,
@@ -373,7 +382,26 @@ impl FormField {
             help: help.map(Into::into),
             error: None,
             option_cursor: 0,
+            option_annotations: None,
         }
+    }
+
+    /// Attach per-option display annotations to a MultiSelect field.
+    /// Length must match the field's option count; mismatched lists are
+    /// dropped and the renderer falls back to plain option text.
+    // The `:subnets` / `:security-groups` pickers build the field
+    // synchronously (placeholder) and populate options later via the
+    // `FormMultiSelectLoaded` handler, which writes `option_annotations`
+    // directly — leaving this builder unused for now. Kept around as a
+    // convenience for forms that have their option list up-front.
+    #[allow(dead_code)]
+    pub fn with_annotations(mut self, annotations: Vec<String>) -> Self {
+        if let FieldKind::MultiSelect { options } = &self.kind {
+            if annotations.len() == options.len() {
+                self.option_annotations = Some(annotations);
+            }
+        }
+        self
     }
 }
 
@@ -653,6 +681,7 @@ mod tests {
                     help: None,
                     error: None,
                     option_cursor: 0,
+                    option_annotations: None,
                 },
                 FormField {
                     key: "b".into(),
@@ -666,6 +695,7 @@ mod tests {
                     help: None,
                     error: None,
                     option_cursor: 0,
+                    option_annotations: None,
                 },
             ],
             FormSubmit::OptionSettings { mappings: vec![] },
@@ -691,6 +721,7 @@ mod tests {
                     help: None,
                     error: None,
                     option_cursor: 0,
+                    option_annotations: None,
                 },
                 FormField {
                     key: "icons".into(),
@@ -700,6 +731,7 @@ mod tests {
                     help: None,
                     error: None,
                     option_cursor: 0,
+                    option_annotations: None,
                 },
                 FormField {
                     key: "refresh_interval_secs".into(),
@@ -713,6 +745,7 @@ mod tests {
                     help: None,
                     error: None,
                     option_cursor: 0,
+                    option_annotations: None,
                 },
                 FormField {
                     key: "redact_default".into(),
@@ -722,6 +755,7 @@ mod tests {
                     help: None,
                     error: None,
                     option_cursor: 0,
+                    option_annotations: None,
                 },
                 FormField {
                     key: "notify_bell".into(),
@@ -731,6 +765,7 @@ mod tests {
                     help: None,
                     error: None,
                     option_cursor: 0,
+                    option_annotations: None,
                 },
                 FormField {
                     key: "required_tags".into(),
@@ -740,6 +775,7 @@ mod tests {
                     help: None,
                     error: None,
                     option_cursor: 0,
+                    option_annotations: None,
                 },
                 FormField {
                     key: "extra_regions".into(),
@@ -749,6 +785,7 @@ mod tests {
                     help: None,
                     error: None,
                     option_cursor: 0,
+                    option_annotations: None,
                 },
                 FormField {
                     key: "webhook_url".into(),
@@ -758,6 +795,7 @@ mod tests {
                     help: None,
                     error: None,
                     option_cursor: 0,
+                    option_annotations: None,
                 },
             ],
             cursor: 0,
@@ -792,6 +830,7 @@ mod tests {
                 help: None,
                 error: None,
                 option_cursor: 0,
+                option_annotations: None,
             }],
             cursor: 0,
             state: FormState::Ready,
@@ -837,6 +876,7 @@ mod tests {
                     help: None,
                     error: None,
                     option_cursor: 0,
+                    option_annotations: None,
                 },
                 FormField {
                     key: "cooldown".into(),
@@ -850,6 +890,7 @@ mod tests {
                     help: None,
                     error: None,
                     option_cursor: 0,
+                    option_annotations: None,
                 },
                 FormField {
                     key: "type".into(),
@@ -859,6 +900,7 @@ mod tests {
                     help: None,
                     error: None,
                     option_cursor: 0,
+                    option_annotations: None,
                 },
             ],
             cursor: 0,

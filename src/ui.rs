@@ -441,10 +441,13 @@ fn draw_form(f: &mut Frame, area: Rect, app: &App) {
             }
             lines.push(Line::from(row_spans));
             // MultiSelect: render the full option list below the value
-            // summary. Each row shows `[x] {opt}` or `[ ] {opt}`; the row
-            // at `option_cursor` gets the same row_selected_bg treatment
+            // summary. Each row shows `[x] {opt}` or `[ ] {opt}`; if the
+            // field carries `option_annotations`, the matching entry is
+            // appended in muted text on the same line. The row at
+            // `option_cursor` gets the same row_selected_bg treatment
             // the table uses for the focused row.
             if let FieldKind::MultiSelect { options } = &fld.kind {
+                let annotations = fld.option_annotations.as_deref();
                 for (idx, opt) in options.iter().enumerate() {
                     let selected = crate::form::is_multi_selected(&fld.value, opt);
                     let marker = if selected { "[x]" } else { "[ ]" };
@@ -458,10 +461,19 @@ fn draw_form(f: &mut Frame, area: Rect, app: &App) {
                     } else {
                         Style::default().fg(theme.text)
                     };
-                    lines.push(Line::from(Span::styled(
-                        format!("     {marker} {opt}"),
-                        row_style,
-                    )));
+                    let annot = annotations
+                        .and_then(|a| a.get(idx))
+                        .map(|s| s.as_str())
+                        .unwrap_or("");
+                    let row_spans = if annot.is_empty() {
+                        vec![Span::styled(format!("     {marker} {opt}"), row_style)]
+                    } else {
+                        vec![
+                            Span::styled(format!("     {marker} {opt}  "), row_style),
+                            Span::styled(annot.to_string(), Style::default().fg(theme.muted)),
+                        ]
+                    };
+                    lines.push(Line::from(row_spans));
                 }
             }
             if let Some(help) = &fld.help {
