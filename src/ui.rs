@@ -1824,10 +1824,12 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
         .map(|(label, _)| match *label {
             "NAME" => Constraint::Percentage(14),
             "APPLICATION" => Constraint::Percentage(12),
-            // 9 fits `" Worker " + trailing breathing space` exactly;
-            // anything narrower clips the Worker pill into the STATUS
-            // column. Web is shorter so the spare cells just blank.
-            "TIER" => Constraint::Length(9),
+            // 11 fits `" {icon} Worker " + trailing breathing space`
+            // exactly (1 pill-pad + 1 icon + 1 sep + 6 label + 1 pill-
+            // pad + 1 breathing = 11). Web fills the same width with
+            // trailing pad inside the pill so the bg stops at the same
+            // column boundary either way.
+            "TIER" => Constraint::Length(11),
             "STATUS" => Constraint::Length(10),
             "HEALTH" => Constraint::Length(3),
             "TREND" => Constraint::Length(22),
@@ -2013,16 +2015,17 @@ fn tier_cell(tier: &str, theme: &Theme) -> Cell<'static> {
     // `theme.title` (the default-primary signal); Worker keeps the
     // accent (yellow) bg since it's the less-common tier and the
     // contrast still calls it out.
-    // Centre-pad both labels to the same inner width so the pill
-    // backgrounds are identical in size — otherwise "Web" reads as a
-    // shorter, less-confident tag than "Worker". `{:^6}` aligns within
-    // the longer label's character count; the outer `pill()` adds the
-    // surrounding ` … ` so the total bg width is 8 cells for both.
+    // Left-justify both labels (so "Web" sits at the same position as
+    // "Worker") and prefix each with an icon-style-aware glyph. Same
+    // pill background dimensions for both — 6-char label padding +
+    // 1-cell icon + 1 separator space = 8 inner chars, plus pill's
+    // surrounding ` … ` = 10 cells of coloured bg.
     let label_width = "Worker".chars().count();
+    let (web_icon, worker_icon) = tier_icons(theme.icons);
     match tier {
         "Worker" => Cell::from(Line::from(vec![
             pill(
-                &format!("{:^width$}", "Worker", width = label_width),
+                &format!("{worker_icon} {:<label_width$}", "Worker"),
                 Color::Black,
                 theme.accent,
             ),
@@ -2030,7 +2033,7 @@ fn tier_cell(tier: &str, theme: &Theme) -> Cell<'static> {
         ])),
         "Web" => Cell::from(Line::from(vec![
             pill(
-                &format!("{:^width$}", "Web", width = label_width),
+                &format!("{web_icon} {:<label_width$}", "Web"),
                 Color::Black,
                 theme.title,
             ),
@@ -2040,6 +2043,20 @@ fn tier_cell(tier: &str, theme: &Theme) -> Cell<'static> {
             other.to_string(),
             Style::default().fg(theme.muted),
         )),
+    }
+}
+
+/// Returns `(web_icon, worker_icon)` for the given icon style. Picks
+/// single-cell glyphs across all three styles so the pill widths stay
+/// predictable. Powerline mode uses Nerd Font MDI glyphs (web-asterisk
+/// + wrench); unicode mode uses common monospaced symbols; ASCII gets
+/// a letter tag so the column still aligns when no decoration is
+/// available.
+fn tier_icons(icons: IconStyle) -> (&'static str, &'static str) {
+    match icons {
+        IconStyle::Powerline => ("\u{f0319}", "\u{f0294}"), // web · wrench
+        IconStyle::Unicode => ("≡", "⚙"),
+        IconStyle::Ascii => ("W", "K"),
     }
 }
 
