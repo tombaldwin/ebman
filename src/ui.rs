@@ -200,7 +200,7 @@ fn micro_bar(value: i64, max: i64, width: usize) -> String {
     out
 }
 
-const SPARKLINE_WIDTH: usize = 20;
+const SPARKLINE_WIDTH: usize = 10;
 /// How wide each divider fill string is. Ratatui truncates per-column, so any
 /// value ≥ max column width works.
 const DIVIDER_FILL_WIDTH: usize = 200;
@@ -1706,11 +1706,8 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                                     .style(Style::default().fg(colour)),
                             }
                         }
-                        "VERSION" => Cell::from(format_version_label(
-                            &e.version_label,
-                            theme.app_palette[0],
-                            theme.muted,
-                        )),
+                        "VERSION" => Cell::from(Span::raw(e.version_label.as_str()))
+                            .style(Style::default().fg(theme.app_palette[0])),
                         "CNAME" => Cell::from(redact(&e.cname, app.redact))
                             .style(Style::default().fg(theme.muted)),
                         // `age` is built freshly per row inside this scope
@@ -1855,7 +1852,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
             "TIER" => Constraint::Length(11),
             "STATUS" => Constraint::Length(10),
             "HEALTH" => Constraint::Length(3),
-            "TREND" => Constraint::Length(22),
+            "TREND" => Constraint::Length(12),
             "PLATFORM" => Constraint::Percentage(15),
             "VERSION" => Constraint::Percentage(10),
             "CNAME" => Constraint::Percentage(14),
@@ -5128,73 +5125,6 @@ fn summarize_group(envs: &[&Environment]) -> String {
     parts.join(" · ")
 }
 
-/// Split a version label into "fixed prefix / moving build number / fixed
-/// suffix" and render the moving part in `accent` with everything else
-/// dimmed to `muted`. The "moving part" is the longest run of digits in
-/// the label — usually the build number, version digit, or commit-prefix
-/// number that operators care about scanning. If no digit run is found,
-/// the whole label renders in `accent`.
-///
-/// Examples:
-/// - `build-10678` → `build-` (muted) + `10678` (accent)
-/// - `2026-20.1-rc` → `2026-` (muted) + `20` (accent) + `.1-rc` (muted)
-///   (first longest run; ties broken by leftmost)
-/// - `v3` → `v3` all in accent (no clear prefix/suffix worth dimming)
-///
-/// Pure — no theme access, no I/O. Caller passes resolved colours so the
-/// helper stays testable.
-fn format_version_label(label: &str, accent: Color, muted: Color) -> Line<'static> {
-    let (start, end) = longest_digit_run(label);
-    if start == end {
-        // No digits found, or the whole string is digits with no clear
-        // surrounding context — render in one colour.
-        return Line::from(Span::styled(label.to_string(), Style::default().fg(accent)));
-    }
-    let mut spans: Vec<Span<'static>> = Vec::with_capacity(3);
-    if start > 0 {
-        spans.push(Span::styled(
-            label[..start].to_string(),
-            Style::default().fg(muted),
-        ));
-    }
-    spans.push(Span::styled(
-        label[start..end].to_string(),
-        Style::default().fg(accent).add_modifier(Modifier::BOLD),
-    ));
-    if end < label.len() {
-        spans.push(Span::styled(
-            label[end..].to_string(),
-            Style::default().fg(muted),
-        ));
-    }
-    Line::from(spans)
-}
-
-/// Pure: byte indices of the longest consecutive digit run in `s`. Returns
-/// `(0, 0)` if there are no digits. Ties broken by leftmost match.
-fn longest_digit_run(s: &str) -> (usize, usize) {
-    let bytes = s.as_bytes();
-    let mut best: (usize, usize) = (0, 0);
-    let mut cur_start: Option<usize> = None;
-    for (i, &b) in bytes.iter().enumerate() {
-        if b.is_ascii_digit() {
-            if cur_start.is_none() {
-                cur_start = Some(i);
-            }
-        } else if let Some(start) = cur_start.take() {
-            if i - start > best.1 - best.0 {
-                best = (start, i);
-            }
-        }
-    }
-    if let Some(start) = cur_start {
-        if bytes.len() - start > best.1 - best.0 {
-            best = (start, bytes.len());
-        }
-    }
-    best
-}
-
 fn humanize_age(d: chrono::Duration) -> String {
     let secs = d.num_seconds().max(0);
     if secs < 60 {
@@ -5648,42 +5578,6 @@ mod tests {
     #[test]
     fn summarize_group_empty_input() {
         assert_eq!(summarize_group(&[]), "");
-    }
-
-    #[test]
-    fn version_label_highlights_build_number() {
-        // Pure helper returns a Line we can inspect span-by-span.
-        let line = format_version_label("build-10678", Color::Cyan, Color::DarkGray);
-        let texts: Vec<String> = line.spans.iter().map(|s| s.content.to_string()).collect();
-        assert_eq!(texts, vec!["build-", "10678"]);
-    }
-
-    #[test]
-    fn version_label_dims_prefix_and_suffix() {
-        let line = format_version_label("v2026-20-1-rc", Color::Cyan, Color::DarkGray);
-        let texts: Vec<String> = line.spans.iter().map(|s| s.content.to_string()).collect();
-        // Longest digit run is "2026"; preceding "v" gets dimmed, trailing
-        // "-20-1-rc" also dimmed.
-        assert_eq!(texts, vec!["v", "2026", "-20-1-rc"]);
-    }
-
-    #[test]
-    fn version_label_no_digits_one_span() {
-        let line = format_version_label("staging", Color::Cyan, Color::DarkGray);
-        assert_eq!(line.spans.len(), 1);
-        assert_eq!(line.spans[0].content, "staging");
-    }
-
-    #[test]
-    fn longest_digit_run_picks_first_on_tie() {
-        // Two equal-length runs — leftmost wins.
-        assert_eq!(longest_digit_run("v12-34"), (1, 3));
-    }
-
-    #[test]
-    fn longest_digit_run_empty_no_digits() {
-        assert_eq!(longest_digit_run(""), (0, 0));
-        assert_eq!(longest_digit_run("abc"), (0, 0));
     }
 
     #[test]
