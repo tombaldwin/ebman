@@ -266,6 +266,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // still surfaces the describe overlay; previously the early return swallowed it.
     if app.mode == Mode::Help {
         draw_help(f, f.area(), app);
+    } else {
+        // Reset the cached max so a stale value doesn't survive across
+        // hides; the next help open will recompute it on the first frame.
+        app.help_max_scroll = 0;
     }
     if app.mode == Mode::Picker {
         draw_picker(f, f.area(), app);
@@ -2283,7 +2287,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn draw_help(f: &mut Frame, area: Rect, app: &App) {
+fn draw_help(f: &mut Frame, area: Rect, app: &mut App) {
     let theme = &app.theme;
     let popup = centered_rect(70, 70, area);
     f.render_widget(Clear, popup);
@@ -2387,24 +2391,74 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(app.theme.muted),
         )),
     ];
-    // Split the popup into a scrollable body + a sticky 1-row footer at
-    // the bottom inside the border, so the byline credit + `:about`
-    // hint stay visible no matter how far the operator scrolls.
-    let body_height = popup.height.saturating_sub(2); // -2 for top + bottom border
+    // Split the popup into a scrollable body + a sticky 1-row byline at
+    // the bottom inside the border. The body is the popup minus the
+    // border (top/bottom) and minus the padding (uniform(1) — top/bottom).
+    // That gives the visible row budget for line-count clamping.
+    let total_lines = lines.len() as u16;
+    let inner_height = popup.height.saturating_sub(4); // top border + top pad + bottom pad + bottom border
+                                                       // Reserve the bottommost inner row for the sticky byline; the body
+                                                       // proper gets one less than that.
+    let body_height = inner_height.saturating_sub(1);
+    // Maximum scroll = where the last line is pinned to the body's
+    // bottom. Below that, scrolling further would reveal blank space.
+    let max_scroll = total_lines.saturating_sub(body_height);
+    app.help_max_scroll = max_scroll;
+    let effective_scroll = app.help_scroll.min(max_scroll);
+
+    // Scroll indicators: emit "↑ N more above" on the top inner row and
+    // "↓ N more below" on the row just above the byline when there's
+    // content past the viewport. Rendered AFTER the body so they overlay
+    // its first / last visible row.
     let footer_row = Rect {
-        x: popup.x + 1,
-        y: popup.y + body_height.saturating_sub(1).max(1),
-        width: popup.width.saturating_sub(2),
+        x: popup.x + 2,
+        y: popup.y + popup.height.saturating_sub(2),
+        width: popup.width.saturating_sub(4),
+        height: 1,
+    };
+    let above_row = Rect {
+        x: popup.x + 2,
+        y: popup.y + 2, // skip border + top pad
+        width: popup.width.saturating_sub(4),
+        height: 1,
+    };
+    let below_row = Rect {
+        x: popup.x + 2,
+        y: popup.y + popup.height.saturating_sub(3),
+        width: popup.width.saturating_sub(4),
         height: 1,
     };
     let help = Paragraph::new(lines)
         .wrap(Wrap { trim: false })
-        .scroll((app.help_scroll, 0))
+        .scroll((effective_scroll, 0))
         .block(
             titled_block(&app.theme, "help", true, app.theme.title_alt)
                 .padding(Padding::uniform(1)),
         );
     f.render_widget(help, popup);
+    let muted_hint = Style::default()
+        .fg(app.theme.accent)
+        .add_modifier(Modifier::BOLD);
+    if effective_scroll > 0 {
+        let n = effective_scroll;
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("↑ {n} more above"),
+                muted_hint,
+            ))),
+            above_row,
+        );
+    }
+    if effective_scroll < max_scroll {
+        let n = max_scroll - effective_scroll;
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("↓ {n} more below"),
+                muted_hint,
+            ))),
+            below_row,
+        );
+    }
     // Render the byline after the help body so it overlays the last row
     // and remains visible regardless of scroll position.
     let credit = Paragraph::new(Line::from(Span::styled(
