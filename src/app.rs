@@ -1749,6 +1749,10 @@ impl App {
                 self.close_shell_session();
             }
         }
+        // persist_state ALSO runs in main.rs after `run()` returns
+        // (Ok or Err) so a draw / select error mid-shutdown can't drop
+        // the operator's state. This call here is kept so the Ok path
+        // still persists *before* `leave_tui()` (cheap, idempotent).
         self.persist_state();
         Ok(())
     }
@@ -8148,7 +8152,7 @@ impl App {
         self.mode = Mode::Picker;
     }
 
-    fn persist_state(&self) {
+    pub fn persist_state(&self) {
         let selected = self.selected_env().map(|e| e.name.clone());
         // Persist the operator's *intent* first, then fall back to the
         // effective state. Override-wins matters when the user has

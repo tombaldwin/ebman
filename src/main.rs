@@ -130,6 +130,14 @@ async fn main() -> Result<()> {
     });
 
     let result = app_inst.run(&mut terminal, control_rx).await;
+    // Belt-and-braces: persist state regardless of how `run()` exited.
+    // The internal call at the end of `run()` only fires on the Ok path,
+    // so a `terminal.draw()?` error mid-shutdown (which can happen when
+    // cargo-watch SIGTERM's the process and the TTY is flaky) would
+    // otherwise drop the latest persistence. This second call is cheap
+    // and idempotent; if run() succeeded it just over-writes its own
+    // earlier write with the same values.
+    app_inst.persist_state();
     leave_tui(&mut terminal)?;
     // Honour a reload request from the control socket: re-exec the same
     // binary with the original argv so the parent shell's terminal is
