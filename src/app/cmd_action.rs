@@ -7,10 +7,7 @@
 //! Fifth slice of the `execute_command` split. Same parent-module
 //! visibility as the other `cmd_*` sub-modules.
 
-use super::{
-    compute_traffic_warning, parse_named_arg, parse_s3_url, Action, ActionFlow, App, ConfirmKind,
-    ConfirmModal, Mode, ParameterisedAction,
-};
+use super::{parse_named_arg, parse_s3_url, Action, App, ParameterisedAction};
 
 impl App {
     /// `:deploy LABEL [--preview]` ships an existing version, or
@@ -167,11 +164,11 @@ impl App {
     }
 
     /// `:swap TARGET` — CNAME swap with another env in the same
-    /// application. Pre-validates the target before opening the
-    /// confirm modal so we fail fast on typos. Builds the
-    /// `ActionFlow::Confirm` directly because the swap shape doesn't
-    /// fit the `open_parameterised_action` API (which assumes the
-    /// action is destructive enough to use a typed-confirm path).
+    /// application. Pre-validates the target before opening the confirm
+    /// modal so we fail fast on typos, then routes through
+    /// `open_parameterised_action` so the preflight (impact preview +
+    /// last-3 events) and read-only guard land the same way they would
+    /// from the action menu.
     pub(crate) fn cmd_swap(&mut self, rest: &[&str]) {
         let Some(target) = rest.first().copied() else {
             self.error_message =
@@ -194,28 +191,12 @@ impl App {
             ));
             return;
         }
-        if self.read_only {
-            self.error_message = Some("read-only mode — swap disabled".into());
-            return;
-        }
-        self.action_flow = Some(ActionFlow::Confirm(ConfirmModal {
-            action: Action::SwapCnames,
-            target_env: env.name.clone(),
-            swap_with: Some(target),
-            typed: String::new(),
-            kind: ConfirmKind::YesNo,
-            dryrun: None,
-            loading_dryrun: false,
-            recent_events: None,
-            loading_events: false,
-            traffic_warning: compute_traffic_warning(&env),
-            deploy_version: None,
-            upgrade_platform_arn: None,
-            upgrade_platform_label: None,
-            clone_target: None,
-            scale_min: None,
-            scale_max: None,
-        }));
-        self.mode = Mode::Action;
+        self.open_parameterised_action(
+            Action::SwapCnames,
+            ParameterisedAction {
+                swap_with: Some(target),
+                ..Default::default()
+            },
+        );
     }
 }

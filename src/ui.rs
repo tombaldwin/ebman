@@ -127,18 +127,19 @@ fn pill_chain(items: &[(String, Color, Color)], theme: &Theme) -> Vec<Span<'stat
 /// `Utc::now()`.
 fn build_chain_pills(app: &App) -> Vec<(String, Color, Color)> {
     let theme = &app.theme;
+    // Single source of truth for pill text colour: WCAG-derived contrast
+    // against each pill's bg, so light + high-contrast themes don't render
+    // black-on-dark or white-on-bright tofu. Previously every pill
+    // hardcoded `Color::Black` (with one `Color::White` outlier for
+    // alerts) which broke the moment a theme changed.
+    let fg = |bg: Color| theme.contrast_text(bg);
+
+    // Pill ordering follows the priority used by `prune_pills_to_width` —
+    // most operationally critical signals (alerts, pending, multi-select,
+    // read-only, update) land first so they survive the elision pass when
+    // the header gets narrower. UX signals (grouped / compact / redact /
+    // SSO / frozen) drop first.
     let mut chain: Vec<(String, Color, Color)> = Vec::new();
-    if app.grouped {
-        chain.push(("GROUPED".into(), Color::Black, theme.title_alt));
-    }
-    match app.view_mode {
-        ViewMode::Compact => chain.push(("COMPACT".into(), Color::Black, theme.accent)),
-        ViewMode::Spacious => chain.push(("SPACIOUS".into(), Color::Black, theme.accent)),
-        ViewMode::Default => {}
-    }
-    if app.redact {
-        chain.push(("REDACT".into(), Color::Black, theme.health_yellow));
-    }
     if app.alerts > 0 {
         chain.push((
             format!(
@@ -146,7 +147,7 @@ fn build_chain_pills(app: &App) -> Vec<(String, Color, Color)> {
                 app.alerts,
                 if app.alerts == 1 { "" } else { "s" }
             ),
-            Color::White,
+            fg(theme.health_red),
             theme.health_red,
         ));
     }
@@ -158,21 +159,37 @@ fn build_chain_pills(app: &App) -> Vec<(String, Color, Color)> {
         .collect();
     if !in_flight.is_empty() {
         chain.push((
-            format!("⏳ {}", summarize_in_flight(&in_flight)),
-            Color::Black,
+            format!(
+                "{}{}",
+                pending_glyph(theme),
+                summarize_in_flight(&in_flight)
+            ),
+            fg(theme.health_yellow),
             theme.health_yellow,
         ));
     }
-    if app.frozen {
-        chain.push(("FROZEN".into(), Color::Black, theme.health_grey));
+    // Multi-select active — surface persistently so the operator can't
+    // accidentally fan a destructive action across N envs after wandering
+    // off (the status-message hint disappears after one refresh tick).
+    let n_selected = app.multi_selected.len();
+    if n_selected > 0 {
+        chain.push((
+            format!("{}{n_selected} selected", multi_select_glyph(theme)),
+            fg(theme.title),
+            theme.title,
+        ));
     }
     if app.read_only {
-        chain.push(("READ-ONLY".into(), Color::Black, theme.health_green));
+        chain.push((
+            "READ-ONLY".into(),
+            fg(theme.health_green),
+            theme.health_green,
+        ));
     }
     if let Some(release) = app.update_available.as_ref() {
         chain.push((
             format!("UPDATE {} (:update)", release.version),
-            Color::Black,
+            fg(theme.title_alt),
             theme.title_alt,
         ));
     }
@@ -192,10 +209,69 @@ fn build_chain_pills(app: &App) -> Vec<(String, Color, Color)> {
             } else {
                 theme.health_grey
             };
-            chain.push((label, Color::Black, bg));
+            chain.push((label, fg(bg), bg));
         }
     }
+    if app.frozen {
+        // Frozen auto-refresh during an incident is operationally
+        // important to not forget about. After 5 minutes of staleness
+        // the FROZEN pill turns yellow so the operator sees they're
+        // looking at old data while they were heads-down on something
+        // else. Grey-on-grey while it's fresh, warning colour after.
+        let stale = app
+            .last_refresh
+            .map(|t| chrono::Utc::now().signed_duration_since(t) >= chrono::Duration::minutes(5))
+            .unwrap_or(false);
+        let bg = if stale {
+            theme.health_yellow
+        } else {
+            theme.health_grey
+        };
+        let label = if stale {
+            "FROZEN (stale)".to_string()
+        } else {
+            "FROZEN".to_string()
+        };
+        chain.push((label, fg(bg), bg));
+    }
+    if app.redact {
+        chain.push((
+            "REDACT".into(),
+            fg(theme.health_yellow),
+            theme.health_yellow,
+        ));
+    }
+    if app.grouped {
+        chain.push(("GROUPED".into(), fg(theme.title_alt), theme.title_alt));
+    }
+    match app.view_mode {
+        ViewMode::Compact => {
+            chain.push(("COMPACT".into(), fg(theme.accent), theme.accent));
+        }
+        ViewMode::Spacious => {
+            chain.push(("SPACIOUS".into(), fg(theme.accent), theme.accent));
+        }
+        ViewMode::Default => {}
+    }
     chain
+}
+
+/// Glyph for the pending-actions pill, gated on the active icon style.
+/// `⏳` (U+23F3) is unicode-only — operators on `icons = "ascii"`
+/// terminals saw box-tofu before this; falls back to a `*` tag now.
+fn pending_glyph(theme: &Theme) -> &'static str {
+    match theme.icons {
+        IconStyle::Ascii => "* ",
+        _ => "⏳ ",
+    }
+}
+
+/// Glyph for the multi-select-active pill.
+fn multi_select_glyph(theme: &Theme) -> &'static str {
+    match theme.icons {
+        IconStyle::Ascii => "+ ",
+        _ => "▶ ",
+    }
 }
 
 /// Decides the header's vertical footprint and whether the contextual pill
@@ -209,12 +285,43 @@ fn header_layout(app: &App, area_width: u16) -> (u16, bool) {
     let col0 = (area_width as u32 * 60 / 100) as u16;
     let inner = col0.saturating_sub(2) as usize;
 
-    let pills = build_chain_pills(app);
+    let mut pills = build_chain_pills(app);
+    prune_pills_to_width(&mut pills, &app.theme, inner);
     let chain_spans = pill_chain(&pills, &app.theme);
     let chain_w: usize = chain_spans.iter().map(|s| s.width()).sum();
     let info_w = estimated_info_row_width(app);
 
     header_dimensions(info_w, chain_w, inner, !app.named_filters.is_empty())
+}
+
+/// Drops trailing (low-priority) pills from `pills` until the rendered
+/// width fits in `max_w`. `build_chain_pills` orders pills by priority
+/// (most operationally critical first — alerts, pending, multi-select,
+/// read-only, update; least — view-mode, grouped, redact), so trimming
+/// from the end strips the cosmetic chips first while preserving the
+/// "you have something serious going on" pills. Mutates in place.
+///
+/// When pills do get elided, the last surviving pill is appended with a
+/// `+N` suffix so the operator knows pills are hidden — silent elision
+/// would be worse than overflow.
+fn prune_pills_to_width(pills: &mut Vec<(String, Color, Color)>, theme: &Theme, max_w: usize) {
+    if pills.is_empty() {
+        return;
+    }
+    let measure = |slice: &[(String, Color, Color)]| -> usize {
+        pill_chain(slice, theme).iter().map(|s| s.width()).sum()
+    };
+    let original_len = pills.len();
+    while pills.len() > 1 && measure(pills) > max_w {
+        pills.pop();
+    }
+    if pills.len() < original_len {
+        // Mark the last visible pill so the operator knows there's more.
+        let hidden = original_len - pills.len();
+        if let Some(last) = pills.last_mut() {
+            last.0 = format!("{} +{hidden}", last.0);
+        }
+    }
 }
 
 /// Pure width math behind `header_layout`. Given the rendered width of the
@@ -641,7 +748,7 @@ fn draw_form(f: &mut Frame, area: Rect, app: &App) {
             }
             if let Some(err) = &fld.error {
                 lines.push(Line::from(Span::styled(
-                    format!("     ⚠ {err}"),
+                    format!("     {}{err}", warn_glyph(theme.icons)),
                     Style::default().fg(theme.health_red),
                 )));
             }
@@ -810,7 +917,7 @@ fn draw_toasts(f: &mut Frame, area: Rect, app: &App) {
         // and keeps the severity signal even at the periphery of vision.
         let para = Paragraph::new(Line::from(vec![
             Span::styled(
-                "▎",
+                stripe_glyph(theme.icons),
                 Style::default()
                     .fg(border_color)
                     .add_modifier(Modifier::BOLD),
@@ -1060,7 +1167,7 @@ fn draw_log_tail_overlay(f: &mut Frame, area: Rect, app: &App) {
     let footer_text = if *filter_active {
         format!(" filter: {filter_input}_ (esc cancel)")
     } else if let Some(err) = last_err {
-        format!(" ⚠ {err}")
+        format!(" {}{err}", warn_glyph(theme.icons))
     } else {
         " j/k scroll · g/G top/follow · / filter · n clear-filter · Tab change group · esc / q close".to_string()
     };
@@ -1718,8 +1825,13 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: bool) {
     }
     // Contextual pill chain — built via `build_chain_pills` so the layout
     // pass (which sizes the header height) can predict whether the chain
-    // fits on the info row at this width.
-    let chain_pills = build_chain_pills(app);
+    // fits on the info row at this width. Pruned via the same
+    // `prune_pills_to_width` pass that `header_layout` ran so the
+    // measurements stay consistent.
+    let inner_w = (area.width as u32 * 60 / 100) as usize;
+    let inner_w = inner_w.saturating_sub(2);
+    let mut chain_pills = build_chain_pills(app);
+    prune_pills_to_width(&mut chain_pills, theme, inner_w);
     if merge_pills && !chain_pills.is_empty() {
         // Wide window: pills tail the info row. Two-space gap so they
         // don't butt up against the last field (or the Powerline lead-in
@@ -2157,7 +2269,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                                 Cell::from(Line::from(vec![
                                     status_pill_for(&e.status, &theme, alerting),
                                     Span::styled(
-                                        format!(" ⚠{dlq}"),
+                                        format!(" {}{dlq}", warn_glyph(theme.icons).trim_end()),
                                         Style::default()
                                             .fg(theme.health_red)
                                             .add_modifier(Modifier::BOLD),
@@ -2477,7 +2589,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                 .to_string();
         } else if app.filter.is_empty() {
             heading = "no environments match the active view".to_string();
-            hint = "press `views` to switch back to default, or `:filters` to drop a saved one"
+            hint = "type `:views` to switch back to default, or `:filters` to drop a saved one"
                 .to_string();
         } else {
             heading = format!("no environments match  `{}`", app.filter);
@@ -2932,7 +3044,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
                 // / filter slots are empty so it doesn't trample anything
                 // the user is actively reading.
                 top.push(Span::styled(
-                    format!(" 💡 {hint}"),
+                    format!(" {}{hint}", hint_glyph(theme.icons)),
                     Style::default().fg(theme.muted),
                 ));
             }
@@ -3072,10 +3184,91 @@ fn draw_help(f: &mut Frame, area: Rect, app: &mut App) {
         help_line(":diff NAME", "side-by-side comparison with another env", theme),
         help_line(":alarms", "CloudWatch alarms list for selected env", theme),
         help_line(":why", "diagnostic overlay — events + alarms + instances + recent deploys for the selected env", theme),
-        help_line("space + :batch-*", "multi-select envs with space, then :batch-rebuild / :batch-restart / :batch-deploy LABEL / :batch-tag KEY VAL / :batch-set-option NS NAME VAL", theme),
+        help_line(":pending / :in-flight", "in-flight + recently-completed actions", theme),
+        help_line(":resources / :res", "DescribeEnvironmentResources dump for selected env", theme),
+        help_line(":versions", "application versions for selected env's app (deploy hint included)", theme),
         help_line(":loglevel LEVEL", "live-reload tracing filter (trace/debug/info/warn/error)", theme),
         help_line(":saved-configs", "list EB saved configuration templates per application", theme),
+        help_line(":custom-platforms", "list custom EB platforms in this account/region", theme),
         help_line(":plugins  /  :NAME", "list / invoke plugin commands defined in commands.toml", theme),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Multi-account / multi-region",
+            Style::default().fg(app.theme.title).add_modifier(Modifier::BOLD),
+        )),
+        help_line(":region NAME / :region all", "switch region, or fan across configured regions in parallel", theme),
+        help_line(":account NAME", "switch to AssumeRole account (accounts.NAME in config.toml); falls back to :profile aliasing", theme),
+        help_line(":accounts", "list AWS-Organizations child accounts (annotated with :account hints)", theme),
+        help_line(":find-env SUBSTRING", "scan every ~/.aws profile + AssumeRole account for an env", theme),
+        help_line(":org-health", "aggregate env / red counts across profiles + AssumeRole accounts", theme),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Lifecycle actions (alternatively: a → menu)",
+            Style::default().fg(app.theme.title).add_modifier(Modifier::BOLD),
+        )),
+        help_line(":rebuild / :restart / :terminate", "menu shortcuts (terminate requires typed-name confirm)", theme),
+        help_line(":deploy LABEL [--preview]", "ship an existing version (preview = side-by-side current vs candidate)", theme),
+        help_line(":deploy --from PATH | s3://...", "upload bundle, register version, deploy (--no-deploy to stop after register)", theme),
+        help_line(":upgrade [ARN]", "no-arg: list compatible platforms; with ARN: migrate to it", theme),
+        help_line(":clone NEW-NAME", "clone selected env", theme),
+        help_line(":scale N / :stop / :start", "ASG min=max=N / 0 / 1", theme),
+        help_line(":capacity", "modal form: Min / Max / Instance type / Cooldown in one shot", theme),
+        help_line(":swap TARGET", "swap CNAMEs (Y/N confirm; same preflight as a → Swap)", theme),
+        help_line(":abort", "cancel an in-flight env update", theme),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Env config",
+            Style::default().fg(app.theme.title).add_modifier(Modifier::BOLD),
+        )),
+        help_line(":env list | set KEY VAL | unset KEY", "application env-var editor", theme),
+        help_line(":tag KEY VALUE / :untag KEY", "env tag editor", theme),
+        help_line(":set-option NS OPT VAL / :unset-option NS OPT", "generic option-settings escape hatch", theme),
+        help_line(":instance-type TYPE", "EC2 instance type (rolling launch-config replacement)", theme),
+        help_line(":keypair / :service-role / :instance-profile", "security tab settings", theme),
+        help_line(":public-ip on|off / :elb-scheme public|internal", "network tab settings", theme),
+        help_line(":subnets / :elb-subnets / :security-groups", "MultiSelect pickers for VPC subnets / SGs", theme),
+        help_line(":deployment-policy POLICY", "AllAtOnce | Rolling | RollingWithAdditionalBatch | Immutable | TrafficSplitting", theme),
+        help_line(":rolling-update on|off", "ASG rolling-update policy", theme),
+        help_line(":health-check-url /path", "HTTP health-check path", theme),
+        help_line(":logs-stream on|off [--retention N]", "toggle CW Logs streaming (default 7d retention)", theme),
+        help_line(":logs-tail [LOG_GROUP]", "open live CW Logs tail overlay (picker if multiple groups)", theme),
+        help_line(":notify EMAIL_OR_SNS_ARN | off", "notification endpoint", theme),
+        help_line(":managed-window DAY HOUR | off", "managed-update window (Mon..Sun, 0..23)", theme),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Versions / configs / alarms / platforms",
+            Style::default().fg(app.theme.title).add_modifier(Modifier::BOLD),
+        )),
+        help_line(":delete-version LABEL [--force]", "drop an app version (--force also nukes the S3 bundle)", theme),
+        help_line(":config-save NAME / :config-apply NAME", "save / apply a config template", theme),
+        help_line(":config-delete APP NAME / :config-inspect NAME", "delete / inspect a template", theme),
+        help_line(":alarm-create NAME KIND THRESHOLD [OP]", "CW alarm (KIND: health | 4xx | 5xx | latency)", theme),
+        help_line(":alarm-delete NAME", "remove a CW alarm", theme),
+        help_line(":custom-platform-delete ARN", "delete a custom EB platform (fails if any env still uses it)", theme),
+        help_line(":metric add LABEL NS NAME [STAT] / :metric remove LABEL / :metric list", "custom Metrics-tab charts", theme),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Bulk ops (space to multi-select first)",
+            Style::default().fg(app.theme.title).add_modifier(Modifier::BOLD),
+        )),
+        help_line(":batch-rebuild / :batch-restart", "fan non-destructive action across selection", theme),
+        help_line(":batch-deploy LABEL", "deploy the same version to every selected env", theme),
+        help_line(":batch-tag KEY VAL / :batch-untag KEY", "fan tag write across selection", theme),
+        help_line(":batch-set-option NS OPT VAL", "fan option-settings write across selection", theme),
+        help_line(":deselect / :select-clear / esc", "clear multi-selection", theme),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Setup / discovery",
+            Style::default().fg(app.theme.title).add_modifier(Modifier::BOLD),
+        )),
+        help_line(":settings", "interactive form to edit ~/.config/ebman/config.toml", theme),
+        help_line(":about / :credits", "version, license, attributions", theme),
+        help_line(":update", "show + yank the upgrade command for the detected install channel", theme),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Detail-view per-tab keys",
+            Style::default().fg(app.theme.title).add_modifier(Modifier::BOLD),
+        )),
         help_line("[ / ] (Metrics tab)", "decrease / increase metric range (15m → 24h)", theme),
         help_line("(Logs tab) ^R", "request tail logs (takes ~10–20s while EB samples instances)", theme),
         help_line("(Logs tab) s", "open CW Logs streaming overlay (live tail; needs `:logs-stream on`)", theme),
@@ -3213,7 +3406,7 @@ fn draw_dlq(f: &mut Frame, area: Rect, app: &mut App) {
         ),
         if dlq.confirm_delete_idx.is_some() {
             Span::styled(
-                "   ⚠ delete this message? y / n",
+                format!("   {}delete this message? y / n", warn_glyph(theme.icons)),
                 Style::default()
                     .fg(theme.health_red)
                     .add_modifier(Modifier::BOLD),
@@ -3508,9 +3701,12 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                 ),
                 Action::AbortUpdate => format!("Abort current update on '{}'?", modal.target_env),
                 // These variants never reach the ConfirmModal — they're
-                // dispatched directly from command paths. Placeholder copy
-                // keeps the match exhaustive without dead UI.
-                Action::ConfigSave
+                // dispatched directly from command paths (Capacity opens a
+                // modal form; Config* and TerminateInstance have their own
+                // spawn paths). Placeholder copy keeps the match
+                // exhaustive without dead UI.
+                Action::Capacity
+                | Action::ConfigSave
                 | Action::ConfigDelete
                 | Action::ConfigApply
                 | Action::TerminateInstance => {
@@ -3551,7 +3747,7 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
             if let Some(w) = &modal.traffic_warning {
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
-                    format!("  ⚠ {w}"),
+                    format!("  {}{w}", warn_glyph(theme.icons)),
                     Style::default()
                         .fg(theme.health_red)
                         .add_modifier(Modifier::BOLD),
@@ -4019,7 +4215,7 @@ fn draw_detail_health(f: &mut Frame, area: Rect, detail: &crate::app::DetailStat
     if dlq_depth > 0 {
         status_line.push(Span::raw("   "));
         status_line.push(Span::styled(
-            format!("⚠ DLQ:{dlq_depth}"),
+            format!("{}DLQ:{dlq_depth}", warn_glyph(theme.icons)),
             Style::default()
                 .fg(theme.health_red)
                 .add_modifier(Modifier::BOLD),
@@ -4172,7 +4368,96 @@ fn draw_detail_health(f: &mut Frame, area: Rect, detail: &crate::app::DetailStat
     }
     lines.push(Line::raw(""));
 
-    // 3. Worker queues — only for Worker envs. Reuses the queues data
+    // 3. CW alarms attached to this env. Mirrors the alarms section in
+    // `:why` so the two triage surfaces tell the same story. Active
+    // (ALARM-state) alarms first; the section is hidden when no alarms
+    // exist to keep the panel quiet for healthy envs.
+    let alarms_present = matches!(&detail.cw_alarms, Some(Ok(a)) if !a.is_empty());
+    let alarms_loading = detail.loading_cw_alarms && detail.cw_alarms.is_none();
+    if alarms_present || alarms_loading {
+        lines.push(section("alarms"));
+        if alarms_loading {
+            lines.push(muted(" fetching alarms…".into()));
+        } else if let Some(Ok(als)) = &detail.cw_alarms {
+            let mut sorted: Vec<&crate::aws::CwAlarm> = als.iter().collect();
+            sorted.sort_by_key(|a| match a.state.as_str() {
+                "ALARM" => 0,
+                "INSUFFICIENT_DATA" => 1,
+                _ => 2,
+            });
+            for a in sorted.iter().take(8) {
+                let (tag, style) = match a.state.as_str() {
+                    "ALARM" => (
+                        "ALARM",
+                        Style::default()
+                            .fg(theme.health_red)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    "OK" => ("OK   ", Style::default().fg(theme.health_green)),
+                    _ => ("INS  ", Style::default().fg(theme.muted)),
+                };
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(tag.to_string(), style),
+                    Span::raw("  "),
+                    Span::styled(
+                        a.name.clone(),
+                        Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("  ({}/{})", a.namespace, a.metric_name),
+                        Style::default().fg(theme.muted),
+                    ),
+                ]));
+            }
+        }
+        lines.push(Line::raw(""));
+    } else if let Some(Err(e)) = &detail.cw_alarms {
+        lines.push(section("alarms"));
+        lines.push(Line::from(Span::styled(
+            format!(" error: {e}"),
+            Style::default().fg(theme.health_red),
+        )));
+        lines.push(Line::raw(""));
+    }
+
+    // 4. Recent deploys — top 3 versions, newest first. The most-recent
+    // deploy is the prime suspect when an env flips Red right after.
+    // Section is skipped entirely on a brand-new app with no versions.
+    let versions_present = matches!(&detail.recent_versions, Some(Ok(v)) if !v.is_empty());
+    let versions_loading = detail.loading_recent_versions && detail.recent_versions.is_none();
+    if versions_present || versions_loading {
+        lines.push(section("recent deploys"));
+        if versions_loading {
+            lines.push(muted(" fetching deploys…".into()));
+        } else if let Some(Ok(vers)) = &detail.recent_versions {
+            for v in vers.iter().take(3) {
+                let when = v
+                    .created
+                    .map(|t| humanize_age(now.signed_duration_since(t)))
+                    .unwrap_or_else(|| "—".into());
+                let when_style = Style::default().fg(age_color(v.created, now, theme));
+                let mut spans = vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        v.label.clone(),
+                        Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(format!("  {when} ago"), when_style),
+                ];
+                if !v.description.is_empty() {
+                    spans.push(Span::styled(
+                        format!("  — {}", truncate_for_display(&v.description, 60)),
+                        Style::default().fg(theme.muted),
+                    ));
+                }
+                lines.push(Line::from(spans));
+            }
+        }
+        lines.push(Line::raw(""));
+    }
+
+    // 5. Worker queues — only for Worker envs. Reuses the queues data
     // populated by `detail_refresh_active_tab`'s `spawn_detail_queues`.
     if is_worker {
         lines.push(section("worker queues"));
@@ -4398,7 +4683,8 @@ fn draw_detail_instances(
             if let Some(inst) = detail.instances.get(idx) {
                 lines.push(Line::from(Span::styled(
                     format!(
-                        "  ⚠ TERMINATE instance {}? ASG will replace it. y / n",
+                        "  {}TERMINATE instance {}? ASG will replace it. y / n",
+                        warn_glyph(theme.icons),
                         inst.id
                     ),
                     Style::default()
@@ -5159,7 +5445,11 @@ fn draw_detail_config(
             lines.push(Line::from(vec![
                 Span::styled("Tag policy    ", Style::default().fg(theme.muted)),
                 Span::styled(
-                    format!("⚠ missing required tag(s): {}", missing.join(", ")),
+                    format!(
+                        "{}missing required tag(s): {}",
+                        warn_glyph(theme.icons),
+                        missing.join(", ")
+                    ),
                     Style::default()
                         .fg(theme.health_yellow)
                         .add_modifier(Modifier::BOLD),
@@ -5744,6 +6034,35 @@ fn separator_glyph(icons: IconStyle) -> &'static str {
     }
 }
 
+/// Warning glyph — `⚠ ` in unicode/powerline modes, `! ` in ascii so
+/// `icons = "ascii"` operators don't get box-tofu instead. Caller
+/// includes the trailing space.
+fn warn_glyph(icons: IconStyle) -> &'static str {
+    match icons {
+        IconStyle::Ascii => "! ",
+        _ => "⚠ ",
+    }
+}
+
+/// Hint / suggestion glyph — `💡 ` (lightbulb) in unicode/powerline,
+/// `? ` in ascii. Used by context-aware footer hints (`:why` / `:alarms`
+/// suggestions when the status slot is empty).
+fn hint_glyph(icons: IconStyle) -> &'static str {
+    match icons {
+        IconStyle::Ascii => "? ",
+        _ => "💡 ",
+    }
+}
+
+/// Severity-stripe glyph for toast notification bodies. Half-block
+/// `▎` in unicode/powerline, `|` in ascii.
+fn stripe_glyph(icons: IconStyle) -> &'static str {
+    match icons {
+        IconStyle::Ascii => "|",
+        _ => "▎",
+    }
+}
+
 fn sparkline_for(
     samples: Option<&std::collections::VecDeque<String>>,
     theme: &Theme,
@@ -5883,12 +6202,13 @@ fn highlight_env_in_summary(
 /// alerts > pending > sso > filter-heavy > newly_added). Returns
 /// `None` when nothing's worth saying — keeps the footer quiet.
 fn context_hint(app: &App) -> Option<String> {
-    // Multiple Red envs — point at the alarms / org-health overlays.
-    if app.alerts >= 2 {
-        return Some(format!(
-            "{} envs alerting — try `:alarms` or `:org-health`",
-            app.alerts
-        ));
+    // Red envs — point at the v0.3.0 triage tool. The alerts pill in
+    // the header already shows the count, so this hint doesn't repeat
+    // it; it sends the operator at the action.
+    if app.alerts > 0 {
+        return Some(
+            "`!` on a Red env opens :why (events + alarms + instances + recent deploys)".into(),
+        );
     }
     // In-flight pending actions — operators sometimes forget what they
     // dispatched seconds ago. Surface that they can review them.
@@ -6229,6 +6549,70 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn warn_glyph_falls_back_in_ascii() {
+        assert_eq!(super::warn_glyph(IconStyle::Ascii), "! ");
+        assert_eq!(super::warn_glyph(IconStyle::Unicode), "⚠ ");
+        assert_eq!(super::warn_glyph(IconStyle::Powerline), "⚠ ");
+    }
+
+    #[test]
+    fn hint_glyph_falls_back_in_ascii() {
+        assert_eq!(super::hint_glyph(IconStyle::Ascii), "? ");
+        assert_eq!(super::hint_glyph(IconStyle::Unicode), "💡 ");
+    }
+
+    #[test]
+    fn stripe_glyph_falls_back_in_ascii() {
+        assert_eq!(super::stripe_glyph(IconStyle::Ascii), "|");
+        assert_eq!(super::stripe_glyph(IconStyle::Unicode), "▎");
+    }
+
+    #[test]
+    fn prune_pills_keeps_first_under_width() {
+        let theme = crate::theme::Theme::dark();
+        let mut pills: Vec<(String, ratatui::style::Color, ratatui::style::Color)> = vec![
+            ("ALERTS".into(), Color::Black, theme.health_red),
+            ("PENDING".into(), Color::Black, theme.health_yellow),
+            ("READ-ONLY".into(), Color::Black, theme.health_green),
+        ];
+        super::prune_pills_to_width(&mut pills, &theme, 10);
+        // First pill always kept even when nothing fits.
+        assert!(!pills.is_empty());
+        assert_eq!(pills[0].0.split(' ').next().unwrap(), "ALERTS");
+    }
+
+    #[test]
+    fn prune_pills_marks_overflow_count_on_last_pill() {
+        let theme = crate::theme::Theme::dark();
+        let mut pills: Vec<(String, ratatui::style::Color, ratatui::style::Color)> = vec![
+            ("ALERTS".into(), Color::Black, theme.health_red),
+            ("PENDING".into(), Color::Black, theme.health_yellow),
+            ("READ-ONLY".into(), Color::Black, theme.health_green),
+            ("UPDATE".into(), Color::Black, theme.title_alt),
+        ];
+        // Tight budget that fits one pill: marker appears on the survivor.
+        super::prune_pills_to_width(&mut pills, &theme, 10);
+        assert_eq!(pills.len(), 1);
+        assert!(
+            pills[0].0.contains("+3"),
+            "expected last-pill marker '+3' on survivor, got {:?}",
+            pills[0].0
+        );
+    }
+
+    #[test]
+    fn prune_pills_noop_when_chain_fits() {
+        let theme = crate::theme::Theme::dark();
+        let mut pills: Vec<(String, ratatui::style::Color, ratatui::style::Color)> = vec![
+            ("A".into(), Color::Black, theme.health_red),
+            ("B".into(), Color::Black, theme.health_yellow),
+        ];
+        let before = pills.clone();
+        super::prune_pills_to_width(&mut pills, &theme, 1_000);
+        assert_eq!(pills, before, "wide budget should not trim or mark");
+    }
 
     #[test]
     fn hover_index_maps_column_to_point() {

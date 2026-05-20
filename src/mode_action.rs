@@ -40,6 +40,10 @@ pub enum Action {
     Clone,
     /// Set ASG min/max so the env scales to a fixed count.
     Scale,
+    /// Open the modal form to edit MinSize / MaxSize / InstanceType /
+    /// Cooldown in one shot. Richer surface than `Scale` for the cases
+    /// where the operator wants more than just min=max=N.
+    Capacity,
     /// Cancel an in-flight environment update.
     AbortUpdate,
     /// `CreateConfigurationTemplate` from the selected env.
@@ -64,6 +68,7 @@ impl Action {
             Self::UpgradePlatform => "Upgrade platform",
             Self::Clone => "Clone environment",
             Self::Scale => "Scale (min/max)",
+            Self::Capacity => "Capacity (min/max/instance/cooldown)",
             Self::AbortUpdate => "Abort current update",
             Self::ConfigSave => "Save configuration template",
             Self::ConfigDelete => "Delete configuration template",
@@ -73,6 +78,30 @@ impl Action {
     }
     pub fn destructive(self) -> bool {
         matches!(self, Self::Terminate)
+    }
+
+    /// Whether the confirm modal should fetch `DescribeInstancesHealth`
+    /// (instance / AZ impact preview) and the last 3 EB events before
+    /// authorising. Actions that touch instances or roll capacity opt in;
+    /// actions that don't (AbortUpdate, swap CNAMEs at the LB layer,
+    /// ConfigDelete on a template definition) opt out.
+    ///
+    /// This is the single source of truth — every `ConfirmModal`
+    /// construction site reads it instead of hand-rolling its own
+    /// allow-list.
+    pub fn wants_preflight(self) -> bool {
+        matches!(
+            self,
+            Self::Deploy
+                | Self::UpgradePlatform
+                | Self::Scale
+                | Self::Clone
+                | Self::Rebuild
+                | Self::RestartAppServer
+                | Self::SwapCnames
+                | Self::Terminate
+                | Self::ConfigApply
+        )
     }
 
     /// Per-icon-style glyph for the action menu. Powerline mode draws
@@ -91,6 +120,7 @@ impl Action {
             (IconStyle::Powerline, Self::UpgradePlatform) => "\u{f0140}", // upgrade arrow
             (IconStyle::Powerline, Self::Clone) => "\u{f018f}",   // content-copy
             (IconStyle::Powerline, Self::Scale) => "\u{f0566}",   // resize / arrow-expand
+            (IconStyle::Powerline, Self::Capacity) => "\u{f0493}", // tune / sliders
             (IconStyle::Powerline, Self::AbortUpdate) => "\u{f0156}", // cancel
             (IconStyle::Powerline, Self::ConfigSave) => "\u{f0193}", // content-save
             (IconStyle::Powerline, Self::ConfigDelete) => "\u{f01b4}", // delete
@@ -106,6 +136,7 @@ impl Action {
             (IconStyle::Unicode, Self::UpgradePlatform) => "▲",
             (IconStyle::Unicode, Self::Clone) => "❐",
             (IconStyle::Unicode, Self::Scale) => "↔",
+            (IconStyle::Unicode, Self::Capacity) => "⚙",
             (IconStyle::Unicode, Self::AbortUpdate) => "■",
             (IconStyle::Unicode, Self::ConfigSave) => "✎",
             (IconStyle::Unicode, Self::ConfigDelete) => "✗",
@@ -120,6 +151,7 @@ impl Action {
             (IconStyle::Ascii, Self::UpgradePlatform) => "U",
             (IconStyle::Ascii, Self::Clone) => "C",
             (IconStyle::Ascii, Self::Scale) => "N",
+            (IconStyle::Ascii, Self::Capacity) => "M",
             (IconStyle::Ascii, Self::AbortUpdate) => "A",
             (IconStyle::Ascii, Self::ConfigSave) => "s",
             (IconStyle::Ascii, Self::ConfigDelete) => "d",
@@ -138,6 +170,7 @@ pub const ACTIONS: &[Action] = &[
     Action::Deploy,
     Action::UpgradePlatform,
     Action::Scale,
+    Action::Capacity,
     Action::Clone,
     Action::SwapCnames,
     Action::AbortUpdate,
@@ -196,7 +229,7 @@ pub struct ConfirmModal {
 }
 
 /// Helper carrying the optional parameters needed by the new parameterised
-/// actions. Avoids passing six `Option<…>` args to `open_parameterised_action`.
+/// actions. Avoids passing seven `Option<…>` args to `open_parameterised_action`.
 #[derive(Default, Clone, Debug)]
 pub struct ParameterisedAction {
     pub deploy_version: Option<String>,
@@ -205,6 +238,8 @@ pub struct ParameterisedAction {
     pub clone_target: Option<String>,
     pub scale_min: Option<i32>,
     pub scale_max: Option<i32>,
+    /// CNAME-swap target. Only meaningful for `Action::SwapCnames`.
+    pub swap_with: Option<String>,
 }
 
 #[derive(Clone, Debug)]
