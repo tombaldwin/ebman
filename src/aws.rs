@@ -80,13 +80,18 @@ pub struct Application {
 }
 
 /// Result of `fetch_env_vpc_context` — the env's VPC plus the option-
-/// settings selections the `:subnets` / `:security-groups` pickers need
-/// for their pre-fill. Each field is `None` / empty when the env doesn't
-/// override that option (EB uses its account-default in that case).
+/// settings selections the `:subnets` / `:elb-subnets` / `:security-groups`
+/// pickers need for their pre-fill. Each field is `None` / empty when the
+/// env doesn't override that option (EB uses its account-default in that
+/// case).
 #[derive(Clone, Debug, Default)]
 pub struct EnvVpcContext {
     pub vpc_id: Option<String>,
     pub subnets: Vec<String>,
+    /// ELB subnets (`aws:ec2:vpc.ELBSubnets`). Web-tier envs typically
+    /// attach the ELB to a separate subnet set than the instance subnets;
+    /// worker envs leave this empty.
+    pub elb_subnets: Vec<String>,
     pub security_groups: Vec<String>,
 }
 
@@ -770,6 +775,9 @@ impl AwsClient {
                     }
                     ("aws:ec2:vpc", "Subnets") if !value.is_empty() => {
                         ctx.subnets = split_csv(&value);
+                    }
+                    ("aws:ec2:vpc", "ELBSubnets") if !value.is_empty() => {
+                        ctx.elb_subnets = split_csv(&value);
                     }
                     ("aws:autoscaling:launchconfiguration", "SecurityGroups")
                         if !value.is_empty() =>
@@ -2383,6 +2391,13 @@ mod tests {
                         )
                         .option_settings(
                             ConfigurationOptionSetting::builder()
+                                .namespace("aws:ec2:vpc")
+                                .option_name("ELBSubnets")
+                                .value("subnet-x,subnet-y")
+                                .build(),
+                        )
+                        .option_settings(
+                            ConfigurationOptionSetting::builder()
                                 .namespace("aws:autoscaling:launchconfiguration")
                                 .option_name("SecurityGroups")
                                 .value("sg-1,sg-2,sg-3")
@@ -2409,6 +2424,7 @@ mod tests {
             .expect("ok");
         assert_eq!(ctx.vpc_id.as_deref(), Some("vpc-123"));
         assert_eq!(ctx.subnets, vec!["subnet-a", "subnet-b"]);
+        assert_eq!(ctx.elb_subnets, vec!["subnet-x", "subnet-y"]);
         assert_eq!(ctx.security_groups, vec!["sg-1", "sg-2", "sg-3"]);
     }
 
