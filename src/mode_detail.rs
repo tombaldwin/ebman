@@ -153,6 +153,18 @@ pub struct DetailState {
     /// Inner Rect of the Metrics tab body, captured by the renderer so
     /// handle_mouse can ignore moves outside it.
     pub metrics_body_rect: Option<ratatui::layout::Rect>,
+    /// CW alarms attached to this env. None = not yet fetched; Some(Err) =
+    /// fetch failed; Some(Ok) = fetched. Surfaced in the Health tab's
+    /// alarms section. Mirrors the alarms data in `:why` so the two
+    /// triage surfaces no longer disagree.
+    pub cw_alarms: Option<Result<Vec<crate::aws::CwAlarm>, String>>,
+    pub loading_cw_alarms: bool,
+    /// Recently-registered application versions (up to ~5). Surfaced in
+    /// the Health tab's "recent deploys" section so an env that flipped
+    /// Red right after a deploy makes that obvious without leaving the
+    /// Detail view.
+    pub recent_versions: Option<Result<Vec<crate::aws::AppVersion>, String>>,
+    pub loading_recent_versions: bool,
 }
 
 impl DetailState {
@@ -307,6 +319,10 @@ mod tests {
             health_cursor: 0,
             metrics_hover_col: None,
             metrics_body_rect: None,
+            cw_alarms: None,
+            loading_cw_alarms: false,
+            recent_versions: None,
+            loading_recent_versions: false,
         }
     }
 

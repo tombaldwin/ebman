@@ -207,6 +207,27 @@ impl Theme {
         }
     }
 
+    /// Returns black or white depending on which gives better contrast
+    /// against `bg`. Uses the WCAG perceived-luminance formula
+    /// (0.299·R + 0.587·G + 0.114·B), thresholded at 140/255 to favour
+    /// black text on coloured pill backgrounds. Falls back to `text`
+    /// for non-RGB Color variants (Black/White/Reset/etc.) so themed
+    /// pill text stays readable across reflowed terminals that re-map
+    /// the 16-colour palette.
+    pub fn contrast_text(&self, bg: Color) -> Color {
+        match bg {
+            Color::Rgb(r, g, b) => {
+                let luminance = (299 * r as u32 + 587 * g as u32 + 114 * b as u32) / 1000;
+                if luminance > 140 {
+                    Color::Black
+                } else {
+                    Color::White
+                }
+            }
+            _ => self.text,
+        }
+    }
+
     /// Parse a theme by name. Returns the matched theme plus an optional warning
     /// when the input didn't match a known preset.
     pub fn resolve(name: &str) -> (Self, Option<String>) {
@@ -268,5 +289,31 @@ mod tests {
         // Sanity: light theme is darker text on lighter bg; dark theme inverts.
         assert_ne!(Theme::dark().text, Theme::light().text);
         assert_ne!(Theme::dark().row_alt_bg, Theme::light().row_alt_bg);
+    }
+
+    #[test]
+    fn contrast_text_picks_black_on_bright_bg() {
+        let theme = Theme::dark();
+        // Bright yellow / red / green / accent — all > 140 luminance.
+        assert_eq!(theme.contrast_text(theme.health_yellow), Color::Black);
+        assert_eq!(theme.contrast_text(theme.health_green), Color::Black);
+        assert_eq!(theme.contrast_text(theme.accent), Color::Black);
+    }
+
+    #[test]
+    fn contrast_text_picks_white_on_dark_bg() {
+        let theme = Theme::light();
+        // Light theme pill bgs are dark — white text reads.
+        assert_eq!(theme.contrast_text(theme.health_red), Color::White);
+        assert_eq!(theme.contrast_text(theme.title_alt), Color::White);
+    }
+
+    #[test]
+    fn contrast_text_falls_back_for_non_rgb() {
+        let theme = Theme::dark();
+        // Themes never use non-RGB pill bgs, but the helper must not
+        // panic on Color::Black / Color::Reset etc. and should return
+        // the theme's primary text colour.
+        assert_eq!(theme.contrast_text(Color::Reset), theme.text);
     }
 }

@@ -400,6 +400,25 @@ Items from the drive-the-app review, shipped together because they share state. 
 - **Caret glyph upgrade (H)** — new `caret_glyph(theme)` helper. Unicode + Powerline modes pick up `U+258E` (a thin vertical block that reads as a real terminal cursor) in place of the underscore. ASCII keeps `_`. Applied to all 10 blinking-cursor sites: command bar, filter bar, quick-jump bar, palette input, picker prompt, Detail Events search, DLQ purge confirm, action swap-target picker, Detail Logs filter, type-name terminate confirm. Test: `caret_glyph_falls_back_to_underscore_on_ascii`.
 - **Toast accent stripe (F)** — every toast now gets a chunky `▎` severity-coloured stripe on the left edge of the body, Slack / VS Code notification-card style. Truncation budget bumped by 1 cell.
 
+### Post-0.3.0 UX punch list (2026-05-21)
+Twelve UX fixes from the v0.3.0 critical review, shipped as one batch (tasks #92–#103):
+
+- **`Action::wants_preflight()`** in `mode_action.rs` — single source of truth for the "show impact preview + last-3 events" gating. Replaces three duplicated allow-lists (`open_parameterised_action`, `advance_action_flow::Terminate`, `advance_action_flow::Rebuild` hand-roll). `Rebuild` now routes through `open_parameterised_action` like every other lifecycle action.
+- **`:swap` routes through `open_parameterised_action`** — was building `ActionFlow::Confirm` directly with `loading_dryrun: false`, so `:swap candidate` from the command bar silently skipped the preflight that `a → Swap` runs. Added `swap_with` to `ParameterisedAction` to support the single entry path.
+- **`Esc` clears multi-select in Normal mode** — the multi-select status message advertised "esc = clear" but Normal had no Esc handler; a silent footgun for operators who multi-selected and walked away.
+- **Multi-select active pill** — persistent "▶ N selected" pill while `multi_selected` is non-empty. Replaces the one-tick status-message hint that disappeared on the next refresh.
+- **Pill foreground colours through `theme.contrast_text(bg)`** — WCAG-luminance-based black/white picker. The chain was hardcoded `Color::Black` (with one `Color::White` outlier for alerts) which broke any non-dark theme. Light + high-contrast themes now render readable pills.
+- **Pill priority + width-aware elision** — `prune_pills_to_width` trims trailing low-priority pills under width pressure and marks the survivor with `+N` so elision isn't silent. Ordered most-critical-first (alerts > pending > multi-select > read-only > update > SSO > frozen > redact > grouped > view-mode).
+- **ASCII glyph fallbacks** — new `warn_glyph` / `hint_glyph` / `stripe_glyph` helpers gate `⚠` / `💡` / `▎` (plus pill `⏳` / `▶`) so `icons = "ascii"` no longer renders box-tofu in the pending pill, footer hints, warnings, and toast accent stripe. Twelve sites swept.
+- **Detail-Health tab now shows alarms + recent deploys** — was missing two of the four sections `:why` shows. New `DetailState::cw_alarms` / `recent_versions` fields + `spawn_detail_alarms` / `spawn_detail_recent_versions` helpers + `AppMsg::DetailAlarms` / `AppMsg::DetailRecentVersions` variants populate them when the Health tab opens. Triage surfaces no longer disagree.
+- **Help screen completeness** — ~40 commands added across new sections (Multi-account, Lifecycle actions, Env config, Versions/configs/alarms/platforms, Bulk ops, Setup/discovery). Previously stale by half the v0.3.0 surface.
+- **`:capacity` in action menu** — `Action::Capacity` variant + menu entry; `a → Capacity` opens the modal form. Was command-bar-only in v0.3.0.
+- **`flatten_err_to_string` token coverage** — adds `AccessDenied`, `NotFound`, `Conflict`, `ExpiredToken` prefix-classifiers alongside the existing `ThrottlingException` set. Operators bouncing profiles hit AccessDenied constantly; now it's a labelled prefix instead of a buried SDK chain.
+- **`FROZEN` pill goes yellow after 5 min staleness** — frozen auto-refresh during an incident is operationally important to not forget. Pill now reads `FROZEN (stale)` against a yellow bg when `last_refresh` is more than 5 min old.
+- **Empty-state hint at no-envs-match** corrected from `views` → `:views`; footer context-hint at `app.alerts > 0` points at `:why` (v0.3.0 triage tool) instead of the stale `:alarms` / `:org-health`.
+
+**14 new tests** covering `prune_pills_to_width` (3), the ASCII glyph helpers (3), `theme.contrast_text` (3), and `flatten_err_to_string` error-code classifiers (5). 282 → 296 total.
+
 ### `execute_command` split: final cut — task #66 complete (2026-05-20)
 - **Three closing sub-modules in one go**:
   - **`src/app/cmd_alarms.rs`** (168 lines) — `cmd_alarm_create`, `cmd_alarm_delete`. Both still emit `AppMsg::AlarmOp` so the pending pill closes + toast fires; `alarm_kind_to_metric` reachable via `super::*`.

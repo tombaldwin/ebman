@@ -972,6 +972,22 @@ enum AppMsg {
         env_name: String,
         groups: Vec<String>,
     },
+    /// CW alarms attached to an env. Populates the Detail-Health-tab
+    /// alarms section. Mirrors `AppMsg::WhyRedAlarms` but lands on the
+    /// Detail view's `cw_alarms` field — single fetch path, two
+    /// destinations.
+    DetailAlarms {
+        gen: u64,
+        env_name: String,
+        result: Result<Vec<crate::aws::CwAlarm>, String>,
+    },
+    /// Recently-registered application versions for an env's app.
+    /// Populates the Detail-Health-tab "recent deploys" section.
+    DetailRecentVersions {
+        gen: u64,
+        env_name: String,
+        result: Result<Vec<crate::aws::AppVersion>, String>,
+    },
     /// Pre-fill values for an open modal form. The handler walks the form's
     /// `(field_key, namespace, option_name)` mappings and populates each
     /// field's `value` from `settings`. Late messages (stale form / context
@@ -2610,6 +2626,14 @@ impl App {
                 }
                 match key.code {
                     KeyCode::Char('q') => self.quit = true,
+                    // Esc clears multi-select when active. Honours the
+                    // "esc = clear" hint the multi-select status message
+                    // advertises; previously a no-op (silent footgun).
+                    KeyCode::Esc if !self.multi_selected.is_empty() => {
+                        let n = self.multi_selected.len();
+                        self.multi_selected.clear();
+                        self.status_message = Some(format!("multi-select cleared ({n} env(s))"));
+                    }
                     KeyCode::Tab => self.set_scope(self.scope.next()),
                     KeyCode::BackTab => self.set_scope(self.scope.prev()),
                     KeyCode::Enter if self.scope == Scope::Apps => self.drill_into_app(),
@@ -3080,6 +3104,55 @@ impl App {
         });
     }
 
+    /// Detail-Health-tab alarms fetch. Mirrors `spawn_why_red_alarms`
+    /// but lands on `AppMsg::DetailAlarms` so the result populates the
+    /// Detail view's `cw_alarms` field instead of the `:why` overlay
+    /// state. The Health tab + `:why` now share the *same* underlying
+    /// AWS call shape but each lands on its own typed result so a stale
+    /// fetch from a closed overlay can't clobber the Detail view.
+    fn spawn_detail_alarms(&mut self, env_name: String) {
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        if let Some(d) = self.detail.as_mut() {
+            d.loading_cw_alarms = true;
+        }
+        let env_for_msg = env_name.clone();
+        tokio::spawn(async move {
+            let result = aws
+                .list_alarms_for_env(&env_name)
+                .await
+                .map_err(|e| flatten_err("list_alarms_for_env", e));
+            let _ = tx.send(AppMsg::DetailAlarms {
+                gen,
+                env_name: env_for_msg,
+                result,
+            });
+        });
+    }
+
+    /// Detail-Health-tab recent-versions fetch. Same shape as
+    /// `spawn_why_red_deploys` but lands on `AppMsg::DetailRecentVersions`.
+    fn spawn_detail_recent_versions(&mut self, app_name: String, env_name: String) {
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        if let Some(d) = self.detail.as_mut() {
+            d.loading_recent_versions = true;
+        }
+        tokio::spawn(async move {
+            let result = aws
+                .list_application_versions(&app_name)
+                .await
+                .map_err(|e| flatten_err("list_application_versions", e));
+            let _ = tx.send(AppMsg::DetailRecentVersions {
+                gen,
+                env_name,
+                result,
+            });
+        });
+    }
+
     fn set_log_level(&mut self, level: &str) {
         // Treat a bare level as a directive applied to the root, but keep the
         // AWS/hyper crates capped at warn unless the user explicitly opts in.
@@ -3456,6 +3529,10 @@ impl App {
             health_cursor: 0,
             metrics_hover_col: None,
             metrics_body_rect: None,
+            cw_alarms: None,
+            loading_cw_alarms: false,
+            recent_versions: None,
+            loading_recent_versions: false,
         };
         self.detail = Some(detail);
         self.mode = Mode::Detail;
@@ -3696,6 +3773,8 @@ impl App {
             // background refresh keeps the count fresh enough.
             DetailTab::Health => {
                 self.spawn_detail_events(env_name.clone());
+                self.spawn_detail_alarms(env_name.clone());
+                self.spawn_detail_recent_versions(app_name.clone(), env_name.clone());
                 if is_worker {
                     self.spawn_detail_queues(app_name, env_name);
                 }
@@ -5179,6 +5258,11 @@ impl App {
                 });
             }
             Action::Terminate => {
+                // Terminate is the only Action that uses TypeName confirm;
+                // every other entry routes through `open_parameterised_action`.
+                // Preflight gating still flows from `Action::wants_preflight()`
+                // so the rule lives in exactly one place.
+                let wants_preflight = action.wants_preflight();
                 self.action_flow = Some(ActionFlow::Confirm(ConfirmModal {
                     action,
                     target_env: env.name.clone(),
@@ -5186,9 +5270,9 @@ impl App {
                     typed: String::new(),
                     kind: ConfirmKind::TypeName,
                     dryrun: None,
-                    loading_dryrun: true,
+                    loading_dryrun: wants_preflight,
                     recent_events: None,
-                    loading_events: true,
+                    loading_events: wants_preflight,
                     traffic_warning: compute_traffic_warning(&env),
                     deploy_version: None,
                     upgrade_platform_arn: None,
@@ -5197,30 +5281,13 @@ impl App {
                     scale_min: None,
                     scale_max: None,
                 }));
-                self.spawn_dry_run(env.name.clone());
-                self.spawn_preflight_events(env.name.clone());
+                if wants_preflight {
+                    self.spawn_dry_run(env.name.clone());
+                    self.spawn_preflight_events(env.name.clone());
+                }
             }
             Action::Rebuild => {
-                self.action_flow = Some(ActionFlow::Confirm(ConfirmModal {
-                    action,
-                    target_env: env.name.clone(),
-                    swap_with: None,
-                    typed: String::new(),
-                    kind: ConfirmKind::YesNo,
-                    dryrun: None,
-                    loading_dryrun: true,
-                    recent_events: None,
-                    loading_events: true,
-                    traffic_warning: compute_traffic_warning(&env),
-                    deploy_version: None,
-                    upgrade_platform_arn: None,
-                    upgrade_platform_label: None,
-                    clone_target: None,
-                    scale_min: None,
-                    scale_max: None,
-                }));
-                self.spawn_dry_run(env.name.clone());
-                self.spawn_preflight_events(env.name.clone());
+                self.open_parameterised_action(action, ParameterisedAction::default());
             }
             // Parameterised actions need user input before the confirm can
             // be built. The menu closes itself and pre-fills the command
@@ -5254,6 +5321,14 @@ impl App {
                 self.status_message = Some(
                     "scale N (instances), or `scale min N` / `scale max N`; enter to apply".into(),
                 );
+            }
+            Action::Capacity => {
+                // `:capacity` opens a modal form pre-filled from
+                // DescribeConfigurationSettings — no command-bar args
+                // needed, so we close the menu and dispatch straight
+                // to the form opener.
+                self.close_action_flow();
+                self.cmd_capacity();
             }
             Action::AbortUpdate => {
                 self.action_flow = Some(ActionFlow::Confirm(ConfirmModal {
@@ -6659,29 +6734,21 @@ impl App {
             self.error_message = Some("no environment selected".into());
             return;
         };
-        // Deploy / UpgradePlatform / Scale / Clone all roll instances or
-        // create new ones — same impact-preview as Rebuild deserves to be
-        // shown so the operator sees "N instances across M AZs" + recent
-        // events before authorising. Abort never touches instances directly,
-        // so skip the pre-flight work for that one.
-        let wants_dryrun = matches!(
-            action,
-            Action::Deploy
-                | Action::UpgradePlatform
-                | Action::Scale
-                | Action::Clone
-                | Action::Rebuild
-        );
+        // The preflight (impact preview + last-3 events) is gated by
+        // `Action::wants_preflight()` — single source of truth, see
+        // `mode_action.rs`. Every ConfirmModal construction site must
+        // route through here so the rule can't drift.
+        let wants_preflight = action.wants_preflight();
         let modal = ConfirmModal {
             action,
             target_env: env.name.clone(),
-            swap_with: None,
+            swap_with: params.swap_with,
             typed: String::new(),
             kind: ConfirmKind::YesNo,
             dryrun: None,
-            loading_dryrun: wants_dryrun,
+            loading_dryrun: wants_preflight,
             recent_events: None,
-            loading_events: wants_dryrun,
+            loading_events: wants_preflight,
             traffic_warning: compute_traffic_warning(&env),
             deploy_version: params.deploy_version,
             upgrade_platform_arn: params.upgrade_platform_arn,
@@ -6692,7 +6759,7 @@ impl App {
         };
         self.action_flow = Some(ActionFlow::Confirm(modal));
         self.mode = Mode::Action;
-        if wants_dryrun {
+        if wants_preflight {
             self.spawn_dry_run(env.name.clone());
             self.spawn_preflight_events(env.name.clone());
         }
@@ -6793,10 +6860,12 @@ impl App {
                     _ => Err(color_eyre::eyre::eyre!("scale min/max missing")),
                 },
                 Action::AbortUpdate => aws.abort_environment_update(&env).await,
-                // The Config* and TerminateInstance variants are dispatched
-                // through dedicated spawn paths, not through `spawn_action`'s
-                // ConfirmModal. They should never reach this branch.
-                Action::ConfigSave
+                // Capacity opens a modal form (cmd_capacity) and dispatches
+                // via spawn_option_settings_update — it never reaches
+                // spawn_action's ConfirmModal path. Same for Config* and
+                // TerminateInstance which have dedicated spawn paths.
+                Action::Capacity
+                | Action::ConfigSave
                 | Action::ConfigDelete
                 | Action::ConfigApply
                 | Action::TerminateInstance => Err(color_eyre::eyre::eyre!(
@@ -8319,6 +8388,40 @@ impl App {
                 }
                 detail.cw_log_groups = Some(groups);
             }
+            AppMsg::DetailAlarms {
+                gen,
+                env_name,
+                result,
+            } => {
+                if gen != self.generation {
+                    return;
+                }
+                let Some(detail) = self.detail.as_mut() else {
+                    return;
+                };
+                if detail.env_name != env_name {
+                    return;
+                }
+                detail.loading_cw_alarms = false;
+                detail.cw_alarms = Some(result);
+            }
+            AppMsg::DetailRecentVersions {
+                gen,
+                env_name,
+                result,
+            } => {
+                if gen != self.generation {
+                    return;
+                }
+                let Some(detail) = self.detail.as_mut() else {
+                    return;
+                };
+                if detail.env_name != env_name {
+                    return;
+                }
+                detail.loading_recent_versions = false;
+                detail.recent_versions = Some(result);
+            }
             AppMsg::FormPrefilled {
                 gen,
                 env_name,
@@ -9644,26 +9747,68 @@ fn flatten_err(op: &str, e: color_eyre::eyre::Report) -> String {
 /// Pure: convert an `eyre::Report` into the user-facing string we route into
 /// toasts and the refresh-error path. The SDK's `Display` impl returns
 /// generic strings like `"service error"` for throttling — the structured
-/// `ThrottlingException` code lives in the `Debug` form. To keep toasts
-/// clean *and* let downstream predicates like [`is_throttling_error`] do
-/// their job, we peek at the Debug dump for a small set of well-known
-/// rate-limit tokens and surface a clean `"ThrottlingException: ..."`
-/// prefix when matched. All other errors pass through with Display unchanged.
+/// AWS error codes (`ThrottlingException`, `AccessDenied`, etc.) live in
+/// the `Debug` form. To keep toasts clean *and* let downstream predicates
+/// like [`is_throttling_error`] do their job, we peek at the Debug dump
+/// for known error codes and surface a clean `"<CodeName>: ..."` prefix.
+/// All other errors pass through with Display unchanged.
 pub(crate) fn flatten_err_to_string(e: &color_eyre::eyre::Report) -> String {
     let display = e.to_string();
     let dbg_lower = format!("{e:?}").to_lowercase();
-    // Same token set as `is_throttling_error` but searched against the
-    // Debug dump so SDK-level codes are reachable. Kept in sync with the
-    // predicate so the two can't drift.
-    const TOKENS: &[&str] = &[
+    // Throttling tokens — kept in sync with `is_throttling_error` so the
+    // predicate and the surfaced prefix can't drift.
+    const THROTTLING_TOKENS: &[&str] = &[
         "throttling",
         "throttlingexception",
         "requestlimitexceeded",
         "too many requests",
         "rate exceeded",
     ];
-    if TOKENS.iter().any(|t| dbg_lower.contains(t)) {
+    if THROTTLING_TOKENS.iter().any(|t| dbg_lower.contains(t)) {
         return format!("ThrottlingException: {display}");
+    }
+    // IAM / authorisation failures — operators hit these constantly when
+    // bouncing between profiles. A clean prefix points them at the policy
+    // gap rather than burying it in the SDK chain dump.
+    const ACCESS_TOKENS: &[&str] = &[
+        "accessdenied",
+        "accessdeniedexception",
+        "unauthorizedoperation",
+        "not authorized to perform",
+    ];
+    if ACCESS_TOKENS.iter().any(|t| dbg_lower.contains(t)) {
+        return format!("AccessDenied: {display}");
+    }
+    // Missing-resource errors. EB / S3 / SQS each have their own variant
+    // names — surface a uniform NotFound prefix so operators don't have
+    // to learn the per-service vocabulary.
+    const NOTFOUND_TOKENS: &[&str] = &[
+        "resourcenotfoundexception",
+        "nosuchentity",
+        "nosuchbucket",
+        "nosuchkey",
+        "queuedoesnotexist",
+        "environmentnotfound",
+        "applicationversionnotfound",
+    ];
+    if NOTFOUND_TOKENS.iter().any(|t| dbg_lower.contains(t)) {
+        return format!("NotFound: {display}");
+    }
+    // Dependency conflicts — usually "can't delete X, Y still references it".
+    const DEPENDENCY_TOKENS: &[&str] = &[
+        "dependencyviolation",
+        "resourceinuse",
+        "operationinprogressexception",
+        "invalidrequestexception",
+    ];
+    if DEPENDENCY_TOKENS.iter().any(|t| dbg_lower.contains(t)) {
+        return format!("Conflict: {display}");
+    }
+    // Expired SSO / STS credentials — surface the rewrite the
+    // ExpiredToken handler already does, in case the error reaches
+    // this path via a different route.
+    if dbg_lower.contains("expiredtoken") || dbg_lower.contains("tokenexpired") {
+        return format!("ExpiredToken: {display}");
     }
     display
 }
@@ -11138,6 +11283,48 @@ mod tests {
             id: None,
             region: None,
         }
+    }
+
+    #[test]
+    fn flatten_err_marks_access_denied() {
+        let e = color_eyre::eyre::eyre!("operation failed")
+            .wrap_err("AccessDeniedException: User: arn:aws:sts::1234 is not authorized");
+        let out = super::flatten_err_to_string(&e);
+        assert!(out.starts_with("AccessDenied:"), "got: {out}");
+    }
+
+    #[test]
+    fn flatten_err_marks_not_found() {
+        let e = color_eyre::eyre::eyre!("operation failed")
+            .wrap_err("ResourceNotFoundException: alarm 'foo' does not exist");
+        let out = super::flatten_err_to_string(&e);
+        assert!(out.starts_with("NotFound:"), "got: {out}");
+    }
+
+    #[test]
+    fn flatten_err_marks_dependency_violation() {
+        let e = color_eyre::eyre::eyre!("operation failed")
+            .wrap_err("DependencyViolation: resource still has dependencies");
+        let out = super::flatten_err_to_string(&e);
+        assert!(out.starts_with("Conflict:"), "got: {out}");
+    }
+
+    #[test]
+    fn flatten_err_marks_expired_token() {
+        let e = color_eyre::eyre::eyre!("operation failed")
+            .wrap_err("ExpiredToken: session credentials expired");
+        let out = super::flatten_err_to_string(&e);
+        assert!(out.starts_with("ExpiredToken:"), "got: {out}");
+    }
+
+    #[test]
+    fn flatten_err_passes_unknown_through_unchanged() {
+        let e = color_eyre::eyre::eyre!("some other failure");
+        let out = super::flatten_err_to_string(&e);
+        assert!(
+            !out.contains(":"),
+            "expected no classification prefix; got: {out}"
+        );
     }
 
     #[test]
