@@ -79,6 +79,35 @@ pub struct Application {
     pub templates: Vec<String>,
 }
 
+/// Result of `fetch_env_vpc_context` — the env's VPC plus the option-
+/// settings selections the `:subnets` / `:security-groups` pickers need
+/// for their pre-fill. Each field is `None` / empty when the env doesn't
+/// override that option (EB uses its account-default in that case).
+#[derive(Clone, Debug, Default)]
+pub struct EnvVpcContext {
+    pub vpc_id: Option<String>,
+    pub subnets: Vec<String>,
+    pub security_groups: Vec<String>,
+}
+
+/// One subnet in a VPC. Used by `:subnets` to populate the picker.
+#[derive(Clone, Debug)]
+pub struct SubnetInfo {
+    pub id: String,
+    pub availability_zone: String,
+    pub cidr_block: String,
+    /// Friendly name from the `Name` tag, if any.
+    pub name_tag: Option<String>,
+}
+
+/// One security group in a VPC. Used by `:security-groups`.
+#[derive(Clone, Debug)]
+pub struct SecurityGroupInfo {
+    pub id: String,
+    pub group_name: String,
+    pub description: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct CustomPlatform {
     pub arn: String,
@@ -708,6 +737,125 @@ impl AwsClient {
                 )
             })
             .collect();
+        Ok(out)
+    }
+
+    /// Pull the env's VPC id plus the currently-selected subnet and
+    /// security-group IDs from EB option settings in a single round-trip.
+    /// `:subnets` and `:security-groups` both call this — VPC id drives
+    /// the subsequent EC2 list call, the existing selections drive the
+    /// MultiSelect pre-fill.
+    pub async fn fetch_env_vpc_context(
+        &self,
+        application_name: &str,
+        env_name: &str,
+    ) -> Result<EnvVpcContext> {
+        let resp = self
+            .client
+            .describe_configuration_settings()
+            .application_name(application_name)
+            .environment_name(env_name)
+            .send()
+            .await
+            .map_err(|e| eyre!("DescribeConfigurationSettings(env) failed: {e}"))?;
+        let mut ctx = EnvVpcContext::default();
+        for setting in resp.configuration_settings.unwrap_or_default() {
+            for opt in setting.option_settings.unwrap_or_default() {
+                let ns = opt.namespace.unwrap_or_default();
+                let name = opt.option_name.unwrap_or_default();
+                let value = opt.value.unwrap_or_default();
+                match (ns.as_str(), name.as_str()) {
+                    ("aws:ec2:vpc", "VPCId") if !value.is_empty() => {
+                        ctx.vpc_id = Some(value);
+                    }
+                    ("aws:ec2:vpc", "Subnets") if !value.is_empty() => {
+                        ctx.subnets = split_csv(&value);
+                    }
+                    ("aws:autoscaling:launchconfiguration", "SecurityGroups")
+                        if !value.is_empty() =>
+                    {
+                        ctx.security_groups = split_csv(&value);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(ctx)
+    }
+
+    /// List subnets in a VPC, ordered by AZ then CIDR for stable picker
+    /// rows. Returns the wide rows the `:subnets` picker needs (id + AZ
+    /// + CIDR + Name tag) so callers don't need a second round-trip.
+    pub async fn list_subnets_in_vpc(&self, vpc_id: &str) -> Result<Vec<SubnetInfo>> {
+        use aws_sdk_ec2::types::Filter;
+        let resp = self
+            .ec2
+            .describe_subnets()
+            .filters(
+                Filter::builder()
+                    .name("vpc-id")
+                    .values(vpc_id.to_string())
+                    .build(),
+            )
+            .send()
+            .await
+            .map_err(|e| eyre!("DescribeSubnets failed: {e}"))?;
+        let mut out: Vec<SubnetInfo> = resp
+            .subnets
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| {
+                let name_tag = s.tags.as_ref().and_then(|tags| {
+                    tags.iter()
+                        .find(|t| t.key.as_deref() == Some("Name"))
+                        .and_then(|t| t.value.clone())
+                });
+                SubnetInfo {
+                    id: s.subnet_id.unwrap_or_default(),
+                    availability_zone: s.availability_zone.unwrap_or_default(),
+                    cidr_block: s.cidr_block.unwrap_or_default(),
+                    name_tag,
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            a.availability_zone
+                .cmp(&b.availability_zone)
+                .then(a.cidr_block.cmp(&b.cidr_block))
+        });
+        Ok(out)
+    }
+
+    /// List security groups in a VPC, ordered by name for stable picker
+    /// rows.
+    pub async fn list_security_groups_in_vpc(
+        &self,
+        vpc_id: &str,
+    ) -> Result<Vec<SecurityGroupInfo>> {
+        use aws_sdk_ec2::types::Filter;
+        let resp = self
+            .ec2
+            .describe_security_groups()
+            .filters(
+                Filter::builder()
+                    .name("vpc-id")
+                    .values(vpc_id.to_string())
+                    .build(),
+            )
+            .send()
+            .await
+            .map_err(|e| eyre!("DescribeSecurityGroups failed: {e}"))?;
+        let mut out: Vec<SecurityGroupInfo> = resp
+            .security_groups
+            .unwrap_or_default()
+            .into_iter()
+            .map(|g| SecurityGroupInfo {
+                id: g.group_id.unwrap_or_default(),
+                group_name: g.group_name.unwrap_or_default(),
+                description: g.description.unwrap_or_default(),
+            })
+            .collect();
+        out.sort_by(|a, b| a.group_name.cmp(&b.group_name));
         Ok(out)
     }
 
@@ -1874,6 +2022,16 @@ fn to_smithy(d: DateTime<Utc>) -> aws_sdk_cloudwatch::primitives::DateTime {
     aws_sdk_cloudwatch::primitives::DateTime::from_secs(d.timestamp())
 }
 
+/// Pure: split a comma-separated EB option-setting value into a clean
+/// `Vec<String>`. Trims each entry and drops empties.
+fn split_csv(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
 fn derive_dlq_url(main: &str) -> Option<String> {
     let trimmed = main.trim_end_matches('/');
     if trimmed.ends_with("-dlq") {
@@ -2179,5 +2337,179 @@ mod tests {
         assert_eq!(e.tier, "Web", "tier normalises WebServer → Web");
         assert_eq!(e.platform, "Java 17");
         assert_eq!(e.version_label, "build-42");
+    }
+
+    // ── MultiSelect picker plumbing ─────────────────────────────────────
+    //
+    // `:subnets` / `:security-groups` rely on three helpers that all
+    // need to round-trip cleanly: VPC discovery via option settings,
+    // EC2 inventory listing filtered by VPC, and the comma-split
+    // helper that converts EB's CSV format to a clean Vec<String>.
+
+    #[test]
+    fn split_csv_trims_and_drops_empties() {
+        assert_eq!(
+            split_csv("subnet-a,subnet-b, subnet-c, ,subnet-d"),
+            vec!["subnet-a", "subnet-b", "subnet-c", "subnet-d"]
+        );
+        assert!(split_csv("").is_empty());
+        assert!(split_csv(",,,").is_empty());
+    }
+
+    #[tokio::test]
+    async fn fetch_env_vpc_context_pulls_vpc_id_subnets_and_sgs() {
+        use aws_sdk_elasticbeanstalk::operation::describe_configuration_settings::DescribeConfigurationSettingsOutput;
+        use aws_sdk_elasticbeanstalk::types::{
+            ConfigurationOptionSetting, ConfigurationSettingsDescription,
+        };
+
+        let dcs = mock!(Client::describe_configuration_settings).then_output(|| {
+            DescribeConfigurationSettingsOutput::builder()
+                .configuration_settings(
+                    ConfigurationSettingsDescription::builder()
+                        .option_settings(
+                            ConfigurationOptionSetting::builder()
+                                .namespace("aws:ec2:vpc")
+                                .option_name("VPCId")
+                                .value("vpc-123")
+                                .build(),
+                        )
+                        .option_settings(
+                            ConfigurationOptionSetting::builder()
+                                .namespace("aws:ec2:vpc")
+                                .option_name("Subnets")
+                                .value("subnet-a,subnet-b")
+                                .build(),
+                        )
+                        .option_settings(
+                            ConfigurationOptionSetting::builder()
+                                .namespace("aws:autoscaling:launchconfiguration")
+                                .option_name("SecurityGroups")
+                                .value("sg-1,sg-2,sg-3")
+                                .build(),
+                        )
+                        // Noise — should be ignored.
+                        .option_settings(
+                            ConfigurationOptionSetting::builder()
+                                .namespace("aws:elasticbeanstalk:application:environment")
+                                .option_name("LOG_LEVEL")
+                                .value("debug")
+                                .build(),
+                        )
+                        .build(),
+                )
+                .build()
+        });
+        let eb = mock_client!(aws_sdk_elasticbeanstalk, [&dcs]);
+        let client = client_with_eb(eb);
+
+        let ctx = client
+            .fetch_env_vpc_context("api", "api-prod")
+            .await
+            .expect("ok");
+        assert_eq!(ctx.vpc_id.as_deref(), Some("vpc-123"));
+        assert_eq!(ctx.subnets, vec!["subnet-a", "subnet-b"]);
+        assert_eq!(ctx.security_groups, vec!["sg-1", "sg-2", "sg-3"]);
+    }
+
+    #[tokio::test]
+    async fn list_subnets_in_vpc_filters_orders_and_extracts_name_tag() {
+        use aws_sdk_ec2::operation::describe_subnets::DescribeSubnetsOutput;
+        use aws_sdk_ec2::types::{Subnet, Tag};
+
+        let ds = mock!(aws_sdk_ec2::Client::describe_subnets).then_output(|| {
+            DescribeSubnetsOutput::builder()
+                .subnets(
+                    Subnet::builder()
+                        .subnet_id("subnet-2b")
+                        .availability_zone("us-east-1b")
+                        .cidr_block("10.0.2.0/24")
+                        .tags(Tag::builder().key("Name").value("private-2b").build())
+                        .build(),
+                )
+                .subnets(
+                    Subnet::builder()
+                        .subnet_id("subnet-1a")
+                        .availability_zone("us-east-1a")
+                        .cidr_block("10.0.1.0/24")
+                        .build(),
+                )
+                .subnets(
+                    Subnet::builder()
+                        .subnet_id("subnet-1a-overlap")
+                        .availability_zone("us-east-1a")
+                        .cidr_block("10.0.0.0/24")
+                        .build(),
+                )
+                .build()
+        });
+        let ec2 = mock_client!(aws_sdk_ec2, [&ds]);
+        let cfg = aws_config::SdkConfig::builder()
+            .region(Region::new("us-east-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        let client = AwsClient::for_tests(
+            Client::new(&cfg),
+            SqsClient::new(&cfg),
+            CwClient::new(&cfg),
+            CwLogsClient::new(&cfg),
+            S3Client::new(&cfg),
+            ec2,
+        );
+
+        let subnets = client.list_subnets_in_vpc("vpc-abc").await.expect("ok");
+        // Ordered by AZ then CIDR — subnet-1a-overlap (10.0.0.0/24) precedes
+        // subnet-1a (10.0.1.0/24), then subnet-2b.
+        let ids: Vec<&str> = subnets.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["subnet-1a-overlap", "subnet-1a", "subnet-2b"]);
+        // Name tag extracted when present, None when absent.
+        assert_eq!(subnets[2].name_tag.as_deref(), Some("private-2b"));
+        assert!(subnets[1].name_tag.is_none());
+    }
+
+    #[tokio::test]
+    async fn list_security_groups_in_vpc_orders_by_name() {
+        use aws_sdk_ec2::operation::describe_security_groups::DescribeSecurityGroupsOutput;
+        use aws_sdk_ec2::types::SecurityGroup;
+
+        let dsg = mock!(aws_sdk_ec2::Client::describe_security_groups).then_output(|| {
+            DescribeSecurityGroupsOutput::builder()
+                .security_groups(
+                    SecurityGroup::builder()
+                        .group_id("sg-z")
+                        .group_name("zeta")
+                        .description("z group")
+                        .build(),
+                )
+                .security_groups(
+                    SecurityGroup::builder()
+                        .group_id("sg-a")
+                        .group_name("alpha")
+                        .description("a group")
+                        .build(),
+                )
+                .build()
+        });
+        let ec2 = mock_client!(aws_sdk_ec2, [&dsg]);
+        let cfg = aws_config::SdkConfig::builder()
+            .region(Region::new("us-east-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        let client = AwsClient::for_tests(
+            Client::new(&cfg),
+            SqsClient::new(&cfg),
+            CwClient::new(&cfg),
+            CwLogsClient::new(&cfg),
+            S3Client::new(&cfg),
+            ec2,
+        );
+
+        let sgs = client
+            .list_security_groups_in_vpc("vpc-abc")
+            .await
+            .expect("ok");
+        assert_eq!(sgs.len(), 2);
+        assert_eq!(sgs[0].group_name, "alpha");
+        assert_eq!(sgs[1].group_name, "zeta");
     }
 }

@@ -129,6 +129,8 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "update",
     "capacity",
     "settings",
+    "subnets",
+    "security-groups",
 ];
 
 /// Which on-screen panel is "focused" — i.e. which one j/k/Enter target. The
@@ -827,6 +829,16 @@ pub struct Picker {
     pub list_state: ListState,
 }
 
+/// Payload for `AppMsg::FormMultiSelectLoaded`. Carries the full option
+/// list, parallel display annotations, and the current EB selection so
+/// the form's `MultiSelect` field can be populated in one update.
+#[derive(Clone, Debug)]
+pub struct MultiSelectOptions {
+    pub options: Vec<String>,
+    pub annotations: Vec<String>,
+    pub initial: Vec<String>,
+}
+
 impl Picker {
     pub fn new(kind: PickerKind, items: Vec<String>, current: Option<&str>) -> Self {
         let mut list_state = ListState::default();
@@ -1164,6 +1176,18 @@ enum AppMsg {
         gen: u64,
         env_name: String,
         settings: Result<Vec<(String, String, String)>, String>,
+    },
+    /// Load `MultiSelect` options for the named field of an open form.
+    /// Used by the `:subnets` / `:security-groups` pickers — the option
+    /// list comes from EC2 (DescribeSubnets / DescribeSecurityGroups),
+    /// not from the env's option settings, so this lives on a separate
+    /// AppMsg from FormPrefilled. Annotations are the per-row display
+    /// suffixes (AZ + CIDR for subnets; group name + description for SGs).
+    FormMultiSelectLoaded {
+        gen: u64,
+        env_name: String,
+        field_key: String,
+        result: Result<MultiSelectOptions, String>,
     },
     /// Result of a `:deploy --from PATH` chain (upload → create version →
     /// optional deploy). `summary` is the same label used in the pending
@@ -4291,6 +4315,92 @@ impl App {
     }
 
     /// Build the `:settings` form pre-filled from the live App state and
+    /// Open the `:subnets` MultiSelect form: lists subnets in the env's
+    /// VPC via `DescribeSubnets`, pre-fills with the env's current
+    /// `aws:ec2:vpc.Subnets` selection, submits via the shared
+    /// option-settings update path. Bound to the env table cursor —
+    /// reports an error and bails if no env is selected.
+    fn open_subnets_form(&mut self) {
+        self.open_multi_select_form(MultiSelectFlavour::Subnets);
+    }
+
+    /// Open the `:security-groups` MultiSelect form. Same shape as
+    /// `:subnets` but lists security groups in the env's VPC and
+    /// targets `aws:autoscaling:launchconfiguration.SecurityGroups`.
+    fn open_security_groups_form(&mut self) {
+        self.open_multi_select_form(MultiSelectFlavour::SecurityGroups);
+    }
+
+    /// Shared open + async-load path for the two MultiSelect pickers.
+    /// Opens the form in `Loading` state with an empty option list,
+    /// then spawns a tokio task that fans out to fetch the VPC context
+    /// (via DescribeConfigurationSettings) and the EC2 listing
+    /// (DescribeSubnets / DescribeSecurityGroups). The result lands as
+    /// `AppMsg::FormMultiSelectLoaded` which the handler matches by
+    /// `field_key` to populate the form.
+    fn open_multi_select_form(&mut self, flavour: MultiSelectFlavour) {
+        use crate::form::{Form, FormField, FormSubmit};
+        let Some(env) = self.selected_env().cloned() else {
+            self.error_message = Some("no environment selected".into());
+            return;
+        };
+        let (title_prefix, summary, field_key, label, ns, opt_name) = match flavour {
+            MultiSelectFlavour::Subnets => (
+                "subnets",
+                "subnets update",
+                "subnets",
+                "Subnets",
+                "aws:ec2:vpc",
+                "Subnets",
+            ),
+            MultiSelectFlavour::SecurityGroups => (
+                "security-groups",
+                "security-groups update",
+                "security_groups",
+                "Security groups",
+                "aws:autoscaling:launchconfiguration",
+                "SecurityGroups",
+            ),
+        };
+        let placeholder = FormField::multi_select(
+            field_key,
+            label,
+            Vec::new(),
+            Vec::new(),
+            Some::<String>("space toggle · ↑↓ option cursor · tab field".into()),
+        );
+        let form = Form::loading(
+            format!("{title_prefix} — {}", env.name),
+            env.name.clone(),
+            summary.to_string(),
+            vec![placeholder],
+            FormSubmit::OptionSettings {
+                mappings: vec![(field_key.into(), ns.into(), opt_name.into())],
+            },
+        );
+        // open_form would dispatch the default DescribeConfigurationSettings
+        // pre-fill, which doesn't load EC2 inventory. Bypass it: stash the
+        // form ourselves and spawn the multi-select-specific loader.
+        self.form = Some(form);
+        self.mode = Mode::Form;
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let env_for_msg = env.name.clone();
+        let app_name = env.application.clone();
+        let field_key_for_msg = field_key.to_string();
+        tokio::spawn(async move {
+            let result = load_multi_select(aws, &app_name, &env_for_msg, flavour).await;
+            let _ = tx.send(AppMsg::FormMultiSelectLoaded {
+                gen,
+                env_name: env_for_msg,
+                field_key: field_key_for_msg,
+                result,
+            });
+        });
+    }
+
+    /// Open the `:settings` form pre-filled from the live App state and
     /// open it. Submit writes `config.toml` and live-applies any field
     /// that can change at runtime (see [`App::apply_config_live`]).
     fn open_settings_form(&mut self) {
@@ -6551,6 +6661,8 @@ impl App {
                 );
                 self.open_form(form);
             }
+            "subnets" => self.open_subnets_form(),
+            "security-groups" => self.open_security_groups_form(),
             "update" => {
                 // Surface the upgrade command for whichever install channel
                 // looks live. Doesn't actually upgrade — operators on
@@ -8865,6 +8977,50 @@ impl App {
                     }
                 }
             }
+            AppMsg::FormMultiSelectLoaded {
+                gen,
+                env_name,
+                field_key,
+                result,
+            } => {
+                if gen != self.generation {
+                    return;
+                }
+                let Some(form) = self.form.as_mut() else {
+                    return;
+                };
+                if form.env_name != env_name {
+                    return;
+                }
+                let Some(field) = form.fields.iter_mut().find(|f| f.key == field_key) else {
+                    return;
+                };
+                match result {
+                    Err(msg) => {
+                        field.error = Some(format!("load failed: {msg}"));
+                        form.state = crate::form::FormState::Ready;
+                    }
+                    Ok(opts) => {
+                        let initial_filtered: Vec<String> = opts
+                            .initial
+                            .iter()
+                            .filter(|v| opts.options.iter().any(|o| o == *v))
+                            .cloned()
+                            .collect();
+                        field.value = initial_filtered.join(",");
+                        field.kind = crate::form::FieldKind::MultiSelect {
+                            options: opts.options.clone(),
+                        };
+                        if opts.annotations.len() == opts.options.len()
+                            && !opts.annotations.is_empty()
+                        {
+                            field.option_annotations = Some(opts.annotations);
+                        }
+                        field.option_cursor = 0;
+                        form.state = crate::form::FormState::Ready;
+                    }
+                }
+            }
             AppMsg::DetailEnvVars {
                 gen,
                 env_name,
@@ -9868,6 +10024,80 @@ fn yank(text: &str) -> std::result::Result<(), String> {
 /// the chain — including the underlying `dyn Error` causes that color-eyre
 /// records on `Report` — goes to `ebman.log` via `tracing::error!`. Without
 /// this the chain was lost both from the UI and the log.
+/// Which EC2 surface a MultiSelect form is pulling its option list from.
+/// Drives both the EC2 API call and the option-setting target so the two
+/// pickers share `open_multi_select_form` without conditional branches.
+#[derive(Copy, Clone, Debug)]
+enum MultiSelectFlavour {
+    Subnets,
+    SecurityGroups,
+}
+
+/// Fetch VPC context + EC2 inventory + current selection for a MultiSelect
+/// picker, in parallel. Returns the data the form's field needs to flip
+/// from Loading → Ready.
+async fn load_multi_select(
+    aws: Arc<crate::aws::AwsClient>,
+    app_name: &str,
+    env_name: &str,
+    flavour: MultiSelectFlavour,
+) -> Result<MultiSelectOptions, String> {
+    let ctx = aws
+        .fetch_env_vpc_context(app_name, env_name)
+        .await
+        .map_err(|e| flatten_err("fetch_env_vpc_context", e))?;
+    let Some(vpc_id) = ctx.vpc_id.as_deref() else {
+        return Err("env has no VPC id in its option settings — using account-default VPC?".into());
+    };
+    match flavour {
+        MultiSelectFlavour::Subnets => {
+            let subnets = aws
+                .list_subnets_in_vpc(vpc_id)
+                .await
+                .map_err(|e| flatten_err("list_subnets_in_vpc", e))?;
+            let mut options = Vec::with_capacity(subnets.len());
+            let mut annotations = Vec::with_capacity(subnets.len());
+            for s in subnets {
+                options.push(s.id.clone());
+                let mut annot = format!("({} · {}", s.availability_zone, s.cidr_block);
+                if let Some(name) = s.name_tag.as_ref().filter(|n| !n.is_empty()) {
+                    annot.push_str(" · ");
+                    annot.push_str(name);
+                }
+                annot.push(')');
+                annotations.push(annot);
+            }
+            Ok(MultiSelectOptions {
+                options,
+                annotations,
+                initial: ctx.subnets,
+            })
+        }
+        MultiSelectFlavour::SecurityGroups => {
+            let groups = aws
+                .list_security_groups_in_vpc(vpc_id)
+                .await
+                .map_err(|e| flatten_err("list_security_groups_in_vpc", e))?;
+            let mut options = Vec::with_capacity(groups.len());
+            let mut annotations = Vec::with_capacity(groups.len());
+            for g in groups {
+                options.push(g.id.clone());
+                let desc_suffix = if g.description.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — {}", g.description)
+                };
+                annotations.push(format!("({}{desc_suffix})", g.group_name));
+            }
+            Ok(MultiSelectOptions {
+                options,
+                annotations,
+                initial: ctx.security_groups,
+            })
+        }
+    }
+}
+
 fn flatten_err(op: &str, e: color_eyre::eyre::Report) -> String {
     tracing::error!(target: "ebman::aws", op = op, error = ?e, "aws call failed");
     format!("{e}")
@@ -9933,6 +10163,14 @@ fn build_palette_items(app: &App) -> Vec<PaletteItem> {
         (
             "settings",
             "modal form: theme / icons / refresh / redact / grouped / webhook",
+        ),
+        (
+            "subnets",
+            "modal form: pick EC2 subnets (aws:ec2:vpc.Subnets)",
+        ),
+        (
+            "security-groups",
+            "modal form: pick instance security groups (aws:autoscaling:launchconfiguration.SecurityGroups)",
         ),
         ("alarms", "CloudWatch alarms for selected env"),
         ("saved-configs", "EB saved configuration templates"),
