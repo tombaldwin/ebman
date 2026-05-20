@@ -475,8 +475,20 @@ Gaps surfaced during the 2026-05-19 console-vs-ebman comparison. Each entry is a
 - [ ] **Capacity profile beyond min/max + instance type** — `:scale N` sets min=max; `:instance-type TYPE` sets the launch-config InstanceType. Console exposes a full Capacity tab with fleet composition (multi-instance-type list, on-demand base + spot %), scaling triggers (custom CW metric / threshold / cooldown), and scheduled scaling actions. New `:capacity` command opening a modal-form (depends on the option-settings editor abstraction from Tier 1) — or per-option commands like `:trigger metric LATENCY threshold 0.5`.
 - [ ] **Custom platforms — create** — delete shipped as `:custom-platform-delete <arn>`. Create still missing: console offers a wizard that builds a new custom AMI from a Packer template (slow — minutes — needs polling); ours would be `:custom-platform-create <packer-config>` via `elasticbeanstalk:CreatePlatformVersion`. Niche but a real gap for operators who maintain in-house base AMIs.
 
-### Tier 4 — multi-account / org
-- [ ] **Account switcher with sts:AssumeRole** — the current `:account NAME` is a `:profile NAME` alias. A proper assume-role flow needs an `[accounts]` config schema in `config.toml` with role ARNs, an AssumeRole call, and credentials injection into the SDK. Deferred.
+### Tier 4 — multi-account / child accounts
+- [ ] **`sts:AssumeRole`-based account switcher** — current `:account NAME` is a `:profile NAME` alias. Real multi-account needs an `[accounts]` schema in `config.toml`:
+  ```toml
+  [accounts.prod]
+  role_arn = "arn:aws:iam::111122223333:role/EbmanReadOnly"
+  source_profile = "default"      # base creds that assume the role
+  external_id = "..."             # optional
+  region = "eu-west-2"            # default region for this account
+  ```
+  `:account prod` calls `sts:AssumeRole` with creds from `source_profile`, injects the temp creds into a fresh `SdkConfig`, swaps `AwsClient`. Cached until expiry (typically 1h) then re-assumes silently on next refresh. The header pill chain already has the room — show a small `↳ prod` indicator next to the profile chip when an assume-role is active.
+- [ ] **AWS Organizations child-account discovery** — when the active credentials live in a management account, surface child accounts automatically via `organizations:ListAccounts` + `organizations:DescribeAccount`. Adds a `:accounts` overlay that lists the org tree (root → OU → account) with each account's status, email, and AssumeRole target. Enter on a row triggers the switcher above. Gated on `organizations:*` perms; falls back to "no org access — list accounts manually in config.toml" when the call's denied. Per-org cache (~5 min TTL) so the overlay opens instantly on subsequent invocations.
+- [ ] **Multi-account fan-out for `:org-health`** — the existing `:org-health` walks profiles in `~/.aws/{config,credentials}`. Extend it to also walk the assume-role accounts above, so a single ebman instance in the mgmt account can survey every child account's EB health in one pass. Same parallelism pattern as the multi-region fan-out (`aws::list_environments_in_region`).
+- [ ] **Cross-account env search** — `:find-env SUBSTRING` already scans profiles; teach it to also scan assume-role accounts. Useful when an alert references an env by name but the operator doesn't know which account owns it.
+- [ ] **Per-account audit log scoping** — `~/.cache/ebman/audit.log` currently logs `account=<account_id> profile=<name>`. With assume-role accounts the `account_id` flips on `:account` switch but the log file is shared — so a query against the audit file works correctly today, but on display it'd help to show the active account in the audit overlay header (`:history`) so the operator can see which account a given action targeted at a glance.
 
 ### Tier 6 — power-user / scripting
 - [ ] **Embedded recorder** — record + replay sessions to `.cast` (asciinema). Deferred — needs its own input-capture + replay infrastructure.
