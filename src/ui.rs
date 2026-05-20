@@ -2441,6 +2441,10 @@ fn draw_help(f: &mut Frame, area: Rect, app: &mut App) {
         .add_modifier(Modifier::BOLD);
     if effective_scroll > 0 {
         let n = effective_scroll;
+        // Clear blanks the row in the back-buffer; without it the
+        // indicator overlays the body's visible line and leaves ghost
+        // characters past the indicator text.
+        f.render_widget(Clear, above_row);
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 format!("↑ {n} more above"),
@@ -2451,6 +2455,7 @@ fn draw_help(f: &mut Frame, area: Rect, app: &mut App) {
     }
     if effective_scroll < max_scroll {
         let n = max_scroll - effective_scroll;
+        f.render_widget(Clear, below_row);
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 format!("↓ {n} more below"),
@@ -2459,8 +2464,10 @@ fn draw_help(f: &mut Frame, area: Rect, app: &mut App) {
             below_row,
         );
     }
-    // Render the byline after the help body so it overlays the last row
-    // and remains visible regardless of scroll position.
+    // Sticky byline row at the bottom of the popup. Clear first for the
+    // same reason as the indicators above — without it, longer help
+    // body lines bleed past the byline's text.
+    f.render_widget(Clear, footer_row);
     let credit = Paragraph::new(Line::from(Span::styled(
         format!(
             "ebman {} · built by Tom Baldwin / Polymorphism Ltd · :about",
