@@ -28,6 +28,13 @@ use crate::{
     ui, Tui,
 };
 
+// Re-export action-cluster types so existing consumers (ui.rs, tests,
+// the `App` impl below) keep their `crate::app::Action` etc. paths
+// working after the move into `crate::mode_action`.
+pub use crate::mode_action::{
+    Action, ActionFlow, ConfirmKind, ConfirmModal, DryRunInfo, ParameterisedAction, ACTIONS,
+};
+
 /// Names of all built-in `:commands`. Used to detect collisions when loading
 /// user plugins from `commands.toml` — plugins that shadow a built-in are
 /// dropped with a warning rather than silently masking it.
@@ -467,167 +474,9 @@ pub enum QueueView {
     Main,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Action {
-    Rebuild,
-    RestartAppServer,
-    SwapCnames,
-    Terminate,
-    /// Deploy a specific application-version label to the env.
-    Deploy,
-    /// Migrate the env to a different platform ARN (rolling).
-    UpgradePlatform,
-    /// Clone the env into a new one with a chosen name.
-    Clone,
-    /// Set ASG min/max so the env scales to a fixed count.
-    Scale,
-    /// Cancel an in-flight environment update.
-    AbortUpdate,
-    /// `CreateConfigurationTemplate` from the selected env.
-    ConfigSave,
-    /// `DeleteConfigurationTemplate`.
-    ConfigDelete,
-    /// `UpdateEnvironment(template_name)` — apply a saved template.
-    ConfigApply,
-    /// `ec2:TerminateInstances` against a single instance picked from the
-    /// Instances tab. ASG replaces it; not env-level.
-    TerminateInstance,
-}
-
-impl Action {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Rebuild => "Rebuild environment",
-            Self::RestartAppServer => "Restart app server",
-            Self::SwapCnames => "Swap CNAMEs with another env",
-            Self::Terminate => "Terminate environment",
-            Self::Deploy => "Deploy application version",
-            Self::UpgradePlatform => "Upgrade platform",
-            Self::Clone => "Clone environment",
-            Self::Scale => "Scale (min/max)",
-            Self::AbortUpdate => "Abort current update",
-            Self::ConfigSave => "Save configuration template",
-            Self::ConfigDelete => "Delete configuration template",
-            Self::ConfigApply => "Apply configuration template",
-            Self::TerminateInstance => "Terminate instance",
-        }
-    }
-    pub fn destructive(self) -> bool {
-        matches!(self, Self::Terminate)
-    }
-
-    /// Per-icon-style glyph for the action menu. Powerline mode draws
-    /// recognisable Nerd Font icons (refresh / power / swap / trash / …)
-    /// next to the label; unicode falls back to short emoji-ish glyphs;
-    /// ASCII gets a single-letter tag so the column stays aligned.
-    pub fn glyph(self, icons: crate::theme::IconStyle) -> &'static str {
-        use crate::theme::IconStyle;
-        match (icons, self) {
-            // Powerline / Nerd Font Material Design glyphs.
-            (IconStyle::Powerline, Self::Rebuild) => "\u{f0450}", // refresh
-            (IconStyle::Powerline, Self::RestartAppServer) => "\u{f0709}", // restart
-            (IconStyle::Powerline, Self::SwapCnames) => "\u{f0521}", // swap-horizontal
-            (IconStyle::Powerline, Self::Terminate) => "\u{f01b4}", // delete / trash
-            (IconStyle::Powerline, Self::Deploy) => "\u{f01da}",  // upload
-            (IconStyle::Powerline, Self::UpgradePlatform) => "\u{f0140}", // upgrade arrow
-            (IconStyle::Powerline, Self::Clone) => "\u{f018f}",   // content-copy
-            (IconStyle::Powerline, Self::Scale) => "\u{f0566}",   // resize / arrow-expand
-            (IconStyle::Powerline, Self::AbortUpdate) => "\u{f0156}", // cancel
-            (IconStyle::Powerline, Self::ConfigSave) => "\u{f0193}", // content-save
-            (IconStyle::Powerline, Self::ConfigDelete) => "\u{f01b4}", // delete
-            (IconStyle::Powerline, Self::ConfigApply) => "\u{f00e2}", // check
-            (IconStyle::Powerline, Self::TerminateInstance) => "\u{f01b4}", // delete
-            // Unicode fallbacks — common monospaced glyphs that render in
-            // most modern terminals without a patched font.
-            (IconStyle::Unicode, Self::Rebuild) => "↻",
-            (IconStyle::Unicode, Self::RestartAppServer) => "⟳",
-            (IconStyle::Unicode, Self::SwapCnames) => "⇄",
-            (IconStyle::Unicode, Self::Terminate) => "✗",
-            (IconStyle::Unicode, Self::Deploy) => "↑",
-            (IconStyle::Unicode, Self::UpgradePlatform) => "▲",
-            (IconStyle::Unicode, Self::Clone) => "❐",
-            (IconStyle::Unicode, Self::Scale) => "↔",
-            (IconStyle::Unicode, Self::AbortUpdate) => "■",
-            (IconStyle::Unicode, Self::ConfigSave) => "✎",
-            (IconStyle::Unicode, Self::ConfigDelete) => "✗",
-            (IconStyle::Unicode, Self::ConfigApply) => "✓",
-            (IconStyle::Unicode, Self::TerminateInstance) => "✗",
-            // ASCII: single-letter tags so the menu column stays fixed-width.
-            (IconStyle::Ascii, Self::Rebuild) => "R",
-            (IconStyle::Ascii, Self::RestartAppServer) => "r",
-            (IconStyle::Ascii, Self::SwapCnames) => "S",
-            (IconStyle::Ascii, Self::Terminate) => "X",
-            (IconStyle::Ascii, Self::Deploy) => "D",
-            (IconStyle::Ascii, Self::UpgradePlatform) => "U",
-            (IconStyle::Ascii, Self::Clone) => "C",
-            (IconStyle::Ascii, Self::Scale) => "N",
-            (IconStyle::Ascii, Self::AbortUpdate) => "A",
-            (IconStyle::Ascii, Self::ConfigSave) => "s",
-            (IconStyle::Ascii, Self::ConfigDelete) => "d",
-            (IconStyle::Ascii, Self::ConfigApply) => "a",
-            (IconStyle::Ascii, Self::TerminateInstance) => "x",
-        }
-    }
-}
-
-pub enum ActionFlow {
-    Menu {
-        list_state: ListState,
-    },
-    SwapTarget {
-        source: String,
-        picker: Picker,
-    },
-    Confirm(ConfirmModal),
-    Running {
-        action: Action,
-        env: String,
-        since: Instant,
-    },
-}
-
-#[derive(Clone)]
-pub struct ConfirmModal {
-    pub action: Action,
-    pub target_env: String,
-    pub swap_with: Option<String>,
-    pub typed: String,
-    pub kind: ConfirmKind,
-    pub dryrun: Option<DryRunInfo>,
-    pub loading_dryrun: bool,
-    pub recent_events: Option<Vec<EbEvent>>,
-    pub loading_events: bool,
-    /// One-line pre-flight warning derived from the env's current state when
-    /// the modal opened — e.g. "ACTIVE DEPLOY: status=Updating" or "RECENT
-    /// CHANGE: updated 4m ago". Surfaced above the Y/N row so the operator
-    /// sees mid-flight changes before authorising another action.
-    pub traffic_warning: Option<String>,
-    /// Version label to deploy when `action == Deploy`. None for other actions.
-    pub deploy_version: Option<String>,
-    /// Platform ARN to migrate to when `action == UpgradePlatform`.
-    pub upgrade_platform_arn: Option<String>,
-    /// Human-readable label for the upgrade target — shown in the modal.
-    pub upgrade_platform_label: Option<String>,
-    /// New env name when `action == Clone`.
-    pub clone_target: Option<String>,
-    /// Desired min/max instance counts when `action == Scale`. Both set to
-    /// the same value for a "scale to N" operation; differ for explicit
-    /// min/max overrides.
-    pub scale_min: Option<i32>,
-    pub scale_max: Option<i32>,
-}
-
-/// Helper carrying the optional parameters needed by the new parameterised
-/// actions. Avoids passing six `Option<…>` args to `open_parameterised_action`.
-#[derive(Default, Clone, Debug)]
-pub struct ParameterisedAction {
-    pub deploy_version: Option<String>,
-    pub upgrade_platform_arn: Option<String>,
-    pub upgrade_platform_label: Option<String>,
-    pub clone_target: Option<String>,
-    pub scale_min: Option<i32>,
-    pub scale_max: Option<i32>,
-}
+// `ActionFlow` / `ConfirmModal` / `ParameterisedAction` / `DryRunInfo`
+// / `ConfirmKind` / `Action` / `ACTIONS` moved to `crate::mode_action`
+// — re-exported from app.rs below so existing imports keep working.
 
 /// One in-flight or recently-completed action. `label` is the human-readable
 /// verb (e.g. "Rebuild environment"), `target` the env or instance the
@@ -670,30 +519,6 @@ pub const PENDING_CAP: usize = 20;
 /// Completed entries linger for this long so the user has time to see the
 /// outcome before the panel clears.
 pub const PENDING_COMPLETED_TTL: Duration = Duration::from_secs(60);
-
-#[derive(Clone, Debug)]
-pub struct DryRunInfo {
-    pub instance_count: usize,
-    pub az_count: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConfirmKind {
-    YesNo,
-    TypeName, // user must type the env name exactly
-}
-
-pub const ACTIONS: &[Action] = &[
-    Action::Rebuild,
-    Action::RestartAppServer,
-    Action::Deploy,
-    Action::UpgradePlatform,
-    Action::Scale,
-    Action::Clone,
-    Action::SwapCnames,
-    Action::AbortUpdate,
-    Action::Terminate,
-];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetailTab {
