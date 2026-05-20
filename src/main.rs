@@ -5,6 +5,7 @@ mod control;
 mod font_probe;
 mod form;
 mod keys;
+mod mode_action;
 mod plugins;
 mod profiles;
 mod shell;
