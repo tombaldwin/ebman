@@ -230,10 +230,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         } else {
             0
         };
-        // Header is taller when the user has saved filters — the chip bar
-        // needs its own row. Stays at 5 otherwise so we don't waste vertical
-        // space on accounts with no saved filters.
-        let header_height: u16 = if app.named_filters.is_empty() { 5 } else { 6 };
+        // Header rows: crumb + line1 (Account/Region/Profile) + line2
+        // (Caller/Envs/Last/Status/Sort) + chain (alerts/redact/sso/etc.)
+        // + optional filter-chip row. The chain lives on its own row so
+        // pills never clip the alert / SSO / update signals; in practice
+        // almost every session has at least one pill active (compact
+        // view / SSO expiry / etc.), so reserving the row by default
+        // doesn't waste meaningful vertical space.
+        let header_height: u16 = if app.named_filters.is_empty() { 6 } else { 7 };
         let mut constraints: Vec<Constraint> =
             vec![Constraint::Length(header_height), Constraint::Min(3)];
         if events_height > 0 {
@@ -1305,19 +1309,23 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
             chain_pills.push((label, Color::Black, bg));
         }
     }
-    if !chain_pills.is_empty() {
-        // In non-Powerline modes pill_chain doesn't add a leading sep, so
-        // inject one here to space the chain from the preceding plain text.
-        // In Powerline mode the chain starts with a coloured E0B2 wedge that
-        // would otherwise sit flush against the preceding text — pad with
-        // two spaces so the wedge has visual breathing room.
-        if theme.icons != IconStyle::Powerline {
-            line2.push(sep(theme));
-        } else {
-            line2.push(Span::raw("  "));
-        }
-        line2.extend(pill_chain(&chain_pills, theme));
-    }
+    // Pill chain lives on its own dedicated line below the info row.
+    // The info row (Caller / Envs / Last / Status / Sort) is already
+    // long enough at typical terminal widths that appending the chain
+    // here would clip pills off the right edge — the alert pill
+    // squashes to `▶!` mid-stream because ratatui truncates the Paragraph
+    // at the column boundary. Giving the chain its own line keeps every
+    // signal visible regardless of width.
+    let pill_line: Option<Line<'static>> = if chain_pills.is_empty() {
+        None
+    } else {
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        // Lead-in: a small indent so the chain doesn't butt against the
+        // titled-block's inner padding.
+        spans.push(Span::raw("  "));
+        spans.extend(pill_chain(&chain_pills, theme));
+        Some(Line::from(spans))
+    };
 
     // Breadcrumb: region / application / env — gives context at a glance.
     let crumb = breadcrumb_line(app);
@@ -1325,6 +1333,9 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     // Each chip is the filter name; the chip matching the currently-applied
     // filter is highlighted. The user activates with `:f NAME` or the palette.
     let mut paragraph_lines: Vec<Line> = vec![crumb, Line::from(line1), Line::from(line2)];
+    if let Some(pl) = pill_line {
+        paragraph_lines.push(pl);
+    }
     if !app.named_filters.is_empty() {
         let mut chips: Vec<Span> =
             vec![Span::styled("Filters: ", Style::default().fg(theme.muted))];
