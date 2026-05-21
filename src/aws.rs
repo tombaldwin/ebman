@@ -74,6 +74,12 @@ pub struct Instance {
 pub struct Application {
     pub name: String,
     pub description: String,
+    /// `date_created` is fetched from `DescribeApplications` but no
+    /// longer rendered (the apps table dropped the CREATED column in
+    /// favour of the ENVS / RED / UPDATING rollup). Keep the field so
+    /// the SDK conversion stays straight-through — re-surface in a
+    /// future `:apps-info` overlay when an operator asks for it.
+    #[allow(dead_code)]
     pub date_created: Option<DateTime<Utc>>,
     pub date_updated: Option<DateTime<Utc>>,
     pub version_count: usize,
