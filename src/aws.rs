@@ -236,6 +236,43 @@ fn cost_explorer_client(base: &SdkConfig) -> CostExplorerClient {
     CostExplorerClient::new(&cfg)
 }
 
+/// One settable EB configuration option, as returned by
+/// [`AwsClient::fetch_env_configuration_options`]. Covers both the
+/// operator's currently-set value and the platform's metadata
+/// (default / constraints / change severity). `:options` uses this
+/// to render the full config vocabulary in one overlay.
+#[derive(Clone, Debug)]
+pub struct ConfigOption {
+    pub namespace: String,
+    pub name: String,
+    /// Current value, or `None` when the operator hasn't overridden
+    /// the default. EB sometimes returns `Some("")` for unset; the
+    /// renderer treats both as "default" and tags accordingly.
+    pub value: Option<String>,
+    pub default_value: Option<String>,
+    /// `"Scalar"` / `"List"` / sometimes blank. Lower-cased on
+    /// the wire; we render as-is.
+    pub value_type: String,
+    /// Constrained value options for enum-shaped settings
+    /// (e.g. `["AllAtOnce", "Rolling", "Immutable", ...]` for
+    /// `DeploymentPolicy`). Empty Vec when unconstrained.
+    pub value_options: Vec<String>,
+    /// `"NoInterruption"` / `"RestartEnvironment"` /
+    /// `"RestartApplicationServer"` / `"Unknown"`. Warns the
+    /// operator that changing this option will roll instances.
+    pub change_severity: Option<String>,
+    /// EB exposes a "this option is operator-settable" flag —
+    /// most options have this true. Currently captured but not
+    /// rendered (operator-set vs default distinction is enough
+    /// signal); kept on the struct because a future "hide read-only
+    /// options" filter would consume it.
+    #[allow(dead_code)]
+    pub user_defined: Option<bool>,
+    pub min_value: Option<i32>,
+    pub max_value: Option<i32>,
+    pub max_length: Option<i32>,
+}
+
 /// One row of cost data returned by [`AwsClient::fetch_env_costs`] —
 /// an EB env name and its monthly cost in USD across the trailing
 /// window. `cost` is in whole + fractional dollars; the SDK returns
@@ -1183,6 +1220,113 @@ impl AwsClient {
             })
             .collect();
         out.sort();
+        Ok(out)
+    }
+
+    /// Fetch every settable EB option for an env — namespace, name,
+    /// current value (when set), default, type, constraints.
+    ///
+    /// Two SDK calls correlated by (namespace, name):
+    ///
+    ///   - `describe_configuration_options` is the canonical
+    ///     "what's the full config vocabulary for this env's
+    ///     platform?" API. Returns ~hundreds of option metadata
+    ///     rows (default value, value type, change severity,
+    ///     constraints) — but no current values.
+    ///   - `describe_configuration_settings` returns the current
+    ///     values for *every* option, including ones still at
+    ///     their default.
+    ///
+    /// Merged on namespace+name so each row carries both the
+    /// metadata and the live value. This is what closes the
+    /// operator's "how do I know what I can set?" question.
+    /// Caller should treat as on-demand (run via `:options`), not
+    /// part of the background refresh — both calls are slow for
+    /// platforms with deep option trees.
+    pub async fn fetch_env_configuration_options(
+        &self,
+        application_name: &str,
+        env_name: &str,
+    ) -> Result<Vec<ConfigOption>> {
+        // Parallel fetch of both shapes. The vocabulary call is
+        // the slower of the two, so kicking them off together
+        // shaves a round-trip off the total latency.
+        let vocab_fut = self
+            .client
+            .describe_configuration_options()
+            .environment_name(env_name)
+            .send();
+        let settings_fut = self
+            .client
+            .describe_configuration_settings()
+            .application_name(application_name)
+            .environment_name(env_name)
+            .send();
+        let (vocab_resp, settings_resp) = tokio::try_join!(
+            async {
+                vocab_fut
+                    .await
+                    .wrap_err("DescribeConfigurationOptions failed")
+            },
+            async {
+                settings_fut
+                    .await
+                    .wrap_err("DescribeConfigurationSettings(options) failed")
+            },
+        )?;
+
+        // Index current values by (namespace, name).
+        let mut current: std::collections::HashMap<(String, String), String> =
+            std::collections::HashMap::new();
+        for c in settings_resp.configuration_settings.unwrap_or_default() {
+            for o in c.option_settings.unwrap_or_default() {
+                if let (Some(ns), Some(name)) = (o.namespace, o.option_name) {
+                    if let Some(v) = o.value {
+                        if !v.is_empty() {
+                            current.insert((ns, name), v);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut out: Vec<ConfigOption> = vocab_resp
+            .options
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|o| {
+                let namespace = o.namespace?;
+                let name = o.name?;
+                let value = current.get(&(namespace.clone(), name.clone())).cloned();
+                Some(ConfigOption {
+                    namespace,
+                    name,
+                    value,
+                    default_value: o.default_value,
+                    value_type: o
+                        .value_type
+                        .map(|v| v.as_str().to_string())
+                        .unwrap_or_default(),
+                    value_options: o.value_options.unwrap_or_default(),
+                    change_severity: o.change_severity,
+                    user_defined: o.user_defined,
+                    min_value: o.min_value,
+                    max_value: o.max_value,
+                    max_length: o.max_length,
+                })
+            })
+            .collect();
+        // Sort: namespace asc, user-set first within each namespace,
+        // then alpha by name. Puts the operator's mutations at the
+        // top of each group where they catch the eye.
+        out.sort_by(|a, b| {
+            let a_set = a.value.is_some();
+            let b_set = b.value.is_some();
+            a.namespace
+                .cmp(&b.namespace)
+                .then_with(|| b_set.cmp(&a_set))
+                .then_with(|| a.name.cmp(&b.name))
+        });
         Ok(out)
     }
 
