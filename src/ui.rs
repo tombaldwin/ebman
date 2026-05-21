@@ -2677,15 +2677,15 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
         let heading: String;
         let hint: String;
         if env_count_total == 0 {
-            heading = "no environments in this account / region".to_string();
+            heading = "no envs in this account / region".to_string();
             hint = "try a different region (r) or profile (p), or check the AWS console (b)"
                 .to_string();
         } else if app.filter.is_empty() {
-            heading = "no environments match the active view".to_string();
+            heading = "no envs match the active view".to_string();
             hint = "type `:views` to switch back to default, or `:filters` to drop a saved one"
                 .to_string();
         } else {
-            heading = format!("no environments match  `{}`", app.filter);
+            heading = format!("no envs match  `{}`", app.filter);
             hint = "press / to edit, or Esc in filter mode to clear".to_string();
         }
         let block_height: u16 = 4;
@@ -3764,11 +3764,11 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
             let mut lines: Vec<Line> = Vec::new();
             let summary = match modal.action {
                 Action::Rebuild => format!(
-                    "Rebuild environment '{}'? (terminates and recreates all instances)",
+                    "Rebuild env '{}'? (terminates and recreates all instances)",
                     modal.target_env
                 ),
                 Action::RestartAppServer => {
-                    format!("Restart app server on environment '{}'?", modal.target_env)
+                    format!("Restart app server on env '{}'?", modal.target_env)
                 }
                 Action::SwapCnames => format!(
                     "Swap CNAMEs between '{}' and '{}'?",
@@ -3776,11 +3776,11 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                     modal.swap_with.as_deref().unwrap_or("?")
                 ),
                 Action::Terminate => format!(
-                    "TERMINATE environment '{}'. This cannot be undone.",
+                    "TERMINATE env '{}'. This cannot be undone.",
                     modal.target_env
                 ),
                 Action::Deploy => format!(
-                    "Deploy version '{}' to environment '{}'? (rolling, reversible)",
+                    "Deploy version '{}' to env '{}'? (rolling, reversible)",
                     modal.deploy_version.as_deref().unwrap_or("?"),
                     modal.target_env
                 ),
@@ -4056,7 +4056,7 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
     h2.extend(kv("Version", &env.version_label, theme));
     h2.push(sep(theme));
     h2.extend(kv("CNAME", &cname_text, theme));
-    let header_title = format!("environment: {}", env.name);
+    let header_title = format!("env: {}", env.name);
     let header = Paragraph::new(vec![Line::from(h1), Line::from(h2), Line::raw("")]).block(
         titled_block(&app.theme, &header_title, true, app.theme.title),
     );
@@ -4695,7 +4695,7 @@ fn draw_detail_events(f: &mut Frame, area: Rect, detail: &crate::app::DetailStat
         let lines = vec![
             Line::from(""),
             Line::from(Span::styled(
-                " ◌  no events for this environment",
+                " ◌  no events for this env",
                 Style::default()
                     .fg(theme.muted)
                     .add_modifier(Modifier::BOLD),
@@ -6361,7 +6361,7 @@ fn summarize_in_flight(labels: &[&str]) -> String {
     }
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
     for l in labels {
-        // Normalise to a short stem so "Rebuild environment" /
+        // Normalise to a short stem so "Rebuild env" /
         // "Restart app server" / etc. read as one word in the pill.
         let stem = l
             .split_whitespace()
@@ -6953,7 +6953,7 @@ mod tests {
         let body = Style::default().fg(Color::White);
         let name = Style::default().fg(Color::Red);
         let line = highlight_env_in_summary(
-            "Rebuild environment 'prod-api'? (terminates and recreates)",
+            "Rebuild env 'prod-api'? (terminates and recreates)",
             "prod-api",
             body,
             name,
