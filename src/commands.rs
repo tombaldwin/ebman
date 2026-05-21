@@ -228,6 +228,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         CommandKind::ZeroArg,
     ),
     cmd(
+        "apps-info",
+        ":apps-info — application metadata overlay (description / dates / templates / envs)",
+        Category::Inspection,
+        CommandKind::ZeroArg,
+    ),
+    cmd(
         "history",
         ":history — show recent info/error messages",
         Category::Inspection,

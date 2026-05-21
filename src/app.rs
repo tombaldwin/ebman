@@ -3180,6 +3180,98 @@ impl App {
     /// via the command palette but never pushed at the operator;
     /// existence justifies removing the splash byline if anyone ever
     /// objects to the 3-second introduction.
+    /// `:apps-info` — surface application metadata that doesn't fit
+    /// in the apps-table columns: full description, creation date,
+    /// last-updated date, saved-config templates, env count.
+    /// Resolves the target via cursor position in either scope:
+    /// Apps scope uses `app_table_state`; Envs scope walks
+    /// `selected_env().application`.
+    pub(crate) fn open_apps_info_overlay(&mut self) {
+        let app_name_opt = match self.scope {
+            Scope::Apps => self
+                .app_table_state
+                .selected()
+                .and_then(|i| self.applications.get(i).map(|a| a.name.clone())),
+            Scope::Envs => self.selected_env().map(|e| e.application.clone()),
+        };
+        let Some(app_name) = app_name_opt else {
+            self.error_message = Some("no application selected".into());
+            return;
+        };
+        let Some(app) = self.applications.iter().find(|a| a.name == app_name) else {
+            self.error_message = Some(format!(
+                "application '{app_name}' not in cache yet — refresh and retry"
+            ));
+            return;
+        };
+        // Walk env list for the rollup figures; mirrors the apps-table
+        // columns so the operator can compare without bouncing.
+        let rollup = app_rollup(&self.environments, &app.name, &self.worker_dlq_depths);
+        let env_names: Vec<&str> = self
+            .environments
+            .iter()
+            .filter(|e| e.application == app.name)
+            .map(|e| e.name.as_str())
+            .collect();
+        let date_fmt = |dt: Option<chrono::DateTime<chrono::Utc>>| -> String {
+            dt.map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string())
+                .unwrap_or_else(|| "—".into())
+        };
+        let templates_block = if app.templates.is_empty() {
+            "  (none)".to_string()
+        } else {
+            app.templates
+                .iter()
+                .map(|t| format!("  ▸ {t}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let envs_block = if env_names.is_empty() {
+            "  (none)".to_string()
+        } else {
+            env_names
+                .iter()
+                .map(|n| format!("  ▸ {n}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let description = if app.description.is_empty() {
+            "(no description)".to_string()
+        } else {
+            app.description.clone()
+        };
+        let latest_line = match (
+            app.latest_version_label.as_deref(),
+            app.latest_version_created,
+        ) {
+            (Some(label), Some(created)) => format!("{label}  ({})", date_fmt(Some(created))),
+            (Some(label), None) => label.to_string(),
+            _ => "—".into(),
+        };
+        let body = format!(
+            "Application: {}\n\
+             Description: {description}\n\n\
+             Created:     {created}\n\
+             Updated:     {updated}\n\n\
+             Versions:    {version_count} registered · latest: {latest_line}\n\
+             Envs:        {env_count} total · {red_count} alerting · {updating_count} updating\n\n\
+             Environments:\n{envs_block}\n\n\
+             Saved configuration templates:\n{templates_block}\n\n\
+             esc / q to close",
+            app.name,
+            created = date_fmt(app.date_created),
+            updated = date_fmt(app.date_updated),
+            version_count = app.version_count,
+            env_count = rollup.env_count,
+            red_count = rollup.red_count + rollup.worker_dlq_alerts,
+            updating_count = rollup.updating_count,
+        );
+        self.current_overlay = Some(Overlay::TextDump {
+            title: format!("info — {}", app.name),
+            body,
+        });
+    }
+
     fn open_about_overlay(&mut self) {
         let body = format!(
             "ebman {version}\n\
@@ -7192,6 +7284,7 @@ impl App {
             },
             "whatsnew" => self.open_whatsnew(),
             "about" | "credits" => self.open_about_overlay(),
+            "apps-info" => self.open_apps_info_overlay(),
             "settings" => {
                 self.open_settings_form();
             }
