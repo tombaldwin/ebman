@@ -38,6 +38,7 @@ portable-pty = "0.9"
 vt100 = "0.15"
 aws-credential-types = { version = "1.2.13", features = ["hardcoded-credentials"] }
 aws-sdk-organizations = "1.110.0"
+aws-sdk-costexplorer = "1"
 
 [dev-dependencies]
 # Mocked AWS clients for unit-testing aws.rs without a live AWS account.
