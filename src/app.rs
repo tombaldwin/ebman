@@ -660,6 +660,18 @@ pub struct App {
     /// render's `⚠ DLQ:N` chip on Worker rows. Missing entry = "not
     /// checked yet" (don't fire an alert on cold state).
     pub worker_dlq_depths: std::collections::HashMap<String, i64>,
+    /// Cost Explorer integration is opt-in via `:cost on`. Toggling
+    /// flips this + triggers a fetch (or a stale-cache load); the
+    /// envs-table COST column renders only while this is true.
+    /// Persisted to state.toml under `cost_enabled`.
+    pub cost_enabled: bool,
+    /// Per-env monthly USD spend, populated by `spawn_cost_fetch`
+    /// after a `:cost on` opt-in. Empty when costs haven't been
+    /// fetched yet or the cache file is missing. Cleared when the
+    /// operator toggles `:cost off` so the column stops rendering
+    /// stale numbers.
+    pub costs: std::collections::HashMap<String, f64>,
+    pub costs_fetched_at: Option<chrono::DateTime<chrono::Utc>>,
     pub frozen: bool, // when true, auto-refresh ticker is no-op
     /// The currently visible overlay popup, if any. See [`Overlay`].
     pub current_overlay: Option<Overlay>,
@@ -905,6 +917,16 @@ enum AppMsg {
         gen: u64,
         env_name: String,
         result: Result<Vec<crate::aws::CwAlarm>, String>,
+    },
+    /// Cost Explorer fetch result. Populates `App.costs` so the env
+    /// table's COST column renders without waiting for the next
+    /// refresh tick. Also written through to the on-disk cache so
+    /// subsequent sessions render immediately.
+    CostsFetched {
+        gen: u64,
+        account: Option<String>,
+        region: String,
+        result: Result<Vec<crate::aws::EnvCost>, String>,
     },
     /// Recently-registered application versions for an env's app.
     /// Populates the Detail-Health-tab "recent deploys" section.
@@ -1288,6 +1310,9 @@ impl App {
             hover_row: None,
             alerts: 0,
             worker_dlq_depths: std::collections::HashMap::new(),
+            cost_enabled: persisted.cost_enabled.unwrap_or(false),
+            costs: std::collections::HashMap::new(),
+            costs_fetched_at: None,
             frozen: false,
             current_overlay: None,
             message_log: VecDeque::with_capacity(MESSAGE_LOG_CAP),
@@ -1447,6 +1472,9 @@ impl App {
             hover_row: None,
             alerts: 0,
             worker_dlq_depths: std::collections::HashMap::new(),
+            cost_enabled: false,
+            costs: std::collections::HashMap::new(),
+            costs_fetched_at: None,
             frozen: false,
             current_overlay: None,
             message_log: VecDeque::with_capacity(MESSAGE_LOG_CAP),
@@ -2915,6 +2943,116 @@ impl App {
     fn manual_refresh(&mut self) {
         self.spawn_refresh();
         self.status_message = Some("refresh requested".into());
+    }
+
+    /// Toggle the COST column. `state` = None flips the current
+    /// value; Some(true)/Some(false) sets explicitly. Persists to
+    /// state.toml so the toggle survives restarts. Opting in triggers
+    /// a fetch immediately (with stale-cache rendered while it runs);
+    /// opting out clears the costs map so the column stops showing
+    /// numbers that no longer represent reality.
+    pub(crate) fn cmd_cost(&mut self, rest: &[&str]) {
+        let next = match rest.first().copied() {
+            Some("on") | Some("true") | Some("enable") => true,
+            Some("off") | Some("false") | Some("disable") => false,
+            Some("status") | None => {
+                let pretty = match (self.cost_enabled, self.costs_fetched_at) {
+                    (false, _) => "off".to_string(),
+                    (true, None) => "on (no data yet)".into(),
+                    (true, Some(t)) => {
+                        let age = chrono::Utc::now()
+                            .signed_duration_since(t)
+                            .to_std()
+                            .unwrap_or_default();
+                        format!(
+                            "on (refreshed {} ago, {} env(s) cached)",
+                            humanize_short_age(age),
+                            self.costs.len()
+                        )
+                    }
+                };
+                self.status_message = Some(format!("cost: {pretty}"));
+                return;
+            }
+            Some(other) => {
+                self.error_message =
+                    Some(format!("usage: :cost on | off | status  (got '{other}')"));
+                return;
+            }
+        };
+        if next == self.cost_enabled {
+            self.status_message =
+                Some(format!("cost: already {}", if next { "on" } else { "off" }));
+            return;
+        }
+        self.cost_enabled = next;
+        if next {
+            // Load whatever the cache has so the column renders
+            // immediately with stale data; spawn a fresh fetch in
+            // the background. The CostsFetched handler will refresh
+            // and persist when the result lands.
+            let account = self
+                .context
+                .account_id
+                .clone()
+                .unwrap_or_else(|| "unknown".into());
+            let cache = crate::cost_cache::load(&account, &self.context.region);
+            let now = chrono::Utc::now();
+            let stale = cache.is_stale(now);
+            self.costs = cache.costs;
+            self.costs_fetched_at = cache.fetched_at;
+            if stale {
+                // Cache stale (>24h) or absent. Fetch in background;
+                // operator sees stale numbers (or "—") immediately
+                // and the column refreshes when CostsFetched lands.
+                self.spawn_cost_fetch();
+                self.status_message =
+                    Some("cost: on — fetching latest from Cost Explorer (1-3s; cached 24h)".into());
+            } else {
+                // Fresh cache hit — Cost Explorer data only refreshes
+                // ~24h on AWS's side anyway, so an extra fetch buys
+                // nothing but rate-limit pressure. Tell the operator
+                // what they're seeing.
+                let age = now
+                    .signed_duration_since(cache.fetched_at.unwrap_or(now))
+                    .to_std()
+                    .unwrap_or_default();
+                self.status_message = Some(format!(
+                    "cost: on — cached ({} ago; AWS refreshes ~24h)",
+                    humanize_short_age(age)
+                ));
+            }
+        } else {
+            self.costs.clear();
+            self.costs_fetched_at = None;
+            self.status_message = Some("cost: off — column hidden, cache preserved".into());
+        }
+        self.persist_state();
+    }
+
+    /// Spawn a Cost Explorer fetch in the background. Result lands
+    /// via `AppMsg::CostsFetched`; on success the costs map updates
+    /// AND the cache file is rewritten. Idempotent — multiple
+    /// fetches in flight overwrite each other harmlessly (last
+    /// write wins; the tag-grouped result is stable across calls).
+    fn spawn_cost_fetch(&mut self) {
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let account = self.context.account_id.clone();
+        let region = self.context.region.clone();
+        tokio::spawn(async move {
+            let result = aws
+                .fetch_env_costs()
+                .await
+                .map_err(|e| flatten_err("fetch_env_costs", e));
+            let _ = tx.send(AppMsg::CostsFetched {
+                gen,
+                account,
+                region,
+                result,
+            });
+        });
     }
 
     fn spawn_alarms_fetch(&mut self, env_name: String) {
@@ -7285,6 +7423,7 @@ impl App {
             "whatsnew" => self.open_whatsnew(),
             "about" | "credits" => self.open_about_overlay(),
             "apps-info" => self.open_apps_info_overlay(),
+            "cost" => self.cmd_cost(&rest),
             "settings" => {
                 self.open_settings_form();
             }
@@ -7600,6 +7739,7 @@ impl App {
             named_filters: self.named_filters.clone(),
             pinned: self.pinned.clone(),
             pinned_apps: self.pinned_apps.clone(),
+            cost_enabled: Some(self.cost_enabled),
             aliases: self.aliases.clone(),
             saved_views: self.saved_views.clone(),
             hidden_cols: self.hidden_cols.clone(),
@@ -8674,6 +8814,45 @@ impl App {
                 }
                 detail.loading_cw_alarms = false;
                 detail.cw_alarms = Some(result);
+            }
+            AppMsg::CostsFetched {
+                gen,
+                account,
+                region,
+                result,
+            } => {
+                if gen != self.generation {
+                    return;
+                }
+                match result {
+                    Ok(rows) => {
+                        let now = chrono::Utc::now();
+                        self.costs.clear();
+                        for row in &rows {
+                            self.costs.insert(row.env_name.clone(), row.cost_usd);
+                        }
+                        self.costs_fetched_at = Some(now);
+                        // Persist to ~/.cache/ebman/cost-{account}-{region}.toml
+                        // so subsequent sessions render immediately.
+                        let account_key = account.unwrap_or_else(|| "unknown".into());
+                        let cache = crate::cost_cache::CostCache {
+                            fetched_at: Some(now),
+                            costs: self.costs.clone(),
+                        };
+                        if let Err(e) = crate::cost_cache::save(&account_key, &region, &cache) {
+                            tracing::warn!(
+                                target: "ebman::cost",
+                                error = %e,
+                                "cost cache write failed (non-fatal)"
+                            );
+                        }
+                        let n = rows.len();
+                        self.status_message = Some(format!("cost: refreshed {n} env(s)"));
+                    }
+                    Err(msg) => {
+                        self.error_message = Some(format!("cost fetch: {msg}"));
+                    }
+                }
             }
             AppMsg::DetailRecentVersions {
                 gen,

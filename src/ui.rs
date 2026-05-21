@@ -2204,6 +2204,16 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
     if !app.multi_regions.is_empty() {
         full.insert(1, ("REGION", SortKey::App));
     }
+    // COST column opt-in via `:cost on`. Inserted before AGE so the
+    // expensive envs catch the eye on the same horizontal band as the
+    // stale-env tint.
+    if app.cost_enabled {
+        let age_idx = full
+            .iter()
+            .position(|(l, _)| *l == "AGE")
+            .unwrap_or(full.len());
+        full.insert(age_idx, ("COST", SortKey::Name));
+    }
     if compact {
         // Compact preset hides TREND + PLATFORM regardless of user pref.
         full.retain(|(label, _)| !matches!(*label, "TREND" | "PLATFORM"));
@@ -2466,6 +2476,33 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                             .style(Style::default().fg(age_color(e.updated, now, &theme))),
                         "REGION" => Cell::from(Span::raw(e.region.as_deref().unwrap_or_default()))
                             .style(Style::default().fg(theme.accent)),
+                        "COST" => {
+                            // `:cost on` populates `app.costs` from
+                            // Cost Explorer (Tag: elasticbeanstalk:env-name).
+                            // Display as `$NNN` (no fractional cents —
+                            // the precision is misleading; Cost Explorer
+                            // reports `1240.503125...` and that's noise).
+                            // Tint cells by bucket so the eye lands on
+                            // the expensive ones: green < $50, muted
+                            // $50–$500, red ≥ $500.
+                            match app.costs.get(&e.name).copied() {
+                                Some(cost) => {
+                                    let text = format!("${cost:.0}");
+                                    let fg = if cost >= 500.0 {
+                                        theme.health_red
+                                    } else if cost >= 50.0 {
+                                        theme.text
+                                    } else {
+                                        theme.health_green
+                                    };
+                                    Cell::from(text)
+                                        .style(Style::default().fg(fg).add_modifier(Modifier::BOLD))
+                                }
+                                None => {
+                                    Cell::from(Span::styled("—", Style::default().fg(theme.muted)))
+                                }
+                            }
+                        }
                         _ => Cell::from(""),
                     })
                     .collect();
@@ -2658,6 +2695,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
             "VERSION" => Constraint::Percentage(10),
             "CNAME" => Constraint::Percentage(14),
             "AGE" => Constraint::Length(6),
+            "COST" => Constraint::Length(8),
             _ => Constraint::Length(6),
         })
         .collect();

@@ -167,10 +167,13 @@ mod tests {
 
     #[test]
     fn parse_round_trip() {
-        let mut c = CostCache::default();
-        c.fetched_at = Some(at(2026, 5, 21));
-        c.costs.insert("prod-api".into(), 1240.50);
-        c.costs.insert("staging-api".into(), 180.0);
+        let mut costs = HashMap::new();
+        costs.insert("prod-api".into(), 1240.50);
+        costs.insert("staging-api".into(), 180.0);
+        let c = CostCache {
+            fetched_at: Some(at(2026, 5, 21)),
+            costs,
+        };
         let text = serialize(&c);
         let parsed = parse(&text);
         assert_eq!(parsed.fetched_at, c.fetched_at);
