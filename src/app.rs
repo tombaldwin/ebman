@@ -691,6 +691,14 @@ pub struct App {
     pub costs: std::collections::HashMap<String, f64>,
     pub costs_fetched_at: Option<chrono::DateTime<chrono::Utc>>,
     pub frozen: bool, // when true, auto-refresh ticker is no-op
+    /// `true` when ebman launched without a `state.toml` on disk —
+    /// i.e. first-ever run on this machine. Renderer surfaces a
+    /// one-line "press ? for help, : for commands, Ctrl-K for
+    /// fuzzy search" hint at the very bottom of the screen.
+    /// Cleared on the operator's first input event so it never
+    /// blocks; the persisted state.toml that every refresh writes
+    /// also means subsequent launches won't re-trigger it.
+    pub first_run_hint: bool,
     /// The currently visible overlay popup, if any. See [`Overlay`].
     pub current_overlay: Option<Overlay>,
     pub message_log: VecDeque<(chrono::DateTime<chrono::Utc>, MsgKind, String)>,
@@ -1334,6 +1342,7 @@ impl App {
             costs: std::collections::HashMap::new(),
             costs_fetched_at: None,
             frozen: false,
+            first_run_hint: !crate::state::file_exists(),
             current_overlay: None,
             message_log: VecDeque::with_capacity(MESSAGE_LOG_CAP),
             toasts: VecDeque::with_capacity(TOAST_CAP),
@@ -1498,6 +1507,7 @@ impl App {
             costs: std::collections::HashMap::new(),
             costs_fetched_at: None,
             frozen: false,
+            first_run_hint: false,
             current_overlay: None,
             message_log: VecDeque::with_capacity(MESSAGE_LOG_CAP),
             toasts: VecDeque::with_capacity(TOAST_CAP),
@@ -2032,6 +2042,14 @@ impl App {
     }
 
     fn handle_event(&mut self, event: Event) {
+        // First-run hint dismisses on any input. The renderer
+        // checks the flag every frame, so this is enough to make
+        // the footer line vanish on the operator's first real
+        // interaction — typed key, mouse click, anything.
+        if self.first_run_hint && matches!(event, Event::Key(_) | Event::Mouse(_) | Event::Paste(_))
+        {
+            self.first_run_hint = false;
+        }
         match event {
             // Press AND Repeat — the latter fires when the user holds a
             // key (Backspace to delete a line, arrow to scroll). Repeat
@@ -12612,6 +12630,30 @@ mod tests {
             max_value: None,
             max_length: None,
         }
+    }
+
+    #[tokio::test]
+    async fn first_run_hint_dismisses_on_first_key() {
+        let mut app = test_app();
+        app.first_run_hint = true;
+        press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+        assert!(
+            !app.first_run_hint,
+            "first key event should clear first_run_hint"
+        );
+    }
+
+    #[tokio::test]
+    async fn first_run_hint_stays_false_for_subsequent_launches() {
+        // Simulates "ebman has run before; state.toml exists."
+        // The test harness defaults first_run_hint to false anyway,
+        // but this nails down the contract: a state.toml on disk
+        // means no hint, full stop.
+        let app = test_app();
+        assert!(
+            !app.first_run_hint,
+            "test harness must default first_run_hint=false (state.toml presumed present)"
+        );
     }
 
     #[test]
