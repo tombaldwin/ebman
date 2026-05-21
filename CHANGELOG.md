@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.5] — Undo: 5-second cancel window after action dispatch
+
+Safety feature called out by the v0.3.0 UX review. After authorising
+an action (Y on Y/N confirm, or typing the env name on a typed-name
+confirm), the AWS call no longer fires immediately — ebman holds the
+dispatch for 5 seconds in a cancel window. Pressing `U` in Normal
+mode aborts before the deadline. After the deadline, the SDK call
+goes out as before.
+
+### Added
+- **`U` keybind in Normal mode** — aborts the pending dispatch within the cancel window. Capital U so it can't be hit accidentally (lowercase `u` is unbound).
+- **Pending-dispatch pill** in the header chain — red bg, format `Rebuild env Ns — U undo`. Re-renders every 100ms via the existing `anim` ticker so the countdown is smooth.
+- **`PendingDispatch` struct + `pending_dispatch: Option<PendingDispatch>` field** on `App`. Holds the captured `ConfirmModal` + deadline `Instant` + cached action / env labels for the toast.
+- **Audit-log line for undone actions** — `stage=undone action=… target=…`. So an operator who aborted mid-incident can find the breadcrumb later.
+
+### Changed
+- **Y / TypeName confirm path no longer calls `spawn_action` directly** — routes through `queue_action_dispatch` which closes the action flow and queues the modal. `tick_pending_dispatch` (called from the main loop) fires `spawn_action` when the deadline passes.
+- **`anim` ticker gate** extended to wake when `pending_dispatch.is_some()` so the per-frame countdown stays accurate even with the operator idle.
+- **Only one pending dispatch at a time**. A second Y-confirm while one is mid-dispatch errors out with "press U to undo or wait".
+
+### Removed
+- **`ActionFlow::Running` variant** + its render code. Used to show a "dispatching…" modal between Y-confirm and the SDK call landing. The pending-dispatch pill subsumes the signal; no operator-facing change but ~30 lines of UI deleted.
+
+### Test foundation
+- 5 new tests (`queue_action_dispatch_holds_action_for_cancel_window`, `cancel_pending_dispatch_clears_field_and_emits_status`, `second_queue_attempt_errors_while_first_pending`, `tick_pending_dispatch_fires_after_deadline`, `capital_u_cancels_pending_dispatch_in_normal_mode`). 304 → 309 total.
+
 ## [0.3.4] — Terminology sweep: env vs environment
 
 Pure-text sweep — no behaviour changes. The v0.3.0 UX review flagged
@@ -235,7 +261,8 @@ Initial public release. Headline surface:
 - Published to crates.io as `ebman`.
 - Homebrew tap at `tombaldwin/homebrew-tap`.
 
-[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.3.5...HEAD
+[0.3.5]: https://github.com/tombaldwin/ebman/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/tombaldwin/ebman/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/tombaldwin/ebman/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/tombaldwin/ebman/compare/v0.3.1...v0.3.2

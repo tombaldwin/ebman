@@ -16,8 +16,6 @@
 //! is `impl ActionMode { fn handle_key(app: &mut App, …) }`-style
 //! wrappers in this file.
 
-use std::time::Instant;
-
 use ratatui::widgets::ListState;
 
 use crate::app::Picker;
@@ -178,23 +176,19 @@ pub const ACTIONS: &[Action] = &[
 ];
 
 /// One step of the action flow. Owned by `App.action_flow` while the
-/// `:a` menu / confirm / running screens are up; replaced on each step
-/// transition and cleared when the operator backs out or the spawn
-/// completes.
+/// `:a` menu / confirm screens are up; replaced on each step
+/// transition and cleared when the operator backs out.
+///
+/// Note: the `Running` variant used to exist for the brief
+/// "dispatching…" modal between Y-confirm and the SDK call landing.
+/// The cancel-window design (5s undo via `U` after a confirm) closes
+/// the action flow immediately on Y-confirm — the pending-dispatch
+/// pill in the header carries the same signal, so the central modal
+/// became dead weight.
 pub enum ActionFlow {
-    Menu {
-        list_state: ListState,
-    },
-    SwapTarget {
-        source: String,
-        picker: Picker,
-    },
+    Menu { list_state: ListState },
+    SwapTarget { source: String, picker: Picker },
     Confirm(ConfirmModal),
-    Running {
-        action: Action,
-        env: String,
-        since: Instant,
-    },
 }
 
 #[derive(Clone)]
