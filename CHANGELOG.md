@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.1] — UX punch list
+
+Twelve UX fixes + supporting plumbing surfaced by a critical post-0.3.0
+review. No new features; everything addresses rough edges that operators
+actually hit.
+
+### Added
+- **Multi-select active pill** in the header chain — persistent `▶ N selected` while `multi_selected` is non-empty. Replaces the one-tick status-message hint that disappeared on the next refresh.
+- **`Action::Capacity` in the `a` action menu** — `Capacity (min/max/instance/cooldown)` entry that opens the modal form. Previously command-bar-only (`:capacity`).
+- **Detail-Health tab now renders alarms + recent deploys** to match `:why` — the default Detail-view landing tab was missing two of the four sections the `:why` overlay showed. Triage surfaces no longer disagree.
+
+### Changed
+- **`Esc` clears multi-select in Normal mode** — the status message after `space`-selecting has always said "esc = clear", but Normal mode had no Esc handler. Silent footgun for operators who multi-selected and walked away. Now actually clears.
+- **`:swap TARGET` routes through `open_parameterised_action`** — was building `ActionFlow::Confirm` directly with `loading_dryrun: false`, skipping the impact-preview + last-3-events preflight that `a → Swap` runs.
+- **`Action::wants_preflight()`** in `mode_action.rs` is now the single source of truth for the "show preflight" decision. Replaces three duplicated allow-lists (`open_parameterised_action`, `advance_action_flow::Terminate`, `advance_action_flow::Rebuild`).
+- **Pill foreground colours go through `Theme::contrast_text(bg)`** — WCAG-luminance black/white picker. The chain hardcoded `Color::Black` (with one `Color::White` outlier for alerts) which broke light + high-contrast themes. Now readable on every theme.
+- **Pill chain elides under width pressure** — `prune_pills_to_width` drops trailing low-priority pills and marks the survivor with `+N` so elision isn't silent. Pill order: alerts > pending > multi-select > read-only > update > SSO > frozen > redact > grouped > view-mode.
+- **ASCII glyph fallbacks** for `⚠` / `💡` / `▎` / `⏳` / `▶` (twelve sites across form errors, footer hints, toast stripe, traffic warnings, DLQ confirm, tag policy, header pills). `icons = "ascii"` no longer renders box-tofu.
+- **`FROZEN` pill turns yellow + reads `FROZEN (stale)` after 5 min staleness** — frozen auto-refresh during an incident is operationally important to not forget.
+- **Global help (`?`) gained ~40 commands across 7 new sections** (Multi-account, Lifecycle actions, Env config, Versions/configs/alarms/platforms, Bulk ops, Setup/discovery, Detail-tab keys). Was stale by half the v0.3.0 surface — the footer was advertising `:help` but help didn't know about `:why`, `:capacity`, `:account`, `:accounts`, `:find-env`, `:org-health`, `:settings`, `:about`, `:update`, `:metric`, `:notify`, `:managed-window`, `:logs-stream`, `:set-option`, `:tag`, `:env`, etc.
+- **Context-aware footer hint** at `app.alerts > 0` points at `:why` (v0.3.0 triage tool) instead of the stale `:alarms` / `:org-health`.
+- **`flatten_err_to_string` classifies AccessDenied / NotFound / Conflict / ExpiredToken** SDK errors with clean prefixes. Was throttling-only; operators bouncing profiles hit AccessDenied constantly — clean prefix instead of a buried SDK Debug chain.
+
+### Fixed
+- **Empty-state hint at "no envs match the active view"** referenced a nonexistent `views` keybind; corrected to `:views` command.
+- **`tracing::info!` on `persist_state` downgraded to `debug!`** — fires every state-changing keystroke; INFO-level telemetry on each one was too noisy in `~/.cache/ebman/ebman.log`.
+
+### Test foundation
+- 14 new tests covering: `prune_pills_to_width` (3), the ASCII glyph helpers (3), `Theme::contrast_text` luminance picker (3), `flatten_err_to_string` error-code classifiers (5). 282 → 296 total.
+
 ## [0.3.0] — Red-env triage, multi-account, bulk ops, default Health tab
 
 ### Added
@@ -137,7 +167,8 @@ Initial public release. Headline surface:
 - Published to crates.io as `ebman`.
 - Homebrew tap at `tombaldwin/homebrew-tap`.
 
-[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/tombaldwin/ebman/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/tombaldwin/ebman/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/tombaldwin/ebman/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/tombaldwin/ebman/compare/v0.1.0...v0.1.1
