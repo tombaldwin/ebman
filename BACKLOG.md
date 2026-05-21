@@ -640,6 +640,24 @@ Tier definitions:
 
 Items list `Depends on:` only when another backlog or done item is a real prerequisite.
 
+### Top priority — console-parity + peer-TUI polish (2026-05-21)
+
+Surfaced by a critical console-vs-ebman + ebman-vs-peer-TUI comparison. Ranked by user-value-per-hour. The smaller ergonomics items in particular (autocompletion, did-you-mean, first-run hint) are the gap that makes ebman look unpolished next to k9s / lazygit — high impact, low cost.
+
+- [ ] **`:options` — full settable-option vocabulary with current values** — Closes the biggest single console-parity gap: configuration discoverability. Console has the canonical list of every EB option-setting with field-level descriptions ("InstanceType: The Amazon EC2 instance type to launch..."). Ebman's `:set-option NAMESPACE NAME VALUE` requires the operator to already know the vocabulary. Fetch shape mirrors `:env` / `:listeners` / `:rds`: DescribeConfigurationSettings → group by namespace → render in scrollable overlay. Bonus: include the option's metadata (Default / ValueOptions) when EB returns it. ~half-day. **Highest-value item on the backlog.**
+- [ ] **`:` autocompletion against `commands::COMMANDS`** — k9s / lazygit / nano all have it. We have `Ctrl-K` for fuzzy palette but the `:` mode is silent on Tab. Add Tab-key handling in `Mode::Command` that suggests + cycles matches from the registry. Half-day. Massive ergonomic win.
+- [ ] **"Did you mean?" on unknown commands** — `unknown command: :restrt` is silent rejection. Levenshtein against `crate::commands::all_names()` (which the 0.3.2 registry refactor handed us for free) and suggest the closest match. One hour.
+- [ ] **First-run nudge** — When `state.toml` doesn't exist (first launch), show a one-paragraph hint: "Press `?` for help, `:` to type a command, `Ctrl-K` for fuzzy search." Auto-dismisses on first input. Adopters churn on the silent boot today. Half-day.
+- [ ] **Resource topology as hierarchical text** — Indented ASG → instances → ELB → target groups in `:resources`. The data is already in `DescribeEnvironmentResources` — currently dumped flat. The graph version is the one thing operators say they want from the console; a hierarchical text view closes most of it without needing real graph rendering. Half-day.
+- [ ] **`:explain` IAM diagnosis** — When an `AccessDenied` lands, the operator wants "what permission is missing on which role?". Use `iam:SimulatePrincipalPolicy` to validate the role's policy against the failed action. No console equivalent. Day's work. Differentiator vs. the console — operators would adopt ebman *because* this exists.
+
+**Secondary** (same review, smaller payoff or design call needed):
+
+- [ ] **Form-based edit for the long tail of namespaces** — `:capacity` already shows the pattern: modal form, pre-filled, validated, dispatched as one update. Currently only Capacity + Subnets + SecurityGroups have forms; the other 10+ namespaces require `:set-option` brutality. Likely 1 day per namespace × 5-10 target namespaces (rolling-updates, deploy-policy specifics, health-check details, sticky-session config, etc). Pick the top 3 by support-question frequency before sprawling.
+- [ ] **Per-tab help-density polish** — lazygit packs ~10-12 keys into the same footer width by using compact glyphs. Ours show ~5. Audit pass on every Detail tab's key strip. Few hours.
+- [ ] **Mouse: column resize via drag + right-click row menus** — Wheel + click-to-select is the current floor. Operators coming from console expect drag + right-click. TBD whether this is worth the design cost for a primarily-keyboard tool.
+- [ ] **Per-env runbook hint** — `:runbook URL` per env, surfaces in `:why` during triage. Useful for incident response. Maybe a config-file map (`runbooks.NAME = URL`) rather than a CLI command. Half-day.
+
 ### Console-replacement gap — items between "useful" and "indispensable"
 
 - [ ] **`:deploy --from` multipart upload + streaming** — `:deploy --from PATH` and `:deploy --from s3://bucket/key` both shipped. Bundles >5 GiB still need multipart on the local-upload path; the s3:// path already sidesteps the limit. Whole bundle held in memory during upload is the other follow-on (stream from disk).
