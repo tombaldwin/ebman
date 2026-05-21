@@ -624,6 +624,12 @@ pub struct App {
     /// Env names the user has marked for batch action via `space`. Cleared on
     /// Esc, on context switch, and after a successful batch dispatch.
     pub multi_selected: BTreeSet<String>,
+    /// Apps-scope multi-selection (parallel to `multi_selected`).
+    /// `space` in Apps scope toggles an app in/out. Doesn't persist
+    /// across sessions — selection is operator-intent for a single
+    /// task. Apps-scope batch ops (future expansion) will fan across
+    /// every env in every selected app.
+    pub apps_selected: BTreeSet<String>,
     /// Render a small corner mini-map showing one coloured cell per env.
     /// Off by default — toggled via `:minimap on|off`.
     pub show_minimap: bool,
@@ -665,6 +671,12 @@ pub struct App {
     pub palette_state: ListState,
     pub read_only: bool,
     pub pinned: BTreeSet<String>,
+    /// Apps-scope pinned set — apps stay at the top of the Apps table
+    /// regardless of sort. Persisted to state.toml's `pinned_apps`
+    /// field. Parallel to `pinned` (which covers envs); the two
+    /// surfaces have different cursor / sort behaviour so keeping
+    /// them as separate sets is cleaner than a tagged union.
+    pub pinned_apps: BTreeSet<String>,
     pub aliases: BTreeMap<String, String>,
     pub saved_views: BTreeMap<String, String>,
     pub hidden_cols: BTreeSet<String>,
@@ -1249,6 +1261,7 @@ impl App {
             events_drag_origin: None,
             events_cursor: None,
             multi_selected: BTreeSet::new(),
+            apps_selected: BTreeSet::new(),
             show_minimap: false,
             focus: Focus::Table,
             multi_regions: Vec::new(),
@@ -1285,6 +1298,7 @@ impl App {
             palette_state: ListState::default(),
             read_only: false,
             pinned: persisted.pinned,
+            pinned_apps: persisted.pinned_apps,
             aliases: persisted.aliases,
             saved_views: persisted.saved_views,
             hidden_cols: persisted.hidden_cols,
@@ -1409,6 +1423,7 @@ impl App {
             events_drag_origin: None,
             events_cursor: None,
             multi_selected: BTreeSet::new(),
+            apps_selected: BTreeSet::new(),
             show_minimap: false,
             focus: Focus::Table,
             multi_regions: Vec::new(),
@@ -1442,6 +1457,7 @@ impl App {
             palette_state: ListState::default(),
             read_only: false,
             pinned: BTreeSet::new(),
+            pinned_apps: BTreeSet::new(),
             aliases: std::collections::BTreeMap::new(),
             saved_views: std::collections::BTreeMap::new(),
             hidden_cols: BTreeSet::new(),
@@ -2571,6 +2587,12 @@ impl App {
                         self.multi_selected.clear();
                         self.status_message = Some(format!("multi-select cleared ({n} env(s))"));
                     }
+                    KeyCode::Esc if !self.apps_selected.is_empty() => {
+                        let n = self.apps_selected.len();
+                        self.apps_selected.clear();
+                        self.status_message =
+                            Some(format!("apps multi-select cleared ({n} app(s))"));
+                    }
                     KeyCode::Tab => self.set_scope(self.scope.next()),
                     KeyCode::BackTab => self.set_scope(self.scope.prev()),
                     KeyCode::Enter if self.scope == Scope::Apps => self.drill_into_app(),
@@ -2705,6 +2727,26 @@ impl App {
                             };
                         }
                     }
+                    KeyCode::Char(' ') if self.scope == Scope::Apps => {
+                        // Apps-scope multi-select — toggles the
+                        // selected app in/out of `apps_selected`.
+                        // Selection is render-only today; future
+                        // Apps-scope batch ops will fan across every
+                        // env in every selected app.
+                        if let Some(idx) = self.app_table_state.selected() {
+                            if let Some(name) = self.applications.get(idx).map(|a| a.name.clone()) {
+                                if !self.apps_selected.remove(&name) {
+                                    self.apps_selected.insert(name);
+                                }
+                                let n = self.apps_selected.len();
+                                self.status_message = if n == 0 {
+                                    Some("apps multi-select cleared".into())
+                                } else {
+                                    Some(format!("{n} app(s) selected (esc = clear)"))
+                                };
+                            }
+                        }
+                    }
                     KeyCode::Char('y') => {
                         if let Some(i) = self.events_cursor {
                             self.yank_event_at(i);
@@ -2726,6 +2768,9 @@ impl App {
                     KeyCode::Char('b') if self.scope == Scope::Envs => self.open_in_console(),
                     KeyCode::Char('D') if self.scope == Scope::Envs => self.open_describe_overlay(),
                     KeyCode::Char('*') if self.scope == Scope::Envs => self.toggle_pin_selected(),
+                    KeyCode::Char('*') if self.scope == Scope::Apps => {
+                        self.toggle_pin_selected_app()
+                    }
                     KeyCode::Char('!') if self.scope == Scope::Envs => {
                         // Diagnostic shortcut — opens `:why` for the
                         // selected env. Works on any health (not just
@@ -3174,6 +3219,48 @@ impl App {
         }
         self.resort_envs();
         self.persist_state();
+    }
+
+    /// Apps-scope counterpart to `toggle_pin_selected`. Pins / unpins
+    /// the application under the apps-table cursor. Pinned apps sort
+    /// to the top of the Apps table regardless of the sort key (the
+    /// `applications` Vec gets re-sorted on every refresh; see
+    /// `resort_applications`).
+    fn toggle_pin_selected_app(&mut self) {
+        let Some(idx) = self.app_table_state.selected() else {
+            self.status_message = Some("no app selected".into());
+            return;
+        };
+        let Some(name) = self.applications.get(idx).map(|a| a.name.clone()) else {
+            return;
+        };
+        if self.pinned_apps.remove(&name) {
+            self.status_message = Some(format!("unpinned app {name}"));
+        } else {
+            self.pinned_apps.insert(name.clone());
+            self.status_message = Some(format!("pinned app {name}"));
+        }
+        self.resort_applications();
+        self.persist_state();
+    }
+
+    /// Sort `self.applications` so pinned apps float to the top.
+    /// Within each pinned / unpinned bucket, alphabetical by name to
+    /// keep ordering stable.
+    fn resort_applications(&mut self) {
+        let pinned = self.pinned_apps.clone();
+        self.applications.sort_by(|a, b| {
+            let a_pin = pinned.contains(&a.name);
+            let b_pin = pinned.contains(&b.name);
+            if a_pin != b_pin {
+                return if a_pin {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Greater
+                };
+            }
+            a.name.cmp(&b.name)
+        });
     }
 
     fn yank_cli(&mut self) {
@@ -7419,6 +7506,7 @@ impl App {
             selected_env: selected,
             named_filters: self.named_filters.clone(),
             pinned: self.pinned.clone(),
+            pinned_apps: self.pinned_apps.clone(),
             aliases: self.aliases.clone(),
             saved_views: self.saved_views.clone(),
             hidden_cols: self.hidden_cols.clone(),
@@ -7898,6 +7986,9 @@ impl App {
                         // tick while the follow-up fan-out is in flight.
                         merge_app_latest_versions(&self.applications, &mut apps);
                         self.applications = apps;
+                        // Pinned-first sort runs every refresh so newly-arrived
+                        // apps don't shuffle the pinned ones off the top row.
+                        self.resort_applications();
                         if self.applications.is_empty() {
                             self.app_table_state.select(None);
                         } else if self
@@ -13218,6 +13309,72 @@ mod tests {
             msg.contains("undone") && msg.contains("3 env(s)"),
             "status should call out the 3-env batch; got: {msg:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn apps_scope_space_toggles_apps_selected() {
+        let mut app = test_app();
+        // Seed two apps + select Apps scope.
+        app.applications = vec![
+            crate::aws::Application {
+                name: "billing".into(),
+                description: String::new(),
+                date_created: None,
+                date_updated: None,
+                version_count: 0,
+                templates: vec![],
+                latest_version_label: None,
+                latest_version_created: None,
+            },
+            crate::aws::Application {
+                name: "checkout".into(),
+                description: String::new(),
+                date_created: None,
+                date_updated: None,
+                version_count: 0,
+                templates: vec![],
+                latest_version_label: None,
+                latest_version_created: None,
+            },
+        ];
+        app.set_scope(Scope::Apps);
+        app.app_table_state.select(Some(0));
+        // First space adds; second space removes.
+        press(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+        assert!(app.apps_selected.contains("billing"));
+        press(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+        assert!(!app.apps_selected.contains("billing"));
+    }
+
+    #[tokio::test]
+    async fn apps_scope_star_pins_and_unpins_app() {
+        let mut app = test_app();
+        app.applications = vec![crate::aws::Application {
+            name: "billing".into(),
+            description: String::new(),
+            date_created: None,
+            date_updated: None,
+            version_count: 0,
+            templates: vec![],
+            latest_version_label: None,
+            latest_version_created: None,
+        }];
+        app.set_scope(Scope::Apps);
+        app.app_table_state.select(Some(0));
+        assert!(!app.pinned_apps.contains("billing"));
+        press(&mut app, KeyCode::Char('*'), KeyModifiers::SHIFT);
+        assert!(app.pinned_apps.contains("billing"));
+        press(&mut app, KeyCode::Char('*'), KeyModifiers::SHIFT);
+        assert!(!app.pinned_apps.contains("billing"));
+    }
+
+    #[tokio::test]
+    async fn esc_clears_apps_selected_when_no_envs_selected() {
+        let mut app = test_app();
+        app.apps_selected.insert("billing".into());
+        app.apps_selected.insert("checkout".into());
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.apps_selected.is_empty());
     }
 
     #[tokio::test]

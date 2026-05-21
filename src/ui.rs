@@ -2087,9 +2087,37 @@ fn draw_apps_table(f: &mut Frame, area: Rect, app: &mut App) {
             // so an env where EB reports Ready but the DLQ is filling
             // up still counts — same rule as the env-table status pill.
             let total_alerting = rollup.red_count + rollup.worker_dlq_alerts;
+            // Per-row affordances: pin glyph (★), multi-select marker
+            // (▶), or two-space gutter. Cursor row picks up the table's
+            // row_highlight_style — both can coexist.
+            let pinned = app.pinned_apps.contains(&a.name);
+            let selected = app.apps_selected.contains(&a.name);
+            let prefix = if pinned {
+                Span::styled(
+                    "★ ",
+                    Style::default()
+                        .fg(theme.accent)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else if selected {
+                Span::styled(
+                    "▶ ",
+                    Style::default()
+                        .fg(theme.title_alt)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Span::raw("  ")
+            };
+            let name_cell = Cell::from(Line::from(vec![
+                prefix,
+                Span::styled(
+                    a.name.clone(),
+                    Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+                ),
+            ]));
             let r = Row::new(vec![
-                Cell::from(a.name.clone())
-                    .style(Style::default().fg(theme.text).add_modifier(Modifier::BOLD)),
+                name_cell,
                 Cell::from(rollup.env_count.to_string())
                     .style(Style::default().fg(theme.text).add_modifier(Modifier::BOLD)),
                 Cell::from(total_alerting.to_string()).style(red_style),
@@ -2104,9 +2132,14 @@ fn draw_apps_table(f: &mut Frame, area: Rect, app: &mut App) {
                 latest_cell,
                 Cell::from(a.description.clone()).style(Style::default().fg(theme.text)),
             ]);
-            // Selection bg is layered on by Table::row_highlight_style; only
-            // apply zebra striping here.
-            if i % 2 == 0 {
+            // Selection bg is layered on by Table::row_highlight_style;
+            // apply zebra striping here. Multi-selected apps get the
+            // accent bg so the operator catches them peripherally
+            // without losing the cursor highlight on the active row.
+            // Even-row zebra striping otherwise; odd-rows pass through.
+            if selected {
+                r.style(Style::default().bg(theme.row_selected_bg))
+            } else if i % 2 == 0 {
                 r.style(Style::default().bg(theme.row_alt_bg))
             } else {
                 r
