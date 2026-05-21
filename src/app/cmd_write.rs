@@ -9,11 +9,13 @@
 //! Second slice of the `execute_command` split — follows the same
 //! parent-module-visibility pattern as `app::cmd_overlay`.
 
-use super::{parse_tag_args, Action, App};
+use super::{parse_tag_args, Action, App, PendingDispatchKind};
 
 impl App {
-    /// `:batch-rebuild` / `:batch-restart`. Caller passes the resolved
-    /// `Action` so the union arm in `execute_command` stays compact.
+    /// `:batch-rebuild` / `:batch-restart`. Routes through the 5s
+    /// cancel-window queue — operator can `U`-undo the whole fan-out
+    /// before any AWS calls go out. Same one-at-a-time rule as
+    /// single-env confirms.
     pub(crate) fn cmd_batch_action(&mut self, action: Action) {
         if self.read_only {
             self.error_message = Some("read-only mode — batch actions disabled".into());
@@ -23,21 +25,23 @@ impl App {
             self.error_message = Some("no envs selected — press space to mark envs first".into());
             return;
         }
-        let names: Vec<String> = self.multi_selected.iter().cloned().collect();
-        let n = names.len();
-        for name in names {
-            self.spawn_batch_action(action, name);
-        }
-        self.status_message = Some(format!(
-            "dispatched {} to {n} env(s) — watch the events panel for outcomes",
-            action.label()
-        ));
+        let env_names: Vec<String> = self.multi_selected.iter().cloned().collect();
+        let n = env_names.len();
+        let label = format!("Batch {}", action.label().to_lowercase());
+        let target = format!("{n} env(s)");
+        self.queue_batch_dispatch(
+            label,
+            target,
+            PendingDispatchKind::BatchAction { action, env_names },
+        );
         self.multi_selected.clear();
     }
 
     /// `:batch-deploy LABEL`. Refuses when the selection spans more
     /// than one application — the label can't possibly resolve for all
-    /// of them and we'd queue N failing requests for no gain.
+    /// of them and we'd queue N failing requests for no gain. Once
+    /// validated, queues through the cancel-window the same as
+    /// `cmd_batch_action`.
     pub(crate) fn cmd_batch_deploy(&mut self, rest: &[&str]) {
         if self.read_only {
             self.error_message = Some("read-only mode — batch-deploy disabled".into());
@@ -47,12 +51,12 @@ impl App {
             self.error_message = Some("no envs selected — press space to mark envs first".into());
             return;
         }
-        let Some(label) = rest.first().map(|s| s.to_string()) else {
+        let Some(version_label) = rest.first().map(|s| s.to_string()) else {
             self.error_message = Some("usage: :batch-deploy LABEL".into());
             return;
         };
-        let names: Vec<String> = self.multi_selected.iter().cloned().collect();
-        let apps: std::collections::BTreeSet<String> = names
+        let env_names: Vec<String> = self.multi_selected.iter().cloned().collect();
+        let apps: std::collections::BTreeSet<String> = env_names
             .iter()
             .filter_map(|n| {
                 self.environments
@@ -69,13 +73,16 @@ impl App {
             ));
             return;
         }
-        let n = names.len();
-        for name in names {
-            self.spawn_batch_deploy(name, label.clone());
-        }
-        self.status_message = Some(format!(
-            "dispatched Deploy({label}) to {n} env(s) — outcomes via toasts",
-        ));
+        let n = env_names.len();
+        let target = format!("{n} env(s)");
+        self.queue_batch_dispatch(
+            format!("Batch deploy {version_label}"),
+            target,
+            PendingDispatchKind::BatchDeploy {
+                env_names,
+                version_label,
+            },
+        );
         self.multi_selected.clear();
     }
 
@@ -106,7 +113,7 @@ impl App {
             (k, None)
         };
         let names: Vec<String> = self.multi_selected.iter().cloned().collect();
-        let mut dispatched = 0usize;
+        let mut envs_with_arns: Vec<(String, String)> = Vec::new();
         let mut missing_arn: Vec<String> = Vec::new();
         for name in &names {
             let arn = self
@@ -115,23 +122,33 @@ impl App {
                 .find(|e| &e.name == name)
                 .and_then(|e| e.arn.clone());
             match arn {
-                Some(arn) => {
-                    self.spawn_batch_tag(name.clone(), arn, key.clone(), value.clone());
-                    dispatched += 1;
-                }
+                Some(arn) => envs_with_arns.push((name.clone(), arn)),
                 None => missing_arn.push(name.clone()),
             }
         }
-        let op = if is_tag { "tag" } else { "untag" };
-        let mut msg = format!("dispatched {op} {key} to {dispatched} env(s)");
-        if !missing_arn.is_empty() {
-            msg.push_str(&format!(
-                " — skipped {} (no ARN): {}",
-                missing_arn.len(),
-                missing_arn.join(", ")
+        if envs_with_arns.is_empty() {
+            self.error_message = Some(format!(
+                "no env has a cached ARN yet ({} skipped) — refresh and retry",
+                missing_arn.len()
             ));
+            return;
         }
-        self.status_message = Some(msg);
+        let op = if is_tag { "tag" } else { "untag" };
+        let count = envs_with_arns.len();
+        let target = if missing_arn.is_empty() {
+            format!("{count} env(s)")
+        } else {
+            format!("{count} env(s) (skipping {} — no ARN)", missing_arn.len())
+        };
+        self.queue_batch_dispatch(
+            format!("Batch {op} {key}"),
+            target,
+            PendingDispatchKind::BatchTag {
+                envs_with_arns,
+                key,
+                value,
+            },
+        );
         self.multi_selected.clear();
     }
 
@@ -152,17 +169,21 @@ impl App {
             self.error_message = Some("usage: :batch-set-option NAMESPACE NAME VALUE".into());
             return;
         }
-        let ns = rest[0].to_string();
-        let name = rest[1].to_string();
+        let namespace = rest[0].to_string();
+        let option_name = rest[1].to_string();
         let value = rest[2..].join(" ");
-        let names: Vec<String> = self.multi_selected.iter().cloned().collect();
-        let n = names.len();
-        for env_name in names {
-            self.spawn_batch_set_option(env_name, ns.clone(), name.clone(), value.clone());
-        }
-        self.status_message = Some(format!(
-            "dispatched set-option {ns}.{name}={value} to {n} env(s)"
-        ));
+        let env_names: Vec<String> = self.multi_selected.iter().cloned().collect();
+        let n = env_names.len();
+        self.queue_batch_dispatch(
+            format!("Batch set-option {namespace}.{option_name}={value}"),
+            format!("{n} env(s)"),
+            PendingDispatchKind::BatchSetOption {
+                env_names,
+                namespace,
+                option_name,
+                value,
+            },
+        );
         self.multi_selected.clear();
     }
 }

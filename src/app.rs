@@ -6751,16 +6751,8 @@ impl App {
         });
     }
 
-    /// Queue an action for dispatch with a brief cancel window.
-    /// Replaces the immediate `spawn_action` call from the
-    /// confirm-flow Y / TypeName-confirm paths so the operator gets
-    /// a chance to undo. Closes the action flow (the modal is gone)
-    /// and surfaces the countdown via `status_message`.
-    ///
-    /// Already-queued dispatches block further confirms — only one
-    /// in flight at a time. Keeps the UX clear: the operator sees
-    /// "X dispatches in Ns" and either waits or undoes; chaining a
-    /// second dispatch on top would mean two countdowns to track.
+    /// Queue a single-env action with the cancel window. Called from
+    /// the Y / TypeName-confirm paths in `handle_action_key`.
     fn queue_action_dispatch(&mut self, modal: ConfirmModal) {
         if self.pending_dispatch.is_some() {
             self.error_message = Some(
@@ -6768,61 +6760,140 @@ impl App {
             );
             return;
         }
-        let action_label = modal.action.label().to_string();
-        let env_name = modal.target_env.clone();
+        let label = modal.action.label().to_string();
+        let target = modal.target_env.clone();
         let deadline = Instant::now() + UNDO_WINDOW;
         self.pending_dispatch = Some(PendingDispatch {
-            modal,
             deadline,
-            action_label: action_label.clone(),
-            env_name: env_name.clone(),
+            label: label.clone(),
+            target: target.clone(),
+            kind: PendingDispatchKind::Single { modal },
         });
         self.status_message = Some(format!(
             "{} → {} dispatches in {}s — press U to undo",
-            action_label,
-            env_name,
+            label,
+            target,
             UNDO_WINDOW.as_secs()
         ));
     }
 
-    /// Per-tick check called from the main loop. Fires the AWS call
-    /// when the cancel window expires; otherwise updates the
-    /// status countdown so the header stays accurate (the existing
-    /// `anim` ticker fires every 100ms while `pending_dispatch.is_some()`,
-    /// so the visible countdown decrements smoothly).
+    /// Queue a batch dispatch with the same cancel window. Caller
+    /// resolves the kind + display labels (e.g. `"Batch rebuild"` /
+    /// `"5 envs"`) before invoking. One-at-a-time rule shared with
+    /// `queue_action_dispatch`.
+    pub(crate) fn queue_batch_dispatch(
+        &mut self,
+        label: String,
+        target: String,
+        kind: PendingDispatchKind,
+    ) {
+        if self.pending_dispatch.is_some() {
+            self.error_message = Some(
+                "another dispatch is mid-window — wait for it to land or press U to undo".into(),
+            );
+            return;
+        }
+        let deadline = Instant::now() + UNDO_WINDOW;
+        let status = format!(
+            "{} → {} dispatches in {}s — press U to undo",
+            label,
+            target,
+            UNDO_WINDOW.as_secs()
+        );
+        self.pending_dispatch = Some(PendingDispatch {
+            deadline,
+            label,
+            target,
+            kind,
+        });
+        self.status_message = Some(status);
+    }
+
+    /// Per-tick check called from the main loop. Fires whatever
+    /// dispatch is queued when its cancel window expires. The
+    /// per-variant dispatch re-uses the same helpers the immediate
+    /// path used to call (`spawn_action`, `spawn_batch_*`), so audit
+    /// log + pending pill + toast plumbing carry over unchanged.
     fn tick_pending_dispatch(&mut self) {
+        let now = Instant::now();
         let Some(pd) = self.pending_dispatch.as_ref() else {
             return;
         };
-        let now = Instant::now();
-        if now >= pd.deadline {
-            let modal = pd.modal.clone();
-            self.pending_dispatch = None;
-            self.spawn_action(modal);
+        if now < pd.deadline {
+            return;
+        }
+        let kind = pd.kind.clone();
+        self.pending_dispatch = None;
+        match kind {
+            PendingDispatchKind::Single { modal } => self.spawn_action(modal),
+            PendingDispatchKind::BatchAction { action, env_names } => {
+                for env in env_names {
+                    self.spawn_batch_action(action, env);
+                }
+            }
+            PendingDispatchKind::BatchDeploy {
+                env_names,
+                version_label,
+            } => {
+                for env in env_names {
+                    self.spawn_batch_deploy(env, version_label.clone());
+                }
+            }
+            PendingDispatchKind::BatchTag {
+                envs_with_arns,
+                key,
+                value,
+            } => {
+                for (env, arn) in envs_with_arns {
+                    self.spawn_batch_tag(env, arn, key.clone(), value.clone());
+                }
+            }
+            PendingDispatchKind::BatchSetOption {
+                env_names,
+                namespace,
+                option_name,
+                value,
+            } => {
+                for env in env_names {
+                    self.spawn_batch_set_option(
+                        env,
+                        namespace.clone(),
+                        option_name.clone(),
+                        value.clone(),
+                    );
+                }
+            }
         }
     }
 
-    /// Cancel the pending dispatch (bound to `U` in Normal mode and
-    /// the per-overlay Esc handlers when the action flow opens a
-    /// nested overlay). Emits a toast so the operator knows the abort
-    /// landed — silent cancellation would feel like a missed keypress.
+    /// Cancel the pending dispatch (bound to `U` in Normal mode).
+    /// Audit-logs the cancel + emits a status toast. Silent abort
+    /// would feel like a missed keypress.
     fn cancel_pending_dispatch(&mut self) {
         let Some(pd) = self.pending_dispatch.take() else {
             return;
         };
-        let msg = format!(
-            "undone — {} → {} not dispatched",
-            pd.action_label, pd.env_name
-        );
-        // Audit-log the cancel so an operator who undid an action
-        // during an incident can find the breadcrumb later.
+        let msg = format!("undone — {} → {} not dispatched", pd.label, pd.target);
+        let action_for_audit = match &pd.kind {
+            PendingDispatchKind::Single { modal } => format!("{:?}", modal.action),
+            PendingDispatchKind::BatchAction { action, .. } => format!("Batch{action:?}"),
+            PendingDispatchKind::BatchDeploy { .. } => "BatchDeploy".into(),
+            PendingDispatchKind::BatchTag { value, .. } => {
+                if value.is_some() {
+                    "BatchTag".into()
+                } else {
+                    "BatchUntag".into()
+                }
+            }
+            PendingDispatchKind::BatchSetOption { .. } => "BatchSetOption".into(),
+        };
         write_audit_line(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
             &format!(
-                "stage=undone action={:?} target={}",
-                pd.modal.action, pd.env_name
+                "stage=undone action={action_for_audit} target={}",
+                pd.target
             ),
         );
         self.status_message = Some(msg);
@@ -10976,24 +11047,66 @@ fn rotate_if_oversize(path: &std::path::Path, max_bytes: u64) {
     let _ = std::fs::rename(path, backup);
 }
 
-/// One action queued for dispatch with a brief cancel window. After
-/// the operator authorises an action (Y on a YesNo confirm, or types
-/// the env name on a TypeName confirm) we don't fire the AWS call
-/// immediately — we hold the modal here, show a countdown in the
-/// header, and dispatch only when [`UNDO_WINDOW`] elapses. The
-/// operator can press `U` in Normal mode to abort during the window,
-/// which clears the entry without sending the SDK call.
+/// One action (or batch of actions) queued for dispatch with a brief
+/// cancel window. After the operator authorises a confirm (Y on a
+/// YesNo modal, typed name on a TypeName modal) or runs a
+/// `:batch-*` command, ebman doesn't fire the AWS call immediately —
+/// it holds the dispatch here, shows a countdown in the header, and
+/// fires only when [`UNDO_WINDOW`] elapses. `U` in Normal mode
+/// aborts before the deadline.
 ///
-/// Only one pending dispatch at a time; subsequent Y-confirms while
-/// one is pending error out and tell the operator to wait or undo.
+/// One pending dispatch at a time. The `kind` carries the work
+/// shape; the deadline + display labels are shared.
 #[derive(Clone)]
 pub struct PendingDispatch {
-    pub modal: ConfirmModal,
     pub deadline: Instant,
-    /// Captured at queue time so the toast / log line can still
-    /// reference the action even after the modal closes.
-    pub action_label: String,
-    pub env_name: String,
+    /// Label rendered in the header pill — `"Rebuild env"` or
+    /// `"Batch rebuild × 5"`. Captured at queue time so the
+    /// rendering doesn't have to walk the kind on every frame.
+    pub label: String,
+    /// Display target. For singles it's the env name; for batches
+    /// it's the count summary (`"5 envs"`) so the pill stays compact.
+    pub target: String,
+    pub kind: PendingDispatchKind,
+}
+
+/// The actual work `tick_pending_dispatch` dispatches when the
+/// cancel window elapses. Mirrors the existing dispatch paths:
+/// `Single` re-uses [`App::spawn_action`]; the batch variants
+/// re-use the per-env `spawn_batch_*` helpers in a loop.
+#[derive(Clone)]
+pub enum PendingDispatchKind {
+    /// A single Y/TypeName-confirm dispatch — preserves the full
+    /// `ConfirmModal` because `spawn_action` reads params off it
+    /// (deploy version, swap target, scale min/max, etc.).
+    Single { modal: ConfirmModal },
+    /// `:batch-rebuild` / `:batch-restart` — one [`Action`] applied
+    /// to every env in the captured set.
+    BatchAction {
+        action: Action,
+        env_names: Vec<String>,
+    },
+    /// `:batch-deploy LABEL` — same version label fanned out.
+    BatchDeploy {
+        env_names: Vec<String>,
+        version_label: String,
+    },
+    /// `:batch-tag KEY VALUE` (`value = Some`) / `:batch-untag KEY`
+    /// (`value = None`). ARN per env captured at queue time so a
+    /// mid-window refresh that drops an env's ARN can't break the
+    /// fan-out.
+    BatchTag {
+        envs_with_arns: Vec<(String, String)>,
+        key: String,
+        value: Option<String>,
+    },
+    /// `:batch-set-option NAMESPACE NAME VALUE`.
+    BatchSetOption {
+        env_names: Vec<String>,
+        namespace: String,
+        option_name: String,
+        value: String,
+    },
 }
 
 /// Cancel window after a confirm — long enough that an "oops" reflex
@@ -12966,7 +13079,11 @@ mod tests {
             .pending_dispatch
             .as_ref()
             .expect("queue should set pending_dispatch");
-        assert_eq!(pd.env_name, "uflexi-prod");
+        assert_eq!(pd.target, "uflexi-prod");
+        assert!(
+            matches!(pd.kind, PendingDispatchKind::Single { .. }),
+            "queue_action_dispatch should produce a Single variant"
+        );
         assert!(
             pd.deadline > std::time::Instant::now(),
             "deadline must be in the future"
@@ -13003,7 +13120,7 @@ mod tests {
         // Second queue attempt is rejected; first dispatch is untouched.
         app.queue_action_dispatch(mk_modal(Action::Rebuild, "second"));
         assert_eq!(
-            app.pending_dispatch.as_ref().unwrap().env_name,
+            app.pending_dispatch.as_ref().unwrap().target,
             "first",
             "second queue must not replace the first"
         );
@@ -13029,15 +13146,77 @@ mod tests {
         // having to wait 5 seconds.
         let modal = mk_modal(Action::Rebuild, "expired");
         app.pending_dispatch = Some(PendingDispatch {
-            modal,
             deadline: std::time::Instant::now() - Duration::from_millis(1),
-            action_label: "Rebuild env".into(),
-            env_name: "expired".into(),
+            label: "Rebuild env".into(),
+            target: "expired".into(),
+            kind: PendingDispatchKind::Single { modal },
         });
         app.tick_pending_dispatch();
         assert!(
             app.pending_dispatch.is_none(),
             "expired tick should clear the field (dispatch handed to spawn_action)"
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_action_routes_through_cancel_window() {
+        let mut app = test_app();
+        app.environments = vec![
+            mk_env("prod-web", "uflexi", "Web", "Green"),
+            mk_env("staging-web", "uflexi", "Web", "Green"),
+        ];
+        app.multi_selected.insert("prod-web".into());
+        app.multi_selected.insert("staging-web".into());
+        app.cmd_batch_action(Action::Rebuild);
+        // Multi-select cleared; dispatch queued with a 5s deadline.
+        assert!(
+            app.multi_selected.is_empty(),
+            "multi-select should clear once the batch is queued"
+        );
+        let pd = app
+            .pending_dispatch
+            .as_ref()
+            .expect("batch action should queue a pending dispatch");
+        match &pd.kind {
+            PendingDispatchKind::BatchAction { action, env_names } => {
+                assert_eq!(*action, Action::Rebuild);
+                assert_eq!(env_names.len(), 2);
+            }
+            other => panic!(
+                "expected BatchAction variant; got {other:?}",
+                other = match other {
+                    PendingDispatchKind::Single { .. } => "Single",
+                    PendingDispatchKind::BatchAction { .. } => "BatchAction",
+                    PendingDispatchKind::BatchDeploy { .. } => "BatchDeploy",
+                    PendingDispatchKind::BatchTag { .. } => "BatchTag",
+                    PendingDispatchKind::BatchSetOption { .. } => "BatchSetOption",
+                }
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_action_undo_cancels_whole_fanout() {
+        let mut app = test_app();
+        app.environments = vec![
+            mk_env("e1", "uflexi", "Web", "Green"),
+            mk_env("e2", "uflexi", "Web", "Green"),
+            mk_env("e3", "uflexi", "Web", "Green"),
+        ];
+        for name in ["e1", "e2", "e3"] {
+            app.multi_selected.insert(name.into());
+        }
+        app.cmd_batch_action(Action::RestartAppServer);
+        assert!(app.pending_dispatch.is_some());
+        app.cancel_pending_dispatch();
+        assert!(
+            app.pending_dispatch.is_none(),
+            "cancel should drop the whole batch, not just one env"
+        );
+        let msg = app.status_message.as_deref().unwrap_or("");
+        assert!(
+            msg.contains("undone") && msg.contains("3 env(s)"),
+            "status should call out the 3-env batch; got: {msg:?}"
         );
     }
 
