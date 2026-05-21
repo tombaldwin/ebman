@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Result, WrapErr};
 use crossterm::event::{
     Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
     MouseEventKind,
@@ -793,6 +793,13 @@ pub struct App {
     /// `Mode::Shell` are forwarded to the PTY rather than dispatched as
     /// ebman key bindings.
     pub pending_shell_target: Option<String>,
+    /// Set when `:env-edit` is mid-flight: the `fetch_env_vars`
+    /// result arrived but the main loop hasn't yet shelled out to
+    /// `$EDITOR` (which needs the `Tui` handle to leave + re-enter
+    /// the alternate screen, only available in the main loop).
+    /// Carries `(env_name, current_env_vars)` — the editor opens
+    /// against these, diffs on save, dispatches the deltas.
+    pub pending_env_edit: Option<(String, Vec<(String, String)>)>,
     /// The live embedded shell pane, if any. `None` outside Mode::Shell.
     pub current_shell: Option<Box<crate::shell::ShellSession>>,
     /// Mode to return to when the user detaches from a shell pane (F12).
@@ -1053,6 +1060,16 @@ enum AppMsg {
         gen: u64,
         env_name: String,
         result: Result<Vec<Instance>, String>,
+    },
+    /// `fetch_env_vars` result for `:env-edit`. The handler stashes
+    /// the env-name + KV pairs in `App.pending_env_edit`; the main
+    /// loop tick takes them and shells out to `$EDITOR`. Two-step
+    /// because the editor needs the `Tui` handle (alt-screen
+    /// leave/enter), which is only available in the main loop.
+    EnvVarsForEdit {
+        gen: u64,
+        env_name: String,
+        result: Result<Vec<(String, String)>, String>,
     },
     PreflightEvents {
         gen: u64,
@@ -1378,6 +1395,7 @@ impl App {
             update_available: None,
             reload_requested: false,
             pending_shell_target: None,
+            pending_env_edit: None,
             current_shell: None,
             shell_return_mode: Mode::Normal,
             last_rendered_buffer: None,
@@ -1542,6 +1560,7 @@ impl App {
             update_available: None,
             reload_requested: false,
             pending_shell_target: None,
+            pending_env_edit: None,
             current_shell: None,
             shell_return_mode: Mode::Normal,
             last_rendered_buffer: None,
@@ -1748,6 +1767,15 @@ impl App {
             if let Some(target) = self.pending_shell_target.take() {
                 self.open_embedded_shell(terminal, &target)?;
             }
+            // Pending env-edit — shell out to `$EDITOR` against a
+            // temp file holding the current env vars. Same
+            // leave-altscreen / spawn / re-enter pattern as the
+            // legacy inline-SSM path.
+            if let Some((env_name, vars)) = self.pending_env_edit.take() {
+                if let Err(e) = self.run_env_editor(terminal, &env_name, &vars) {
+                    self.error_message = Some(format!("env-edit: {e}"));
+                }
+            }
 
             // Auto-close the shell pane when the subprocess has exited.
             if matches!(self.mode, Mode::Shell)
@@ -1855,6 +1883,135 @@ impl App {
             self.status_message = Some(format!("{} ended", s.label));
         }
         self.mode = self.shell_return_mode;
+    }
+
+    /// Open the operator's `$EDITOR` against a temp file holding
+    /// the current env vars in `KEY=VALUE` form. On save, parses
+    /// the file, diffs against `original`, and dispatches the
+    /// deltas via `spawn_option_settings_update`. Cancel paths
+    /// (unchanged file / missing file / editor non-zero exit)
+    /// are no-ops with a clear status message.
+    ///
+    /// Drops out of the alt-screen for the editor (vim / nano /
+    /// VS Code's `code --wait` etc. all need the terminal directly)
+    /// and re-enters when the editor exits — same pattern as
+    /// `run_inline_ssm`.
+    fn run_env_editor(
+        &mut self,
+        terminal: &mut Tui,
+        env_name: &str,
+        original: &[(String, String)],
+    ) -> Result<()> {
+        use crossterm::{
+            event::{DisableMouseCapture, EnableMouseCapture},
+            execute,
+            terminal::{
+                disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+            },
+        };
+
+        let editor = std::env::var("VISUAL")
+            .or_else(|_| std::env::var("EDITOR"))
+            .unwrap_or_else(|_| "vi".to_string());
+
+        // Temp file path. Use the OS temp dir + a fingerprint
+        // built from the env name + epoch nanos so concurrent
+        // sessions can't collide. Format suffix `.env` so editor
+        // syntax-highlighters give the operator a useful default.
+        let now_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let safe = env_name
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>();
+        let path = std::env::temp_dir().join(format!("ebman-env-{safe}-{now_ns}.env"));
+
+        let body = build_env_edit_body(env_name, original);
+        std::fs::write(&path, body.as_bytes()).wrap_err("writing env-edit temp file")?;
+
+        // Leave the TUI for the editor.
+        disable_raw_mode()?;
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
+        terminal.show_cursor()?;
+
+        let status = std::process::Command::new(&editor).arg(&path).status();
+
+        // Always re-enter, regardless of editor outcome.
+        enable_raw_mode()?;
+        execute!(
+            terminal.backend_mut(),
+            EnterAlternateScreen,
+            EnableMouseCapture
+        )?;
+        terminal.hide_cursor()?;
+        terminal.clear()?;
+
+        match status {
+            Ok(s) if !s.success() => {
+                self.error_message = Some(format!(
+                    "$EDITOR ({editor}) exited {} — no changes dispatched",
+                    s.code().unwrap_or(-1)
+                ));
+                let _ = std::fs::remove_file(&path);
+                return Ok(());
+            }
+            Err(e) => {
+                self.error_message = Some(format!(
+                    "couldn't launch editor ({editor}): {e} — set $EDITOR / $VISUAL"
+                ));
+                let _ = std::fs::remove_file(&path);
+                return Ok(());
+            }
+            _ => {}
+        }
+
+        let edited = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                self.error_message = Some(format!(
+                    "couldn't re-read temp file at {} — no changes dispatched ({e})",
+                    path.display()
+                ));
+                return Ok(());
+            }
+        };
+        let _ = std::fs::remove_file(&path);
+
+        let edited_map = parse_env_edit_body(&edited);
+        let original_map: std::collections::BTreeMap<String, String> = original
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let (to_set, to_remove) = diff_env_vars(
+            "aws:elasticbeanstalk:application:environment",
+            &original_map,
+            &edited_map,
+        );
+
+        if to_set.is_empty() && to_remove.is_empty() {
+            self.status_message = Some("env-edit: no changes — nothing dispatched".into());
+            return Ok(());
+        }
+
+        let label = format!(
+            "env-edit ({} set, {} removed)",
+            to_set.len(),
+            to_remove.len()
+        );
+        self.spawn_option_settings_update(label, to_set, to_remove);
+        Ok(())
     }
 
     /// Legacy inline-subprocess path: drops out of the TUI, runs
@@ -3540,6 +3697,52 @@ impl App {
             next + 1,
             n
         ));
+    }
+
+    /// `:env-edit` — bulk env-var editor via `$EDITOR`. Two-stage:
+    ///
+    ///   1. Async fetch of the env's current env vars
+    ///      (`spawn_env_vars_for_edit`).
+    ///   2. Main-loop tick takes the result + shells out to
+    ///      `$EDITOR` against a temp file, parses the result on
+    ///      save, dispatches the diff via `spawn_option_settings_update`.
+    ///
+    /// Closes the bulk-edit gap that single-key `:env set` /
+    /// `:env unset` doesn't. Operator can add / remove / rename
+    /// multiple env vars in one update — and saving an unchanged
+    /// file is a clean no-op.
+    pub(crate) fn cmd_env_edit(&mut self) {
+        let Some(env) = self.selected_env().cloned() else {
+            self.error_message = Some("no env selected".into());
+            return;
+        };
+        if self.read_only {
+            self.error_message = Some("read-only mode — :env-edit disabled".into());
+            return;
+        }
+        if self.pending_env_edit.is_some() {
+            self.error_message =
+                Some("another :env-edit is mid-flight — wait for the editor to close".into());
+            return;
+        }
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let app_name = env.application.clone();
+        let env_name = env.name.clone();
+        let env_name_for_msg = env_name.clone();
+        self.status_message = Some(format!("fetching env vars for {env_name}…"));
+        tokio::spawn(async move {
+            let result = aws
+                .fetch_env_vars(&app_name, &env_name)
+                .await
+                .map_err(|e| flatten_err("fetch_env_vars", e));
+            let _ = tx.send(AppMsg::EnvVarsForEdit {
+                gen,
+                env_name: env_name_for_msg,
+                result,
+            });
+        });
     }
 
     /// `:explain` — diagnose an IAM `AccessDenied` by calling
@@ -7916,6 +8119,7 @@ impl App {
             "rds" => self.cmd_rds(),
             "options" => self.cmd_options(&rest),
             "explain" => self.cmd_explain(&rest),
+            "env-edit" => self.cmd_env_edit(),
             "report-bug" => self.open_report_bug_overlay(),
             "settings" => {
                 self.open_settings_form();
@@ -9319,6 +9523,26 @@ impl App {
                 }
                 detail.loading_cw_alarms = false;
                 detail.cw_alarms = Some(result);
+            }
+            AppMsg::EnvVarsForEdit {
+                gen,
+                env_name,
+                result,
+            } => {
+                if gen != self.generation {
+                    return;
+                }
+                match result {
+                    Ok(vars) => {
+                        // Stash for the main loop to consume. The
+                        // editor shell-out has to happen there
+                        // because that's where the `Tui` handle is.
+                        self.pending_env_edit = Some((env_name, vars));
+                    }
+                    Err(msg) => {
+                        self.error_message = Some(format!("env-edit fetch: {msg}"));
+                    }
+                }
             }
             AppMsg::CostsFetched {
                 gen,
@@ -12066,6 +12290,100 @@ pub fn app_rollup(
     out
 }
 
+/// Pure: format the temp-file body the `:env-edit` flow opens
+/// in `$EDITOR`. Header comment explains the contract (lines look
+/// like `KEY=VALUE`; `#` comments and blank lines are ignored;
+/// save+quit applies; quit-without-save / unchanged-body cancels).
+/// Existing env vars are sorted alphabetically so the operator
+/// gets a stable target for diffs across runs.
+pub(crate) fn build_env_edit_body(env_name: &str, vars: &[(String, String)]) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("# ebman env-var editor — {env_name}\n"));
+    out.push_str("#\n");
+    out.push_str("# Lines that look like KEY=VALUE are interpreted as env vars.\n");
+    out.push_str("# Lines starting with # are comments.\n");
+    out.push_str("# Blank lines are ignored.\n");
+    out.push_str("#\n");
+    out.push_str("# Save and quit to apply changes. Saving an unchanged file is a clean\n");
+    out.push_str("# no-op. To reference a Secrets Manager value, store the ARN here\n");
+    out.push_str("# (e.g. `DB_PASSWORD_SECRET_ARN=arn:aws:secretsmanager:...`) and have\n");
+    out.push_str("# your app's bootstrap call GetSecretValue at runtime — EB does not\n");
+    out.push_str("# resolve secretsmanager:// references natively.\n\n");
+    let mut sorted: Vec<&(String, String)> = vars.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    for (k, v) in sorted {
+        out.push_str(&format!("{k}={v}\n"));
+    }
+    out
+}
+
+/// Pure: parse the operator's edited `:env-edit` body back into a
+/// `KEY -> VALUE` map. Splits each non-comment line on the *first*
+/// `=` so values containing `=` (common for query-string-style
+/// settings or base64-encoded secrets) pass through intact.
+/// Keys that fail to validate (empty after trim, contain whitespace)
+/// are dropped — EB's option-settings API would reject them anyway,
+/// and the operator gets the diff feedback after save.
+pub(crate) fn parse_env_edit_body(text: &str) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    for raw in text.lines() {
+        let trimmed = raw.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        if key.is_empty() || key.chars().any(char::is_whitespace) {
+            continue;
+        }
+        // Trailing whitespace + a single optional carriage return
+        // (Windows line endings) get stripped from the value, but
+        // intentional internal whitespace is preserved.
+        let value = value.trim_end_matches('\r').trim_end_matches('\n');
+        out.insert(key.to_string(), value.to_string());
+    }
+    out
+}
+
+/// Pure: produce `(to_set, to_remove)` deltas from two env-var
+/// snapshots. `to_set` carries the EB option-settings triple
+/// `(namespace, name, value)`; `to_remove` carries `(namespace,
+/// name)`. Caller-supplied namespace because the same shape is
+/// reusable beyond `aws:elasticbeanstalk:application:environment`
+/// (e.g. future `:options-edit` could feed any namespace).
+/// `(namespace, key, value)` triples — the shape EB's option-settings
+/// update API expects for "set these". Aliased so [`diff_env_vars`]'s
+/// signature isn't tripping the complex-type clippy lint.
+pub(crate) type OptionSet = Vec<(String, String, String)>;
+/// `(namespace, key)` pairs — "remove these" shape.
+pub(crate) type OptionRemove = Vec<(String, String)>;
+
+pub(crate) fn diff_env_vars(
+    namespace: &str,
+    original: &std::collections::BTreeMap<String, String>,
+    edited: &std::collections::BTreeMap<String, String>,
+) -> (OptionSet, OptionRemove) {
+    let mut to_set: OptionSet = Vec::new();
+    let mut to_remove: OptionRemove = Vec::new();
+    // Set or update: any key present in `edited` whose value
+    // differs from the original (or was missing entirely).
+    for (k, v) in edited {
+        match original.get(k) {
+            Some(prev) if prev == v => continue,
+            _ => to_set.push((namespace.to_string(), k.clone(), v.clone())),
+        }
+    }
+    // Remove: keys present in `original` but absent from `edited`.
+    for k in original.keys() {
+        if !edited.contains_key(k) {
+            to_remove.push((namespace.to_string(), k.clone()));
+        }
+    }
+    (to_set, to_remove)
+}
+
 /// Pure: parse an AWS `AccessDenied` error message into
 /// `(principal_arn, action)`. Returns `None` when the message
 /// doesn't match a recognised shape.
@@ -12971,6 +13289,103 @@ mod tests {
             max_value: None,
             max_length: None,
         }
+    }
+
+    #[test]
+    fn build_env_edit_body_sorts_keys_and_emits_header() {
+        let vars = vec![
+            ("LOG_LEVEL".into(), "info".into()),
+            ("DB_HOST".into(), "db.example".into()),
+            ("DB_PORT".into(), "5432".into()),
+        ];
+        let body = super::build_env_edit_body("prod", &vars);
+        // Header comment present.
+        assert!(body.starts_with("# ebman env-var editor — prod\n"));
+        assert!(body.contains("Secrets Manager"));
+        // Keys sorted alphabetically.
+        let db_host_pos = body.find("DB_HOST=").expect("DB_HOST line");
+        let db_port_pos = body.find("DB_PORT=").expect("DB_PORT line");
+        let log_pos = body.find("LOG_LEVEL=").expect("LOG_LEVEL line");
+        assert!(db_host_pos < db_port_pos && db_port_pos < log_pos);
+    }
+
+    #[test]
+    fn parse_env_edit_body_round_trip() {
+        let vars = vec![
+            ("LOG_LEVEL".into(), "info".into()),
+            (
+                "DB_URL".into(),
+                "postgres://user:pass@host:5432/db?sslmode=require".into(),
+            ),
+        ];
+        let body = super::build_env_edit_body("env", &vars);
+        let parsed = super::parse_env_edit_body(&body);
+        assert_eq!(parsed.get("LOG_LEVEL").map(String::as_str), Some("info"));
+        // Value containing `=` (postgres URL) passes through intact
+        // because we split on the *first* `=` only.
+        assert_eq!(
+            parsed.get("DB_URL").map(String::as_str),
+            Some("postgres://user:pass@host:5432/db?sslmode=require")
+        );
+    }
+
+    #[test]
+    fn parse_env_edit_body_skips_comments_and_blanks() {
+        let body = "# comment\n\nDB_HOST=localhost\n   # indented comment\n\nLOG=debug\n";
+        let parsed = super::parse_env_edit_body(body);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed.get("DB_HOST").map(String::as_str), Some("localhost"));
+        assert_eq!(parsed.get("LOG").map(String::as_str), Some("debug"));
+    }
+
+    #[test]
+    fn parse_env_edit_body_drops_invalid_keys() {
+        let body = "= no-key\n KEY WITH SPACES=foo\nGOOD=val\n";
+        let parsed = super::parse_env_edit_body(body);
+        assert_eq!(parsed.len(), 1);
+        assert!(parsed.contains_key("GOOD"));
+    }
+
+    #[test]
+    fn diff_env_vars_produces_set_and_remove_lists() {
+        let mut original = std::collections::BTreeMap::new();
+        original.insert("KEEP".into(), "same".into());
+        original.insert("CHANGE".into(), "old".into());
+        original.insert("DROP".into(), "going".into());
+        let mut edited = std::collections::BTreeMap::new();
+        edited.insert("KEEP".into(), "same".into()); // unchanged
+        edited.insert("CHANGE".into(), "new".into()); // updated
+        edited.insert("NEW".into(), "added".into()); // added
+
+        let (to_set, to_remove) = super::diff_env_vars("ns", &original, &edited);
+        // CHANGE + NEW should be in to_set; KEEP excluded (unchanged).
+        let set_keys: std::collections::BTreeSet<&str> =
+            to_set.iter().map(|(_, k, _)| k.as_str()).collect();
+        assert_eq!(
+            set_keys,
+            ["CHANGE", "NEW"]
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>(),
+            "to_set should include changed + added keys"
+        );
+        assert!(
+            !set_keys.contains("KEEP"),
+            "unchanged key must not re-dispatch"
+        );
+        // DROP should be in to_remove.
+        assert_eq!(to_remove.len(), 1);
+        assert_eq!(to_remove[0].1, "DROP");
+    }
+
+    #[test]
+    fn diff_env_vars_empty_when_unchanged() {
+        let mut original = std::collections::BTreeMap::new();
+        original.insert("A".into(), "1".into());
+        original.insert("B".into(), "2".into());
+        let edited = original.clone();
+        let (to_set, to_remove) = super::diff_env_vars("ns", &original, &edited);
+        assert!(to_set.is_empty());
+        assert!(to_remove.is_empty());
     }
 
     #[test]
