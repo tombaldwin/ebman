@@ -240,6 +240,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         CommandKind::ZeroArg,
     ),
     cmd(
+        "rds",
+        ":rds — RDS instance config attached to the env (engine / class / credentials). Password is redacted.",
+        Category::Inspection,
+        CommandKind::ZeroArg,
+    ),
+    cmd(
         "cost",
         ":cost on | off | status — toggle the COST column ($/month per env via Cost Explorer; 24h cache)",
         Category::View,
