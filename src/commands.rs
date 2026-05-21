@@ -246,6 +246,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         CommandKind::ZeroArg,
     ),
     cmd(
+        "options",
+        ":options [NAMESPACE] — full settable-option vocabulary for the env's platform (current value + default + type + constraints). Slow.",
+        Category::Inspection,
+        CommandKind::Prefill("options "),
+    ),
+    cmd(
         "report-bug",
         ":report-bug — scrubbed bug-report overlay. y = copy, b = open GitHub issue with body pre-filled. No outbound HTTP from ebman.",
         Category::Setup,

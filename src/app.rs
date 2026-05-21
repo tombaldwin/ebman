@@ -3447,6 +3447,48 @@ impl App {
     }
 
     /// `:rds` — fetch the env's RDS dbinstance option settings and
+    /// `:options [NAMESPACE]` — full settable-option vocabulary for
+    /// the selected env's platform. Closes the biggest console-parity
+    /// gap (config discoverability): the console has the canonical
+    /// list of every settable EB option with metadata; ebman's
+    /// `:set-option NAMESPACE NAME VALUE` requires the operator to
+    /// already know the vocabulary.
+    ///
+    /// `:options` lists everything. `:options NAMESPACE` filters
+    /// to one family (e.g. `:options aws:elbv2:listener`,
+    /// `:options aws:autoscaling:asg`).
+    pub(crate) fn cmd_options(&mut self, rest: &[&str]) {
+        let Some(env) = self.selected_env().cloned() else {
+            self.error_message = Some("no env selected".into());
+            return;
+        };
+        let filter_ns = rest.first().map(|s| s.to_string());
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let app_name = env.application.clone();
+        let env_name = env.name.clone();
+        self.status_message = Some(format!(
+            "fetching config vocabulary for {env_name}… (this can take a few seconds)"
+        ));
+        tokio::spawn(async move {
+            let result = aws
+                .fetch_env_configuration_options(&app_name, &env_name)
+                .await
+                .map_err(|e| flatten_err("fetch_env_configuration_options", e));
+            let body = match result {
+                Ok(rows) => render_options_overlay(&rows, filter_ns.as_deref(), &env_name),
+                Err(e) => format!("options: {e}\n\nesc / q to close"),
+            };
+            let _ = tx.send(AppMsg::TextOverlay {
+                gen,
+                title: format!("options — {env_name}"),
+                body,
+            });
+        });
+    }
+
+    /// `:rds` — fetch the env's RDS dbinstance option settings and
     /// render them. Visibility-only first cut: attach (via
     /// `UpdateEnvironment(aws:rds:dbinstance.*)`) and detach (the
     /// decouple-via-snapshot workflow) are follow-ups — both need
@@ -7689,6 +7731,7 @@ impl App {
             "cost" => self.cmd_cost(&rest),
             "listeners" => self.cmd_listeners(),
             "rds" => self.cmd_rds(),
+            "options" => self.cmd_options(&rest),
             "report-bug" => self.open_report_bug_overlay(),
             "settings" => {
                 self.open_settings_form();
@@ -11827,6 +11870,140 @@ pub fn app_rollup(
     out
 }
 
+/// Pure render of the `:options` overlay body. Groups `rows` by
+/// namespace; within each group, operator-set rows come first
+/// (marked `▸`), defaults follow (marked `•`). Optional
+/// `filter_ns` restricts to one namespace.
+///
+/// Format per row:
+///   `<marker> NAME[<padding>]  = VALUE       (default: X, type: T, ...)`
+///
+/// The metadata trailer (`default:`, `type:`, `severity:`, ranges,
+/// value_options) only renders when the field is set — keeps the
+/// line lean. Long value-option lists get truncated to "first 5 +
+/// …" to avoid one option blowing past the popup width.
+///
+/// Top of the body carries a one-line legend so the operator
+/// doesn't have to learn the marker convention from `?`.
+pub(crate) fn render_options_overlay(
+    rows: &[crate::aws::ConfigOption],
+    filter_ns: Option<&str>,
+    env_name: &str,
+) -> String {
+    let filtered: Vec<&crate::aws::ConfigOption> = rows
+        .iter()
+        .filter(|r| filter_ns.is_none_or(|ns| r.namespace == ns))
+        .collect();
+    if filtered.is_empty() {
+        return match filter_ns {
+            Some(ns) => format!(
+                "No options found for namespace '{ns}' on env '{env_name}'.\n\n\
+                 Spelling? Try `:options` (no arg) to see the full list of\n\
+                 namespaces available for this env's platform.\n\n\
+                 esc / q to close"
+            ),
+            None => format!(
+                "No configuration options returned for env '{env_name}'.\n\n\
+                 This usually means the env's platform doesn't expose an option\n\
+                 vocabulary (custom platform or stale solution-stack). Try\n\
+                 `:set-option` directly if you know what you want to change.\n\n\
+                 esc / q to close"
+            ),
+        };
+    }
+    // Compute the longest name within each namespace so the `= value`
+    // columns line up per group. Walking once first; second pass renders.
+    let mut max_name_per_ns: std::collections::HashMap<&str, usize> =
+        std::collections::HashMap::new();
+    for r in &filtered {
+        let e = max_name_per_ns.entry(r.namespace.as_str()).or_insert(0);
+        *e = (*e).max(r.name.chars().count()).min(38);
+    }
+
+    let user_set = filtered.iter().filter(|r| r.value.is_some()).count();
+    let mut body = String::new();
+    body.push_str(&format!(
+        "Configuration vocabulary for {env_name}\n\
+         {user_set}/{total} options are operator-set; the rest are at default.\n\n\
+         ▸ = operator-set    • = default    severity warns when changing rolls instances\n\n",
+        total = filtered.len()
+    ));
+
+    let mut current_ns: Option<&str> = None;
+    for r in &filtered {
+        if Some(r.namespace.as_str()) != current_ns {
+            if current_ns.is_some() {
+                body.push('\n');
+            }
+            body.push_str(&format!("── {} ──\n", r.namespace));
+            current_ns = Some(r.namespace.as_str());
+        }
+        let marker = if r.value.is_some() { "▸" } else { "•" };
+        let name_width = max_name_per_ns
+            .get(r.namespace.as_str())
+            .copied()
+            .unwrap_or(20);
+        let name_padded = if r.name.chars().count() < name_width {
+            format!("{name:<width$}", name = r.name, width = name_width)
+        } else {
+            r.name.clone()
+        };
+        let value_str = match &r.value {
+            Some(v) => format!(" = {v}"),
+            None => String::new(),
+        };
+        // Trailing metadata — only emit what's set so short-form
+        // rows stay short.
+        let mut meta: Vec<String> = Vec::new();
+        if let Some(d) = &r.default_value {
+            if !d.is_empty() {
+                meta.push(format!("default: {d}"));
+            }
+        }
+        if !r.value_type.is_empty() && r.value_type != "Scalar" {
+            // Scalar is the default; only call out non-scalars
+            // (`List`) which surprise the operator.
+            meta.push(format!("type: {}", r.value_type));
+        }
+        if let Some(s) = &r.change_severity {
+            if s != "NoInterruption" && s != "Unknown" {
+                meta.push(format!("severity: {s}"));
+            }
+        }
+        match (r.min_value, r.max_value) {
+            (Some(min), Some(max)) => meta.push(format!("range: {min}-{max}")),
+            (Some(min), None) => meta.push(format!("min: {min}")),
+            (None, Some(max)) => meta.push(format!("max: {max}")),
+            (None, None) => {}
+        }
+        if let Some(maxlen) = r.max_length {
+            meta.push(format!("max_len: {maxlen}"));
+        }
+        if !r.value_options.is_empty() {
+            let preview: Vec<&str> = r.value_options.iter().take(5).map(String::as_str).collect();
+            let more = r.value_options.len().saturating_sub(5);
+            let suffix = if more > 0 {
+                format!(", … +{more}")
+            } else {
+                String::new()
+            };
+            meta.push(format!("oneof: {}{suffix}", preview.join(", ")));
+        }
+        let meta_str = if meta.is_empty() {
+            String::new()
+        } else {
+            format!("  ({})", meta.join(", "))
+        };
+        body.push_str(&format!("  {marker} {name_padded}{value_str}{meta_str}\n"));
+    }
+    body.push_str(
+        "\n`:set-option NAMESPACE NAME VALUE` to change a setting.\n\
+         `:options NAMESPACE` to filter to one family.\n\
+         esc / q to close",
+    );
+    body
+}
+
 fn console_url(region: &str, app_name: &str, env_name: &str) -> String {
     let app = urlencode(app_name);
     let env = urlencode(env_name);
@@ -12243,6 +12420,87 @@ mod tests {
         let dlq: HashMap<String, i64> = HashMap::new();
         let r = super::app_rollup(&envs, "nope", &dlq);
         assert_eq!(r, super::AppRollup::default());
+    }
+
+    fn opt(
+        ns: &str,
+        name: &str,
+        value: Option<&str>,
+        default: Option<&str>,
+    ) -> crate::aws::ConfigOption {
+        crate::aws::ConfigOption {
+            namespace: ns.into(),
+            name: name.into(),
+            value: value.map(String::from),
+            default_value: default.map(String::from),
+            value_type: "Scalar".into(),
+            value_options: vec![],
+            change_severity: None,
+            user_defined: Some(true),
+            min_value: None,
+            max_value: None,
+            max_length: None,
+        }
+    }
+
+    #[test]
+    fn render_options_overlay_groups_by_namespace_and_marks_set_vs_default() {
+        let rows = vec![
+            opt("aws:autoscaling:asg", "MinSize", Some("2"), Some("1")),
+            opt("aws:autoscaling:asg", "MaxSize", None, Some("4")),
+            opt(
+                "aws:elasticbeanstalk:command",
+                "DeploymentPolicy",
+                Some("Rolling"),
+                Some("AllAtOnce"),
+            ),
+        ];
+        let body = super::render_options_overlay(&rows, None, "uflexi-prod");
+        // Section headers per namespace.
+        assert!(body.contains("── aws:autoscaling:asg ──"));
+        assert!(body.contains("── aws:elasticbeanstalk:command ──"));
+        // Operator-set rows marked with ▸; default rows with •.
+        assert!(body.contains("▸ MinSize"));
+        assert!(body.contains("• MaxSize"));
+        assert!(body.contains("▸ DeploymentPolicy"));
+        // Default value is surfaced.
+        assert!(body.contains("default: 1"));
+        assert!(body.contains("default: 4"));
+        // Top header counts set vs default.
+        assert!(body.contains("2/3 options are operator-set"));
+    }
+
+    #[test]
+    fn render_options_overlay_filters_to_namespace_when_given() {
+        let rows = vec![
+            opt("aws:autoscaling:asg", "MinSize", Some("2"), None),
+            opt(
+                "aws:elasticbeanstalk:command",
+                "DeploymentPolicy",
+                Some("Rolling"),
+                None,
+            ),
+        ];
+        let body = super::render_options_overlay(&rows, Some("aws:autoscaling:asg"), "uflexi-prod");
+        assert!(body.contains("MinSize"));
+        assert!(!body.contains("DeploymentPolicy"));
+    }
+
+    #[test]
+    fn render_options_overlay_handles_unknown_namespace() {
+        let rows = vec![opt("aws:autoscaling:asg", "MinSize", Some("2"), None)];
+        let body = super::render_options_overlay(&rows, Some("aws:bogus:ns"), "uflexi-prod");
+        assert!(body.contains("No options found"));
+        assert!(body.contains("aws:bogus:ns"));
+    }
+
+    #[test]
+    fn render_options_overlay_truncates_long_value_options_list() {
+        let mut row = opt("aws:foo", "Enum", Some("a"), None);
+        row.value_options = (0..20).map(|i| format!("v{i}")).collect();
+        let rows = vec![row];
+        let body = super::render_options_overlay(&rows, None, "env");
+        assert!(body.contains("oneof: v0, v1, v2, v3, v4, … +15"));
     }
 
     #[test]
