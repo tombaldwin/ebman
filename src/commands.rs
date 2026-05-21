@@ -234,6 +234,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         CommandKind::ZeroArg,
     ),
     cmd(
+        "cost",
+        ":cost on | off | status — toggle the COST column ($/month per env via Cost Explorer; 24h cache)",
+        Category::View,
+        CommandKind::Prefill("cost "),
+    ),
+    cmd(
         "history",
         ":history — show recent info/error messages",
         Category::Inspection,

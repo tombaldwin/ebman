@@ -18,6 +18,11 @@ pub struct PersistedState {
     pub named_filters: BTreeMap<String, String>,
     pub pinned: BTreeSet<String>,
     pub pinned_apps: BTreeSet<String>,
+    /// Cost Explorer column toggle. Defaults to `None` (off) so the
+    /// COST column doesn't render until the operator opts in via
+    /// `:cost on`. Persists across sessions because Cost Explorer
+    /// access is account-level and the operator's intent is durable.
+    pub cost_enabled: Option<bool>,
     pub aliases: BTreeMap<String, String>,
     pub saved_views: BTreeMap<String, String>,
     pub hidden_cols: BTreeSet<String>,
@@ -145,6 +150,7 @@ pub fn parse(text: &str) -> PersistedState {
                     .filter(|s| !s.is_empty())
                     .collect();
             }
+            "cost_enabled" => state.cost_enabled = parse_bool(&value),
             _ if k.starts_with("alias.") => {
                 let name = k.trim_start_matches("alias.").trim().to_string();
                 if !name.is_empty() {
@@ -221,6 +227,9 @@ pub fn save(state: &PersistedState) {
     if !state.pinned_apps.is_empty() {
         let joined: Vec<&str> = state.pinned_apps.iter().map(String::as_str).collect();
         out.push_str(&format!("pinned_apps = \"{}\"\n", joined.join(",")));
+    }
+    if let Some(b) = state.cost_enabled {
+        out.push_str(&format!("cost_enabled = {b}\n"));
     }
     for (name, value) in &state.aliases {
         out.push_str(&format!("alias.{name} = \"{value}\"\n"));
