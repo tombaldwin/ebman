@@ -1,6 +1,7 @@
 use aws_config::{Region, SdkConfig};
 use aws_sdk_cloudwatch::Client as CwClient;
 use aws_sdk_cloudwatchlogs::Client as CwLogsClient;
+use aws_sdk_costexplorer::Client as CostExplorerClient;
 use aws_sdk_ec2::Client as Ec2Client;
 use aws_sdk_elasticbeanstalk::Client;
 use aws_sdk_organizations::Client as OrgClient;
@@ -198,6 +199,11 @@ pub struct AwsClient {
     s3: S3Client,
     ec2: Ec2Client,
     org: OrgClient,
+    /// Cost Explorer client. Cost Explorer is a global service —
+    /// always endpoints in `us-east-1` regardless of the operator's
+    /// active region. Lazy-initialised on first `:cost on` so
+    /// operators who never opt in don't carry the dep weight.
+    cost: CostExplorerClient,
     config: SdkConfig,
     pub context: AwsContext,
 }
@@ -217,6 +223,28 @@ pub struct OrgAccount {
     /// `ACTIVE` / `SUSPENDED` / `PENDING_CLOSURE` — capitalised verbatim
     /// from the API.
     pub status: String,
+}
+
+/// Build a Cost Explorer client pinned to `us-east-1`. Cost Explorer
+/// is a global service that only endpoints in `us-east-1` regardless
+/// of which region the caller's `SdkConfig` carries; calling it from
+/// any other region returns an empty result with no error, which is
+/// exactly the silent failure the operator never debugs. Override
+/// region here so the dep can't drift.
+fn cost_explorer_client(base: &SdkConfig) -> CostExplorerClient {
+    let cfg = base.to_builder().region(Region::new("us-east-1")).build();
+    CostExplorerClient::new(&cfg)
+}
+
+/// One row of cost data returned by [`AwsClient::fetch_env_costs`] —
+/// an EB env name and its monthly cost in USD across the trailing
+/// window. `cost` is in whole + fractional dollars; the SDK returns
+/// strings and we parse at the boundary.
+#[derive(Clone, Debug)]
+pub struct EnvCost {
+    pub env_name: String,
+    /// Monthly USD spend (summed across the trailing-30d window).
+    pub cost_usd: f64,
 }
 
 impl AwsClient {
@@ -243,6 +271,7 @@ impl AwsClient {
         let s3 = S3Client::new(&config);
         let ec2 = Ec2Client::new(&config);
         let org = OrgClient::new(&config);
+        let cost = cost_explorer_client(&config);
 
         Ok(Self {
             client,
@@ -252,6 +281,7 @@ impl AwsClient {
             s3,
             ec2,
             org,
+            cost,
             config,
             context: AwsContext {
                 region,
@@ -334,6 +364,7 @@ impl AwsClient {
             .map(|r| r.as_ref().to_string())
             .unwrap_or_else(|| "unknown".to_string());
 
+        let cost = cost_explorer_client(&config);
         Ok(Self {
             client: Client::new(&config),
             sqs: SqsClient::new(&config),
@@ -342,6 +373,7 @@ impl AwsClient {
             s3: S3Client::new(&config),
             ec2: Ec2Client::new(&config),
             org: OrgClient::new(&config),
+            cost,
             config,
             context: AwsContext {
                 region,
@@ -395,10 +427,11 @@ impl AwsClient {
             .region(Region::new("us-east-1"))
             .behavior_version(aws_config::BehaviorVersion::latest())
             .build();
-        // Org client is created here from default config because no
-        // existing test exercises it; mocked-org tests can use a
+        // Org + Cost Explorer clients use default config because no
+        // existing test exercises them; mocked variants can use a
         // dedicated helper if added.
         let org = OrgClient::new(&config);
+        let cost = cost_explorer_client(&config);
         Self {
             client,
             sqs,
@@ -407,6 +440,7 @@ impl AwsClient {
             s3,
             ec2,
             org,
+            cost,
             config,
             context: AwsContext {
                 region: "us-east-1".to_string(),
@@ -762,6 +796,99 @@ impl AwsClient {
     /// Describe metric alarms whose first dimension references the given env.
     /// CloudWatch doesn't expose a server-side filter by dimension, so we pull
     /// alarms in the AWS/ElasticBeanstalk namespace and filter client-side.
+    /// Per-env monthly cost from AWS Cost Explorer. One round trip;
+    /// returns a row per env tag value the Cost Explorer API saw in
+    /// the trailing-30-day window.
+    ///
+    /// Cost Explorer is rate-limited (~1 req/s per account) and slow
+    /// (1-3s per query) — the caller is expected to cache the result
+    /// for ~24h via `crate::cost_cache`. The 24h granularity matches
+    /// AWS's own data freshness (most cost data lags ~24h).
+    ///
+    /// Returned costs span the full window — divide by ~30 days for
+    /// a daily rate, or treat as a monthly figure (which is what
+    /// every operator actually wants).
+    ///
+    /// Tag key: `elasticbeanstalk:environment-name` (the EB-set tag
+    /// AWS adds to every env-owned resource by default). Envs whose
+    /// resources have been re-tagged or never carried the tag won't
+    /// show up — surface as zero / unknown rather than guessing.
+    pub async fn fetch_env_costs(&self) -> Result<Vec<EnvCost>> {
+        use aws_sdk_costexplorer::types::{DateInterval, GroupDefinition, GroupDefinitionType};
+
+        // Trailing window — end is "today" (exclusive in Cost Explorer)
+        // so the inclusive Start is 30 days ago. Cost Explorer dates
+        // are ISO-8601 (YYYY-MM-DD) in UTC.
+        let now = chrono::Utc::now().date_naive();
+        let start = (now - chrono::Duration::days(30))
+            .format("%Y-%m-%d")
+            .to_string();
+        let end = now.format("%Y-%m-%d").to_string();
+        let time_period = DateInterval::builder()
+            .start(start)
+            .end(end)
+            .build()
+            .wrap_err("Cost Explorer DateInterval missing field")?;
+        let group_by = GroupDefinition::builder()
+            .r#type(GroupDefinitionType::Tag)
+            .key("elasticbeanstalk:environment-name")
+            .build();
+        let resp = self
+            .cost
+            .get_cost_and_usage()
+            .time_period(time_period)
+            .granularity(aws_sdk_costexplorer::types::Granularity::Monthly)
+            .metrics("UnblendedCost")
+            .group_by(group_by)
+            .send()
+            .await
+            .wrap_err("GetCostAndUsage failed")?;
+
+        // Result format: results_by_time[N].groups[].keys[0] is the
+        // tag value (prefixed with `elasticbeanstalk:environment-name$`
+        // — the Cost Explorer SDK encodes the tag key in the group
+        // key, separated by `$`). Strip the prefix to recover the env
+        // name. Sum across the time buckets in case the window spans
+        // multiple months.
+        let mut totals: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+        for period in resp.results_by_time.unwrap_or_default() {
+            for group in period.groups.unwrap_or_default() {
+                let raw_key = match group.keys.as_ref().and_then(|k| k.first()) {
+                    Some(k) => k.clone(),
+                    None => continue,
+                };
+                // Cost Explorer encodes a tag group key as
+                // `elasticbeanstalk:environment-name$<value>`. The
+                // empty-tag bucket (resources untagged) shows up as
+                // the bare prefix — skip it.
+                let env_name = match raw_key.split_once('$') {
+                    Some((_, v)) if !v.is_empty() => v.to_string(),
+                    _ => continue,
+                };
+                let amount: f64 = group
+                    .metrics
+                    .as_ref()
+                    .and_then(|m| m.get("UnblendedCost"))
+                    .and_then(|m| m.amount.as_deref())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0.0);
+                *totals.entry(env_name).or_insert(0.0) += amount;
+            }
+        }
+        let mut out: Vec<EnvCost> = totals
+            .into_iter()
+            .map(|(env_name, cost_usd)| EnvCost { env_name, cost_usd })
+            .collect();
+        // Stable ordering — highest-cost first so the operator's eye
+        // catches the expensive envs without scrolling.
+        out.sort_by(|a, b| {
+            b.cost_usd
+                .partial_cmp(&a.cost_usd)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        Ok(out)
+    }
+
     pub async fn list_alarms_for_env(&self, env_name: &str) -> Result<Vec<CwAlarm>> {
         let mut out = Vec::new();
         let mut next_token: Option<String> = None;

@@ -3,6 +3,7 @@ mod aws;
 mod commands;
 mod config;
 mod control;
+mod cost_cache;
 mod font_probe;
 mod form;
 mod keys;
