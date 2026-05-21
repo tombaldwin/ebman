@@ -1143,6 +1143,49 @@ impl AwsClient {
         Ok(out)
     }
 
+    /// Fetch RDS dbinstance option settings for an env. EB envs
+    /// optionally have an attached RDS instance (via
+    /// `aws:rds:dbinstance.*` option settings + auto-managed
+    /// security group); this returns the configured settings as
+    /// `(option_name, value)` pairs sorted alphabetically.
+    ///
+    /// Empty result = no RDS attached. Caller should distinguish
+    /// "no RDS" from "fetch failed" via the Result type.
+    pub async fn fetch_env_rds_config(
+        &self,
+        application_name: &str,
+        env_name: &str,
+    ) -> Result<Vec<(String, String)>> {
+        let resp = self
+            .client
+            .describe_configuration_settings()
+            .application_name(application_name)
+            .environment_name(env_name)
+            .send()
+            .await
+            .wrap_err("DescribeConfigurationSettings(rds) failed")?;
+        let mut out: Vec<(String, String)> = resp
+            .configuration_settings
+            .unwrap_or_default()
+            .into_iter()
+            .flat_map(|c| c.option_settings.unwrap_or_default())
+            .filter_map(|o| {
+                let ns = o.namespace?;
+                if ns != "aws:rds:dbinstance" {
+                    return None;
+                }
+                let opt = o.option_name?;
+                let value = o.value.unwrap_or_default();
+                if value.is_empty() {
+                    return None;
+                }
+                Some((opt, value))
+            })
+            .collect();
+        out.sort();
+        Ok(out)
+    }
+
     /// Fetch ALB listener option settings for an env. EB stores
     /// listener config in `aws:elbv2:listener:<PORT>` namespaces (one
     /// per listener; `default` is the port-80 HTTP listener, `443`

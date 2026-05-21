@@ -3318,6 +3318,74 @@ impl App {
     /// via the command palette but never pushed at the operator;
     /// existence justifies removing the splash byline if anyone ever
     /// objects to the 3-second introduction.
+    /// `:rds` — fetch the env's RDS dbinstance option settings and
+    /// render them. Visibility-only first cut: attach (via
+    /// `UpdateEnvironment(aws:rds:dbinstance.*)`) and detach (the
+    /// decouple-via-snapshot workflow) are follow-ups — both need
+    /// careful operator confirmation flows and the detach path is
+    /// genuinely destructive.
+    ///
+    /// Empty result = no RDS attached. We surface that as an
+    /// explicit message rather than "no config" so the operator
+    /// isn't left wondering whether the fetch failed silently.
+    pub(crate) fn cmd_rds(&mut self) {
+        let Some(env) = self.selected_env().cloned() else {
+            self.error_message = Some("no env selected".into());
+            return;
+        };
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let app_name = env.application.clone();
+        let env_name = env.name.clone();
+        self.status_message = Some(format!("fetching RDS config for {env_name}…"));
+        tokio::spawn(async move {
+            let result = aws
+                .fetch_env_rds_config(&app_name, &env_name)
+                .await
+                .map_err(|e| flatten_err("fetch_env_rds_config", e));
+            let body = match result {
+                Ok(rows) if rows.is_empty() => "No RDS instance attached to this env.\n\n\
+                     EB-managed RDS is configured via `aws:rds:dbinstance.*`\n\
+                     option settings. To attach a new one:\n\n  \
+                     :set-option aws:rds:dbinstance DBEngine postgres\n  \
+                     :set-option aws:rds:dbinstance DBInstanceClass db.t3.micro\n  \
+                     :set-option aws:rds:dbinstance DBPassword <secret>\n\n\
+                     (See the EB docs — there are 10+ required fields. A\n\
+                     dedicated `:rds-attach` form is a planned follow-up.)\n\n\
+                     esc / q to close"
+                    .to_string(),
+                Ok(rows) => {
+                    let mut body = String::from("RDS dbinstance configuration:\n\n");
+                    for (opt, value) in &rows {
+                        // Redact the password field even when the
+                        // operator hasn't toggled global redact mode —
+                        // surfacing a DB password into an overlay is a
+                        // worse default than hiding it.
+                        let safe_value = if opt.eq_ignore_ascii_case("DBPassword") {
+                            "(redacted)".to_string()
+                        } else {
+                            value.clone()
+                        };
+                        body.push_str(&format!("  {opt:<28}  {safe_value}\n"));
+                    }
+                    body.push_str(
+                        "\nUse `:set-option aws:rds:dbinstance <KEY> <VALUE>` to change a setting.\n\
+                         Note: most RDS option changes trigger instance modification (downtime risk).\n\
+                         esc / q to close",
+                    );
+                    body
+                }
+                Err(e) => format!("rds: {e}\n\nesc / q to close"),
+            };
+            let _ = tx.send(AppMsg::TextOverlay {
+                gen,
+                title: format!("rds — {env_name}"),
+                body,
+            });
+        });
+    }
+
     /// `:listeners` — fetch the env's ALB listener config (per-port:
     /// protocol, attached cert ARN, SSL policy, default rule) and
     /// render it as a text overlay. Web-tier only — Worker envs
@@ -7492,6 +7560,7 @@ impl App {
             "apps-info" => self.open_apps_info_overlay(),
             "cost" => self.cmd_cost(&rest),
             "listeners" => self.cmd_listeners(),
+            "rds" => self.cmd_rds(),
             "settings" => {
                 self.open_settings_form();
             }
