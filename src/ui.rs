@@ -3347,6 +3347,16 @@ fn draw_help(f: &mut Frame, area: Rect, app: &mut App) {
         theme,
     ));
     lines.push(help_line("j / k / g / G", "navigate the apps table", theme));
+    lines.push(help_line(
+        "space",
+        "multi-select an app (persistent until esc clears)",
+        theme,
+    ));
+    lines.push(help_line(
+        "*",
+        "pin / unpin selected app (sticks to top of apps table; persists in state.toml)",
+        theme,
+    ));
     // Command-bar reference — driven by `crate::commands::COMMANDS` so
     // adding a built-in only touches one file. Sections render in
     // `Category::ORDER`. Plugins land in their own footer block below.
