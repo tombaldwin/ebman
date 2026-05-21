@@ -63,117 +63,13 @@ pub use crate::mode_dlq::{DlqState, QueueView};
 /// Names of all built-in `:commands`. Used to detect collisions when loading
 /// user plugins from `commands.toml` — plugins that shadow a built-in are
 /// dropped with a warning rather than silently masking it.
-pub const BUILTIN_COMMANDS: &[&str] = &[
-    "q",
-    "quit",
-    "refresh",
-    "help",
-    "?",
-    "region",
-    "r",
-    "profile",
-    "p",
-    "sort",
-    "group",
-    "redact",
-    "events",
-    "export",
-    "json",
-    "report",
-    "markdown",
-    "readonly",
-    "pin",
-    "alias",
-    "alias-drop",
-    "alias-rm",
-    "whatsnew",
-    "history",
-    "saved-configs",
-    "configs",
-    "plugins",
-    "diff",
-    "alarms",
-    "loglevel",
-    "cols",
-    "save-view",
-    "view",
-    "views",
-    "view-drop",
-    "filter",
-    "f",
-    "save",
-    "drop",
-    "filters",
-    "batch-rebuild",
-    "batch-restart",
-    "batch-deploy",
-    "batch-tag",
-    "batch-untag",
-    "batch-set-option",
-    "deselect",
-    "select-clear",
-    "minimap",
-    "config-save",
-    "config-delete",
-    "config-apply",
-    "config-inspect",
-    "alarm-create",
-    "alarm-delete",
-    "logs-stream",
-    "logs-tail",
-    "metric",
-    "notify",
-    "managed-window",
-    "env",
-    "instance-type",
-    "keypair",
-    "public-ip",
-    "elb-scheme",
-    "service-role",
-    "instance-profile",
-    "set-option",
-    "unset-option",
-    "deployment-policy",
-    "rolling-update",
-    "health-check-url",
-    "custom-platform-delete",
-    "versions",
-    "deploy",
-    "upgrade",
-    "clone",
-    "scale",
-    "stop",
-    "start",
-    "abort",
-    "resources",
-    "res",
-    "pending",
-    "in-flight",
-    "inflight",
-    "tag",
-    "untag",
-    "delete-version",
-    "rebuild",
-    "restart",
-    "terminate",
-    "swap",
-    "account",
-    "find-env",
-    "org-health",
-    "custom-platforms",
-    "platforms",
-    "update",
-    "capacity",
-    "settings",
-    "subnets",
-    "elb-subnets",
-    "security-groups",
-    "about",
-    "credits",
-    "why",
-    "diagnose",
-    "accounts",
-];
+///
+/// Derived from [`crate::commands::COMMANDS`] so adding a command only
+/// requires one edit (`commands.rs`). The list is built lazily on first
+/// access; the registry is a `const` slice so the work is O(N) with N≈90.
+pub fn builtin_commands() -> Vec<&'static str> {
+    crate::commands::all_names()
+}
 
 /// Which on-screen panel is "focused" — i.e. which one j/k/Enter target. The
 /// main table is the default; the user can `Ctrl-]` over to the events panel
@@ -1288,7 +1184,8 @@ impl App {
         let mut app_table_state = TableState::default();
         app_table_state.select(Some(0));
 
-        let plugins_loaded = crate::plugins::load(BUILTIN_COMMANDS);
+        let names = builtin_commands();
+        let plugins_loaded = crate::plugins::load(&names);
         for w in &plugins_loaded.warnings {
             tracing::warn!(target: "ebman::plugins", "{}", w);
         }
@@ -9856,160 +9753,29 @@ fn scroll_apply(current: u16, delta: i32) -> u16 {
 fn build_palette_items(app: &App) -> Vec<PaletteItem> {
     let mut out: Vec<PaletteItem> = Vec::new();
 
-    // Commands without args — `RunCommand` so Enter executes immediately.
-    let zero_arg_cmds: &[(&str, &str)] = &[
-        ("refresh", "force a refresh now"),
-        ("help", "open the help popup"),
-        ("export", "yank filtered view as TSV"),
-        ("json", "yank filtered view as JSON"),
-        ("report", "yank filtered view as Markdown"),
-        ("history", "recent status / error messages"),
-        ("whatsnew", "embedded changelog"),
-        ("about", "author / license / repo info"),
-        ("update", "show upgrade command (copies to clipboard)"),
-        (
-            "capacity",
-            "modal form: edit ASG min/max + instance type + cooldown",
-        ),
-        (
-            "settings",
-            "modal form: theme / icons / refresh / redact / grouped / webhook",
-        ),
-        (
-            "subnets",
-            "modal form: pick EC2 subnets (aws:ec2:vpc.Subnets)",
-        ),
-        (
-            "elb-subnets",
-            "modal form: pick ELB subnets (aws:ec2:vpc.ELBSubnets) — web-tier",
-        ),
-        (
-            "security-groups",
-            "modal form: pick instance security groups (aws:autoscaling:launchconfiguration.SecurityGroups)",
-        ),
-        ("alarms", "CloudWatch alarms for selected env"),
-        (
-            "why",
-            "diagnose env — recent events + alarms + instance health + recent deploys",
-        ),
-        ("saved-configs", "EB saved configuration templates"),
-        ("plugins", "list user plugin commands"),
-        ("views", "list saved views"),
-        ("filters", "list saved filters"),
-        ("pin", "pin / unpin selected env"),
-        ("quit", "exit ebman"),
-    ];
-    for (name, desc) in zero_arg_cmds {
-        out.push(PaletteItem {
-            label: format!(":{name}"),
-            detail: (*desc).to_string(),
-            kind_tag: "cmd",
-            action: PaletteAction::RunCommand((*name).to_string()),
-        });
-    }
-
-    // Commands that take an argument — prefill the command bar so the user
-    // can type the rest.
-    let prefill_cmds: &[(&str, &str)] = &[
-        ("region ", "switch AWS region"),
-        ("profile ", "switch AWS profile"),
-        ("sort ", "set sort key (name/app/status/health/version/age)"),
-        ("group ", "toggle grouping (on/off)"),
-        ("redact ", "toggle redact mode (on/off)"),
-        ("events ", "toggle events panel (on/off)"),
-        ("save ", "save the current filter as NAME"),
-        ("f ", "load named filter"),
-        ("filter ", "load named filter"),
-        ("save-view ", "save current view as NAME"),
-        ("view ", "load saved view"),
-        ("alias ", "set alias: <env-name> <label>"),
-        ("alias-drop ", "remove alias for <env-name>"),
-        ("diff ", "diff with another env: <env-name>"),
-        ("cols ", "manage columns (list / hide / show / reset)"),
-        (
-            "loglevel ",
-            "set tracing filter (trace/debug/info/warn/error)",
-        ),
-        ("readonly ", "toggle read-only (on/off)"),
-        ("tag ", "add or update env tag: KEY VALUE"),
-        ("untag ", "remove env tag: KEY"),
-        ("batch-deploy ", "deploy LABEL to all multi-selected envs (same app)"),
-        ("batch-tag ", "tag all multi-selected envs: KEY VALUE"),
-        ("batch-untag ", "untag all multi-selected envs: KEY"),
-        (
-            "batch-set-option ",
-            "set option on all multi-selected envs: NAMESPACE NAME VALUE",
-        ),
-        ("delete-version ", "delete app version: LABEL [--force]"),
-        (
-            "config-inspect ",
-            "inspect saved config template: [APP] TEMPLATE",
-        ),
-        (
-            "alarm-create ",
-            "create CW alarm: NAME KIND THRESHOLD (KIND: health|4xx|5xx|latency)",
-        ),
-        ("alarm-delete ", "delete CW alarm by NAME"),
-        (
-            "logs-stream ",
-            "toggle CW Logs streaming: on|off [--retention DAYS]",
-        ),
-        (
-            "logs-tail ",
-            "stream a CW Logs group for the selected env (auto-picks the best group)",
-        ),
-        (
-            "metric ",
-            "custom metric chart: list | add LABEL NS NAME [STAT] | remove LABEL",
-        ),
-        (
-            "deploy --from ",
-            "deploy a local .zip bundle: PATH [--label L] [--describe D] [--no-deploy]",
-        ),
-        (
-            "notify ",
-            "set notification endpoint: EMAIL_OR_SNS_ARN | off",
-        ),
-        (
-            "managed-window ",
-            "set maintenance window: DAY HOUR | off (e.g. Sun 4)",
-        ),
-        (
-            "env ",
-            "env vars: list | set KEY VAL | unset KEY (triggers restart)",
-        ),
-        (
-            "instance-type ",
-            "set EC2 instance type for the env's ASG (e.g. t3.medium)",
-        ),
-        ("keypair ", "set EC2 key pair NAME on the env's ASG"),
-        ("public-ip ", "toggle EC2 public IP association: on|off"),
-        ("elb-scheme ", "set ELB scheme: public|internal (rolling)"),
-        ("service-role ", "set EB service role ARN/name"),
-        (
-            "instance-profile ",
-            "set EC2 instance-profile NAME for the env's ASG",
-        ),
-        ("set-option ", "generic option set: NAMESPACE OPTION VALUE"),
-        ("unset-option ", "generic option clear: NAMESPACE OPTION"),
-        (
-            "deployment-policy ",
-            "set deploy policy: AllAtOnce | Rolling | Immutable | TrafficSplitting | RollingWithAdditionalBatch",
-        ),
-        ("rolling-update ", "ASG rolling-update policy: on|off"),
-        (
-            "health-check-url ",
-            "set HTTP health-check path (e.g. /health)",
-        ),
-        ("custom-platform-delete ", "delete a custom platform by ARN"),
-    ];
-    for (prefix, desc) in prefill_cmds {
-        out.push(PaletteItem {
-            label: format!(":{}", prefix.trim_end()),
-            detail: (*desc).to_string(),
-            kind_tag: "cmd",
-            action: PaletteAction::PrefillCommand((*prefix).to_string()),
-        });
+    // Built-in commands — generated from `crate::commands::COMMANDS` so
+    // the registry, the palette, and the help screen can't drift apart.
+    // ZeroArg → Enter executes; Prefill → Enter switches to command-bar
+    // mode with the prefix typed in; Hidden → skipped here.
+    for c in crate::commands::COMMANDS {
+        match c.kind {
+            crate::commands::CommandKind::ZeroArg => {
+                out.push(PaletteItem {
+                    label: format!(":{}", c.name),
+                    detail: c.help.to_string(),
+                    kind_tag: "cmd",
+                    action: PaletteAction::RunCommand(c.name.to_string()),
+                });
+            }
+            crate::commands::CommandKind::Prefill(prefix) => {
+                out.push(PaletteItem {
+                    label: format!(":{}", prefix.trim_end()),
+                    detail: c.help.to_string(),
+                    kind_tag: "cmd",
+                    action: PaletteAction::PrefillCommand(prefix.to_string()),
+                });
+            }
+        }
     }
 
     // Envs — jump cursor.
