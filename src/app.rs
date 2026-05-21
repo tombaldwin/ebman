@@ -8017,7 +8017,19 @@ impl App {
                     self.run_plugin_command(other, &plugin);
                     return;
                 }
-                self.error_message = Some(format!("unknown command: :{other}  (try :help)"));
+                // Did-you-mean: surface the closest registry name
+                // within edit-distance 2. Catches everyday typos
+                // like `:restrt` → `:restart`. Skips the suggestion
+                // entirely when nothing's close enough — a wild
+                // guess would mislead rather than help.
+                let suggestion = suggest_command(other);
+                let msg = match suggestion {
+                    Some(name) => {
+                        format!("unknown command: :{other} — did you mean :{name}? (try :help)")
+                    }
+                    None => format!("unknown command: :{other}  (try :help)"),
+                };
+                self.error_message = Some(msg);
             }
         }
     }
@@ -11947,6 +11959,66 @@ pub fn app_rollup(
     out
 }
 
+/// Pure: edit (Levenshtein) distance between two strings, counting
+/// single-character insertions / deletions / substitutions. Used by
+/// the unknown-command `did-you-mean` path; small enough that
+/// pulling in the `strsim` crate would be over-spec.
+///
+/// Implemented as the standard O(m·n) DP table with byte-level
+/// iteration. ASCII-only paths get exact answers; multi-byte
+/// UTF-8 still terminates but the distance is counted in bytes,
+/// not graphemes. Acceptable for the command-name use case
+/// (every built-in is ASCII).
+pub(crate) fn edit_distance(a: &str, b: &str) -> usize {
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+    if a_bytes.is_empty() {
+        return b_bytes.len();
+    }
+    if b_bytes.is_empty() {
+        return a_bytes.len();
+    }
+    // Two-row rolling DP: only the previous row's distances are
+    // needed to compute the current row. Saves O(m·n) memory →
+    // O(min(m,n)) without changing the answer.
+    let (short, long) = if a_bytes.len() < b_bytes.len() {
+        (a_bytes, b_bytes)
+    } else {
+        (b_bytes, a_bytes)
+    };
+    let mut prev: Vec<usize> = (0..=short.len()).collect();
+    let mut curr: Vec<usize> = vec![0; short.len() + 1];
+    for (i, lc) in long.iter().enumerate() {
+        curr[0] = i + 1;
+        for (j, sc) in short.iter().enumerate() {
+            let cost = if lc == sc { 0 } else { 1 };
+            curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[short.len()]
+}
+
+/// Suggest the closest registry name to `input` within an
+/// edit-distance threshold. Returns `None` when no candidate is
+/// close enough — a wild guess would mislead rather than help.
+///
+/// Threshold is length-dependent: short inputs (`:q`, `:r`) get
+/// distance ≤ 1; longer ones tolerate up to 2 typos. The
+/// length-aware threshold prevents a 2-char miss like `:xy`
+/// from "matching" every 3-char name in the registry.
+pub(crate) fn suggest_command(input: &str) -> Option<String> {
+    let threshold = if input.len() <= 3 { 1 } else { 2 };
+    let mut best: Option<(usize, String)> = None;
+    for name in crate::commands::all_names() {
+        let d = edit_distance(input, name);
+        if d <= threshold && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
+            best = Some((d, name.to_string()));
+        }
+    }
+    best.map(|(_, name)| name)
+}
+
 /// Pure: return the built-in command names + aliases that begin
 /// with `prefix`. Sorted alphabetically. Empty prefix returns every
 /// name (still alpha-sorted). De-duplicated so a command's
@@ -12540,6 +12612,46 @@ mod tests {
             max_value: None,
             max_length: None,
         }
+    }
+
+    #[test]
+    fn edit_distance_basic_cases() {
+        assert_eq!(super::edit_distance("", ""), 0);
+        assert_eq!(super::edit_distance("abc", ""), 3);
+        assert_eq!(super::edit_distance("", "abc"), 3);
+        assert_eq!(super::edit_distance("kitten", "sitting"), 3);
+        assert_eq!(super::edit_distance("restart", "restart"), 0);
+        assert_eq!(super::edit_distance("restrt", "restart"), 1);
+        assert_eq!(super::edit_distance("rebild", "rebuild"), 1);
+        assert_eq!(super::edit_distance("scal", "scale"), 1);
+    }
+
+    #[test]
+    fn suggest_command_catches_one_char_typos() {
+        // Operator typo: forgot the 'a' in restart.
+        assert_eq!(super::suggest_command("restrt").as_deref(), Some("restart"));
+        // Operator typo: dropped a 'u' in rebuild.
+        assert_eq!(super::suggest_command("rebild").as_deref(), Some("rebuild"));
+        // Operator typo: dropped the 'e' in scale.
+        assert_eq!(super::suggest_command("scal").as_deref(), Some("scale"));
+    }
+
+    #[test]
+    fn suggest_command_returns_none_when_too_far() {
+        // Nonsense input — no command is within edit-distance 2.
+        assert_eq!(super::suggest_command("zzzzzz"), None);
+    }
+
+    #[test]
+    fn suggest_command_threshold_is_strict_for_short_input() {
+        // 2-char input shouldn't "match" every 3-char alias —
+        // the operator's intent is too ambiguous to guess.
+        // `:zz` is distance 2 from many names; we cap at 1.
+        let suggestion = super::suggest_command("zz");
+        assert!(
+            suggestion.is_none(),
+            "2-char typo should require distance ≤ 1; got {suggestion:?}"
+        );
     }
 
     #[test]
