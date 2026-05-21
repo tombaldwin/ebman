@@ -159,7 +159,7 @@ fn build_chain_pills(app: &App) -> Vec<(String, Color, Color)> {
         let now = std::time::Instant::now();
         let remaining = pd.deadline.saturating_duration_since(now).as_secs() + 1;
         chain.push((
-            format!("{} {}s — U undo", pd.action_label, remaining),
+            format!("{} {}s — U undo", pd.label, remaining),
             fg(theme.health_red),
             theme.health_red,
         ));
