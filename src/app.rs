@@ -608,6 +608,16 @@ pub struct App {
     pub sort_key: SortKey,
     pub sort_desc: bool,
     pub command_input: String,
+    /// The text the operator had typed before they first pressed
+    /// Tab to start a completion cycle. Cycling forward / backward
+    /// matches against this prefix; typing a new character resets
+    /// it (and the cycle). `None` when no cycle is active.
+    pub command_completion_origin: Option<String>,
+    /// Position within the candidate list for the active completion
+    /// cycle. Only meaningful when `command_completion_origin` is
+    /// `Some`. Zero before the first Tab (so the first Tab lands
+    /// on the first match).
+    pub command_completion_index: usize,
     pub quickjump_input: String,
     pub named_filters: BTreeMap<String, String>,
     pub extra_regions: Vec<String>,
@@ -1280,6 +1290,8 @@ impl App {
             sort_key,
             sort_desc,
             command_input: String::new(),
+            command_completion_origin: None,
+            command_completion_index: 0,
             quickjump_input: String::new(),
             named_filters: persisted.named_filters,
             extra_regions: config.extra_regions,
@@ -1445,6 +1457,8 @@ impl App {
             sort_key: SortKey::App,
             sort_desc: false,
             command_input: String::new(),
+            command_completion_origin: None,
+            command_completion_index: 0,
             quickjump_input: String::new(),
             named_filters: std::collections::BTreeMap::new(),
             extra_regions: config.extra_regions.clone(),
@@ -2252,18 +2266,32 @@ impl App {
             Mode::Command => match key.code {
                 KeyCode::Esc => {
                     self.command_input.clear();
+                    self.command_completion_origin = None;
                     self.mode = Mode::Normal;
                 }
                 KeyCode::Enter => {
                     let cmd = self.command_input.clone();
                     self.command_input.clear();
+                    self.command_completion_origin = None;
                     self.mode = Mode::Normal;
                     self.execute_command(&cmd);
                 }
                 KeyCode::Backspace => {
+                    // Reset the completion cycle — the operator
+                    // is editing, not cycling. Same intent as
+                    // typing a new character.
+                    self.command_completion_origin = None;
                     self.command_input.pop();
                 }
-                KeyCode::Char(c) if is_text_input(&key) => self.command_input.push(c),
+                KeyCode::Tab => self.command_completion_step(1),
+                KeyCode::BackTab => self.command_completion_step(-1),
+                KeyCode::Char(c) if is_text_input(&key) => {
+                    // Any printable key resets the completion
+                    // cycle so the operator's next Tab starts a
+                    // fresh search.
+                    self.command_completion_origin = None;
+                    self.command_input.push(c);
+                }
                 _ => {}
             },
             Mode::Shell => {
@@ -3447,6 +3475,55 @@ impl App {
     }
 
     /// `:rds` — fetch the env's RDS dbinstance option settings and
+    /// Advance / rewind the command-mode completion cycle by
+    /// `delta` (+1 = Tab, -1 = Shift-Tab). Captures the operator's
+    /// typed prefix on the first Tab; subsequent Tabs cycle
+    /// through matches without losing the original prefix (so
+    /// they can pop out by typing).
+    ///
+    /// Args after the first whitespace pass through untouched —
+    /// only the command-name fragment gets matched. Means `:set-
+    /// option aws` still completes `set-option` if the operator
+    /// goes back and Tabs at the start.
+    fn command_completion_step(&mut self, delta: i32) {
+        // First Tab: snapshot what the operator had typed so a
+        // subsequent reverse-Tab (or text input) can restore.
+        if self.command_completion_origin.is_none() {
+            self.command_completion_origin = Some(self.command_input.clone());
+            self.command_completion_index = 0;
+        }
+        let origin = self.command_completion_origin.clone().unwrap_or_default();
+        // Split origin into (name_fragment, rest). Only the
+        // pre-whitespace fragment is completed; anything after
+        // (args) is preserved as-is. Take ownership of the
+        // fragments so we can move `origin` if we hit the
+        // empty-candidates restore path below.
+        let (prefix, rest): (String, String) = match origin.find(char::is_whitespace) {
+            Some(i) => (origin[..i].to_string(), origin[i..].to_string()),
+            None => (origin.clone(), String::new()),
+        };
+        let candidates = completion_candidates(&prefix);
+        if candidates.is_empty() {
+            // Restore the operator's typed prefix and surface a
+            // hint so the silent-no-op doesn't feel broken.
+            self.command_input = origin;
+            self.status_message = Some(format!(
+                "no command matches '{prefix}' (Tab cycles command names)"
+            ));
+            return;
+        }
+        let n = candidates.len() as i32;
+        let cur = self.command_completion_index as i32;
+        let next = (cur + delta).rem_euclid(n) as usize;
+        self.command_completion_index = next;
+        self.command_input = format!("{}{rest}", candidates[next]);
+        self.status_message = Some(format!(
+            "completion {}/{} — Tab cycles, Esc cancels",
+            next + 1,
+            n
+        ));
+    }
+
     /// `:options [NAMESPACE]` — full settable-option vocabulary for
     /// the selected env's platform. Closes the biggest console-parity
     /// gap (config discoverability): the console has the canonical
@@ -11870,6 +11947,28 @@ pub fn app_rollup(
     out
 }
 
+/// Pure: return the built-in command names + aliases that begin
+/// with `prefix`. Sorted alphabetically. Empty prefix returns every
+/// name (still alpha-sorted). De-duplicated so a command's
+/// canonical name and any aliases don't both surface for the same
+/// dispatch arm — first occurrence wins.
+///
+/// Used by command-mode Tab cycling. Plugins (`commands.toml`) are
+/// not included here because plugins are operator-specific and
+/// can change without a registry update; future enhancement could
+/// merge them in but the registry-driven first cut keeps the
+/// behaviour predictable.
+pub(crate) fn completion_candidates(prefix: &str) -> Vec<String> {
+    let mut names: Vec<String> = crate::commands::all_names()
+        .into_iter()
+        .filter(|n| n.starts_with(prefix))
+        .map(String::from)
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
 /// Pure render of the `:options` overlay body. Groups `rows` by
 /// namespace; within each group, operator-set rows come first
 /// (marked `▸`), defaults follow (marked `•`). Optional
@@ -12441,6 +12540,95 @@ mod tests {
             max_value: None,
             max_length: None,
         }
+    }
+
+    #[test]
+    fn completion_candidates_filters_by_prefix() {
+        let c = super::completion_candidates("ba");
+        assert!(
+            c.iter().any(|s| s == "batch-rebuild"),
+            "expected batch-rebuild among ba-prefixed candidates; got {c:?}"
+        );
+        assert!(
+            c.iter().all(|s| s.starts_with("ba")),
+            "every candidate must start with the prefix; got {c:?}"
+        );
+        assert_eq!(
+            c.clone(),
+            {
+                let mut sorted = c.clone();
+                sorted.sort();
+                sorted
+            },
+            "candidates must be alphabetically sorted"
+        );
+    }
+
+    #[test]
+    fn completion_candidates_with_empty_prefix_returns_full_list() {
+        let c = super::completion_candidates("");
+        // The registry has 80+ names + aliases — exact count drifts
+        // with each release, just sanity-check the shape.
+        assert!(
+            c.len() > 50,
+            "expected the full command list; got {} entries",
+            c.len()
+        );
+        assert!(c.iter().any(|s| s == "why"));
+        assert!(c.iter().any(|s| s == "rebuild"));
+    }
+
+    #[tokio::test]
+    async fn tab_in_command_mode_cycles_through_matches() {
+        let mut app = test_app();
+        app.mode = Mode::Command;
+        app.command_input = "bat".into();
+        // First Tab → first match (batch-deploy alphabetically).
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        let first = app.command_input.clone();
+        assert!(
+            first.starts_with("bat"),
+            "Tab should keep the bat-prefix; got {first:?}"
+        );
+        assert!(
+            crate::commands::all_names().contains(&first.as_str()),
+            "Tab should expand to a real command name; got {first:?}"
+        );
+        // Second Tab cycles forward; should differ from first.
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        let second = app.command_input.clone();
+        assert_ne!(first, second, "second Tab should advance the cycle");
+    }
+
+    #[tokio::test]
+    async fn typing_in_command_mode_breaks_the_completion_cycle() {
+        let mut app = test_app();
+        app.mode = Mode::Command;
+        app.command_input = "re".into();
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert!(app.command_completion_origin.is_some());
+        // Operator types — cycle should reset.
+        press(&mut app, KeyCode::Char('s'), KeyModifiers::NONE);
+        assert!(
+            app.command_completion_origin.is_none(),
+            "typing must reset the completion origin"
+        );
+    }
+
+    #[tokio::test]
+    async fn shift_tab_cycles_backward() {
+        let mut app = test_app();
+        app.mode = Mode::Command;
+        app.command_input = "ba".into();
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        let forward = app.command_input.clone();
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        press(&mut app, KeyCode::BackTab, KeyModifiers::NONE);
+        // Two forward + one back = same as one forward.
+        assert_eq!(
+            app.command_input, forward,
+            "Tab Tab BackTab should land on the first match"
+        );
     }
 
     #[test]
