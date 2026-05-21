@@ -12,6 +12,7 @@ mod mode_detail;
 mod mode_dlq;
 mod plugins;
 mod profiles;
+mod report_bug;
 mod shell;
 mod sso;
 mod state;

@@ -246,6 +246,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         CommandKind::ZeroArg,
     ),
     cmd(
+        "report-bug",
+        ":report-bug — scrubbed bug-report overlay. y = copy, b = open GitHub issue with body pre-filled. No outbound HTTP from ebman.",
+        Category::Setup,
+        CommandKind::ZeroArg,
+    ),
+    cmd(
         "cost",
         ":cost on | off | status — toggle the COST column ($/month per env via Cost Explorer; 24h cache)",
         Category::View,

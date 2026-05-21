@@ -578,6 +578,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 env_names,
                 cursor,
             } => draw_apps_action_menu(f, f.area(), app, &app_name, &env_names, cursor),
+            Overlay::ReportBug { body } => draw_report_bug_overlay(f, f.area(), app, &body),
         }
     }
     if app.mode == Mode::Palette {
@@ -1710,6 +1711,77 @@ fn draw_apps_action_menu(
     let p = Paragraph::new(lines)
         .wrap(Wrap { trim: false })
         .block(titled_block(theme, &title, true, theme.title).padding(Padding::uniform(1)));
+    f.render_widget(p, popup);
+}
+
+/// Bug-report overlay. Renders the scrubbed payload as a scrollable
+/// text dump + a footer key strip advertising the y / b / esc
+/// keybinds the operator picks among. Wide popup so long log lines
+/// don't reflow into unreadable wrap.
+fn draw_report_bug_overlay(f: &mut Frame, area: Rect, app: &App, body: &str) {
+    let theme = &app.theme;
+    let popup = centered_rect(80, 80, area);
+    f.render_widget(Clear, popup);
+    let mut lines: Vec<Line<'static>> = body
+        .lines()
+        .map(|l| {
+            // Distinguish section headers (### …) and code-fence rows
+            // for at-a-glance scanning. Pure text overlay otherwise.
+            if l.starts_with("### ") || l.starts_with("## ") {
+                Line::from(Span::styled(
+                    l.to_string(),
+                    Style::default()
+                        .fg(theme.title)
+                        .add_modifier(Modifier::BOLD),
+                ))
+            } else if l.starts_with("```") {
+                Line::from(Span::styled(
+                    l.to_string(),
+                    Style::default().fg(theme.muted),
+                ))
+            } else if l.starts_with("<!--") {
+                Line::from(Span::styled(
+                    l.to_string(),
+                    Style::default()
+                        .fg(theme.muted)
+                        .add_modifier(Modifier::ITALIC),
+                ))
+            } else {
+                Line::from(Span::styled(l.to_string(), Style::default().fg(theme.text)))
+            }
+        })
+        .collect();
+    lines.push(Line::raw(""));
+    lines.push(Line::from(vec![
+        Span::styled(
+            "  y",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" copy to clipboard   ", Style::default().fg(theme.muted)),
+        Span::styled(
+            "b",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            " open GitHub issue in browser   ",
+            Style::default().fg(theme.muted),
+        ),
+        Span::styled(
+            "esc / q",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" cancel", Style::default().fg(theme.muted)),
+    ]));
+    let title = "bug report (scrubbed — review before sending)";
+    let p = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .block(titled_block(theme, title, true, theme.title).padding(Padding::uniform(1)));
     f.render_widget(p, popup);
 }
 
