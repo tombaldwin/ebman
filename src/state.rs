@@ -17,6 +17,7 @@ pub struct PersistedState {
     pub selected_env: Option<String>,
     pub named_filters: BTreeMap<String, String>,
     pub pinned: BTreeSet<String>,
+    pub pinned_apps: BTreeSet<String>,
     pub aliases: BTreeMap<String, String>,
     pub saved_views: BTreeMap<String, String>,
     pub hidden_cols: BTreeSet<String>,
@@ -137,6 +138,13 @@ pub fn parse(text: &str) -> PersistedState {
                     .filter(|s| !s.is_empty())
                     .collect();
             }
+            "pinned_apps" => {
+                state.pinned_apps = value
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+            }
             _ if k.starts_with("alias.") => {
                 let name = k.trim_start_matches("alias.").trim().to_string();
                 if !name.is_empty() {
@@ -210,6 +218,10 @@ pub fn save(state: &PersistedState) {
         let joined: Vec<&str> = state.pinned.iter().map(String::as_str).collect();
         out.push_str(&format!("pinned = \"{}\"\n", joined.join(",")));
     }
+    if !state.pinned_apps.is_empty() {
+        let joined: Vec<&str> = state.pinned_apps.iter().map(String::as_str).collect();
+        out.push_str(&format!("pinned_apps = \"{}\"\n", joined.join(",")));
+    }
     for (name, value) in &state.aliases {
         out.push_str(&format!("alias.{name} = \"{value}\"\n"));
     }
@@ -281,6 +293,7 @@ filter.prod = "live"
     fn parse_collections() {
         let text = r#"
 pinned = "prod-api,prod-worker"
+pinned_apps = "billing,checkout"
 alias.awseb-e-abc = "production"
 alias.awseb-e-xyz = "staging"
 view.dev = "filter=dev;sort=app:asc;grouped=false;scope=envs"
@@ -289,6 +302,8 @@ hidden_cols = "TREND,PLATFORM"
         let s = parse(text);
         assert!(s.pinned.contains("prod-api"));
         assert!(s.pinned.contains("prod-worker"));
+        assert!(s.pinned_apps.contains("billing"));
+        assert!(s.pinned_apps.contains("checkout"));
         assert_eq!(
             s.aliases.get("awseb-e-abc").map(String::as_str),
             Some("production")
