@@ -234,6 +234,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         CommandKind::ZeroArg,
     ),
     cmd(
+        "listeners",
+        ":listeners — ALB listener config (per-port: proto / cert / SSL policy / default rule). Web-tier only.",
+        Category::Inspection,
+        CommandKind::ZeroArg,
+    ),
+    cmd(
         "cost",
         ":cost on | off | status — toggle the COST column ($/month per env via Cost Explorer; 24h cache)",
         Category::View,
