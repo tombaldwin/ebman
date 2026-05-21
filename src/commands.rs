@@ -252,6 +252,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         CommandKind::Prefill("options "),
     ),
     cmd(
+        "explain",
+        ":explain — diagnose the last IAM AccessDenied via iam:SimulatePrincipalPolicy.  :explain ARN ACTION evaluates explicit pairs.",
+        Category::Inspection,
+        CommandKind::Prefill("explain "),
+    ),
+    cmd(
         "report-bug",
         ":report-bug — scrubbed bug-report overlay. y = copy, b = open GitHub issue with body pre-filled. No outbound HTTP from ebman.",
         Category::Setup,

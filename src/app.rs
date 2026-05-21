@@ -3542,6 +3542,94 @@ impl App {
         ));
     }
 
+    /// `:explain` — diagnose an IAM `AccessDenied` by calling
+    /// `iam:SimulatePrincipalPolicy` against the principal + action
+    /// the failed request named. Surfaces the policy decision
+    /// (allowed / explicitDeny / implicitDeny), the matched
+    /// statements, SCP / permission-boundary blockers, and a
+    /// concrete JSON snippet the operator can paste into a policy.
+    ///
+    /// Two shapes:
+    ///   - `:explain` (no args) walks the most recent error message
+    ///     looking for the standard AWS AccessDenied shape; uses
+    ///     [`parse_access_denied`] to extract principal + action.
+    ///   - `:explain ARN ACTION [ACTION ...]` evaluates explicit
+    ///     pairs. Useful for pre-flight ("can this role rebuild
+    ///     this env?") even when no error has happened yet.
+    ///
+    /// Caller needs `iam:SimulatePrincipalPolicy` on the target
+    /// principal — common gap on assumed-role sessions. We surface
+    /// that as a clear error rather than a silent no-op.
+    pub(crate) fn cmd_explain(&mut self, rest: &[&str]) {
+        let (principal, actions): (String, Vec<String>) = match rest.first().copied() {
+            // Args form: ARN + 1..N action names.
+            Some(arn) if arn.starts_with("arn:aws:") && rest.len() >= 2 => {
+                let actions: Vec<String> = rest[1..].iter().map(|s| s.to_string()).collect();
+                (arn.to_string(), actions)
+            }
+            Some(_) => {
+                self.error_message = Some(
+                    "usage: :explain (no args, walks last error) | :explain ARN ACTION [ACTION ...]"
+                        .into(),
+                );
+                return;
+            }
+            None => {
+                // Walk message_log for the latest error containing
+                // "is not authorized to perform" — that's the
+                // AWS AccessDenied shape `parse_access_denied`
+                // understands.
+                let latest = self.message_log.iter().rev().find(|(_, kind, text)| {
+                    matches!(kind, MsgKind::Error) && text.contains("is not authorized to perform")
+                });
+                let Some((_, _, text)) = latest else {
+                    self.error_message = Some(
+                        "no recent AccessDenied to explain — :explain ARN ACTION to evaluate explicitly".into(),
+                    );
+                    return;
+                };
+                match parse_access_denied(text) {
+                    Some((arn, action)) => (arn, vec![action]),
+                    None => {
+                        self.error_message = Some(format!(
+                            "couldn't parse principal + action from last error: {text}"
+                        ));
+                        return;
+                    }
+                }
+            }
+        };
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let principal_for_title = principal.clone();
+        self.status_message = Some(format!(
+            "diagnosing IAM perms for {} action(s) on {principal}…",
+            actions.len()
+        ));
+        tokio::spawn(async move {
+            let result = aws
+                .simulate_principal_policy(&principal, &actions, &[])
+                .await
+                .map_err(|e| flatten_err("simulate_principal_policy", e));
+            let body = match result {
+                Ok(rows) => render_explain_overlay(&principal, &rows),
+                Err(e) => format!(
+                    "explain: {e}\n\n\
+                     This usually means the caller lacks `iam:SimulatePrincipalPolicy`\n\
+                     on the target role — common with assumed-role sessions that don't\n\
+                     have IAM perms. Try from a profile with IAM access.\n\n\
+                     esc / q to close"
+                ),
+            };
+            let _ = tx.send(AppMsg::TextOverlay {
+                gen,
+                title: format!("explain — {principal_for_title}"),
+                body,
+            });
+        });
+    }
+
     /// `:options [NAMESPACE]` — full settable-option vocabulary for
     /// the selected env's platform. Closes the biggest console-parity
     /// gap (config discoverability): the console has the canonical
@@ -7827,6 +7915,7 @@ impl App {
             "listeners" => self.cmd_listeners(),
             "rds" => self.cmd_rds(),
             "options" => self.cmd_options(&rest),
+            "explain" => self.cmd_explain(&rest),
             "report-bug" => self.open_report_bug_overlay(),
             "settings" => {
                 self.open_settings_form();
@@ -11977,6 +12066,117 @@ pub fn app_rollup(
     out
 }
 
+/// Pure: parse an AWS `AccessDenied` error message into
+/// `(principal_arn, action)`. Returns `None` when the message
+/// doesn't match a recognised shape.
+///
+/// Recognised shapes:
+///   - `User: arn:aws:sts::ACCOUNT:assumed-role/ROLE/SESSION is
+///     not authorized to perform: SERVICE:ACTION ...`
+///   - `User: arn:aws:iam::ACCOUNT:{user,role}/NAME is not
+///     authorized to perform: SERVICE:ACTION ...`
+///
+/// Assumed-role ARNs are rewritten to the underlying role ARN
+/// (`arn:aws:iam::ACCOUNT:role/ROLE`) because that's what
+/// `iam:SimulatePrincipalPolicy` wants as the policy source —
+/// the session credentials themselves aren't a policy attachment
+/// point.
+pub(crate) fn parse_access_denied(msg: &str) -> Option<(String, String)> {
+    let user_prefix = "User: ";
+    let action_prefix = "is not authorized to perform:";
+    let user_start = msg.find(user_prefix)? + user_prefix.len();
+    let user_end = msg[user_start..]
+        .find(|c: char| c.is_whitespace())
+        .map(|i| user_start + i)?;
+    let principal_raw = &msg[user_start..user_end];
+    let action_start = msg.find(action_prefix)? + action_prefix.len();
+    let action_rest = msg[action_start..].trim_start();
+    let action_end = action_rest
+        .find(|c: char| c.is_whitespace() || c == ',')
+        .unwrap_or(action_rest.len());
+    let action = action_rest[..action_end].to_string();
+    let principal = if let Some(rest) = principal_raw.strip_prefix("arn:aws:sts::") {
+        // `arn:aws:sts::ACCOUNT:assumed-role/ROLE/SESSION`
+        let parts: Vec<&str> = rest.splitn(2, ':').collect();
+        let account = parts.first()?;
+        let role_part = parts.get(1)?;
+        let role_name = role_part.strip_prefix("assumed-role/")?.split('/').next()?;
+        format!("arn:aws:iam::{account}:role/{role_name}")
+    } else {
+        principal_raw.to_string()
+    };
+    Some((principal, action))
+}
+
+/// Pure: render the result of an IAM `SimulatePrincipalPolicy`
+/// call. One section per evaluated action, with the decision +
+/// matched statements + SCP / boundary blockers + a concrete
+/// suggestion of what policy statement to add when the decision
+/// was implicitDeny.
+pub(crate) fn render_explain_overlay(principal: &str, rows: &[crate::aws::IamSimResult]) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("IAM diagnosis for {principal}\n"));
+    out.push_str("═══════════════════════════════════════════════════\n\n");
+    if rows.is_empty() {
+        out.push_str("(no evaluation results returned)\n\nesc / q to close");
+        return out;
+    }
+    for (idx, r) in rows.iter().enumerate() {
+        if idx > 0 {
+            out.push('\n');
+        }
+        out.push_str(&format!("Action:   {}\n", r.action));
+        if !r.resource.is_empty() {
+            out.push_str(&format!("Resource: {}\n", r.resource));
+        }
+        let (mark, label) = match r.decision.as_str() {
+            "allowed" => ("✓", "allowed"),
+            "explicitDeny" => ("✗", "explicitDeny — a policy *denies* this action"),
+            "implicitDeny" => ("✗", "implicitDeny — no policy allows this action"),
+            other => ("?", other),
+        };
+        out.push_str(&format!("Decision: {mark} {label}\n"));
+        if r.blocked_by_scp {
+            out.push_str("          ⚠ also blocked by an Organizations SCP at the org level\n");
+        }
+        if r.blocked_by_boundary {
+            out.push_str("          ⚠ also blocked by the role's permission boundary\n");
+        }
+        if !r.matched_statements.is_empty() {
+            out.push_str("Matched statements:\n");
+            for s in &r.matched_statements {
+                out.push_str(&format!("  ▸ {s}\n"));
+            }
+        }
+        if !r.missing_context.is_empty() {
+            out.push_str("Missing context keys (conditions unsatisfied):\n");
+            for c in &r.missing_context {
+                out.push_str(&format!("  ▸ {c}\n"));
+            }
+        }
+        if r.decision == "implicitDeny" {
+            out.push_str(&format!(
+                "\nTo allow, add this statement to one of the role's policies:\n\
+                 \n\
+                 {{\n\
+                 \x20\x20\"Effect\": \"Allow\",\n\
+                 \x20\x20\"Action\": \"{}\",\n\
+                 \x20\x20\"Resource\": \"*\"\n\
+                 }}\n",
+                r.action
+            ));
+        } else if r.decision == "explicitDeny" {
+            out.push_str(
+                "\nAn explicit Deny in the matched statement(s) above is\n\
+                 overriding any Allow. Remove or scope down the Deny to\n\
+                 unblock — explicit Deny always wins.\n",
+            );
+        }
+    }
+    out.push_str("\nesc / q to close");
+    out
+}
+
 /// Pure: render the env's underlying AWS resources as a tree.
 /// Replaces the previous flat-section dump. The hierarchy mirrors
 /// the conceptual graph an operator builds in their head:
@@ -12771,6 +12971,105 @@ mod tests {
             max_value: None,
             max_length: None,
         }
+    }
+
+    #[test]
+    fn parse_access_denied_handles_assumed_role() {
+        let msg = "User: arn:aws:sts::123456789012:assumed-role/EbmanReadOnly/session-abc \
+                   is not authorized to perform: elasticbeanstalk:RebuildEnvironment \
+                   on resource: arn:aws:elasticbeanstalk:eu-west-2:123:environment/foo/bar";
+        let parsed = super::parse_access_denied(msg);
+        assert_eq!(
+            parsed,
+            Some((
+                "arn:aws:iam::123456789012:role/EbmanReadOnly".into(),
+                "elasticbeanstalk:RebuildEnvironment".into()
+            )),
+            "assumed-role should be rewritten to the role ARN"
+        );
+    }
+
+    #[test]
+    fn parse_access_denied_handles_iam_user() {
+        let msg = "User: arn:aws:iam::123456789012:user/alice is not authorized to \
+                   perform: s3:GetObject on resource: arn:aws:s3:::bucket/key";
+        let parsed = super::parse_access_denied(msg);
+        assert_eq!(
+            parsed,
+            Some((
+                "arn:aws:iam::123456789012:user/alice".into(),
+                "s3:GetObject".into()
+            )),
+            "IAM-user ARN should pass through unchanged"
+        );
+    }
+
+    #[test]
+    fn parse_access_denied_returns_none_on_unrelated_error() {
+        assert_eq!(
+            super::parse_access_denied("ThrottlingException: rate exceeded"),
+            None
+        );
+        assert_eq!(super::parse_access_denied("random garbage text"), None);
+    }
+
+    #[test]
+    fn render_explain_overlay_marks_decisions_and_suggests_fix() {
+        let rows = vec![
+            crate::aws::IamSimResult {
+                action: "elasticbeanstalk:RebuildEnvironment".into(),
+                resource: "*".into(),
+                decision: "implicitDeny".into(),
+                matched_statements: vec![],
+                missing_context: vec![],
+                blocked_by_scp: false,
+                blocked_by_boundary: false,
+            },
+            crate::aws::IamSimResult {
+                action: "ec2:DescribeInstances".into(),
+                resource: "*".into(),
+                decision: "allowed".into(),
+                matched_statements: vec![
+                    "arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess @ 0:0".into()
+                ],
+                missing_context: vec![],
+                blocked_by_scp: false,
+                blocked_by_boundary: false,
+            },
+        ];
+        let body = super::render_explain_overlay("arn:aws:iam::123:role/EbmanReadOnly", &rows);
+        // Both action sections present, marked with correct decision glyphs.
+        assert!(body.contains("Action:   elasticbeanstalk:RebuildEnvironment"));
+        assert!(body.contains("✗ implicitDeny"));
+        assert!(body.contains("Action:   ec2:DescribeInstances"));
+        assert!(body.contains("✓ allowed"));
+        // implicitDeny suggests the JSON-policy fix.
+        assert!(body.contains("\"Effect\": \"Allow\""));
+        assert!(body.contains("\"Action\": \"elasticbeanstalk:RebuildEnvironment\""));
+        // The allowed action does NOT get the fix suggestion.
+        assert!(body.matches("To allow, add this statement").count() == 1);
+        // Matched statement surfaces for the allowed action.
+        assert!(body.contains("AmazonEC2ReadOnlyAccess"));
+    }
+
+    #[test]
+    fn render_explain_overlay_flags_scp_and_boundary_blockers() {
+        let rows = vec![crate::aws::IamSimResult {
+            action: "ec2:TerminateInstances".into(),
+            resource: "*".into(),
+            decision: "explicitDeny".into(),
+            matched_statements: vec!["org-scp/SCPDenyTerminate @ 0:0".into()],
+            missing_context: vec![],
+            blocked_by_scp: true,
+            blocked_by_boundary: true,
+        }];
+        let body = super::render_explain_overlay("arn:aws:iam::123:role/X", &rows);
+        assert!(body.contains("Organizations SCP"));
+        assert!(body.contains("permission boundary"));
+        // explicitDeny gives the "Remove the Deny" hint instead of
+        // the implicitDeny JSON snippet.
+        assert!(body.contains("explicit Deny always wins"));
+        assert!(!body.contains("\"Effect\": \"Allow\""));
     }
 
     fn empty_resources() -> crate::aws::EnvResources {
