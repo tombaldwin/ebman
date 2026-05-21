@@ -151,6 +151,19 @@ fn build_chain_pills(app: &App) -> Vec<(String, Color, Color)> {
             theme.health_red,
         ));
     }
+    // Pending-dispatch countdown — operator just authorised an action
+    // and is in the 5s cancel window. Red bg so the operator catches
+    // it peripherally; the 100ms anim ticker re-renders the second
+    // digit each frame so the countdown is smooth.
+    if let Some(pd) = app.pending_dispatch.as_ref() {
+        let now = std::time::Instant::now();
+        let remaining = pd.deadline.saturating_duration_since(now).as_secs() + 1;
+        chain.push((
+            format!("{} {}s — U undo", pd.action_label, remaining),
+            fg(theme.health_red),
+            theme.health_red,
+        ));
+    }
     let in_flight: Vec<&str> = app
         .pending_actions
         .iter()
@@ -3234,6 +3247,11 @@ fn draw_help(f: &mut Frame, area: Rect, app: &mut App) {
             "diagnose selected env (events + alarms + instances + recent deploys)",
             theme,
         ),
+        help_line(
+            "U",
+            "undo a pending action dispatch during its 5s cancel window",
+            theme,
+        ),
         help_line("f", "freeze / unfreeze auto-refresh", theme),
         help_line(
             "1 - 9",
@@ -3972,34 +3990,6 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                     .block(block),
                 popup,
             );
-        }
-        ActionFlow::Running { action, env, since } => {
-            let popup = centered_rect(50, 25, area);
-            f.render_widget(Clear, popup);
-            let elapsed = since.elapsed().as_secs();
-            let lines = vec![
-                Line::from(""),
-                Line::from(Span::styled(
-                    format!("  {} on {env}…", action.label()),
-                    Style::default()
-                        .fg(theme.health_yellow)
-                        .add_modifier(Modifier::BOLD),
-                )),
-                Line::from(""),
-                Line::from(Span::styled(
-                    format!("  elapsed {elapsed}s"),
-                    Style::default().fg(theme.muted),
-                )),
-            ];
-            let block = rounded_block(&theme, true)
-                .border_style(Style::default().fg(theme.health_yellow))
-                .title(Span::styled(
-                    " running ",
-                    Style::default()
-                        .fg(theme.health_yellow)
-                        .add_modifier(Modifier::BOLD),
-                ));
-            f.render_widget(Paragraph::new(lines).block(block), popup);
         }
     }
 }

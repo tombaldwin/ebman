@@ -701,6 +701,11 @@ pub struct App {
     /// Rolling list of in-flight + recently-completed action dispatches.
     /// See `PendingAction`. Surfaced as a header chip + `:pending` overlay.
     pub pending_actions: std::collections::VecDeque<PendingAction>,
+    /// Action queued for dispatch but inside the [`UNDO_WINDOW`] —
+    /// see [`PendingDispatch`]. `tick_pending_dispatch` (called from
+    /// the main loop) fires the AWS call when the deadline passes;
+    /// `U` in Normal mode cancels.
+    pub pending_dispatch: Option<PendingDispatch>,
     /// Current scope of the help overlay. Determines which keymap subset
     /// `draw_help` renders. Set whenever `?` opens Help.
     pub help_topic: HelpTopic,
@@ -1294,6 +1299,7 @@ impl App {
             consecutive_throttles: 0,
             sso_expiry: crate::sso::latest_session_expiry(),
             pending_actions: std::collections::VecDeque::with_capacity(PENDING_CAP),
+            pending_dispatch: None,
             help_topic: HelpTopic::Global,
             pre_help_mode: None,
             pre_help_overlay: None,
@@ -1449,6 +1455,7 @@ impl App {
             consecutive_throttles: 0,
             sso_expiry: None,
             pending_actions: std::collections::VecDeque::with_capacity(PENDING_CAP),
+            pending_dispatch: None,
             help_topic: HelpTopic::Global,
             pre_help_mode: None,
             pre_help_overlay: None,
@@ -1611,11 +1618,13 @@ impl App {
                 }
                 _ = anim.tick(), if self.loading_since.is_some()
                     || !self.toasts.is_empty()
+                    || self.pending_dispatch.is_some()
                     || self.loading_visible_until.map(|t| Instant::now() < t).unwrap_or(false) => {
                     // Wake the draw loop so the spinner can advance, toasts
-                    // expire promptly, and the loading-indicator linger
-                    // window can finish counting down. Gated to keep idle CPU
-                    // at zero otherwise.
+                    // expire promptly, the cancel-window countdown stays
+                    // accurate, and the loading-indicator linger window can
+                    // finish counting down. Gated to keep idle CPU at zero
+                    // otherwise.
                 }
                 Some(msg) = self.msg_rx.recv() => {
                     self.handle_msg(msg);
@@ -1654,6 +1663,11 @@ impl App {
             }
             // Drop pending-actions entries that completed > PENDING_COMPLETED_TTL ago.
             self.expire_pending();
+            // Fire any pending dispatch whose cancel window has elapsed.
+            // Cheap (a single Instant comparison when None); placed here
+            // so the deadline is checked on every loop iteration, not
+            // gated on user input.
+            self.tick_pending_dispatch();
             // Pending embedded shell — allocate a PTY and switch mode.
             if let Some(target) = self.pending_shell_target.take() {
                 self.open_embedded_shell(terminal, &target)?;
@@ -2542,6 +2556,13 @@ impl App {
                 }
                 match key.code {
                     KeyCode::Char('q') => self.quit = true,
+                    // `U` undoes a pending action dispatch during the
+                    // 5s cancel window — last-ditch "oh god no" rescue
+                    // after a Y / typed-name confirm. Uppercase so it
+                    // can't be mistaken for a regular keystroke.
+                    KeyCode::Char('U') if self.pending_dispatch.is_some() => {
+                        self.cancel_pending_dispatch();
+                    }
                     // Esc clears multi-select when active. Honours the
                     // "esc = clear" hint the multi-select status message
                     // advertises; previously a no-op (silent footgun).
@@ -5112,23 +5133,23 @@ impl App {
                 // typing the env name and `q` might be part of it.
                 (KeyCode::Char('q'), ConfirmKind::YesNo) => self.close_action_flow(),
                 (KeyCode::Char('y'), ConfirmKind::YesNo) | (KeyCode::Enter, ConfirmKind::YesNo) => {
+                    // Queue with a 5s cancel window instead of dispatching
+                    // immediately. The action flow closes (modal gone)
+                    // and a countdown lands in `status_message`; `U` in
+                    // Normal mode undoes it before the deadline.
                     let m = modal.clone();
-                    self.action_flow = Some(ActionFlow::Running {
-                        action: m.action,
-                        env: m.target_env.clone(),
-                        since: Instant::now(),
-                    });
-                    self.spawn_action(m);
+                    self.close_action_flow();
+                    self.queue_action_dispatch(m);
                 }
                 (KeyCode::Char('n'), ConfirmKind::YesNo) => self.close_action_flow(),
                 (KeyCode::Enter, ConfirmKind::TypeName) if modal.typed == modal.target_env => {
+                    // Same cancel-window treatment as Y-confirms. Terminate
+                    // is the loudest example — the typed-name guard already
+                    // prevents accidental dispatch, but the 5s window is a
+                    // last-ditch "oh god no" rescue.
                     let m = modal.clone();
-                    self.action_flow = Some(ActionFlow::Running {
-                        action: m.action,
-                        env: m.target_env.clone(),
-                        since: Instant::now(),
-                    });
-                    self.spawn_action(m);
+                    self.close_action_flow();
+                    self.queue_action_dispatch(m);
                 }
                 (KeyCode::Backspace, ConfirmKind::TypeName) => {
                     modal.typed.pop();
@@ -5138,11 +5159,6 @@ impl App {
                 }
                 _ => {}
             },
-            ActionFlow::Running { .. } => {
-                if key.code == KeyCode::Esc {
-                    self.close_action_flow();
-                }
-            }
         }
     }
 
@@ -6733,6 +6749,83 @@ impl App {
                 body,
             });
         });
+    }
+
+    /// Queue an action for dispatch with a brief cancel window.
+    /// Replaces the immediate `spawn_action` call from the
+    /// confirm-flow Y / TypeName-confirm paths so the operator gets
+    /// a chance to undo. Closes the action flow (the modal is gone)
+    /// and surfaces the countdown via `status_message`.
+    ///
+    /// Already-queued dispatches block further confirms — only one
+    /// in flight at a time. Keeps the UX clear: the operator sees
+    /// "X dispatches in Ns" and either waits or undoes; chaining a
+    /// second dispatch on top would mean two countdowns to track.
+    fn queue_action_dispatch(&mut self, modal: ConfirmModal) {
+        if self.pending_dispatch.is_some() {
+            self.error_message = Some(
+                "another action is mid-dispatch — wait for it to land or press U to undo".into(),
+            );
+            return;
+        }
+        let action_label = modal.action.label().to_string();
+        let env_name = modal.target_env.clone();
+        let deadline = Instant::now() + UNDO_WINDOW;
+        self.pending_dispatch = Some(PendingDispatch {
+            modal,
+            deadline,
+            action_label: action_label.clone(),
+            env_name: env_name.clone(),
+        });
+        self.status_message = Some(format!(
+            "{} → {} dispatches in {}s — press U to undo",
+            action_label,
+            env_name,
+            UNDO_WINDOW.as_secs()
+        ));
+    }
+
+    /// Per-tick check called from the main loop. Fires the AWS call
+    /// when the cancel window expires; otherwise updates the
+    /// status countdown so the header stays accurate (the existing
+    /// `anim` ticker fires every 100ms while `pending_dispatch.is_some()`,
+    /// so the visible countdown decrements smoothly).
+    fn tick_pending_dispatch(&mut self) {
+        let Some(pd) = self.pending_dispatch.as_ref() else {
+            return;
+        };
+        let now = Instant::now();
+        if now >= pd.deadline {
+            let modal = pd.modal.clone();
+            self.pending_dispatch = None;
+            self.spawn_action(modal);
+        }
+    }
+
+    /// Cancel the pending dispatch (bound to `U` in Normal mode and
+    /// the per-overlay Esc handlers when the action flow opens a
+    /// nested overlay). Emits a toast so the operator knows the abort
+    /// landed — silent cancellation would feel like a missed keypress.
+    fn cancel_pending_dispatch(&mut self) {
+        let Some(pd) = self.pending_dispatch.take() else {
+            return;
+        };
+        let msg = format!(
+            "undone — {} → {} not dispatched",
+            pd.action_label, pd.env_name
+        );
+        // Audit-log the cancel so an operator who undid an action
+        // during an incident can find the breadcrumb later.
+        write_audit_line(
+            self.context.account_id.as_deref(),
+            self.context.profile.as_deref(),
+            &self.context.region,
+            &format!(
+                "stage=undone action={:?} target={}",
+                pd.modal.action, pd.env_name
+            ),
+        );
+        self.status_message = Some(msg);
     }
 
     fn spawn_action(&mut self, modal: ConfirmModal) {
@@ -10883,6 +10976,32 @@ fn rotate_if_oversize(path: &std::path::Path, max_bytes: u64) {
     let _ = std::fs::rename(path, backup);
 }
 
+/// One action queued for dispatch with a brief cancel window. After
+/// the operator authorises an action (Y on a YesNo confirm, or types
+/// the env name on a TypeName confirm) we don't fire the AWS call
+/// immediately — we hold the modal here, show a countdown in the
+/// header, and dispatch only when [`UNDO_WINDOW`] elapses. The
+/// operator can press `U` in Normal mode to abort during the window,
+/// which clears the entry without sending the SDK call.
+///
+/// Only one pending dispatch at a time; subsequent Y-confirms while
+/// one is pending error out and tell the operator to wait or undo.
+#[derive(Clone)]
+pub struct PendingDispatch {
+    pub modal: ConfirmModal,
+    pub deadline: Instant,
+    /// Captured at queue time so the toast / log line can still
+    /// reference the action even after the modal closes.
+    pub action_label: String,
+    pub env_name: String,
+}
+
+/// Cancel window after a confirm — long enough that an "oops" reflex
+/// can recover but short enough that operators don't notice it on a
+/// deliberate action. The UX review flagged the absence of any
+/// abort affordance after dispatch as a real safety gap.
+pub const UNDO_WINDOW: Duration = Duration::from_secs(5);
+
 /// Items the Apps-scope action overlay (`Overlay::AppsActionMenu`)
 /// offers when the operator presses `a` from the Apps table. Each
 /// dispatches via `cmd_batch_*` after seeding `multi_selected` with the
@@ -12811,5 +12930,126 @@ mod tests {
         assert!(app.redact);
         press(&mut app, KeyCode::Char('x'), KeyModifiers::CONTROL);
         assert!(!app.redact);
+    }
+
+    /// Helper for the cancel-window tests — build a ConfirmModal for
+    /// the given Action / env. Mirrors the shape `advance_action_flow`
+    /// produces; pre-flight fields stay None (the cancel-window code
+    /// path doesn't read them).
+    fn mk_modal(action: Action, env: &str) -> ConfirmModal {
+        ConfirmModal {
+            action,
+            target_env: env.into(),
+            swap_with: None,
+            typed: String::new(),
+            kind: ConfirmKind::YesNo,
+            dryrun: None,
+            loading_dryrun: false,
+            recent_events: None,
+            loading_events: false,
+            traffic_warning: None,
+            deploy_version: None,
+            upgrade_platform_arn: None,
+            upgrade_platform_label: None,
+            clone_target: None,
+            scale_min: None,
+            scale_max: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn queue_action_dispatch_holds_action_for_cancel_window() {
+        let mut app = test_app();
+        let modal = mk_modal(Action::Rebuild, "uflexi-prod");
+        app.queue_action_dispatch(modal);
+        let pd = app
+            .pending_dispatch
+            .as_ref()
+            .expect("queue should set pending_dispatch");
+        assert_eq!(pd.env_name, "uflexi-prod");
+        assert!(
+            pd.deadline > std::time::Instant::now(),
+            "deadline must be in the future"
+        );
+        let remaining = pd
+            .deadline
+            .saturating_duration_since(std::time::Instant::now());
+        assert!(
+            remaining <= UNDO_WINDOW && remaining >= UNDO_WINDOW - Duration::from_millis(500),
+            "deadline should be roughly UNDO_WINDOW from now; got {remaining:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_pending_dispatch_clears_field_and_emits_status() {
+        let mut app = test_app();
+        app.queue_action_dispatch(mk_modal(Action::Terminate, "uflexi-prod"));
+        assert!(app.pending_dispatch.is_some());
+        app.cancel_pending_dispatch();
+        assert!(app.pending_dispatch.is_none());
+        let msg = app.status_message.as_deref().unwrap_or("");
+        assert!(
+            msg.contains("undone") && msg.contains("uflexi-prod"),
+            "status should mention the undo + env; got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn second_queue_attempt_errors_while_first_pending() {
+        let mut app = test_app();
+        app.queue_action_dispatch(mk_modal(Action::Rebuild, "first"));
+        assert!(app.pending_dispatch.is_some());
+        let first_deadline = app.pending_dispatch.as_ref().unwrap().deadline;
+        // Second queue attempt is rejected; first dispatch is untouched.
+        app.queue_action_dispatch(mk_modal(Action::Rebuild, "second"));
+        assert_eq!(
+            app.pending_dispatch.as_ref().unwrap().env_name,
+            "first",
+            "second queue must not replace the first"
+        );
+        assert_eq!(
+            app.pending_dispatch.as_ref().unwrap().deadline,
+            first_deadline,
+            "second queue must not bump the deadline"
+        );
+        assert!(
+            app.error_message
+                .as_deref()
+                .unwrap_or("")
+                .contains("press U to undo"),
+            "second queue should surface a useful error"
+        );
+    }
+
+    #[tokio::test]
+    async fn tick_pending_dispatch_fires_after_deadline() {
+        let mut app = test_app();
+        // Forge a pending dispatch whose deadline has already elapsed
+        // so tick_pending_dispatch fires synchronously without us
+        // having to wait 5 seconds.
+        let modal = mk_modal(Action::Rebuild, "expired");
+        app.pending_dispatch = Some(PendingDispatch {
+            modal,
+            deadline: std::time::Instant::now() - Duration::from_millis(1),
+            action_label: "Rebuild env".into(),
+            env_name: "expired".into(),
+        });
+        app.tick_pending_dispatch();
+        assert!(
+            app.pending_dispatch.is_none(),
+            "expired tick should clear the field (dispatch handed to spawn_action)"
+        );
+    }
+
+    #[tokio::test]
+    async fn capital_u_cancels_pending_dispatch_in_normal_mode() {
+        let mut app = test_app();
+        app.queue_action_dispatch(mk_modal(Action::Rebuild, "uflexi-prod"));
+        assert!(app.pending_dispatch.is_some());
+        press(&mut app, KeyCode::Char('U'), KeyModifiers::SHIFT);
+        assert!(
+            app.pending_dispatch.is_none(),
+            "capital U in Normal mode should cancel the pending dispatch"
+        );
     }
 }
