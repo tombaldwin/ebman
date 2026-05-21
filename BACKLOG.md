@@ -400,6 +400,70 @@ Items from the drive-the-app review, shipped together because they share state. 
 - **Caret glyph upgrade (H)** — new `caret_glyph(theme)` helper. Unicode + Powerline modes pick up `U+258E` (a thin vertical block that reads as a real terminal cursor) in place of the underscore. ASCII keeps `_`. Applied to all 10 blinking-cursor sites: command bar, filter bar, quick-jump bar, palette input, picker prompt, Detail Events search, DLQ purge confirm, action swap-target picker, Detail Logs filter, type-name terminate confirm. Test: `caret_glyph_falls_back_to_underscore_on_ascii`.
 - **Toast accent stripe (F)** — every toast now gets a chunky `▎` severity-coloured stripe on the left edge of the body, Slack / VS Code notification-card style. Truncation budget bumped by 1 cell.
 
+### 0.4.0-bound feature batch (2026-05-21, unreleased)
+
+Seven features built on top of 0.3.5 in a single working session. All on
+`main`, no version bump yet — natural anchor for 0.4.0 when cut. Order
+of landing:
+
+- **Undo window extended to batch ops** (`4a6f8b2`) — `:batch-rebuild` /
+  `:batch-restart` / `:batch-deploy` / `:batch-tag` / `:batch-untag` /
+  `:batch-set-option` now route through the same 5s cancel window as
+  single-env confirms from 0.3.5. `PendingDispatch` refactored into a
+  kind-enum (`Single` + four `Batch*` variants); `cancel_pending_dispatch`
+  drops the whole batch on `U`. Apps-scope per-app action menu's
+  `BatchRebuild` / `BatchRestart` pick up the window for free. +2 tests.
+- **Apps-scope multi-select + pin** (`80aee4e` + `274cec3`) — `space`
+  toggles app in/out of `apps_selected`; `*` toggles pin into
+  `pinned_apps` (persisted to state.toml's new `pinned_apps` key).
+  Pinned apps sort to the top via `resort_applications()`. Per-row
+  prefix: `★ ` pinned / `▶ ` selected / two-space gutter. Esc clears
+  apps-selected when no envs-selected. Help-screen entries. +3 tests.
+- **`:apps-info` overlay** (`2eb1114`) — surfaces app metadata that
+  doesn't fit in the apps-table columns (description / created /
+  updated / template count / env list). Resolves the target from
+  cursor in either scope. Removes the `#[allow(dead_code)]` on
+  `Application::date_created` (now consumed). Registry entry under
+  `Category::Inspection`.
+- **Cost Explorer integration** (`bfb33f4` + `8bf732c`) — opt-in
+  `:cost on` adds a COST column to the env table showing $/month per
+  env via Cost Explorer (`Tag: elasticbeanstalk:environment-name`,
+  30d trailing). 24h on-disk cache at
+  `~/.cache/ebman/cost-{account}-{region}.toml`. Cost Explorer
+  client pinned to `us-east-1` (global service). Bucketed cell
+  colours (green < $50, text $50-$500, red ≥ $500). `cost_enabled`
+  persists in state.toml. `:cost status` shows cache age. +4 tests.
+- **`:listeners` ALB config overlay** (`1aa3358`) — fetches the env's
+  `aws:elbv2:listener:*` namespaces via DescribeConfigurationSettings
+  and renders one block per port (default first, then numeric asc).
+  Web-tier only — Worker envs error out. Visibility-only; edit
+  follow-up tracked as task #111.
+- **`:rds` dbinstance config overlay** (`23e9221`) — fetches
+  `aws:rds:dbinstance.*` option settings and renders them.
+  `DBPassword` always redacted to "(redacted)" regardless of the
+  global `:redact` toggle. Empty-state shows a usage example for
+  bare `:set-option`. Visibility-only; attach/detach follow-up
+  tracked as task #110.
+- **`:report-bug` overlay** (`737048d`) — operator-driven bug reports
+  with no outbound HTTP. New `src/report_bug.rs` module builds a
+  scrubbed payload (version / OS / icons / theme / last 30 log lines
+  / last 10 on-screen messages / latest panic backtrace). Scrubber
+  redacts ARNs, env names (longest-first), app names, CNAMEs,
+  12-digit account IDs, profile name (skipping the generic
+  "default"). Operator picks `y` (copy to clipboard) / `b` (open
+  GitHub issue draft in browser, body pre-filled via URL params,
+  truncated at ~7900 chars for the 8k limit). README "Privacy /
+  telemetry" section documents the design. +8 tests.
+
+**Net for the batch**: 318 → 326 tests. Six commits on `main`. Working
+tree empty. CI green throughout.
+
+**Follow-ups parked**
+
+- Task #110 — RDS attach / detach modal form (snapshot+modify+wait
+  orchestration for detach; 10-field attach form).
+- Task #111 — ALB listener edit form (LB tab + ACM cert picker).
+
 ### Post-0.3.0 UX punch list (2026-05-21)
 Twelve UX fixes from the v0.3.0 critical review, shipped as one batch (tasks #92–#103):
 
@@ -584,7 +648,7 @@ Items list `Depends on:` only when another backlog or done item is a real prereq
 
 Items surfaced during a backlog-review pass — gaps between "ebman is useful" and "ebman replaces the console during incidents". Ranked by likely operator value.
 
-- [ ] **Cost-Explorer integration** — `$/month` per env in a new column or `:cost` overlay. Surfaces idle envs the team has forgotten about. AWS Cost Explorer API is rate-limited (~1 req/s) and slow (~1-3s per query), so structure as lazy + 24h cache + opt-in via `:cost on`.
+- [x] **Cost-Explorer integration** — Done (2026-05-21). `:cost on` adds a COST column with bucketed colours; opt-in + 24h cache at `~/.cache/ebman/cost-{account}-{region}.toml`. Real-account verification still TODO since I can only test the SDK request shape against the docs.
 
 ### Refactors — structural cleanup remaining
 
@@ -615,9 +679,9 @@ All previously listed Tier 1 items are now shipped:
 
 Gaps surfaced during the 2026-05-19 console-vs-ebman comparison. Each entry is a console feature with no ebman equivalent. Ordered by daily-operator frequency.
 
-- [ ] **Attach / detach RDS database** — console exposes a Database tab where you can attach a new RDS instance to an env (creates the security-group + IAM linkage automatically) or detach an existing one. Needs `UpdateEnvironment(option_settings: aws:rds:dbinstance.*)` for create/attach, and a different code path for the post-creation "decouple" workflow (since EB-created RDS instances are pinned to the env's lifecycle by default).
-- [ ] **ALB listener + TLS cert config** — list and edit ALB listeners (port, protocol, default action, attached cert) for the env's ALB. Adds an "LB" tab in Detail. Needs `aws:elbv2:listener.*` option settings + an ACM cert picker. Web-tier-only.
-- [ ] **Capacity profile beyond min/max + instance type** — `:scale N` sets min=max; `:instance-type TYPE` sets the launch-config InstanceType. Console exposes a full Capacity tab with fleet composition (multi-instance-type list, on-demand base + spot %), scaling triggers (custom CW metric / threshold / cooldown), and scheduled scaling actions. New `:capacity` command opening a modal-form (depends on the option-settings editor abstraction from Tier 1) — or per-option commands like `:trigger metric LATENCY threshold 0.5`.
+- [~] **Attach / detach RDS database** — Partial. `:rds` (2026-05-21) reads + displays the env's `aws:rds:dbinstance.*` option settings with DBPassword redacted. Full attach (10+ required fields → modal form) and detach (snapshot→modify→wait sequence with typed-name confirm) tracked as **task #110**.
+- [~] **ALB listener + TLS cert config** — Partial. `:listeners` (2026-05-21) reads the env's `aws:elbv2:listener:*` namespaces, groups by port (`default` first, then numeric asc), filters empty values. Web-tier only. Edit support (LB tab + ACM cert picker) tracked as **task #111**.
+- [x] **Capacity profile beyond min/max + instance type** — Done. `:capacity` modal form (MinSize / MaxSize / InstanceType / Cooldown) shipped in 0.3.0; `a → Capacity` menu entry shipped in 0.3.1. Multi-instance-type / spot-base / scheduled-scaling fleets still missing but those are niche enough to drop from this list — operators using them are mostly EB CLI / Terraform users.
 - [ ] **Custom platforms — create** — delete shipped as `:custom-platform-delete <arn>`. Create still missing: console offers a wizard that builds a new custom AMI from a Packer template (slow — minutes — needs polling); ours would be `:custom-platform-create <packer-config>` via `elasticbeanstalk:CreatePlatformVersion`. Niche but a real gap for operators who maintain in-house base AMIs.
 
 ### Tier 4 — multi-account / child accounts
@@ -645,11 +709,14 @@ Honest list of features that landed during expansion sprints but aren't earning 
 
 Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-line reason. Drop the entry once retried (successfully or with the user's deliberate decision to defer further).
 
-- **README screenshots / demo gif** — autonomous shell has no real TTY; can't render the TUI for capture. Retry from an interactive session.
-- **Option settings editor (Tier 1)** — requires a modal text-input form generator and a category-tree of namespaces; defer.
-- **Split `src/app.rs`** — refactor spans 10+ mode handlers + state machines, exceeds the CLAUDE.md "touches > 3 modules" stop condition. Pick up in a focused session.
+- **README screenshots / demo gif** — autonomous shell has no real TTY; can't render the TUI for capture. Retry from an interactive session (operator captures stills + gif; I edit the supporting copy).
 - **Embedded asciinema recorder (Tier 6)** — needs its own input-capture/replay infrastructure; defer.
-- **`sts:AssumeRole`-based account switcher (Tier 4)** — needs an `[accounts]` config schema with role ARNs + credentials injection; defer. The current `:account NAME` aliases `:profile NAME` for the standard one-profile-per-account pattern.
+
+**Retried successfully** (kept here briefly so the history's discoverable):
+
+- **Option settings editor** — shipped in 0.3.0 (`:env`, `:set-option`, `:capacity` modal, every per-namespace command).
+- **Split `src/app.rs`** — shipped as task #66 (ten `cmd_*.rs` sub-modules); app.rs 14,277 → 12,478.
+- **`sts:AssumeRole` account switcher** — shipped in 0.3.0 (`accounts.NAME.role_arn` config + `:account NAME` switcher). [[multi-account-discovery]].
 
 ---
 
