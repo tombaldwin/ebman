@@ -258,6 +258,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         CommandKind::Prefill("explain "),
     ),
     cmd(
+        "env-edit",
+        ":env-edit — bulk env-var editor: opens current env vars in $EDITOR (KEY=VALUE), diffs + dispatches on save",
+        Category::EnvConfig,
+        CommandKind::ZeroArg,
+    ),
+    cmd(
         "report-bug",
         ":report-bug — scrubbed bug-report overlay. y = copy, b = open GitHub issue with body pre-filled. No outbound HTTP from ebman.",
         Category::Setup,
