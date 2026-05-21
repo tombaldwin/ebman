@@ -214,6 +214,14 @@ pub enum Overlay {
         dlq_messages: Option<Result<Vec<crate::aws::QueueMessage>, String>>,
         session_id: u64,
     },
+    /// Scrubbed bug-report payload from `:report-bug`. The operator
+    /// chooses how to deliver: `y` copies to clipboard (paste into a
+    /// GitHub issue manually); `b` opens a pre-filled GitHub issue
+    /// in the browser; `esc` cancels. Ebman never sends the payload
+    /// itself — the operator is always the agent that emits data,
+    /// on their machine, after seeing the exact bytes that would
+    /// leave.
+    ReportBug { body: String },
     /// Per-app action menu opened by Apps-scope `a`. Lists batch
     /// operations that target every env in the application — the
     /// operator picks one via j/k + Enter and the dispatcher fans
@@ -2178,6 +2186,13 @@ impl App {
                 self.handle_apps_action_menu_key(key);
                 return;
             }
+            if matches!(
+                self.current_overlay.as_ref(),
+                Some(Overlay::ReportBug { .. })
+            ) {
+                self.handle_report_bug_key(key);
+                return;
+            }
             if let Some(overlay) = self.current_overlay.as_ref() {
                 let universal = matches!(key.code, KeyCode::Esc | KeyCode::Char('q'));
                 let variant_extra = match overlay {
@@ -3318,6 +3333,119 @@ impl App {
     /// via the command palette but never pushed at the operator;
     /// existence justifies removing the splash byline if anyone ever
     /// objects to the 3-second introduction.
+    /// `:report-bug` — build a scrubbed bug-report payload from
+    /// current app state + ~/.cache/ebman/ebman.log tail + latest
+    /// crash log (if any), and show it in the `Overlay::ReportBug`.
+    /// Operator chooses `y` (copy to clipboard) or `b` (open
+    /// GitHub issue in browser). See `report_bug` module for the
+    /// scrubbing rules.
+    pub(crate) fn open_report_bug_overlay(&mut self) {
+        let cnames: std::collections::BTreeSet<String> = self
+            .environments
+            .iter()
+            .filter(|e| !e.cname.is_empty())
+            .map(|e| e.cname.clone())
+            .collect();
+        let env_names: std::collections::BTreeSet<String> =
+            self.environments.iter().map(|e| e.name.clone()).collect();
+        let app_names: std::collections::BTreeSet<String> =
+            self.applications.iter().map(|a| a.name.clone()).collect();
+        // message_log entries are (timestamp, kind, text) tuples;
+        // pull the text + a single-char severity prefix so the
+        // operator can see whether each line was a status or an
+        // error without the structured tracing noise.
+        let recent_messages: Vec<String> = self
+            .message_log
+            .iter()
+            .rev()
+            .take(10)
+            .map(|(ts, kind, text)| {
+                let sev = match kind {
+                    MsgKind::Info => "[i]",
+                    MsgKind::Error => "[!]",
+                };
+                let when = ts.format("%H:%M:%S");
+                format!("{when}  {sev}  {text}")
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        let icons = format!("{:?}", self.theme.icons).to_lowercase();
+        let input = crate::report_bug::ReportInput {
+            ebman_version: env!("CARGO_PKG_VERSION"),
+            os: std::env::consts::OS,
+            os_release: std::env::consts::ARCH,
+            icons: &icons,
+            theme: self.theme.name,
+            refresh_interval_secs: self.refresh_interval.as_secs(),
+            recent_log_lines: crate::report_bug::tail_ebman_log(30),
+            recent_messages,
+            recent_crash: crate::report_bug::latest_crash_log(),
+            env_count: self.environments.len(),
+            app_count: self.applications.len(),
+            multi_regions_count: self.multi_regions.len(),
+            multi_account_enabled: !self.accounts.is_empty(),
+        };
+        let ctx = crate::report_bug::ScrubContext {
+            account_id: self.context.account_id.clone(),
+            profile: self.context.profile.clone(),
+            region: Some(self.context.region.clone()),
+            env_names,
+            app_names,
+            cnames,
+        };
+        let body = crate::report_bug::build_report(&input, &ctx);
+        self.current_overlay = Some(Overlay::ReportBug { body });
+    }
+
+    /// Key handler for the `:report-bug` overlay. `y` copies the
+    /// scrubbed payload to clipboard; `b` opens a pre-filled
+    /// GitHub issue in the browser; `esc` / `q` closes. Same shape
+    /// as the other interactive overlays.
+    fn handle_report_bug_key(&mut self, key: KeyEvent) {
+        let body = match self.current_overlay.as_ref() {
+            Some(Overlay::ReportBug { body }) => body.clone(),
+            _ => return,
+        };
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.current_overlay = None;
+            }
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                match yank(&body) {
+                    Ok(()) => {
+                        self.status_message = Some(format!(
+                            "bug report copied to clipboard ({} chars) — paste at https://github.com/tombaldwin/ebman/issues/new",
+                            body.chars().count()
+                        ));
+                    }
+                    Err(e) => {
+                        self.error_message = Some(format!("clipboard error: {e}"));
+                    }
+                }
+                self.current_overlay = None;
+            }
+            KeyCode::Char('b') | KeyCode::Char('B') => {
+                let url = crate::report_bug::github_issue_url(
+                    "tombaldwin/ebman",
+                    "Bug report from ebman",
+                    &body,
+                );
+                match open_url(&url) {
+                    Ok(()) => {
+                        self.status_message = Some("opened GitHub issue draft in browser".into());
+                    }
+                    Err(e) => {
+                        self.error_message = Some(format!("couldn't open browser: {e}"));
+                    }
+                }
+                self.current_overlay = None;
+            }
+            _ => {}
+        }
+    }
+
     /// `:rds` — fetch the env's RDS dbinstance option settings and
     /// render them. Visibility-only first cut: attach (via
     /// `UpdateEnvironment(aws:rds:dbinstance.*)`) and detach (the
@@ -7561,6 +7689,7 @@ impl App {
             "cost" => self.cmd_cost(&rest),
             "listeners" => self.cmd_listeners(),
             "rds" => self.cmd_rds(),
+            "report-bug" => self.open_report_bug_overlay(),
             "settings" => {
                 self.open_settings_form();
             }
