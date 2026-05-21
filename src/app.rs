@@ -214,6 +214,18 @@ pub enum Overlay {
         dlq_messages: Option<Result<Vec<crate::aws::QueueMessage>, String>>,
         session_id: u64,
     },
+    /// Per-app action menu opened by Apps-scope `a`. Lists batch
+    /// operations that target every env in the application — the
+    /// operator picks one via j/k + Enter and the dispatcher fans
+    /// out through the existing `cmd_batch_*` helpers. Closing with
+    /// esc / q returns to the Apps table without doing anything.
+    AppsActionMenu {
+        app_name: String,
+        /// Cached at open time so the action labels can show "N envs"
+        /// without re-walking `app.environments` per frame.
+        env_names: Vec<String>,
+        cursor: usize,
+    },
     /// Streaming CloudWatch Logs view opened by `:logs-tail`. Polling task
     /// pushes new events via `AppMsg::LogTailEvents` every ~2s; the buffer
     /// is capped at `LOG_TAIL_MAX_LINES` (oldest dropped when growing).
@@ -2101,6 +2113,13 @@ impl App {
                 self.handle_log_tail_key(key);
                 return;
             }
+            if matches!(
+                self.current_overlay.as_ref(),
+                Some(Overlay::AppsActionMenu { .. })
+            ) {
+                self.handle_apps_action_menu_key(key);
+                return;
+            }
             if let Some(overlay) = self.current_overlay.as_ref() {
                 let universal = matches!(key.code, KeyCode::Esc | KeyCode::Char('q'));
                 let variant_extra = match overlay {
@@ -2535,7 +2554,13 @@ impl App {
                     KeyCode::BackTab => self.set_scope(self.scope.prev()),
                     KeyCode::Enter if self.scope == Scope::Apps => self.drill_into_app(),
                     KeyCode::Enter => self.open_detail(),
+                    KeyCode::Char('a') if self.scope == Scope::Apps => {
+                        self.open_apps_action_menu();
+                    }
                     KeyCode::Char('a') if self.scope == Scope::Envs => self.open_action_menu(),
+                    KeyCode::Char('b') if self.scope == Scope::Apps => {
+                        self.open_app_in_console();
+                    }
                     KeyCode::F(5) => self.manual_refresh(),
                     KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         self.manual_refresh();
@@ -8779,6 +8804,141 @@ impl App {
         }
     }
 
+    /// Open the apps-scope action overlay for the selected application.
+    /// Captures the env list at open time so later refreshes (e.g. an
+    /// env terminating mid-action) can't shift which envs the operator
+    /// thought they were targeting. Closes silently when no app is
+    /// selected or the application has no envs.
+    pub(crate) fn open_apps_action_menu(&mut self) {
+        let Some(idx) = self.app_table_state.selected() else {
+            return;
+        };
+        let Some(app_name) = self.applications.get(idx).map(|a| a.name.clone()) else {
+            return;
+        };
+        let env_names: Vec<String> = self
+            .environments
+            .iter()
+            .filter(|e| e.application == app_name)
+            .map(|e| e.name.clone())
+            .collect();
+        if env_names.is_empty() {
+            self.status_message = Some(format!(
+                "application '{app_name}' has no environments — nothing to act on"
+            ));
+            return;
+        }
+        self.current_overlay = Some(Overlay::AppsActionMenu {
+            app_name,
+            env_names,
+            cursor: 0,
+        });
+    }
+
+    /// Key handler for the apps-scope action overlay. j/k cycles the
+    /// cursor; Enter dispatches the selected item; esc / q closes.
+    /// Five items, dispatched via the matching `cmd_batch_*` helpers
+    /// after seeding `multi_selected` with the captured env list.
+    fn handle_apps_action_menu_key(&mut self, key: KeyEvent) {
+        let n_items = APPS_ACTION_ITEMS.len() as i32;
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.current_overlay = None;
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(Overlay::AppsActionMenu { cursor, .. }) = self.current_overlay.as_mut()
+                {
+                    let cur = *cursor as i32;
+                    *cursor = (cur + 1).rem_euclid(n_items) as usize;
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(Overlay::AppsActionMenu { cursor, .. }) = self.current_overlay.as_mut()
+                {
+                    let cur = *cursor as i32;
+                    *cursor = (cur - 1).rem_euclid(n_items) as usize;
+                }
+            }
+            KeyCode::Enter => self.dispatch_apps_action_menu(),
+            _ => {}
+        }
+    }
+
+    fn dispatch_apps_action_menu(&mut self) {
+        let Some(Overlay::AppsActionMenu {
+            app_name,
+            env_names,
+            cursor,
+        }) = self.current_overlay.as_ref().cloned()
+        else {
+            return;
+        };
+        // Close the overlay before dispatching so the resulting toast /
+        // confirm modal renders on the bare apps table, not on top of
+        // the menu.
+        self.current_overlay = None;
+        let item = match APPS_ACTION_ITEMS.get(cursor) {
+            Some(it) => *it,
+            None => return,
+        };
+        match item {
+            AppsActionItem::Drill => {
+                self.filter = app_name.clone();
+                self.set_scope(Scope::Envs);
+                self.rebuild_view();
+                self.status_message = Some(format!("filtered envs to application '{app_name}'"));
+            }
+            AppsActionItem::BatchRebuild => {
+                self.multi_selected = env_names.into_iter().collect();
+                self.cmd_batch_action(Action::Rebuild);
+            }
+            AppsActionItem::BatchRestart => {
+                self.multi_selected = env_names.into_iter().collect();
+                self.cmd_batch_action(Action::RestartAppServer);
+            }
+            AppsActionItem::BatchDeploy => {
+                // Seed the multi-select then drop into command mode
+                // with `:batch-deploy ` so the operator types the
+                // version label and Enter dispatches.
+                self.multi_selected = env_names.into_iter().collect();
+                self.mode = Mode::Command;
+                self.command_input = "batch-deploy ".into();
+                self.status_message = Some("type a version label and press enter".into());
+            }
+            AppsActionItem::OpenInConsole => {
+                self.open_app_in_console();
+            }
+        }
+    }
+
+    /// Open the EB applications-page console URL for the selected
+    /// application in the browser. Mirrors `open_in_console`'s
+    /// `arboard`-clipboard-on-failure shape so the operator still has
+    /// the URL available when the browser launch fails (SSH session,
+    /// no DISPLAY, etc.).
+    pub(crate) fn open_app_in_console(&mut self) {
+        let Some(idx) = self.app_table_state.selected() else {
+            self.status_message = Some("no application selected".into());
+            return;
+        };
+        let Some(name) = self.applications.get(idx).map(|a| a.name.clone()) else {
+            return;
+        };
+        let region = &self.context.region;
+        let app_enc = urlencode(&name);
+        let url = format!(
+            "https://{region}.console.aws.amazon.com/elasticbeanstalk/home?region={region}#/application/overview?applicationName={app_enc}"
+        );
+        match open_url(&url) {
+            Ok(()) => {
+                self.status_message = Some(format!("opened {name} in browser"));
+            }
+            Err(e) => {
+                self.error_message = Some(format!("couldn't open browser: {e}"));
+            }
+        }
+    }
+
     fn drill_into_app(&mut self) {
         let Some(idx) = self.app_table_state.selected() else {
             return;
@@ -10723,6 +10883,89 @@ fn rotate_if_oversize(path: &std::path::Path, max_bytes: u64) {
     let _ = std::fs::rename(path, backup);
 }
 
+/// Items the Apps-scope action overlay (`Overlay::AppsActionMenu`)
+/// offers when the operator presses `a` from the Apps table. Each
+/// dispatches via `cmd_batch_*` after seeding `multi_selected` with the
+/// envs captured at menu-open time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppsActionItem {
+    Drill,
+    BatchRebuild,
+    BatchRestart,
+    BatchDeploy,
+    OpenInConsole,
+}
+
+impl AppsActionItem {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Drill => "Drill into envs",
+            Self::BatchRebuild => "Rebuild all envs in app",
+            Self::BatchRestart => "Restart all envs in app",
+            Self::BatchDeploy => "Deploy version label to all envs",
+            Self::OpenInConsole => "Open application in AWS console",
+        }
+    }
+}
+
+/// Menu order — Drill at the top because it's the default action
+/// operators reach for; OpenInConsole at the bottom so it's not the
+/// thumb-stroke option.
+pub const APPS_ACTION_ITEMS: &[AppsActionItem] = &[
+    AppsActionItem::Drill,
+    AppsActionItem::BatchRebuild,
+    AppsActionItem::BatchRestart,
+    AppsActionItem::BatchDeploy,
+    AppsActionItem::OpenInConsole,
+];
+
+/// Rollup of operational signals across every env in an application.
+/// Pure — driven entirely by the in-memory env list, so the Apps
+/// table can refresh as part of the same view-rebuild that touches
+/// the Envs table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct AppRollup {
+    pub env_count: usize,
+    pub red_count: usize,
+    pub updating_count: usize,
+    pub worker_dlq_alerts: usize,
+}
+
+/// Compute the rollup for one application. Iterates `envs` once and
+/// counts Red / Updating envs (case-insensitive on the health + status
+/// columns). Worker-DLQ alerts come from `dlq_depths` which the App
+/// owns globally — passed in so this stays a free fn that test code
+/// can call without a full `App`.
+pub fn app_rollup(
+    envs: &[crate::aws::Environment],
+    app_name: &str,
+    dlq_depths: &HashMap<String, i64>,
+) -> AppRollup {
+    let mut out = AppRollup::default();
+    for e in envs.iter().filter(|e| e.application == app_name) {
+        out.env_count += 1;
+        // Red / Severe — operator-visible distress signals.
+        if matches!(
+            e.health.to_lowercase().as_str(),
+            "red" | "severe" | "degraded"
+        ) {
+            out.red_count += 1;
+        }
+        if e.status.eq_ignore_ascii_case("Updating")
+            || e.status.eq_ignore_ascii_case("Launching")
+            || e.status.eq_ignore_ascii_case("Terminating")
+        {
+            out.updating_count += 1;
+        }
+        if e.tier.eq_ignore_ascii_case("Worker")
+            && dlq_depths.get(&e.name).copied().unwrap_or(0) > 0
+        {
+            out.worker_dlq_alerts += 1;
+        }
+    }
+    out
+}
+
 fn console_url(region: &str, app_name: &str, env_name: &str) -> String {
     let app = urlencode(app_name);
     let env = urlencode(env_name);
@@ -11049,6 +11292,96 @@ mod tests {
             id: None,
             region: None,
         }
+    }
+
+    #[test]
+    fn app_rollup_counts_envs_red_and_updating() {
+        let envs = vec![
+            crate::aws::Environment {
+                name: "prod".into(),
+                application: "foo".into(),
+                status: "Ready".into(),
+                health: "Green".into(),
+                platform: "Java 17".into(),
+                tier: "WebServer".into(),
+                cname: String::new(),
+                version_label: String::new(),
+                arn: None,
+                updated: None,
+                id: None,
+                region: None,
+            },
+            crate::aws::Environment {
+                name: "staging".into(),
+                application: "foo".into(),
+                status: "Updating".into(),
+                health: "Red".into(),
+                platform: "Java 17".into(),
+                tier: "WebServer".into(),
+                cname: String::new(),
+                version_label: String::new(),
+                arn: None,
+                updated: None,
+                id: None,
+                region: None,
+            },
+            crate::aws::Environment {
+                name: "other-app".into(),
+                application: "bar".into(),
+                status: "Ready".into(),
+                health: "Green".into(),
+                platform: "Java 17".into(),
+                tier: "WebServer".into(),
+                cname: String::new(),
+                version_label: String::new(),
+                arn: None,
+                updated: None,
+                id: None,
+                region: None,
+            },
+        ];
+        let dlq: HashMap<String, i64> = HashMap::new();
+        let r = super::app_rollup(&envs, "foo", &dlq);
+        assert_eq!(r.env_count, 2, "foo has 2 envs (prod + staging)");
+        assert_eq!(r.red_count, 1, "staging is Red");
+        assert_eq!(r.updating_count, 1, "staging is Updating");
+        assert_eq!(r.worker_dlq_alerts, 0, "no worker envs in foo");
+    }
+
+    #[test]
+    fn app_rollup_worker_dlq_alert_counts() {
+        let envs = vec![crate::aws::Environment {
+            name: "worker-prod".into(),
+            application: "wapp".into(),
+            status: "Ready".into(),
+            health: "Green".into(),
+            platform: "Java 17".into(),
+            tier: "Worker".into(),
+            cname: String::new(),
+            version_label: String::new(),
+            arn: None,
+            updated: None,
+            id: None,
+            region: None,
+        }];
+        let mut dlq: HashMap<String, i64> = HashMap::new();
+        dlq.insert("worker-prod".into(), 7);
+        let r = super::app_rollup(&envs, "wapp", &dlq);
+        // EB calls it Green; ebman flags it because the DLQ is non-empty.
+        assert_eq!(r.env_count, 1);
+        assert_eq!(r.red_count, 0, "EB health stays Green");
+        assert_eq!(
+            r.worker_dlq_alerts, 1,
+            "worker env with DLQ depth > 0 counts as alerting"
+        );
+    }
+
+    #[test]
+    fn app_rollup_empty_for_unknown_app() {
+        let envs: Vec<crate::aws::Environment> = vec![];
+        let dlq: HashMap<String, i64> = HashMap::new();
+        let r = super::app_rollup(&envs, "nope", &dlq);
+        assert_eq!(r, super::AppRollup::default());
     }
 
     #[test]

@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.3] — Apps scope as a real surface
+
+Builds out the previously-half-finished Apps scope that the v0.3.0 UX
+review flagged as undersold. `Tab` into Apps view now has its own
+operational rollup, its own action menu, and its own browser-open
+keybinding — the scope is a real mental model now, not a vestigial
+table.
+
+### Added
+- **Apps table rollup columns** — ENVS / RED / UPDATING replace the previous CREATED column. Counts walk the live env list every refresh; RED merges EB-reported Red health with worker-DLQ-depth alerts so an env where the DLQ is filling up but EB still calls it healthy counts as alerting. Red / Updating cells render bold in the corresponding severity colour when non-zero.
+- **Apps-scope `a` opens a per-app action menu**. Five items (`Drill into envs` / `Rebuild all N envs` / `Restart all N envs` / `Deploy version label to all N envs` / `Open application in AWS console`); j/k navigates; Enter dispatches; esc closes. Batch actions seed `multi_selected` with the app's envs and route through the existing `cmd_batch_*` helpers so audit log + pending pill + toasts all work the same way the env-scope batch ops do.
+- **Apps-scope `b`** — opens the EB applications-page console URL in the browser. Mirrors envs-scope `b` but for the application overview, not a specific env.
+- **Help screen "Apps-scope keys" section** — documents `enter` / `a` / `b` / `j-k-g-G` so the keys aren't discovered by accident.
+- **`app_rollup(envs, app_name, dlq_depths)`** pure helper — testable rollup of env count / red count / updating count / worker-DLQ alerts. Three new tests covering happy path, worker-DLQ-only alerting, and the empty / unknown-app case.
+
+### Changed
+- **Apps table CREATED column dropped** to make room for ENVS / RED / UPDATING. `Application::date_created` field kept (still populated by the SDK conversion) but marked `#[allow(dead_code)]` — re-surface in a future `:apps-info` overlay if an operator asks.
+
+### Test foundation
+- 3 new tests (`app_rollup_*`). 301 → 304 total.
+
 ## [0.3.2] — Command registry
 
 Internal-only refactor; no user-visible behaviour changes. Pulls the
@@ -190,7 +211,8 @@ Initial public release. Headline surface:
 - Published to crates.io as `ebman`.
 - Homebrew tap at `tombaldwin/homebrew-tap`.
 
-[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/tombaldwin/ebman/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/tombaldwin/ebman/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/tombaldwin/ebman/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/tombaldwin/ebman/compare/v0.2.0...v0.3.0

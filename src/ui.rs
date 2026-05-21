@@ -560,6 +560,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             }
             Overlay::LogTail { .. } => draw_log_tail_overlay(f, f.area(), app),
             Overlay::WhyRed { .. } => draw_why_red_overlay(f, f.area(), app),
+            Overlay::AppsActionMenu {
+                app_name,
+                env_names,
+                cursor,
+            } => draw_apps_action_menu(f, f.area(), app, &app_name, &env_names, cursor),
         }
     }
     if app.mode == Mode::Palette {
@@ -1632,6 +1637,69 @@ fn truncate_for_display(s: &str, max: usize) -> String {
     format!("{prefix}…")
 }
 
+/// Apps-scope action overlay. Small centred popup with one row per
+/// `AppsActionItem`. Cursor row gets the title-alt accent (matches the
+/// SavedConfigsInteractive cursor styling). Footer hint enumerates the
+/// keys so the operator doesn't have to read help.
+fn draw_apps_action_menu(
+    f: &mut Frame,
+    area: Rect,
+    app: &App,
+    app_name: &str,
+    env_names: &[String],
+    cursor: usize,
+) {
+    let theme = &app.theme;
+    let popup = centered_rect(40, 30, area);
+    f.render_widget(Clear, popup);
+    let n_envs = env_names.len();
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        format!("application: {app_name}  ·  {n_envs} env(s)"),
+        Style::default().fg(theme.muted),
+    )));
+    lines.push(Line::from(""));
+    for (i, item) in crate::app::APPS_ACTION_ITEMS.iter().enumerate() {
+        let active = i == cursor;
+        let cursor_glyph = if active { cursor_marker(theme) } else { "  " };
+        // Inline the env count so the operator sees the blast radius
+        // for the destructive batch entries without flipping screens.
+        let label = match item {
+            crate::app::AppsActionItem::BatchRebuild => {
+                format!("Rebuild all {n_envs} env(s)")
+            }
+            crate::app::AppsActionItem::BatchRestart => {
+                format!("Restart all {n_envs} env(s)")
+            }
+            crate::app::AppsActionItem::BatchDeploy => {
+                format!("Deploy version label to all {n_envs} env(s)")
+            }
+            _ => item.label().to_string(),
+        };
+        let style = if active {
+            Style::default()
+                .fg(theme.title_alt)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(cursor_glyph.to_string(), style),
+            Span::styled(label, style),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " j/k move · enter dispatch · esc / q cancel",
+        Style::default().fg(theme.muted),
+    )));
+    let title = format!("apps action — {app_name}");
+    let p = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .block(titled_block(theme, &title, true, theme.title).padding(Padding::uniform(1)));
+    f.render_widget(p, popup);
+}
+
 fn draw_history_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
     let popup = centered_rect(60, 70, area);
     f.render_widget(Clear, popup);
@@ -1934,8 +2002,10 @@ fn draw_apps_table(f: &mut Frame, area: Rect, app: &mut App) {
     let header = Row::new(
         [
             "NAME",
+            "ENVS",
+            "RED",
+            "UPDATING",
             "VERSIONS",
-            "CREATED",
             "UPDATED",
             "LATEST",
             "DESCRIPTION",
@@ -1982,16 +2052,37 @@ fn draw_apps_table(f: &mut Frame, area: Rect, app: &mut App) {
                 )),
                 _ => Cell::from(Span::styled("—", Style::default().fg(theme.muted))),
             };
+            // Operational rollup — env count + Red / Updating buckets.
+            // Pulls from the global env list via `app_rollup` so the
+            // numbers move with the same 15s ticker as the envs table.
+            let rollup = crate::app::app_rollup(&app.environments, &a.name, &app.worker_dlq_depths);
+            let red_style = if rollup.red_count > 0 {
+                Style::default()
+                    .fg(theme.health_red)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.muted)
+            };
+            let updating_style = if rollup.updating_count > 0 {
+                Style::default()
+                    .fg(theme.status_updating)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.muted)
+            };
+            // Red column merges "EB-side Red" with the worker-DLQ alert
+            // so an env where EB reports Ready but the DLQ is filling
+            // up still counts — same rule as the env-table status pill.
+            let total_alerting = rollup.red_count + rollup.worker_dlq_alerts;
             let r = Row::new(vec![
                 Cell::from(a.name.clone())
                     .style(Style::default().fg(theme.text).add_modifier(Modifier::BOLD)),
+                Cell::from(rollup.env_count.to_string())
+                    .style(Style::default().fg(theme.text).add_modifier(Modifier::BOLD)),
+                Cell::from(total_alerting.to_string()).style(red_style),
+                Cell::from(rollup.updating_count.to_string()).style(updating_style),
                 Cell::from(a.version_count.to_string())
                     .style(Style::default().fg(theme.app_palette[0])),
-                Cell::from(age(a.date_created)).style(Style::default().fg(age_color(
-                    a.date_created,
-                    now,
-                    &theme,
-                ))),
                 Cell::from(age(a.date_updated)).style(Style::default().fg(age_color(
                     a.date_updated,
                     now,
@@ -2012,11 +2103,13 @@ fn draw_apps_table(f: &mut Frame, area: Rect, app: &mut App) {
     let title = format!("Applications  {}", app.applications.len());
     let widths = [
         Constraint::Percentage(20),
-        Constraint::Length(8),
-        Constraint::Length(8),
-        Constraint::Length(8),
-        Constraint::Percentage(22),
-        Constraint::Percentage(35),
+        Constraint::Length(5),      // ENVS
+        Constraint::Length(4),      // RED
+        Constraint::Length(9),      // UPDATING
+        Constraint::Length(8),      // VERSIONS
+        Constraint::Length(8),      // UPDATED
+        Constraint::Percentage(22), // LATEST
+        Constraint::Percentage(28), // DESCRIPTION
     ];
     let popup_open = matches!(
         app.mode,
@@ -3153,7 +3246,7 @@ fn draw_help(f: &mut Frame, area: Rect, app: &mut App) {
             "yank equivalent `aws elasticbeanstalk describe-environments` command",
             theme,
         ),
-        help_line("tab / shift-tab", "cycle scope (envs ↔ apps)", theme),
+        help_line("tab / shift-tab", "cycle scope (envs ↔ apps); Apps scope shows per-app rollup + has its own `a` / `b` / Enter", theme),
         help_line("click", "select row", theme),
         help_line("/", "filter rows (name, app, status, health)", theme),
         help_line("s / S", "cycle sort key / toggle ascending", theme),
@@ -3177,6 +3270,32 @@ fn draw_help(f: &mut Frame, area: Rect, app: &mut App) {
         help_line("?", "toggle this help", theme),
         help_line("q / Ctrl-C", "quit", theme),
     ];
+    // Apps-scope keys — pressed when Tab has swapped the main table to
+    // the Applications view. Distinct from Envs-scope behaviour so the
+    // operator knows what `a` / `b` / Enter do over there.
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Apps-scope keys (tab to enter)",
+        Style::default()
+            .fg(app.theme.title)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(help_line(
+        "enter",
+        "drill into envs (filters the envs table to this application)",
+        theme,
+    ));
+    lines.push(help_line(
+        "a",
+        "open per-app action menu (Rebuild / Restart / Deploy / Open in console)",
+        theme,
+    ));
+    lines.push(help_line(
+        "b",
+        "open application's AWS console page in the browser",
+        theme,
+    ));
+    lines.push(help_line("j / k / g / G", "navigate the apps table", theme));
     // Command-bar reference — driven by `crate::commands::COMMANDS` so
     // adding a built-in only touches one file. Sections render in
     // `Category::ORDER`. Plugins land in their own footer block below.
