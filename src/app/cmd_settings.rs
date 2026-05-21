@@ -41,7 +41,7 @@ impl App {
         match rest.first().copied() {
             Some("list") | Some("ls") | None => {
                 let Some(env) = self.selected_env().cloned() else {
-                    self.error_message = Some("no environment selected".into());
+                    self.error_message = Some("no env selected".into());
                     return;
                 };
                 let app_name = env.application.clone();
@@ -54,7 +54,7 @@ impl App {
                 tokio::spawn(async move {
                     let body = match aws.fetch_env_vars(&app_name, &env_name).await {
                         Ok(vars) if vars.is_empty() => {
-                            "(no env vars set on this environment)".to_string()
+                            "(no env vars set)".to_string()
                         }
                         Ok(vars) => format_env_vars(&vars),
                         Err(e) => format!("error: {}", flatten_err("fetch_env_vars", e)),
@@ -102,7 +102,7 @@ impl App {
     /// path; submit routes through `OptionSettings` mappings.
     pub(crate) fn cmd_capacity(&mut self) {
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no environment selected".into());
+            self.error_message = Some("no env selected".into());
             return;
         };
         let fields = vec![

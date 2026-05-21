@@ -66,7 +66,7 @@ impl App {
 
     pub(crate) fn cmd_versions(&mut self) {
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no environment selected".into());
+            self.error_message = Some("no env selected".into());
             return;
         };
         let app_name = env.application.clone();
@@ -142,7 +142,7 @@ impl App {
 
     pub(crate) fn cmd_resources(&mut self) {
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no environment selected".into());
+            self.error_message = Some("no env selected".into());
             return;
         };
         let aws = self.aws.clone();

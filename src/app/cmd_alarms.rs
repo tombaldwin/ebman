@@ -45,7 +45,7 @@ impl App {
         };
         let op = op_override.unwrap_or(default_op);
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no environment selected".into());
+            self.error_message = Some("no env selected".into());
             return;
         };
         let env_name = env.name.clone();

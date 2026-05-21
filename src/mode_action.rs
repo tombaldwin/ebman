@@ -60,13 +60,13 @@ pub enum Action {
 impl Action {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Rebuild => "Rebuild environment",
+            Self::Rebuild => "Rebuild env",
             Self::RestartAppServer => "Restart app server",
             Self::SwapCnames => "Swap CNAMEs with another env",
-            Self::Terminate => "Terminate environment",
+            Self::Terminate => "Terminate env",
             Self::Deploy => "Deploy application version",
             Self::UpgradePlatform => "Upgrade platform",
-            Self::Clone => "Clone environment",
+            Self::Clone => "Clone env",
             Self::Scale => "Scale (min/max)",
             Self::Capacity => "Capacity (min/max/instance/cooldown)",
             Self::AbortUpdate => "Abort current update",

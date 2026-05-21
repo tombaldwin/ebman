@@ -429,7 +429,7 @@ pub struct PaletteItem {
 // — re-exported from app.rs below so existing imports keep working.
 
 /// One in-flight or recently-completed action. `label` is the human-readable
-/// verb (e.g. "Rebuild environment"), `target` the env or instance the
+/// verb (e.g. "Rebuild env"), `target` the env or instance the
 /// action was dispatched against. `completed` lands when `AppMsg::ActionResult`
 /// arrives; until then the entry counts as in-flight and the user can see it
 /// in the `:pending` overlay + header chip.
@@ -1871,7 +1871,7 @@ impl App {
         // Dedupe: if an identical toast (same kind + text) is already on
         // screen, refresh its timestamp instead of stacking a duplicate.
         // Without this, a flurry of identical status updates (e.g. repeated
-        // "no environment selected" key presses, or a rebuilt-context message
+        // "no env selected" key presses, or a rebuilt-context message
         // arriving twice) would push the same card N times.
         if let Some(existing) = self
             .toasts
@@ -2716,7 +2716,7 @@ impl App {
                             let app_name = env.application.clone();
                             self.open_why_red(env_name, app_name);
                         } else {
-                            self.error_message = Some("no environment selected".into());
+                            self.error_message = Some("no env selected".into());
                         }
                     }
                     KeyCode::Char('f') if self.scope == Scope::Envs => {
@@ -3142,7 +3142,7 @@ impl App {
             self.selected_env().map(|e| e.name.clone())
         };
         let Some(name) = name_opt else {
-            self.status_message = Some("no environment selected".into());
+            self.status_message = Some("no env selected".into());
             return;
         };
         if self.pinned.remove(&name) {
@@ -3162,7 +3162,7 @@ impl App {
             self.selected_env().cloned()
         };
         let Some(env) = env_opt else {
-            self.status_message = Some("no environment selected".into());
+            self.status_message = Some("no env selected".into());
             return;
         };
         let cmd = build_describe_cli(
@@ -3262,7 +3262,7 @@ impl App {
             self.selected_env().cloned()
         };
         let Some(env) = env else {
-            self.status_message = Some("no environment selected".into());
+            self.status_message = Some("no env selected".into());
             return;
         };
         self.current_overlay = Some(Overlay::Describe(describe_env(&env)));
@@ -3275,7 +3275,7 @@ impl App {
             self.selected_env().cloned()
         };
         let Some(env) = env_opt else {
-            self.status_message = Some("no environment selected".into());
+            self.status_message = Some("no env selected".into());
             return;
         };
         let url = console_url(&self.context.region, &env.application, &env.name);
@@ -3403,7 +3403,7 @@ impl App {
 
     fn open_detail(&mut self) {
         let Some(env) = self.selected_env().cloned() else {
-            self.status_message = Some("no environment selected".into());
+            self.status_message = Some("no env selected".into());
             return;
         };
         let mut tabs = vec![
@@ -3934,7 +3934,7 @@ impl App {
         if target_url.is_empty() {
             self.status_message = Some(match viewing {
                 QueueView::Main => "no main queue URL known".into(),
-                QueueView::Dlq => "no DLQ for this environment".into(),
+                QueueView::Dlq => "no DLQ for this env".into(),
             });
             return;
         }
@@ -3964,7 +3964,7 @@ impl App {
             return;
         }
         let Some(dlq_url) = detail.queues.dlq_url.clone() else {
-            self.status_message = Some("no DLQ for this environment".into());
+            self.status_message = Some("no DLQ for this env".into());
             return;
         };
         let main_url = detail.queues.main_url.clone().unwrap_or_default();
@@ -4347,7 +4347,7 @@ impl App {
             return;
         }
         if self.target_env_for_action().is_none() {
-            self.status_message = Some("no environment selected".into());
+            self.status_message = Some("no env selected".into());
             return;
         }
         let mut list_state = ListState::default();
@@ -4703,7 +4703,7 @@ impl App {
     fn open_multi_select_form(&mut self, flavour: MultiSelectFlavour) {
         use crate::form::{Form, FormField, FormSubmit};
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no environment selected".into());
+            self.error_message = Some("no env selected".into());
             return;
         };
         let (title_prefix, summary, field_key, label, ns, opt_name) = match flavour {
@@ -5168,7 +5168,7 @@ impl App {
                         Mode::Normal
                     };
                     self.error_message = Some(format!(
-                        "no swap candidates: app '{}' has only one environment",
+                        "no swap candidates: app '{}' has only one env",
                         env.application
                     ));
                     return;
@@ -5648,7 +5648,7 @@ impl App {
             return;
         }
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no environment selected".into());
+            self.error_message = Some("no env selected".into());
             return;
         };
         if to_set.is_empty() && to_remove.is_empty() {
@@ -5721,7 +5721,7 @@ impl App {
             return;
         }
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no environment selected".into());
+            self.error_message = Some("no env selected".into());
             return;
         };
         // Derive label from the S3 key's basename if not pinned. Same
@@ -5859,7 +5859,7 @@ impl App {
             return;
         }
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no environment selected".into());
+            self.error_message = Some("no env selected".into());
             return;
         };
         // Path resolution: ~ expansion + check file exists + read bytes.
@@ -6014,7 +6014,7 @@ impl App {
             return;
         }
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no environment selected".into());
+            self.error_message = Some("no env selected".into());
             return;
         };
         let application = env.application.clone();
@@ -6154,7 +6154,7 @@ impl App {
                 if let Some((_app, template)) = selected {
                     self.current_overlay = None;
                     let Some(env) = self.selected_env().cloned() else {
-                        self.error_message = Some("no environment selected".into());
+                        self.error_message = Some("no env selected".into());
                         return;
                     };
                     // Direct call bypasses execute_command's whitespace
@@ -6203,7 +6203,7 @@ impl App {
             return;
         }
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no environment selected".into());
+            self.error_message = Some("no env selected".into());
             return;
         };
         let Some(arn) = env.arn.clone() else {
@@ -6653,7 +6653,7 @@ impl App {
             return;
         }
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no environment selected".into());
+            self.error_message = Some("no env selected".into());
             return;
         };
         // The preflight (impact preview + last-3 events) is gated by
@@ -7009,7 +7009,7 @@ impl App {
                         self.selected_env().cloned()
                     };
                     let Some(left) = left_opt else {
-                        self.error_message = Some("no environment selected".into());
+                        self.error_message = Some("no env selected".into());
                         return;
                     };
                     let right = self
@@ -7020,7 +7020,7 @@ impl App {
                     match right {
                         None => {
                             self.error_message =
-                                Some(format!("no environment named '{target}' in current view"));
+                                Some(format!("no env named '{target}' in current view"));
                         }
                         Some(right) => {
                             self.current_overlay =
@@ -7037,7 +7037,7 @@ impl App {
                 };
                 match env_opt {
                     Some(env_name) => self.spawn_alarms_fetch(env_name),
-                    None => self.error_message = Some("no environment selected".into()),
+                    None => self.error_message = Some("no env selected".into()),
                 }
             }
             "why" | "diagnose" => {
@@ -7049,7 +7049,7 @@ impl App {
                 };
                 match env_opt {
                     Some((env_name, app_name)) => self.open_why_red(env_name, app_name),
-                    None => self.error_message = Some("no environment selected".into()),
+                    None => self.error_message = Some("no env selected".into()),
                 }
             }
             "loglevel" => match rest.first() {
@@ -7118,7 +7118,7 @@ impl App {
                 // tracked on App.log_tail_task so subsequent calls / close
                 // can abort cleanly.
                 let Some(env) = self.selected_env().cloned() else {
-                    self.error_message = Some("no environment selected".into());
+                    self.error_message = Some("no env selected".into());
                     return;
                 };
                 let explicit_group = rest.first().map(|s| s.to_string());
@@ -7160,7 +7160,7 @@ impl App {
             self.selected_env().cloned()
         };
         let Some(env) = env_opt else {
-            self.error_message = Some(format!(":{name} — no environment selected"));
+            self.error_message = Some(format!(":{name} — no env selected"));
             return;
         };
         let rendered = crate::plugins::render(
@@ -8824,7 +8824,7 @@ impl App {
             .collect();
         if env_names.is_empty() {
             self.status_message = Some(format!(
-                "application '{app_name}' has no environments — nothing to act on"
+                "application '{app_name}' has no envs — nothing to act on"
             ));
             return;
         }
@@ -10564,7 +10564,7 @@ fn diff_envs(left: &Environment, right: &Environment, redact_on: bool) -> String
 fn format_alarms(result: Result<Vec<CwAlarm>, String>) -> String {
     match result {
         Err(e) => format!("error fetching alarms: {e}"),
-        Ok(alarms) if alarms.is_empty() => "no CloudWatch alarms reference this environment".into(),
+        Ok(alarms) if alarms.is_empty() => "no CloudWatch alarms reference this env".into(),
         Ok(alarms) => {
             let mut out = String::new();
             out.push_str(&format!("CloudWatch alarms ({})\n", alarms.len()));

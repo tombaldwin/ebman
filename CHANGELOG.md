@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.4] — Terminology sweep: env vs environment
+
+Pure-text sweep — no behaviour changes. The v0.3.0 UX review flagged
+30+ user-facing strings mixing `env` and `environment` inconsistently
+(pills + scope tab + `:env` command all use `env`; error messages,
+confirm-modal copy, and the action menu used `environment`). This
+commit picks `env` as canonical and sweeps every user-facing string.
+
+### Changed
+- **Error / status messages** — `"no environment selected"` → `"no env selected"` (32 sites), plus `"no environments in this account / region"` → `"no envs in this account / region"`, `"no environments match the active view"` → `"no envs match the active view"`, etc.
+- **Confirm modal copy** — `"Rebuild environment 'X'?"` → `"Rebuild env 'X'?"`; same for `"TERMINATE environment 'X'..."`, `"Restart app server on environment 'X'?"`, `"Deploy version 'Y' to environment 'X'?"`.
+- **Action menu labels** (`Action::label()`) — `"Rebuild environment"` → `"Rebuild env"`, `"Terminate environment"` → `"Terminate env"`, `"Clone environment"` → `"Clone env"`.
+- **Detail-view header** — `"environment: {name}"` → `"env: {name}"`.
+- **Empty-state hints** — `"no DLQ for this environment"` → `"no DLQ for this env"`, `"no CloudWatch alarms reference this environment"` → `"no CloudWatch alarms reference this env"`, etc.
+
+### Kept as-is
+- **AWS namespace strings** (`aws:elasticbeanstalk:environment`, `aws:elasticbeanstalk:application:environment`) — these are EB API identifiers, not display copy.
+- **AWS console URL paths** (`...environment/dashboard?environmentName=...`).
+- **AWS CLI command examples** (`aws elasticbeanstalk describe-environments --environment-names ...`) — the CLI itself expects that spelling.
+- **AWS SDK type names / function names** (`Environment`, `list_environments`, `environmentnotfound` classifier token).
+- **AWS event-message test fixtures** (`"Updating environment to use version label 'build-142'."`, `"Adding instance 'i-abc123' to environment."`) — these are literal AWS API outputs ebman parses, must stay verbatim.
+
+No new tests; the existing 304 still pass.
+
 ## [0.3.3] — Apps scope as a real surface
 
 Builds out the previously-half-finished Apps scope that the v0.3.0 UX
@@ -211,7 +235,8 @@ Initial public release. Headline surface:
 - Published to crates.io as `ebman`.
 - Homebrew tap at `tombaldwin/homebrew-tap`.
 
-[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/tombaldwin/ebman/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/tombaldwin/ebman/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/tombaldwin/ebman/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/tombaldwin/ebman/compare/v0.3.0...v0.3.1
