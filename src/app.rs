@@ -3318,6 +3318,73 @@ impl App {
     /// via the command palette but never pushed at the operator;
     /// existence justifies removing the splash byline if anyone ever
     /// objects to the 3-second introduction.
+    /// `:listeners` — fetch the env's ALB listener config (per-port:
+    /// protocol, attached cert ARN, SSL policy, default rule) and
+    /// render it as a text overlay. Web-tier only — Worker envs
+    /// don't have an ALB. Edit support (cert rotation, listener
+    /// add/remove) is a follow-up; the generic
+    /// `:set-option aws:elbv2:listener:<PORT> KEY VAL` already
+    /// works for one-off updates.
+    pub(crate) fn cmd_listeners(&mut self) {
+        let Some(env) = self.selected_env().cloned() else {
+            self.error_message = Some("no env selected".into());
+            return;
+        };
+        if env.tier.eq_ignore_ascii_case("Worker") {
+            self.error_message = Some(format!(
+                "env '{}' is Worker tier — no ALB to configure",
+                env.name
+            ));
+            return;
+        }
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let app_name = env.application.clone();
+        let env_name = env.name.clone();
+        self.status_message = Some(format!("fetching listeners for {env_name}…"));
+        tokio::spawn(async move {
+            let result = aws
+                .fetch_env_listeners(&app_name, &env_name)
+                .await
+                .map_err(|e| flatten_err("fetch_env_listeners", e));
+            let body = match result {
+                Ok(rows) if rows.is_empty() => "No listener config found.\n\n\
+                     The env may use a Classic ELB instead of an ALB, or no\n\
+                     listener overrides have been set (EB uses account defaults).\n\
+                     `:set-option aws:elbv2:listener:443 SSLCertificateArns ARN`\n\
+                     to configure a listener from scratch.\n\nesc / q to close"
+                    .to_string(),
+                Ok(rows) => {
+                    let mut body = String::from("Listener configuration:\n");
+                    body.push_str("(one block per port; `default` = HTTP/80)\n\n");
+                    let mut current_port: Option<String> = None;
+                    for (port, opt, value) in &rows {
+                        if current_port.as_deref() != Some(port.as_str()) {
+                            if current_port.is_some() {
+                                body.push('\n');
+                            }
+                            body.push_str(&format!("── aws:elbv2:listener:{port} ──\n"));
+                            current_port = Some(port.clone());
+                        }
+                        body.push_str(&format!("  {opt:<32}  {value}\n"));
+                    }
+                    body.push_str(
+                        "\n`:set-option aws:elbv2:listener:<PORT> <KEY> <VALUE>` to change a setting.\n\
+                         esc / q to close",
+                    );
+                    body
+                }
+                Err(e) => format!("listeners: {e}\n\nesc / q to close"),
+            };
+            let _ = tx.send(AppMsg::TextOverlay {
+                gen,
+                title: format!("listeners — {env_name}"),
+                body,
+            });
+        });
+    }
+
     /// `:apps-info` — surface application metadata that doesn't fit
     /// in the apps-table columns: full description, creation date,
     /// last-updated date, saved-config templates, env count.
@@ -7424,6 +7491,7 @@ impl App {
             "about" | "credits" => self.open_about_overlay(),
             "apps-info" => self.open_apps_info_overlay(),
             "cost" => self.cmd_cost(&rest),
+            "listeners" => self.cmd_listeners(),
             "settings" => {
                 self.open_settings_form();
             }

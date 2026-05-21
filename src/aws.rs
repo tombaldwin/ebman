@@ -1143,6 +1143,63 @@ impl AwsClient {
         Ok(out)
     }
 
+    /// Fetch ALB listener option settings for an env. EB stores
+    /// listener config in `aws:elbv2:listener:<PORT>` namespaces (one
+    /// per listener; `default` is the port-80 HTTP listener, `443`
+    /// is the typical HTTPS one). Returns a Vec of
+    /// `(port_or_default, option_name, value)` rows so the renderer
+    /// can group by port.
+    ///
+    /// Result is empty when the env doesn't use an ALB (Classic LB
+    /// or worker tier) — caller should distinguish from "no config"
+    /// by checking the env's tier first.
+    pub async fn fetch_env_listeners(
+        &self,
+        application_name: &str,
+        env_name: &str,
+    ) -> Result<Vec<(String, String, String)>> {
+        let resp = self
+            .client
+            .describe_configuration_settings()
+            .application_name(application_name)
+            .environment_name(env_name)
+            .send()
+            .await
+            .wrap_err("DescribeConfigurationSettings(listeners) failed")?;
+        let mut out: Vec<(String, String, String)> = resp
+            .configuration_settings
+            .unwrap_or_default()
+            .into_iter()
+            .flat_map(|c| c.option_settings.unwrap_or_default())
+            .filter_map(|o| {
+                let ns = o.namespace?;
+                // Listener namespaces look like
+                // `aws:elbv2:listener:default` / `aws:elbv2:listener:443`.
+                // Strip the prefix to get the port (or "default").
+                let port = ns.strip_prefix("aws:elbv2:listener:")?.to_string();
+                let opt = o.option_name?;
+                let value = o.value.unwrap_or_default();
+                // Skip empty values — EB returns every settable key
+                // even when unset, and an empty cert ARN / rule
+                // list isn't worth showing.
+                if value.is_empty() {
+                    return None;
+                }
+                Some((port, opt, value))
+            })
+            .collect();
+        // Sort: 'default' (port 80) first, then numeric ports asc,
+        // then alpha by option name within each listener.
+        out.sort_by(|a, b| {
+            let rank_a = u8::from(a.0 != "default");
+            let rank_b = u8::from(b.0 != "default");
+            let port_a = a.0.parse::<u32>().unwrap_or(0);
+            let port_b = b.0.parse::<u32>().unwrap_or(0);
+            (rank_a, port_a, &a.1).cmp(&(rank_b, port_b, &b.1))
+        });
+        Ok(out)
+    }
+
     pub async fn fetch_env_vars(
         &self,
         application_name: &str,
