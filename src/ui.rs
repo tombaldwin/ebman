@@ -517,7 +517,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         if events_height > 0 {
             constraints.push(Constraint::Length(events_height));
         }
-        constraints.push(Constraint::Length(2));
+        // Footer is 2 rows normally (status row + key strip); the
+        // first-run nudge inserts a third row above so adopters
+        // see the discovery hints without the existing layout
+        // shifting around once they dismiss.
+        let footer_height: u16 = if app.first_run_hint { 3 } else { 2 };
+        constraints.push(Constraint::Length(footer_height));
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -3195,10 +3200,78 @@ fn severity_style(s: &str, theme: &Theme) -> Style {
 }
 
 fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
+    // First-run hint sits ABOVE the regular footer rows when this
+    // is the operator's first launch (no `state.toml` on disk).
+    // Clears on first input event — the renderer just reads the
+    // flag every frame. Adds one row to the footer when present;
+    // the layout below stays the same shape otherwise so existing
+    // mode-aware logic is untouched.
+    let constraints: &[Constraint] = if app.first_run_hint {
+        &[
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ]
+    } else {
+        &[Constraint::Length(1), Constraint::Length(1)]
+    };
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .constraints(constraints.to_vec())
         .split(area);
+    let (hint_row, top_row, bottom_row) = if app.first_run_hint {
+        (Some(rows[0]), rows[1], rows[2])
+    } else {
+        (None, rows[0], rows[1])
+    };
+
+    // First-run hint row — bright accent, single line, dismisses
+    // on any input. Wording emphasises the three discovery
+    // surfaces an adopter most needs to know about.
+    if let Some(area) = hint_row {
+        let theme = &app.theme;
+        let line = Line::from(vec![
+            Span::styled(
+                "  ★ ",
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "First launch — press ",
+                Style::default()
+                    .fg(theme.title)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "?",
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" for help, ", Style::default().fg(theme.title)),
+            Span::styled(
+                ":",
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" for commands, ", Style::default().fg(theme.title)),
+            Span::styled(
+                "Ctrl-K",
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " for fuzzy search.  (any key dismisses)",
+                Style::default().fg(theme.title),
+            ),
+        ]);
+        f.render_widget(Paragraph::new(line), area);
+    }
+
+    let rows = [top_row, bottom_row];
 
     // Top row: contextual state (filter input, command input, active filter, status/error message, or blank).
     let mut top: Vec<Span> = Vec::new();

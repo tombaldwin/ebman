@@ -106,6 +106,15 @@ pub fn load() -> PersistedState {
     parse(&text)
 }
 
+/// True when no `state.toml` exists on disk yet. Used by the
+/// first-run nudge to decide whether to surface the "press ? for
+/// help" hint at boot. Distinct from "state.toml exists but is
+/// empty" — the latter means the operator has run ebman before
+/// (we wrote the file) but everything got cleared.
+pub fn file_exists() -> bool {
+    state_path().exists()
+}
+
 pub fn parse(text: &str) -> PersistedState {
     let mut state = PersistedState::default();
     for line in text.lines() {
