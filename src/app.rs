@@ -11977,6 +11977,147 @@ pub fn app_rollup(
     out
 }
 
+/// Pure: render the env's underlying AWS resources as a tree.
+/// Replaces the previous flat-section dump. The hierarchy mirrors
+/// the conceptual graph an operator builds in their head:
+///
+///   env  (Tier)
+///   ├─ ASGs
+///   │  └─ <asg-name>
+///   │     ├─ <instance-id>
+///   │     └─ <instance-id>
+///   ├─ Launch template / config
+///   ├─ Load balancers
+///   ├─ Triggers
+///   └─ Queues  (Worker only)
+///      ├─ WorkerQueue
+///      │     https://sqs.../...
+///      └─ WorkerDeadLetterQueue
+///            https://sqs.../...
+///
+/// Instances are nested under ASGs because EB envs typically have
+/// one ASG that owns every instance. The first ASG in the list
+/// carries the instance children; if the env has zero ASGs but
+/// non-zero instances (rare; mid-launch maybe), those instances
+/// surface as a separate "orphan" section.
+pub(crate) fn render_env_resources_tree(
+    res: &crate::aws::EnvResources,
+    env_name: &str,
+    tier: &str,
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("Resources for {env_name}  ({tier})\n"));
+    out.push_str("═══════════════════════════════════════\n\n");
+
+    // Collect non-empty sections first. The last kept section
+    // uses `└─`; the rest `├─`. Easier to track once we know how
+    // many sections survive than to count inline.
+    let mut sections: Vec<(String, Vec<String>)> = Vec::new();
+
+    if !res.asgs.is_empty() {
+        let mut lines: Vec<String> = Vec::new();
+        let n_asgs = res.asgs.len();
+        for (asg_idx, asg) in res.asgs.iter().enumerate() {
+            let last_asg = asg_idx + 1 == n_asgs;
+            let asg_prefix = if last_asg { "└─" } else { "├─" };
+            lines.push(format!("  {asg_prefix} {asg}"));
+            // Only the first ASG carries the instance children
+            // (typical case: one ASG per env).
+            if asg_idx == 0 && !res.instances.is_empty() {
+                let n_inst = res.instances.len();
+                let cont = if last_asg { "  " } else { "│ " };
+                for (i, id) in res.instances.iter().enumerate() {
+                    let last_inst = i + 1 == n_inst;
+                    let glyph = if last_inst { "└─" } else { "├─" };
+                    lines.push(format!("  {cont}   {glyph} {id}"));
+                }
+            }
+        }
+        sections.push((format!("Auto-scaling groups ({})", res.asgs.len()), lines));
+    } else if !res.instances.is_empty() {
+        let mut lines: Vec<String> = Vec::new();
+        let n = res.instances.len();
+        for (i, id) in res.instances.iter().enumerate() {
+            let last = i + 1 == n;
+            let glyph = if last { "└─" } else { "├─" };
+            lines.push(format!("  {glyph} {id}"));
+        }
+        sections.push((format!("Instances ({n}) — orphan (no ASG attached)"), lines));
+    }
+
+    if !res.launch_templates.is_empty() {
+        let mut lines: Vec<String> = Vec::new();
+        let n = res.launch_templates.len();
+        for (i, t) in res.launch_templates.iter().enumerate() {
+            let glyph = if i + 1 == n { "└─" } else { "├─" };
+            lines.push(format!("  {glyph} {t}"));
+        }
+        sections.push((format!("Launch templates ({n})"), lines));
+    }
+    if !res.launch_configs.is_empty() {
+        let mut lines: Vec<String> = Vec::new();
+        let n = res.launch_configs.len();
+        for (i, lc) in res.launch_configs.iter().enumerate() {
+            let glyph = if i + 1 == n { "└─" } else { "├─" };
+            lines.push(format!("  {glyph} {lc}"));
+        }
+        sections.push((format!("Launch configurations ({n})"), lines));
+    }
+    if !res.load_balancers.is_empty() {
+        let mut lines: Vec<String> = Vec::new();
+        let n = res.load_balancers.len();
+        for (i, lb) in res.load_balancers.iter().enumerate() {
+            let glyph = if i + 1 == n { "└─" } else { "├─" };
+            lines.push(format!("  {glyph} {lb}"));
+        }
+        sections.push((format!("Load balancers ({n})"), lines));
+    }
+    if !res.triggers.is_empty() {
+        let mut lines: Vec<String> = Vec::new();
+        let n = res.triggers.len();
+        for (i, t) in res.triggers.iter().enumerate() {
+            let glyph = if i + 1 == n { "└─" } else { "├─" };
+            lines.push(format!("  {glyph} {t}"));
+        }
+        sections.push((format!("Triggers ({n})"), lines));
+    }
+    if !res.queues.is_empty() {
+        let mut lines: Vec<String> = Vec::new();
+        let n = res.queues.len();
+        for (i, q) in res.queues.iter().enumerate() {
+            let last = i + 1 == n;
+            let glyph = if last { "└─" } else { "├─" };
+            lines.push(format!("  {glyph} {}", q.name));
+            if !q.url.is_empty() {
+                let url_prefix = if last { "       " } else { "  │    " };
+                lines.push(format!("{url_prefix}{}", q.url));
+            }
+        }
+        sections.push((format!("Queues ({n})"), lines));
+    }
+
+    if sections.is_empty() {
+        out.push_str("  (no resources reported — env may still be launching)\n");
+    } else {
+        let n_sections = sections.len();
+        for (idx, (label, lines)) in sections.iter().enumerate() {
+            let last_section = idx + 1 == n_sections;
+            let section_glyph = if last_section { "└─" } else { "├─" };
+            out.push_str(&format!("{section_glyph} {label}\n"));
+            let prefix = if last_section { "  " } else { "│ " };
+            for line in lines {
+                out.push_str(&format!("{prefix}{line}\n"));
+            }
+            if !last_section {
+                out.push_str("│\n");
+            }
+        }
+    }
+
+    out.push_str("\nesc / q to close");
+    out
+}
+
 /// Pure: edit (Levenshtein) distance between two strings, counting
 /// single-character insertions / deletions / substitutions. Used by
 /// the unknown-command `did-you-mean` path; small enough that
@@ -12630,6 +12771,76 @@ mod tests {
             max_value: None,
             max_length: None,
         }
+    }
+
+    fn empty_resources() -> crate::aws::EnvResources {
+        crate::aws::EnvResources::default()
+    }
+
+    #[test]
+    fn render_env_resources_tree_shows_asg_with_nested_instances() {
+        let mut res = empty_resources();
+        res.asgs = vec!["awseb-AWSEBAutoScalingGroup-XYZ".into()];
+        res.instances = vec!["i-0abc".into(), "i-0def".into(), "i-0ghi".into()];
+        let body = super::render_env_resources_tree(&res, "prod-api", "Web");
+        // Section header for ASG group.
+        assert!(body.contains("Auto-scaling groups (1)"));
+        // ASG node under it (└─ since only one ASG).
+        assert!(body.contains("└─ awseb-AWSEBAutoScalingGroup-XYZ"));
+        // Instances nested below the ASG with proper tree glyphs.
+        assert!(body.contains("├─ i-0abc"));
+        assert!(body.contains("├─ i-0def"));
+        assert!(body.contains("└─ i-0ghi"));
+    }
+
+    #[test]
+    fn render_env_resources_tree_skips_empty_sections() {
+        let mut res = empty_resources();
+        res.asgs = vec!["asg-1".into()];
+        // Everything else empty.
+        let body = super::render_env_resources_tree(&res, "small-env", "Web");
+        assert!(body.contains("Auto-scaling groups (1)"));
+        // No load-balancer / launch-config / queue headers when
+        // the lists are empty.
+        assert!(!body.contains("Load balancers"));
+        assert!(!body.contains("Launch configurations"));
+        assert!(!body.contains("Queues"));
+    }
+
+    #[test]
+    fn render_env_resources_tree_marks_orphan_instances_when_no_asg() {
+        let mut res = empty_resources();
+        res.instances = vec!["i-stranded".into()];
+        let body = super::render_env_resources_tree(&res, "env", "Web");
+        assert!(body.contains("orphan (no ASG attached)"));
+        assert!(body.contains("i-stranded"));
+    }
+
+    #[test]
+    fn render_env_resources_tree_renders_queue_urls_inline() {
+        let mut res = empty_resources();
+        res.queues = vec![
+            crate::aws::EnvResourceQueue {
+                name: "WorkerQueue".into(),
+                url: "https://sqs.eu-west-2.amazonaws.com/123/main".into(),
+            },
+            crate::aws::EnvResourceQueue {
+                name: "WorkerDeadLetterQueue".into(),
+                url: "https://sqs.eu-west-2.amazonaws.com/123/dlq".into(),
+            },
+        ];
+        let body = super::render_env_resources_tree(&res, "worker-prod", "Worker");
+        assert!(body.contains("├─ WorkerQueue"));
+        assert!(body.contains("https://sqs.eu-west-2.amazonaws.com/123/main"));
+        assert!(body.contains("└─ WorkerDeadLetterQueue"));
+        assert!(body.contains("https://sqs.eu-west-2.amazonaws.com/123/dlq"));
+    }
+
+    #[test]
+    fn render_env_resources_tree_handles_zero_resources() {
+        let res = empty_resources();
+        let body = super::render_env_resources_tree(&res, "fresh-env", "Web");
+        assert!(body.contains("(no resources reported"));
     }
 
     #[tokio::test]
