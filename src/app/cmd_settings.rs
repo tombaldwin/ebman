@@ -53,9 +53,7 @@ impl App {
                 self.status_message = Some(format!("fetching env vars for {env_name}…"));
                 tokio::spawn(async move {
                     let body = match aws.fetch_env_vars(&app_name, &env_name).await {
-                        Ok(vars) if vars.is_empty() => {
-                            "(no env vars set)".to_string()
-                        }
+                        Ok(vars) if vars.is_empty() => "(no env vars set)".to_string(),
                         Ok(vars) => format_env_vars(&vars),
                         Err(e) => format!("error: {}", flatten_err("fetch_env_vars", e)),
                     };
