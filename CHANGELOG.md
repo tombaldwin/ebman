@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.2] — Command registry
+
+Internal-only refactor; no user-visible behaviour changes. Pulls the
+`:command` metadata into a single `src/commands.rs` registry so the
+palette (`Ctrl-K`), the global help screen (`?`), and the plugin-collision
+detector all read from the same list. Adding a new command now means
+one entry in `commands.rs` plus the dispatch arm — the help and palette
+update automatically.
+
+### Changed
+- **New `src/commands.rs` module** with `pub const COMMANDS: &[CommandSpec]` carrying every built-in `:command`'s name, aliases, one-line help, category, and palette behaviour (`ZeroArg` vs `Prefill`).
+- **`build_palette_items`** (palette source) iterates `COMMANDS` instead of the two hand-maintained `zero_arg_cmds` / `prefill_cmds` lists. ~150 lines deleted from `app.rs`.
+- **`draw_help`** (global `?` screen) iterates `COMMANDS` grouped by `Category::ORDER` instead of the 100+ hand-written `help_line(...)` calls. ~100 lines deleted from `ui.rs`.
+- **`app::BUILTIN_COMMANDS`** const replaced with `app::builtin_commands()` fn that flattens `COMMANDS` (names + aliases). Same callers, same data, single source.
+
+### Test foundation
+- **`commands::tests::registry_covers_every_dispatch_arm`** — parses `app.rs::execute_command` at test time and asserts every `"name" =>` arm appears in `COMMANDS` (as name or alias). Fails fast if someone adds a dispatch arm without a registry entry.
+- **`commands::tests::every_registry_name_has_a_dispatch_arm`** — reverse direction. Fails if a registry entry has no real dispatch.
+- **`commands::tests::every_name_is_unique`** — no duplicate name/alias collisions across the registry.
+- **`commands::tests::every_command_has_nonempty_help`** — every entry has a one-line description.
+
+Five new tests, 296 → 301 total. The agent's "three sources of truth for what `?` should say" pattern of concern from the v0.3.0 UX review — keybindings in `app.rs`, dispatch in `cmd_*.rs`, help in `ui.rs` — is now a single source of truth backed by CI.
+
 ## [0.3.1] — UX punch list
 
 Twelve UX fixes + supporting plumbing surfaced by a critical post-0.3.0
@@ -167,7 +190,8 @@ Initial public release. Headline surface:
 - Published to crates.io as `ebman`.
 - Homebrew tap at `tombaldwin/homebrew-tap`.
 
-[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/tombaldwin/ebman/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/tombaldwin/ebman/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/tombaldwin/ebman/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/tombaldwin/ebman/compare/v0.1.1...v0.2.0

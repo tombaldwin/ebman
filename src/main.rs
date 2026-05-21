@@ -1,5 +1,6 @@
 mod app;
 mod aws;
+mod commands;
 mod config;
 mod control;
 mod font_probe;

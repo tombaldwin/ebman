@@ -3117,7 +3117,7 @@ fn draw_help(f: &mut Frame, area: Rect, app: &mut App) {
     }
 
     let interval_secs = app.refresh_interval.as_secs();
-    let lines = vec![
+    let mut lines: Vec<Line> = vec![
         Line::from(Span::styled(
             "ebman — keybindings",
             Style::default()
@@ -3129,14 +3129,30 @@ fn draw_help(f: &mut Frame, area: Rect, app: &mut App) {
         help_line("k / ↑ / wheel", "move selection up", theme),
         help_line("g / G", "jump to top / bottom", theme),
         help_line("enter", "open drill-down view for the selected env", theme),
-        help_line("a", "open actions menu (rebuild / restart / swap / terminate)", theme),
+        help_line(
+            "a",
+            "open actions menu (rebuild / restart / swap / terminate)",
+            theme,
+        ),
         help_line("b", "open selected env in the AWS console", theme),
         help_line("D", "describe overlay (raw env dump as JSON)", theme),
-        help_line("!", "diagnose selected env (events + alarms + instances + recent deploys)", theme),
+        help_line(
+            "!",
+            "diagnose selected env (events + alarms + instances + recent deploys)",
+            theme,
+        ),
         help_line("f", "freeze / unfreeze auto-refresh", theme),
-        help_line("1 - 9", "jump to env at position 1-9 in the current view", theme),
+        help_line(
+            "1 - 9",
+            "jump to env at position 1-9 in the current view",
+            theme,
+        ),
         help_line("'", "name-jump: type a prefix to move selection", theme),
-        help_line("Ctrl-W", "yank equivalent `aws elasticbeanstalk describe-environments` command", theme),
+        help_line(
+            "Ctrl-W",
+            "yank equivalent `aws elasticbeanstalk describe-environments` command",
+            theme,
+        ),
         help_line("tab / shift-tab", "cycle scope (envs ↔ apps)", theme),
         help_line("click", "select row", theme),
         help_line("/", "filter rows (name, app, status, health)", theme),
@@ -3147,146 +3163,112 @@ fn draw_help(f: &mut Frame, area: Rect, app: &mut App) {
         help_line("Ctrl-Y", "export filtered table as TSV to clipboard", theme),
         help_line("r", "switch AWS region", theme),
         help_line("p", "switch AWS profile", theme),
-        help_line("Ctrl-K", "command palette: fuzzy search across commands / envs / views / plugins", theme),
+        help_line(
+            "Ctrl-K",
+            "command palette: fuzzy search across commands / envs / views / plugins",
+            theme,
+        ),
         help_line("Ctrl-R / F5", "refresh now", theme),
-        help_line("Ctrl-X", "toggle redact mode (account id, ARN, CNAMEs)", theme),
+        help_line(
+            "Ctrl-X",
+            "toggle redact mode (account id, ARN, CNAMEs)",
+            theme,
+        ),
         help_line("?", "toggle this help", theme),
         help_line("q / Ctrl-C", "quit", theme),
+    ];
+    // Command-bar reference — driven by `crate::commands::COMMANDS` so
+    // adding a built-in only touches one file. Sections render in
+    // `Category::ORDER`. Plugins land in their own footer block below.
+    for category in crate::commands::Category::ORDER {
+        let entries: Vec<&crate::commands::CommandSpec> = crate::commands::COMMANDS
+            .iter()
+            .filter(|c| c.category == *category)
+            .collect();
+        if entries.is_empty() {
+            continue;
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            category.label(),
+            Style::default()
+                .fg(app.theme.title)
+                .add_modifier(Modifier::BOLD),
+        )));
+        for c in entries {
+            // Label is `:name` plus a `/ :alias` chain when aliases
+            // exist — matches the existing help convention where
+            // `:q / :quit` was on one row.
+            let mut label = format!(":{}", c.name);
+            for alias in c.aliases {
+                label.push_str(&format!(" / :{alias}"));
+            }
+            lines.push(help_line(&label, c.help, theme));
+        }
+    }
+    // Plugin commands (user-defined in commands.toml). Listed last so
+    // they don't interleave with built-ins in the built-in sections.
+    if !app.plugins.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "User plugin commands (commands.toml)",
+            Style::default()
+                .fg(app.theme.title)
+                .add_modifier(Modifier::BOLD),
+        )));
+        for (name, plugin) in &app.plugins {
+            let desc = plugin
+                .description
+                .clone()
+                .unwrap_or_else(|| "plugin command".to_string());
+            lines.push(help_line(&format!(":{name}"), &desc, theme));
+        }
+    }
+    // Detail-view per-tab keys — these aren't `:commands` so they
+    // don't fit the registry; render manually under their own header.
+    let mut detail_lines: Vec<Line> = vec![
         Line::from(""),
         Line::from(Span::styled(
-            "Command bar (press :)",
+            "Detail-view per-tab keys",
             Style::default()
                 .fg(app.theme.title)
                 .add_modifier(Modifier::BOLD),
         )),
-        help_line(":q", "quit", theme),
-        help_line(":region X", "switch AWS region", theme),
-        help_line(":profile X", "switch AWS profile", theme),
-        help_line(":sort KEY [desc]", "set sort (name/app/status/health/version/age)", theme),
-        help_line(":group on|off", "toggle grouping", theme),
-        help_line(":redact on|off", "toggle redact mode", theme),
-        help_line(":save NAME", "save current filter as NAME", theme),
-        help_line(":f NAME / :filter NAME", "recall a saved filter", theme),
-        help_line(":filters / :drop NAME", "list / remove saved filters", theme),
-        help_line(":events on|off", "toggle the events panel", theme),
-        help_line(":export / :json / :report", "copy filtered table (TSV / JSON / Markdown)", theme),
-        help_line(":refresh", "re-fetch the table immediately", theme),
-        help_line(":readonly on|off", "toggle destructive-action lockout", theme),
-        help_line(":alias NAME LABEL", "set or update a local env alias", theme),
-        help_line(":alias-drop NAME", "remove an alias", theme),
-        help_line(":pin", "pin / unpin the selected env (also `*`)", theme),
-        help_line(":whatsnew", "embedded changelog popup", theme),
-        help_line(":save-view NAME", "snapshot filter/sort/grouping/scope under NAME", theme),
-        help_line(":view NAME", "load a previously saved view", theme),
-        help_line(":views / :view-drop NAME", "list / remove saved views", theme),
-        help_line(":history", "show recent info/error messages", theme),
-        help_line(":cols", "list / hide / show / reset columns (e.g. :cols hide PLATFORM)", theme),
-        help_line(":diff NAME", "side-by-side comparison with another env", theme),
-        help_line(":alarms", "CloudWatch alarms list for selected env", theme),
-        help_line(":why", "diagnostic overlay — events + alarms + instances + recent deploys for the selected env", theme),
-        help_line(":pending / :in-flight", "in-flight + recently-completed actions", theme),
-        help_line(":resources / :res", "DescribeEnvironmentResources dump for selected env", theme),
-        help_line(":versions", "application versions for selected env's app (deploy hint included)", theme),
-        help_line(":loglevel LEVEL", "live-reload tracing filter (trace/debug/info/warn/error)", theme),
-        help_line(":saved-configs", "list EB saved configuration templates per application", theme),
-        help_line(":custom-platforms", "list custom EB platforms in this account/region", theme),
-        help_line(":plugins  /  :NAME", "list / invoke plugin commands defined in commands.toml", theme),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Multi-account / multi-region",
-            Style::default().fg(app.theme.title).add_modifier(Modifier::BOLD),
-        )),
-        help_line(":region NAME / :region all", "switch region, or fan across configured regions in parallel", theme),
-        help_line(":account NAME", "switch to AssumeRole account (accounts.NAME in config.toml); falls back to :profile aliasing", theme),
-        help_line(":accounts", "list AWS-Organizations child accounts (annotated with :account hints)", theme),
-        help_line(":find-env SUBSTRING", "scan every ~/.aws profile + AssumeRole account for an env", theme),
-        help_line(":org-health", "aggregate env / red counts across profiles + AssumeRole accounts", theme),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Lifecycle actions (alternatively: a → menu)",
-            Style::default().fg(app.theme.title).add_modifier(Modifier::BOLD),
-        )),
-        help_line(":rebuild / :restart / :terminate", "menu shortcuts (terminate requires typed-name confirm)", theme),
-        help_line(":deploy LABEL [--preview]", "ship an existing version (preview = side-by-side current vs candidate)", theme),
-        help_line(":deploy --from PATH | s3://...", "upload bundle, register version, deploy (--no-deploy to stop after register)", theme),
-        help_line(":upgrade [ARN]", "no-arg: list compatible platforms; with ARN: migrate to it", theme),
-        help_line(":clone NEW-NAME", "clone selected env", theme),
-        help_line(":scale N / :stop / :start", "ASG min=max=N / 0 / 1", theme),
-        help_line(":capacity", "modal form: Min / Max / Instance type / Cooldown in one shot", theme),
-        help_line(":swap TARGET", "swap CNAMEs (Y/N confirm; same preflight as a → Swap)", theme),
-        help_line(":abort", "cancel an in-flight env update", theme),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Env config",
-            Style::default().fg(app.theme.title).add_modifier(Modifier::BOLD),
-        )),
-        help_line(":env list | set KEY VAL | unset KEY", "application env-var editor", theme),
-        help_line(":tag KEY VALUE / :untag KEY", "env tag editor", theme),
-        help_line(":set-option NS OPT VAL / :unset-option NS OPT", "generic option-settings escape hatch", theme),
-        help_line(":instance-type TYPE", "EC2 instance type (rolling launch-config replacement)", theme),
-        help_line(":keypair / :service-role / :instance-profile", "security tab settings", theme),
-        help_line(":public-ip on|off / :elb-scheme public|internal", "network tab settings", theme),
-        help_line(":subnets / :elb-subnets / :security-groups", "MultiSelect pickers for VPC subnets / SGs", theme),
-        help_line(":deployment-policy POLICY", "AllAtOnce | Rolling | RollingWithAdditionalBatch | Immutable | TrafficSplitting", theme),
-        help_line(":rolling-update on|off", "ASG rolling-update policy", theme),
-        help_line(":health-check-url /path", "HTTP health-check path", theme),
-        help_line(":logs-stream on|off [--retention N]", "toggle CW Logs streaming (default 7d retention)", theme),
-        help_line(":logs-tail [LOG_GROUP]", "open live CW Logs tail overlay (picker if multiple groups)", theme),
-        help_line(":notify EMAIL_OR_SNS_ARN | off", "notification endpoint", theme),
-        help_line(":managed-window DAY HOUR | off", "managed-update window (Mon..Sun, 0..23)", theme),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Versions / configs / alarms / platforms",
-            Style::default().fg(app.theme.title).add_modifier(Modifier::BOLD),
-        )),
-        help_line(":delete-version LABEL [--force]", "drop an app version (--force also nukes the S3 bundle)", theme),
-        help_line(":config-save NAME / :config-apply NAME", "save / apply a config template", theme),
-        help_line(":config-delete APP NAME / :config-inspect NAME", "delete / inspect a template", theme),
-        help_line(":alarm-create NAME KIND THRESHOLD [OP]", "CW alarm (KIND: health | 4xx | 5xx | latency)", theme),
-        help_line(":alarm-delete NAME", "remove a CW alarm", theme),
-        help_line(":custom-platform-delete ARN", "delete a custom EB platform (fails if any env still uses it)", theme),
-        help_line(":metric add LABEL NS NAME [STAT] / :metric remove LABEL / :metric list", "custom Metrics-tab charts", theme),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Bulk ops (space to multi-select first)",
-            Style::default().fg(app.theme.title).add_modifier(Modifier::BOLD),
-        )),
-        help_line(":batch-rebuild / :batch-restart", "fan non-destructive action across selection", theme),
-        help_line(":batch-deploy LABEL", "deploy the same version to every selected env", theme),
-        help_line(":batch-tag KEY VAL / :batch-untag KEY", "fan tag write across selection", theme),
-        help_line(":batch-set-option NS OPT VAL", "fan option-settings write across selection", theme),
-        help_line(":deselect / :select-clear / esc", "clear multi-selection", theme),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Setup / discovery",
-            Style::default().fg(app.theme.title).add_modifier(Modifier::BOLD),
-        )),
-        help_line(":settings", "interactive form to edit ~/.config/ebman/config.toml", theme),
-        help_line(":about / :credits", "version, license, attributions", theme),
-        help_line(":update", "show + yank the upgrade command for the detected install channel", theme),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Detail-view per-tab keys",
-            Style::default().fg(app.theme.title).add_modifier(Modifier::BOLD),
-        )),
-        help_line("[ / ] (Metrics tab)", "decrease / increase metric range (15m → 24h)", theme),
-        help_line("(Logs tab) ^R", "request tail logs (takes ~10–20s while EB samples instances)", theme),
-        help_line("(Logs tab) s", "open CW Logs streaming overlay (live tail; needs `:logs-stream on`)", theme),
+        help_line(
+            "[ / ] (Metrics tab)",
+            "decrease / increase metric range (15m → 24h)",
+            theme,
+        ),
+        help_line(
+            "(Logs tab) ^R",
+            "request tail logs (takes ~10–20s while EB samples instances)",
+            theme,
+        ),
+        help_line(
+            "(Logs tab) s",
+            "open CW Logs streaming overlay (live tail; needs `:logs-stream on`)",
+            theme,
+        ),
         help_line("(Logs tab) /", "regex-filter the visible log lines", theme),
-        help_line("(Logs overlay) Tab", "switch tailed log group via picker (over the env's discovered groups)", theme),
+        help_line(
+            "(Logs overlay) Tab",
+            "switch tailed log group via picker (over the env's discovered groups)",
+            theme,
+        ),
         Line::from(""),
-        Line::from(Span::styled(
-            format!(
-                "Refresh runs automatically every {interval_secs}s. Theme: {}. Configurable in ~/.config/ebman/config.toml.",
-                app.theme.name
-            ),
-            Style::default().fg(app.theme.muted),
-        )),
-        Line::from(Span::styled(
-            "Region/profile come from the standard AWS env (AWS_REGION, AWS_PROFILE).",
-            Style::default().fg(app.theme.muted),
-        )),
     ];
+    lines.append(&mut detail_lines);
+    lines.push(Line::from(Span::styled(
+        format!(
+            "Refresh runs automatically every {interval_secs}s. Theme: {}. Configurable in ~/.config/ebman/config.toml.",
+            app.theme.name
+        ),
+        Style::default().fg(app.theme.muted),
+    )));
+    lines.push(Line::from(Span::styled(
+        "Region/profile come from the standard AWS env (AWS_REGION, AWS_PROFILE).",
+        Style::default().fg(app.theme.muted),
+    )));
     // Split the popup into a scrollable body + a sticky 1-row byline at
     // the bottom inside the border. The body is the popup minus the
     // border (top/bottom) and minus the padding (uniform(1) — top/bottom).
@@ -5852,10 +5834,15 @@ fn draw_help_shell(f: &mut Frame, popup: Rect, app: &App) {
     f.render_widget(p, popup);
 }
 
-fn help_line<'a>(key: &'a str, desc: &'a str, theme: &Theme) -> Line<'a> {
+fn help_line(key: &str, desc: &str, theme: &Theme) -> Line<'static> {
     // Pad short keys to a 16-char column so descriptions line up, but if the
     // key itself is wider than the column always emit at least 2 spaces of
     // separator so it can't glue against the description.
+    //
+    // Returns Line<'static> by cloning into owned Spans so callers can
+    // pass non-'static labels (e.g. the registry-driven loop builds
+    // `format!(":{name}")` per row). Cheap — the help screen renders
+    // once per `?` press, not per frame.
     let key_col = 16usize;
     let formatted = if key.chars().count() < key_col {
         format!(" {key:<width$}", width = key_col)
@@ -5869,7 +5856,7 @@ fn help_line<'a>(key: &'a str, desc: &'a str, theme: &Theme) -> Line<'a> {
                 .fg(theme.health_yellow)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(desc, Style::default().fg(theme.text)),
+        Span::styled(desc.to_string(), Style::default().fg(theme.text)),
     ])
 }
 
