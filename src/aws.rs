@@ -236,6 +236,28 @@ fn cost_explorer_client(base: &SdkConfig) -> CostExplorerClient {
     CostExplorerClient::new(&cfg)
 }
 
+/// Parsed `DescribeEnvironmentResources` payload. The SDK returns
+/// flat lists; we hold them in field-typed buckets so the
+/// `:resources` renderer can format them as a hierarchical tree
+/// (ASG → instances → LB → queues etc.) without re-traversing
+/// the raw API shape.
+#[derive(Clone, Debug, Default)]
+pub struct EnvResources {
+    pub asgs: Vec<String>,
+    pub instances: Vec<String>,
+    pub launch_configs: Vec<String>,
+    pub launch_templates: Vec<String>,
+    pub load_balancers: Vec<String>,
+    pub triggers: Vec<String>,
+    pub queues: Vec<EnvResourceQueue>,
+}
+
+#[derive(Clone, Debug)]
+pub struct EnvResourceQueue {
+    pub name: String,
+    pub url: String,
+}
+
 /// One settable EB configuration option, as returned by
 /// [`AwsClient::fetch_env_configuration_options`]. Covers both the
 /// operator's currently-set value and the platform's metadata
@@ -542,7 +564,11 @@ impl AwsClient {
     /// instances, launch configurations, launch templates, load balancers,
     /// trigger names, and SQS queues — i.e. every infra resource EB
     /// manages for the env. Useful for "what's actually under this env?".
-    pub async fn describe_env_resources(&self, env_name: &str) -> Result<String> {
+    /// Fetch the env's underlying AWS resources (ASGs, instances,
+    /// launch config/template, load balancers, triggers, queues).
+    /// Returns the parsed shape so the renderer can format as a
+    /// hierarchical tree rather than a flat dump.
+    pub async fn describe_env_resources(&self, env_name: &str) -> Result<EnvResources> {
         let resp = self
             .client
             .describe_environment_resources()
@@ -553,58 +579,56 @@ impl AwsClient {
         let res = resp
             .environment_resources
             .ok_or_else(|| eyre!("no environment_resources in response"))?;
-        let mut out = String::new();
-        out.push_str(&format!("Resources for {env_name}\n"));
-        out.push_str("───────────────────────────────────────\n\n");
-        let asgs = res.auto_scaling_groups.unwrap_or_default();
-        out.push_str(&format!("Auto-scaling groups ({})\n", asgs.len()));
-        for a in &asgs {
-            out.push_str(&format!("  ▸ {}\n", a.name.as_deref().unwrap_or("?")));
-        }
-        let instances = res.instances.unwrap_or_default();
-        out.push_str(&format!("\nInstances ({})\n", instances.len()));
-        for i in &instances {
-            out.push_str(&format!("  ▸ {}\n", i.id.as_deref().unwrap_or("?")));
-        }
-        let lcs = res.launch_configurations.unwrap_or_default();
-        if !lcs.is_empty() {
-            out.push_str(&format!("\nLaunch configurations ({})\n", lcs.len()));
-            for l in &lcs {
-                out.push_str(&format!("  ▸ {}\n", l.name.as_deref().unwrap_or("?")));
-            }
-        }
-        let lts = res.launch_templates.unwrap_or_default();
-        if !lts.is_empty() {
-            out.push_str(&format!("\nLaunch templates ({})\n", lts.len()));
-            for l in &lts {
-                out.push_str(&format!("  ▸ {}\n", l.id.as_deref().unwrap_or("?")));
-            }
-        }
-        let lbs = res.load_balancers.unwrap_or_default();
-        out.push_str(&format!("\nLoad balancers ({})\n", lbs.len()));
-        for l in &lbs {
-            out.push_str(&format!("  ▸ {}\n", l.name.as_deref().unwrap_or("?")));
-        }
-        let triggers = res.triggers.unwrap_or_default();
-        if !triggers.is_empty() {
-            out.push_str(&format!("\nTriggers ({})\n", triggers.len()));
-            for t in &triggers {
-                out.push_str(&format!("  ▸ {}\n", t.name.as_deref().unwrap_or("?")));
-            }
-        }
-        let queues = res.queues.unwrap_or_default();
-        if !queues.is_empty() {
-            out.push_str(&format!("\nQueues ({})\n", queues.len()));
-            for q in &queues {
-                out.push_str(&format!(
-                    "  ▸ {}\n      {}\n",
-                    q.name.as_deref().unwrap_or("?"),
-                    q.url.as_deref().unwrap_or("?")
-                ));
-            }
-        }
-        out.push_str("\nesc / q to close");
-        Ok(out)
+        Ok(EnvResources {
+            asgs: res
+                .auto_scaling_groups
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|a| a.name)
+                .collect(),
+            instances: res
+                .instances
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|i| i.id)
+                .collect(),
+            launch_configs: res
+                .launch_configurations
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|l| l.name)
+                .collect(),
+            launch_templates: res
+                .launch_templates
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|l| l.id)
+                .collect(),
+            load_balancers: res
+                .load_balancers
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|l| l.name)
+                .collect(),
+            triggers: res
+                .triggers
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|t| t.name)
+                .collect(),
+            queues: res
+                .queues
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|q| {
+                    let name = q.name?;
+                    Some(EnvResourceQueue {
+                        name,
+                        url: q.url.unwrap_or_default(),
+                    })
+                })
+                .collect(),
+        })
     }
 
     /// Resolve the worker queue URL (and DLQ URL) for an env. EB autocreates

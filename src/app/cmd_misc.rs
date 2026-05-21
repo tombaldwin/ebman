@@ -149,6 +149,7 @@ impl App {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_name = env.name.clone();
+        let tier = env.tier.clone();
         self.status_message = Some(format!("fetching env resources for {env_name}…"));
         let env_name_for_title = env_name.clone();
         tokio::spawn(async move {
@@ -157,7 +158,7 @@ impl App {
                 .await
                 .map_err(|e| flatten_err("describe_env_resources", e));
             let body = match result {
-                Ok(text) => text,
+                Ok(res) => super::render_env_resources_tree(&res, &env_name, &tier),
                 Err(e) => format!("resources: {e}\n\nesc / q to close"),
             };
             let _ = tx.send(AppMsg::TextOverlay {
