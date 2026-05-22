@@ -492,6 +492,31 @@ impl DetailState {
             self.config_cursor.min(n - 1)
         };
     }
+
+    /// Drop a now-stale in-place edit after a refetch. If the row
+    /// being edited no longer exists (deleted by this operator or
+    /// another), the editor would render invisible — its `key` no
+    /// longer matches any row — yet still swallow every keypress and
+    /// commit a write that *re-creates* the deleted key. Clearing it
+    /// here is the safe outcome. Add-row edits (`is_new`) reference
+    /// no existing row, so they're left alone.
+    pub fn revalidate_config_edit(&mut self) {
+        let Some((kind, key)) = self.config_edit.as_ref().and_then(|e| {
+            if e.is_new {
+                None
+            } else {
+                Some((e.kind, e.key.clone()))
+            }
+        }) else {
+            return;
+        };
+        let still_present = config_editable_items(self)
+            .iter()
+            .any(|it| it.kind == kind && it.key == key);
+        if !still_present {
+            self.config_edit = None;
+        }
+    }
 }
 
 /// Pure: enumerate the Health-tab items that the operator can navigate

@@ -9900,8 +9900,10 @@ impl App {
                     match r {
                         Ok(tags) => {
                             d.tags = tags;
-                            // A delete may have shrunk the list.
+                            // A delete may have shrunk the list / removed
+                            // the row mid-edit.
                             d.clamp_config_cursor();
+                            d.revalidate_config_edit();
                         }
                         Err(msg) => tracing::warn!(error = %msg, "tags fetch failed"),
                     }
@@ -10230,8 +10232,10 @@ impl App {
                     match r {
                         Ok(vars) => {
                             d.env_vars = vars;
-                            // A delete may have shrunk the list.
+                            // A delete may have shrunk the list / removed
+                            // the row mid-edit.
                             d.clamp_config_cursor();
+                            d.revalidate_config_edit();
                         }
                         Err(msg) => tracing::warn!(error = %msg, "env vars fetch failed"),
                     }
@@ -13528,8 +13532,13 @@ fn try_pretty_json(s: &str) -> String {
             }
             '{' | '[' => {
                 out.push(c);
-                // Empty container? Don't add a newline.
+                // Empty container — emit `{}` / `[]` inline. Consume
+                // the closing bracket here so the `}`/`]` arm (which
+                // would add its own newline + indent) never sees it.
                 if matches!(chars.peek(), Some('}') | Some(']')) {
+                    if let Some(close) = chars.next() {
+                        out.push(close);
+                    }
                     continue;
                 }
                 depth += 1;
@@ -14607,6 +14616,17 @@ mod tests {
         assert!(lines.len() >= 4, "lines={lines:?}");
         assert!(lines.iter().any(|l| l.contains("\"a\": 1")));
         assert!(lines.iter().any(|l| l.contains("\"b\": 2")));
+    }
+
+    #[test]
+    fn try_pretty_json_emits_empty_containers_inline() {
+        // Empty container must stay on one line, not split to `{\n}`.
+        assert_eq!(super::try_pretty_json("{}"), "{}");
+        assert_eq!(super::try_pretty_json("[]"), "[]");
+        // Nested empty container — the outer object expands, the
+        // inner `{}` stays inline beside its key.
+        let pretty = super::try_pretty_json(r#"{"a":{}}"#);
+        assert!(pretty.contains("\"a\": {}"), "got: {pretty}");
     }
 
     #[test]
