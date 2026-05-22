@@ -59,6 +59,7 @@ mod cmd_overlay;
 mod cmd_settings;
 mod cmd_view;
 mod cmd_write;
+mod msg;
 pub use crate::mode_dlq::{DlqState, QueueView};
 
 /// Names of all built-in `:commands`. Used to detect collisions when loading
@@ -625,6 +626,72 @@ pub enum LoadState {
     Error,
 }
 
+/// In-progress command-bar Tab-completion cycle.
+#[derive(Default)]
+pub struct CompletionState {
+    /// The text the operator had typed before they first pressed Tab to
+    /// start a completion cycle. Cycling forward / backward matches against
+    /// this prefix; typing a new character resets it (and the cycle).
+    /// `None` when no cycle is active.
+    pub origin: Option<String>,
+    /// Position within the candidate list for the active completion cycle.
+    /// Only meaningful when `origin` is `Some`. Zero before the first Tab
+    /// (so the first Tab lands on the first match).
+    pub index: usize,
+}
+
+/// State for the global help overlay.
+pub struct HelpState {
+    pub scroll: u16,
+    /// Last computed max scroll, written by `draw_help` each frame and read
+    /// by the j/k handler so an incremental scroll past the bottom doesn't
+    /// accumulate (which would otherwise require N matching scroll-ups to
+    /// bring content back into view).
+    pub max_scroll: u16,
+    /// Which keymap subset `draw_help` renders. Set whenever `?` opens Help.
+    pub topic: HelpTopic,
+    /// The mode the user was in before they opened help. Restored when help
+    /// closes so pressing `?` from Detail / Action / Dlq doesn't drop the
+    /// user back to Normal and lose the active screen.
+    pub pre_mode: Option<Mode>,
+    /// Overlay (if any) the user had open before pressing `?`. Help renders
+    /// before overlays in the z-order so it's stashed here and restored
+    /// around the help round-trip.
+    pub pre_overlay: Option<Overlay>,
+}
+
+/// State for the bottom Events panel (and the event-timestamp format it
+/// shares with the Detail/Events tab).
+pub struct EventPanel {
+    pub events: Vec<EbEvent>,
+    pub visible: bool,
+    /// How event timestamps render in the Events panel + Detail/Events tab.
+    /// Defaults to UTC so the column matches CloudWatch / EB API output.
+    /// Operator cycles `Utc → Local → Age` via `:event-time` or the `T` key
+    /// in scopes where events are visible. Persists.
+    pub time_format: EventTimeFormat,
+    /// Env the current `events` list was fetched for. `None` = global. Used
+    /// by `refresh_events_if_selection_changed` to detect when the user has
+    /// moved the table cursor to a different env and refetch.
+    pub for_env: Option<String>,
+    pub scroll: u16,
+    /// Inner Rect of the events panel — captured by the renderer so the
+    /// mouse handler can detect drags on the top edge (divider row) for
+    /// resize.
+    pub area: Option<ratatui::layout::Rect>,
+    /// Set when a divider drag is in progress; stores the panel height at
+    /// the moment the user pressed down so we can compute the delta against
+    /// the current mouse row.
+    pub drag_origin: Option<u16>,
+    /// When set, the user has "entered" the events panel for navigation:
+    /// J/K move the cursor within the events list, Y yanks the highlighted
+    /// line. `None` means events keys are inert and the main table responds
+    /// to J/K.
+    pub cursor: Option<usize>,
+    /// Rendered height of the events panel, in rows.
+    pub height: u16,
+}
+
 pub struct App {
     pub context: AwsContext,
     pub scope: Scope,
@@ -658,42 +725,11 @@ pub struct App {
     pub sort_key: SortKey,
     pub sort_desc: bool,
     pub command_input: String,
-    /// The text the operator had typed before they first pressed
-    /// Tab to start a completion cycle. Cycling forward / backward
-    /// matches against this prefix; typing a new character resets
-    /// it (and the cycle). `None` when no cycle is active.
-    pub command_completion_origin: Option<String>,
-    /// Position within the candidate list for the active completion
-    /// cycle. Only meaningful when `command_completion_origin` is
-    /// `Some`. Zero before the first Tab (so the first Tab lands
-    /// on the first match).
-    pub command_completion_index: usize,
+    pub completion: CompletionState,
     pub quickjump_input: String,
     pub named_filters: BTreeMap<String, String>,
     pub extra_regions: Vec<String>,
-    pub events: Vec<EbEvent>,
-    pub events_visible: bool,
-    /// How event timestamps render in the Events panel + Detail/Events tab.
-    /// Defaults to UTC so the column matches CloudWatch / EB API output.
-    /// Operator can cycle through `Utc → Local → Age` via `:event-time`
-    /// or the `T` key in scopes where events are visible. Persists.
-    pub event_time_format: EventTimeFormat,
-    /// Env the current `events` list was fetched for. `None` = global. Used
-    /// by `refresh_events_if_selection_changed` to detect when the user has
-    /// moved the table cursor to a different env and refetch.
-    pub events_for_env: Option<String>,
-    pub events_scroll: u16,
-    /// Inner Rect of the events panel — captured by the renderer so the mouse
-    /// handler can detect drags on the top edge (divider row) for resize.
-    pub events_area: Option<ratatui::layout::Rect>,
-    /// Set when a divider drag is in progress; stores the events panel
-    /// height at the moment the user pressed down so we can compute the
-    /// delta against the current mouse row.
-    pub events_drag_origin: Option<u16>,
-    /// When set, the user has "entered" the events panel for navigation: J/K
-    /// move the cursor within the events list, Y yanks the highlighted line.
-    /// `None` means events keys are inert and the main table responds to J/K.
-    pub events_cursor: Option<usize>,
+    pub event_panel: EventPanel,
     /// Env names the user has marked for batch action via `space`. Cleared on
     /// Esc, on context switch, and after a successful batch dispatch.
     pub multi_selected: BTreeSet<String>,
@@ -718,13 +754,7 @@ pub struct App {
     pub dlq: Option<DlqState>,
     pub theme: Arc<Theme>,
     pub view_mode: ViewMode,
-    pub events_panel_height: u16,
-    pub help_scroll: u16,
-    /// Last computed max scroll for the global help overlay. Written by
-    /// `draw_help` each frame, read by the j/k handler so an incremental
-    /// scroll past the bottom doesn't accumulate (which would otherwise
-    /// require N matching scroll-ups to bring content back into view).
-    pub help_max_scroll: u16,
+    pub help: HelpState,
     pub hover_row: Option<usize>,
     pub alerts: usize, // count of envs currently in Red, recomputed each refresh
     /// Cached DLQ depth (`Visible` messages) for each Worker-tier env,
@@ -745,6 +775,11 @@ pub struct App {
     /// stale numbers.
     pub costs: std::collections::HashMap<String, f64>,
     pub costs_fetched_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// `family_key → newest available version` from `ListAvailableSolutionStacks`,
+    /// built by `spawn_solution_stacks`. Drives the envs-table stale-platform
+    /// tint. Empty until the first fetch lands; cleared on context switch so a
+    /// new account/region rebuilds it.
+    pub latest_stacks: std::collections::HashMap<String, String>,
     pub frozen: bool, // when true, auto-refresh ticker is no-op
     /// `true` when ebman launched without a `state.toml` on disk —
     /// i.e. first-ever run on this machine. Renderer surfaces a
@@ -811,17 +846,6 @@ pub struct App {
     /// the main loop) fires the AWS call when the deadline passes;
     /// `U` in Normal mode cancels.
     pub pending_dispatch: Option<PendingDispatch>,
-    /// Current scope of the help overlay. Determines which keymap subset
-    /// `draw_help` renders. Set whenever `?` opens Help.
-    pub help_topic: HelpTopic,
-    /// The mode the user was in before they opened the help overlay. Restored
-    /// when help closes so pressing `?` from Detail / Action / Dlq doesn't
-    /// drop the user back to Normal and lose the active screen.
-    pub pre_help_mode: Option<Mode>,
-    /// Overlay (if any) the user had open before pressing `?`. Help renders
-    /// before overlays in the z-order so we have to stash and restore the
-    /// overlay around the help round-trip.
-    pub pre_help_overlay: Option<Overlay>,
     /// Active modal-form session (`:capacity`, future `:network`, etc.).
     /// Populated by `open_form`; cleared on cancel / submit completion.
     pub form: Option<crate::form::Form>,
@@ -910,6 +934,12 @@ pub struct App {
     /// render hot path can look up `app → Color` without allocating a fresh
     /// HashMap per frame (previously `draw_table` did this on every draw).
     pub cached_app_colors: HashMap<String, ratatui::style::Color>,
+    /// `env_name → newest available platform version` for envs running a
+    /// superseded solution stack. Rebuilt in [`App::rebuild_view`] so the
+    /// render hot path does an O(1) lookup instead of re-parsing every
+    /// env's stack string per row per frame. Empty until `latest_stacks`
+    /// has been fetched.
+    pub cached_stale_platforms: HashMap<String, String>,
     pending_select: Option<String>,
     aws: Arc<AwsClient>,
     generation: u64,
@@ -1015,6 +1045,13 @@ enum AppMsg {
         account: Option<String>,
         region: String,
         result: Result<Vec<crate::aws::EnvCost>, String>,
+    },
+    /// Flat `ListAvailableSolutionStacks` result. The handler folds it into
+    /// `App.latest_stacks` (family → newest version) so the envs table can
+    /// flag platforms with a newer version available.
+    SolutionStacks {
+        gen: u64,
+        result: Result<Vec<String>, String>,
     },
     /// Recently-registered application versions for an env's app.
     /// Populates the Detail-Health-tab "recent deploys" section.
@@ -1380,19 +1417,21 @@ impl App {
             sort_key,
             sort_desc,
             command_input: String::new(),
-            command_completion_origin: None,
-            command_completion_index: 0,
+            completion: CompletionState::default(),
             quickjump_input: String::new(),
             named_filters: persisted.named_filters,
             extra_regions: config.extra_regions,
-            events: Vec::new(),
-            events_visible,
-            event_time_format,
-            events_for_env: None,
-            events_scroll: 0,
-            events_area: None,
-            events_drag_origin: None,
-            events_cursor: None,
+            event_panel: EventPanel {
+                events: Vec::new(),
+                visible: events_visible,
+                time_format: event_time_format,
+                for_env: None,
+                scroll: 0,
+                area: None,
+                drag_origin: None,
+                cursor: None,
+                height: 10,
+            },
             multi_selected: BTreeSet::new(),
             apps_selected: BTreeSet::new(),
             show_minimap: false,
@@ -1415,15 +1454,20 @@ impl App {
                 Arc::new(t)
             },
             view_mode: ViewMode::Default,
-            events_panel_height: 10,
-            help_scroll: 0,
-            help_max_scroll: 0,
+            help: HelpState {
+                scroll: 0,
+                max_scroll: 0,
+                topic: HelpTopic::Global,
+                pre_mode: None,
+                pre_overlay: None,
+            },
             hover_row: None,
             alerts: 0,
             worker_dlq_depths: std::collections::HashMap::new(),
             cost_enabled: persisted.cost_enabled.unwrap_or(false),
             costs: std::collections::HashMap::new(),
             costs_fetched_at: None,
+            latest_stacks: std::collections::HashMap::new(),
             frozen: false,
             first_run_hint: !crate::state::file_exists(),
             current_overlay: None,
@@ -1451,9 +1495,6 @@ impl App {
             sso_expiry: crate::sso::latest_session_expiry(),
             pending_actions: std::collections::VecDeque::with_capacity(PENDING_CAP),
             pending_dispatch: None,
-            help_topic: HelpTopic::Global,
-            pre_help_mode: None,
-            pre_help_overlay: None,
             form: None,
             log_tail_task: None,
             log_tail_session: 0,
@@ -1482,6 +1523,7 @@ impl App {
             cached_filtered: Vec::new(),
             cached_display: Vec::new(),
             cached_app_colors: HashMap::new(),
+            cached_stale_platforms: HashMap::new(),
             pending_select: persisted.selected_env,
             aws,
             generation: 0,
@@ -1550,19 +1592,21 @@ impl App {
             sort_key: SortKey::App,
             sort_desc: false,
             command_input: String::new(),
-            command_completion_origin: None,
-            command_completion_index: 0,
+            completion: CompletionState::default(),
             quickjump_input: String::new(),
             named_filters: std::collections::BTreeMap::new(),
             extra_regions: config.extra_regions.clone(),
-            events: Vec::new(),
-            events_visible: false,
-            event_time_format: EventTimeFormat::default(),
-            events_for_env: None,
-            events_scroll: 0,
-            events_area: None,
-            events_drag_origin: None,
-            events_cursor: None,
+            event_panel: EventPanel {
+                events: Vec::new(),
+                visible: false,
+                time_format: EventTimeFormat::default(),
+                for_env: None,
+                scroll: 0,
+                area: None,
+                drag_origin: None,
+                cursor: None,
+                height: 10,
+            },
             multi_selected: BTreeSet::new(),
             apps_selected: BTreeSet::new(),
             show_minimap: false,
@@ -1582,15 +1626,20 @@ impl App {
                 Arc::new(t)
             },
             view_mode: ViewMode::Default,
-            events_panel_height: 10,
-            help_scroll: 0,
-            help_max_scroll: 0,
+            help: HelpState {
+                scroll: 0,
+                max_scroll: 0,
+                topic: HelpTopic::Global,
+                pre_mode: None,
+                pre_overlay: None,
+            },
             hover_row: None,
             alerts: 0,
             worker_dlq_depths: std::collections::HashMap::new(),
             cost_enabled: false,
             costs: std::collections::HashMap::new(),
             costs_fetched_at: None,
+            latest_stacks: std::collections::HashMap::new(),
             frozen: false,
             first_run_hint: false,
             current_overlay: None,
@@ -1617,9 +1666,6 @@ impl App {
             sso_expiry: None,
             pending_actions: std::collections::VecDeque::with_capacity(PENDING_CAP),
             pending_dispatch: None,
-            help_topic: HelpTopic::Global,
-            pre_help_mode: None,
-            pre_help_overlay: None,
             form: None,
             log_tail_task: None,
             log_tail_session: 0,
@@ -1648,6 +1694,7 @@ impl App {
             cached_filtered: Vec::new(),
             cached_display: Vec::new(),
             cached_app_colors: HashMap::new(),
+            cached_stale_platforms: HashMap::new(),
             pending_select: None,
             aws,
             generation: 0,
@@ -2292,15 +2339,15 @@ impl App {
         // Drag-to-resize on the events-panel divider. The divider is the top
         // row of the events area (one row above the panel body, conceptually).
         // We bracket the row with a 1-cell tolerance so clicks land easily.
-        if self.events_visible {
-            if let Some(area) = self.events_area {
+        if self.event_panel.visible {
+            if let Some(area) = self.event_panel.area {
                 let divider_row = area.y;
-                let in_drag = self.events_drag_origin.is_some();
+                let in_drag = self.event_panel.drag_origin.is_some();
                 match m.kind {
                     MouseEventKind::Down(MouseButton::Left)
                         if (m.row as i32 - divider_row as i32).abs() <= 0 =>
                     {
-                        self.events_drag_origin = Some(self.events_panel_height);
+                        self.event_panel.drag_origin = Some(self.event_panel.height);
                         return;
                     }
                     MouseEventKind::Drag(MouseButton::Left) if in_drag => {
@@ -2308,11 +2355,11 @@ impl App {
                         // events panel height = footer_bottom - mouse_row.
                         let footer_bottom = area.y.saturating_add(area.height).saturating_add(2);
                         let new_height = footer_bottom.saturating_sub(m.row);
-                        self.events_panel_height = new_height.clamp(4, 30);
+                        self.event_panel.height = new_height.clamp(4, 30);
                         return;
                     }
                     MouseEventKind::Up(MouseButton::Left) if in_drag => {
-                        self.events_drag_origin = None;
+                        self.event_panel.drag_origin = None;
                         return;
                     }
                     _ => {}
@@ -2490,32 +2537,32 @@ impl App {
                     // help. `pre_help_mode` is set at every `?` keypress; if
                     // somehow missing, fall back to Normal so we don't get
                     // stuck in Help.
-                    self.mode = self.pre_help_mode.take().unwrap_or(Mode::Normal);
-                    if let Some(overlay) = self.pre_help_overlay.take() {
+                    self.mode = self.help.pre_mode.take().unwrap_or(Mode::Normal);
+                    if let Some(overlay) = self.help.pre_overlay.take() {
                         self.current_overlay = Some(overlay);
                     }
-                    self.help_scroll = 0;
+                    self.help.scroll = 0;
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
                     // Clamp to the last-known content bound so scrolling
                     // past the end doesn't accumulate phantom offsets.
-                    self.help_scroll = self.help_scroll.saturating_add(1).min(self.help_max_scroll);
+                    self.help.scroll = self.help.scroll.saturating_add(1).min(self.help.max_scroll);
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
-                    self.help_scroll = self.help_scroll.saturating_sub(1);
+                    self.help.scroll = self.help.scroll.saturating_sub(1);
                 }
                 _ => {}
             },
             Mode::Command => match key.code {
                 KeyCode::Esc => {
                     self.command_input.clear();
-                    self.command_completion_origin = None;
+                    self.completion.origin = None;
                     self.mode = Mode::Normal;
                 }
                 KeyCode::Enter => {
                     let cmd = self.command_input.clone();
                     self.command_input.clear();
-                    self.command_completion_origin = None;
+                    self.completion.origin = None;
                     self.mode = Mode::Normal;
                     self.execute_command(&cmd);
                 }
@@ -2523,7 +2570,7 @@ impl App {
                     // Reset the completion cycle — the operator
                     // is editing, not cycling. Same intent as
                     // typing a new character.
-                    self.command_completion_origin = None;
+                    self.completion.origin = None;
                     self.command_input.pop();
                 }
                 KeyCode::Tab => self.command_completion_step(1),
@@ -2532,7 +2579,7 @@ impl App {
                     // Any printable key resets the completion
                     // cycle so the operator's next Tab starts a
                     // fresh search.
-                    self.command_completion_origin = None;
+                    self.completion.origin = None;
                     self.command_input.push(c);
                 }
                 _ => {}
@@ -2738,8 +2785,8 @@ impl App {
                         }
                     }
                     KeyCode::Char('?') => {
-                        self.help_topic = HelpTopic::Detail;
-                        self.pre_help_mode = Some(Mode::Detail);
+                        self.help.topic = HelpTopic::Detail;
+                        self.help.pre_mode = Some(Mode::Detail);
                         self.mode = Mode::Help;
                     }
                     KeyCode::Char('a') => self.open_action_menu(),
@@ -2959,8 +3006,8 @@ impl App {
             }
             Mode::Action => {
                 if key.code == KeyCode::Char('?') {
-                    self.help_topic = HelpTopic::Action;
-                    self.pre_help_mode = Some(Mode::Action);
+                    self.help.topic = HelpTopic::Action;
+                    self.help.pre_mode = Some(Mode::Action);
                     self.mode = Mode::Help;
                 } else {
                     self.handle_action_key(key);
@@ -2968,8 +3015,8 @@ impl App {
             }
             Mode::Dlq => {
                 if key.code == KeyCode::Char('?') {
-                    self.help_topic = HelpTopic::Dlq;
-                    self.pre_help_mode = Some(Mode::Dlq);
+                    self.help.topic = HelpTopic::Dlq;
+                    self.help.pre_mode = Some(Mode::Dlq);
                     self.mode = Mode::Help;
                 } else {
                     self.handle_dlq_key(key);
@@ -3041,11 +3088,11 @@ impl App {
                         });
                     }
                     KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        self.events_visible = !self.events_visible;
-                        if self.events_visible {
-                            self.events_scroll = 0;
+                        self.event_panel.visible = !self.event_panel.visible;
+                        if self.event_panel.visible {
+                            self.event_panel.scroll = 0;
                             // events were fetched on each refresh; if we have none yet, prompt one.
-                            if self.events.is_empty() {
+                            if self.event_panel.events.is_empty() {
                                 self.spawn_events();
                             }
                         }
@@ -3055,15 +3102,15 @@ impl App {
                         self.status_message = Some(format!("view: {}", self.view_mode.label()));
                     }
                     KeyCode::Up
-                        if key.modifiers.contains(KeyModifiers::CONTROL) && self.events_visible =>
+                        if key.modifiers.contains(KeyModifiers::CONTROL) && self.event_panel.visible =>
                     {
-                        self.events_panel_height = (self.events_panel_height + 1).min(30);
+                        self.event_panel.height = (self.event_panel.height + 1).min(30);
                     }
                     KeyCode::Down
-                        if key.modifiers.contains(KeyModifiers::CONTROL) && self.events_visible =>
+                        if key.modifiers.contains(KeyModifiers::CONTROL) && self.event_panel.visible =>
                     {
-                        self.events_panel_height =
-                            self.events_panel_height.saturating_sub(1).max(4);
+                        self.event_panel.height =
+                            self.event_panel.height.saturating_sub(1).max(4);
                     }
                     KeyCode::Char('s') => {
                         self.sort_key = self.sort_key.next();
@@ -3095,7 +3142,7 @@ impl App {
                     KeyCode::Char(']') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         self.focus = match self.focus {
                             Focus::Table => {
-                                if self.events_visible {
+                                if self.event_panel.visible {
                                     Focus::Events
                                 } else {
                                     Focus::Table
@@ -3103,11 +3150,11 @@ impl App {
                             }
                             Focus::Events => Focus::Table,
                         };
-                        if matches!(self.focus, Focus::Events) && self.events_cursor.is_none() {
-                            self.events_cursor = Some(0);
+                        if matches!(self.focus, Focus::Events) && self.event_panel.cursor.is_none() {
+                            self.event_panel.cursor = Some(0);
                         }
                         if matches!(self.focus, Focus::Table) {
-                            self.events_cursor = None;
+                            self.event_panel.cursor = None;
                         }
                         self.status_message = Some(format!(
                             "focus: {}",
@@ -3122,7 +3169,7 @@ impl App {
                         self.focus = match self.focus {
                             Focus::Events => Focus::Table,
                             Focus::Table => {
-                                if self.events_visible {
+                                if self.event_panel.visible {
                                     Focus::Events
                                 } else {
                                     Focus::Table
@@ -3166,22 +3213,23 @@ impl App {
                         }
                     }
                     KeyCode::Char('y') => {
-                        if let Some(i) = self.events_cursor {
+                        if let Some(i) = self.event_panel.cursor {
                             self.yank_event_at(i);
                         } else {
                             self.yank_selected(YankKind::Cname);
                         }
                     }
                     KeyCode::Char('Y') => self.yank_selected(YankKind::Name),
-                    KeyCode::Char('J') if self.events_visible && !self.events.is_empty() => {
+                    KeyCode::Char('J') if self.event_panel.visible && !self.event_panel.events.is_empty() => {
                         let next = self
-                            .events_cursor
-                            .map(|c| (c + 1).min(self.events.len().saturating_sub(1)))
+                            .event_panel
+                            .cursor
+                            .map(|c| (c + 1).min(self.event_panel.events.len().saturating_sub(1)))
                             .unwrap_or(0);
-                        self.events_cursor = Some(next);
+                        self.event_panel.cursor = Some(next);
                     }
-                    KeyCode::Char('K') if self.events_visible && !self.events.is_empty() => {
-                        self.events_cursor = self.events_cursor.and_then(|c| c.checked_sub(1));
+                    KeyCode::Char('K') if self.event_panel.visible && !self.event_panel.events.is_empty() => {
+                        self.event_panel.cursor = self.event_panel.cursor.and_then(|c| c.checked_sub(1));
                     }
                     KeyCode::Char('b') if self.scope == Scope::Envs => self.open_in_console(),
                     KeyCode::Char('D') if self.scope == Scope::Envs => self.open_describe_overlay(),
@@ -3213,8 +3261,8 @@ impl App {
                     }
                     KeyCode::Char(c @ '1'..='9') => self.quick_jump((c as u8 - b'0') as usize),
                     KeyCode::Char('?') => {
-                        self.help_topic = HelpTopic::Global;
-                        self.pre_help_mode = Some(Mode::Normal);
+                        self.help.topic = HelpTopic::Global;
+                        self.help.pre_mode = Some(Mode::Normal);
                         self.mode = Mode::Help;
                     }
                     KeyCode::Char(':') => {
@@ -3235,18 +3283,19 @@ impl App {
                     KeyCode::Char('p') => self.open_profile_picker(),
                     KeyCode::Char('r') => self.open_region_picker(),
                     KeyCode::Char('j') | KeyCode::Down => match self.focus {
-                        Focus::Events if self.events_visible => {
+                        Focus::Events if self.event_panel.visible => {
                             let next = self
-                                .events_cursor
-                                .map(|c| (c + 1).min(self.events.len().saturating_sub(1)))
+                                .event_panel
+                                .cursor
+                                .map(|c| (c + 1).min(self.event_panel.events.len().saturating_sub(1)))
                                 .unwrap_or(0);
-                            self.events_cursor = Some(next);
+                            self.event_panel.cursor = Some(next);
                         }
                         _ => self.move_scope_selection(1),
                     },
                     KeyCode::Char('k') | KeyCode::Up => match self.focus {
-                        Focus::Events if self.events_visible => {
-                            self.events_cursor = self.events_cursor.and_then(|c| c.checked_sub(1));
+                        Focus::Events if self.event_panel.visible => {
+                            self.event_panel.cursor = self.event_panel.cursor.and_then(|c| c.checked_sub(1));
                         }
                         _ => self.move_scope_selection(-1),
                     },
@@ -3425,24 +3474,44 @@ impl App {
     /// AND the cache file is rewritten. Idempotent — multiple
     /// fetches in flight overwrite each other harmlessly (last
     /// write wins; the tag-grouped result is stable across calls).
-    fn spawn_cost_fetch(&mut self) {
+    /// Spawn a background AWS call off the UI thread.
+    ///
+    /// `op` runs against a cloned `AwsClient`; on failure its `eyre::Report`
+    /// is flattened to a user-facing string tagged with `op_name`. The
+    /// `Result<T, String>` plus the generation captured at spawn time are
+    /// handed to `into_msg`, whose `AppMsg` is sent back to the event loop.
+    /// This is the boilerplate every simple single-call `spawn_*` helper
+    /// shares; multi-call fan-outs (`spawn_worker_queue_check`,
+    /// `spawn_app_latest_versions`) still build their tasks directly.
+    fn spawn_aws<T, Fut, Op, Build>(&self, op_name: &'static str, op: Op, into_msg: Build)
+    where
+        T: Send + 'static,
+        Fut: std::future::Future<Output = Result<T, color_eyre::eyre::Report>> + Send + 'static,
+        Op: FnOnce(Arc<AwsClient>) -> Fut + Send + 'static,
+        Build: FnOnce(u64, Result<T, String>) -> AppMsg + Send + 'static,
+    {
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
+        tokio::spawn(async move {
+            let result = op(aws).await.map_err(|e| flatten_err(op_name, e));
+            let _ = tx.send(into_msg(gen, result));
+        });
+    }
+
+    fn spawn_cost_fetch(&mut self) {
         let account = self.context.account_id.clone();
         let region = self.context.region.clone();
-        tokio::spawn(async move {
-            let result = aws
-                .fetch_env_costs()
-                .await
-                .map_err(|e| flatten_err("fetch_env_costs", e));
-            let _ = tx.send(AppMsg::CostsFetched {
+        self.spawn_aws(
+            "fetch_env_costs",
+            move |aws| async move { aws.fetch_env_costs().await },
+            move |gen, result| AppMsg::CostsFetched {
                 gen,
                 account,
                 region,
                 result,
-            });
-        });
+            },
+        );
     }
 
     fn spawn_alarms_fetch(&mut self, env_name: String) {
@@ -3453,21 +3522,16 @@ impl App {
             env_name: env_name.clone(),
             body: format!("fetching alarms for {env_name}…"),
         });
-        let aws = self.aws.clone();
-        let tx = self.msg_tx.clone();
-        let gen = self.generation;
         let name_for_msg = env_name.clone();
-        tokio::spawn(async move {
-            let result = aws
-                .list_alarms_for_env(&env_name)
-                .await
-                .map_err(|e| flatten_err("list_alarms_for_env", e));
-            let _ = tx.send(AppMsg::Alarms {
+        self.spawn_aws(
+            "list_alarms_for_env",
+            move |aws| async move { aws.list_alarms_for_env(&env_name).await },
+            move |gen, result| AppMsg::Alarms {
                 gen,
                 env_name: name_for_msg,
                 result,
-            });
-        });
+            },
+        );
     }
 
     /// `:why` / `:diagnose` — open the unified diagnostic overlay for the
@@ -3513,20 +3577,15 @@ impl App {
     }
 
     fn spawn_why_red_queues(&self, app_name: String, env_name: String, session_id: u64) {
-        let aws = self.aws.clone();
-        let tx = self.msg_tx.clone();
-        let gen = self.generation;
-        tokio::spawn(async move {
-            let result = aws
-                .describe_worker_queues(&app_name, &env_name)
-                .await
-                .map_err(|e| flatten_err("describe_worker_queues", e));
-            let _ = tx.send(AppMsg::WhyRedQueues {
+        self.spawn_aws(
+            "describe_worker_queues",
+            move |aws| async move { aws.describe_worker_queues(&app_name, &env_name).await },
+            move |gen, result| AppMsg::WhyRedQueues {
                 gen,
                 session_id,
                 result,
-            });
-        });
+            },
+        );
     }
 
     /// Second-stage worker-queues fetch: once the queue stats land and
@@ -3536,88 +3595,63 @@ impl App {
     /// brief invisibility is acceptable since the DLQ isn't being
     /// consumed by anyone in normal operation.
     fn spawn_why_red_dlq_peek(&self, dlq_url: String, session_id: u64) {
-        let aws = self.aws.clone();
-        let tx = self.msg_tx.clone();
-        let gen = self.generation;
-        tokio::spawn(async move {
-            let result = aws
-                .peek_messages(&dlq_url, 3)
-                .await
-                .map_err(|e| flatten_err("peek_messages", e));
-            let _ = tx.send(AppMsg::WhyRedDlqMessages {
+        self.spawn_aws(
+            "peek_messages",
+            move |aws| async move { aws.peek_messages(&dlq_url, 3).await },
+            move |gen, result| AppMsg::WhyRedDlqMessages {
                 gen,
                 session_id,
                 result,
-            });
-        });
+            },
+        );
     }
 
     fn spawn_why_red_events(&self, env_name: String, session_id: u64) {
-        let aws = self.aws.clone();
-        let tx = self.msg_tx.clone();
-        let gen = self.generation;
-        tokio::spawn(async move {
-            let result = aws
-                .list_events_for_env(&env_name, 50)
-                .await
-                .map_err(|e| flatten_err("list_events_for_env", e));
-            let _ = tx.send(AppMsg::WhyRedEvents {
+        self.spawn_aws(
+            "list_events_for_env",
+            move |aws| async move { aws.list_events_for_env(&env_name, 50).await },
+            move |gen, result| AppMsg::WhyRedEvents {
                 gen,
                 session_id,
                 result,
-            });
-        });
+            },
+        );
     }
 
     fn spawn_why_red_alarms(&self, env_name: String, session_id: u64) {
-        let aws = self.aws.clone();
-        let tx = self.msg_tx.clone();
-        let gen = self.generation;
-        tokio::spawn(async move {
-            let result = aws
-                .list_alarms_for_env(&env_name)
-                .await
-                .map_err(|e| flatten_err("list_alarms_for_env", e));
-            let _ = tx.send(AppMsg::WhyRedAlarms {
+        self.spawn_aws(
+            "list_alarms_for_env",
+            move |aws| async move { aws.list_alarms_for_env(&env_name).await },
+            move |gen, result| AppMsg::WhyRedAlarms {
                 gen,
                 session_id,
                 result,
-            });
-        });
+            },
+        );
     }
 
     fn spawn_why_red_instances(&self, env_name: String, session_id: u64) {
-        let aws = self.aws.clone();
-        let tx = self.msg_tx.clone();
-        let gen = self.generation;
-        tokio::spawn(async move {
-            let result = aws
-                .list_instances(&env_name)
-                .await
-                .map_err(|e| flatten_err("list_instances", e));
-            let _ = tx.send(AppMsg::WhyRedInstances {
+        self.spawn_aws(
+            "list_instances",
+            move |aws| async move { aws.list_instances(&env_name).await },
+            move |gen, result| AppMsg::WhyRedInstances {
                 gen,
                 session_id,
                 result,
-            });
-        });
+            },
+        );
     }
 
     fn spawn_why_red_deploys(&self, app_name: String, session_id: u64) {
-        let aws = self.aws.clone();
-        let tx = self.msg_tx.clone();
-        let gen = self.generation;
-        tokio::spawn(async move {
-            let result = aws
-                .list_application_versions(&app_name)
-                .await
-                .map_err(|e| flatten_err("list_application_versions", e));
-            let _ = tx.send(AppMsg::WhyRedDeploys {
+        self.spawn_aws(
+            "list_application_versions",
+            move |aws| async move { aws.list_application_versions(&app_name).await },
+            move |gen, result| AppMsg::WhyRedDeploys {
                 gen,
                 session_id,
                 result,
-            });
-        });
+            },
+        );
     }
 
     /// Detail-Health-tab alarms fetch. Mirrors `spawn_why_red_alarms`
@@ -3627,46 +3661,36 @@ impl App {
     /// AWS call shape but each lands on its own typed result so a stale
     /// fetch from a closed overlay can't clobber the Detail view.
     fn spawn_detail_alarms(&mut self, env_name: String) {
-        let aws = self.aws.clone();
-        let tx = self.msg_tx.clone();
-        let gen = self.generation;
         if let Some(d) = self.detail.as_mut() {
             d.loading_cw_alarms = true;
         }
         let env_for_msg = env_name.clone();
-        tokio::spawn(async move {
-            let result = aws
-                .list_alarms_for_env(&env_name)
-                .await
-                .map_err(|e| flatten_err("list_alarms_for_env", e));
-            let _ = tx.send(AppMsg::DetailAlarms {
+        self.spawn_aws(
+            "list_alarms_for_env",
+            move |aws| async move { aws.list_alarms_for_env(&env_name).await },
+            move |gen, result| AppMsg::DetailAlarms {
                 gen,
                 env_name: env_for_msg,
                 result,
-            });
-        });
+            },
+        );
     }
 
     /// Detail-Health-tab recent-versions fetch. Same shape as
     /// `spawn_why_red_deploys` but lands on `AppMsg::DetailRecentVersions`.
     fn spawn_detail_recent_versions(&mut self, app_name: String, env_name: String) {
-        let aws = self.aws.clone();
-        let tx = self.msg_tx.clone();
-        let gen = self.generation;
         if let Some(d) = self.detail.as_mut() {
             d.loading_recent_versions = true;
         }
-        tokio::spawn(async move {
-            let result = aws
-                .list_application_versions(&app_name)
-                .await
-                .map_err(|e| flatten_err("list_application_versions", e));
-            let _ = tx.send(AppMsg::DetailRecentVersions {
+        self.spawn_aws(
+            "list_application_versions",
+            move |aws| async move { aws.list_application_versions(&app_name).await },
+            move |gen, result| AppMsg::DetailRecentVersions {
                 gen,
                 env_name,
                 result,
-            });
-        });
+            },
+        );
     }
 
     fn set_log_level(&mut self, level: &str) {
@@ -3835,11 +3859,11 @@ impl App {
     fn command_completion_step(&mut self, delta: i32) {
         // First Tab: snapshot what the operator had typed so a
         // subsequent reverse-Tab (or text input) can restore.
-        if self.command_completion_origin.is_none() {
-            self.command_completion_origin = Some(self.command_input.clone());
-            self.command_completion_index = 0;
+        if self.completion.origin.is_none() {
+            self.completion.origin = Some(self.command_input.clone());
+            self.completion.index = 0;
         }
-        let origin = self.command_completion_origin.clone().unwrap_or_default();
+        let origin = self.completion.origin.clone().unwrap_or_default();
         // Split origin into (name_fragment, rest). Only the
         // pre-whitespace fragment is completed; anything after
         // (args) is preserved as-is. Take ownership of the
@@ -3860,9 +3884,9 @@ impl App {
             return;
         }
         let n = candidates.len() as i32;
-        let cur = self.command_completion_index as i32;
+        let cur = self.completion.index as i32;
         let next = (cur + delta).rem_euclid(n) as usize;
-        self.command_completion_index = next;
+        self.completion.index = next;
         self.command_input = format!("{}{rest}", candidates[next]);
         self.status_message = Some(format!(
             "completion {}/{} — Tab cycles, Esc cancels",
@@ -4043,7 +4067,7 @@ impl App {
     /// operator cross-references against.
     pub(crate) fn cmd_event_time(&mut self, rest: &[&str]) {
         let next = match rest.first().copied() {
-            None => self.event_time_format.next(),
+            None => self.event_panel.time_format.next(),
             Some(arg) => match EventTimeFormat::parse(arg) {
                 Some(f) => f,
                 None => {
@@ -4054,7 +4078,7 @@ impl App {
                 }
             },
         };
-        self.event_time_format = next;
+        self.event_panel.time_format = next;
         self.persist_state();
         self.status_message = Some(match next {
             EventTimeFormat::Utc => "event timestamps: UTC (YYYY-MM-DD HH:MM:SSZ)".into(),
@@ -4945,20 +4969,16 @@ impl App {
         if let Some(d) = self.detail.as_mut() {
             d.loading_env_vars = true;
         }
-        let aws = self.aws.clone();
-        let tx = self.msg_tx.clone();
-        let gen = self.generation;
-        tokio::spawn(async move {
-            let result = aws
-                .fetch_env_vars(&app_name, &env_name)
-                .await
-                .map_err(|e| flatten_err("fetch_env_vars", e));
-            let _ = tx.send(AppMsg::DetailEnvVars {
+        let env_for_msg = env_name.clone();
+        self.spawn_aws(
+            "fetch_env_vars",
+            move |aws| async move { aws.fetch_env_vars(&app_name, &env_name).await },
+            move |gen, result| AppMsg::DetailEnvVars {
                 gen,
-                env_name,
+                env_name: env_for_msg,
                 result,
-            });
-        });
+            },
+        );
     }
 
     fn spawn_detail_tags(&mut self) {
@@ -4972,20 +4992,15 @@ impl App {
         if let Some(d) = self.detail.as_mut() {
             d.loading_tags = true;
         }
-        let aws = self.aws.clone();
-        let tx = self.msg_tx.clone();
-        let gen = self.generation;
-        tokio::spawn(async move {
-            let result = aws
-                .list_tags(&arn)
-                .await
-                .map_err(|e| flatten_err("list_tags", e));
-            let _ = tx.send(AppMsg::DetailTags {
+        self.spawn_aws(
+            "list_tags",
+            move |aws| async move { aws.list_tags(&arn).await },
+            move |gen, result| AppMsg::DetailTags {
                 gen,
                 env_name,
                 result,
-            });
-        });
+            },
+        );
     }
 
     /// Enter handler for the Health tab — drills into whichever
@@ -5742,25 +5757,20 @@ impl App {
         let Some(dlq) = self.dlq.as_mut() else { return };
         dlq.loading = true;
         dlq.error = None;
-        let aws = self.aws.clone();
-        let tx = self.msg_tx.clone();
-        let gen = self.generation;
         let env_name = dlq.env_name.clone();
         let queue_url = match dlq.viewing {
             QueueView::Dlq => dlq.dlq_url.clone(),
             QueueView::Main => dlq.main_queue_url.clone(),
         };
-        tokio::spawn(async move {
-            let result = aws
-                .peek_messages(&queue_url, 50)
-                .await
-                .map_err(|e| flatten_err("peek_messages", e));
-            let _ = tx.send(AppMsg::DlqMessages {
+        self.spawn_aws(
+            "peek_messages",
+            move |aws| async move { aws.peek_messages(&queue_url, 50).await },
+            move |gen, result| AppMsg::DlqMessages {
                 gen,
                 env_name,
                 result,
-            });
-        });
+            },
+        );
     }
 
     /// Delete a single message from whichever queue is currently loaded
@@ -6036,21 +6046,18 @@ impl App {
             d.loading_queues = true;
             d.error = None;
         }
-        let aws = self.aws.clone();
-        let tx = self.msg_tx.clone();
-        let gen = self.generation;
-        let name = env_name.clone();
-        tokio::spawn(async move {
-            let result = aws
-                .describe_worker_queues(&application_name, &name)
-                .await
-                .map_err(|e| flatten_err("describe_worker_queues", e));
-            let _ = tx.send(AppMsg::DetailQueues {
+        let env_for_msg = env_name.clone();
+        self.spawn_aws(
+            "describe_worker_queues",
+            move |aws| async move {
+                aws.describe_worker_queues(&application_name, &env_name).await
+            },
+            move |gen, result| AppMsg::DetailQueues {
                 gen,
-                env_name,
+                env_name: env_for_msg,
                 result,
-            });
-        });
+            },
+        );
     }
 
     fn spawn_detail_events(&mut self, env_name: String) {
@@ -6058,21 +6065,16 @@ impl App {
             d.loading_events = true;
             d.error = None;
         }
-        let aws = self.aws.clone();
-        let tx = self.msg_tx.clone();
-        let gen = self.generation;
-        let name = env_name.clone();
-        tokio::spawn(async move {
-            let result = aws
-                .list_events_for_env(&name, 50)
-                .await
-                .map_err(|e| flatten_err("list_events_for_env", e));
-            let _ = tx.send(AppMsg::DetailEvents {
+        let env_for_msg = env_name.clone();
+        self.spawn_aws(
+            "list_events_for_env",
+            move |aws| async move { aws.list_events_for_env(&env_name, 50).await },
+            move |gen, result| AppMsg::DetailEvents {
                 gen,
-                env_name,
+                env_name: env_for_msg,
                 result,
-            });
-        });
+            },
+        );
     }
 
     fn target_env_for_action(&self) -> Option<Environment> {
@@ -7923,9 +7925,9 @@ impl App {
                 }
             }
             KeyCode::Char('?') => {
-                self.pre_help_overlay = self.current_overlay.take();
-                self.pre_help_mode = Some(self.mode);
-                self.help_topic = HelpTopic::SavedConfigs;
+                self.help.pre_overlay = self.current_overlay.take();
+                self.help.pre_mode = Some(self.mode);
+                self.help.topic = HelpTopic::SavedConfigs;
                 self.mode = Mode::Help;
             }
             _ => {}
@@ -8012,37 +8014,29 @@ impl App {
     }
 
     fn spawn_preflight_events(&mut self, env_name: String) {
-        let aws = self.aws.clone();
-        let tx = self.msg_tx.clone();
-        let gen = self.generation;
-        tokio::spawn(async move {
-            let result = aws
-                .list_events_for_env(&env_name, 3)
-                .await
-                .map_err(|e| flatten_err("preflight_events", e));
-            let _ = tx.send(AppMsg::PreflightEvents {
+        let env_for_msg = env_name.clone();
+        self.spawn_aws(
+            "preflight_events",
+            move |aws| async move { aws.list_events_for_env(&env_name, 3).await },
+            move |gen, result| AppMsg::PreflightEvents {
                 gen,
-                env_name,
+                env_name: env_for_msg,
                 result,
-            });
-        });
+            },
+        );
     }
 
     fn spawn_dry_run(&mut self, env_name: String) {
-        let aws = self.aws.clone();
-        let tx = self.msg_tx.clone();
-        let gen = self.generation;
-        tokio::spawn(async move {
-            let result = aws
-                .list_instances(&env_name)
-                .await
-                .map_err(|e| flatten_err("dry_run_list_instances", e));
-            let _ = tx.send(AppMsg::DryRunResult {
+        let env_for_msg = env_name.clone();
+        self.spawn_aws(
+            "dry_run_list_instances",
+            move |aws| async move { aws.list_instances(&env_name).await },
+            move |gen, result| AppMsg::DryRunResult {
                 gen,
-                env_name,
+                env_name: env_for_msg,
                 result,
-            });
-        });
+            },
+        );
     }
 
     /// Fire a single non-destructive action for batch mode. Unlike
@@ -8050,9 +8044,6 @@ impl App {
     /// opted in by typing `:batch-…`. Only Rebuild and RestartAppServer are
     /// allowed; destructive actions still require per-env strict confirm.
     fn spawn_batch_action(&mut self, action: Action, env: String) {
-        let aws = self.aws.clone();
-        let tx = self.msg_tx.clone();
-        let gen = self.generation;
         write_audit_entry(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
@@ -8063,22 +8054,24 @@ impl App {
         );
         self.push_pending(action.label(), env.clone());
         let env_for_msg = env.clone();
-        tokio::spawn(async move {
-            let result = match action {
-                Action::Rebuild => aws.rebuild_env(&env).await,
-                Action::RestartAppServer => aws.restart_app_server(&env).await,
-                _ => Err(color_eyre::eyre::eyre!(
-                    "batch-mode only supports Rebuild / Restart"
-                )),
-            }
-            .map_err(|e| flatten_err("batch_action", e));
-            let _ = tx.send(AppMsg::ActionResult {
+        self.spawn_aws(
+            "batch_action",
+            move |aws| async move {
+                match action {
+                    Action::Rebuild => aws.rebuild_env(&env).await,
+                    Action::RestartAppServer => aws.restart_app_server(&env).await,
+                    _ => Err(color_eyre::eyre::eyre!(
+                        "batch-mode only supports Rebuild / Restart"
+                    )),
+                }
+            },
+            move |gen, result| AppMsg::ActionResult {
                 gen,
                 action,
                 env_name: env_for_msg,
                 result,
-            });
-        });
+            },
+        );
     }
 
     /// Per-env deploy dispatch for `:batch-deploy`. Shares the pending
@@ -8696,21 +8689,16 @@ impl App {
             d.loading_instances = true;
             d.error = None;
         }
-        let aws = self.aws.clone();
-        let tx = self.msg_tx.clone();
-        let gen = self.generation;
-        let name = env_name.clone();
-        tokio::spawn(async move {
-            let result = aws
-                .list_instances(&name)
-                .await
-                .map_err(|e| flatten_err("list_instances", e));
-            let _ = tx.send(AppMsg::DetailInstances {
+        let env_for_msg = env_name.clone();
+        self.spawn_aws(
+            "list_instances",
+            move |aws| async move { aws.list_instances(&env_name).await },
+            move |gen, result| AppMsg::DetailInstances {
                 gen,
-                env_name,
+                env_name: env_for_msg,
                 result,
-            });
-        });
+            },
+        );
     }
 
     fn execute_command(&mut self, raw: &str) {
@@ -8730,7 +8718,7 @@ impl App {
                 // transition doesn't leave a breadcrumb, so we infer from
                 // what's currently set (Detail view live, action flow open,
                 // DLQ open, interactive overlay open).
-                self.help_topic = if self.detail.is_some() {
+                self.help.topic = if self.detail.is_some() {
                     HelpTopic::Detail
                 } else if self.action_flow.is_some() {
                     HelpTopic::Action
@@ -8744,7 +8732,7 @@ impl App {
                 } else {
                     HelpTopic::Global
                 };
-                self.pre_help_mode = Some(self.mode);
+                self.help.pre_mode = Some(self.mode);
                 self.mode = Mode::Help;
             }
             "region" | "r" => self.cmd_region(&rest),
@@ -8766,11 +8754,11 @@ impl App {
             "group" => self.cmd_group(&rest),
             "redact" => self.cmd_redact(&rest),
             "events" => {
-                self.events_visible = parse_toggle(rest.first().copied(), self.events_visible);
-                if self.events_visible && self.events.is_empty() {
+                self.event_panel.visible = parse_toggle(rest.first().copied(), self.event_panel.visible);
+                if self.event_panel.visible && self.event_panel.events.is_empty() {
                     self.spawn_events();
                 }
-                self.status_message = Some(if self.events_visible {
+                self.status_message = Some(if self.event_panel.visible {
                     "events panel ON".into()
                 } else {
                     "events panel off".into()
@@ -9163,8 +9151,8 @@ impl App {
             )),
             grouped: Some(self.grouped),
             redact: Some(self.redact),
-            events_visible: Some(self.events_visible),
-            event_time_format: Some(self.event_time_format),
+            events_visible: Some(self.event_panel.visible),
+            event_time_format: Some(self.event_panel.time_format),
             selected_env: selected,
             named_filters: self.named_filters.clone(),
             pinned: self.pinned.clone(),
@@ -9373,16 +9361,11 @@ impl App {
     }
 
     fn spawn_identity(&mut self) {
-        let aws = self.aws.clone();
-        let tx = self.msg_tx.clone();
-        let gen = self.generation;
-        tokio::spawn(async move {
-            let result = aws
-                .verify_identity()
-                .await
-                .map_err(|e| flatten_err("verify_identity", e));
-            let _ = tx.send(AppMsg::Identity { gen, result });
-        });
+        self.spawn_aws(
+            "verify_identity",
+            move |aws| async move { aws.verify_identity().await },
+            |gen, result| AppMsg::Identity { gen, result },
+        );
     }
 
     fn spawn_update_check(&mut self) {
@@ -9459,23 +9442,35 @@ impl App {
                 let _ = tx.send(AppMsg::Refresh { gen, result });
             });
         }
-        if self.events_visible {
+        if self.event_panel.visible {
             self.spawn_events();
         }
         self.spawn_applications();
+        // Solution stacks change rarely (AWS releases platform versions
+        // roughly monthly); fetch once per context and reuse. Cleared on a
+        // context switch so a new account/region rebuilds it.
+        if self.latest_stacks.is_empty() {
+            self.spawn_solution_stacks();
+        }
+    }
+
+    /// Fetch the region's solution-stack catalogue so the envs table can
+    /// flag platforms with a newer version available. Best-effort: a failed
+    /// fetch just leaves `latest_stacks` empty and no env is flagged.
+    fn spawn_solution_stacks(&self) {
+        self.spawn_aws(
+            "list_solution_stacks",
+            move |aws| async move { aws.list_solution_stacks().await },
+            |gen, result| AppMsg::SolutionStacks { gen, result },
+        );
     }
 
     fn spawn_applications(&self) {
-        let aws = self.aws.clone();
-        let tx = self.msg_tx.clone();
-        let gen = self.generation;
-        tokio::spawn(async move {
-            let result = aws
-                .list_applications()
-                .await
-                .map_err(|e| flatten_err("list_applications", e));
-            let _ = tx.send(AppMsg::Applications { gen, result });
-        });
+        self.spawn_aws(
+            "list_applications",
+            move |aws| async move { aws.list_applications().await },
+            |gen, result| AppMsg::Applications { gen, result },
+        );
     }
 
     /// Set the active scope. Triggers the lazy `spawn_app_latest_versions`
@@ -9561,24 +9556,23 @@ impl App {
     }
 
     fn spawn_events(&mut self) {
-        let aws = self.aws.clone();
-        let tx = self.msg_tx.clone();
-        let gen = self.generation;
         // Scope the events panel to the currently-selected env so it tells
         // the user about *this* env, not the entire account. Falls back to
         // the global event stream when no env is selected. The previously-
         // fetched env name is recorded so we can detect selection changes
         // and refetch without firing a request on every j/k.
         let selected = self.selected_env().map(|e| e.name.clone());
-        self.events_for_env = selected.clone();
-        tokio::spawn(async move {
-            let result = match selected {
-                Some(name) => aws.list_events_for_env(&name, 50).await,
-                None => aws.list_events(50).await,
-            }
-            .map_err(|e| flatten_err("list_events", e));
-            let _ = tx.send(AppMsg::Events { gen, result });
-        });
+        self.event_panel.for_env = selected.clone();
+        self.spawn_aws(
+            "list_events",
+            move |aws| async move {
+                match selected {
+                    Some(name) => aws.list_events_for_env(&name, 50).await,
+                    None => aws.list_events(50).await,
+                }
+            },
+            |gen, result| AppMsg::Events { gen, result },
+        );
     }
 
     /// Refetch the events panel if the cursor has moved to a different env
@@ -9586,37 +9580,29 @@ impl App {
     /// any keystroke / mouse click that changed selection picks up the new
     /// env's events on the next frame.
     fn refresh_events_if_selection_changed(&mut self) {
-        if !self.events_visible {
+        if !self.event_panel.visible {
             return;
         }
         let selected = self.selected_env().map(|e| e.name.clone());
-        if selected != self.events_for_env {
+        if selected != self.event_panel.for_env {
             self.spawn_events();
         }
     }
 
     /// Apply a Detail-tab AppMsg payload. Handles the boilerplate every
-    /// `Detail*` variant shares: drop on stale generation, drop when no
-    /// Detail view is open, drop when the user switched to a different
-    /// env mid-fetch.
+    /// `Detail*` variant shares: drop when no Detail view is open, drop
+    /// when the user switched to a different env mid-fetch. The stale-
+    /// generation drop is handled upstream by `handle_msg`'s central guard.
     ///
     /// The closure runs against `&mut DetailState` + the raw
     /// `Result<T, String>` so the caller picks its own success / error
     /// behaviour — most clear `detail.error` on the Ok branch, but tags /
     /// env-vars use `tracing::warn!` instead since their failures
     /// shouldn't tint the whole tab red.
-    fn apply_detail_msg<T, F>(
-        &mut self,
-        gen: u64,
-        env_name: &str,
-        result: Result<T, String>,
-        apply: F,
-    ) where
+    fn apply_detail_msg<T, F>(&mut self, env_name: &str, result: Result<T, String>, apply: F)
+    where
         F: FnOnce(&mut DetailState, Result<T, String>),
     {
-        if gen != self.generation {
-            return;
-        }
         let Some(detail) = self.detail.as_mut() else {
             return;
         };
@@ -9624,1135 +9610,6 @@ impl App {
             return;
         }
         apply(detail, result);
-    }
-
-    fn handle_msg(&mut self, msg: AppMsg) {
-        match msg {
-            AppMsg::Refresh { gen, result } => {
-                if gen != self.generation {
-                    return; // stale result from a previous context — drop.
-                }
-                self.apply_refresh(result);
-            }
-            AppMsg::Rebuild(result) => self.apply_rebuild(result),
-            AppMsg::Identity { gen, result } => {
-                if gen != self.generation {
-                    return;
-                }
-                match result {
-                    Ok(id) => {
-                        self.context.account_id = id.account_id;
-                        self.context.caller_arn = id.caller_arn;
-                    }
-                    Err(msg) => {
-                        tracing::warn!(error = %msg, "identity refresh failed");
-                    }
-                }
-            }
-            AppMsg::Applications { gen, result } => {
-                if gen != self.generation {
-                    return;
-                }
-                match result {
-                    Ok(mut apps) => {
-                        apps.sort_by_key(|a| a.name.to_lowercase());
-                        // Preserve the previously-fetched LATEST values across
-                        // refreshes so the column doesn't flicker to "—" every
-                        // tick while the follow-up fan-out is in flight.
-                        merge_app_latest_versions(&self.applications, &mut apps);
-                        self.applications = apps;
-                        // Pinned-first sort runs every refresh so newly-arrived
-                        // apps don't shuffle the pinned ones off the top row.
-                        self.resort_applications();
-                        if self.applications.is_empty() {
-                            self.app_table_state.select(None);
-                        } else if self
-                            .app_table_state
-                            .selected()
-                            .map(|s| s >= self.applications.len())
-                            .unwrap_or(true)
-                        {
-                            self.app_table_state.select(Some(0));
-                        }
-                        // Fan out latest-version fetches only when the
-                        // operator is actually looking at the apps view.
-                        // Otherwise we'd burn N DescribeApplicationVersions
-                        // calls on every refresh tick for users who live in
-                        // the envs view all day. Switching scope to Apps
-                        // (Tab / BackTab) kicks off the fetch on demand;
-                        // the periodic refresh then keeps it fresh.
-                        if self.scope == Scope::Apps {
-                            self.spawn_app_latest_versions();
-                        }
-                    }
-                    Err(msg) => tracing::warn!(error = %msg, "applications fetch failed"),
-                }
-            }
-            AppMsg::AppLatestVersions { gen, results } => {
-                if gen != self.generation {
-                    return;
-                }
-                let by_name: std::collections::HashMap<_, _> = results
-                    .into_iter()
-                    .map(|(name, label, created)| (name, (label, created)))
-                    .collect();
-                for app in self.applications.iter_mut() {
-                    if let Some((label, created)) = by_name.get(&app.name) {
-                        app.latest_version_label = label.clone();
-                        app.latest_version_created = *created;
-                    }
-                }
-            }
-            AppMsg::WorkerQueueCheck { gen, results } => {
-                if gen != self.generation {
-                    return;
-                }
-                // Rebuild the cache from scratch so workers whose DLQ
-                // drained back to zero are reflected. Missing entries =
-                // "fetch failed this tick"; we drop them so a transient
-                // SQS error doesn't blank the chip for everyone.
-                self.worker_dlq_depths.clear();
-                for (env_name, depth) in results {
-                    self.worker_dlq_depths.insert(env_name, depth);
-                }
-                // Recompute alerts now that the cache is fresh — the
-                // count set during apply_refresh used the *previous*
-                // tick's cache. Workers newly above DLQ=0 join the
-                // alert pill on the next draw.
-                self.alerts = compute_red_alerts(&self.environments, &self.worker_dlq_depths);
-            }
-            AppMsg::Events { gen, result } => {
-                if gen != self.generation {
-                    return;
-                }
-                match result {
-                    // The API returns events in time-descending order already.
-                    Ok(events) => self.events = events,
-                    Err(msg) => tracing::warn!(error = %msg, "event fetch failed"),
-                }
-            }
-            AppMsg::DetailEvents {
-                gen,
-                env_name,
-                result,
-            } => {
-                self.apply_detail_msg(gen, &env_name, result, |d, r| {
-                    d.loading_events = false;
-                    match r {
-                        Ok(events) => {
-                            d.events = events;
-                            d.error = None;
-                        }
-                        Err(msg) => d.error = Some(msg),
-                    }
-                });
-            }
-            AppMsg::ActionResult {
-                gen,
-                action,
-                env_name,
-                result,
-            } => {
-                if gen != self.generation {
-                    return;
-                }
-                write_audit_outcome(
-                    self.context.account_id.as_deref(),
-                    self.context.profile.as_deref(),
-                    &self.context.region,
-                    action,
-                    &env_name,
-                    result.as_ref().map(|_| ()).map_err(|e| e.as_str()),
-                );
-                // Stamp the matching pending-actions entry with the outcome
-                // so the panel shows ✓ / ✗ instead of "in flight".
-                self.complete_pending(
-                    action.label(),
-                    &env_name,
-                    result.as_ref().map(|_| ()).map_err(|e| e.clone()),
-                );
-                match result {
-                    Ok(()) => {
-                        self.close_action_flow();
-                        self.status_message =
-                            Some(format!("{} on {env_name} dispatched", action.label()));
-                        self.spawn_refresh();
-                    }
-                    Err(msg) => {
-                        // Keep the confirm modal open via a Running→error transition;
-                        // simpler: close flow, surface the error.
-                        self.close_action_flow();
-                        self.error_message =
-                            Some(format!("{} on {env_name} failed: {msg}", action.label()));
-                    }
-                }
-            }
-            AppMsg::DetailInstances {
-                gen,
-                env_name,
-                result,
-            } => {
-                self.apply_detail_msg(gen, &env_name, result, |d, r| {
-                    d.loading_instances = false;
-                    match r {
-                        Ok(instances) => {
-                            d.instances = instances;
-                            d.error = None;
-                        }
-                        Err(msg) => d.error = Some(msg),
-                    }
-                });
-            }
-            AppMsg::DetailMetrics {
-                gen,
-                env_name,
-                result,
-            } => {
-                self.apply_detail_msg(gen, &env_name, result, |d, r| {
-                    d.loading_metrics = false;
-                    match r {
-                        Ok(metrics) => {
-                            d.metrics = metrics;
-                            d.error = None;
-                        }
-                        Err(msg) => d.error = Some(msg),
-                    }
-                });
-            }
-            AppMsg::DetailLogsProgress {
-                gen,
-                env_name,
-                stage,
-                attempt,
-            } => {
-                if gen != self.generation {
-                    return;
-                }
-                let Some(detail) = self.detail.as_mut() else {
-                    return;
-                };
-                if detail.env_name != env_name {
-                    return;
-                }
-                detail.log_tail.stage = stage;
-                if matches!(stage, LogTailStage::Polling) {
-                    detail.log_tail.poll_attempt = attempt;
-                }
-            }
-            AppMsg::DetailLogs {
-                gen,
-                env_name,
-                result,
-            } => {
-                if gen != self.generation {
-                    return;
-                }
-                let Some(detail) = self.detail.as_mut() else {
-                    return;
-                };
-                if detail.env_name != env_name {
-                    return;
-                }
-                match result {
-                    Ok(by_instance) => {
-                        detail.log_tail.by_instance = by_instance;
-                        detail.log_tail.stage = LogTailStage::Ready;
-                        detail.log_tail.error = None;
-                    }
-                    Err(msg) => {
-                        detail.log_tail.stage = LogTailStage::Ready;
-                        detail.log_tail.error = Some(msg);
-                    }
-                }
-            }
-            AppMsg::TextOverlay { gen, title, body } => {
-                if gen != self.generation {
-                    return;
-                }
-                self.current_overlay = Some(Overlay::TextDump { title, body });
-            }
-            AppMsg::AppVersions {
-                gen,
-                application,
-                deployed_label,
-                result,
-            } => {
-                if gen != self.generation {
-                    return;
-                }
-                match result {
-                    Ok(versions) if versions.is_empty() => {
-                        self.status_message =
-                            Some(format!("no application versions for {application}"));
-                    }
-                    Ok(versions) => {
-                        self.current_overlay = Some(Overlay::TextDump {
-                            title: format!("application versions — {application}"),
-                            body: format_app_versions(&versions, deployed_label.as_deref(), 20),
-                        });
-                    }
-                    Err(msg) => self.error_message = Some(msg),
-                }
-            }
-            AppMsg::UpdateCheck(latest) => {
-                if let Some(release) = latest {
-                    tracing::info!(target: "ebman::update", current = env!("CARGO_PKG_VERSION"), latest = %release.version, "newer ebman released on crates.io");
-                    self.update_available = Some(release);
-                }
-            }
-            AppMsg::DryRunResult {
-                gen,
-                env_name,
-                result,
-            } => {
-                if gen != self.generation {
-                    return;
-                }
-                let Some(ActionFlow::Confirm(modal)) = self.action_flow.as_mut() else {
-                    return;
-                };
-                if modal.target_env != env_name {
-                    return;
-                }
-                modal.loading_dryrun = false;
-                if let Ok(instances) = result {
-                    let azs: std::collections::HashSet<&str> = instances
-                        .iter()
-                        .map(|i| i.availability_zone.as_str())
-                        .filter(|az| !az.is_empty())
-                        .collect();
-                    modal.dryrun = Some(DryRunInfo {
-                        instance_count: instances.len(),
-                        az_count: azs.len(),
-                    });
-                }
-            }
-            AppMsg::Alarms {
-                gen,
-                env_name,
-                result,
-            } => {
-                if gen != self.generation {
-                    return;
-                }
-                // Drop stale results: the user may have closed the overlay or
-                // requested alarms for a different env during the round-trip.
-                // The overlay carries the env it was opened for; only replace
-                // its body if that still matches the result we just received.
-                match self.current_overlay.as_mut() {
-                    Some(Overlay::Alarms {
-                        env_name: requested,
-                        body,
-                    }) if requested == &env_name => {
-                        *body = format_alarms(result);
-                    }
-                    _ => (),
-                }
-            }
-            AppMsg::WhyRedEvents {
-                gen,
-                session_id,
-                result,
-            } => {
-                if gen != self.generation {
-                    return;
-                }
-                if let Some(Overlay::WhyRed {
-                    session_id: s,
-                    events,
-                    ..
-                }) = self.current_overlay.as_mut()
-                {
-                    if *s == session_id {
-                        *events = Some(result);
-                    }
-                }
-            }
-            AppMsg::WhyRedAlarms {
-                gen,
-                session_id,
-                result,
-            } => {
-                if gen != self.generation {
-                    return;
-                }
-                if let Some(Overlay::WhyRed {
-                    session_id: s,
-                    alarms,
-                    ..
-                }) = self.current_overlay.as_mut()
-                {
-                    if *s == session_id {
-                        *alarms = Some(result);
-                    }
-                }
-            }
-            AppMsg::WhyRedInstances {
-                gen,
-                session_id,
-                result,
-            } => {
-                if gen != self.generation {
-                    return;
-                }
-                if let Some(Overlay::WhyRed {
-                    session_id: s,
-                    instances,
-                    ..
-                }) = self.current_overlay.as_mut()
-                {
-                    if *s == session_id {
-                        *instances = Some(result);
-                    }
-                }
-            }
-            AppMsg::WhyRedDeploys {
-                gen,
-                session_id,
-                result,
-            } => {
-                if gen != self.generation {
-                    return;
-                }
-                if let Some(Overlay::WhyRed {
-                    session_id: s,
-                    deploys,
-                    ..
-                }) = self.current_overlay.as_mut()
-                {
-                    if *s == session_id {
-                        *deploys = Some(result);
-                    }
-                }
-            }
-            AppMsg::WhyRedQueues {
-                gen,
-                session_id,
-                result,
-            } => {
-                if gen != self.generation {
-                    return;
-                }
-                // Land the queues result, then kick the DLQ peek if the
-                // DLQ has visible messages. The peek is a second-stage
-                // fetch — it only fires when the first stage shows
-                // something worth peeking at, avoiding pointless SQS
-                // calls on healthy workers.
-                let mut dlq_url_to_peek: Option<String> = None;
-                if let Some(Overlay::WhyRed {
-                    session_id: s,
-                    queues,
-                    dlq_messages,
-                    ..
-                }) = self.current_overlay.as_mut()
-                {
-                    if *s == session_id {
-                        if let Ok(ref qs) = result {
-                            let dlq_visible = qs.dlq_stats.as_ref().map(|s| s.visible).unwrap_or(0);
-                            if dlq_visible > 0 {
-                                if let Some(url) = qs.dlq_url.clone() {
-                                    dlq_url_to_peek = Some(url);
-                                }
-                            } else {
-                                // Mark dlq_messages as resolved-empty so
-                                // the renderer doesn't show "loading…"
-                                // forever for a clean DLQ.
-                                *dlq_messages = Some(Ok(Vec::new()));
-                            }
-                        }
-                        *queues = Some(result);
-                    }
-                }
-                if let Some(url) = dlq_url_to_peek {
-                    self.spawn_why_red_dlq_peek(url, session_id);
-                }
-            }
-            AppMsg::WhyRedDlqMessages {
-                gen,
-                session_id,
-                result,
-            } => {
-                if gen != self.generation {
-                    return;
-                }
-                if let Some(Overlay::WhyRed {
-                    session_id: s,
-                    dlq_messages,
-                    ..
-                }) = self.current_overlay.as_mut()
-                {
-                    if *s == session_id {
-                        *dlq_messages = Some(result);
-                    }
-                }
-            }
-            AppMsg::PreflightEvents {
-                gen,
-                env_name,
-                result,
-            } => {
-                if gen != self.generation {
-                    return;
-                }
-                let Some(ActionFlow::Confirm(modal)) = self.action_flow.as_mut() else {
-                    return;
-                };
-                if modal.target_env != env_name {
-                    return;
-                }
-                modal.loading_events = false;
-                if let Ok(events) = result {
-                    modal.recent_events = Some(events);
-                }
-            }
-            AppMsg::RollbackTarget {
-                gen,
-                env_name,
-                current_version,
-                result,
-            } => {
-                if gen != self.generation {
-                    return;
-                }
-                match result {
-                    Err(e) => self.error_message = Some(format!("rollback: {e}")),
-                    Ok(events) => {
-                        match previous_version_label(&events, &current_version) {
-                            None => {
-                                self.error_message = Some(format!(
-                                    "rollback: no prior version in {env_name}'s recent events — use :versions then :deploy"
-                                ));
-                            }
-                            // The deploy-confirm modal targets the
-                            // *selected* env; if the cursor moved off
-                            // the env `:rollback` was issued for, bail
-                            // rather than roll back the wrong one.
-                            Some(_)
-                                if self.selected_env().map(|e| e.name.as_str())
-                                    != Some(env_name.as_str()) =>
-                            {
-                                self.error_message = Some(
-                                    "rollback cancelled — selection moved off the target env"
-                                        .into(),
-                                );
-                            }
-                            Some(prev) => {
-                                self.status_message = Some(format!(
-                                    "rollback {env_name}: redeploying previous version {prev}"
-                                ));
-                                self.open_parameterised_action(
-                                    Action::Deploy,
-                                    ParameterisedAction {
-                                        deploy_version: Some(prev),
-                                        ..Default::default()
-                                    },
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-            AppMsg::DetailTags {
-                gen,
-                env_name,
-                result,
-            } => {
-                self.apply_detail_msg(gen, &env_name, result, |d, r| {
-                    d.loading_tags = false;
-                    match r {
-                        Ok(tags) => {
-                            d.tags = tags;
-                            // A delete may have shrunk the list / removed
-                            // the row mid-edit.
-                            d.clamp_config_cursor();
-                            d.revalidate_config_edit();
-                        }
-                        Err(msg) => tracing::warn!(error = %msg, "tags fetch failed"),
-                    }
-                });
-            }
-            AppMsg::DeployFromLocal {
-                gen,
-                env_name,
-                label,
-                summary,
-                result,
-            } => {
-                if gen != self.generation {
-                    return;
-                }
-                self.complete_pending(
-                    &summary,
-                    &env_name,
-                    result.as_ref().map(|_| ()).map_err(|e| e.clone()),
-                );
-                match result {
-                    Ok(()) => {
-                        self.push_toast(
-                            ToastKind::Info,
-                            format!("{summary} → {env_name} (version {label})"),
-                        );
-                    }
-                    Err(msg) => {
-                        self.push_toast(
-                            ToastKind::Error,
-                            format!("{summary} on {env_name} failed: {msg}"),
-                        );
-                    }
-                }
-            }
-            AppMsg::LogTailOpened {
-                gen,
-                session_id,
-                env_name,
-                log_group,
-                since_ms,
-            } => {
-                if gen != self.generation || session_id != self.log_tail_session {
-                    return;
-                }
-                self.current_overlay = Some(Overlay::LogTail {
-                    log_group,
-                    env_name,
-                    events: std::collections::VecDeque::with_capacity(LOG_TAIL_MAX_LINES),
-                    scroll: 0,
-                    following: true,
-                    since_ms,
-                    filter_input: String::new(),
-                    filter_active: false,
-                    filter_pattern: None,
-                    last_err: None,
-                    session_id,
-                });
-                self.status_message = None;
-            }
-            AppMsg::LogTailEvents {
-                gen,
-                session_id,
-                next_since_ms,
-                result,
-            } => {
-                if gen != self.generation || session_id != self.log_tail_session {
-                    return;
-                }
-                // Route to whichever overlay slot currently holds the LogTail
-                // — `current_overlay` normally, or `pre_help_overlay` if the
-                // user pressed `?` mid-tail. Without the second slot, events
-                // arriving during the help round-trip would be lost.
-                let target = if matches!(
-                    self.current_overlay.as_ref(),
-                    Some(Overlay::LogTail { session_id: s, .. }) if *s == session_id
-                ) {
-                    self.current_overlay.as_mut()
-                } else if matches!(
-                    self.pre_help_overlay.as_ref(),
-                    Some(Overlay::LogTail { session_id: s, .. }) if *s == session_id
-                ) {
-                    self.pre_help_overlay.as_mut()
-                } else {
-                    return;
-                };
-                let Some(Overlay::LogTail {
-                    events,
-                    since_ms,
-                    last_err,
-                    ..
-                }) = target
-                else {
-                    return;
-                };
-                *since_ms = next_since_ms;
-                match result {
-                    Ok(new_events) => {
-                        *last_err = None;
-                        for ev in new_events {
-                            if events.len() >= LOG_TAIL_MAX_LINES {
-                                events.pop_front();
-                            }
-                            events.push_back(ev);
-                        }
-                    }
-                    Err(msg) => {
-                        *last_err = Some(msg);
-                    }
-                }
-            }
-            AppMsg::DetailLogGroups {
-                gen,
-                env_name,
-                groups,
-            } => {
-                if gen != self.generation {
-                    return;
-                }
-                let Some(detail) = self.detail.as_mut() else {
-                    return;
-                };
-                if detail.env_name != env_name {
-                    return;
-                }
-                detail.cw_log_groups = Some(groups);
-            }
-            AppMsg::DetailAlarms {
-                gen,
-                env_name,
-                result,
-            } => {
-                if gen != self.generation {
-                    return;
-                }
-                let Some(detail) = self.detail.as_mut() else {
-                    return;
-                };
-                if detail.env_name != env_name {
-                    return;
-                }
-                detail.loading_cw_alarms = false;
-                detail.cw_alarms = Some(result);
-            }
-            AppMsg::EnvVarsForEdit {
-                gen,
-                env_name,
-                result,
-            } => {
-                if gen != self.generation {
-                    return;
-                }
-                match result {
-                    Ok(vars) => {
-                        // Stash for the main loop to consume. The
-                        // editor shell-out has to happen there
-                        // because that's where the `Tui` handle is.
-                        self.pending_env_edit = Some((env_name, vars));
-                    }
-                    Err(msg) => {
-                        self.error_message = Some(format!("env-edit fetch: {msg}"));
-                    }
-                }
-            }
-            AppMsg::CostsFetched {
-                gen,
-                account,
-                region,
-                result,
-            } => {
-                if gen != self.generation {
-                    return;
-                }
-                match result {
-                    Ok(rows) => {
-                        let now = chrono::Utc::now();
-                        self.costs.clear();
-                        for row in &rows {
-                            self.costs.insert(row.env_name.clone(), row.cost_usd);
-                        }
-                        self.costs_fetched_at = Some(now);
-                        // Persist to ~/.cache/ebman/cost-{account}-{region}.toml
-                        // so subsequent sessions render immediately.
-                        let account_key = account.unwrap_or_else(|| "unknown".into());
-                        let cache = crate::cost_cache::CostCache {
-                            fetched_at: Some(now),
-                            costs: self.costs.clone(),
-                        };
-                        if let Err(e) = crate::cost_cache::save(&account_key, &region, &cache) {
-                            tracing::warn!(
-                                target: "ebman::cost",
-                                error = %e,
-                                "cost cache write failed (non-fatal)"
-                            );
-                        }
-                        let n = rows.len();
-                        self.status_message = Some(format!("cost: refreshed {n} env(s)"));
-                    }
-                    Err(msg) => {
-                        self.error_message = Some(format!("cost fetch: {msg}"));
-                    }
-                }
-            }
-            AppMsg::DetailRecentVersions {
-                gen,
-                env_name,
-                result,
-            } => {
-                if gen != self.generation {
-                    return;
-                }
-                let Some(detail) = self.detail.as_mut() else {
-                    return;
-                };
-                if detail.env_name != env_name {
-                    return;
-                }
-                detail.loading_recent_versions = false;
-                detail.recent_versions = Some(result);
-            }
-            AppMsg::FormPrefilled {
-                gen,
-                env_name,
-                settings,
-            } => {
-                if gen != self.generation {
-                    return;
-                }
-                let Some(form) = self.form.as_mut() else {
-                    return;
-                };
-                if form.env_name != env_name {
-                    return;
-                }
-                match settings {
-                    Err(msg) => {
-                        // Surface the fetch failure on the form's first
-                        // field as a global error; operator can dismiss or
-                        // fill values manually.
-                        if let Some(first) = form.fields.first_mut() {
-                            first.error = Some(format!("pre-fill failed: {msg}"));
-                        }
-                        form.state = crate::form::FormState::Ready;
-                    }
-                    Ok(rows) => {
-                        // Build a (ns, name) -> value lookup; populate the
-                        // form's fields using the mappings stored on submit.
-                        use std::collections::HashMap;
-                        let lookup: HashMap<(String, String), String> = rows
-                            .into_iter()
-                            .map(|(ns, name, value)| ((ns, name), value))
-                            .collect();
-                        let mappings = match &form.submit {
-                            crate::form::FormSubmit::OptionSettings { mappings } => {
-                                mappings.clone()
-                            }
-                            // LocalConfig forms skip the AWS pre-fill in
-                            // `open_form` so the FormPrefilled msg never
-                            // fires for them — drop the result if one
-                            // arrives anyway (stale message after the user
-                            // switched form types).
-                            crate::form::FormSubmit::LocalConfig => return,
-                        };
-                        for (key, ns, opt) in mappings {
-                            if let Some(value) = lookup.get(&(ns, opt)) {
-                                if let Some(field) = form.fields.iter_mut().find(|f| f.key == key) {
-                                    field.value = value.clone();
-                                }
-                            }
-                        }
-                        form.state = crate::form::FormState::Ready;
-                    }
-                }
-            }
-            AppMsg::FormMultiSelectLoaded {
-                gen,
-                env_name,
-                field_key,
-                result,
-            } => {
-                if gen != self.generation {
-                    return;
-                }
-                let Some(form) = self.form.as_mut() else {
-                    return;
-                };
-                if form.env_name != env_name {
-                    return;
-                }
-                let Some(field) = form.fields.iter_mut().find(|f| f.key == field_key) else {
-                    return;
-                };
-                match result {
-                    Err(msg) => {
-                        field.error = Some(format!("load failed: {msg}"));
-                        form.state = crate::form::FormState::Ready;
-                    }
-                    Ok(opts) => {
-                        let initial_filtered: Vec<String> = opts
-                            .initial
-                            .iter()
-                            .filter(|v| opts.options.iter().any(|o| o == *v))
-                            .cloned()
-                            .collect();
-                        field.value = initial_filtered.join(",");
-                        field.kind = crate::form::FieldKind::MultiSelect {
-                            options: opts.options.clone(),
-                        };
-                        if opts.annotations.len() == opts.options.len()
-                            && !opts.annotations.is_empty()
-                        {
-                            field.option_annotations = Some(opts.annotations);
-                        }
-                        field.option_cursor = 0;
-                        form.state = crate::form::FormState::Ready;
-                    }
-                }
-            }
-            AppMsg::DetailEnvVars {
-                gen,
-                env_name,
-                result,
-            } => {
-                self.apply_detail_msg(gen, &env_name, result, |d, r| {
-                    d.loading_env_vars = false;
-                    match r {
-                        Ok(vars) => {
-                            d.env_vars = vars;
-                            // A delete may have shrunk the list / removed
-                            // the row mid-edit.
-                            d.clamp_config_cursor();
-                            d.revalidate_config_edit();
-                        }
-                        Err(msg) => tracing::warn!(error = %msg, "env vars fetch failed"),
-                    }
-                });
-            }
-            AppMsg::OptionSettingsUpdate {
-                gen,
-                env_name,
-                summary,
-                result,
-            } => {
-                if gen != self.generation {
-                    return;
-                }
-                self.complete_pending(
-                    &summary,
-                    &env_name,
-                    result.as_ref().map(|_| ()).map_err(|e| e.clone()),
-                );
-                match result {
-                    Ok(()) => {
-                        self.push_toast(ToastKind::Success, format!("{summary} → {env_name}"));
-                        // If it was an env-var set/unset/rename and the
-                        // Detail view is open on the same env, refresh the
-                        // Config tab's env vars so the change reflects
-                        // without waiting for the next 15s tick.
-                        if summary.starts_with("env set ")
-                            || summary.starts_with("env unset ")
-                            || summary.starts_with("env rename ")
-                        {
-                            if let Some(d) = self.detail.as_ref() {
-                                if d.env_name == env_name {
-                                    self.spawn_detail_env_vars();
-                                }
-                            }
-                        }
-                    }
-                    Err(msg) => {
-                        self.push_toast(
-                            ToastKind::Error,
-                            format!("{summary} on {env_name} failed: {msg}"),
-                        );
-                    }
-                }
-            }
-            AppMsg::AlarmOp {
-                gen,
-                verb,
-                alarm_name,
-                env_name,
-                result,
-            } => {
-                if gen != self.generation {
-                    return;
-                }
-                let label = match verb {
-                    "create" => "Create alarm",
-                    "delete" => "Delete alarm",
-                    _ => "Alarm op",
-                };
-                let target = format!("{env_name}/{alarm_name}");
-                self.complete_pending(
-                    label,
-                    &target,
-                    result.as_ref().map(|_| ()).map_err(|e| e.clone()),
-                );
-                match result {
-                    Ok(()) => {
-                        let past = if verb == "create" {
-                            "created"
-                        } else {
-                            "deleted"
-                        };
-                        self.push_toast(ToastKind::Success, format!("alarm '{alarm_name}' {past}"));
-                    }
-                    Err(msg) => {
-                        self.push_toast(
-                            ToastKind::Error,
-                            format!("alarm '{alarm_name}' {verb} failed: {msg}"),
-                        );
-                    }
-                }
-            }
-            AppMsg::DeleteAppVersion {
-                gen,
-                application,
-                label,
-                force,
-                result,
-            } => {
-                if gen != self.generation {
-                    return;
-                }
-                let force_str = if force { " (+source bundle)" } else { "" };
-                let pending_label = if force {
-                    "Delete app version (+source)"
-                } else {
-                    "Delete app version"
-                };
-                let pending_target = format!("{application}/{label}");
-                self.complete_pending(
-                    pending_label,
-                    &pending_target,
-                    result.as_ref().map(|_| ()).map_err(|e| e.clone()),
-                );
-                match result {
-                    Ok(()) => {
-                        self.push_toast(
-                            ToastKind::Info,
-                            format!("deleted {application}/{label}{force_str}"),
-                        );
-                        // If the user has the matching `:versions` overlay
-                        // open, re-fetch so the deleted entry disappears
-                        // instead of lingering as stale text.
-                        let want_title = format!("application versions — {application}");
-                        if matches!(
-                            self.current_overlay.as_ref(),
-                            Some(Overlay::TextDump { title, .. }) if title == &want_title
-                        ) {
-                            let aws = self.aws.clone();
-                            let tx = self.msg_tx.clone();
-                            let gen = self.generation;
-                            let app_name = application.clone();
-                            // Look up the env's currently-deployed version
-                            // to re-mark it after the refresh. Picks the
-                            // first env in this application — single-env
-                            // case is the norm; multi-env case is rare and
-                            // the marker is best-effort anyway.
-                            let deployed_label = self
-                                .environments
-                                .iter()
-                                .find(|e| e.application == application)
-                                .filter(|e| !e.version_label.is_empty())
-                                .map(|e| e.version_label.clone());
-                            tokio::spawn(async move {
-                                let result = aws
-                                    .list_application_versions(&app_name)
-                                    .await
-                                    .map_err(|e| flatten_err("list_application_versions", e));
-                                let _ = tx.send(AppMsg::AppVersions {
-                                    gen,
-                                    application: app_name,
-                                    deployed_label,
-                                    result,
-                                });
-                            });
-                        }
-                    }
-                    Err(msg) => {
-                        self.push_toast(
-                            ToastKind::Error,
-                            format!("delete {application}/{label}{force_str} failed: {msg}"),
-                        );
-                    }
-                }
-            }
-            AppMsg::TagUpdate {
-                gen,
-                env_name,
-                summary,
-                result,
-            } => {
-                if gen != self.generation {
-                    return;
-                }
-                self.complete_pending(
-                    &summary,
-                    &env_name,
-                    result.as_ref().map(|_| ()).map_err(|e| e.clone()),
-                );
-                match result {
-                    Ok(()) => {
-                        self.push_toast(ToastKind::Info, format!("{summary} on {env_name}"));
-                        if let Some(d) = self.detail.as_ref() {
-                            if d.env_name == env_name {
-                                self.spawn_detail_tags();
-                            }
-                        }
-                    }
-                    Err(msg) => {
-                        self.push_toast(
-                            ToastKind::Error,
-                            format!("{summary} on {env_name} failed: {msg}"),
-                        );
-                    }
-                }
-            }
-            AppMsg::DetailQueues {
-                gen,
-                env_name,
-                result,
-            } => {
-                self.apply_detail_msg(gen, &env_name, result, |d, r| {
-                    d.loading_queues = false;
-                    match r {
-                        Ok(queues) => {
-                            d.queues = queues;
-                            d.error = None;
-                        }
-                        Err(msg) => d.error = Some(msg),
-                    }
-                });
-            }
-            AppMsg::DlqMessages {
-                gen,
-                env_name,
-                result,
-            } => {
-                if gen != self.generation {
-                    return;
-                }
-                let Some(dlq) = self.dlq.as_mut() else { return };
-                if dlq.env_name != env_name {
-                    return;
-                }
-                dlq.loading = false;
-                match result {
-                    Ok(messages) => {
-                        dlq.messages = messages;
-                        let cur = dlq.list_state.selected().unwrap_or(0);
-                        if dlq.messages.is_empty() {
-                            dlq.list_state.select(None);
-                        } else if cur >= dlq.messages.len() {
-                            dlq.list_state.select(Some(0));
-                        }
-                        dlq.error = None;
-                    }
-                    Err(msg) => dlq.error = Some(msg),
-                }
-            }
-            AppMsg::DlqActionResult {
-                gen,
-                env_name,
-                result,
-            } => {
-                if gen != self.generation {
-                    return;
-                }
-                let Some(dlq) = self.dlq.as_mut() else { return };
-                if dlq.env_name != env_name {
-                    return;
-                }
-                match result {
-                    Ok(DlqOp::Resent { message_id }) => {
-                        dlq.messages.retain(|m| m.id != message_id);
-                        self.status_message = Some(format!("message {message_id} resent"));
-                    }
-                    Ok(DlqOp::Purged) => {
-                        dlq.messages.clear();
-                        self.status_message = Some("DLQ purged".into());
-                    }
-                    Err(msg) => dlq.error = Some(msg),
-                }
-            }
-        }
     }
 
     fn apply_rebuild(&mut self, result: Result<Box<AwsClient>, String>) {
@@ -10763,9 +9620,12 @@ impl App {
                 self.aws = Arc::new(*client);
                 self.maybe_apply_profile_theme();
                 self.environments.clear();
-                self.events.clear();
-                self.events_scroll = 0;
+                self.event_panel.events.clear();
+                self.event_panel.scroll = 0;
                 self.history.clear();
+                // Solution-stack catalogue is region-specific; drop it so the
+                // new context's `spawn_refresh` rebuilds it.
+                self.latest_stacks.clear();
                 // Overlays show data from the previous context (describe dump,
                 // alarms list, …); close them so the user doesn't act on stale info.
                 self.current_overlay = None;
@@ -11094,6 +9954,21 @@ impl App {
                 .map(|i| self.environments[*i].application.as_str()),
             &self.theme.app_palette,
         );
+
+        // Stale-platform cache: parse each env's solution stack against the
+        // available-versions catalogue once here, so the render path looks
+        // up `env_name → newer version` instead of re-parsing per row per
+        // frame. Empty while `latest_stacks` hasn't loaded yet.
+        self.cached_stale_platforms.clear();
+        if !self.latest_stacks.is_empty() {
+            for e in &self.environments {
+                if let Some(newer) =
+                    crate::aws::newer_stack_version(&e.solution_stack, &self.latest_stacks)
+                {
+                    self.cached_stale_platforms.insert(e.name.clone(), newer);
+                }
+            }
+        }
     }
 
     fn apply_refresh(&mut self, result: Result<Vec<Environment>, String>) {
@@ -11547,8 +10422,8 @@ fn assign_app_colors<'a>(
 
 impl App {
     fn yank_event_at(&mut self, idx: usize) {
-        let Some(ev) = self.events.get(idx) else {
-            self.events_cursor = None;
+        let Some(ev) = self.event_panel.events.get(idx) else {
+            self.event_panel.cursor = None;
             return;
         };
         let when = ev
@@ -14327,6 +13202,7 @@ mod tests {
             status: status.into(),
             health: health.into(),
             platform: "Java 17".into(),
+            solution_stack: String::new(),
             tier: "Web".into(),
             cname: "x.elb".into(),
             version_label: "v1".into(),
@@ -14346,6 +13222,7 @@ mod tests {
                 status: "Ready".into(),
                 health: "Green".into(),
                 platform: "Java 17".into(),
+                solution_stack: String::new(),
                 tier: "WebServer".into(),
                 cname: String::new(),
                 version_label: String::new(),
@@ -14360,6 +13237,7 @@ mod tests {
                 status: "Updating".into(),
                 health: "Red".into(),
                 platform: "Java 17".into(),
+                solution_stack: String::new(),
                 tier: "WebServer".into(),
                 cname: String::new(),
                 version_label: String::new(),
@@ -14374,6 +13252,7 @@ mod tests {
                 status: "Ready".into(),
                 health: "Green".into(),
                 platform: "Java 17".into(),
+                solution_stack: String::new(),
                 tier: "WebServer".into(),
                 cname: String::new(),
                 version_label: String::new(),
@@ -14399,6 +13278,7 @@ mod tests {
             status: "Ready".into(),
             health: "Green".into(),
             platform: "Java 17".into(),
+            solution_stack: String::new(),
             tier: "Worker".into(),
             cname: String::new(),
             version_label: String::new(),
@@ -14904,11 +13784,11 @@ mod tests {
         app.mode = Mode::Command;
         app.command_input = "re".into();
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
-        assert!(app.command_completion_origin.is_some());
+        assert!(app.completion.origin.is_some());
         // Operator types — cycle should reset.
         press(&mut app, KeyCode::Char('s'), KeyModifiers::NONE);
         assert!(
-            app.command_completion_origin.is_none(),
+            app.completion.origin.is_none(),
             "typing must reset the completion origin"
         );
     }
@@ -16048,6 +14928,7 @@ mod tests {
             status: "Ready".into(),
             health: health.into(),
             platform: "Java 17".into(),
+            solution_stack: String::new(),
             tier: tier.into(),
             cname: String::new(),
             version_label: String::new(),
@@ -16079,6 +14960,7 @@ mod tests {
             status: "Ready".into(),
             health: "Green".into(),
             platform: "Java 17".into(),
+            solution_stack: String::new(),
             tier: "Web".into(),
             cname: String::new(),
             version_label: String::new(),
@@ -16104,6 +14986,7 @@ mod tests {
             status: "Ready".into(),
             health: "Green".into(),
             platform: "Java 17".into(),
+            solution_stack: String::new(),
             tier: "Worker".into(),
             cname: String::new(),
             version_label: String::new(),
@@ -16297,6 +15180,7 @@ mod tests {
             status: status.into(),
             health: health.into(),
             platform: "Java 17".into(),
+            solution_stack: String::new(),
             tier: "Web".into(),
             cname: format!("{name}.elb.amazonaws.com"),
             version_label: version.into(),
@@ -16462,6 +15346,7 @@ mod tests {
             status: "Ready".into(),
             health: "Green".into(),
             platform: "Java 17".into(),
+            solution_stack: String::new(),
             tier: "Web".into(),
             cname: "my-env.elb.amazonaws.com".into(),
             version_label: "v42".into(),
@@ -16574,6 +15459,7 @@ mod tests {
             status: "Ready".into(),
             health: health.into(),
             platform: "Java 17".into(),
+            solution_stack: String::new(),
             tier: tier.into(),
             cname: format!("{name}.example.com"),
             version_label: "build-1".into(),
