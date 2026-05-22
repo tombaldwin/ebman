@@ -59,6 +59,287 @@ impl DetailTab {
     }
 }
 
+/// Minimum-severity filter for the Events tab. Acts as a floor:
+/// `Info` shows INFO and above, hiding DEBUG / TRACE. `All` shows
+/// everything. Cycles `All → Info → Warn → Error → All`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EventLevel {
+    #[default]
+    All,
+    Info,
+    Warn,
+    Error,
+}
+
+impl EventLevel {
+    pub fn next(self) -> Self {
+        match self {
+            Self::All => Self::Info,
+            Self::Info => Self::Warn,
+            Self::Warn => Self::Error,
+            Self::Error => Self::All,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Info => "info+",
+            Self::Warn => "warn+",
+            Self::Error => "error",
+        }
+    }
+
+    /// Numeric floor an event's severity must reach to pass.
+    fn rank(self) -> u8 {
+        match self {
+            Self::All => 0,
+            Self::Info => 2,
+            Self::Warn => 3,
+            Self::Error => 4,
+        }
+    }
+}
+
+/// Map an EB event severity string to a comparable rank. EB emits
+/// `TRACE` / `DEBUG` / `INFO` / `WARN` / `ERROR`; an unrecognised or
+/// empty value is treated as INFO so it isn't silently hidden by a
+/// `warn+` filter.
+pub fn severity_rank(severity: &str) -> u8 {
+    match severity.to_ascii_uppercase().as_str() {
+        "TRACE" => 0,
+        "DEBUG" => 1,
+        "INFO" => 2,
+        "WARN" | "WARNING" => 3,
+        "ERROR" | "FATAL" => 4,
+        _ => 2,
+    }
+}
+
+/// Time-window filter for the Events tab. `All` disables the window;
+/// the rest keep only events newer than the cutoff. Cycles
+/// `All → 1h → 6h → 24h → 7d → All`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EventWindow {
+    #[default]
+    All,
+    H1,
+    H6,
+    D1,
+    D7,
+}
+
+impl EventWindow {
+    pub fn next(self) -> Self {
+        match self {
+            Self::All => Self::H1,
+            Self::H1 => Self::H6,
+            Self::H6 => Self::D1,
+            Self::D1 => Self::D7,
+            Self::D7 => Self::All,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::H1 => "1h",
+            Self::H6 => "6h",
+            Self::D1 => "24h",
+            Self::D7 => "7d",
+        }
+    }
+
+    /// Oldest timestamp that still passes, given `now`. `None` means
+    /// "no cutoff" (the `All` variant).
+    pub fn cutoff(
+        self,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Option<chrono::DateTime<chrono::Utc>> {
+        let dur = match self {
+            Self::All => return None,
+            Self::H1 => chrono::Duration::hours(1),
+            Self::H6 => chrono::Duration::hours(6),
+            Self::D1 => chrono::Duration::days(1),
+            Self::D7 => chrono::Duration::days(7),
+        };
+        Some(now - dur)
+    }
+}
+
+/// Pure: return the indices of `events` that pass both the severity
+/// floor and the time window. Indices (not clones) so the renderer
+/// can still map back to the source vec for n/N search-jump and
+/// Health-tab drill-in. An event with no timestamp passes the window
+/// filter (can't be excluded by a cutoff it has no value for).
+pub fn filter_event_indices(
+    events: &[EbEvent],
+    level: EventLevel,
+    window: EventWindow,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<usize> {
+    let floor = level.rank();
+    let cutoff = window.cutoff(now);
+    events
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| severity_rank(&e.severity) >= floor)
+        .filter(|(_, e)| match (cutoff, e.at) {
+            (Some(c), Some(at)) => at >= c,
+            _ => true,
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Which editable section of the Config tab a row belongs to.
+/// Determines the dispatch path on commit (`UpdateOptionSettings`
+/// for env vars, `UpdateTags` for tags).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigItemKind {
+    EnvVar,
+    Tag,
+}
+
+/// One cursor-addressable, editable row on the Config tab. The
+/// read-only metadata rows (name / status / platform / …) are not
+/// represented here — the cursor only stops on rows the operator
+/// can actually change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigItem {
+    pub kind: ConfigItemKind,
+    pub key: String,
+    pub value: String,
+}
+
+/// Active in-place value editor on the Config tab. `key` is fixed
+/// (renaming = delete + re-add, a later section); `input` is the
+/// value buffer, seeded from `original` so the operator edits from
+/// the current value rather than a blank field. `caret` is a
+/// *char* index into `input` (not a byte offset) — the text-cursor
+/// position that Left/Right/Home/End move and where insert/delete
+/// act.
+#[derive(Debug, Clone)]
+pub struct ConfigEdit {
+    pub kind: ConfigItemKind,
+    pub key: String,
+    pub original: String,
+    pub input: String,
+    pub caret: usize,
+    /// `true` when this is the add-a-new-row flow: `key` is empty,
+    /// `input` holds a `KEY=VALUE` string being typed, and commit
+    /// parses it. `false` for the edit-existing-value flow, where
+    /// `key` is fixed and `input` is just the value.
+    pub is_new: bool,
+}
+
+impl ConfigEdit {
+    /// Char count of the value buffer.
+    fn char_len(&self) -> usize {
+        self.input.chars().count()
+    }
+
+    /// Byte offset of the caret within `input`. Always a valid char
+    /// boundary — `char_indices` yields boundaries, and a caret at
+    /// the very end maps to `input.len()`.
+    fn caret_byte(&self) -> usize {
+        self.input
+            .char_indices()
+            .nth(self.caret)
+            .map(|(b, _)| b)
+            .unwrap_or(self.input.len())
+    }
+
+    /// Insert a char at the caret and step the caret past it.
+    pub fn insert(&mut self, c: char) {
+        let b = self.caret_byte();
+        self.input.insert(b, c);
+        self.caret += 1;
+    }
+
+    /// Delete the char *before* the caret (Backspace).
+    pub fn backspace(&mut self) {
+        if self.caret == 0 {
+            return;
+        }
+        self.caret -= 1;
+        let b = self.caret_byte();
+        self.input.remove(b);
+    }
+
+    /// Delete the char *at* the caret (Delete / Del).
+    pub fn delete(&mut self) {
+        if self.caret >= self.char_len() {
+            return;
+        }
+        let b = self.caret_byte();
+        self.input.remove(b);
+    }
+
+    pub fn move_left(&mut self) {
+        self.caret = self.caret.saturating_sub(1);
+    }
+
+    pub fn move_right(&mut self) {
+        self.caret = (self.caret + 1).min(self.char_len());
+    }
+
+    pub fn move_home(&mut self) {
+        self.caret = 0;
+    }
+
+    pub fn move_end(&mut self) {
+        self.caret = self.char_len();
+    }
+
+    /// Split `input` at the caret for rendering — `(before, after)`.
+    pub fn split_at_caret(&self) -> (&str, &str) {
+        self.input.split_at(self.caret_byte())
+    }
+}
+
+/// Parse the `KEY=VALUE` buffer of an add-a-new-row Config edit.
+/// Splits on the *first* `=` so a value may itself contain `=`; the
+/// key is trimmed and must be non-empty. Returns `None` for
+/// malformed input (no `=`, or an empty/whitespace key). The value
+/// is taken verbatim — not trimmed — since trailing spaces can be
+/// significant in an env var.
+pub fn parse_new_config_row(input: &str) -> Option<(String, String)> {
+    let (k, v) = input.split_once('=')?;
+    let k = k.trim();
+    if k.is_empty() {
+        return None;
+    }
+    Some((k.to_string(), v.to_string()))
+}
+
+/// Pure: build the flat list of editable Config-tab rows in the
+/// exact order [`crate::ui::draw_detail_config`] renders them —
+/// tags first (sorted case-insensitively by key, matching the
+/// render), then env vars (natural order). The Config-tab cursor
+/// indexes into this list, so render + navigation agree by
+/// construction.
+pub fn config_editable_items(detail: &DetailState) -> Vec<ConfigItem> {
+    let mut out = Vec::with_capacity(detail.tags.len() + detail.env_vars.len());
+    let mut tags: Vec<&(String, String)> = detail.tags.iter().collect();
+    tags.sort_by_key(|(k, _)| k.to_lowercase());
+    for (k, v) in tags {
+        out.push(ConfigItem {
+            kind: ConfigItemKind::Tag,
+            key: k.clone(),
+            value: v.clone(),
+        });
+    }
+    for (k, v) in &detail.env_vars {
+        out.push(ConfigItem {
+            kind: ConfigItemKind::EnvVar,
+            key: k.clone(),
+            value: v.clone(),
+        });
+    }
+    out
+}
+
 /// Per-instance tail-log capture state.
 #[derive(Debug, Clone, Default)]
 pub struct LogTail {
@@ -111,6 +392,15 @@ pub struct DetailState {
     pub search_pattern: Option<regex::Regex>,
     pub search_error: Option<String>,
     pub events_scroll: u16,
+    /// Max legal `events_scroll`, written by the Events-tab renderer
+    /// each frame (filtered line count minus the visible body height).
+    /// The key handler clamps against it so j/k can't scroll the list
+    /// off the bottom into blank space. Same pattern as `help_max_scroll`.
+    pub events_max_scroll: u16,
+    /// Minimum-severity filter for the Events tab. `L` cycles it.
+    pub events_level: EventLevel,
+    /// Time-window filter for the Events tab. `w` cycles it.
+    pub events_window: EventWindow,
     pub instances_scroll: u16,
     pub tags: Vec<(String, String)>,
     /// Env vars pulled from `DescribeConfigurationSettings` filtered to
@@ -165,6 +455,24 @@ pub struct DetailState {
     /// Detail view.
     pub recent_versions: Option<Result<Vec<crate::aws::AppVersion>, String>>,
     pub loading_recent_versions: bool,
+    /// Cursor index into [`config_editable_items`] — the editable
+    /// rows of the Config tab (tags + env vars). `j`/`k` move it;
+    /// `enter` opens the in-place editor for the row it points at.
+    pub config_cursor: usize,
+    /// Active in-place value editor on the Config tab. `Some` while
+    /// the operator is typing a new value; commit dispatches the
+    /// change and clears it.
+    pub config_edit: Option<ConfigEdit>,
+    /// Vertical scroll offset of the Config-tab body. Recomputed by
+    /// the renderer each frame to keep `config_cursor` in the
+    /// viewport (the body is one tall `Paragraph`, so a long
+    /// tag/env-var list would otherwise run off the bottom).
+    pub config_scroll: u16,
+    /// When `Some(i)`, the Config-tab row at editable-index `i` has a
+    /// delete pending operator confirmation (`x` armed it; `y`
+    /// confirms, anything else cancels). Mirrors
+    /// `instance_terminate_confirm`.
+    pub config_delete_confirm: Option<usize>,
 }
 
 impl DetailState {
@@ -301,6 +609,9 @@ mod tests {
             search_pattern: None,
             search_error: None,
             events_scroll: 0,
+            events_max_scroll: 0,
+            events_level: EventLevel::default(),
+            events_window: EventWindow::default(),
             instances_scroll: 0,
             tags: vec![],
             env_vars: vec![],
@@ -323,6 +634,10 @@ mod tests {
             loading_cw_alarms: false,
             recent_versions: None,
             loading_recent_versions: false,
+            config_cursor: 0,
+            config_edit: None,
+            config_scroll: 0,
+            config_delete_confirm: None,
         }
     }
 
@@ -420,5 +735,258 @@ mod tests {
         assert!(matches!(items[1], HealthItem::Instance { .. }));
         assert_eq!(items[2], HealthItem::MainQueue);
         assert_eq!(items[3], HealthItem::Dlq);
+    }
+
+    #[test]
+    fn event_level_cycles_and_parses_severities() {
+        assert_eq!(EventLevel::default(), EventLevel::All);
+        assert_eq!(EventLevel::All.next(), EventLevel::Info);
+        assert_eq!(EventLevel::Info.next(), EventLevel::Warn);
+        assert_eq!(EventLevel::Warn.next(), EventLevel::Error);
+        assert_eq!(EventLevel::Error.next(), EventLevel::All);
+        // Severity-string ranking, incl. the synonyms + unknown→INFO.
+        assert!(severity_rank("ERROR") > severity_rank("WARN"));
+        assert!(severity_rank("WARN") > severity_rank("INFO"));
+        assert!(severity_rank("INFO") > severity_rank("DEBUG"));
+        assert_eq!(severity_rank("WARNING"), severity_rank("WARN"));
+        assert_eq!(severity_rank("fatal"), severity_rank("ERROR"));
+        assert_eq!(severity_rank("garbage"), severity_rank("INFO"));
+    }
+
+    #[test]
+    fn event_window_cycles_and_computes_cutoff() {
+        assert_eq!(EventWindow::default(), EventWindow::All);
+        assert_eq!(EventWindow::All.next(), EventWindow::H1);
+        assert_eq!(EventWindow::D7.next(), EventWindow::All);
+        let now = chrono::Utc::now();
+        assert_eq!(EventWindow::All.cutoff(now), None);
+        assert_eq!(
+            EventWindow::H1.cutoff(now),
+            Some(now - chrono::Duration::hours(1))
+        );
+        assert_eq!(
+            EventWindow::D7.cutoff(now),
+            Some(now - chrono::Duration::days(7))
+        );
+    }
+
+    #[test]
+    fn filter_event_indices_applies_severity_floor() {
+        // mins_ago small so the time window never excludes these.
+        let events = vec![
+            mk_event("INFO", 1),
+            mk_event("WARN", 2),
+            mk_event("ERROR", 3),
+            mk_event("DEBUG", 4),
+        ];
+        let now = chrono::Utc::now();
+        // All → every event.
+        assert_eq!(
+            filter_event_indices(&events, EventLevel::All, EventWindow::All, now).len(),
+            4
+        );
+        // Warn+ → WARN + ERROR only.
+        assert_eq!(
+            filter_event_indices(&events, EventLevel::Warn, EventWindow::All, now),
+            vec![1, 2]
+        );
+        // Error → ERROR only.
+        assert_eq!(
+            filter_event_indices(&events, EventLevel::Error, EventWindow::All, now),
+            vec![2]
+        );
+    }
+
+    #[test]
+    fn filter_event_indices_applies_time_window() {
+        let events = vec![
+            mk_event("INFO", 10),          // 10 min ago
+            mk_event("INFO", 120),         // 2 h ago
+            mk_event("INFO", 60 * 24 * 3), // 3 days ago
+        ];
+        let now = chrono::Utc::now();
+        // 1h window → only the 10-min-old event.
+        assert_eq!(
+            filter_event_indices(&events, EventLevel::All, EventWindow::H1, now),
+            vec![0]
+        );
+        // 24h window → the 10-min + 2h events.
+        assert_eq!(
+            filter_event_indices(&events, EventLevel::All, EventWindow::D1, now),
+            vec![0, 1]
+        );
+        // 7d window → all three.
+        assert_eq!(
+            filter_event_indices(&events, EventLevel::All, EventWindow::D7, now).len(),
+            3
+        );
+    }
+
+    fn mk_edit(value: &str) -> ConfigEdit {
+        ConfigEdit {
+            kind: ConfigItemKind::EnvVar,
+            key: "K".into(),
+            original: value.into(),
+            input: value.into(),
+            caret: value.chars().count(),
+            is_new: false,
+        }
+    }
+
+    #[test]
+    fn config_edit_caret_moves_and_clamps() {
+        let mut e = mk_edit("abc");
+        assert_eq!(e.caret, 3);
+        e.move_right(); // already at end — clamps
+        assert_eq!(e.caret, 3);
+        e.move_left();
+        e.move_left();
+        assert_eq!(e.caret, 1);
+        e.move_home();
+        assert_eq!(e.caret, 0);
+        e.move_left(); // at start — clamps
+        assert_eq!(e.caret, 0);
+        e.move_end();
+        assert_eq!(e.caret, 3);
+    }
+
+    #[test]
+    fn config_edit_insert_at_caret() {
+        let mut e = mk_edit("ac");
+        e.move_left(); // caret between a and c
+        assert_eq!(e.caret, 1);
+        e.insert('b');
+        assert_eq!(e.input, "abc");
+        assert_eq!(e.caret, 2);
+        e.move_home();
+        e.insert('X');
+        assert_eq!(e.input, "Xabc");
+        assert_eq!(e.caret, 1);
+    }
+
+    #[test]
+    fn config_edit_backspace_and_delete() {
+        let mut e = mk_edit("abc");
+        e.backspace(); // removes 'c'
+        assert_eq!(e.input, "ab");
+        assert_eq!(e.caret, 2);
+        e.move_home();
+        e.backspace(); // at start — no-op
+        assert_eq!(e.input, "ab");
+        e.delete(); // removes 'a' at caret
+        assert_eq!(e.input, "b");
+        assert_eq!(e.caret, 0);
+        e.move_end();
+        e.delete(); // at end — no-op
+        assert_eq!(e.input, "b");
+    }
+
+    #[test]
+    fn config_edit_split_at_caret() {
+        let mut e = mk_edit("hello");
+        e.move_left();
+        e.move_left();
+        assert_eq!(e.split_at_caret(), ("hel", "lo"));
+        e.move_home();
+        assert_eq!(e.split_at_caret(), ("", "hello"));
+        e.move_end();
+        assert_eq!(e.split_at_caret(), ("hello", ""));
+    }
+
+    #[test]
+    fn config_edit_handles_multibyte_chars() {
+        // Caret arithmetic is char-based — a multi-byte char must
+        // not panic insert/remove (which take byte offsets).
+        let mut e = mk_edit("café");
+        assert_eq!(e.caret, 4);
+        e.move_left(); // before 'é'
+        e.insert('X');
+        assert_eq!(e.input, "cafXé");
+        e.move_end();
+        e.backspace(); // removes 'é'
+        assert_eq!(e.input, "cafX");
+    }
+
+    #[test]
+    fn parse_new_config_row_splits_on_first_equals() {
+        assert_eq!(
+            parse_new_config_row("PORT=8080"),
+            Some(("PORT".into(), "8080".into()))
+        );
+        // Value may itself contain `=`.
+        assert_eq!(
+            parse_new_config_row("URL=a=b=c"),
+            Some(("URL".into(), "a=b=c".into()))
+        );
+        // Key is trimmed; value is not.
+        assert_eq!(
+            parse_new_config_row("  KEY  = val "),
+            Some(("KEY".into(), " val ".into()))
+        );
+        // Empty value is allowed (explicit empty env var).
+        assert_eq!(
+            parse_new_config_row("EMPTY="),
+            Some(("EMPTY".into(), "".into()))
+        );
+    }
+
+    #[test]
+    fn parse_new_config_row_rejects_malformed() {
+        // No `=` at all.
+        assert_eq!(parse_new_config_row("JUSTAKEY"), None);
+        // Empty / whitespace key.
+        assert_eq!(parse_new_config_row("=value"), None);
+        assert_eq!(parse_new_config_row("   =value"), None);
+    }
+
+    #[test]
+    fn config_editable_items_empty_when_no_tags_or_env_vars() {
+        let d = empty_detail("Web");
+        assert!(config_editable_items(&d).is_empty());
+    }
+
+    #[test]
+    fn config_editable_items_lists_tags_sorted_then_env_vars_natural() {
+        let mut d = empty_detail("Web");
+        // Tags inserted out of order — expect case-insensitive sort.
+        d.tags = vec![
+            ("Zone".into(), "eu".into()),
+            ("app".into(), "uflexi".into()),
+        ];
+        // Env vars keep natural (insertion) order, NOT sorted.
+        d.env_vars = vec![("PORT".into(), "8080".into()), ("DEBUG".into(), "0".into())];
+        let items = config_editable_items(&d);
+        assert_eq!(items.len(), 4);
+        // Tags first, sorted case-insensitively: app, Zone.
+        assert_eq!(items[0].kind, ConfigItemKind::Tag);
+        assert_eq!(items[0].key, "app");
+        assert_eq!(items[1].key, "Zone");
+        // Env vars next, in insertion order: PORT, DEBUG.
+        assert_eq!(items[2].kind, ConfigItemKind::EnvVar);
+        assert_eq!(items[2].key, "PORT");
+        assert_eq!(items[2].value, "8080");
+        assert_eq!(items[3].key, "DEBUG");
+    }
+
+    #[test]
+    fn config_editable_items_handles_only_env_vars() {
+        let mut d = empty_detail("Web");
+        d.env_vars = vec![("A".into(), "1".into())];
+        let items = config_editable_items(&d);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind, ConfigItemKind::EnvVar);
+    }
+
+    #[test]
+    fn filter_event_indices_keeps_events_with_no_timestamp() {
+        // An event with `at: None` can't be excluded by a time window.
+        let mut e = mk_event("INFO", 0);
+        e.at = None;
+        let events = vec![e];
+        let now = chrono::Utc::now();
+        assert_eq!(
+            filter_event_indices(&events, EventLevel::All, EventWindow::H1, now),
+            vec![0]
+        );
     }
 }

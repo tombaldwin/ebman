@@ -3128,15 +3128,13 @@ fn draw_events(f: &mut Frame, area: Rect, app: &App) {
     }
 
     let now = chrono::Utc::now();
+    let tw = event_time_width(app.event_time_format);
     let lines: Vec<Line> = app
         .events
         .iter()
         .enumerate()
         .map(|(i, e)| {
-            let when = match e.at {
-                Some(t) => humanize_age(now.signed_duration_since(t)),
-                None => "—".into(),
-            };
+            let when = format_event_time(e.at, app.event_time_format, now);
             let sev_style = severity_style(&e.severity, &app.theme);
             let is_cursor = app.events_cursor == Some(i);
             let marker = if is_cursor { "▶ " } else { "  " };
@@ -3150,7 +3148,7 @@ fn draw_events(f: &mut Frame, area: Rect, app: &App) {
             Line::from(vec![
                 Span::styled(marker, marker_style),
                 Span::styled(
-                    format!("{:>4} ", when),
+                    format!("{when:>tw$} "),
                     Style::default().fg(app.theme.muted),
                 ),
                 Span::styled(format!("{:<5} ", e.severity), sev_style),
@@ -3486,6 +3484,11 @@ fn draw_help(f: &mut Frame, area: Rect, app: &mut App) {
         help_line("s / S", "cycle sort key / toggle ascending", theme),
         help_line("Ctrl-G", "toggle group-by-application", theme),
         help_line("Ctrl-E", "toggle events panel", theme),
+        help_line(
+            "T",
+            "cycle event timestamp format (UTC → local → age)",
+            theme,
+        ),
         help_line("y / Y", "yank CNAME / name to clipboard", theme),
         help_line("Ctrl-Y", "export filtered table as TSV to clipboard", theme),
         help_line("r", "switch AWS region", theme),
@@ -4286,22 +4289,34 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
     // Body
     let body_area = chunks[2];
     let active_tab = detail.tab();
+    let mut events_max_scroll: Option<u16> = None;
+    let mut config_scroll: Option<u16> = None;
     match active_tab {
         DetailTab::Health => draw_detail_health(f, body_area, detail, app),
-        DetailTab::Events => draw_detail_events(f, body_area, detail, &app.theme),
+        DetailTab::Events => {
+            events_max_scroll = Some(draw_detail_events(
+                f,
+                body_area,
+                detail,
+                &app.theme,
+                app.event_time_format,
+            ));
+        }
         DetailTab::Instances => draw_detail_instances(f, body_area, detail, &app.theme),
         DetailTab::Metrics => draw_detail_metrics(f, body_area, detail, &app.theme),
         DetailTab::Queue => draw_detail_queue(f, body_area, detail, app.redact, &app.theme),
         DetailTab::Logs => draw_detail_logs(f, body_area, detail, &app.theme),
-        DetailTab::Config => draw_detail_config(
-            f,
-            body_area,
-            env,
-            detail,
-            app.redact,
-            &app.required_tags,
-            &app.theme,
-        ),
+        DetailTab::Config => {
+            config_scroll = Some(draw_detail_config(
+                f,
+                body_area,
+                env,
+                detail,
+                app.redact,
+                &app.required_tags,
+                &app.theme,
+            ));
+        }
     }
     // Snapshot the fields the footer block needs before we drop the immutable
     // borrow and reach for `app.detail.as_mut()` to write metrics_body_rect.
@@ -4325,6 +4340,16 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
             d.metrics_hover_col = None;
             None
         };
+        // Persist the Events-tab scroll ceiling computed by the
+        // renderer so the j/k key handler can clamp against it.
+        if let Some(max) = events_max_scroll {
+            d.events_max_scroll = max;
+        }
+        // Persist the Config-tab scroll offset the renderer adjusted
+        // to keep the cursor in view.
+        if let Some(s) = config_scroll {
+            d.config_scroll = s;
+        }
     }
 
     // Footer
@@ -4375,7 +4400,7 @@ fn detail_tab_keystrip(tab: DetailTab) -> &'static str {
             " INSTANCES  j/k cursor  s ssm shell  i info  y yank id  x terminate  tab→ Metrics  a actions  ^R refresh  ? help  esc back"
         }
         DetailTab::Events => {
-            " EVENTS  j/k scroll  / filter  n/N next/prev  tab→ Instances  a actions  ^R refresh  ? help  esc back"
+            " EVENTS  j/k scroll  / filter  n/N next  L lvl  w window  T time  tab→ Instances  a actions  ^R refresh  ? help  esc back"
         }
         DetailTab::Metrics => {
             " METRICS  [ / ]  range  hover values  tab→ Queue  a actions  ^R refresh  R auto-refresh  ? help  esc back"
@@ -4387,7 +4412,7 @@ fn detail_tab_keystrip(tab: DetailTab) -> &'static str {
             " LOGS  ^R snapshot  s live-stream  / filter  ? help  esc back"
         }
         DetailTab::Config => {
-            " CONFIG  tab/shift-tab cycle  a actions  ^R refresh  ? help  esc back"
+            " CONFIG  j/k move  enter edit  n new  x delete  a actions  ^R refresh  ? help  esc back"
         }
     }
 }
@@ -4832,21 +4857,54 @@ fn draw_detail_health(f: &mut Frame, area: Rect, detail: &crate::app::DetailStat
     f.render_widget(p, area);
 }
 
-fn draw_detail_events(f: &mut Frame, area: Rect, detail: &crate::app::DetailState, theme: &Theme) {
+/// Renders the Detail/Events tab. Returns the maximum legal
+/// `events_scroll` for the current filtered line count + body height,
+/// so the caller can persist it onto `DetailState` for the key
+/// handler to clamp against (same contract as `help_max_scroll`).
+fn draw_detail_events(
+    f: &mut Frame,
+    area: Rect,
+    detail: &crate::app::DetailState,
+    theme: &Theme,
+    time_format: crate::app::EventTimeFormat,
+) -> u16 {
+    let now = chrono::Utc::now();
+    // Severity + time-window filter. Indices map back to the source
+    // `detail.events` vec so search-jump / Health drill-in stay valid.
+    let visible: Vec<usize> = crate::mode_detail::filter_event_indices(
+        &detail.events,
+        detail.events_level,
+        detail.events_window,
+        now,
+    );
+    let total = detail.events.len();
+    let shown = visible.len();
+    let filters_on = detail.events_level != crate::app::EventLevel::default()
+        || detail.events_window != crate::app::EventWindow::default();
+
     let matches = if let Some(re) = detail.search_pattern.as_ref() {
-        detail
-            .events
+        visible
             .iter()
-            .filter(|e| re.is_match(&e.message))
+            .filter(|&&i| re.is_match(&detail.events[i].message))
             .count()
     } else {
         0
     };
-    let title = if detail.search_pattern.is_some() {
-        format!(" Events [{}] · matches: {matches} ", detail.events.len())
+    let mut title = if filters_on {
+        format!(" Events [{shown}/{total}] ")
     } else {
-        format!(" Events [{}] ", detail.events.len())
+        format!(" Events [{total}] ")
     };
+    if filters_on {
+        title.push_str(&format!(
+            "· {} {} ",
+            detail.events_level.label(),
+            detail.events_window.label()
+        ));
+    }
+    if detail.search_pattern.is_some() {
+        title.push_str(&format!("· matches: {matches} "));
+    }
     let outer = rounded_block(theme, true)
         .title(Span::styled(
             title,
@@ -4921,21 +4979,36 @@ fn draw_detail_events(f: &mut Frame, area: Rect, detail: &crate::app::DetailStat
                 Style::default().fg(theme.muted),
             )),
         ];
-        let p = Paragraph::new(lines);
-        f.render_widget(p, body_area);
-        return;
+        f.render_widget(Paragraph::new(lines), body_area);
+        return 0;
     }
 
-    let now = chrono::Utc::now();
+    // Events exist but the active filter hides every one of them.
+    if shown == 0 && !detail.events.is_empty() {
+        let lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                format!(" ◌  no events match filter ({} hidden)", total),
+                Style::default()
+                    .fg(theme.muted)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "    L widens severity · w widens time window",
+                Style::default().fg(theme.muted),
+            )),
+        ];
+        f.render_widget(Paragraph::new(lines), body_area);
+        return 0;
+    }
+
+    let tw = event_time_width(time_format);
     let re = detail.search_pattern.as_ref();
-    let lines: Vec<Line> = detail
-        .events
+    let lines: Vec<Line> = visible
         .iter()
-        .map(|e| {
-            let when = match e.at {
-                Some(t) => humanize_age(now.signed_duration_since(t)),
-                None => "—".into(),
-            };
+        .map(|&i| {
+            let e = &detail.events[i];
+            let when = format_event_time(e.at, time_format, now);
             let matches = re.is_some_and(|r| r.is_match(&e.message));
             let msg_style = if matches {
                 Style::default()
@@ -4946,7 +5019,7 @@ fn draw_detail_events(f: &mut Frame, area: Rect, detail: &crate::app::DetailStat
                 Style::default()
             };
             Line::from(vec![
-                Span::styled(format!("{:>4} ", when), Style::default().fg(theme.muted)),
+                Span::styled(format!("{when:>tw$} "), Style::default().fg(theme.muted)),
                 Span::styled(
                     format!("{:<5} ", e.severity),
                     severity_style(&e.severity, theme),
@@ -4955,8 +5028,16 @@ fn draw_detail_events(f: &mut Frame, area: Rect, detail: &crate::app::DetailStat
             ])
         })
         .collect();
-    let p = Paragraph::new(lines).scroll((detail.events_scroll, 0));
-    f.render_widget(p, body_area);
+    // Clamp scroll so j/k can't push the list off the bottom into
+    // blank space — `max_scroll` is the offset that pins the final
+    // line to the body's bottom edge.
+    let max_scroll = (lines.len() as u16).saturating_sub(body_area.height);
+    let effective_scroll = detail.events_scroll.min(max_scroll);
+    f.render_widget(
+        Paragraph::new(lines).scroll((effective_scroll, 0)),
+        body_area,
+    );
+    max_scroll
 }
 
 fn draw_detail_instances(
@@ -5622,6 +5703,108 @@ fn draw_detail_logs(f: &mut Frame, area: Rect, detail: &crate::app::DetailState,
     );
 }
 
+/// Render the in-progress "add a new row" editor line — a `+`
+/// marker followed by the `KEY=VALUE` buffer with the caret drawn
+/// at its position. Shown below whichever section (tags / env vars)
+/// the new row will join.
+fn config_new_row_line(edit: &crate::app::ConfigEdit, theme: &Theme) -> Line<'static> {
+    let (before, after) = edit.split_at_caret();
+    let editor_style = Style::default()
+        .fg(theme.title_alt)
+        .add_modifier(Modifier::BOLD);
+    Line::from(vec![
+        Span::styled("  + ", editor_style),
+        Span::styled(
+            format!("{before}{}{after}", caret_glyph(theme)),
+            editor_style,
+        ),
+        Span::styled("   (KEY=VALUE)", Style::default().fg(theme.muted)),
+    ])
+}
+
+/// Render one editable Config-tab row (a tag or env-var k/v pair).
+/// Bumps `*idx` — the running editable-row counter shared across the
+/// tags + env-vars sections — and decides from `detail.config_cursor`
+/// / `detail.config_edit` whether to draw the `▶` cursor marker or
+/// the in-place value editor (input buffer + blinking caret).
+fn config_editable_row(
+    detail: &crate::app::DetailState,
+    idx: &mut usize,
+    item: &crate::app::ConfigItem,
+    key_width: usize,
+    key_color: Color,
+    theme: &Theme,
+) -> Line<'static> {
+    let this = *idx;
+    *idx += 1;
+    let key = item.key.as_str();
+    let value = item.value.as_str();
+    // Only an *existing-row* edit (`!is_new`) draws inside a row; the
+    // add-new-row editor renders as its own line via `config_new_row_line`.
+    let editing = detail
+        .config_edit
+        .as_ref()
+        .filter(|e| !e.is_new && e.kind == item.kind && e.key == key);
+    let is_cursor = detail.config_cursor == this && editing.is_none();
+    let marker = if is_cursor { "▶ " } else { "  " };
+    let key_len = key.chars().count();
+    let key_text = if key_len <= key_width {
+        format!("{marker}{key:<key_width$}")
+    } else {
+        // Long key overflows its column — wrap it onto its own line so
+        // the value still aligns. Marker stays on the first row.
+        format!("{marker}{key}\n  {pad:<key_width$}", pad = "")
+    };
+    let key_style = if is_cursor {
+        Style::default().fg(key_color).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(key_color)
+    };
+    let value_span = match editing {
+        Some(e) => {
+            // Caret renders at its position, not pinned to the end —
+            // Left/Right move it within the value being edited.
+            let (before, after) = e.split_at_caret();
+            Span::styled(
+                format!("{before}{}{after}", caret_glyph(theme)),
+                Style::default()
+                    .fg(theme.title_alt)
+                    .add_modifier(Modifier::BOLD),
+            )
+        }
+        None => {
+            // Empty value shows as `""` so "explicitly empty" is
+            // visually distinct from "absent".
+            let shown = if value.is_empty() {
+                "\"\"".to_string()
+            } else {
+                value.to_string()
+            };
+            Span::styled(shown, Style::default().fg(theme.text))
+        }
+    };
+    let mut spans = vec![
+        Span::styled(key_text, key_style),
+        Span::raw("  "),
+        value_span,
+    ];
+    // Delete-pending row gets a red confirm suffix.
+    if detail.config_delete_confirm == Some(this) {
+        spans.push(Span::styled(
+            "   delete? y / N",
+            Style::default()
+                .fg(theme.health_red)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// Renders the Detail/Config tab. Returns the (possibly adjusted)
+/// vertical scroll offset so the caller can persist it onto
+/// `DetailState.config_scroll` — the body is one tall `Paragraph`,
+/// so without scroll-follow the cursor would run off the bottom on
+/// an env with many tags + env vars.
 fn draw_detail_config(
     f: &mut Frame,
     area: Rect,
@@ -5630,7 +5813,7 @@ fn draw_detail_config(
     redact_on: bool,
     required_tags: &[String],
     theme: &Theme,
-) {
+) -> u16 {
     let block = titled_block(theme, "Config", true, theme.title).padding(Padding::horizontal(2));
 
     let updated = env
@@ -5702,6 +5885,14 @@ fn draw_detail_config(
         )));
     }
 
+    // Running counter across the editable sections (tags then env
+    // vars) — must match the order `config_editable_items` produces
+    // so the cursor index lines up with what's on screen.
+    let mut editable_idx: usize = 0;
+    // Line index (into `lines`) of each editable row, in cursor
+    // order — drives scroll-follow so the cursor stays on screen.
+    let mut row_line_idx: Vec<usize> = Vec::new();
+
     // Tags section
     lines.push(Line::raw(""));
     if detail.loading_tags && detail.tags.is_empty() {
@@ -5732,20 +5923,29 @@ fn draw_detail_config(
             .unwrap_or(0)
             .clamp(12, 40);
         for (k, v) in &sorted {
-            let key_len = k.chars().count();
-            let key_text = if key_len <= max_key_width {
-                format!("  {k:<width$}", width = max_key_width)
-            } else {
-                // Long key overflows the column — emit it on its own line so
-                // the value still aligns on the next row.
-                format!("  {k}\n  {pad:<width$}", pad = "", width = max_key_width)
+            let item = crate::app::ConfigItem {
+                kind: crate::app::ConfigItemKind::Tag,
+                key: (*k).clone(),
+                value: (*v).clone(),
             };
-            lines.push(Line::from(vec![
-                Span::styled(key_text, Style::default().fg(theme.app_palette[0])),
-                Span::raw("  "),
-                Span::styled(v.to_string(), Style::default().fg(theme.text)),
-            ]));
+            row_line_idx.push(lines.len());
+            lines.push(config_editable_row(
+                detail,
+                &mut editable_idx,
+                &item,
+                max_key_width,
+                theme.app_palette[0],
+                theme,
+            ));
         }
+    }
+    // In-progress add-a-tag editor renders below the tag rows.
+    if let Some(e) = detail
+        .config_edit
+        .as_ref()
+        .filter(|e| e.is_new && e.kind == crate::app::ConfigItemKind::Tag)
+    {
+        lines.push(config_new_row_line(e, theme));
     }
 
     // Tag policy check
@@ -5802,24 +6002,63 @@ fn draw_detail_config(
             .unwrap_or(0)
             .clamp(12, 40);
         for (k, v) in &detail.env_vars {
-            let key_len = k.chars().count();
-            let key_text = if key_len <= max_key_width {
-                format!("  {k:<width$}", width = max_key_width)
-            } else {
-                format!("  {k}\n  {pad:<width$}", pad = "", width = max_key_width)
+            let item = crate::app::ConfigItem {
+                kind: crate::app::ConfigItemKind::EnvVar,
+                key: k.clone(),
+                value: v.clone(),
             };
-            // Render empty value as `""` so operators can distinguish
-            // "explicitly empty" from "not set" (mirrors `:env list`).
-            let value = if v.is_empty() { "\"\"" } else { v.as_str() };
-            lines.push(Line::from(vec![
-                Span::styled(key_text, Style::default().fg(theme.app_palette[1])),
-                Span::raw("  "),
-                Span::styled(value.to_string(), Style::default().fg(theme.text)),
-            ]));
+            row_line_idx.push(lines.len());
+            lines.push(config_editable_row(
+                detail,
+                &mut editable_idx,
+                &item,
+                max_key_width,
+                theme.app_palette[1],
+                theme,
+            ));
         }
     }
+    // In-progress add-an-env-var editor renders below the env-var rows.
+    if let Some(e) = detail
+        .config_edit
+        .as_ref()
+        .filter(|e| e.is_new && e.kind == crate::app::ConfigItemKind::EnvVar)
+    {
+        lines.push(config_new_row_line(e, theme));
+    }
 
-    f.render_widget(Paragraph::new(lines).block(block), area);
+    // Scroll-follow: keep the cursor row inside the viewport. The
+    // body's visible height is `area` minus the block's top/bottom
+    // borders.
+    let inner_h = area.height.saturating_sub(2) as usize;
+    let cursor_line = row_line_idx.get(detail.config_cursor).copied();
+    let scroll = config_scroll_follow(detail.config_scroll, cursor_line, inner_h, lines.len());
+    f.render_widget(Paragraph::new(lines).block(block).scroll((scroll, 0)), area);
+    scroll
+}
+
+/// Pure: adjust a Config-tab scroll offset to keep `cursor_line`
+/// inside a `viewport_h`-tall window over `total_lines`. The offset
+/// only moves when the cursor would fall off an edge (so unrelated
+/// scrolling doesn't jump), then clamps so the view never runs past
+/// the last line. `cursor_line` is `None` when there's no editable
+/// row — the offset is left as-is (just clamped).
+fn config_scroll_follow(
+    current: u16,
+    cursor_line: Option<usize>,
+    viewport_h: usize,
+    total_lines: usize,
+) -> u16 {
+    let mut scroll = current as usize;
+    if let Some(cl) = cursor_line {
+        if cl < scroll {
+            scroll = cl;
+        } else if viewport_h > 0 && cl >= scroll + viewport_h {
+            scroll = cl + 1 - viewport_h;
+        }
+    }
+    let max_scroll = total_lines.saturating_sub(viewport_h);
+    scroll.min(max_scroll) as u16
 }
 
 fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
@@ -5928,6 +6167,9 @@ fn draw_help_detail(f: &mut Frame, popup: Rect, app: &App) {
         )),
         help_line("/", "regex filter event messages", theme),
         help_line("n / N", "jump next / previous match", theme),
+        help_line("L", "cycle min severity (all → info → warn → error)", theme),
+        help_line("w", "cycle time window (all → 1h → 6h → 24h → 7d)", theme),
+        help_line("T", "cycle timestamp format (UTC → local → age)", theme),
         Line::from(""),
         Line::from(Span::styled(
             "Metrics tab",
@@ -5985,6 +6227,27 @@ fn draw_help_detail(f: &mut Frame, popup: Rect, app: &App) {
             theme,
         ),
         help_line("/", "regex filter visible lines", theme),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Config tab",
+            Style::default().fg(app.theme.title),
+        )),
+        help_line(
+            "j / k",
+            "move cursor over editable rows (tags + env vars)",
+            theme,
+        ),
+        help_line(
+            "enter",
+            "edit selected value in place (enter saves, esc cancels)",
+            theme,
+        ),
+        help_line(
+            "n",
+            "add a new row (KEY=VALUE; kind from cursor section)",
+            theme,
+        ),
+        help_line("x", "delete the selected row (y confirms)", theme),
         Line::from(""),
         Line::from(Span::styled(
             "esc / q  to close help; from Normal mode `?` shows the full keymap",
@@ -6708,6 +6971,42 @@ fn humanize_age(d: chrono::Duration) -> String {
     }
 }
 
+/// Render an event timestamp according to the operator's chosen
+/// [`EventTimeFormat`]. `Utc` / `Local` produce a full
+/// `YYYY-MM-DD HH:MM:SS` stamp (UTC suffixed with `Z`); `Age` keeps
+/// the compact relative form. `None` timestamps render as `—`.
+/// Pure — `now` is passed in so the Age branch is testable.
+fn format_event_time(
+    at: Option<chrono::DateTime<chrono::Utc>>,
+    mode: crate::app::EventTimeFormat,
+    now: chrono::DateTime<chrono::Utc>,
+) -> String {
+    use crate::app::EventTimeFormat;
+    let Some(t) = at else {
+        return "—".into();
+    };
+    match mode {
+        EventTimeFormat::Utc => t.format("%Y-%m-%d %H:%M:%SZ").to_string(),
+        EventTimeFormat::Local => t
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string(),
+        EventTimeFormat::Age => humanize_age(now.signed_duration_since(t)),
+    }
+}
+
+/// Column width to reserve for the event-time cell, given the mode.
+/// UTC carries the `Z` suffix so it's one wider than Local; Age is
+/// the compact 4-cell form. Keeps the two event renderers aligned.
+fn event_time_width(mode: crate::app::EventTimeFormat) -> usize {
+    use crate::app::EventTimeFormat;
+    match mode {
+        EventTimeFormat::Utc => 20,   // "YYYY-MM-DD HH:MM:SSZ"
+        EventTimeFormat::Local => 19, // "YYYY-MM-DD HH:MM:SS"
+        EventTimeFormat::Age => 4,    // ">999d" worst case is 5; 4 matches old layout
+    }
+}
+
 /// Pure: pick a theme colour for the AGE column based on how recently the
 /// env was updated. Three buckets:
 ///
@@ -7035,6 +7334,64 @@ mod tests {
         assert_eq!(humanize_age(Duration::seconds(2 * 86_400)), "2d");
         // Negative durations clamp to 0.
         assert_eq!(humanize_age(Duration::seconds(-30)), "0s");
+    }
+
+    #[test]
+    fn format_event_time_renders_each_mode() {
+        use crate::app::EventTimeFormat;
+        use chrono::{TimeZone, Utc};
+        let t = Utc.with_ymd_and_hms(2026, 5, 21, 22, 34, 56).unwrap();
+        let now = Utc.with_ymd_and_hms(2026, 5, 21, 22, 39, 56).unwrap();
+        // UTC: full stamp with trailing Z.
+        assert_eq!(
+            format_event_time(Some(t), EventTimeFormat::Utc, now),
+            "2026-05-21 22:34:56Z"
+        );
+        // Age: 5 minutes elapsed.
+        assert_eq!(format_event_time(Some(t), EventTimeFormat::Age, now), "5m");
+        // Local: shape only (TZ-dependent) — assert length + no Z suffix.
+        let local = format_event_time(Some(t), EventTimeFormat::Local, now);
+        assert_eq!(local.len(), 19);
+        assert!(!local.ends_with('Z'));
+    }
+
+    #[test]
+    fn format_event_time_handles_missing_timestamp() {
+        use crate::app::EventTimeFormat;
+        let now = chrono::Utc::now();
+        for mode in [
+            EventTimeFormat::Utc,
+            EventTimeFormat::Local,
+            EventTimeFormat::Age,
+        ] {
+            assert_eq!(format_event_time(None, mode, now), "—");
+        }
+    }
+
+    #[test]
+    fn config_scroll_follow_keeps_cursor_in_viewport() {
+        // Cursor in view → offset unchanged.
+        assert_eq!(config_scroll_follow(0, Some(5), 20, 100), 0);
+        // Cursor below the fold → scroll so cursor is the last visible row.
+        assert_eq!(config_scroll_follow(0, Some(25), 20, 100), 6);
+        // Cursor above the current offset → scroll up to it.
+        assert_eq!(config_scroll_follow(30, Some(10), 20, 100), 10);
+        // Never scroll past the end: max = total - viewport.
+        assert_eq!(config_scroll_follow(0, Some(99), 20, 100), 80);
+        // No editable row → offset just clamped, not moved by a cursor.
+        assert_eq!(config_scroll_follow(50, None, 20, 100), 50);
+        assert_eq!(config_scroll_follow(95, None, 20, 100), 80);
+        // Content shorter than the viewport → no scroll at all.
+        assert_eq!(config_scroll_follow(0, Some(3), 20, 8), 0);
+    }
+
+    #[test]
+    fn event_time_width_matches_rendered_stamp() {
+        use crate::app::EventTimeFormat;
+        // UTC width must fit "YYYY-MM-DD HH:MM:SSZ" (20 chars).
+        assert_eq!(event_time_width(EventTimeFormat::Utc), 20);
+        assert_eq!(event_time_width(EventTimeFormat::Local), 19);
+        assert_eq!(event_time_width(EventTimeFormat::Age), 4);
     }
 
     #[test]

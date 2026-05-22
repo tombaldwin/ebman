@@ -1,6 +1,6 @@
 [package]
 name = "ebman"
-version = "0.3.5"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.91"
 authors = ["Tom Baldwin <tom@polymorphism.co.uk>"]
@@ -40,6 +40,7 @@ aws-credential-types = { version = "1.2.13", features = ["hardcoded-credentials"
 aws-sdk-organizations = "1.110.0"
 aws-sdk-costexplorer = "1"
 aws-sdk-iam = "1"
+aws-sdk-secretsmanager = "1"
 
 [dev-dependencies]
 # Mocked AWS clients for unit-testing aws.rs without a live AWS account.

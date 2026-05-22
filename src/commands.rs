@@ -264,6 +264,18 @@ pub const COMMANDS: &[CommandSpec] = &[
         CommandKind::ZeroArg,
     ),
     cmd(
+        "secrets",
+        ":secrets [FILTER] — browse Secrets Manager (region-scoped). Metadata only — values stay hidden until :secret NAME.",
+        Category::Inspection,
+        CommandKind::Prefill("secrets "),
+    ),
+    cmd(
+        "secret",
+        ":secret NAME — fetch one secret's value (CloudTrail-audited). Respects :redact. Use :secrets to find the name.",
+        Category::Inspection,
+        CommandKind::Prefill("secret "),
+    ),
+    cmd(
         "report-bug",
         ":report-bug — scrubbed bug-report overlay. y = copy, b = open GitHub issue with body pre-filled. No outbound HTTP from ebman.",
         Category::Setup,
@@ -611,6 +623,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         ":events on|off — toggle the events panel",
         Category::View,
         CommandKind::Prefill("events "),
+    ),
+    cmd(
+        "event-time",
+        ":event-time [utc|local|age] — event timestamp display; no arg cycles. Default UTC. Also bound to T.",
+        Category::View,
+        CommandKind::Prefill("event-time "),
     ),
     cmd(
         "cols",

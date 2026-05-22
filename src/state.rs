@@ -14,6 +14,10 @@ pub struct PersistedState {
     pub grouped: Option<bool>,
     pub redact: Option<bool>,
     pub events_visible: Option<bool>,
+    /// Event-timestamp display mode for the Events panel + Detail/Events
+    /// tab. `None` means "never set" — the app falls back to the
+    /// `EventTimeFormat` default (UTC). Stored as `"utc"|"local"|"age"`.
+    pub event_time_format: Option<crate::app::EventTimeFormat>,
     pub selected_env: Option<String>,
     pub named_filters: BTreeMap<String, String>,
     pub pinned: BTreeSet<String>,
@@ -138,6 +142,9 @@ pub fn parse(text: &str) -> PersistedState {
             "grouped" => state.grouped = parse_bool(&value),
             "redact" => state.redact = parse_bool(&value),
             "events_visible" => state.events_visible = parse_bool(&value),
+            "event_time_format" => {
+                state.event_time_format = crate::app::EventTimeFormat::parse(&value)
+            }
             "selected_env" => state.selected_env = Some(value),
             _ if k.starts_with("filter.") => {
                 let name = k.trim_start_matches("filter.").trim().to_string();
@@ -223,6 +230,9 @@ pub fn save(state: &PersistedState) {
     if let Some(e) = state.events_visible {
         out.push_str(&format!("events_visible = {e}\n"));
     }
+    if let Some(f) = state.event_time_format {
+        out.push_str(&format!("event_time_format = \"{}\"\n", f.label()));
+    }
     if let Some(s) = &state.selected_env {
         out.push_str(&format!("selected_env = \"{s}\"\n"));
     }
@@ -288,6 +298,30 @@ selected_env = "my-env"
         assert_eq!(s.redact, Some(false));
         assert_eq!(s.events_visible, Some(true));
         assert_eq!(s.selected_env, Some("my-env".into()));
+    }
+
+    #[test]
+    fn event_time_format_parses_each_value() {
+        use crate::app::EventTimeFormat;
+        assert_eq!(
+            parse("event_time_format = \"utc\"\n").event_time_format,
+            Some(EventTimeFormat::Utc)
+        );
+        assert_eq!(
+            parse("event_time_format = \"local\"\n").event_time_format,
+            Some(EventTimeFormat::Local)
+        );
+        assert_eq!(
+            parse("event_time_format = \"age\"\n").event_time_format,
+            Some(EventTimeFormat::Age)
+        );
+        // Absent key → None (app falls back to the EventTimeFormat default).
+        assert_eq!(parse("region = \"x\"\n").event_time_format, None);
+        // Garbage value → None, not a panic.
+        assert_eq!(
+            parse("event_time_format = \"bogus\"\n").event_time_format,
+            None
+        );
     }
 
     #[test]

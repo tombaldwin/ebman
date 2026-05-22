@@ -35,7 +35,8 @@ pub use crate::mode_action::{
     Action, ActionFlow, ConfirmKind, ConfirmModal, DryRunInfo, ParameterisedAction, ACTIONS,
 };
 pub use crate::mode_detail::{
-    health_items, DetailState, DetailTab, HealthItem, LogTail, LogTailStage,
+    config_editable_items, health_items, ConfigEdit, ConfigItem, ConfigItemKind, DetailState,
+    DetailTab, EventLevel, EventWindow, HealthItem, LogTail, LogTailStage,
 };
 
 // Sub-modules: `execute_command` arms split by category. The
@@ -388,6 +389,50 @@ impl SortKey {
     }
 }
 
+/// How event timestamps render. Three-state cycle:
+/// `Utc` (default — matches EB / CloudWatch API output) →
+/// `Local` (operator's wall-clock for cross-referencing with
+/// other terminals / Slack threads) → `Age` (compact `5m` /
+/// `2h` / `3d` relative form). Persists in state.toml as
+/// `event_time_format = "utc"|"local"|"age"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EventTimeFormat {
+    #[default]
+    Utc,
+    Local,
+    Age,
+}
+
+impl EventTimeFormat {
+    /// Cycle in the order documented above. Keeping UTC first means
+    /// the no-arg `:event-time` press most often lands the operator
+    /// back at the canonical form (the EB API uses UTC).
+    pub fn next(self) -> Self {
+        match self {
+            Self::Utc => Self::Local,
+            Self::Local => Self::Age,
+            Self::Age => Self::Utc,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Utc => "utc",
+            Self::Local => "local",
+            Self::Age => "age",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "utc" => Some(Self::Utc),
+            "local" => Some(Self::Local),
+            "age" | "relative" => Some(Self::Age),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Normal,
@@ -623,6 +668,11 @@ pub struct App {
     pub extra_regions: Vec<String>,
     pub events: Vec<EbEvent>,
     pub events_visible: bool,
+    /// How event timestamps render in the Events panel + Detail/Events tab.
+    /// Defaults to UTC so the column matches CloudWatch / EB API output.
+    /// Operator can cycle through `Utc → Local → Age` via `:event-time`
+    /// or the `T` key in scopes where events are visible. Persists.
+    pub event_time_format: EventTimeFormat,
     /// Env the current `events` list was fetched for. `None` = global. Used
     /// by `refresh_events_if_selection_changed` to detect when the user has
     /// moved the table cursor to a different env and refetch.
@@ -1273,6 +1323,7 @@ impl App {
             .or(config.grouped_default)
             .unwrap_or(false);
         let events_visible = persisted.events_visible.unwrap_or(false);
+        let event_time_format = persisted.event_time_format.unwrap_or_default();
         let refresh_interval = config.refresh_interval;
 
         let mut app_table_state = TableState::default();
@@ -1322,6 +1373,7 @@ impl App {
             extra_regions: config.extra_regions,
             events: Vec::new(),
             events_visible,
+            event_time_format,
             events_for_env: None,
             events_scroll: 0,
             events_area: None,
@@ -1491,6 +1543,7 @@ impl App {
             extra_regions: config.extra_regions.clone(),
             events: Vec::new(),
             events_visible: false,
+            event_time_format: EventTimeFormat::default(),
             events_for_env: None,
             events_scroll: 0,
             events_area: None,
@@ -2563,6 +2616,16 @@ impl App {
                     self.handle_detail_search_key(key);
                     return;
                 }
+                // In-place Config-tab value editor intercepts ALL keys
+                // while open — same pattern as the search input.
+                if self
+                    .detail
+                    .as_ref()
+                    .is_some_and(|d| d.config_edit.is_some())
+                {
+                    self.handle_config_edit_key(key);
+                    return;
+                }
                 // Instance-terminate confirm intercepts ALL keys until resolved.
                 if let Some(idx) = self
                     .detail
@@ -2581,6 +2644,26 @@ impl App {
                                 d.instance_terminate_confirm = None;
                             }
                             self.status_message = Some("terminate cancelled".into());
+                        }
+                    }
+                    return;
+                }
+                // Config-row delete confirm intercepts ALL keys until resolved.
+                if self
+                    .detail
+                    .as_ref()
+                    .and_then(|d| d.config_delete_confirm)
+                    .is_some()
+                {
+                    match key.code {
+                        KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                            self.commit_config_delete();
+                        }
+                        _ => {
+                            if let Some(d) = self.detail.as_mut() {
+                                d.config_delete_confirm = None;
+                            }
+                            self.status_message = Some("delete cancelled".into());
                         }
                     }
                     return;
@@ -2606,6 +2689,37 @@ impl App {
                                 "detail auto-refresh off"
                             };
                             self.status_message = Some(msg.into());
+                        }
+                    }
+                    KeyCode::Char('T') => {
+                        self.cmd_event_time(&[]);
+                    }
+                    // Events-tab severity / time-window filters. Guarded
+                    // to the Events tab so `L` / `w` stay free elsewhere.
+                    KeyCode::Char('L')
+                        if matches!(
+                            self.detail.as_ref().map(|d| d.tab()),
+                            Some(DetailTab::Events)
+                        ) =>
+                    {
+                        if let Some(d) = self.detail.as_mut() {
+                            d.events_level = d.events_level.next();
+                            d.events_scroll = 0;
+                            let label = d.events_level.label();
+                            self.status_message = Some(format!("events: severity ≥ {label}"));
+                        }
+                    }
+                    KeyCode::Char('w')
+                        if matches!(
+                            self.detail.as_ref().map(|d| d.tab()),
+                            Some(DetailTab::Events)
+                        ) =>
+                    {
+                        if let Some(d) = self.detail.as_mut() {
+                            d.events_window = d.events_window.next();
+                            d.events_scroll = 0;
+                            let label = d.events_window.label();
+                            self.status_message = Some(format!("events: window {label}"));
                         }
                     }
                     KeyCode::Char('?') => {
@@ -2675,6 +2789,36 @@ impl App {
                         // `i` is an alias for Enter on the Instances tab —
                         // open the info overlay.
                         self.open_instance_info_overlay();
+                    }
+                    KeyCode::Enter
+                        if matches!(
+                            self.detail.as_ref().map(|d| d.tab()),
+                            Some(DetailTab::Config)
+                        ) =>
+                    {
+                        // On the Config tab, Enter opens the in-place
+                        // value editor for the row under the cursor.
+                        self.start_config_edit();
+                    }
+                    KeyCode::Char('n')
+                        if matches!(
+                            self.detail.as_ref().map(|d| d.tab()),
+                            Some(DetailTab::Config)
+                        ) =>
+                    {
+                        // `n` on the Config tab — add a new row (tag or
+                        // env var, kind taken from the cursor's section).
+                        self.start_config_add();
+                    }
+                    KeyCode::Char('x')
+                        if matches!(
+                            self.detail.as_ref().map(|d| d.tab()),
+                            Some(DetailTab::Config)
+                        ) =>
+                    {
+                        // `x` on the Config tab — arm delete of the row
+                        // under the cursor (y confirms).
+                        self.arm_config_delete();
                     }
                     KeyCode::Char('y')
                         if matches!(
@@ -2913,6 +3057,9 @@ impl App {
                             self.sort_key.label(),
                             if self.sort_desc { "desc" } else { "asc" }
                         ));
+                    }
+                    KeyCode::Char('T') => {
+                        self.cmd_event_time(&[]);
                     }
                     KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         self.export_tsv();
@@ -3699,6 +3846,114 @@ impl App {
         ));
     }
 
+    /// `:secrets [FILTER]` — list Secrets Manager secrets in the
+    /// active region. Optional substring filter matches against
+    /// secret name. Output: one section per secret with name +
+    /// ARN + description + last-changed / last-rotated dates.
+    /// Operator yanks the ARN to paste into `:env-edit` /
+    /// `:env set ENV_VAR ARN` for downstream consumption.
+    ///
+    /// No secret *values* shown here — that's a separate explicit
+    /// `:secret NAME` call so an accidentally-typed `:secrets`
+    /// doesn't dump credentials to the screen.
+    pub(crate) fn cmd_secrets(&mut self, rest: &[&str]) {
+        let filter = rest.first().map(|s| s.to_string());
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let title_filter = filter.clone();
+        self.status_message = Some(match filter.as_deref() {
+            Some(f) => format!("listing secrets matching '{f}'…"),
+            None => "listing secrets…".into(),
+        });
+        tokio::spawn(async move {
+            let result = aws
+                .list_secrets(filter.as_deref())
+                .await
+                .map_err(|e| flatten_err("list_secrets", e));
+            let body = match result {
+                Ok(rows) => render_secrets_overlay(&rows, title_filter.as_deref()),
+                Err(e) => format!("secrets: {e}\n\nesc / q to close"),
+            };
+            let _ = tx.send(AppMsg::TextOverlay {
+                gen,
+                title: "secrets".into(),
+                body,
+            });
+        });
+    }
+
+    /// `:secret NAME` — fetch and reveal a single Secrets Manager
+    /// secret's value. Requires an explicit name to make this an
+    /// opt-in action (accidental `:secret` with no arg is an
+    /// error, not a "dump every secret"). Audit-logs the read so
+    /// the operator's CloudTrail-equivalent has a record.
+    ///
+    /// Output respects `app.redact` — when redact mode is on, the
+    /// value is hashed instead of shown. The operator can flip
+    /// `:redact off` first if they need to see it.
+    pub(crate) fn cmd_secret_view(&mut self, rest: &[&str]) {
+        let Some(name) = rest.first().map(|s| s.to_string()) else {
+            self.error_message =
+                Some("usage: :secret NAME  (NAME or full ARN; see :secrets to list)".into());
+            return;
+        };
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let redact = self.redact;
+        let name_for_audit = name.clone();
+        write_audit_line(
+            self.context.account_id.as_deref(),
+            self.context.profile.as_deref(),
+            &self.context.region,
+            &format!("stage=dispatched action=GetSecretValue target={name_for_audit}"),
+        );
+        self.status_message = Some(format!("fetching secret '{name}'…"));
+        tokio::spawn(async move {
+            let result = aws
+                .fetch_secret_value(&name)
+                .await
+                .map_err(|e| flatten_err("fetch_secret_value", e));
+            let body = match result {
+                Ok(value) => render_secret_value_overlay(&name, &value, redact),
+                Err(e) => format!("secret: {e}\n\nesc / q to close"),
+            };
+            let _ = tx.send(AppMsg::TextOverlay {
+                gen,
+                title: format!("secret — {name}"),
+                body,
+            });
+        });
+    }
+
+    /// `:event-time [utc|local|age]` — set how event timestamps render
+    /// in the Events panel + Detail/Events tab. No argument cycles
+    /// `Utc → Local → Age`. Persists to state.toml. UTC is the
+    /// default because it matches the EB / CloudWatch API output the
+    /// operator cross-references against.
+    pub(crate) fn cmd_event_time(&mut self, rest: &[&str]) {
+        let next = match rest.first().copied() {
+            None => self.event_time_format.next(),
+            Some(arg) => match EventTimeFormat::parse(arg) {
+                Some(f) => f,
+                None => {
+                    self.error_message = Some(format!(
+                        "unknown event-time format '{arg}'  (use: utc | local | age)"
+                    ));
+                    return;
+                }
+            },
+        };
+        self.event_time_format = next;
+        self.persist_state();
+        self.status_message = Some(match next {
+            EventTimeFormat::Utc => "event timestamps: UTC (YYYY-MM-DD HH:MM:SSZ)".into(),
+            EventTimeFormat::Local => "event timestamps: local time".into(),
+            EventTimeFormat::Age => "event timestamps: relative age".into(),
+        });
+    }
+
     /// `:env-edit` — bulk env-var editor via `$EDITOR`. Two-stage:
     ///
     ///   1. Async fetch of the env's current env vars
@@ -4462,6 +4717,9 @@ impl App {
             search_pattern: None,
             search_error: None,
             events_scroll: 0,
+            events_max_scroll: 0,
+            events_level: EventLevel::default(),
+            events_window: EventWindow::default(),
             instances_scroll: 0,
             tags: Vec::new(),
             env_vars: Vec::new(),
@@ -4484,6 +4742,10 @@ impl App {
             loading_cw_alarms: false,
             recent_versions: None,
             loading_recent_versions: false,
+            config_cursor: 0,
+            config_edit: None,
+            config_scroll: 0,
+            config_delete_confirm: None,
         };
         self.detail = Some(detail);
         self.mode = Mode::Detail;
@@ -4663,7 +4925,10 @@ impl App {
         };
         match detail.tab() {
             DetailTab::Events => {
-                detail.events_scroll = scroll_apply(detail.events_scroll, delta);
+                // Clamp to the ceiling the renderer published last frame
+                // so j/k can't scroll the list off into blank space.
+                detail.events_scroll =
+                    scroll_apply(detail.events_scroll, delta).min(detail.events_max_scroll);
             }
             DetailTab::Instances => {
                 let n = detail.instances.len();
@@ -4697,10 +4962,20 @@ impl App {
                 let cur = detail.health_cursor as i32;
                 detail.health_cursor = (cur + delta).rem_euclid(n) as usize;
             }
-            // Metrics / Config tabs have no scrollable cursor — they're
-            // either chart bodies that handle their own keyboard
-            // interactions or fixed-key-value summaries.
-            DetailTab::Metrics | DetailTab::Config => {}
+            DetailTab::Config => {
+                // Cursor moves over the editable rows (tags + env vars).
+                // Clamped at the ends — no wrap — since the list can be
+                // long and wrapping past the bottom is disorienting.
+                let n = crate::app::config_editable_items(detail).len();
+                if n == 0 {
+                    return;
+                }
+                let cur = detail.config_cursor as i32;
+                detail.config_cursor = (cur + delta).clamp(0, n as i32 - 1) as usize;
+            }
+            // Metrics tab has no scrollable cursor — the chart body
+            // handles its own keyboard interactions.
+            DetailTab::Metrics => {}
         }
     }
 
@@ -4820,6 +5095,223 @@ impl App {
         }
     }
 
+    /// Open the in-place value editor for the Config-tab row under the
+    /// cursor. No-op if the cursor isn't on an editable row (empty
+    /// list). Refuses in read-only mode so the operator isn't left
+    /// typing a value that can't be dispatched.
+    fn start_config_edit(&mut self) {
+        if self.read_only {
+            self.error_message = Some("read-only mode — config editing disabled".into());
+            return;
+        }
+        let Some(detail) = self.detail.as_mut() else {
+            return;
+        };
+        let items = crate::app::config_editable_items(detail);
+        let Some(item) = items.get(detail.config_cursor) else {
+            self.error_message = Some("no editable config rows".into());
+            return;
+        };
+        let key = item.key.clone();
+        // Caret starts at the end of the value so the operator can
+        // append immediately, or arrow left to edit mid-string.
+        let caret = item.value.chars().count();
+        detail.config_edit = Some(ConfigEdit {
+            kind: item.kind,
+            key: item.key.clone(),
+            original: item.value.clone(),
+            input: item.value.clone(),
+            caret,
+            is_new: false,
+        });
+        self.status_message = Some(format!("editing {key} — enter saves, esc cancels"));
+    }
+
+    /// Key handling while the Config-tab in-place editor is open.
+    /// Esc cancels, Enter commits, Backspace / printable chars edit
+    /// the value buffer. Mirrors `handle_detail_search_key`.
+    fn handle_config_edit_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                if let Some(d) = self.detail.as_mut() {
+                    d.config_edit = None;
+                }
+                self.status_message = Some("config edit cancelled".into());
+            }
+            KeyCode::Enter => self.commit_config_edit(),
+            KeyCode::Backspace => {
+                if let Some(e) = self.detail.as_mut().and_then(|d| d.config_edit.as_mut()) {
+                    e.backspace();
+                }
+            }
+            KeyCode::Delete => {
+                if let Some(e) = self.detail.as_mut().and_then(|d| d.config_edit.as_mut()) {
+                    e.delete();
+                }
+            }
+            KeyCode::Left => {
+                if let Some(e) = self.detail.as_mut().and_then(|d| d.config_edit.as_mut()) {
+                    e.move_left();
+                }
+            }
+            KeyCode::Right => {
+                if let Some(e) = self.detail.as_mut().and_then(|d| d.config_edit.as_mut()) {
+                    e.move_right();
+                }
+            }
+            KeyCode::Home => {
+                if let Some(e) = self.detail.as_mut().and_then(|d| d.config_edit.as_mut()) {
+                    e.move_home();
+                }
+            }
+            KeyCode::End => {
+                if let Some(e) = self.detail.as_mut().and_then(|d| d.config_edit.as_mut()) {
+                    e.move_end();
+                }
+            }
+            KeyCode::Char(c) if is_text_input(&key) => {
+                if let Some(e) = self.detail.as_mut().and_then(|d| d.config_edit.as_mut()) {
+                    e.insert(c);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Commit the open Config-tab edit. For an existing-row edit the
+    /// value change dispatches via the same `UpdateOptionSettings`
+    /// (env var) / `UpdateTags` (tag) paths `:env set` / `:tag` use;
+    /// an unchanged value is dropped without a dispatch. For an
+    /// add-new-row edit the `KEY=VALUE` buffer is parsed and the new
+    /// row dispatched as a set. Clears the editor either way.
+    fn commit_config_edit(&mut self) {
+        let Some(edit) = self.detail.as_mut().and_then(|d| d.config_edit.take()) else {
+            return;
+        };
+        // Resolve to a concrete (kind, key, value) to dispatch.
+        let (kind, key, value) = if edit.is_new {
+            // New row — the buffer is `KEY=VALUE`.
+            match crate::mode_detail::parse_new_config_row(&edit.input) {
+                Some((k, v)) => (edit.kind, k, v),
+                None => {
+                    self.error_message = Some("new row needs KEY=VALUE (non-empty key)".into());
+                    return;
+                }
+            }
+        } else {
+            if edit.input == edit.original {
+                self.status_message = Some(format!("{} unchanged", edit.key));
+                return;
+            }
+            (edit.kind, edit.key.clone(), edit.input.clone())
+        };
+        match kind {
+            ConfigItemKind::EnvVar => {
+                let ns = "aws:elasticbeanstalk:application:environment";
+                self.spawn_option_settings_update(
+                    format!("env set {key}"),
+                    vec![(ns.into(), key, value)],
+                    vec![],
+                );
+            }
+            ConfigItemKind::Tag => {
+                self.spawn_tag_update(vec![(key, value)], vec![]);
+            }
+        }
+    }
+
+    /// `n` on the Config tab — open the add-a-new-row editor. The new
+    /// row's kind (tag vs env var) is taken from the section the
+    /// cursor currently sits in; an empty editable list defaults to
+    /// an env var (the more common edit target). The buffer is typed
+    /// as `KEY=VALUE`.
+    fn start_config_add(&mut self) {
+        if self.read_only {
+            self.error_message = Some("read-only mode — config editing disabled".into());
+            return;
+        }
+        let Some(detail) = self.detail.as_mut() else {
+            return;
+        };
+        let items = crate::app::config_editable_items(detail);
+        let kind = items
+            .get(detail.config_cursor)
+            .map(|i| i.kind)
+            .unwrap_or(ConfigItemKind::EnvVar);
+        detail.config_edit = Some(ConfigEdit {
+            kind,
+            key: String::new(),
+            original: String::new(),
+            input: String::new(),
+            caret: 0,
+            is_new: true,
+        });
+        let what = match kind {
+            ConfigItemKind::EnvVar => "env var",
+            ConfigItemKind::Tag => "tag",
+        };
+        self.status_message = Some(format!(
+            "new {what} — type KEY=VALUE, enter saves, esc cancels"
+        ));
+    }
+
+    /// `x` on the Config tab — arm a delete of the row under the
+    /// cursor. The actual `UpdateTags` / `UpdateOptionSettings`
+    /// removal waits for the `y` confirmation (see the
+    /// `config_delete_confirm` interception in the key handler).
+    fn arm_config_delete(&mut self) {
+        if self.read_only {
+            self.error_message = Some("read-only mode — config editing disabled".into());
+            return;
+        }
+        let Some(detail) = self.detail.as_mut() else {
+            return;
+        };
+        let items = crate::app::config_editable_items(detail);
+        let Some(item) = items.get(detail.config_cursor) else {
+            self.error_message = Some("no editable config rows".into());
+            return;
+        };
+        let key = item.key.clone();
+        detail.config_delete_confirm = Some(detail.config_cursor);
+        self.status_message = Some(format!("delete {key}? — y confirms, any other key cancels"));
+    }
+
+    /// Confirmed delete of the armed Config-tab row — dispatches the
+    /// removal (`UpdateTags` remove / `UpdateOptionSettings` remove).
+    fn commit_config_delete(&mut self) {
+        let Some(idx) = self
+            .detail
+            .as_mut()
+            .and_then(|d| d.config_delete_confirm.take())
+        else {
+            return;
+        };
+        let Some(detail) = self.detail.as_ref() else {
+            return;
+        };
+        let items = crate::app::config_editable_items(detail);
+        let Some(item) = items.get(idx) else {
+            self.error_message = Some("config row no longer exists".into());
+            return;
+        };
+        let kind = item.kind;
+        let key = item.key.clone();
+        match kind {
+            ConfigItemKind::EnvVar => {
+                let ns = "aws:elasticbeanstalk:application:environment";
+                self.spawn_option_settings_update(
+                    format!("env unset {key}"),
+                    vec![],
+                    vec![(ns.into(), key)],
+                );
+            }
+            ConfigItemKind::Tag => {
+                self.spawn_tag_update(vec![], vec![key]);
+            }
+        }
+    }
+
     fn detail_search_jump(&mut self, delta: i32) {
         let Some(detail) = self.detail.as_mut() else {
             return;
@@ -4827,26 +5319,30 @@ impl App {
         let Some(re) = detail.search_pattern.as_ref() else {
             return;
         };
-        let n = detail.events.len();
+        // Search only within the *filtered* event set — `events_scroll`
+        // is a line offset into the rendered (filtered) list, so the
+        // jump target must be a position in that same list, not a raw
+        // index into `detail.events`.
+        let visible = crate::mode_detail::filter_event_indices(
+            &detail.events,
+            detail.events_level,
+            detail.events_window,
+            chrono::Utc::now(),
+        );
+        let n = visible.len();
         if n == 0 {
             return;
         }
-        let cur = detail.events_scroll as usize;
-        if delta >= 0 {
-            for off in 1..=n {
-                let i = (cur + off) % n;
-                if re.is_match(&detail.events[i].message) {
-                    detail.events_scroll = i as u16;
-                    return;
-                }
-            }
+        let cur = (detail.events_scroll as usize).min(n - 1);
+        let order: Vec<usize> = if delta >= 0 {
+            (1..=n).map(|off| (cur + off) % n).collect()
         } else {
-            for off in 1..=n {
-                let i = (cur + n - off) % n;
-                if re.is_match(&detail.events[i].message) {
-                    detail.events_scroll = i as u16;
-                    return;
-                }
+            (1..=n).map(|off| (cur + n - off) % n).collect()
+        };
+        for pos in order {
+            if re.is_match(&detail.events[visible[pos]].message) {
+                detail.events_scroll = pos as u16;
+                return;
             }
         }
     }
@@ -8062,6 +8558,7 @@ impl App {
                     "events panel off".into()
                 });
             }
+            "event-time" => self.cmd_event_time(&rest),
             "export" => self.export_tsv(),
             "json" => self.export_json(),
             "report" | "markdown" => self.export_markdown(),
@@ -8120,6 +8617,8 @@ impl App {
             "options" => self.cmd_options(&rest),
             "explain" => self.cmd_explain(&rest),
             "env-edit" => self.cmd_env_edit(),
+            "secrets" => self.cmd_secrets(&rest),
+            "secret" => self.cmd_secret_view(&rest),
             "report-bug" => self.open_report_bug_overlay(),
             "settings" => {
                 self.open_settings_form();
@@ -8444,6 +8943,7 @@ impl App {
             grouped: Some(self.grouped),
             redact: Some(self.redact),
             events_visible: Some(self.events_visible),
+            event_time_format: Some(self.event_time_format),
             selected_env: selected,
             named_filters: self.named_filters.clone(),
             pinned: self.pinned.clone(),
@@ -8574,12 +9074,24 @@ impl App {
     fn apply_picker_choice(&mut self, kind: PickerKind, value: String) {
         match kind {
             PickerKind::Profile => {
+                tracing::info!(
+                    target: "ebman::state",
+                    new_profile = %value,
+                    cleared_override_region = ?self.override_region,
+                    "apply_picker_choice(Profile) clears override_region so SDK re-resolves from new profile config"
+                );
                 self.override_profile = Some(value.clone());
                 self.override_region = None;
                 self.status_message = Some(format!("switching to profile {value}…"));
                 self.spawn_rebuild();
             }
             PickerKind::Region => {
+                tracing::info!(
+                    target: "ebman::state",
+                    new_region = %value,
+                    prior_override = ?self.override_region,
+                    "apply_picker_choice(Region) sets override_region"
+                );
                 self.override_region = Some(value.clone());
                 self.status_message = Some(format!("switching to region {value}…"));
                 self.spawn_rebuild();
@@ -12852,6 +13364,213 @@ pub(crate) fn render_options_overlay(
     body
 }
 
+/// Render the `:secrets` overlay — metadata only, never values.
+/// Pure (takes the SDK rows + filter, returns the body string) so
+/// the table layout / empty-state copy can be unit-tested without
+/// hitting Secrets Manager.
+pub(crate) fn render_secrets_overlay(
+    rows: &[crate::aws::SecretSummary],
+    filter: Option<&str>,
+) -> String {
+    if rows.is_empty() {
+        return match filter {
+            Some(f) => format!(
+                "No secrets matching '{f}'.\n\n\
+                 `:secrets` (no arg) to see everything in this region.\n\
+                 Secrets Manager is region-scoped — switch with `:region` first if needed.\n\n\
+                 esc / q to close"
+            ),
+            None => "No Secrets Manager secrets in this region.\n\n\
+                 Either none have been created, or the caller is missing\n\
+                 `secretsmanager:ListSecrets`. Try `:explain :secrets` to check.\n\n\
+                 esc / q to close"
+                .to_string(),
+        };
+    }
+    let now = chrono::Utc::now();
+    let mut body = String::new();
+    body.push_str(&match filter {
+        Some(f) => format!(
+            "Secrets Manager — {n} matching '{f}'\n\
+             Sorted by last-changed (newest first). Values not shown — use `:secret NAME`.\n\n",
+            n = rows.len()
+        ),
+        None => format!(
+            "Secrets Manager — {n} secrets\n\
+             Sorted by last-changed (newest first). Values not shown — use `:secret NAME`.\n\n",
+            n = rows.len()
+        ),
+    });
+    for r in rows {
+        body.push_str(&format!("▸ {}\n", r.name));
+        if !r.arn.is_empty() {
+            body.push_str(&format!("    arn: {}\n", r.arn));
+        }
+        if let Some(d) = &r.description {
+            body.push_str(&format!("    desc: {d}\n"));
+        }
+        let changed = r.last_changed.map(|t| format_age(now, t));
+        let rotated = r.last_rotated.map(|t| format_age(now, t));
+        match (changed, rotated) {
+            (Some(c), Some(r)) => {
+                body.push_str(&format!("    changed: {c}    rotated: {r}\n"));
+            }
+            (Some(c), None) => {
+                body.push_str(&format!("    changed: {c}    rotated: never\n"));
+            }
+            (None, Some(r)) => {
+                body.push_str(&format!("    rotated: {r}\n"));
+            }
+            (None, None) => {}
+        }
+        if let Some(k) = &r.kms_key_id {
+            body.push_str(&format!("    kms: {k}\n"));
+        }
+        body.push('\n');
+    }
+    body.push_str(
+        "y to yank an ARN (select first) · `:secret NAME` to read the value\n\
+         esc / q to close",
+    );
+    body
+}
+
+/// Render the `:secret NAME` overlay — the single-secret detail view.
+/// Honours `redact` mode by replacing the value with a length + sha
+/// hint, so an operator on a screen-share can confirm "yes I have
+/// the right secret" without exposing it. JSON-shaped values are
+/// pretty-printed for readability (Secrets Manager's common k/v
+/// idiom is `{"USERNAME":"…","PASSWORD":"…"}`).
+pub(crate) fn render_secret_value_overlay(name: &str, value: &str, redact: bool) -> String {
+    let mut body = String::new();
+    body.push_str(&format!("Secret — {name}\n\n"));
+    if redact {
+        body.push_str(&format!(
+            "value: <redacted; {} chars, fingerprint {}>\n\
+             Run `:redact off` then re-fetch if you need the cleartext.\n\n\
+             esc / q to close",
+            value.chars().count(),
+            short_fingerprint(value),
+        ));
+        return body;
+    }
+    // Try to pretty-print JSON so k/v secrets are scannable.
+    let pretty = try_pretty_json(value);
+    body.push_str("value:\n");
+    body.push_str(&pretty);
+    if !pretty.ends_with('\n') {
+        body.push('\n');
+    }
+    body.push_str("\ny to yank the value · esc / q to close");
+    body
+}
+
+/// FNV-1a 32-bit fingerprint of the value, hex-encoded — short,
+/// dependency-free, good enough to confirm "same secret as before"
+/// without leaking the value itself. NOT a cryptographic hash and
+/// not used for security decisions; only for the redact-mode
+/// "is this the right one" eyeball check.
+fn short_fingerprint(s: &str) -> String {
+    let mut h: u32 = 0x811C_9DC5;
+    for b in s.as_bytes() {
+        h ^= *b as u32;
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    format!("{h:08x}")
+}
+
+/// If the value parses as JSON, return a pretty-printed form;
+/// otherwise return the raw string. Uses a very minimal recursive
+/// parser instead of pulling in `serde_json` for one render path.
+fn try_pretty_json(s: &str) -> String {
+    let trimmed = s.trim();
+    if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
+        return s.to_string();
+    }
+    // Minimal pass: walk chars, indenting on { [ and dedenting on } ].
+    // Quoted strings are preserved verbatim. This handles the
+    // Secrets-Manager k/v idiom without taking a hard JSON dep.
+    let mut out = String::with_capacity(s.len() + 32);
+    let mut depth: usize = 0;
+    let mut in_str = false;
+    let mut escape = false;
+    let mut chars = trimmed.chars().peekable();
+    while let Some(c) = chars.next() {
+        if in_str {
+            out.push(c);
+            if escape {
+                escape = false;
+            } else if c == '\\' {
+                escape = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => {
+                in_str = true;
+                out.push(c);
+            }
+            '{' | '[' => {
+                out.push(c);
+                // Empty container? Don't add a newline.
+                if matches!(chars.peek(), Some('}') | Some(']')) {
+                    continue;
+                }
+                depth += 1;
+                out.push('\n');
+                out.push_str(&"  ".repeat(depth));
+            }
+            '}' | ']' => {
+                depth = depth.saturating_sub(1);
+                out.push('\n');
+                out.push_str(&"  ".repeat(depth));
+                out.push(c);
+            }
+            ',' => {
+                out.push(c);
+                out.push('\n');
+                out.push_str(&"  ".repeat(depth));
+            }
+            ':' => {
+                out.push(c);
+                out.push(' ');
+            }
+            ' ' | '\n' | '\t' | '\r' => {} // collapse whitespace outside strings
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Format an "age" against now. Pure; keeps the secrets renderer
+/// from depending on ui.rs's private `humanize_age`.
+fn format_age(now: chrono::DateTime<chrono::Utc>, t: chrono::DateTime<chrono::Utc>) -> String {
+    let d = now.signed_duration_since(t);
+    let secs = d.num_seconds().max(0);
+    if secs < 60 {
+        return format!("{secs}s ago");
+    }
+    let mins = secs / 60;
+    if mins < 60 {
+        return format!("{mins}m ago");
+    }
+    let hrs = mins / 60;
+    if hrs < 48 {
+        return format!("{hrs}h ago");
+    }
+    let days = hrs / 24;
+    if days < 60 {
+        return format!("{days}d ago");
+    }
+    let months = days / 30;
+    if months < 24 {
+        return format!("~{months}mo ago");
+    }
+    format!("~{}y ago", days / 365)
+}
+
 fn console_url(region: &str, app_name: &str, env_name: &str) -> String {
     let app = urlencode(app_name);
     let env = urlencode(env_name);
@@ -13759,6 +14478,139 @@ mod tests {
         let body = super::render_options_overlay(&rows, Some("aws:bogus:ns"), "uflexi-prod");
         assert!(body.contains("No options found"));
         assert!(body.contains("aws:bogus:ns"));
+    }
+
+    #[test]
+    fn render_secrets_overlay_empty_with_filter_explains_region_scope() {
+        let body = super::render_secrets_overlay(&[], Some("prod-db"));
+        assert!(body.contains("No secrets matching 'prod-db'"));
+        assert!(body.contains("region-scoped"));
+    }
+
+    #[test]
+    fn render_secrets_overlay_empty_no_filter_hints_at_iam() {
+        let body = super::render_secrets_overlay(&[], None);
+        assert!(body.contains("No Secrets Manager secrets"));
+        assert!(body.contains("ListSecrets"));
+    }
+
+    #[test]
+    fn render_secrets_overlay_lists_metadata_only() {
+        let now = chrono::Utc::now();
+        let rows = vec![crate::aws::SecretSummary {
+            name: "prod/db/password".into(),
+            arn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/db/password-AbCdEf"
+                .into(),
+            description: Some("RDS master".into()),
+            last_changed: Some(now - chrono::Duration::days(3)),
+            last_rotated: Some(now - chrono::Duration::days(30)),
+            kms_key_id: Some("alias/aws/secretsmanager".into()),
+        }];
+        let body = super::render_secrets_overlay(&rows, None);
+        assert!(body.contains("prod/db/password"));
+        assert!(body.contains("RDS master"));
+        assert!(body.contains("arn:aws:secretsmanager"));
+        assert!(body.contains("changed:"));
+        assert!(body.contains("rotated:"));
+        assert!(body.contains("alias/aws/secretsmanager"));
+        // The values themselves must never appear in :secrets output.
+        assert!(!body.to_lowercase().contains("password:"));
+    }
+
+    #[test]
+    fn render_secrets_overlay_marks_never_rotated() {
+        let now = chrono::Utc::now();
+        let rows = vec![crate::aws::SecretSummary {
+            name: "api-key".into(),
+            arn: "arn:aws:secretsmanager:us-east-1:1:secret:api-key-x".into(),
+            description: None,
+            last_changed: Some(now - chrono::Duration::hours(2)),
+            last_rotated: None,
+            kms_key_id: None,
+        }];
+        let body = super::render_secrets_overlay(&rows, None);
+        assert!(body.contains("rotated: never"));
+    }
+
+    #[test]
+    fn render_secret_value_overlay_redacts_when_redact_on() {
+        let body = super::render_secret_value_overlay("api-key", "hunter2", true);
+        assert!(body.contains("<redacted; 7 chars"));
+        assert!(body.contains("fingerprint"));
+        assert!(!body.contains("hunter2"));
+        assert!(body.contains(":redact off"));
+    }
+
+    #[test]
+    fn render_secret_value_overlay_shows_value_when_redact_off() {
+        let body = super::render_secret_value_overlay("api-key", "hunter2", false);
+        assert!(body.contains("hunter2"));
+        assert!(body.contains("yank"));
+    }
+
+    #[test]
+    fn render_secret_value_overlay_pretty_prints_json() {
+        let body = super::render_secret_value_overlay(
+            "prod/db",
+            r#"{"USERNAME":"app","PASSWORD":"x"}"#,
+            false,
+        );
+        // Expect a multi-line shape, not the input one-liner.
+        assert!(body.contains("USERNAME"));
+        assert!(body.contains("PASSWORD"));
+        assert!(
+            body.matches('\n').count() >= 4,
+            "should pretty-print: {body}"
+        );
+    }
+
+    #[test]
+    fn render_secret_value_overlay_leaves_non_json_alone() {
+        let body = super::render_secret_value_overlay("flat", "ABC-DEF-GHI", false);
+        assert!(body.contains("ABC-DEF-GHI"));
+    }
+
+    #[test]
+    fn short_fingerprint_is_stable_and_diffs() {
+        let a = super::short_fingerprint("hunter2");
+        let b = super::short_fingerprint("hunter2");
+        let c = super::short_fingerprint("hunter3");
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_eq!(a.len(), 8);
+    }
+
+    #[test]
+    fn try_pretty_json_passes_through_non_json() {
+        assert_eq!(super::try_pretty_json("just a string"), "just a string");
+        assert_eq!(super::try_pretty_json(""), "");
+    }
+
+    #[test]
+    fn try_pretty_json_indents_objects() {
+        let pretty = super::try_pretty_json(r#"{"a":1,"b":2}"#);
+        let lines: Vec<&str> = pretty.lines().collect();
+        assert!(lines.len() >= 4, "lines={lines:?}");
+        assert!(lines.iter().any(|l| l.contains("\"a\": 1")));
+        assert!(lines.iter().any(|l| l.contains("\"b\": 2")));
+    }
+
+    #[test]
+    fn try_pretty_json_preserves_strings_with_braces() {
+        // A `{` inside a string must not trigger indent.
+        let pretty = super::try_pretty_json(r#"{"msg":"hello {world}"}"#);
+        assert!(pretty.contains("hello {world}"));
+    }
+
+    #[test]
+    fn format_age_buckets() {
+        let now = chrono::Utc::now();
+        assert!(super::format_age(now, now).ends_with("s ago"));
+        assert!(super::format_age(now, now - chrono::Duration::seconds(120)).ends_with("m ago"));
+        assert!(super::format_age(now, now - chrono::Duration::hours(5)).ends_with("h ago"));
+        assert!(super::format_age(now, now - chrono::Duration::days(10)).ends_with("d ago"));
+        let body = super::format_age(now, now - chrono::Duration::days(120));
+        assert!(body.starts_with('~') && body.contains("mo"));
     }
 
     #[test]
@@ -14773,6 +15625,33 @@ mod tests {
         assert!(!dir.join("audit.log.1").exists());
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn event_time_format_cycles_utc_local_age() {
+        let f = EventTimeFormat::default();
+        assert_eq!(f, EventTimeFormat::Utc);
+        assert_eq!(f.next(), EventTimeFormat::Local);
+        assert_eq!(f.next().next(), EventTimeFormat::Age);
+        assert_eq!(f.next().next().next(), EventTimeFormat::Utc);
+    }
+
+    #[test]
+    fn event_time_format_parse_round_trips() {
+        for f in [
+            EventTimeFormat::Utc,
+            EventTimeFormat::Local,
+            EventTimeFormat::Age,
+        ] {
+            assert_eq!(EventTimeFormat::parse(f.label()), Some(f));
+        }
+        // Case-insensitive + the "relative" alias for age.
+        assert_eq!(EventTimeFormat::parse("UTC"), Some(EventTimeFormat::Utc));
+        assert_eq!(
+            EventTimeFormat::parse("relative"),
+            Some(EventTimeFormat::Age)
+        );
+        assert_eq!(EventTimeFormat::parse("nonsense"), None);
     }
 
     #[test]

@@ -400,11 +400,11 @@ Items from the drive-the-app review, shipped together because they share state. 
 - **Caret glyph upgrade (H)** — new `caret_glyph(theme)` helper. Unicode + Powerline modes pick up `U+258E` (a thin vertical block that reads as a real terminal cursor) in place of the underscore. ASCII keeps `_`. Applied to all 10 blinking-cursor sites: command bar, filter bar, quick-jump bar, palette input, picker prompt, Detail Events search, DLQ purge confirm, action swap-target picker, Detail Logs filter, type-name terminate confirm. Test: `caret_glyph_falls_back_to_underscore_on_ascii`.
 - **Toast accent stripe (F)** — every toast now gets a chunky `▎` severity-coloured stripe on the left edge of the body, Slack / VS Code notification-card style. Truncation budget bumped by 1 cell.
 
-### 0.4.0-bound feature batch (2026-05-21, unreleased)
+### 0.4.0 release (2026-05-22)
 
-Seven features built on top of 0.3.5 in a single working session. All on
-`main`, no version bump yet — natural anchor for 0.4.0 when cut. Order
-of landing:
+The feature batch built on top of 0.3.5, shipped as **0.4.0**
+(`Cargo.toml` bumped, CHANGELOG `## [0.4.0]` written). Order of
+landing:
 
 - **Undo window extended to batch ops** (`4a6f8b2`) — `:batch-rebuild` /
   `:batch-restart` / `:batch-deploy` / `:batch-tag` / `:batch-untag` /
@@ -455,14 +455,140 @@ of landing:
   truncated at ~7900 chars for the 8k limit). README "Privacy /
   telemetry" section documents the design. +8 tests.
 
-**Net for the batch**: 318 → 326 tests. Six commits on `main`. Working
-tree empty. CI green throughout.
+**Follow-on landings (all in 0.4.0):**
+
+- **`:options [NAMESPACE]` settable-option vocabulary overlay** (task
+  #113) — closes the biggest console-parity gap. Two parallel SDK
+  calls (`DescribeConfigurationOptions` for vocab + `DescribeConfigurationSettings`
+  for current values), merged by `(namespace, name)`. Renders one
+  block per namespace with `▸` (operator-set) / `•` (default)
+  markers, default value, `value_type`, `change_severity`,
+  `min`/`max`/`max_len`, and the first 5 `value_options` enums.
+  Optional `NAMESPACE` arg filters; bare `:options` shows the full
+  list (slow but exhaustive). +3 tests.
+- **`:` Tab autocompletion** (task #114) — Tab inside `Mode::Command`
+  cycles forward through registry matches; Shift-Tab cycles back.
+  Origin fragment captured so repeated cycling restores the prefix
+  cleanly on each press. Footer hint advertises the binding.
+- **"Did you mean?" on unknown commands** (task #115) — Levenshtein
+  distance against `commands::all_names()`; `:restrt` → "did you
+  mean `:restart`?" toast. Distance threshold of 2 keeps false
+  positives down. +2 tests.
+- **First-run nudge** (task #116) — `state::file_exists()` check at
+  boot sets `app.first_run_hint = true`; sticky footer row hints
+  at `?` / `:` / `Ctrl-K` until first input clears it. Footer
+  height grows from 2→3 only on first run. +1 test.
+- **`:resources` hierarchical tree** (task #117) — replaces the
+  flat dump with an indented ASG → instances → ELB → target-group
+  tree (Worker envs show ASG → instances → queue tier). Pure
+  `render_env_resources_tree` keeps the rendering testable;
+  `describe_env_resources` refactored from `String`-returning to
+  `EnvResources`-returning. +1 test.
+- **`:explain` IAM diagnosis** (task #118) — `:explain` (no arg)
+  scrapes the last `AccessDenied:` toast and runs
+  `iam:SimulatePrincipalPolicy` for that principal+action;
+  `:explain ARN ACTION` evaluates explicit pairs. Renders allowed
+  / explicit-deny / implicit-deny rows with matched / missing
+  statement IDs and an SCP/permissions-boundary blocker flag when
+  the simulator surfaces one. +2 tests.
+- **`:env-edit` bulk env-var editor** (task #122) — drops the alt
+  screen, shells out to `$EDITOR` (defaults to `vi`) with the
+  current env's vars rendered as `KEY=VALUE` lines, diffs on save
+  via pure `diff_env_vars(before, after)`, dispatches the
+  resulting OptionSettings update through the existing 5s undo
+  window. New `PendingDispatchKind::Single` variant + `pending_env_edit`
+  main-loop handoff so the terminal blocking happens off the
+  tokio runtime. +3 tests.
+- **`:secrets` + `:secret NAME` Secrets Manager browser** (task #123) —
+  region-scoped browser for the bulk-edit flow above. `:secrets [FILTER]`
+  paginates `ListSecrets` and renders metadata only (name / ARN /
+  description / changed / rotated / KMS key) so an accidental
+  `:secrets` never dumps credentials. `:secret NAME` is the
+  opt-in value reveal — JSON-shaped values pretty-print via a
+  dependency-free recursive walker; `:redact on` replaces the
+  value with `<redacted; N chars, fingerprint XXXXXXXX>` using a
+  non-crypto FNV-1a fingerprint so the operator can confirm
+  "same secret as before" on a screen-share without leaking it.
+  CloudTrail logs `GetSecretValue` on the AWS side; ebman additionally
+  writes its own audit line at dispatch. +12 tests covering the
+  empty states, metadata-only rendering, redact path, JSON
+  pretty-printer (incl. strings-with-braces), and age buckets.
+
+- **Event timestamp display modes** — Events panel + Detail/Events
+  tab timestamps are now switchable between `Utc` (default —
+  `YYYY-MM-DD HH:MM:SSZ`, matches the EB / CloudWatch API),
+  `Local` (operator wall-clock), and `Age` (the prior compact
+  `5m` / `2h` relative form). New `EventTimeFormat` enum cycles
+  `Utc → Local → Age`; switchable via `:event-time [utc|local|age]`
+  (no arg cycles) or the `T` key in both the main table and the
+  Detail view. Persists to state.toml as `event_time_format`.
+  Pure `format_event_time` + `event_time_width` keep both
+  renderers aligned. +6 tests.
+
+- **Events tab — scroll clamp + severity / time-window filters** —
+  Three fixes to the Detail/Events tab:
+  - **Scroll no longer runs off the bottom.** `draw_detail_events`
+    now returns the max legal scroll offset (filtered line count
+    minus body height); the renderer clamps the display offset and
+    the `j`/`k` handler clamps `events_scroll` against the stored
+    `events_max_scroll`. Same `help_max_scroll` pattern.
+  - **Severity filter** — `L` cycles a minimum-severity floor
+    (`all → info+ → warn+ → error`). `severity_rank` maps EB's
+    `TRACE/DEBUG/INFO/WARN/ERROR` (+ `WARNING`/`FATAL` synonyms;
+    unknown → INFO) to a comparable rank.
+  - **Time-window filter** — `w` cycles a window
+    (`all → 1h → 6h → 24h → 7d`); events older than the cutoff are
+    hidden. Events with no timestamp always pass (can't be excluded
+    by a cutoff they have no value for).
+  - Both filters are client-side over the already-fetched event
+    list (no re-fetch). Title shows `[shown/total]` + active
+    filter labels; a dedicated empty-state fires when filters hide
+    every event. `n`/`N` search-jump rewritten to walk the
+    *filtered* set so jump targets stay valid. +6 tests.
+
+- **Config tab — cursor navigation + in-place value editing
+  (section 1 of a sectioned editor)** — The Config tab was a
+  read-only paragraph dump. Now:
+  - `j`/`k` / arrow keys move a `▶` cursor over the *editable* rows
+    (tags + env vars); read-only metadata rows are skipped.
+  - `enter` opens an in-place value editor on the selected row;
+    `enter` saves, `esc` cancels. Key is fixed (value-only edit) —
+    renaming is a later section. The editor is a real text field:
+    Left/Right/Home/End move a char-indexed caret, Backspace/Delete
+    act at the caret, and the caret renders at its position
+    (multi-byte-char safe).
+  - Commit dispatches through the existing `:env set`
+    (`UpdateOptionSettings`) / `:tag` (`UpdateTags`) paths, so the
+    5s undo window + audit log + auto-refetch all apply for free.
+    Unchanged values are dropped without a dispatch.
+  - New `ConfigItem` / `ConfigItemKind` / `ConfigEdit` types; pure
+    `config_editable_items` builds the cursor's index space in the
+    exact order the renderer draws (tags sorted case-insensitively,
+    then env vars natural order) so navigation + render agree by
+    construction. +4 tests.
+  - Section (d) **scroll-follow** shipped: pure `config_scroll_follow`
+    keeps the cursor inside the viewport on long lists.
+  - Sections (a) **add-new-row** (`n` — inline `KEY=VALUE` editor,
+    kind from the cursor's section) and (b) **delete-selected-row**
+    (`x`, `y`-confirmed) shipped. Both dispatch through the same
+    `UpdateOptionSettings` / `UpdateTags` paths. Pure
+    `parse_new_config_row` parses the add buffer. Only **key
+    rename** (section c) remains — and value-edit + add + delete
+    already cover it the long way.
+
+**Net for the 0.4.0 batch**: 309 → 392 tests. Shipped as 0.4.0.
 
 **Follow-ups parked**
 
 - Task #110 — RDS attach / detach modal form (snapshot+modify+wait
   orchestration for detach; 10-field attach form).
 - Task #111 — ALB listener edit form (LB tab + ACM cert picker).
+- Task #119 — Form-based edit for the top 3 config namespaces (the
+  `:env-edit` flow handles env vars; the long-tail namespaces still
+  need a modal form per family).
+- Task #120 — Per-tab help-density polish (lazygit-style compact
+  glyphs in the per-tab key strip).
+- Task #121 — Per-env runbook hint surfaced in `:why`.
 
 ### Post-0.3.0 UX punch list (2026-05-21)
 Twelve UX fixes from the v0.3.0 critical review, shipped as one batch (tasks #92–#103):
@@ -644,16 +770,17 @@ Items list `Depends on:` only when another backlog or done item is a real prereq
 
 Surfaced by a critical console-vs-ebman + ebman-vs-peer-TUI comparison. Ranked by user-value-per-hour. The smaller ergonomics items in particular (autocompletion, did-you-mean, first-run hint) are the gap that makes ebman look unpolished next to k9s / lazygit — high impact, low cost.
 
-- [ ] **`:options` — full settable-option vocabulary with current values** — Closes the biggest single console-parity gap: configuration discoverability. Console has the canonical list of every EB option-setting with field-level descriptions ("InstanceType: The Amazon EC2 instance type to launch..."). Ebman's `:set-option NAMESPACE NAME VALUE` requires the operator to already know the vocabulary. Fetch shape mirrors `:env` / `:listeners` / `:rds`: DescribeConfigurationSettings → group by namespace → render in scrollable overlay. Bonus: include the option's metadata (Default / ValueOptions) when EB returns it. ~half-day. **Highest-value item on the backlog.**
-- [ ] **`:` autocompletion against `commands::COMMANDS`** — k9s / lazygit / nano all have it. We have `Ctrl-K` for fuzzy palette but the `:` mode is silent on Tab. Add Tab-key handling in `Mode::Command` that suggests + cycles matches from the registry. Half-day. Massive ergonomic win.
-- [ ] **"Did you mean?" on unknown commands** — `unknown command: :restrt` is silent rejection. Levenshtein against `crate::commands::all_names()` (which the 0.3.2 registry refactor handed us for free) and suggest the closest match. One hour.
-- [ ] **First-run nudge** — When `state.toml` doesn't exist (first launch), show a one-paragraph hint: "Press `?` for help, `:` to type a command, `Ctrl-K` for fuzzy search." Auto-dismisses on first input. Adopters churn on the silent boot today. Half-day.
-- [ ] **Resource topology as hierarchical text** — Indented ASG → instances → ELB → target groups in `:resources`. The data is already in `DescribeEnvironmentResources` — currently dumped flat. The graph version is the one thing operators say they want from the console; a hierarchical text view closes most of it without needing real graph rendering. Half-day.
-- [ ] **`:explain` IAM diagnosis** — When an `AccessDenied` lands, the operator wants "what permission is missing on which role?". Use `iam:SimulatePrincipalPolicy` to validate the role's policy against the failed action. No console equivalent. Day's work. Differentiator vs. the console — operators would adopt ebman *because* this exists.
+- [x] **`:options` — full settable-option vocabulary with current values** — Done (task #113). Two-call merge of `DescribeConfigurationOptions` (vocab/metadata) + `DescribeConfigurationSettings` (current values) keyed on `(namespace, name)`. `▸` operator-set / `•` default; emits `value_type` / `change_severity` / range / enum-options when EB returns them. Optional `NAMESPACE` arg filters.
+- [x] **`:` autocompletion against `commands::COMMANDS`** — Done (task #114). Tab cycles forward, Shift-Tab cycles back; origin fragment cached on first press so repeated cycling restores the prefix cleanly.
+- [x] **"Did you mean?" on unknown commands** — Done (task #115). Levenshtein against `commands::all_names()`, threshold 2.
+- [x] **First-run nudge** — Done (task #116). `state::file_exists()` gate sets `first_run_hint`; sticky footer row hints at `?` / `:` / `Ctrl-K` until first input.
+- [x] **Resource topology as hierarchical text** — Done (task #117). Indented ASG → instances → ELB → TGs (Worker tier shows ASG → instances → queue). Pure `render_env_resources_tree`.
+- [x] **`:explain` IAM diagnosis** — Done (task #118). `:explain` no-arg scrapes the last `AccessDenied:` toast; `:explain ARN ACTION` evaluates explicit pairs via `iam:SimulatePrincipalPolicy`. Surfaces SCP / permissions-boundary blockers when the simulator flags them.
 
 **Secondary** (same review, smaller payoff or design call needed):
 
-- [ ] **Form-based edit for the long tail of namespaces** — `:capacity` already shows the pattern: modal form, pre-filled, validated, dispatched as one update. Currently only Capacity + Subnets + SecurityGroups have forms; the other 10+ namespaces require `:set-option` brutality. Likely 1 day per namespace × 5-10 target namespaces (rolling-updates, deploy-policy specifics, health-check details, sticky-session config, etc). Pick the top 3 by support-question frequency before sprawling.
+- [~] **Form-based edit for the long tail of namespaces** — Env vars now editable in bulk via `:env-edit` (`$EDITOR` shell-out, diff on save, dispatch through the 5s undo window). The other 10+ namespaces still need modal forms. Task #119 tracks the top-3 follow-up.
+- [~] **Config tab in-place editor — key rename** — Shipped in 0.4.0: cursor nav, in-place value editing, scroll-follow, add-new-row (`n`), delete-selected-row (`x`). Only **key rename** remains — currently value-only; renaming a tag/env-var key means delete + re-add. A dedicated rename flow (edit the key field, dispatch remove-old + set-new as one batch) is the last slice. Low priority — add + delete already cover it.
 - [ ] **Per-tab help-density polish** — lazygit packs ~10-12 keys into the same footer width by using compact glyphs. Ours show ~5. Audit pass on every Detail tab's key strip. Few hours.
 - [ ] **Mouse: column resize via drag + right-click row menus** — Wheel + click-to-select is the current floor. Operators coming from console expect drag + right-click. TBD whether this is worth the design cost for a primarily-keyboard tool.
 - [ ] **Per-env runbook hint** — `:runbook URL` per env, surfaces in `:why` during triage. Useful for incident response. Maybe a config-file map (`runbooks.NAME = URL`) rather than a CLI command. Half-day.
