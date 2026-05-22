@@ -362,8 +362,7 @@ accounts.staging.external_id = "abc-xyz"
     #[test]
     fn runbooks_round_trip_through_serialize() {
         let mut cfg = Config::default();
-        cfg.runbooks
-            .insert("prod".into(), "https://rb/prod".into());
+        cfg.runbooks.insert("prod".into(), "https://rb/prod".into());
         let reparsed = parse(&serialize(&cfg));
         assert_eq!(
             reparsed.runbooks.get("prod").map(String::as_str),

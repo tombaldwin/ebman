@@ -161,7 +161,10 @@ mod tests {
         let now = Utc::now();
         let msgs = vec![msg("a", Some(5), now), msg("b", Some(60), now)];
         // `b` is older, so it comes first.
-        assert_eq!(select_replay_indices(&msgs, &ReplaySpec::All, now), vec![1, 0]);
+        assert_eq!(
+            select_replay_indices(&msgs, &ReplaySpec::All, now),
+            vec![1, 0]
+        );
     }
 
     #[test]
