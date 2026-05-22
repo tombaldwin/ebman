@@ -905,6 +905,9 @@ pub struct App {
     /// switch through `apply_rebuild` so the visual cue follows the
     /// active profile without restart.
     pub profile_themes: std::collections::HashMap<String, String>,
+    /// Per-environment runbook URLs from `config.toml`'s `runbooks.ENV`
+    /// keys. Surfaced in the `:why` triage overlay; empty when unset.
+    pub runbooks: std::collections::HashMap<String, String>,
     /// Named AssumeRole accounts loaded from `config.toml`'s
     /// `accounts.NAME.*` keys. `:account NAME` consults this map first;
     /// if the name matches, builds an `AwsClient` via STS AssumeRole.
@@ -1283,6 +1286,9 @@ enum AppMsg {
 pub enum DlqOp {
     Resent { message_id: String },
     Purged,
+    /// Outcome of a batch replay: `count` messages moved to the main queue
+    /// (sent + deleted from the DLQ), `failures` that errored mid-way.
+    Replayed { count: usize, failures: usize },
 }
 
 /// True when this looks like the user's very first run: no persisted ebman
@@ -1511,6 +1517,7 @@ impl App {
             webhook_url: config.webhook_url,
             cfg_icons_raw: config.icons.clone(),
             profile_themes: config.profile_themes.clone(),
+            runbooks: config.runbooks.clone(),
             accounts: config.accounts.clone(),
             base_theme_name: config.theme.clone(),
             newly_red: HashSet::new(),
@@ -1682,6 +1689,7 @@ impl App {
             webhook_url: config.webhook_url.clone(),
             cfg_icons_raw: config.icons.clone(),
             profile_themes: config.profile_themes.clone(),
+            runbooks: config.runbooks.clone(),
             accounts: config.accounts.clone(),
             base_theme_name: config.theme.clone(),
             newly_red: HashSet::new(),
@@ -4464,6 +4472,70 @@ impl App {
         });
     }
 
+    /// `:listener-edit PORT` — modal cert-rotation form for an ALB
+    /// listener. Opens a single MultiSelect field whose options are the
+    /// region's ISSUED ACM certificates (loaded async), pre-selected with
+    /// the listener's current `SSLCertificateArns`. Submit writes the new
+    /// cert set to `aws:elbv2:listener:<PORT>` via the option-settings
+    /// path. `PORT` is `443` / a numeric port / `default` (HTTP/80).
+    pub(crate) fn cmd_listener_edit(&mut self, rest: &[&str]) {
+        use crate::form::{Form, FormField, FormSubmit};
+        let Some(env) = self.selected_env().cloned() else {
+            self.error_message = Some("no env selected".into());
+            return;
+        };
+        if env.tier.eq_ignore_ascii_case("Worker") {
+            self.error_message = Some(format!(
+                "env '{}' is Worker tier — no ALB to configure",
+                env.name
+            ));
+            return;
+        }
+        let Some(port) = rest.first().copied() else {
+            self.error_message = Some(
+                "usage: :listener-edit PORT  (e.g. :listener-edit 443; `default` = HTTP/80)".into(),
+            );
+            return;
+        };
+        let port = port.to_string();
+        let ns = format!("aws:elbv2:listener:{port}");
+        let placeholder = FormField::multi_select(
+            "cert",
+            "SSL certificate(s)",
+            Vec::new(),
+            Vec::new(),
+            Some::<String>("space toggle · ↑↓ option cursor · loaded from ACM".into()),
+        );
+        let form = Form::loading(
+            format!("listener {port} — {}", env.name),
+            env.name.clone(),
+            format!("listener {port} cert update"),
+            vec![placeholder],
+            FormSubmit::OptionSettings {
+                mappings: vec![("cert".into(), ns, "SSLCertificateArns".into())],
+            },
+        );
+        // Bypass open_form's DescribeConfigurationSettings pre-fill (it
+        // wouldn't load ACM inventory) — stash the form and spawn the
+        // cert-specific loader, mirroring the subnet / SG pickers.
+        self.form = Some(form);
+        self.mode = Mode::Form;
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let env_for_msg = env.name.clone();
+        let app_name = env.application.clone();
+        tokio::spawn(async move {
+            let result = load_listener_certs(aws, &app_name, &env_for_msg, &port).await;
+            let _ = tx.send(AppMsg::FormMultiSelectLoaded {
+                gen,
+                env_name: env_for_msg,
+                field_key: "cert".to_string(),
+                result,
+            });
+        });
+    }
+
     /// `:apps-info` — surface application metadata that doesn't fit
     /// in the apps-table columns: full description, creation date,
     /// last-updated date, saved-config templates, env count.
@@ -5718,6 +5790,7 @@ impl App {
             purge_typed: String::new(),
             viewing,
             confirm_delete_idx: None,
+            replay_input: None,
         };
         self.dlq = Some(dlq);
         self.mode = Mode::Dlq;
@@ -5748,6 +5821,7 @@ impl App {
             purge_typed: String::new(),
             viewing: QueueView::Dlq,
             confirm_delete_idx: None,
+            replay_input: None,
         };
         self.dlq = Some(dlq);
         self.mode = Mode::Dlq;
@@ -5874,6 +5948,43 @@ impl App {
             }
             return;
         }
+        // Time-windowed replay prompt: type a spec, Enter resolves + dispatches.
+        if let Some(input) = dlq.replay_input.as_mut() {
+            match key.code {
+                KeyCode::Esc => dlq.replay_input = None,
+                KeyCode::Enter => match crate::mode_dlq::parse_replay_spec(input) {
+                    None => {
+                        dlq.error = Some(
+                            "replay: type `all`, a count (e.g. 20), or a window (1h / 24h / 7d)"
+                                .into(),
+                        );
+                    }
+                    Some(spec) => {
+                        let idxs = crate::mode_dlq::select_replay_indices(
+                            &dlq.messages,
+                            &spec,
+                            chrono::Utc::now(),
+                        );
+                        let msgs: Vec<_> = idxs
+                            .iter()
+                            .filter_map(|&i| dlq.messages.get(i).cloned())
+                            .collect();
+                        dlq.replay_input = None;
+                        if msgs.is_empty() {
+                            self.error_message = Some("replay: no messages match".into());
+                        } else {
+                            self.spawn_dlq_replay_batch(msgs);
+                        }
+                    }
+                },
+                KeyCode::Backspace => {
+                    input.pop();
+                }
+                KeyCode::Char(c) if is_text_input(&key) => input.push(c),
+                _ => {}
+            }
+            return;
+        }
 
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => self.close_dlq(),
@@ -5935,6 +6046,16 @@ impl App {
                     self.error_message = Some("resend is only available in DLQ view".into());
                 } else {
                     self.spawn_dlq_resend_selected();
+                }
+            }
+            KeyCode::Char('R') => {
+                if matches!(dlq.viewing, QueueView::Main) {
+                    self.error_message = Some("replay is only available in DLQ view".into());
+                } else if dlq.messages.is_empty() {
+                    self.error_message = Some("replay: DLQ is empty".into());
+                } else {
+                    dlq.replay_input = Some(String::new());
+                    dlq.error = None;
                 }
             }
             KeyCode::Char('m') => {
@@ -6043,6 +6164,66 @@ impl App {
                 .await
                 .map(|_| DlqOp::Purged)
                 .map_err(|e| flatten_err("purge_queue", e));
+            let _ = tx.send(AppMsg::DlqActionResult {
+                gen,
+                env_name,
+                result,
+            });
+        });
+    }
+
+    /// Batch DLQ replay: for each message, send the body to the main queue
+    /// then delete it from the DLQ. A send failure (or a delete failure
+    /// after a successful send) counts toward `failures` and is logged;
+    /// the batch keeps going. Result lands as `DlqOp::Replayed`.
+    fn spawn_dlq_replay_batch(&mut self, messages: Vec<crate::aws::QueueMessage>) {
+        if self.read_only {
+            self.error_message = Some("read-only mode — replay disabled".into());
+            return;
+        }
+        let Some(dlq) = self.dlq.as_ref() else { return };
+        if matches!(dlq.viewing, QueueView::Main) {
+            self.error_message = Some("replay is only available in DLQ view".into());
+            return;
+        }
+        if dlq.main_queue_url.is_empty() {
+            self.error_message = Some("main queue URL unknown — cannot replay".into());
+            return;
+        }
+        let main_url = dlq.main_queue_url.clone();
+        let dlq_url = dlq.dlq_url.clone();
+        let env_name = dlq.env_name.clone();
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let count = messages.len();
+        write_audit_line(
+            self.context.account_id.as_deref(),
+            self.context.profile.as_deref(),
+            &self.context.region,
+            &format!("dlq-replay env={env_name} count={count}"),
+        );
+        self.status_message = Some(format!("replaying {count} message(s) to the main queue…"));
+        tokio::spawn(async move {
+            let mut failures = 0usize;
+            for msg in &messages {
+                match aws.send_message(&main_url, &msg.body).await {
+                    Ok(()) => {
+                        if let Err(e) = aws.delete_message(&dlq_url, &msg.receipt_handle).await {
+                            tracing::error!(target: "ebman::aws", op = "dlq_replay_delete", error = ?e, msg_id = %msg.id, "DLQ delete after send failed");
+                            failures += 1;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(target: "ebman::aws", op = "dlq_replay_send", error = ?e, msg_id = %msg.id, "send to main queue failed");
+                        failures += 1;
+                    }
+                }
+            }
+            let result = Ok(DlqOp::Replayed {
+                count: count - failures,
+                failures,
+            });
             let _ = tx.send(AppMsg::DlqActionResult {
                 gen,
                 env_name,
@@ -6690,6 +6871,7 @@ impl App {
             // need its own editor), so the snapshot just preserves
             // whatever was loaded.
             accounts: self.accounts.clone(),
+            runbooks: self.runbooks.clone(),
         }
     }
 
@@ -8831,7 +9013,10 @@ impl App {
             "apps-info" => self.open_apps_info_overlay(),
             "cost" => self.cmd_cost(&rest),
             "listeners" => self.cmd_listeners(),
+            "listener-edit" => self.cmd_listener_edit(&rest),
             "rds" => self.cmd_rds(),
+            "rds-attach" => self.cmd_rds_attach(),
+            "rds-detach" => self.cmd_rds_detach(&rest),
             "options" => self.cmd_options(&rest),
             "config-diff" => self.cmd_config_diff(&rest),
             "explain" => self.cmd_explain(&rest),
@@ -10671,6 +10856,50 @@ async fn load_multi_select(
             })
         }
     }
+}
+
+/// Load the cert picker for `:listener-edit`: the region's ACM
+/// certificates as options, plus the listener's current
+/// `SSLCertificateArns` as the pre-selected `initial` set.
+async fn load_listener_certs(
+    aws: Arc<crate::aws::AwsClient>,
+    app_name: &str,
+    env_name: &str,
+    port: &str,
+) -> Result<MultiSelectOptions, String> {
+    let certs = aws
+        .list_certificates()
+        .await
+        .map_err(|e| flatten_err("list_certificates", e))?;
+    let listeners = aws
+        .fetch_env_listeners(app_name, env_name)
+        .await
+        .map_err(|e| flatten_err("fetch_env_listeners", e))?;
+    let initial: Vec<String> = listeners
+        .iter()
+        .find(|(p, opt, _)| p == port && opt == "SSLCertificateArns")
+        .map(|(_, _, v)| {
+            v.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut options = Vec::with_capacity(certs.len());
+    let mut annotations = Vec::with_capacity(certs.len());
+    for c in certs {
+        options.push(c.arn);
+        annotations.push(if c.domain.is_empty() {
+            String::new()
+        } else {
+            format!("({})", c.domain)
+        });
+    }
+    Ok(MultiSelectOptions {
+        options,
+        annotations,
+        initial,
+    })
 }
 
 /// Pure: copy `latest_version_label` / `latest_version_created` from a

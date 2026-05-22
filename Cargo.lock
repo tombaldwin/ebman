@@ -188,6 +188,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-acm"
+version = "1.102.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71f78271a79f4ee3f3f7f9c118400b3ea9eeebf82a8641efb29fd7607ffb9163"
+dependencies = [
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 0.2.12",
+ "http 1.4.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-cloudwatch"
 version = "1.111.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1425,6 +1449,7 @@ dependencies = [
  "arboard",
  "aws-config",
  "aws-credential-types",
+ "aws-sdk-acm",
  "aws-sdk-cloudwatch",
  "aws-sdk-cloudwatchlogs",
  "aws-sdk-costexplorer",

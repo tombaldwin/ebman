@@ -103,9 +103,9 @@ pub enum FieldKind {
 /// What the form does on submit.
 #[derive(Debug, Clone)]
 pub enum FormSubmit {
-    /// Every field maps to one `(namespace, option_name)` pair. Empty
-    /// integer fields (when `allow_empty`) are dropped from the update so
-    /// EB keeps its existing value.
+    /// Every field maps to one `(namespace, option_name)` pair. Blank
+    /// fields (empty text, or empty `allow_empty` integers) are dropped
+    /// from the update so EB keeps its existing value.
     OptionSettings {
         /// Map from field `key` → `(namespace, option_name)`. Order is
         /// preserved when building the to_set vec.
@@ -181,9 +181,10 @@ impl Form {
     }
 
     /// Build `(to_set, to_remove)` slices suitable for
-    /// `aws::update_env_option_settings`. Skips empty integer fields when
-    /// the field's `allow_empty` is true — those imply "don't touch this".
-    /// Pre-validation is the caller's responsibility.
+    /// `aws::update_env_option_settings`. A blank field means "leave this
+    /// setting alone" and is dropped from the update — empty `allow_empty`
+    /// integers, and empty text fields. Pre-validation is the caller's
+    /// responsibility.
     #[allow(clippy::type_complexity)]
     pub fn to_option_settings(&self) -> (Vec<(String, String, String)>, Vec<(String, String)>) {
         let mappings = match &self.submit {
@@ -191,9 +192,9 @@ impl Form {
             FormSubmit::LocalConfig => return (Vec::new(), Vec::new()),
         };
         let mut to_set: Vec<(String, String, String)> = Vec::new();
-        // No field kind currently maps to "remove this setting"; the field's
-        // empty integer + allow_empty case is handled by skipping the field
-        // entirely (leave EB's value alone), not by explicit remove.
+        // No field kind currently maps to "remove this setting"; a blank
+        // field is handled by skipping it (leave EB's value alone), not by
+        // an explicit remove.
         let to_remove: Vec<(String, String)> = Vec::new();
         for (key, ns, opt) in mappings {
             let Some(field) = self.fields.iter().find(|f| &f.key == key) else {
@@ -204,6 +205,16 @@ impl Form {
                     allow_empty: true, ..
                 } if field.value.trim().is_empty() => {
                     // Operator left it blank — leave the AWS-side value alone.
+                    continue;
+                }
+                FieldKind::Text if field.value.trim().is_empty() => {
+                    // A blank text field means "leave this setting alone",
+                    // not "set it to empty". Critical for pre-filled edit
+                    // forms: EB redacts secrets like DBPassword, so they
+                    // pre-fill blank — without this they'd be clobbered
+                    // with an empty value on submit. A genuinely-required
+                    // field left blank is still caught downstream: EB
+                    // rejects the update with a clear "option required".
                     continue;
                 }
                 _ => {}
@@ -936,6 +947,66 @@ mod tests {
                     "t3.medium".into(),
                 ),
             ]
+        );
+    }
+
+    #[test]
+    fn form_to_option_settings_drops_empty_text() {
+        // A blank text field — e.g. an untouched DBPassword on a pre-filled
+        // edit form — must not be sent as an empty value.
+        let f = Form {
+            title: "t".into(),
+            fields: vec![
+                FormField {
+                    key: "engine".into(),
+                    label: "engine".into(),
+                    value: "postgres".into(),
+                    kind: FieldKind::Text,
+                    help: None,
+                    error: None,
+                    option_cursor: 0,
+                    option_annotations: None,
+                },
+                FormField {
+                    key: "password".into(),
+                    label: "password".into(),
+                    value: "  ".into(),
+                    kind: FieldKind::Text,
+                    help: None,
+                    error: None,
+                    option_cursor: 0,
+                    option_annotations: None,
+                },
+            ],
+            cursor: 0,
+            state: FormState::Ready,
+            submit: FormSubmit::OptionSettings {
+                mappings: vec![
+                    (
+                        "engine".into(),
+                        "aws:rds:dbinstance".into(),
+                        "DBEngine".into(),
+                    ),
+                    (
+                        "password".into(),
+                        "aws:rds:dbinstance".into(),
+                        "DBPassword".into(),
+                    ),
+                ],
+            },
+            summary: "sum".into(),
+            env_name: "env".into(),
+        };
+        let (set, remove) = f.to_option_settings();
+        assert!(remove.is_empty());
+        // password dropped (blank), engine retained.
+        assert_eq!(
+            set,
+            vec![(
+                "aws:rds:dbinstance".into(),
+                "DBEngine".into(),
+                "postgres".into(),
+            )]
         );
     }
 }
