@@ -831,6 +831,8 @@ Proposed during the Powerline-aesthetic pass but skipped because the cost / payo
 - [ ] **README screenshots / demo gif** — text README shipped; capturing screenshots requires running the TUI in a real terminal (not this shell).
 - [ ] **`cargo install ebman` smoke test** — verify the binary installs cleanly from a stock toolchain. (Local-only verification possible; full smoke test needs a crates.io publish.)
 - [ ] **Homebrew formula / GitHub Releases with binaries** — macOS users won't `cargo install`. Depends on CI building release artefacts.
+- [ ] **Backfill crates.io 0.3.5 → 0.5.0 gap (or decide not to)** — crates.io publishing lapsed after 0.3.5: 0.4.0 and 0.4.1 shipped as GitHub Releases only, and 0.5.0 was published to crates.io manually (2026-05-22) to close the gap at the top. The in-app `update_check` polls crates.io, so while crates.io trailed it reported a stale "latest". Decide whether to retro-publish 0.4.0 / 0.4.1 for a continuous version history or accept the gap (those tags exist on GitHub Releases regardless).
+- [ ] **Automate `cargo publish` in the release workflow** — `release.yml` builds + attaches tarballs but doesn't publish to crates.io, so the publish is a manual per-release step that's easy to forget (it was, for 0.4.0 / 0.4.1). Add a job gated on a `CARGO_REGISTRY_TOKEN` secret that runs `cargo publish` on a `v*` tag, after the build matrix passes.
 
 ### Tier 1 — operator killer features (the daily-driver gap)
 All previously listed Tier 1 items are now shipped:
