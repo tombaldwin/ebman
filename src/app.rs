@@ -9033,6 +9033,7 @@ impl App {
                 self.open_settings_form();
             }
             "capacity" => self.cmd_capacity(),
+            "scaling-triggers" => self.cmd_scaling_triggers(),
             "subnets" => self.open_subnets_form(),
             "elb-subnets" => self.open_elb_subnets_form(),
             "security-groups" => self.open_security_groups_form(),

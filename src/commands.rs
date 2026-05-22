@@ -398,6 +398,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         CommandKind::ZeroArg,
     ),
     cmd(
+        "scaling-triggers",
+        ":scaling-triggers — modal form for the metric-based autoscaling trigger (metric / statistic / period / breach duration / thresholds / scale increments). Pre-fills the current trigger.",
+        Category::Lifecycle,
+        CommandKind::ZeroArg,
+    ),
+    cmd(
         "swap",
         ":swap TARGET — swap CNAMEs (Y/N confirm; same preflight as a → Swap)",
         Category::Lifecycle,
