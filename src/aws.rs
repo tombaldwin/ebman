@@ -161,7 +161,7 @@ pub struct Environment {
     /// platform envs that don't report a solution stack. Drives the
     /// stale-platform comparison against `ListAvailableSolutionStacks`.
     pub solution_stack: String,
-    pub tier: String,     // "Web" / "Worker" / "?"
+    pub tier: String, // "Web" / "Worker" / "?"
     pub cname: String,
     pub version_label: String,
     pub arn: Option<String>,
@@ -3082,30 +3082,21 @@ mod tests {
     #[test]
     fn newer_stack_version_flags_only_superseded() {
         let latest = latest_stack_versions(&[
-            "64bit Amazon Linux 2023 v6.1.0 running Node.js 18".to_string(),
+            "64bit Amazon Linux 2023 v6.1.0 running Node.js 18".to_string()
         ]);
         // Older patch → flagged.
         assert_eq!(
-            newer_stack_version(
-                "64bit Amazon Linux 2023 v6.0.3 running Node.js 18",
-                &latest
-            ),
+            newer_stack_version("64bit Amazon Linux 2023 v6.0.3 running Node.js 18", &latest),
             Some("6.1.0".to_string())
         );
         // Already current → not flagged.
         assert_eq!(
-            newer_stack_version(
-                "64bit Amazon Linux 2023 v6.1.0 running Node.js 18",
-                &latest
-            ),
+            newer_stack_version("64bit Amazon Linux 2023 v6.1.0 running Node.js 18", &latest),
             None
         );
         // Different family (Node 18 vs 20) → not flagged.
         assert_eq!(
-            newer_stack_version(
-                "64bit Amazon Linux 2023 v1.0.0 running Node.js 20",
-                &latest
-            ),
+            newer_stack_version("64bit Amazon Linux 2023 v1.0.0 running Node.js 20", &latest),
             None
         );
         // No parseable stack → not flagged.
