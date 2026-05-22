@@ -479,6 +479,19 @@ impl DetailState {
     pub fn tab(&self) -> DetailTab {
         self.tabs[self.tab_idx]
     }
+
+    /// Clamp `config_cursor` into the current editable-row range.
+    /// Called after a tags / env-vars refetch so a delete that
+    /// shrank the list doesn't leave the cursor pointing past the
+    /// end (which would hide the `▶` marker until the next `j`/`k`).
+    pub fn clamp_config_cursor(&mut self) {
+        let n = config_editable_items(self).len();
+        self.config_cursor = if n == 0 {
+            0
+        } else {
+            self.config_cursor.min(n - 1)
+        };
+    }
 }
 
 /// Pure: enumerate the Health-tab items that the operator can navigate
@@ -966,6 +979,30 @@ mod tests {
         assert_eq!(items[2].key, "PORT");
         assert_eq!(items[2].value, "8080");
         assert_eq!(items[3].key, "DEBUG");
+    }
+
+    #[test]
+    fn clamp_config_cursor_pulls_back_past_end() {
+        let mut d = empty_detail("Web");
+        d.env_vars = vec![
+            ("A".into(), "1".into()),
+            ("B".into(), "2".into()),
+            ("C".into(), "3".into()),
+        ];
+        // Cursor was on row 2; a delete shrank the list to 2 rows.
+        d.config_cursor = 2;
+        d.env_vars.truncate(2);
+        d.clamp_config_cursor();
+        assert_eq!(d.config_cursor, 1);
+        // Cursor already in range — left alone.
+        d.config_cursor = 0;
+        d.clamp_config_cursor();
+        assert_eq!(d.config_cursor, 0);
+        // Empty list — cursor pinned to 0, not len-1 underflow.
+        d.env_vars.clear();
+        d.config_cursor = 5;
+        d.clamp_config_cursor();
+        assert_eq!(d.config_cursor, 0);
     }
 
     #[test]
