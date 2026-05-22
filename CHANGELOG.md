@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.1] — Config-editor polish
+
+Two fixes from a post-0.4.0 code review of the Config-tab editor.
+
+### Fixed
+- **Config cursor no longer strands past the end of the list.** Deleting the last tag / env-var row left `config_cursor` pointing past the (now shorter) list, so the `▶` marker vanished until the next `j`/`k`. `DetailState::clamp_config_cursor` is now called when a tags / env-vars refetch lands, pulling the cursor back into range.
+- **`:secret` now audit-logs completion.** It logged only `stage=dispatched`; the spawned fetch task now also writes a `stage=completed action=GetSecretValue … ok|err` line, matching the dispatched/completed pairing of the write paths.
+
+### Also
+- The Config-tab add-a-row editor scroll-follows correctly — on a long tag/env-var list the new-row line is brought into view instead of being typed blind below the fold. (Shipped just after 0.4.0; folded in here.)
+
 ## [0.4.0] — Console-parity push: discovery, diagnosis, and in-place config editing
 
 A large feature release built on top of 0.3.5. The throughline is

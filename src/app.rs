@@ -3902,19 +3902,34 @@ impl App {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let redact = self.redact;
-        let name_for_audit = name.clone();
         write_audit_line(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
-            &format!("stage=dispatched action=GetSecretValue target={name_for_audit}"),
+            &format!("stage=dispatched action=GetSecretValue target={name}"),
         );
+        // Captured for the completion audit line written from the task.
+        let account = self.context.account_id.clone();
+        let profile = self.context.profile.clone();
+        let region = self.context.region.clone();
         self.status_message = Some(format!("fetching secret '{name}'…"));
         tokio::spawn(async move {
             let result = aws
                 .fetch_secret_value(&name)
                 .await
                 .map_err(|e| flatten_err("fetch_secret_value", e));
+            // Audit the completion — `stage=completed`, matching the
+            // dispatched/completed pairing of the write paths. (The
+            // AWS-side CloudTrail event is the canonical record; this
+            // is ebman's own breadcrumb.)
+            let outcome = match &result {
+                Ok(_) => format!("stage=completed action=GetSecretValue target={name} ok"),
+                Err(e) => format!(
+                    "stage=completed action=GetSecretValue target={name} err=\"{}\"",
+                    e.replace('"', "'")
+                ),
+            };
+            write_audit_line(account.as_deref(), profile.as_deref(), &region, &outcome);
             let body = match result {
                 Ok(value) => render_secret_value_overlay(&name, &value, redact),
                 Err(e) => format!("secret: {e}\n\nesc / q to close"),
@@ -9892,7 +9907,11 @@ impl App {
                 self.apply_detail_msg(gen, &env_name, result, |d, r| {
                     d.loading_tags = false;
                     match r {
-                        Ok(tags) => d.tags = tags,
+                        Ok(tags) => {
+                            d.tags = tags;
+                            // A delete may have shrunk the list.
+                            d.clamp_config_cursor();
+                        }
                         Err(msg) => tracing::warn!(error = %msg, "tags fetch failed"),
                     }
                 });
@@ -10218,7 +10237,11 @@ impl App {
                 self.apply_detail_msg(gen, &env_name, result, |d, r| {
                     d.loading_env_vars = false;
                     match r {
-                        Ok(vars) => d.env_vars = vars,
+                        Ok(vars) => {
+                            d.env_vars = vars;
+                            // A delete may have shrunk the list.
+                            d.clamp_config_cursor();
+                        }
                         Err(msg) => tracing::warn!(error = %msg, "env vars fetch failed"),
                     }
                 });
