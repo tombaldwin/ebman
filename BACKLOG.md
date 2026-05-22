@@ -559,8 +559,12 @@ landing:
     (multi-byte-char safe).
   - Commit dispatches through the existing `:env set`
     (`UpdateOptionSettings`) / `:tag` (`UpdateTags`) paths, so the
-    5s undo window + audit log + auto-refetch all apply for free.
-    Unchanged values are dropped without a dispatch.
+    audit log + in-flight pill + auto-refetch all apply for free.
+    Unchanged values are dropped without a dispatch. (Note: those
+    paths dispatch immediately — they do *not* go through the 5s
+    `PendingDispatch` undo window, which today only wraps lifecycle
+    `Action`s + batch ops. Wiring option-settings updates into it
+    is a separate follow-up.)
   - New `ConfigItem` / `ConfigItemKind` / `ConfigEdit` types; pure
     `config_editable_items` builds the cursor's index space in the
     exact order the renderer draws (tags sorted case-insensitively,
