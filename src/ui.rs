@@ -1371,10 +1371,14 @@ fn draw_about(f: &mut Frame, area: Rect, app: &App, opened: std::time::Instant) 
                     Constraint::Min(0),
                 ])
                 .split(inner);
-            f.render_widget(Paragraph::new(crate::splash_giant_lines(frame)), cols[0]);
-            // Vertically centre the text against the taller scene.
+            // Scene with a one-row margin above; the column is sized
+            // one row taller than the scene, so a row also falls below.
+            let mut scene = vec![Line::from("")];
+            scene.extend(crate::splash_giant_lines(frame));
+            f.render_widget(Paragraph::new(scene), cols[0]);
+            // Text vertically centred in the same column height.
             let mut col_text: Vec<Line> = Vec::new();
-            let pad = (scene_h.saturating_sub(text_h) / 2) as usize;
+            let pad = (cols[2].height.saturating_sub(text_h) / 2) as usize;
             col_text.extend(std::iter::repeat_with(|| Line::from("")).take(pad));
             col_text.extend(text_lines);
             f.render_widget(Paragraph::new(col_text), cols[2]);
