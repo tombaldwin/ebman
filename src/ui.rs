@@ -1239,34 +1239,20 @@ fn draw_text_dump_overlay(f: &mut Frame, area: Rect, app: &App, title: &str, tex
     );
 }
 
-/// `:about` overlay — the project card, topped with the animated
-/// 8-bit angry-giant-grabs-the-beanstalk scene. The animation frame
-/// is derived from `opened.elapsed()` (the `anim` ticker wakes the
-/// draw loop while this overlay is up). On a popup too short for the
-/// scene, the card degrades to text-only.
+/// `:about` overlay — the project card with the animated 8-bit
+/// angry-giant-eats-the-beanstalk scene. The animation frame is
+/// derived from `opened.elapsed()` (the `anim` ticker wakes the
+/// draw loop while this overlay is up).
+///
+/// Three responsive layouts pick themselves from the terminal size:
+/// **stacked** (scene above text, roomy terminal), **side-by-side**
+/// (scene left, text right — wide but short), or **text-only** (no
+/// scene, small terminal). The popup is sized to the layout chosen.
 fn draw_about(f: &mut Frame, area: Rect, app: &App, opened: std::time::Instant) {
-    let popup = centered_rect(64, 90, area);
-    f.render_widget(Clear, popup);
     let theme = &app.theme;
-    let outer = titled_block(&app.theme, "about ebman", true, app.theme.title)
-        .padding(Padding::horizontal(1));
-    let inner = outer.inner(popup);
-    f.render_widget(outer, popup);
+    let frame = (opened.elapsed().as_millis() / 30) as u64;
 
-    let mut lines: Vec<Line> = Vec::new();
-    // Animated giant scene — ~30 ms-per-unit frame clock so the A↔B
-    // cycle matches the boot splash. Shown only when the popup has
-    // room for the 13-row scene plus the text block.
-    // The square-pixel scene is ~60 cells wide; only draw it when the
-    // popup has room for that plus the project text below.
-    let scene_h = crate::GIANT_SCENE_ROWS as u16;
-    if inner.height >= scene_h + 14 && inner.width >= 60 {
-        let frame = (opened.elapsed().as_millis() / 30) as u64;
-        lines.push(Line::from(""));
-        lines.extend(crate::splash_giant_lines(frame));
-    }
-    lines.push(Line::from(""));
-
+    // Project text block.
     let title_style = Style::default()
         .fg(theme.title)
         .add_modifier(Modifier::BOLD);
@@ -1274,47 +1260,103 @@ fn draw_about(f: &mut Frame, area: Rect, app: &App, opened: std::time::Instant) 
     let text = Style::default().fg(theme.text);
     let accent = Style::default().fg(theme.title_alt);
     let centered = |span: Span<'static>| Line::from(span).alignment(Alignment::Center);
-
-    lines.push(centered(Span::styled(
+    let mut text_lines: Vec<Line> = Vec::new();
+    text_lines.push(centered(Span::styled(
         format!("ebman {}", env!("CARGO_PKG_VERSION")),
         title_style,
     )));
-    lines.push(centered(Span::styled(
+    text_lines.push(centered(Span::styled(
         "k9s-style TUI for AWS Elastic Beanstalk".to_string(),
         muted,
     )));
-    lines.push(Line::from(""));
-    lines.push(centered(Span::styled(
+    text_lines.push(Line::from(""));
+    text_lines.push(centered(Span::styled(
         "Built by Tom Baldwin · Polymorphism Ltd".to_string(),
         accent,
     )));
-    lines.push(centered(Span::styled(
+    text_lines.push(centered(Span::styled(
         "https://polymorphism.co.uk".to_string(),
         muted,
     )));
-    lines.push(Line::from(""));
+    text_lines.push(Line::from(""));
     for row in [
         "Source:   https://github.com/tombaldwin/ebman",
         "License:  MIT OR Apache-2.0",
         "Crates:   https://crates.io/crates/ebman",
     ] {
-        lines.push(centered(Span::styled(row.to_string(), text)));
+        text_lines.push(centered(Span::styled(row.to_string(), text)));
     }
-    lines.push(Line::from(""));
+    text_lines.push(Line::from(""));
     for row in [
         "Polymorphism Ltd builds operations tools for teams",
-        "running EB / ECS / Lambda at scale. Hire us, fork the",
-        "code, or just tell us what's missing — happy either way.",
+        "running EB / ECS / Lambda at scale. Hire us, fork",
+        "the code, or tell us what's missing — happy either way.",
     ] {
-        lines.push(centered(Span::styled(row.to_string(), muted)));
+        text_lines.push(centered(Span::styled(row.to_string(), muted)));
     }
-    lines.push(Line::from(""));
-    lines.push(centered(Span::styled(
+    text_lines.push(Line::from(""));
+    text_lines.push(centered(Span::styled(
         "esc / q to close".to_string(),
         muted,
     )));
 
-    f.render_widget(Paragraph::new(lines), inner);
+    // Scene + text dimensions, then pick a layout for the terminal.
+    let scene_h = crate::GIANT_SCENE_ROWS as u16; // 24
+    let scene_w: u16 = 60; // 30 art pixels × 2 cells
+    let text_h = text_lines.len() as u16;
+    let text_w: u16 = 58;
+    // `+4` / `+6` budget the bordered block + padding + margins.
+    let stacked = area.width >= scene_w + 6 && area.height >= scene_h + 1 + text_h + 4;
+    let side = !stacked && area.width >= scene_w + 4 + text_w + 4 && area.height >= scene_h + 4;
+
+    let (pw, ph) = if stacked {
+        (scene_w + 6, scene_h + 1 + text_h + 4)
+    } else if side {
+        (scene_w + 4 + text_w + 4, scene_h + 4)
+    } else {
+        (text_w + 6, text_h + 4)
+    };
+    let pw = pw.min(area.width);
+    let ph = ph.min(area.height);
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(pw)) / 2,
+        y: area.y + (area.height.saturating_sub(ph)) / 2,
+        width: pw,
+        height: ph,
+    };
+    f.render_widget(Clear, popup);
+    let outer = titled_block(&app.theme, "about ebman", true, app.theme.title)
+        .padding(Padding::horizontal(1));
+    let inner = outer.inner(popup);
+    f.render_widget(outer, popup);
+
+    if stacked {
+        let mut all: Vec<Line> = vec![Line::from("")];
+        all.extend(crate::splash_giant_lines(frame));
+        all.push(Line::from(""));
+        all.extend(text_lines);
+        f.render_widget(Paragraph::new(all), inner);
+    } else if side {
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(scene_w),
+                Constraint::Length(2),
+                Constraint::Min(0),
+            ])
+            .split(inner);
+        f.render_widget(Paragraph::new(crate::splash_giant_lines(frame)), cols[0]);
+        // Vertically centre the text against the taller scene.
+        let mut col_text: Vec<Line> = Vec::new();
+        let pad = (scene_h.saturating_sub(text_h) / 2) as usize;
+        col_text.extend(std::iter::repeat_with(|| Line::from("")).take(pad));
+        col_text.extend(text_lines);
+        f.render_widget(Paragraph::new(col_text), cols[2]);
+    } else {
+        let mut all: Vec<Line> = vec![Line::from("")];
+        all.extend(text_lines);
+        f.render_widget(Paragraph::new(all), inner);
+    }
 }
 
 fn draw_saved_configs_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
