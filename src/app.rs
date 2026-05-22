@@ -1284,11 +1284,16 @@ enum AppMsg {
 
 #[derive(Debug, Clone)]
 pub enum DlqOp {
-    Resent { message_id: String },
+    Resent {
+        message_id: String,
+    },
     Purged,
     /// Outcome of a batch replay: `count` messages moved to the main queue
     /// (sent + deleted from the DLQ), `failures` that errored mid-way.
-    Replayed { count: usize, failures: usize },
+    Replayed {
+        count: usize,
+        failures: usize,
+    },
 }
 
 /// True when this looks like the user's very first run: no persisted ebman
