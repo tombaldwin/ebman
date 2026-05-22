@@ -793,9 +793,15 @@ Surfaced by a critical console-vs-ebman + ebman-vs-peer-TUI comparison. Ranked b
 
 - [ ] **`:deploy --from` multipart upload + streaming** — `:deploy --from PATH` and `:deploy --from s3://bucket/key` both shipped. Bundles >5 GiB still need multipart on the local-upload path; the s3:// path already sidesteps the limit. Whole bundle held in memory during upload is the other follow-on (stream from disk).
 
-### Proposed (review 2026-05-20)
+### Proposed (review 2026-05-22, post-0.4.1)
 
-Items surfaced during a backlog-review pass — gaps between "ebman is useful" and "ebman replaces the console during incidents". Ranked by likely operator value.
+Ideas surfaced after the 0.4.x console-parity + config-editor work. Ranked by operator value. The config-editor *key rename* slice is tracked separately (the `[~]` item below); per-tab help-density is task #120.
+
+- [ ] **`:rollback`** — *incident-grade, highest value.* One key/command to redeploy the env's **previously-deployed** version label, read from the env's `DescribeEvents` history ("Updating environment to use version label 'X'"). During a bad deploy the operator wants "undo the deploy" more than anything; the version data is already fetchable. Routes through the existing confirm + 5s undo window. Pure helper: parse the prior label out of the event stream (testable). ~half-day.
+- [ ] **Config change timeline** (`:history env` / surfaced in `:why`) — `DescribeEvents` filtered to config-update bursts ("environment update", `UpdateEnvironment`, rolling-update steps), grouped by deployment id, rendered as a "deploys + option-update bursts" timeline. Closes the one real gap left in the Events story — "what changed on this env, and when". EB has no native config-history API, so this event-derived view is the best available. ~half-day.
+- [ ] **Env config compare / drift** — diff one env's option-settings against another env (or against a saved baseline file). Answers the constant operator question "why does staging differ from prod?". Reuses the `DescribeConfigurationSettings` data the Config tab + `:options` already pull; the diff itself is a pure function over two `(namespace, name) → value` maps. For grouped apps, a follow-on could flag drift automatically. ~1 day.
+- [ ] **Stale-platform surfacing** — flag envs running a superseded solution stack / platform version (a newer one exists for the same platform family). The AWS console nags about this; ebman is currently silent. Render as a pill or a column tint. Needs a `ListAvailableSolutionStacks` / `ListPlatformVersions` lookup + a "newer exists" comparison. ~half-day.
+- [ ] **Worker DLQ time-windowed replay** — the DLQ viewer does per-message resend + bulk purge; add "replay all" / "replay last N" / "replay since T" so a recovered worker can drain its DLQ in one action instead of message-by-message. Builds on the existing send-to-main + delete-from-DLQ plumbing. ~half-day.
 
 - [x] **Cost-Explorer integration** — Done (2026-05-21). `:cost on` adds a COST column with bucketed colours; opt-in + 24h cache at `~/.cache/ebman/cost-{account}-{region}.toml`. Real-account verification still TODO since I can only test the SDK request shape against the docs.
 
