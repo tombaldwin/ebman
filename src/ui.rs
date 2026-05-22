@@ -5892,6 +5892,10 @@ fn draw_detail_config(
     // Line index (into `lines`) of each editable row, in cursor
     // order — drives scroll-follow so the cursor stays on screen.
     let mut row_line_idx: Vec<usize> = Vec::new();
+    // Line index of the in-progress add-a-row editor, if any —
+    // scroll-follow targets it so the operator never types blind
+    // below the fold.
+    let mut new_row_line: Option<usize> = None;
 
     // Tags section
     lines.push(Line::raw(""));
@@ -5945,6 +5949,7 @@ fn draw_detail_config(
         .as_ref()
         .filter(|e| e.is_new && e.kind == crate::app::ConfigItemKind::Tag)
     {
+        new_row_line = Some(lines.len());
         lines.push(config_new_row_line(e, theme));
     }
 
@@ -6024,15 +6029,16 @@ fn draw_detail_config(
         .as_ref()
         .filter(|e| e.is_new && e.kind == crate::app::ConfigItemKind::EnvVar)
     {
+        new_row_line = Some(lines.len());
         lines.push(config_new_row_line(e, theme));
     }
 
-    // Scroll-follow: keep the cursor row inside the viewport. The
-    // body's visible height is `area` minus the block's top/bottom
-    // borders.
+    // Scroll-follow: keep the active row inside the viewport. While
+    // adding, follow the new-row editor (so the operator doesn't
+    // type blind below the fold); otherwise follow the cursor row.
     let inner_h = area.height.saturating_sub(2) as usize;
-    let cursor_line = row_line_idx.get(detail.config_cursor).copied();
-    let scroll = config_scroll_follow(detail.config_scroll, cursor_line, inner_h, lines.len());
+    let follow_line = new_row_line.or_else(|| row_line_idx.get(detail.config_cursor).copied());
+    let scroll = config_scroll_follow(detail.config_scroll, follow_line, inner_h, lines.len());
     f.render_widget(Paragraph::new(lines).block(block).scroll((scroll, 0)), area);
     scroll
 }
