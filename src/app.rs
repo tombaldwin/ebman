@@ -35,8 +35,8 @@ pub use crate::mode_action::{
     Action, ActionFlow, ConfirmKind, ConfirmModal, DryRunInfo, ParameterisedAction, ACTIONS,
 };
 pub use crate::mode_detail::{
-    config_editable_items, health_items, ConfigEdit, ConfigItem, ConfigItemKind, DetailState,
-    DetailTab, EventLevel, EventWindow, HealthItem, LogTail, LogTailStage,
+    config_editable_items, health_items, ConfigEdit, ConfigEditMode, ConfigItem, ConfigItemKind,
+    DetailState, DetailTab, EventLevel, EventWindow, HealthItem, LogTail, LogTailStage,
 };
 
 // Sub-modules: `execute_command` arms split by category. The
@@ -2835,6 +2835,16 @@ impl App {
                         // under the cursor (y confirms).
                         self.arm_config_delete();
                     }
+                    KeyCode::Char('r')
+                        if matches!(
+                            self.detail.as_ref().map(|d| d.tab()),
+                            Some(DetailTab::Config)
+                        ) =>
+                    {
+                        // `r` on the Config tab — rename the key of the
+                        // row under the cursor.
+                        self.start_config_rename();
+                    }
                     KeyCode::Char('y')
                         if matches!(
                             self.detail.as_ref().map(|d| d.tab()),
@@ -3992,6 +4002,40 @@ impl App {
         });
     }
 
+    /// `:changes` — config-change timeline for the selected env: the
+    /// deploy + configuration-update events from `DescribeEvents`,
+    /// newest-first, with routine health/scaling noise filtered out.
+    pub(crate) fn cmd_changes(&mut self) {
+        let env_opt = if let Some(d) = self.detail.as_ref() {
+            Some(d.env_name.clone())
+        } else {
+            self.selected_env().map(|e| e.name.clone())
+        };
+        let Some(env_name) = env_opt else {
+            self.error_message = Some("no env selected".into());
+            return;
+        };
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        self.status_message = Some(format!("fetching change history for {env_name}…"));
+        tokio::spawn(async move {
+            let result = aws
+                .list_events_for_env(&env_name, 100)
+                .await
+                .map_err(|e| flatten_err("list_events_for_env", e));
+            let body = match result {
+                Ok(events) => render_changes_overlay(&env_name, &events),
+                Err(e) => format!("changes: {e}\n\nesc / q to close"),
+            };
+            let _ = tx.send(AppMsg::TextOverlay {
+                gen,
+                title: format!("changes — {env_name}"),
+                body,
+            });
+        });
+    }
+
     /// `:event-time [utc|local|age]` — set how event timestamps render
     /// in the Events panel + Detail/Events tab. No argument cycles
     /// `Utc → Local → Age`. Persists to state.toml. UTC is the
@@ -4189,6 +4233,63 @@ impl App {
             let _ = tx.send(AppMsg::TextOverlay {
                 gen,
                 title: format!("options — {env_name}"),
+                body,
+            });
+        });
+    }
+
+    /// `:config-diff ENV` — compare the selected env's option-settings
+    /// against `ENV`'s, showing every setting that differs. Answers
+    /// "why does staging differ from prod?". Fetches both envs'
+    /// configuration options in parallel and renders the diff.
+    pub(crate) fn cmd_config_diff(&mut self, rest: &[&str]) {
+        let Some(target) = rest.first().map(|s| s.to_string()) else {
+            self.error_message = Some(
+                "usage: :config-diff ENV  (compare the selected env's option-settings against ENV)"
+                    .into(),
+            );
+            return;
+        };
+        let left = if let Some(d) = self.detail.as_ref() {
+            Some(d.env_snapshot.clone())
+        } else {
+            self.selected_env().cloned()
+        };
+        let Some(left) = left else {
+            self.error_message = Some("no env selected".into());
+            return;
+        };
+        let Some(right) = self.environments.iter().find(|e| e.name == target).cloned() else {
+            self.error_message = Some(format!("no env named '{target}' in the current view"));
+            return;
+        };
+        if left.name == right.name {
+            self.error_message = Some("pick a different env to compare against".into());
+            return;
+        }
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let (la, ln) = (left.application.clone(), left.name.clone());
+        let (ra, rn) = (right.application.clone(), right.name.clone());
+        self.status_message = Some(format!("comparing config: {ln} ↔ {rn}…"));
+        tokio::spawn(async move {
+            let body = match tokio::try_join!(
+                aws.fetch_env_configuration_options(&la, &ln),
+                aws.fetch_env_configuration_options(&ra, &rn),
+            ) {
+                Ok((lopts, ropts)) => {
+                    let diffs = diff_config_options(&lopts, &ropts);
+                    render_config_diff_overlay(&ln, &rn, &diffs)
+                }
+                Err(e) => format!(
+                    "config-diff: {}\n\nesc / q to close",
+                    flatten_err("fetch_env_configuration_options", e)
+                ),
+            };
+            let _ = tx.send(AppMsg::TextOverlay {
+                gen,
+                title: format!("config diff — {ln} ↔ {rn}"),
                 body,
             });
         });
@@ -5172,7 +5273,7 @@ impl App {
             original: item.value.clone(),
             input: item.value.clone(),
             caret,
-            is_new: false,
+            mode: ConfigEditMode::Value,
         });
         self.status_message = Some(format!("editing {key} — enter saves, esc cancels"));
     }
@@ -5228,44 +5329,79 @@ impl App {
         }
     }
 
-    /// Commit the open Config-tab edit. For an existing-row edit the
-    /// value change dispatches via the same `UpdateOptionSettings`
-    /// (env var) / `UpdateTags` (tag) paths `:env set` / `:tag` use;
-    /// an unchanged value is dropped without a dispatch. For an
-    /// add-new-row edit the `KEY=VALUE` buffer is parsed and the new
-    /// row dispatched as a set. Clears the editor either way.
+    /// Commit the open Config-tab edit. All three modes dispatch via
+    /// the same `UpdateOptionSettings` (env var) / `UpdateTags` (tag)
+    /// paths `:env set` / `:tag` use. `Value` sets the row's new
+    /// value (unchanged → no-op); `NewRow` parses the `KEY=VALUE`
+    /// buffer and sets the new row; `RenameKey` sets the new key +
+    /// removes the old in one call, carrying the row's value across.
+    /// Clears the editor either way.
     fn commit_config_edit(&mut self) {
         let Some(edit) = self.detail.as_mut().and_then(|d| d.config_edit.take()) else {
             return;
         };
-        // Resolve to a concrete (kind, key, value) to dispatch.
-        let (kind, key, value) = if edit.is_new {
-            // New row — the buffer is `KEY=VALUE`.
-            match crate::mode_detail::parse_new_config_row(&edit.input) {
-                Some((k, v)) => (edit.kind, k, v),
-                None => {
-                    self.error_message = Some("new row needs KEY=VALUE (non-empty key)".into());
+        let ns = "aws:elasticbeanstalk:application:environment";
+        match edit.mode {
+            ConfigEditMode::Value => {
+                if edit.input == edit.original {
+                    self.status_message = Some(format!("{} unchanged", edit.key));
                     return;
                 }
+                match edit.kind {
+                    ConfigItemKind::EnvVar => self.spawn_option_settings_update(
+                        format!("env set {}", edit.key),
+                        vec![(ns.into(), edit.key.clone(), edit.input.clone())],
+                        vec![],
+                    ),
+                    ConfigItemKind::Tag => {
+                        self.spawn_tag_update(vec![(edit.key.clone(), edit.input.clone())], vec![])
+                    }
+                }
             }
-        } else {
-            if edit.input == edit.original {
-                self.status_message = Some(format!("{} unchanged", edit.key));
-                return;
+            ConfigEditMode::NewRow => {
+                let Some((k, v)) = crate::mode_detail::parse_new_config_row(&edit.input) else {
+                    self.error_message = Some("new row needs KEY=VALUE (non-empty key)".into());
+                    return;
+                };
+                match edit.kind {
+                    ConfigItemKind::EnvVar => self.spawn_option_settings_update(
+                        format!("env set {k}"),
+                        vec![(ns.into(), k, v)],
+                        vec![],
+                    ),
+                    ConfigItemKind::Tag => self.spawn_tag_update(vec![(k, v)], vec![]),
+                }
             }
-            (edit.kind, edit.key.clone(), edit.input.clone())
-        };
-        match kind {
-            ConfigItemKind::EnvVar => {
-                let ns = "aws:elasticbeanstalk:application:environment";
-                self.spawn_option_settings_update(
-                    format!("env set {key}"),
-                    vec![(ns.into(), key, value)],
-                    vec![],
-                );
-            }
-            ConfigItemKind::Tag => {
-                self.spawn_tag_update(vec![(key, value)], vec![]);
+            ConfigEditMode::RenameKey => {
+                let new_key = edit.input.trim().to_string();
+                if new_key.is_empty() {
+                    self.error_message = Some("rename: the new key can't be empty".into());
+                    return;
+                }
+                if new_key == edit.original {
+                    self.status_message = Some(format!("{} unchanged", edit.key));
+                    return;
+                }
+                // Carry the row's current value across to the new key.
+                let value = self.detail.as_ref().and_then(|d| {
+                    config_editable_items(d)
+                        .into_iter()
+                        .find(|it| it.kind == edit.kind && it.key == edit.key)
+                        .map(|it| it.value)
+                });
+                let Some(value) = value else {
+                    self.error_message = Some("rename: the row no longer exists".into());
+                    return;
+                };
+                let old = edit.key.clone();
+                match edit.kind {
+                    ConfigItemKind::EnvVar => self.spawn_option_settings_update(
+                        format!("env rename {old} -> {new_key}"),
+                        vec![(ns.into(), new_key, value)],
+                        vec![(ns.into(), old)],
+                    ),
+                    ConfigItemKind::Tag => self.spawn_tag_update(vec![(new_key, value)], vec![old]),
+                }
             }
         }
     }
@@ -5294,7 +5430,7 @@ impl App {
             original: String::new(),
             input: String::new(),
             caret: 0,
-            is_new: true,
+            mode: ConfigEditMode::NewRow,
         });
         let what = match kind {
             ConfigItemKind::EnvVar => "env var",
@@ -5302,6 +5438,38 @@ impl App {
         };
         self.status_message = Some(format!(
             "new {what} — type KEY=VALUE, enter saves, esc cancels"
+        ));
+    }
+
+    /// `r` on the Config tab — open the key-rename editor for the row
+    /// under the cursor. `input` is seeded with the current key;
+    /// commit dispatches a remove-old + set-new (keeping the value)
+    /// as one `UpdateOptionSettings` / `UpdateTags` call.
+    fn start_config_rename(&mut self) {
+        if self.read_only {
+            self.error_message = Some("read-only mode — config editing disabled".into());
+            return;
+        }
+        let Some(detail) = self.detail.as_mut() else {
+            return;
+        };
+        let items = crate::app::config_editable_items(detail);
+        let Some(item) = items.get(detail.config_cursor) else {
+            self.error_message = Some("no editable config rows".into());
+            return;
+        };
+        let key = item.key.clone();
+        let caret = key.chars().count();
+        detail.config_edit = Some(ConfigEdit {
+            kind: item.kind,
+            key: item.key.clone(),
+            original: item.key.clone(),
+            input: item.key.clone(),
+            caret,
+            mode: ConfigEditMode::RenameKey,
+        });
+        self.status_message = Some(format!(
+            "renaming {key} — type the new key, enter saves, esc cancels"
         ));
     }
 
@@ -8665,6 +8833,7 @@ impl App {
             "listeners" => self.cmd_listeners(),
             "rds" => self.cmd_rds(),
             "options" => self.cmd_options(&rest),
+            "config-diff" => self.cmd_config_diff(&rest),
             "explain" => self.cmd_explain(&rest),
             "env-edit" => self.cmd_env_edit(),
             "secrets" => self.cmd_secrets(&rest),
@@ -8808,6 +8977,7 @@ impl App {
             "versions" => self.cmd_versions(),
             "deploy" => self.cmd_deploy(&rest),
             "rollback" => self.cmd_rollback(),
+            "changes" => self.cmd_changes(),
             "delete-version" => self.cmd_delete_version(&rest),
             "upgrade" => self.cmd_upgrade(&rest),
             "clone" => self.cmd_clone(&rest),
@@ -10350,11 +10520,14 @@ impl App {
                 match result {
                     Ok(()) => {
                         self.push_toast(ToastKind::Success, format!("{summary} → {env_name}"));
-                        // If it was an env-var set/unset and the Detail view
-                        // is open on the same env, refresh the Config tab's
-                        // env vars so the change reflects without waiting
-                        // for the next 15s tick.
-                        if summary.starts_with("env set ") || summary.starts_with("env unset ") {
+                        // If it was an env-var set/unset/rename and the
+                        // Detail view is open on the same env, refresh the
+                        // Config tab's env vars so the change reflects
+                        // without waiting for the next 15s tick.
+                        if summary.starts_with("env set ")
+                            || summary.starts_with("env unset ")
+                            || summary.starts_with("env rename ")
+                        {
                             if let Some(d) = self.detail.as_ref() {
                                 if d.env_name == env_name {
                                     self.spawn_detail_env_vars();
@@ -11414,6 +11587,52 @@ pub fn previous_version_label(events: &[EbEvent], current: &str) -> Option<Strin
         .filter(|v| !v.is_empty())
         .find(|v| *v != current)
         .map(|v| v.to_string())
+}
+
+/// Pure: whether an event message looks like a deploy or a
+/// configuration change — the rows the `:changes` timeline keeps,
+/// filtering out routine health / scaling / launch noise.
+pub fn is_config_event(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    m.contains("version label")
+        || m.contains("deploying")
+        || m.contains("configuration")
+        || m.contains("config setting")
+}
+
+/// Render the `:changes` overlay — the env's deploy / config-change
+/// events as a newest-first timeline. Routine health + scaling
+/// events are filtered out by [`is_config_event`].
+pub(crate) fn render_changes_overlay(env: &str, events: &[EbEvent]) -> String {
+    let rows: Vec<&EbEvent> = events
+        .iter()
+        .filter(|e| is_config_event(&e.message))
+        .collect();
+    if rows.is_empty() {
+        return format!(
+            "Config change timeline — {env}\n\n\
+             No deploy / config-change events in the recent window.\n\n\
+             esc / q to close"
+        );
+    }
+    let mut body = format!(
+        "Config change timeline — {env}\n\
+         {} change event(s), newest first.\n\n",
+        rows.len()
+    );
+    for e in rows {
+        let ts =
+            e.at.map(|t| t.format("%Y-%m-%d %H:%M:%SZ").to_string())
+                .unwrap_or_else(|| "—".into());
+        let ver = e
+            .version_label
+            .as_deref()
+            .map(|v| format!("  [{v}]"))
+            .unwrap_or_default();
+        body.push_str(&format!("{ts}{ver}\n    {}\n\n", e.message));
+    }
+    body.push_str("esc / q to close");
+    body
 }
 
 pub fn humanize_short_age(d: Duration) -> String {
@@ -13370,6 +13589,95 @@ pub(crate) fn completion_candidates(prefix: &str) -> Vec<String> {
 ///
 /// Top of the body carries a one-line legend so the operator
 /// doesn't have to learn the marker convention from `?`.
+/// One option-setting that differs between two envs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigDiff {
+    pub namespace: String,
+    pub name: String,
+    pub left: Option<String>,
+    pub right: Option<String>,
+}
+
+/// Pure: option-settings that differ between two envs. Compares the
+/// operator-set `value` per `(namespace, name)`; rows where both
+/// sides agree — including both unset — are dropped. EB's
+/// `Some("")` and `None` both mean "unset", so they're normalised
+/// to equal. Result is sorted `(namespace, name)` for a stable
+/// overlay.
+pub fn diff_config_options(
+    left: &[crate::aws::ConfigOption],
+    right: &[crate::aws::ConfigOption],
+) -> Vec<ConfigDiff> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let norm = |v: &Option<String>| v.clone().filter(|s| !s.is_empty());
+    let to_map = |opts: &[crate::aws::ConfigOption]| -> BTreeMap<(String, String), Option<String>> {
+        opts.iter()
+            .map(|o| ((o.namespace.clone(), o.name.clone()), norm(&o.value)))
+            .collect()
+    };
+    let lmap = to_map(left);
+    let rmap = to_map(right);
+    let mut keys: BTreeSet<(String, String)> = lmap.keys().cloned().collect();
+    keys.extend(rmap.keys().cloned());
+    keys.into_iter()
+        .filter_map(|k| {
+            let l = lmap.get(&k).cloned().flatten();
+            let r = rmap.get(&k).cloned().flatten();
+            if l == r {
+                None
+            } else {
+                Some(ConfigDiff {
+                    namespace: k.0,
+                    name: k.1,
+                    left: l,
+                    right: r,
+                })
+            }
+        })
+        .collect()
+}
+
+/// Render the `:config-diff` overlay — the option-settings that
+/// differ between `left_env` and `right_env`, grouped by namespace.
+pub(crate) fn render_config_diff_overlay(
+    left_env: &str,
+    right_env: &str,
+    diffs: &[ConfigDiff],
+) -> String {
+    if diffs.is_empty() {
+        return format!(
+            "Config diff — {left_env}  ↔  {right_env}\n\n\
+             ✓ identical: every operator-set option-setting matches.\n\n\
+             esc / q to close"
+        );
+    }
+    let mut body = format!(
+        "Config diff — {left_env}  ↔  {right_env}\n\
+         {n} option-setting(s) differ.  L = {left_env}   R = {right_env}\n\
+         (unset = at the platform default)\n\n",
+        n = diffs.len()
+    );
+    let mut current_ns: Option<&str> = None;
+    let show = |v: &Option<String>| v.clone().unwrap_or_else(|| "(unset)".into());
+    for d in diffs {
+        if Some(d.namespace.as_str()) != current_ns {
+            if current_ns.is_some() {
+                body.push('\n');
+            }
+            body.push_str(&format!("── {} ──\n", d.namespace));
+            current_ns = Some(d.namespace.as_str());
+        }
+        body.push_str(&format!(
+            "  {}\n      L: {}\n      R: {}\n",
+            d.name,
+            show(&d.left),
+            show(&d.right),
+        ));
+    }
+    body.push_str("\nesc / q to close");
+    body
+}
+
 pub(crate) fn render_options_overlay(
     rows: &[crate::aws::ConfigOption],
     filter_ns: Option<&str>,
@@ -14138,6 +14446,68 @@ mod tests {
             max_value: None,
             max_length: None,
         }
+    }
+
+    #[test]
+    fn diff_config_options_reports_only_differences() {
+        let left = vec![
+            opt("aws:autoscaling:asg", "MinSize", Some("2"), None),
+            opt("aws:autoscaling:asg", "MaxSize", Some("4"), None),
+            opt(
+                "aws:elasticbeanstalk:application:environment",
+                "LOG",
+                Some("info"),
+                None,
+            ),
+            opt("aws:foo", "Same", Some("x"), None),
+        ];
+        let right = vec![
+            opt("aws:autoscaling:asg", "MinSize", Some("3"), None), // changed
+            opt("aws:autoscaling:asg", "MaxSize", Some("4"), None), // same
+            opt(
+                "aws:elasticbeanstalk:application:environment",
+                "LOG",
+                None,
+                None,
+            ), // unset on right
+            opt("aws:foo", "Same", Some("x"), None),                // same
+        ];
+        let diffs = super::diff_config_options(&left, &right);
+        assert_eq!(diffs.len(), 2, "got {diffs:?}");
+        let min = diffs.iter().find(|d| d.name == "MinSize").unwrap();
+        assert_eq!(min.left.as_deref(), Some("2"));
+        assert_eq!(min.right.as_deref(), Some("3"));
+        let log = diffs.iter().find(|d| d.name == "LOG").unwrap();
+        assert_eq!(log.left.as_deref(), Some("info"));
+        assert_eq!(log.right, None);
+    }
+
+    #[test]
+    fn diff_config_options_treats_empty_string_as_unset() {
+        // EB returns Some("") for some unset options — must not show
+        // as a difference against an actually-unset None.
+        let left = vec![opt("aws:foo", "Bar", Some(""), None)];
+        let right = vec![opt("aws:foo", "Bar", None, None)];
+        assert!(super::diff_config_options(&left, &right).is_empty());
+    }
+
+    #[test]
+    fn render_config_diff_overlay_states() {
+        // No differences → identical message.
+        let body = super::render_config_diff_overlay("staging", "prod", &[]);
+        assert!(body.contains("identical"));
+        // With a diff → the namespace + name + both values appear.
+        let diffs = vec![super::ConfigDiff {
+            namespace: "aws:autoscaling:asg".into(),
+            name: "MinSize".into(),
+            left: Some("2".into()),
+            right: None,
+        }];
+        let body = super::render_config_diff_overlay("staging", "prod", &diffs);
+        assert!(body.contains("aws:autoscaling:asg"));
+        assert!(body.contains("MinSize"));
+        assert!(body.contains("L: 2"));
+        assert!(body.contains("R: (unset)"));
     }
 
     #[test]
@@ -15541,6 +15911,50 @@ mod tests {
             super::previous_version_label(&[ev(Some("")), ev(Some("build-1"))], "build-3"),
             Some("build-1".into())
         );
+    }
+
+    #[test]
+    fn is_config_event_keeps_deploys_and_config_changes() {
+        assert!(super::is_config_event(
+            "Updating environment uflexi-prod to use version label 'build-9'."
+        ));
+        assert!(super::is_config_event(
+            "Deploying new version to instance(s)."
+        ));
+        assert!(super::is_config_event(
+            "Updating environment uflexi-prod's configuration settings."
+        ));
+        // Routine health / lifecycle noise is filtered out.
+        assert!(!super::is_config_event(
+            "Environment health transitioned from Ok to Severe."
+        ));
+        assert!(!super::is_config_event(
+            "Added instance 'i-abc' to environment."
+        ));
+    }
+
+    #[test]
+    fn render_changes_overlay_states() {
+        let ev = |msg: &str, vl: Option<&str>| crate::aws::Event {
+            at: None,
+            env: "e".into(),
+            application: "a".into(),
+            message: msg.into(),
+            severity: "INFO".into(),
+            version_label: vl.map(String::from),
+        };
+        // Only noise → empty-state message.
+        let noise = vec![ev("Environment health transitioned to Ok.", None)];
+        assert!(super::render_changes_overlay("prod", &noise).contains("No deploy"));
+        // A deploy event is kept and its version label shown.
+        let evs = vec![
+            ev("Deploying new version to instance(s).", Some("build-9")),
+            ev("Environment health transitioned to Ok.", None),
+        ];
+        let body = super::render_changes_overlay("prod", &evs);
+        assert!(body.contains("Deploying new version"));
+        assert!(body.contains("[build-9]"));
+        assert!(!body.contains("health transitioned"));
     }
 
     #[test]

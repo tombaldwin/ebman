@@ -4565,7 +4565,7 @@ fn detail_tab_keystrip(tab: DetailTab) -> &'static str {
             " LOGS  ^R snapshot  s live-stream  / filter  ? help  esc back"
         }
         DetailTab::Config => {
-            " CONFIG  j/k move  enter edit  n new  x delete  a actions  ^R refresh  ? help  esc back"
+            " CONFIG  j/k move  enter edit  r rename  n new  x delete  a actions  ^R refresh  ? help  esc back"
         }
     }
 }
@@ -5892,40 +5892,58 @@ fn config_editable_row(
     *idx += 1;
     let key = item.key.as_str();
     let value = item.value.as_str();
-    // Only an *existing-row* edit (`!is_new`) draws inside a row; the
-    // add-new-row editor renders as its own line via `config_new_row_line`.
-    let editing = detail
-        .config_edit
-        .as_ref()
-        .filter(|e| !e.is_new && e.kind == item.kind && e.key == key);
+    // An existing-row edit (Value or RenameKey) draws inside this
+    // row; the add-new-row editor renders separately as its own line.
+    let editing = detail.config_edit.as_ref().filter(|e| {
+        e.mode != crate::app::ConfigEditMode::NewRow && e.kind == item.kind && e.key == key
+    });
     let is_cursor = detail.config_cursor == this && editing.is_none();
     let marker = if is_cursor { "▶ " } else { "  " };
-    let key_len = key.chars().count();
-    let key_text = if key_len <= key_width {
-        format!("{marker}{key:<key_width$}")
+    let editor_style = Style::default()
+        .fg(theme.title_alt)
+        .add_modifier(Modifier::BOLD);
+
+    // Key cell — the in-place editor when this row's *key* is being
+    // renamed, otherwise the fixed key text.
+    let renaming = matches!(
+        editing.map(|e| e.mode),
+        Some(crate::app::ConfigEditMode::RenameKey)
+    );
+    let key_span = if let (true, Some(e)) = (renaming, editing) {
+        let (before, after) = e.split_at_caret();
+        Span::styled(
+            format!("{marker}{before}{}{after}", caret_glyph(theme)),
+            editor_style,
+        )
     } else {
-        // Long key overflows its column — wrap it onto its own line so
-        // the value still aligns. Marker stays on the first row.
-        format!("{marker}{key}\n  {pad:<key_width$}", pad = "")
+        let key_len = key.chars().count();
+        let key_text = if key_len <= key_width {
+            format!("{marker}{key:<key_width$}")
+        } else {
+            // Long key overflows its column — wrap it onto its own line
+            // so the value still aligns. Marker stays on the first row.
+            format!("{marker}{key}\n  {pad:<key_width$}", pad = "")
+        };
+        let key_style = if is_cursor {
+            Style::default().fg(key_color).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(key_color)
+        };
+        Span::styled(key_text, key_style)
     };
-    let key_style = if is_cursor {
-        Style::default().fg(key_color).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(key_color)
-    };
-    let value_span = match editing {
-        Some(e) => {
-            // Caret renders at its position, not pinned to the end —
-            // Left/Right move it within the value being edited.
+
+    // Value cell — the in-place editor when this row's *value* is
+    // being edited, otherwise the plain value.
+    let value_span = match editing.map(|e| e.mode) {
+        Some(crate::app::ConfigEditMode::Value) => {
+            let e = editing.expect("editing is Some in this arm");
             let (before, after) = e.split_at_caret();
             Span::styled(
                 format!("{before}{}{after}", caret_glyph(theme)),
-                Style::default()
-                    .fg(theme.title_alt)
-                    .add_modifier(Modifier::BOLD),
+                editor_style,
             )
         }
-        None => {
+        _ => {
             // Empty value shows as `""` so "explicitly empty" is
             // visually distinct from "absent".
             let shown = if value.is_empty() {
@@ -5936,11 +5954,7 @@ fn config_editable_row(
             Span::styled(shown, Style::default().fg(theme.text))
         }
     };
-    let mut spans = vec![
-        Span::styled(key_text, key_style),
-        Span::raw("  "),
-        value_span,
-    ];
+    let mut spans = vec![key_span, Span::raw("  "), value_span];
     // Delete-pending row gets a red confirm suffix.
     if detail.config_delete_confirm == Some(this) {
         spans.push(Span::styled(
@@ -6097,11 +6111,9 @@ fn draw_detail_config(
         }
     }
     // In-progress add-a-tag editor renders below the tag rows.
-    if let Some(e) = detail
-        .config_edit
-        .as_ref()
-        .filter(|e| e.is_new && e.kind == crate::app::ConfigItemKind::Tag)
-    {
+    if let Some(e) = detail.config_edit.as_ref().filter(|e| {
+        e.mode == crate::app::ConfigEditMode::NewRow && e.kind == crate::app::ConfigItemKind::Tag
+    }) {
         new_row_line = Some(lines.len());
         lines.push(config_new_row_line(e, theme));
     }
@@ -6177,11 +6189,9 @@ fn draw_detail_config(
         }
     }
     // In-progress add-an-env-var editor renders below the env-var rows.
-    if let Some(e) = detail
-        .config_edit
-        .as_ref()
-        .filter(|e| e.is_new && e.kind == crate::app::ConfigItemKind::EnvVar)
-    {
+    if let Some(e) = detail.config_edit.as_ref().filter(|e| {
+        e.mode == crate::app::ConfigEditMode::NewRow && e.kind == crate::app::ConfigItemKind::EnvVar
+    }) {
         new_row_line = Some(lines.len());
         lines.push(config_new_row_line(e, theme));
     }
@@ -6406,6 +6416,7 @@ fn draw_help_detail(f: &mut Frame, popup: Rect, app: &App) {
             "add a new row (KEY=VALUE; kind from cursor section)",
             theme,
         ),
+        help_line("r", "rename the selected row's key", theme),
         help_line("x", "delete the selected row (y confirms)", theme),
         Line::from(""),
         Line::from(Span::styled(
