@@ -399,6 +399,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-secretsmanager"
+version = "1.104.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "811bcb3da8bf26e571da7a248c0a93152bba9642aa4c8c907c58d949fa5f1d5c"
+dependencies = [
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 0.2.12",
+ "http 1.4.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-sqs"
 version = "1.98.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1396,7 +1420,7 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "ebman"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "arboard",
  "aws-config",
@@ -1409,6 +1433,7 @@ dependencies = [
  "aws-sdk-iam",
  "aws-sdk-organizations",
  "aws-sdk-s3",
+ "aws-sdk-secretsmanager",
  "aws-sdk-sqs",
  "aws-sdk-sts",
  "aws-smithy-mocks",

@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.0] — Console-parity push: discovery, diagnosis, and in-place config editing
+
+A large feature release built on top of 0.3.5. The throughline is
+closing the gap with the AWS console: surfacing the configuration
+vocabulary operators didn't know to ask for, diagnosing failures
+ebman previously just reported, and — the headline — editing an
+environment's config without leaving the TUI.
+
+### Added — discovery & diagnosis
+- **`:options [NAMESPACE]`** — the full settable-option vocabulary for the env's platform, with current value / default / type / constraints / enum choices, grouped by namespace. Closes the biggest config-discoverability gap vs. the console.
+- **`:explain`** — diagnoses the last `AccessDenied` via `iam:SimulatePrincipalPolicy` (`:explain ARN ACTION` for explicit pairs). Surfaces the matched/missing statement and flags SCP / permissions-boundary blockers.
+- **`:resources`** — environment resources as an indented ASG → instances → ELB → target-group tree (was a flat dump).
+- **`:listeners`** / **`:rds`** — read-only overlays for the env's ALB listener and RDS dbinstance option settings (`DBPassword` always redacted).
+- **`:secrets [FILTER]`** / **`:secret NAME`** — region-scoped Secrets Manager browser. `:secrets` lists metadata only (never values); `:secret` is the opt-in value reveal, JSON pretty-printed, redaction-aware, CloudTrail- + audit-logged.
+- **`:apps-info`** — app metadata overlay (description / created / updated / template count / env list).
+- **`:cost on|off`** — opt-in COST column ($/month per env via Cost Explorer; 24h on-disk cache).
+- **`:report-bug`** — scrubbed bug-report overlay (no outbound HTTP; PII redacted; copy-to-clipboard or pre-filled GitHub issue).
+
+### Added — config editing
+- **`:env-edit`** — bulk env-var editor: opens the current vars in `$EDITOR` as `KEY=VALUE`, diffs on save, dispatches the delta.
+- **Editable Config tab** — `j`/`k`/arrows move a cursor over the tags + env-var rows; `enter` edits a value in place (full text-field caret: Left/Right/Home/End, Backspace/Delete); `n` adds a new row (`KEY=VALUE`); `x` deletes the selected row (with `y` confirm). All changes dispatch through the existing `UpdateOptionSettings` / `UpdateTags` paths — audit log, in-flight pill, and auto-refetch included. The body scroll-follows the cursor.
+
+### Added — events & ergonomics
+- **`:event-time` / `T`** — event timestamps switchable between UTC (default), local, and relative age; persists.
+- **Events-tab filters** — `L` cycles a minimum-severity floor (`all → info+ → warn+ → error`); `w` cycles a time window (`all → 1h → 6h → 24h → 7d`). Events-tab scrolling is now clamped so `j`/`k` can't run off the bottom.
+- **`:` Tab autocompletion** — Tab / Shift-Tab cycle command-registry matches in the command bar.
+- **"Did you mean?"** — Levenshtein suggestion on an unknown command.
+- **First-run nudge** — a one-time footer hint (`?` / `:` / `Ctrl-K`) when no `state.toml` exists yet.
+- **Apps scope** — `space` multi-select, `*` pin (pinned apps sort to the top, persisted).
+
+### Changed
+- The 5-second undo window now also covers the batch operations (`:batch-rebuild` / `:batch-deploy` / `:batch-tag` / …), not just single-env confirms.
+
+### Test foundation
+- 309 → 392 tests. New coverage spans the option-vocabulary merge, IAM-simulation rendering, the env-var diff, secret scrubbing + JSON pretty-printer, event filters, and the Config-tab editor (cursor, caret, `KEY=VALUE` parse, scroll-follow).
+
 ## [0.3.5] — Undo: 5-second cancel window after action dispatch
 
 Safety feature called out by the v0.3.0 UX review. After authorising
