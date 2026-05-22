@@ -212,13 +212,24 @@ pub struct ConfigItem {
     pub value: String,
 }
 
-/// Active in-place value editor on the Config tab. `key` is fixed
-/// (renaming = delete + re-add, a later section); `input` is the
-/// value buffer, seeded from `original` so the operator edits from
-/// the current value rather than a blank field. `caret` is a
-/// *char* index into `input` (not a byte offset) — the text-cursor
-/// position that Left/Right/Home/End move and where insert/delete
-/// act.
+/// What an open Config-tab editor is editing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigEditMode {
+    /// Editing an existing row's value — `key` fixed, `input` is the value.
+    Value,
+    /// Adding a new row — `key` empty, `input` is a `KEY=VALUE` string.
+    NewRow,
+    /// Renaming an existing row's key — `key` is the *old* key,
+    /// `input` is the new key being typed. Commit dispatches a
+    /// remove-old + set-new under the same value.
+    RenameKey,
+}
+
+/// Active in-place editor on the Config tab. `input` is the text
+/// buffer; what it means depends on `mode` (a value, a `KEY=VALUE`
+/// pair, or a replacement key). `caret` is a *char* index into
+/// `input` (not a byte offset) — the text-cursor position that
+/// Left/Right/Home/End move and where insert/delete act.
 #[derive(Debug, Clone)]
 pub struct ConfigEdit {
     pub kind: ConfigItemKind,
@@ -226,11 +237,7 @@ pub struct ConfigEdit {
     pub original: String,
     pub input: String,
     pub caret: usize,
-    /// `true` when this is the add-a-new-row flow: `key` is empty,
-    /// `input` holds a `KEY=VALUE` string being typed, and commit
-    /// parses it. `false` for the edit-existing-value flow, where
-    /// `key` is fixed and `input` is just the value.
-    pub is_new: bool,
+    pub mode: ConfigEditMode,
 }
 
 impl ConfigEdit {
@@ -498,11 +505,11 @@ impl DetailState {
     /// another), the editor would render invisible — its `key` no
     /// longer matches any row — yet still swallow every keypress and
     /// commit a write that *re-creates* the deleted key. Clearing it
-    /// here is the safe outcome. Add-row edits (`is_new`) reference
-    /// no existing row, so they're left alone.
+    /// here is the safe outcome. Add-row edits reference no existing
+    /// row, so they're left alone.
     pub fn revalidate_config_edit(&mut self) {
         let Some((kind, key)) = self.config_edit.as_ref().and_then(|e| {
-            if e.is_new {
+            if e.mode == ConfigEditMode::NewRow {
                 None
             } else {
                 Some((e.kind, e.key.clone()))
@@ -868,7 +875,7 @@ mod tests {
             original: value.into(),
             input: value.into(),
             caret: value.chars().count(),
-            is_new: false,
+            mode: ConfigEditMode::Value,
         }
     }
 

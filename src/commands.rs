@@ -252,6 +252,18 @@ pub const COMMANDS: &[CommandSpec] = &[
         CommandKind::Prefill("options "),
     ),
     cmd(
+        "config-diff",
+        ":config-diff ENV — compare the selected env's option-settings against ENV's; shows every setting that differs",
+        Category::Inspection,
+        CommandKind::Prefill("config-diff "),
+    ),
+    cmd(
+        "changes",
+        ":changes — deploy + config-change timeline for the selected env (from its event history, newest first)",
+        Category::Inspection,
+        CommandKind::ZeroArg,
+    ),
+    cmd(
         "explain",
         ":explain — diagnose the last IAM AccessDenied via iam:SimulatePrincipalPolicy.  :explain ARN ACTION evaluates explicit pairs.",
         Category::Inspection,
