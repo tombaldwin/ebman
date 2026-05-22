@@ -107,7 +107,7 @@ async fn main() -> Result<()> {
     // Animate the splash while App::new resolves (config load + STS + first
     // SDK setup). Keep the splash visible for at least SPLASH_MIN_DURATION even
     // if App::new returns sooner — gives the user a chance to actually see it.
-    const SPLASH_MIN_DURATION: std::time::Duration = std::time::Duration::from_secs(5);
+    const SPLASH_MIN_DURATION: std::time::Duration = std::time::Duration::from_secs(3);
 
     let splash_started = std::time::Instant::now();
     let mut splash_frame: u64 = 0;
@@ -587,7 +587,7 @@ fn draw_splash(terminal: &mut Tui, frame: u64, icons: &str) -> Result<()> {
         // text-only card so the splash never overflows. The card is
         // sized to its content and centred.
         let show_scene = area.width >= 68 && area.height >= 34;
-        let (card_w, card_h): (u16, u16) = if show_scene { (64, 32) } else { (52, 11) };
+        let (card_w, card_h): (u16, u16) = if show_scene { (64, 32) } else { (52, 9) };
         let v = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -680,8 +680,8 @@ fn draw_splash(terminal: &mut Tui, frame: u64, icons: &str) -> Result<()> {
             .alignment(Alignment::Center),
         );
 
-        // Card border tracks the spotlight: warms to magenta during the pass,
-        // cools back to cyan once the spotlight has exited.
+        // One-shot border glow: warms cyan → magenta → cyan over the
+        // first ~1 s of the splash, then settles to cyan.
         const BORDER_SPOTLIGHT_FRAMES: f64 = 33.0;
         let border_phase = (frame as f64 / BORDER_SPOTLIGHT_FRAMES).clamp(0.0, 1.0);
         // Triangle: 0 → 1 → 0 across the pass.
