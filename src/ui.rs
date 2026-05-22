@@ -1239,6 +1239,37 @@ fn draw_text_dump_overlay(f: &mut Frame, area: Rect, app: &App, title: &str, tex
     );
 }
 
+/// Rendered width of the giant scene (30 art pixels × 2 cells).
+const ABOUT_SCENE_W: u16 = 60;
+/// Width budget for the `:about` project-text block.
+const ABOUT_TEXT_W: u16 = 58;
+
+/// Which of the three `:about` layouts to use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AboutLayout {
+    /// Scene above the text — roomy terminal.
+    Stacked,
+    /// Scene left, text right — wide but short.
+    SideBySide,
+    /// No scene — small terminal.
+    TextOnly,
+}
+
+/// Pure: pick the `:about` layout for a `w`×`h` terminal given the
+/// project-text block height `text_h`. The `+6` / `+8` budgets
+/// cover the bordered block, padding, and ~2 rows/cols of slack so
+/// content never butts against the card edge.
+fn about_layout(w: u16, h: u16, text_h: u16) -> AboutLayout {
+    let scene_h = crate::GIANT_SCENE_ROWS as u16;
+    if w >= ABOUT_SCENE_W + 6 && h >= scene_h + text_h + 6 {
+        AboutLayout::Stacked
+    } else if w >= ABOUT_SCENE_W + ABOUT_TEXT_W + 8 && h >= scene_h + 4 {
+        AboutLayout::SideBySide
+    } else {
+        AboutLayout::TextOnly
+    }
+}
+
 /// `:about` overlay — the project card with the animated 8-bit
 /// angry-giant-eats-the-beanstalk scene. The animation frame is
 /// derived from `opened.elapsed()` (the `anim` ticker wakes the
@@ -1300,21 +1331,14 @@ fn draw_about(f: &mut Frame, area: Rect, app: &App, opened: std::time::Instant) 
         muted,
     )));
 
-    // Scene + text dimensions, then pick a layout for the terminal.
-    let scene_h = crate::GIANT_SCENE_ROWS as u16; // 24
-    let scene_w: u16 = 60; // 30 art pixels × 2 cells
+    // Pick a layout for the terminal, then size the popup to match.
+    let scene_h = crate::GIANT_SCENE_ROWS as u16;
     let text_h = text_lines.len() as u16;
-    let text_w: u16 = 58;
-    // `+4` / `+6` budget the bordered block + padding + margins.
-    let stacked = area.width >= scene_w + 6 && area.height >= scene_h + 1 + text_h + 4;
-    let side = !stacked && area.width >= scene_w + 4 + text_w + 4 && area.height >= scene_h + 4;
-
-    let (pw, ph) = if stacked {
-        (scene_w + 6, scene_h + 1 + text_h + 4)
-    } else if side {
-        (scene_w + 4 + text_w + 4, scene_h + 4)
-    } else {
-        (text_w + 6, text_h + 4)
+    let layout = about_layout(area.width, area.height, text_h);
+    let (pw, ph) = match layout {
+        AboutLayout::Stacked => (ABOUT_SCENE_W + 6, scene_h + text_h + 6),
+        AboutLayout::SideBySide => (ABOUT_SCENE_W + ABOUT_TEXT_W + 8, scene_h + 4),
+        AboutLayout::TextOnly => (ABOUT_TEXT_W + 6, text_h + 4),
     };
     let pw = pw.min(area.width);
     let ph = ph.min(area.height);
@@ -1330,32 +1354,36 @@ fn draw_about(f: &mut Frame, area: Rect, app: &App, opened: std::time::Instant) 
     let inner = outer.inner(popup);
     f.render_widget(outer, popup);
 
-    if stacked {
-        let mut all: Vec<Line> = vec![Line::from("")];
-        all.extend(crate::splash_giant_lines(frame));
-        all.push(Line::from(""));
-        all.extend(text_lines);
-        f.render_widget(Paragraph::new(all), inner);
-    } else if side {
-        let cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(scene_w),
-                Constraint::Length(2),
-                Constraint::Min(0),
-            ])
-            .split(inner);
-        f.render_widget(Paragraph::new(crate::splash_giant_lines(frame)), cols[0]);
-        // Vertically centre the text against the taller scene.
-        let mut col_text: Vec<Line> = Vec::new();
-        let pad = (scene_h.saturating_sub(text_h) / 2) as usize;
-        col_text.extend(std::iter::repeat_with(|| Line::from("")).take(pad));
-        col_text.extend(text_lines);
-        f.render_widget(Paragraph::new(col_text), cols[2]);
-    } else {
-        let mut all: Vec<Line> = vec![Line::from("")];
-        all.extend(text_lines);
-        f.render_widget(Paragraph::new(all), inner);
+    match layout {
+        AboutLayout::Stacked => {
+            let mut all: Vec<Line> = vec![Line::from("")];
+            all.extend(crate::splash_giant_lines(frame));
+            all.push(Line::from(""));
+            all.extend(text_lines);
+            f.render_widget(Paragraph::new(all), inner);
+        }
+        AboutLayout::SideBySide => {
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Length(ABOUT_SCENE_W),
+                    Constraint::Length(2),
+                    Constraint::Min(0),
+                ])
+                .split(inner);
+            f.render_widget(Paragraph::new(crate::splash_giant_lines(frame)), cols[0]);
+            // Vertically centre the text against the taller scene.
+            let mut col_text: Vec<Line> = Vec::new();
+            let pad = (scene_h.saturating_sub(text_h) / 2) as usize;
+            col_text.extend(std::iter::repeat_with(|| Line::from("")).take(pad));
+            col_text.extend(text_lines);
+            f.render_widget(Paragraph::new(col_text), cols[2]);
+        }
+        AboutLayout::TextOnly => {
+            let mut all: Vec<Line> = vec![Line::from("")];
+            all.extend(text_lines);
+            f.render_widget(Paragraph::new(all), inner);
+        }
     }
 }
 
@@ -7510,6 +7538,23 @@ mod tests {
         assert_eq!(config_scroll_follow(95, None, 20, 100), 80);
         // Content shorter than the viewport → no scroll at all.
         assert_eq!(config_scroll_follow(0, Some(3), 20, 8), 0);
+    }
+
+    #[test]
+    fn about_layout_picks_by_terminal_size() {
+        // text_h ~15 — a representative project-text height.
+        let th = 15;
+        // Roomy → scene stacked above text.
+        assert_eq!(about_layout(120, 60, th), AboutLayout::Stacked);
+        // Wide but short → scene beside text.
+        assert_eq!(about_layout(140, 30, th), AboutLayout::SideBySide);
+        // Small both ways → text only.
+        assert_eq!(about_layout(50, 20, th), AboutLayout::TextOnly);
+        // Wide enough to stack but the scene won't fit width-wise
+        // for side-by-side either → text only.
+        assert_eq!(about_layout(64, 60, th), AboutLayout::TextOnly);
+        // Tall enough but too narrow for the scene → text only.
+        assert_eq!(about_layout(62, 60, th), AboutLayout::TextOnly);
     }
 
     #[test]
