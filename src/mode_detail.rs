@@ -607,6 +607,7 @@ mod tests {
             application: "poly".into(),
             message: "test".into(),
             severity: sev.into(),
+            version_label: None,
         }
     }
 
