@@ -3102,15 +3102,16 @@ impl App {
                         self.status_message = Some(format!("view: {}", self.view_mode.label()));
                     }
                     KeyCode::Up
-                        if key.modifiers.contains(KeyModifiers::CONTROL) && self.event_panel.visible =>
+                        if key.modifiers.contains(KeyModifiers::CONTROL)
+                            && self.event_panel.visible =>
                     {
                         self.event_panel.height = (self.event_panel.height + 1).min(30);
                     }
                     KeyCode::Down
-                        if key.modifiers.contains(KeyModifiers::CONTROL) && self.event_panel.visible =>
+                        if key.modifiers.contains(KeyModifiers::CONTROL)
+                            && self.event_panel.visible =>
                     {
-                        self.event_panel.height =
-                            self.event_panel.height.saturating_sub(1).max(4);
+                        self.event_panel.height = self.event_panel.height.saturating_sub(1).max(4);
                     }
                     KeyCode::Char('s') => {
                         self.sort_key = self.sort_key.next();
@@ -3150,7 +3151,8 @@ impl App {
                             }
                             Focus::Events => Focus::Table,
                         };
-                        if matches!(self.focus, Focus::Events) && self.event_panel.cursor.is_none() {
+                        if matches!(self.focus, Focus::Events) && self.event_panel.cursor.is_none()
+                        {
                             self.event_panel.cursor = Some(0);
                         }
                         if matches!(self.focus, Focus::Table) {
@@ -3220,7 +3222,9 @@ impl App {
                         }
                     }
                     KeyCode::Char('Y') => self.yank_selected(YankKind::Name),
-                    KeyCode::Char('J') if self.event_panel.visible && !self.event_panel.events.is_empty() => {
+                    KeyCode::Char('J')
+                        if self.event_panel.visible && !self.event_panel.events.is_empty() =>
+                    {
                         let next = self
                             .event_panel
                             .cursor
@@ -3228,8 +3232,11 @@ impl App {
                             .unwrap_or(0);
                         self.event_panel.cursor = Some(next);
                     }
-                    KeyCode::Char('K') if self.event_panel.visible && !self.event_panel.events.is_empty() => {
-                        self.event_panel.cursor = self.event_panel.cursor.and_then(|c| c.checked_sub(1));
+                    KeyCode::Char('K')
+                        if self.event_panel.visible && !self.event_panel.events.is_empty() =>
+                    {
+                        self.event_panel.cursor =
+                            self.event_panel.cursor.and_then(|c| c.checked_sub(1));
                     }
                     KeyCode::Char('b') if self.scope == Scope::Envs => self.open_in_console(),
                     KeyCode::Char('D') if self.scope == Scope::Envs => self.open_describe_overlay(),
@@ -3287,7 +3294,9 @@ impl App {
                             let next = self
                                 .event_panel
                                 .cursor
-                                .map(|c| (c + 1).min(self.event_panel.events.len().saturating_sub(1)))
+                                .map(|c| {
+                                    (c + 1).min(self.event_panel.events.len().saturating_sub(1))
+                                })
                                 .unwrap_or(0);
                             self.event_panel.cursor = Some(next);
                         }
@@ -3295,7 +3304,8 @@ impl App {
                     },
                     KeyCode::Char('k') | KeyCode::Up => match self.focus {
                         Focus::Events if self.event_panel.visible => {
-                            self.event_panel.cursor = self.event_panel.cursor.and_then(|c| c.checked_sub(1));
+                            self.event_panel.cursor =
+                                self.event_panel.cursor.and_then(|c| c.checked_sub(1));
                         }
                         _ => self.move_scope_selection(-1),
                     },
@@ -6050,7 +6060,8 @@ impl App {
         self.spawn_aws(
             "describe_worker_queues",
             move |aws| async move {
-                aws.describe_worker_queues(&application_name, &env_name).await
+                aws.describe_worker_queues(&application_name, &env_name)
+                    .await
             },
             move |gen, result| AppMsg::DetailQueues {
                 gen,
@@ -8754,7 +8765,8 @@ impl App {
             "group" => self.cmd_group(&rest),
             "redact" => self.cmd_redact(&rest),
             "events" => {
-                self.event_panel.visible = parse_toggle(rest.first().copied(), self.event_panel.visible);
+                self.event_panel.visible =
+                    parse_toggle(rest.first().copied(), self.event_panel.visible);
                 if self.event_panel.visible && self.event_panel.events.is_empty() {
                     self.spawn_events();
                 }

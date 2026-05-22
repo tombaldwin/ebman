@@ -382,8 +382,7 @@ impl App {
         match result {
             Ok(()) => {
                 self.close_action_flow();
-                self.status_message =
-                    Some(format!("{} on {env_name} dispatched", action.label()));
+                self.status_message = Some(format!("{} on {env_name} dispatched", action.label()));
                 self.spawn_refresh();
             }
             Err(msg) => {
@@ -396,11 +395,7 @@ impl App {
         }
     }
 
-    fn handle_detail_instances(
-        &mut self,
-        env_name: String,
-        result: Result<Vec<Instance>, String>,
-    ) {
+    fn handle_detail_instances(&mut self, env_name: String, result: Result<Vec<Instance>, String>) {
         self.apply_detail_msg(&env_name, result, |d, r| {
             d.loading_instances = false;
             match r {
@@ -430,12 +425,7 @@ impl App {
         });
     }
 
-    fn handle_detail_logs_progress(
-        &mut self,
-        env_name: String,
-        stage: LogTailStage,
-        attempt: u32,
-    ) {
+    fn handle_detail_logs_progress(&mut self, env_name: String, stage: LogTailStage, attempt: u32) {
         let Some(detail) = self.detail.as_mut() else {
             return;
         };
@@ -484,8 +474,7 @@ impl App {
     ) {
         match result {
             Ok(versions) if versions.is_empty() => {
-                self.status_message =
-                    Some(format!("no application versions for {application}"));
+                self.status_message = Some(format!("no application versions for {application}"));
             }
             Ok(versions) => {
                 self.current_overlay = Some(Overlay::TextDump {
@@ -541,11 +530,7 @@ impl App {
         }
     }
 
-    fn handle_why_red_events(
-        &mut self,
-        session_id: u64,
-        result: Result<Vec<EbEvent>, String>,
-    ) {
+    fn handle_why_red_events(&mut self, session_id: u64, result: Result<Vec<EbEvent>, String>) {
         if let Some(Overlay::WhyRed {
             session_id: s,
             events,
@@ -558,11 +543,7 @@ impl App {
         }
     }
 
-    fn handle_why_red_alarms(
-        &mut self,
-        session_id: u64,
-        result: Result<Vec<CwAlarm>, String>,
-    ) {
+    fn handle_why_red_alarms(&mut self, session_id: u64, result: Result<Vec<CwAlarm>, String>) {
         if let Some(Overlay::WhyRed {
             session_id: s,
             alarms,
@@ -575,11 +556,7 @@ impl App {
         }
     }
 
-    fn handle_why_red_instances(
-        &mut self,
-        session_id: u64,
-        result: Result<Vec<Instance>, String>,
-    ) {
+    fn handle_why_red_instances(&mut self, session_id: u64, result: Result<Vec<Instance>, String>) {
         if let Some(Overlay::WhyRed {
             session_id: s,
             instances,
@@ -592,11 +569,7 @@ impl App {
         }
     }
 
-    fn handle_why_red_deploys(
-        &mut self,
-        session_id: u64,
-        result: Result<Vec<AppVersion>, String>,
-    ) {
+    fn handle_why_red_deploys(&mut self, session_id: u64, result: Result<Vec<AppVersion>, String>) {
         if let Some(Overlay::WhyRed {
             session_id: s,
             deploys,
@@ -609,11 +582,7 @@ impl App {
         }
     }
 
-    fn handle_why_red_queues(
-        &mut self,
-        session_id: u64,
-        result: Result<WorkerQueues, String>,
-    ) {
+    fn handle_why_red_queues(&mut self, session_id: u64, result: Result<WorkerQueues, String>) {
         // Land the queues result, then kick the DLQ peek if the DLQ has
         // visible messages. The peek is a second-stage fetch — it only
         // fires when the first stage shows something worth peeking at,
@@ -665,11 +634,7 @@ impl App {
         }
     }
 
-    fn handle_preflight_events(
-        &mut self,
-        env_name: String,
-        result: Result<Vec<EbEvent>, String>,
-    ) {
+    fn handle_preflight_events(&mut self, env_name: String, result: Result<Vec<EbEvent>, String>) {
         let Some(ActionFlow::Confirm(modal)) = self.action_flow.as_mut() else {
             return;
         };
@@ -700,12 +665,10 @@ impl App {
                 // the cursor moved off the env `:rollback` was issued for,
                 // bail rather than roll back the wrong one.
                 Some(_)
-                    if self.selected_env().map(|e| e.name.as_str())
-                        != Some(env_name.as_str()) =>
+                    if self.selected_env().map(|e| e.name.as_str()) != Some(env_name.as_str()) =>
                 {
-                    self.error_message = Some(
-                        "rollback cancelled — selection moved off the target env".into(),
-                    );
+                    self.error_message =
+                        Some("rollback cancelled — selection moved off the target env".into());
                 }
                 Some(prev) => {
                     self.status_message = Some(format!(
@@ -1198,12 +1161,7 @@ impl App {
         }
     }
 
-    fn handle_tag_update(
-        &mut self,
-        env_name: String,
-        summary: String,
-        result: Result<(), String>,
-    ) {
+    fn handle_tag_update(&mut self, env_name: String, summary: String, result: Result<(), String>) {
         self.complete_pending(
             &summary,
             &env_name,
@@ -1240,11 +1198,7 @@ impl App {
         });
     }
 
-    fn handle_dlq_messages(
-        &mut self,
-        env_name: String,
-        result: Result<Vec<QueueMessage>, String>,
-    ) {
+    fn handle_dlq_messages(&mut self, env_name: String, result: Result<Vec<QueueMessage>, String>) {
         let Some(dlq) = self.dlq.as_mut() else { return };
         if dlq.env_name != env_name {
             return;

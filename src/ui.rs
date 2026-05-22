@@ -4611,11 +4611,7 @@ fn detail_tab_keys(tab: DetailTab) -> &'static [(&'static str, &'static str)] {
             ("d", "DLQ"),
             ("^R", "refresh"),
         ],
-        DetailTab::Logs => &[
-            ("^R", "snapshot"),
-            ("s", "live-stream"),
-            ("/", "filter"),
-        ],
+        DetailTab::Logs => &[("^R", "snapshot"), ("s", "live-stream"), ("/", "filter")],
         DetailTab::Config => &[
             ("j/k", "move"),
             ("enter", "edit"),
@@ -4637,9 +4633,7 @@ const DETAIL_GLOBAL_KEYS: &[(&str, &str)] = &[("tab", "tabs"), ("?", "help"), ("
 /// muted, separated by a thin dim `·`. The visual key/label contrast lets
 /// the operator scan keys without the strip needing extra width.
 fn render_detail_keystrip(tab: DetailTab, theme: &Theme) -> Line<'static> {
-    let key_style = Style::default()
-        .fg(theme.text)
-        .add_modifier(Modifier::BOLD);
+    let key_style = Style::default().fg(theme.text).add_modifier(Modifier::BOLD);
     let label_style = Style::default().fg(theme.muted);
     let sep_style = Style::default().fg(theme.border_idle);
     let mut spans: Vec<Span> = vec![Span::styled(
@@ -4653,10 +4647,7 @@ fn render_detail_keystrip(tab: DetailTab, theme: &Theme) -> Line<'static> {
         .chain(DETAIL_GLOBAL_KEYS.iter())
         .enumerate()
     {
-        spans.push(Span::styled(
-            if i == 0 { " " } else { " · " },
-            sep_style,
-        ));
+        spans.push(Span::styled(if i == 0 { " " } else { " · " }, sep_style));
         spans.push(Span::styled(*key, key_style));
         spans.push(Span::raw(" "));
         spans.push(Span::styled(*label, label_style));
@@ -7488,7 +7479,10 @@ mod tests {
         let line = render_detail_keystrip(DetailTab::Config, &theme);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("CONFIG"), "missing tab name: {text:?}");
-        assert!(text.contains("rename"), "missing tab-specific key: {text:?}");
+        assert!(
+            text.contains("rename"),
+            "missing tab-specific key: {text:?}"
+        );
         assert!(text.contains("esc"), "missing global key: {text:?}");
     }
 
