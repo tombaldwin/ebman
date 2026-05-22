@@ -1220,20 +1220,38 @@ impl App {
     }
 
     fn handle_dlq_action_result(&mut self, env_name: String, result: Result<DlqOp, String>) {
-        let Some(dlq) = self.dlq.as_mut() else { return };
-        if dlq.env_name != env_name {
-            return;
+        let mut refetch = false;
+        {
+            let Some(dlq) = self.dlq.as_mut() else { return };
+            if dlq.env_name != env_name {
+                return;
+            }
+            match result {
+                Ok(DlqOp::Resent { message_id }) => {
+                    dlq.messages.retain(|m| m.id != message_id);
+                    self.status_message = Some(format!("message {message_id} resent"));
+                }
+                Ok(DlqOp::Purged) => {
+                    dlq.messages.clear();
+                    self.status_message = Some("DLQ purged".into());
+                }
+                Ok(DlqOp::Replayed { count, failures }) => {
+                    if failures == 0 {
+                        self.status_message =
+                            Some(format!("replayed {count} message(s) to the main queue"));
+                    } else {
+                        self.error_message =
+                            Some(format!("replayed {count}, {failures} failed — see log"));
+                    }
+                    // The loaded page changed substantially — refetch rather
+                    // than reconcile message ids one by one.
+                    refetch = true;
+                }
+                Err(msg) => dlq.error = Some(msg),
+            }
         }
-        match result {
-            Ok(DlqOp::Resent { message_id }) => {
-                dlq.messages.retain(|m| m.id != message_id);
-                self.status_message = Some(format!("message {message_id} resent"));
-            }
-            Ok(DlqOp::Purged) => {
-                dlq.messages.clear();
-                self.status_message = Some("DLQ purged".into());
-            }
-            Err(msg) => dlq.error = Some(msg),
+        if refetch {
+            self.spawn_dlq_fetch();
         }
     }
 }

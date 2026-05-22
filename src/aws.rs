@@ -1,4 +1,5 @@
 use aws_config::{Region, SdkConfig};
+use aws_sdk_acm::Client as AcmClient;
 use aws_sdk_cloudwatch::Client as CwClient;
 use aws_sdk_cloudwatchlogs::Client as CwLogsClient;
 use aws_sdk_costexplorer::Client as CostExplorerClient;
@@ -65,6 +66,14 @@ pub struct QueueMessage {
     pub body: String,
     pub receive_count: i64,
     pub sent_at: Option<DateTime<Utc>>,
+}
+
+/// One ISSUED ACM certificate in the active region. Drives the
+/// `:listener-edit` SSL-cert picker.
+#[derive(Clone, Debug)]
+pub struct AcmCert {
+    pub arn: String,
+    pub domain: String,
 }
 
 #[derive(Clone, Debug)]
@@ -225,6 +234,9 @@ pub struct AwsClient {
     /// Explorer / Organizations) — operators read secrets from
     /// the same region as the env they're configuring.
     secrets: SecretsClient,
+    /// ACM client. Region-scoped — `:listener-edit` lists the region's
+    /// certificates for the SSL-cert picker.
+    acm: AcmClient,
     config: SdkConfig,
     pub context: AwsContext,
 }
@@ -432,6 +444,7 @@ impl AwsClient {
             cost,
             iam,
             secrets,
+            acm: AcmClient::new(&config),
             config,
             context: AwsContext {
                 region,
@@ -528,6 +541,7 @@ impl AwsClient {
             cost,
             iam,
             secrets,
+            acm: AcmClient::new(&config),
             config,
             context: AwsContext {
                 region,
@@ -599,6 +613,7 @@ impl AwsClient {
             cost,
             iam,
             secrets,
+            acm: AcmClient::new(&config),
             config,
             context: AwsContext {
                 region: "us-east-1".to_string(),
@@ -1680,6 +1695,38 @@ impl AwsClient {
             let port_b = b.0.parse::<u32>().unwrap_or(0);
             (rank_a, port_a, &a.1).cmp(&(rank_b, port_b, &b.1))
         });
+        Ok(out)
+    }
+
+    /// List the region's ACM certificates (ISSUED only) as
+    /// `(arn, primary domain)`. Drives the `:listener-edit` cert picker.
+    pub async fn list_certificates(&self) -> Result<Vec<AcmCert>> {
+        use aws_sdk_acm::types::CertificateStatus;
+        let mut out: Vec<AcmCert> = Vec::new();
+        let mut next_token: Option<String> = None;
+        loop {
+            let mut req = self
+                .acm
+                .list_certificates()
+                .certificate_statuses(CertificateStatus::Issued);
+            if let Some(t) = next_token.take() {
+                req = req.next_token(t);
+            }
+            let resp = req.send().await.wrap_err("ListCertificates failed")?;
+            for c in resp.certificate_summary_list.unwrap_or_default() {
+                if let Some(arn) = c.certificate_arn {
+                    out.push(AcmCert {
+                        arn,
+                        domain: c.domain_name.unwrap_or_default(),
+                    });
+                }
+            }
+            match resp.next_token {
+                Some(t) if !t.is_empty() => next_token = Some(t),
+                _ => break,
+            }
+        }
+        out.sort_by(|a, b| a.domain.cmp(&b.domain));
         Ok(out)
     }
 

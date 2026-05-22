@@ -34,6 +34,10 @@ pub struct Config {
     /// use the form `accounts.NAME.field = "value"`, mirroring the
     /// `metric.LABEL.field` shape that the rest of the config uses.
     pub accounts: std::collections::HashMap<String, AccountSpec>,
+    /// Per-environment runbook URLs. Key = env name; value = a URL the
+    /// operator wants surfaced during triage. Lines in `config.toml` use
+    /// `runbooks.ENV = "https://…"`. Shown in the `:why` overlay.
+    pub runbooks: std::collections::HashMap<String, String>,
 }
 
 /// A named `sts:AssumeRole` target. The operator typically pins one of
@@ -64,6 +68,7 @@ impl Default for Config {
             webhook_url: None,
             profile_themes: std::collections::HashMap::new(),
             accounts: std::collections::HashMap::new(),
+            runbooks: std::collections::HashMap::new(),
         }
     }
 }
@@ -134,6 +139,14 @@ pub fn parse(text: &str) -> Config {
                 // are skipped so a stray trailing comma can't smuggle in
                 // a `"" → ""` mapping.
                 cfg.profile_themes = parse_profile_themes(&value);
+            }
+            other if other.starts_with("runbooks.") => {
+                // `runbooks.ENV = "url"`. The key after the dot is the
+                // whole env name (EB env names don't contain dots).
+                let name = other.trim_start_matches("runbooks.").trim();
+                if !name.is_empty() && !value.is_empty() {
+                    cfg.runbooks.insert(name.to_string(), value);
+                }
             }
             other if other.starts_with("accounts.") => {
                 // `accounts.NAME.field = "value"`. Split on the dots so
@@ -215,6 +228,14 @@ pub fn serialize(cfg: &Config) -> String {
             .collect::<Vec<_>>()
             .join(",");
         out.push_str(&format!("profile_themes = \"{joined}\"\n"));
+    }
+    if !cfg.runbooks.is_empty() {
+        // Sorted so repeated serialize cycles don't churn the file.
+        let mut pairs: Vec<(&String, &String)> = cfg.runbooks.iter().collect();
+        pairs.sort_by(|a, b| a.0.cmp(b.0));
+        for (env, url) in pairs {
+            out.push_str(&format!("runbooks.{env} = \"{url}\"\n"));
+        }
     }
     out
 }
@@ -323,6 +344,34 @@ accounts.staging.external_id = "abc-xyz"
     }
 
     #[test]
+    fn parse_runbooks_maps_env_to_url() {
+        let cfg = parse(
+            "runbooks.uflexi-prod = \"https://wiki/runbook/prod\"\n\
+             runbooks.uflexi-staging = \"https://wiki/runbook/staging\"\n",
+        );
+        assert_eq!(cfg.runbooks.len(), 2);
+        assert_eq!(
+            cfg.runbooks.get("uflexi-prod").map(String::as_str),
+            Some("https://wiki/runbook/prod")
+        );
+        // Blank URL is skipped — a stray `runbooks.x =` can't smuggle in
+        // an empty mapping.
+        assert!(parse("runbooks.x = \"\"\n").runbooks.is_empty());
+    }
+
+    #[test]
+    fn runbooks_round_trip_through_serialize() {
+        let mut cfg = Config::default();
+        cfg.runbooks
+            .insert("prod".into(), "https://rb/prod".into());
+        let reparsed = parse(&serialize(&cfg));
+        assert_eq!(
+            reparsed.runbooks.get("prod").map(String::as_str),
+            Some("https://rb/prod")
+        );
+    }
+
+    #[test]
     fn parse_writes_profile_themes_into_config() {
         // End-to-end check: a config file with `profile_themes = "..."`
         // ends up in cfg.profile_themes correctly.
@@ -371,6 +420,7 @@ accounts.staging.external_id = "abc-xyz"
             webhook_url: Some("https://hooks.example/abc".into()),
             profile_themes,
             accounts: std::collections::HashMap::new(),
+            runbooks: std::collections::HashMap::new(),
         };
 
         let body = serialize(&cfg);

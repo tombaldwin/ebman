@@ -159,6 +159,121 @@ impl App {
         self.open_form(form);
     }
 
+    /// `:rds-attach` — modal form that couples an RDS instance to the env
+    /// via the `aws:rds:dbinstance` namespace; EB provisions the database
+    /// on the next environment update. If an RDS instance is already
+    /// attached the form pre-fills with its current settings (DBPassword
+    /// always blank — EB redacts it), so this doubles as an edit form: a
+    /// field left blank is dropped from the update (see
+    /// `Form::to_option_settings`), so editing the instance class without
+    /// retyping the password is safe.
+    /// `DBEngineVersion` and snapshot-restore are deliberately omitted —
+    /// EB defaults the version, and `:set-option aws:rds:dbinstance …`
+    /// covers the long tail.
+    pub(crate) fn cmd_rds_attach(&mut self) {
+        let Some(env) = self.selected_env().cloned() else {
+            self.error_message = Some("no env selected".into());
+            return;
+        };
+        let ns = "aws:rds:dbinstance";
+        let fields = vec![
+            crate::form::FormField::text(
+                "db_engine",
+                "DB engine",
+                Some("postgres / mysql / mariadb / sqlserver-ex / oracle-se2"),
+            ),
+            crate::form::FormField::text(
+                "db_class",
+                "Instance class",
+                Some("e.g. db.t3.micro, db.t3.small, db.m6g.large"),
+            ),
+            crate::form::FormField::integer(
+                "db_storage",
+                "Allocated storage (GiB)",
+                Some("5–65536; per-engine minimums apply"),
+                Some(5),
+                Some(65_536),
+                false,
+            ),
+            crate::form::FormField::text("db_user", "Master username", Some("RDS master user")),
+            crate::form::FormField::text(
+                "db_password",
+                "Master password",
+                Some("8+ characters; stored as an EB option setting"),
+            ),
+            crate::form::FormField::select(
+                "db_deletion",
+                "Deletion policy",
+                vec!["Snapshot".into(), "Delete".into()],
+                Some("what happens to the DB when the env is terminated"),
+            ),
+            crate::form::FormField::boolean(
+                "db_multiaz",
+                "Multi-AZ",
+                Some("provision a standby replica in a second AZ"),
+            ),
+        ];
+        let form = crate::form::Form::loading(
+            format!("rds-attach — {}", env.name),
+            env.name.clone(),
+            "rds attach".to_string(),
+            fields,
+            crate::form::FormSubmit::OptionSettings {
+                mappings: vec![
+                    ("db_engine".into(), ns.into(), "DBEngine".into()),
+                    ("db_class".into(), ns.into(), "DBInstanceClass".into()),
+                    ("db_storage".into(), ns.into(), "DBAllocatedStorage".into()),
+                    ("db_user".into(), ns.into(), "DBUser".into()),
+                    ("db_password".into(), ns.into(), "DBPassword".into()),
+                    ("db_deletion".into(), ns.into(), "DBDeletionPolicy".into()),
+                    ("db_multiaz".into(), ns.into(), "MultiAZDatabase".into()),
+                ],
+            },
+        );
+        self.open_form(form);
+    }
+
+    /// `:rds-detach ENV` — "safe-ify" the env's coupled RDS instance: sets
+    /// `DBDeletionPolicy = Snapshot` so the database survives environment
+    /// termination (EB takes a final snapshot then). The `ENV` argument
+    /// must repeat the selected env's name — a typed-name confirm, since
+    /// this changes the fate of a production database.
+    ///
+    /// This does *not* decouple the DB: Elastic Beanstalk has no detach
+    /// operation — an EB-created RDS instance lives in the environment's
+    /// CloudFormation stack, and true decoupling needs an environment
+    /// rebuild. The command makes the data safe to keep; it doesn't move it.
+    pub(crate) fn cmd_rds_detach(&mut self, rest: &[&str]) {
+        let Some(env) = self.selected_env().cloned() else {
+            self.error_message = Some("no env selected".into());
+            return;
+        };
+        if rest.first().copied() != Some(env.name.as_str()) {
+            self.error_message = Some(format!(
+                "rds-detach changes a production database — confirm by repeating the env name: :rds-detach {}",
+                env.name
+            ));
+            return;
+        }
+        self.spawn_option_settings_update(
+            "rds-detach (DBDeletionPolicy → Snapshot)".into(),
+            vec![(
+                "aws:rds:dbinstance".into(),
+                "DBDeletionPolicy".into(),
+                "Snapshot".into(),
+            )],
+            vec![],
+        );
+        self.push_toast(
+            crate::app::ToastKind::Info,
+            format!(
+                "{}: DB deletion policy → Snapshot — the database will survive env \
+                 termination. This does not decouple the DB (EB has no detach op).",
+                env.name
+            ),
+        );
+    }
+
     pub(crate) fn cmd_logs_stream(&mut self, rest: &[&str]) {
         let on = match rest.first().copied() {
             Some("on") | Some("true") | Some("enable") => true,

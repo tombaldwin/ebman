@@ -1519,6 +1519,22 @@ fn draw_why_red_overlay(f: &mut Frame, area: Rect, app: &App) {
         Line::from(Span::styled(s, Style::default().fg(theme.muted)))
     };
 
+    // Operator-configured runbook for this env (config.toml `runbooks.ENV`),
+    // surfaced at the top of the triage overlay so it's the first thing
+    // the responder sees.
+    if let Some(url) = app.runbooks.get(env_name) {
+        lines.push(Line::from(vec![
+            Span::styled(
+                " runbook  ",
+                Style::default()
+                    .fg(theme.title_alt)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(url.clone(), Style::default().fg(theme.accent)),
+        ]));
+        lines.push(blank());
+    }
+
     // 1. RECENT EVENTS (last 30 minutes — the window where "what went
     // wrong" usually shows up; older events are noise during triage).
     lines.push(section("recent events (last 30 min)"));
@@ -3576,7 +3592,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
             Some(crate::app::QueueView::Main) => {
                 " MAIN  j/k move  enter view body  x delete  m → DLQ  ^R refresh  ? help  esc / q back".into()
             }
-            _ => " DLQ  j/k move  enter view body  r resend  x delete  p purge  m → MAIN  ^R refresh  ? help  esc / q back".into(),
+            _ => " DLQ  j/k move  enter view body  r resend  R replay  x delete  p purge  m → MAIN  ^R refresh  ? help  esc / q back".into(),
         },
         Mode::Shell => {
             // Keystrokes are forwarded to the subprocess; F12 detaches.
@@ -4035,13 +4051,37 @@ fn draw_dlq(f: &mut Frame, area: Rect, app: &mut App) {
             ),
         ]));
         f.render_widget(line, chunks[2]);
+    } else if let Some(input) = &dlq.replay_input {
+        let line = Paragraph::new(Line::from(vec![
+            Span::styled(
+                " REPLAY → main queue — ",
+                Style::default()
+                    .fg(theme.health_yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "all / count (20) / window (1h 24h 7d): ",
+                Style::default().fg(theme.muted),
+            ),
+            Span::styled(
+                input.clone(),
+                Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                caret_glyph(&theme),
+                Style::default()
+                    .fg(theme.health_yellow)
+                    .add_modifier(Modifier::SLOW_BLINK),
+            ),
+        ]));
+        f.render_widget(line, chunks[2]);
     } else {
         let keys = match dlq.viewing {
             crate::app::QueueView::Main => {
                 " MAIN  j/k move  enter view body  x delete  m → DLQ  ^R refresh  esc / q back"
             }
             crate::app::QueueView::Dlq => {
-                " DLQ  j/k move  enter view body  r resend  x delete  p purge  m → MAIN  ^R refresh  esc / q back"
+                " DLQ  j/k move  enter view body  r resend  R replay  x delete  p purge  m → MAIN  ^R refresh  esc / q back"
             }
         };
         let footer = Paragraph::new(vec![
@@ -6529,6 +6569,11 @@ fn draw_help_dlq(f: &mut Frame, popup: Rect, app: &App) {
         help_line("j / k", "move cursor", theme),
         help_line("enter", "view full message body", theme),
         help_line("r", "resend selected (DLQ → main) — DLQ view only", theme),
+        help_line(
+            "R",
+            "replay batch: all / count / window (1h 24h 7d) — DLQ view only",
+            theme,
+        ),
         help_line("x", "delete selected message (Y/N confirm)", theme),
         help_line(
             "p",

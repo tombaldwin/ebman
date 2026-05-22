@@ -240,10 +240,28 @@ pub const COMMANDS: &[CommandSpec] = &[
         CommandKind::ZeroArg,
     ),
     cmd(
+        "listener-edit",
+        ":listener-edit PORT — modal cert picker for an ALB listener: pick from the region's ACM certificates (loaded live), pre-selected with the listener's current certs. PORT = 443 / numeric / default.",
+        Category::Lifecycle,
+        CommandKind::Prefill("listener-edit "),
+    ),
+    cmd(
         "rds",
         ":rds — RDS instance config attached to the env (engine / class / credentials). Password is redacted.",
         Category::Inspection,
         CommandKind::ZeroArg,
+    ),
+    cmd(
+        "rds-attach",
+        ":rds-attach — modal form: couple an RDS instance to the env (engine / class / storage / credentials / deletion policy / Multi-AZ). Pre-fills if one is already attached.",
+        Category::Lifecycle,
+        CommandKind::ZeroArg,
+    ),
+    cmd(
+        "rds-detach",
+        ":rds-detach ENV — safe-ify the coupled RDS: sets DBDeletionPolicy=Snapshot so the DB survives env termination. Repeat the env name to confirm. Does not decouple the DB (EB has no detach op).",
+        Category::Lifecycle,
+        CommandKind::Prefill("rds-detach "),
     ),
     cmd(
         "options",
