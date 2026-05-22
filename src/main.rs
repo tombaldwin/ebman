@@ -363,15 +363,6 @@ fn cli_esc(s: &str) -> String {
 
 const SPLASH_SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-/// Block-letter "ebman" — 5 rows tall, ~44 cols wide.
-const SPLASH_LOGO: &[&str] = &[
-    "███████ ██████  ███    ███  █████  ███    ██",
-    "██      ██   ██ ████  ████ ██   ██ ████   ██",
-    "█████   ██████  ██ ████ ██ ███████ ██ ██  ██",
-    "██      ██   ██ ██  ██  ██ ██   ██ ██  ██ ██",
-    "███████ ██████  ██      ██ ██   ██ ██   ████",
-];
-
 // 8-bit pixel-art splash scene — an angry giant chomping a
 // beanstalk (the `ebman` = Elastic *Beanstalk* gag: a giant
 // devouring the thing).
@@ -590,12 +581,13 @@ fn draw_splash(terminal: &mut Tui, frame: u64, icons: &str) -> Result<()> {
 
     terminal.draw(|f| {
         let area = f.area();
-        // The pixel-art giant scene is ~60 cells wide (square pixels)
-        // and 24 rows tall; it needs real room. On a smaller terminal
-        // fall back to the compact text splash so the card never
-        // overflows.
-        let show_scene = area.height >= 40 && area.width >= 90;
-        let card_h: u16 = if show_scene { 38 } else { 14 };
+        let powerline = icons == "powerline";
+        // Two tiers: a roomy terminal gets the pixel-art giant scene
+        // above the text; a smaller one falls back to a compact
+        // text-only card so the splash never overflows. The card is
+        // sized to its content and centred.
+        let show_scene = area.width >= 68 && area.height >= 34;
+        let (card_w, card_h): (u16, u16) = if show_scene { (64, 32) } else { (52, 11) };
         let v = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -607,53 +599,19 @@ fn draw_splash(terminal: &mut Tui, frame: u64, icons: &str) -> Result<()> {
         let h = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Percentage(15),
-                Constraint::Percentage(70),
-                Constraint::Percentage(15),
+                Constraint::Min(0),
+                Constraint::Length(card_w),
+                Constraint::Min(0),
             ])
             .split(v[1]);
 
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(""));
-        // 8-bit angry-giant-grabs-the-beanstalk scene above the wordmark.
+        // 8-bit angry-giant-eats-the-beanstalk scene above the text.
         if show_scene {
             lines.extend(splash_giant_lines(frame));
             lines.push(Line::from(""));
         }
-        // Per-character hue-shift gives a horizontal gradient that scrolls
-        // through cool tones (cyan → blue → purple → magenta) as `frame` advances.
-        let powerline = icons == "powerline";
-        for row in SPLASH_LOGO {
-            let spans: Vec<Span> = row
-                .chars()
-                .enumerate()
-                .map(|(col, ch)| {
-                    if ch == ' ' {
-                        return Span::raw(" ".to_string());
-                    }
-                    // One-shot spotlight: a soft magenta wave crosses the logo
-                    // left-to-right over ~1 s, then the letters settle to cyan
-                    // and stay there for the rest of the splash.
-                    const SPOTLIGHT_FRAMES: f64 = 33.0; // ~1 s at 30 ms ticks
-                    const SPOTLIGHT_WIDTH: f64 = 9.0; // column-wise softness
-                    const LOGO_TRAVEL: f64 = 56.0; // includes off-screen exit
-                    let pos = (frame as f64 / SPOTLIGHT_FRAMES) * LOGO_TRAVEL;
-                    let dist = (col as f64 - pos).abs();
-                    let glow = (1.0 - dist / SPOTLIGHT_WIDTH).clamp(0.0, 1.0);
-                    let h_deg = 180.0 + glow * 120.0; // cyan → magenta at peak
-                    let l = 0.55 + glow * 0.10;
-                    let (r, g, b) = hsl_to_rgb(h_deg, 0.70, l);
-                    Span::styled(
-                        ch.to_string(),
-                        Style::default()
-                            .fg(Color::Rgb(r, g, b))
-                            .add_modifier(Modifier::BOLD),
-                    )
-                })
-                .collect();
-            lines.push(Line::from(spans).alignment(Alignment::Center));
-        }
-        lines.push(Line::from(""));
         // In Powerline mode (resolved by `font_probe` before this runs, so
         // the PUA glyphs are guaranteed to render here), wrap the tagline +
         // byline in rounded-cap pills and lead the tagline with a Nerd Font
