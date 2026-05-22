@@ -607,6 +607,7 @@ mod tests {
             application: "uflexi".into(),
             message: "test".into(),
             severity: sev.into(),
+            version_label: None,
         }
     }
 

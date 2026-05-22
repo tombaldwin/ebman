@@ -326,6 +326,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         CommandKind::Prefill("deploy "),
     ),
     cmd(
+        "rollback",
+        ":rollback — redeploy the env's previously-deployed version (found from its event history; opens the deploy confirm)",
+        Category::Lifecycle,
+        CommandKind::ZeroArg,
+    ),
+    cmd(
         "upgrade",
         ":upgrade [ARN] — no-arg: list compatible platforms; with ARN: migrate to it",
         Category::Lifecycle,

@@ -20,6 +20,11 @@ pub struct Event {
     pub application: String,
     pub message: String,
     pub severity: String,
+    /// Application version label this event relates to, when EB
+    /// tags it (deploy events carry it). `None` for events with no
+    /// associated version. Drives `:rollback`'s previous-version
+    /// detection.
+    pub version_label: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -643,6 +648,7 @@ impl AwsClient {
                     .severity
                     .map(|s| s.as_str().to_string())
                     .unwrap_or_else(|| "INFO".to_string()),
+                version_label: e.version_label.filter(|v| !v.is_empty()),
             })
             .collect();
         Ok(events)

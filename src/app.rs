@@ -1131,6 +1131,15 @@ enum AppMsg {
         env_name: String,
         result: Result<Vec<EbEvent>, String>,
     },
+    /// `:rollback` — the env's recent events came back; the handler
+    /// scans them for the previously-deployed version label and opens
+    /// the deploy-confirm modal for it.
+    RollbackTarget {
+        gen: u64,
+        env_name: String,
+        current_version: String,
+        result: Result<Vec<EbEvent>, String>,
+    },
     Alarms {
         gen: u64,
         env_name: String,
@@ -3944,6 +3953,41 @@ impl App {
                 gen,
                 title: format!("secret — {name}"),
                 body,
+            });
+        });
+    }
+
+    /// `:rollback` — redeploy the env's previously-deployed version.
+    /// Fetches the env's recent events, scans them for the version
+    /// label that was current before this one (see
+    /// [`previous_version_label`]), and opens the standard deploy
+    /// confirm modal for it — so the operator sees + confirms the
+    /// target, and the 5s undo window still applies.
+    pub(crate) fn cmd_rollback(&mut self) {
+        if self.read_only {
+            self.error_message = Some("read-only mode — rollback disabled".into());
+            return;
+        }
+        let Some(env) = self.selected_env().cloned() else {
+            self.error_message = Some("no env selected".into());
+            return;
+        };
+        let env_name = env.name.clone();
+        let current_version = env.version_label.clone();
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        self.status_message = Some(format!("rollback: finding {env_name}'s previous version…"));
+        tokio::spawn(async move {
+            let result = aws
+                .list_events_for_env(&env_name, 100)
+                .await
+                .map_err(|e| flatten_err("list_events_for_env", e));
+            let _ = tx.send(AppMsg::RollbackTarget {
+                gen,
+                env_name,
+                current_version,
+                result,
             });
         });
     }
@@ -8763,6 +8807,7 @@ impl App {
             "batch-set-option" => self.cmd_batch_set_option(&rest),
             "versions" => self.cmd_versions(),
             "deploy" => self.cmd_deploy(&rest),
+            "rollback" => self.cmd_rollback(),
             "delete-version" => self.cmd_delete_version(&rest),
             "upgrade" => self.cmd_upgrade(&rest),
             "clone" => self.cmd_clone(&rest),
@@ -9888,6 +9933,53 @@ impl App {
                 modal.loading_events = false;
                 if let Ok(events) = result {
                     modal.recent_events = Some(events);
+                }
+            }
+            AppMsg::RollbackTarget {
+                gen,
+                env_name,
+                current_version,
+                result,
+            } => {
+                if gen != self.generation {
+                    return;
+                }
+                match result {
+                    Err(e) => self.error_message = Some(format!("rollback: {e}")),
+                    Ok(events) => {
+                        match previous_version_label(&events, &current_version) {
+                            None => {
+                                self.error_message = Some(format!(
+                                    "rollback: no prior version in {env_name}'s recent events — use :versions then :deploy"
+                                ));
+                            }
+                            // The deploy-confirm modal targets the
+                            // *selected* env; if the cursor moved off
+                            // the env `:rollback` was issued for, bail
+                            // rather than roll back the wrong one.
+                            Some(_)
+                                if self.selected_env().map(|e| e.name.as_str())
+                                    != Some(env_name.as_str()) =>
+                            {
+                                self.error_message = Some(
+                                    "rollback cancelled — selection moved off the target env"
+                                        .into(),
+                                );
+                            }
+                            Some(prev) => {
+                                self.status_message = Some(format!(
+                                    "rollback {env_name}: redeploying previous version {prev}"
+                                ));
+                                self.open_parameterised_action(
+                                    Action::Deploy,
+                                    ParameterisedAction {
+                                        deploy_version: Some(prev),
+                                        ..Default::default()
+                                    },
+                                );
+                            }
+                        }
+                    }
                 }
             }
             AppMsg::DetailTags {
@@ -11309,6 +11401,21 @@ impl App {
 
 /// Compact age formatter — "3s", "12s", "2m", "1h", "4d". Used for the
 /// pending-actions overlay so ages stay short and uniform.
+/// Pure: the version label deployed *before* `current`, found by
+/// scanning `events` (newest-first, as `DescribeEvents` returns)
+/// for the first `version_label` that differs from `current`. EB
+/// tags each event with the version current at the time, so walking
+/// back, the first label ≠ `current` is the one the env ran before
+/// this deploy. `None` when no prior version appears in the window.
+pub fn previous_version_label(events: &[EbEvent], current: &str) -> Option<String> {
+    events
+        .iter()
+        .filter_map(|e| e.version_label.as_deref())
+        .filter(|v| !v.is_empty())
+        .find(|v| *v != current)
+        .map(|v| v.to_string())
+}
+
 pub fn humanize_short_age(d: Duration) -> String {
     let secs = d.as_secs();
     if secs < 60 {
@@ -15389,7 +15496,51 @@ mod tests {
             application: "uflexi".into(),
             message: msg.into(),
             severity: "INFO".into(),
+            version_label: None,
         }
+    }
+
+    #[test]
+    fn previous_version_label_finds_prior_deploy() {
+        let ev = |vl: Option<&str>| crate::aws::Event {
+            at: None,
+            env: "e".into(),
+            application: "a".into(),
+            message: String::new(),
+            severity: "INFO".into(),
+            version_label: vl.map(String::from),
+        };
+        // Newest-first: current build-3, an untagged event, then the
+        // older deploys. The first label ≠ current is the rollback target.
+        let events = vec![
+            ev(Some("build-3")),
+            ev(None),
+            ev(Some("build-3")),
+            ev(Some("build-2")),
+            ev(Some("build-1")),
+        ];
+        assert_eq!(
+            super::previous_version_label(&events, "build-3"),
+            Some("build-2".into())
+        );
+        // Only the current version (+ untagged) appears → None.
+        let only_current = vec![ev(Some("build-3")), ev(None), ev(Some("build-3"))];
+        assert_eq!(
+            super::previous_version_label(&only_current, "build-3"),
+            None
+        );
+        // No version labels at all → None.
+        assert_eq!(
+            super::previous_version_label(&[ev(None), ev(None)], "build-3"),
+            None
+        );
+        // Empty event list → None.
+        assert_eq!(super::previous_version_label(&[], "build-3"), None);
+        // Empty-string labels are skipped.
+        assert_eq!(
+            super::previous_version_label(&[ev(Some("")), ev(Some("build-1"))], "build-3"),
+            Some("build-1".into())
+        );
     }
 
     #[test]
