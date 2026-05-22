@@ -372,85 +372,195 @@ const SPLASH_LOGO: &[&str] = &[
     "███████ ██████  ██      ██ ██   ██ ██   ████",
 ];
 
-/// 8-bit pixel-art splash scene — an angry giant clutching a
-/// beanstalk (the `ebman` = Elastic *Beanstalk* gag). Each glyph is
-/// a palette key, not a literal; the renderer paints every
-/// non-space key as a full-block `█` cell coloured via
-/// [`splash_pixel`]. Two frames cycle for a "tug + glare" loop.
-/// Authored deliberately chunky — NES-sprite aesthetic. Rows need
-/// not be equal length; the renderer pads to the widest row.
-///
-/// Palette keys: G/g/h giant skin + shadow + highlight · B brow ·
-/// W eye-white · P pupil (angry red) · M mouth · K tusk ·
-/// T/t beanstalk stem · L/l leaf · D/d ground.
-const GIANT_FRAME_A: &[&str] = &[
-    "         ggGGGGGGGGGGGGGGGGGGgg          ",
-    "        gGGBBB  GGGGGG  BBBGGGg          ",
-    "        GGGG BBBB    BBBB GGGG           ",
-    "        GGh  WPW G  G WPW  hGG           ",
-    "        gGGg  gg GGGG gg  gGGg           ",
-    "         GGg  MMMMMMMMMM  gGG            ",
-    "          gG K MMMMMMMM K Gg             ",
-    "             lLl  tTt  lLl               ",
-    "          GGGGGGGGGGGGGGGGGGGG           ",
-    "         GGgg    tTt    ggGG             ",
-    "          GGGGGGGGGGGGGGGGGGGG           ",
-    "                  tTt                    ",
-    "  DDDDDDDDDDDDDDdtTtdDDDDDDDDDDDDDDDD     ",
+// 8-bit pixel-art splash scene — an angry giant chomping a
+// beanstalk (the `ebman` = Elastic *Beanstalk* gag: a giant
+// devouring the thing).
+//
+// Each glyph in a frame is a palette key, not a literal. The
+// renderer ([`splash_giant_lines`]) paints every non-space key as a
+// **two-cell** `██` block coloured via [`splash_pixel`] — two cells
+// wide so each logical pixel is roughly square (terminal cells are
+// ~1:2). Transparent keys render as two blank cells.
+//
+// Four frames cycle a chomp: jaws-wide → closing → CHOMP → opening.
+// Only the forehead wrinkles (rows 3-4), the eyes (rows 7-9) and
+// the mouth (rows 12-13) animate — the furrow deepens toward the
+// bite. Everything else, the head outline and the whole leafy
+// beanstalk (rows 14-23), is identical across every frame, so the
+// beanstalk stays rooted and still while the giant glares, furrows
+// and chomps.
+//
+// Palette keys: G/g/h giant skin + shadow + highlight · B brow ·
+// W eye-white · P pupil (angry red) · M mouth · K tusk ·
+// T/t beanstalk stem · L/l leaf · D/d ground. Rows need not be
+// equal length — the renderer pads to the widest row.
+
+/// Frame 1 — JAWS WIDE. Eyes glaring, mouth gaping over the leafy
+/// crown of the (static) beanstalk.
+const GIANT_FRAME_1: &[&str] = &[
+    "          hGGGGGGGGGGg        ",
+    "        hGGGGGGGGGGGGGGGg      ",
+    "       hGGGGGGGGGGGGGGGGGg     ",
+    "      hGGggggGGGGGGggggGGGg    ",
+    "      GGGGGGGggggggGGGGGGGg    ",
+    "      GGBBBBGGGGGGGGBBBBGGg    ",
+    "      GGGGBBBBGGGGBBBBGGGGGg   ",
+    "      GGGWWWWWGGGGWWWWWGGGGg   ",
+    "      GgGWWPPWGGggGWWPPWGGgg   ",
+    "      GgGWWWWWGgggGWWWWWGGGg   ",
+    "      GggGGGGGGGgggGGGGGGGgg   ",
+    "      GggGKKGGGGGGGGKKGGGGgg   ",
+    "      GgGKMMMMLLMMMMMMKGGGGg   ",
+    "      GgGKMMMMTTMMMMMMKGGGGg   ",
+    "       GgGGGGGTTGGGGGGGGGgg    ",
+    "        GgggGGtTtGGGGGGGgg     ",
+    "         GggGGtTtGGGGGGgg      ",
+    "        lLLltttTTtttlLLl       ",
+    "          GGgtTTtgGG          ",
+    "           GgtTTtgG           ",
+    "         lLLltTTt             ",
+    "             tTTtlLLl         ",
+    "             tTTt             ",
+    "  DDDDDDDDDDDDtTTtDDDDDDDDDD  ",
 ];
 
-/// Second frame — brows slammed lower, eyes narrowed to angry
-/// slits, mouth open wider (roar), fist shifted + the stalk leaning
-/// as the giant yanks it. Cycling A↔B reads as a tug.
-const GIANT_FRAME_B: &[&str] = &[
-    "         ggGGGGGGGGGGGGGGGGGGgg          ",
-    "        gGGBBBBGGGGGGGGBBBBGGGg          ",
-    "        GGGGBBBBBB  BBBBBB GGGG          ",
-    "        GGh  BPB G  G BPB  hGG           ",
-    "        gGGg  gg GGGG gg  gGGg           ",
-    "         GG  MMMMMMMMMMMM  GG            ",
-    "         gG K MMMMMMMMMM K Gg            ",
-    "            lLl   tTt    Ll              ",
-    "         GGGGGGGGGGGGGGGGGGGG            ",
-    "        GGgg   tTt     ggGG              ",
-    "         GGGGGGGGGGGGGGGGGGGG            ",
-    "                 t Tt                   ",
-    "  DDDDDDDDDDDDDDdtTtdDDDDDDDDDDDDDDDD     ",
+/// Frame 2 — CLOSING. Eyes flick to the food, mouth half-shut, a
+/// forehead furrow forming as the strain begins.
+const GIANT_FRAME_2: &[&str] = &[
+    "          hGGGGGGGGGGg        ",
+    "        hGGGGGGGGGGGGGGGg      ",
+    "       hGGGGGGGGGGGGGGGGGg     ",
+    "      hGGggggGGGGGGggggGGGg    ",
+    "      GGGGGGGggggggGGGGGGGg    ",
+    "      GGBBBBGGGGGGGGBBBBGGg    ",
+    "      GGGGBBBBGGGGBBBBGGGGGg   ",
+    "      GGGWWWWWGGGGWWWWWGGGGg   ",
+    "      GgGWWWPWGGggGWPWWWGGgg   ",
+    "      GgGWWWWWGgggGWWWWWGGGg   ",
+    "      GggGGGGGGGgggGGGGGGGgg   ",
+    "      GggGKKGGGGGGGGKKGGGGgg   ",
+    "      GgGKGMMMLLMMMMMGKGGGGg   ",
+    "      GgGKGMMMTTMMMMMGKGGGGg   ",
+    "       GgGGGGGTTGGGGGGGGGgg    ",
+    "        GgggGGtTtGGGGGGGgg     ",
+    "         GggGGtTtGGGGGGgg      ",
+    "        lLLltttTTtttlLLl       ",
+    "          GGgtTTtgGG          ",
+    "           GgtTTtgG           ",
+    "         lLLltTTt             ",
+    "             tTTtlLLl         ",
+    "             tTTt             ",
+    "  DDDDDDDDDDDDtTTtDDDDDDDDDD  ",
+];
+
+/// Frame 3 — CHOMP. Eyes screwed to angry slits, mouth clamped shut
+/// on the vine, forehead furrowed deep with the effort. The bite.
+const GIANT_FRAME_3: &[&str] = &[
+    "          hGGGGGGGGGGg        ",
+    "        hGGGGGGGGGGGGGGGg      ",
+    "       hGggggGGGGGGggggGGg     ",
+    "      hGGGGgggGGGGgggGGGGGg    ",
+    "      GGGGGGGggggggGGGGGGGg    ",
+    "      GGBBBBGGGGGGGGBBBBGGg    ",
+    "      GGGGBBBBGGGGBBBBGGGGGg   ",
+    "      GGGBBBBBGGGGBBBBBGGGGg   ",
+    "      GgGWPPWWGGggGWWPPWGGgg   ",
+    "      GgGGWWWGGgggGGWWWGGGGg   ",
+    "      GggGGGGGGGgggGGGGGGGgg   ",
+    "      GggGKKGGGGGGGGKKGGGGgg   ",
+    "      GgGKGGGGGGGGGGGGKGGGGg   ",
+    "      GgGKMMMMMMMMMMMMKGGGGg   ",
+    "       GgGGGGGTTGGGGGGGGGgg    ",
+    "        GgggGGtTtGGGGGGGgg     ",
+    "         GggGGtTtGGGGGGgg      ",
+    "        lLLltttTTtttlLLl       ",
+    "          GGgtTTtgGG          ",
+    "           GgtTTtgG           ",
+    "         lLLltTTt             ",
+    "             tTTtlLLl         ",
+    "             tTTt             ",
+    "  DDDDDDDDDDDDtTTtDDDDDDDDDD  ",
+];
+
+/// Frame 4 — OPENING. Eyes widen back to a glare, mouth parting for
+/// the next mouthful, the forehead furrow easing off.
+const GIANT_FRAME_4: &[&str] = &[
+    "          hGGGGGGGGGGg        ",
+    "        hGGGGGGGGGGGGGGGg      ",
+    "       hGGGGGGGGGGGGGGGGGg     ",
+    "      hGGggggGGGGGGggggGGGg    ",
+    "      GGGGGGGggggggGGGGGGGg    ",
+    "      GGBBBBGGGGGGGGBBBBGGg    ",
+    "      GGGGBBBBGGGGBBBBGGGGGg   ",
+    "      GGGWWWWWGGGGWWWWWGGGGg   ",
+    "      GgGWWPPWGGggGWWPPWGGgg   ",
+    "      GgGWWWWWGgggGWWWWWGGGg   ",
+    "      GggGGGGGGGgggGGGGGGGgg   ",
+    "      GggGKKGGGGGGGGKKGGGGgg   ",
+    "      GgGKGMMMLLMMMMMGKGGGGg   ",
+    "      GgGKGMMMTTMMMMMGKGGGGg   ",
+    "       GgGGGGGTTGGGGGGGGGgg    ",
+    "        GgggGGtTtGGGGGGGgg     ",
+    "         GggGGtTtGGGGGGgg      ",
+    "        lLLltttTTtttlLLl       ",
+    "          GGgtTTtgGG          ",
+    "           GgtTTtgG           ",
+    "         lLLltTTt             ",
+    "             tTTtlLLl         ",
+    "             tTTt             ",
+    "  DDDDDDDDDDDDtTTtDDDDDDDDDD  ",
 ];
 
 /// Map a pixel-art palette key to an RGB colour. `None` = a
-/// transparent cell (rendered as a blank space).
+/// transparent cell (rendered as two blank cells).
+///
+/// The giant's skin is a cool stone-grey — deliberately *not*
+/// green, so the green beanstalk it's chomping stays visible as it
+/// passes over the face / neck instead of disappearing into it.
 fn splash_pixel(key: char) -> Option<(u8, u8, u8)> {
     Some(match key {
-        'G' => (124, 168, 99),  // giant skin — sickly ogre green
-        'g' => (82, 116, 68),   // giant skin shadow
-        'h' => (162, 200, 136), // giant skin highlight
-        'B' => (38, 46, 33),    // heavy brow
-        'W' => (244, 244, 228), // eye white
-        'P' => (214, 52, 46),   // pupil — angry red
-        'M' => (58, 22, 26),    // mouth interior
-        'K' => (238, 236, 214), // tusk
-        'T' => (74, 150, 58),   // beanstalk stem
-        't' => (46, 102, 42),   // beanstalk stem shadow
-        'L' => (120, 196, 80),  // leaf
-        'l' => (64, 134, 52),   // leaf shadow
-        'D' => (116, 84, 58),   // ground / dirt
-        'd' => (78, 56, 40),    // dirt shadow
+        'G' => (138, 142, 150), // giant skin — cool stone grey
+        'g' => (92, 96, 106),   // giant skin shadow
+        'h' => (176, 180, 188), // giant skin highlight
+        'B' => (30, 34, 40),    // heavy brow
+        'W' => (246, 246, 232), // eye white
+        'P' => (222, 54, 46),   // pupil — angry red
+        'M' => (52, 16, 22),    // mouth interior
+        'K' => (240, 238, 216), // tusk
+        'T' => (96, 188, 66),   // beanstalk stem — bright, pops on grey
+        't' => (52, 124, 46),   // beanstalk stem shadow
+        'L' => (146, 220, 96),  // leaf
+        'l' => (78, 158, 60),   // leaf shadow
+        'D' => (122, 88, 58),   // ground / dirt
+        'd' => (82, 60, 40),    // dirt shadow
         _ => return None,
     })
 }
 
+/// Number of art rows in the giant scene (every frame is the same
+/// height). Used by callers to size the splash card / about popup.
+pub(crate) const GIANT_SCENE_ROWS: usize = GIANT_FRAME_1.len();
+
 /// Build the coloured lines for the giant scene at `frame`. Each
-/// non-transparent cell is a `█` block in its palette colour. Used
-/// by the boot splash and by the `:about` overlay.
+/// non-transparent pixel is a **two-cell** `██` block in its palette
+/// colour, so the logical pixels are roughly square. Used by the
+/// boot splash and the `:about` overlay.
 pub(crate) fn splash_giant_lines(frame: u64) -> Vec<ratatui::text::Line<'static>> {
     use ratatui::layout::Alignment;
     use ratatui::style::{Color, Style};
     use ratatui::text::{Line, Span};
-    let frames = [GIANT_FRAME_A, GIANT_FRAME_B];
-    // ~0.45 s per frame at 30 ms ticks — a slow, deliberate tug.
-    let scene = frames[(frame as usize / 15) % frames.len()];
-    let width = scene.iter().map(|r| r.chars().count()).max().unwrap_or(0);
+    let frames = [GIANT_FRAME_1, GIANT_FRAME_2, GIANT_FRAME_3, GIANT_FRAME_4];
+    // ~0.3 s per frame at 30 ms ticks — a brisk four-step tug cycle.
+    let scene = frames[(frame as usize / 10) % frames.len()];
+    // Pad every row to the widest row across ALL frames (not just the
+    // current one) — a per-frame width would re-centre each frame and
+    // make the whole sprite jitter sideways between frames.
+    let width = frames
+        .iter()
+        .flat_map(|f| f.iter())
+        .map(|r| r.chars().count())
+        .max()
+        .unwrap_or(0);
     scene
         .iter()
         .map(|row| {
@@ -459,10 +569,11 @@ pub(crate) fn splash_giant_lines(frame: u64) -> Vec<ratatui::text::Line<'static>
                 .map(|col| {
                     let key = chars.get(col).copied().unwrap_or(' ');
                     match splash_pixel(key) {
+                        // Two cells per pixel → square logical pixels.
                         Some((r, g, b)) => {
-                            Span::styled("█", Style::default().fg(Color::Rgb(r, g, b)))
+                            Span::styled("██", Style::default().fg(Color::Rgb(r, g, b)))
                         }
-                        None => Span::raw(" "),
+                        None => Span::raw("  "),
                     }
                 })
                 .collect();
@@ -479,11 +590,12 @@ fn draw_splash(terminal: &mut Tui, frame: u64, icons: &str) -> Result<()> {
 
     terminal.draw(|f| {
         let area = f.area();
-        // The pixel-art giant scene needs vertical + horizontal room;
-        // on a small terminal fall back to the compact text splash so
-        // the card never overflows.
-        let show_scene = area.height >= 32 && area.width >= 56;
-        let card_h: u16 = if show_scene { 28 } else { 14 };
+        // The pixel-art giant scene is ~60 cells wide (square pixels)
+        // and 24 rows tall; it needs real room. On a smaller terminal
+        // fall back to the compact text splash so the card never
+        // overflows.
+        let show_scene = area.height >= 40 && area.width >= 90;
+        let card_h: u16 = if show_scene { 38 } else { 14 };
         let v = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -815,7 +927,7 @@ fn dirs_log_dir() -> std::path::PathBuf {
 mod tests {
     use super::{
         cli_esc, hsl_to_rgb, prune_old_crash_reports, splash_giant_lines, splash_pixel,
-        GIANT_FRAME_A, GIANT_FRAME_B,
+        GIANT_FRAME_1, GIANT_FRAME_2, GIANT_FRAME_3, GIANT_FRAME_4,
     };
 
     #[test]
@@ -828,7 +940,7 @@ mod tests {
     #[test]
     fn splash_pixel_maps_keys_and_treats_space_as_transparent() {
         // Every key used in the art frames must resolve to a colour.
-        for frame in [GIANT_FRAME_A, GIANT_FRAME_B] {
+        for frame in [GIANT_FRAME_1, GIANT_FRAME_2, GIANT_FRAME_3, GIANT_FRAME_4] {
             for row in frame {
                 for ch in row.chars() {
                     if ch != ' ' {
@@ -844,26 +956,72 @@ mod tests {
     }
 
     #[test]
+    fn all_giant_frames_are_the_same_height() {
+        // Frames must agree on row count — the head silhouette is
+        // meant to stay fixed while only the expressive rows change.
+        let h = GIANT_FRAME_1.len();
+        for f in [GIANT_FRAME_2, GIANT_FRAME_3, GIANT_FRAME_4] {
+            assert_eq!(f.len(), h, "frame height mismatch");
+        }
+    }
+
+    #[test]
+    fn splash_giant_frames_render_identical_width() {
+        // Every frame must render to the same total cell width, or
+        // centre-alignment shifts the sprite sideways between frames
+        // (a visible jitter). Guards the global-width padding.
+        let line_w = |l: &ratatui::text::Line| -> usize {
+            l.spans.iter().map(|s| s.content.chars().count()).sum()
+        };
+        let widths: Vec<usize> = [0_u64, 10, 20, 30]
+            .iter()
+            .map(|&f| {
+                let ls = splash_giant_lines(f);
+                // Every row within a frame is already the same width;
+                // sample the first.
+                line_w(&ls[0])
+            })
+            .collect();
+        assert!(
+            widths.iter().all(|&w| w == widths[0]),
+            "frames render at differing widths: {widths:?}"
+        );
+    }
+
+    #[test]
     fn splash_giant_lines_renders_full_scene_and_animates() {
-        // Both frames render every art row.
-        let a = splash_giant_lines(0);
-        let b = splash_giant_lines(15); // crosses into frame B at /15
-        assert_eq!(a.len(), GIANT_FRAME_A.len());
-        assert_eq!(b.len(), GIANT_FRAME_B.len());
-        // The two frames must actually differ, or it's not animating.
+        // Include the foreground colour, not just the glyph — the
+        // frames animate by recolouring cells (eyes glare↔slits,
+        // mouth open↔shut), so a glyph-only compare would miss it.
         let render = |ls: &[ratatui::text::Line]| {
             ls.iter()
                 .map(|l| {
                     l.spans
                         .iter()
-                        .map(|s| s.content.as_ref())
+                        .map(|s| format!("{:?}{}", s.style.fg, s.content))
                         .collect::<String>()
                 })
                 .collect::<Vec<_>>()
         };
-        assert_ne!(render(&a), render(&b), "frames A and B should differ");
-        // The cycle returns to frame A.
-        assert_eq!(render(&splash_giant_lines(30)), render(&a));
+        // Every frame renders every art row.
+        let f1 = splash_giant_lines(0);
+        assert_eq!(f1.len(), GIANT_FRAME_1.len());
+        // The four cycle slots are not all identical — it animates.
+        let f2 = render(&splash_giant_lines(10));
+        let f3 = render(&splash_giant_lines(20));
+        let f4 = render(&splash_giant_lines(30));
+        let f1r = render(&f1);
+        assert!(
+            f1r != f2 || f1r != f3 || f1r != f4,
+            "frames should differ — scene is not animating"
+        );
+        // The 4-frame cycle wraps back to frame 1.
+        assert_eq!(render(&splash_giant_lines(40)), f1r);
+        // Square pixels: a painted cell is the two-block "██".
+        assert!(f1
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .any(|s| s.content.as_ref() == "██"));
     }
 
     #[test]

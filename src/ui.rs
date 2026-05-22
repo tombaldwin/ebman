@@ -1257,8 +1257,10 @@ fn draw_about(f: &mut Frame, area: Rect, app: &App, opened: std::time::Instant) 
     // Animated giant scene — ~30 ms-per-unit frame clock so the A↔B
     // cycle matches the boot splash. Shown only when the popup has
     // room for the 13-row scene plus the text block.
-    let scene_h = crate::GIANT_FRAME_A.len() as u16;
-    if inner.height >= scene_h + 14 {
+    // The square-pixel scene is ~60 cells wide; only draw it when the
+    // popup has room for that plus the project text below.
+    let scene_h = crate::GIANT_SCENE_ROWS as u16;
+    if inner.height >= scene_h + 14 && inner.width >= 60 {
         let frame = (opened.elapsed().as_millis() / 30) as u64;
         lines.push(Line::from(""));
         lines.extend(crate::splash_giant_lines(frame));
