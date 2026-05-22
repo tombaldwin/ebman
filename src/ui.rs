@@ -502,8 +502,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     } else if app.detail.is_some() {
         draw_detail(f, f.area(), app);
     } else {
-        let events_height: u16 = if app.events_visible {
-            app.events_panel_height
+        let events_height: u16 = if app.event_panel.visible {
+            app.event_panel.height
         } else {
             0
         };
@@ -534,12 +534,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             Scope::Envs => draw_table(f, chunks[1], app),
             Scope::Apps => draw_apps_table(f, chunks[1], app),
         }
-        if app.events_visible {
-            app.events_area = Some(chunks[2]);
+        if app.event_panel.visible {
+            app.event_panel.area = Some(chunks[2]);
             draw_events(f, chunks[2], app);
             draw_footer(f, chunks[3], app);
         } else {
-            app.events_area = None;
+            app.event_panel.area = None;
             draw_footer(f, chunks[2], app);
         }
     }
@@ -552,7 +552,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     } else {
         // Reset the cached max so a stale value doesn't survive across
         // hides; the next help open will recompute it on the first frame.
-        app.help_max_scroll = 0;
+        app.help.max_scroll = 0;
     }
     if app.mode == Mode::Picker {
         draw_picker(f, f.area(), app);
@@ -2680,14 +2680,36 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                             } else {
                                 None
                             };
-                            match icon {
-                                Some(g) => Cell::from(Line::from(vec![
-                                    Span::styled(format!("{g} "), Style::default().fg(colour)),
-                                    Span::styled(e.platform.as_str(), Style::default().fg(colour)),
-                                ])),
-                                None => Cell::from(Span::raw(e.platform.as_str()))
-                                    .style(Style::default().fg(colour)),
+                            // A newer platform version in the same family
+                            // recolours the name amber + appends an ↑ glyph
+                            // so the operator sees the console's "update
+                            // available" nag without leaving the table.
+                            // Staleness is precomputed in `rebuild_view` —
+                            // this is an O(1) lookup, not a per-frame parse.
+                            let stale = app.cached_stale_platforms.get(&e.name);
+                            let name_colour = if stale.is_some() {
+                                theme.health_yellow
+                            } else {
+                                colour
+                            };
+                            let mut spans = Vec::new();
+                            if let Some(g) = icon {
+                                spans.push(Span::styled(
+                                    format!("{g} "),
+                                    Style::default().fg(colour),
+                                ));
                             }
+                            spans.push(Span::styled(
+                                e.platform.as_str(),
+                                Style::default().fg(name_colour),
+                            ));
+                            if stale.is_some() {
+                                spans.push(Span::styled(
+                                    format!(" {}", stale_glyph(theme.icons)),
+                                    Style::default().fg(theme.health_yellow),
+                                ));
+                            }
+                            Cell::from(Line::from(spans))
                         }
                         "VERSION" => Cell::from(Span::raw(e.version_label.as_str()))
                             .style(Style::default().fg(theme.app_palette[0])),
@@ -3253,15 +3275,15 @@ fn status_pill_for(status: &str, theme: &Theme, muted: bool) -> Span<'static> {
 }
 
 fn draw_events(f: &mut Frame, area: Rect, app: &App) {
-    let scope_suffix = match app.events_for_env.as_deref() {
+    let scope_suffix = match app.event_panel.for_env.as_deref() {
         Some(env) => format!(" · {env}"),
         None => " · all envs".to_string(),
     };
-    let title = format!("Events  {}{}", app.events.len(), scope_suffix);
+    let title = format!("Events  {}{}", app.event_panel.events.len(), scope_suffix);
     let block =
         titled_block(&app.theme, &title, true, app.theme.title).padding(Padding::horizontal(1));
 
-    if app.events.is_empty() {
+    if app.event_panel.events.is_empty() {
         let lines = vec![
             Line::from(""),
             Line::from(Span::styled(
@@ -3281,15 +3303,16 @@ fn draw_events(f: &mut Frame, area: Rect, app: &App) {
     }
 
     let now = chrono::Utc::now();
-    let tw = event_time_width(app.event_time_format);
+    let tw = event_time_width(app.event_panel.time_format);
     let lines: Vec<Line> = app
+        .event_panel
         .events
         .iter()
         .enumerate()
         .map(|(i, e)| {
-            let when = format_event_time(e.at, app.event_time_format, now);
+            let when = format_event_time(e.at, app.event_panel.time_format, now);
             let sev_style = severity_style(&e.severity, &app.theme);
-            let is_cursor = app.events_cursor == Some(i);
+            let is_cursor = app.event_panel.cursor == Some(i);
             let marker = if is_cursor { "▶ " } else { "  " };
             let marker_style = if is_cursor {
                 Style::default()
@@ -3318,7 +3341,7 @@ fn draw_events(f: &mut Frame, area: Rect, app: &App) {
 
     let para = Paragraph::new(lines)
         .block(block)
-        .scroll((app.events_scroll, 0));
+        .scroll((app.event_panel.scroll, 0));
     f.render_widget(para, area);
 }
 
@@ -3536,7 +3559,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         Mode::Normal => {
             // Focus-aware key strip: the events panel has its own navigation.
             match app.focus {
-                crate::app::Focus::Events if app.events_visible => {
+                crate::app::Focus::Events if app.event_panel.visible => {
                     " EVENTS  j/k cursor   y yank line   ^] back to table   ^E hide   esc / q".into()
                 }
                 _ => " j/k move  enter drill  a actions  / filter  : command  ^K palette  r region  p profile  ^R refresh  ? help  q quit".into(),
@@ -3578,7 +3601,7 @@ fn draw_help(f: &mut Frame, area: Rect, app: &mut App) {
     // Per-context help: when the user pressed `?` inside Detail / DLQ /
     // Action / Shell, show only the keys relevant to that screen. The
     // global keymap is still available via `?` from Normal mode.
-    match app.help_topic {
+    match app.help.topic {
         crate::app::HelpTopic::Detail => return draw_help_detail(f, popup, app),
         crate::app::HelpTopic::Dlq => return draw_help_dlq(f, popup, app),
         crate::app::HelpTopic::Action => return draw_help_action(f, popup, app),
@@ -3800,8 +3823,8 @@ fn draw_help(f: &mut Frame, area: Rect, app: &mut App) {
     // Maximum scroll = where the last line is pinned to the body's
     // bottom. Below that, scrolling further would reveal blank space.
     let max_scroll = total_lines.saturating_sub(body_height);
-    app.help_max_scroll = max_scroll;
-    let effective_scroll = app.help_scroll.min(max_scroll);
+    app.help.max_scroll = max_scroll;
+    let effective_scroll = app.help.scroll.min(max_scroll);
 
     // Scroll indicators: emit "↑ N more above" on the top inner row and
     // "↓ N more below" on the row just above the byline when there's
@@ -4424,6 +4447,14 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
 
     let cname_text = redact(&env.cname, app.redact);
     let mut h2 = kv("Platform", &env.platform, theme);
+    if let Some(newer) = app.cached_stale_platforms.get(&env.name) {
+        h2.push(Span::styled(
+            format!("  {}v{newer} available", stale_glyph(theme.icons)),
+            Style::default()
+                .fg(theme.health_yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
     h2.push(sep(theme));
     h2.extend(kv("Version", &env.version_label, theme));
     h2.push(sep(theme));
@@ -4452,7 +4483,7 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
                 body_area,
                 detail,
                 &app.theme,
-                app.event_time_format,
+                app.event_panel.time_format,
             ));
         }
         DetailTab::Instances => draw_detail_instances(f, body_area, detail, &app.theme),
@@ -4533,41 +4564,104 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
             Span::raw("   "),
             auto_badge,
         ]),
-        Line::from(Span::styled(
-            detail_tab_keystrip(active_tab),
-            Style::default().fg(app.theme.muted),
-        )),
+        render_detail_keystrip(active_tab, &app.theme),
     ]);
     f.render_widget(footer, chunks[3]);
 }
 
-/// Per-tab key strip for the Detail footer. Each tab advertises the keys
-/// most relevant to that view; common cycling keys (tab / shift-tab / ^R)
-/// stay across all of them.
-fn detail_tab_keystrip(tab: DetailTab) -> &'static str {
+/// Tab-specific `(key, label)` pairs for the Detail footer key strip.
+/// The global keys (`tab` / `?` / `esc`) are appended uniformly by
+/// `render_detail_keystrip`, so each tab only declares what's unique to it.
+fn detail_tab_keys(tab: DetailTab) -> &'static [(&'static str, &'static str)] {
     match tab {
-        DetailTab::Health => {
-            " HEALTH  j/k move  enter drill  tab→ Events  a actions  ^R refresh  ? help  esc back"
-        }
-        DetailTab::Instances => {
-            " INSTANCES  j/k cursor  s ssm shell  i info  y yank id  x terminate  tab→ Metrics  a actions  ^R refresh  ? help  esc back"
-        }
-        DetailTab::Events => {
-            " EVENTS  j/k scroll  / filter  n/N next  L lvl  w window  T time  tab→ Instances  a actions  ^R refresh  ? help  esc back"
-        }
-        DetailTab::Metrics => {
-            " METRICS  [ / ]  range  hover values  tab→ Queue  a actions  ^R refresh  R auto-refresh  ? help  esc back"
-        }
-        DetailTab::Queue => {
-            " QUEUE  j/k pick Main/DLQ  enter view  d DLQ  ^R refresh  ? help  esc back"
-        }
-        DetailTab::Logs => {
-            " LOGS  ^R snapshot  s live-stream  / filter  ? help  esc back"
-        }
-        DetailTab::Config => {
-            " CONFIG  j/k move  enter edit  r rename  n new  x delete  a actions  ^R refresh  ? help  esc back"
-        }
+        DetailTab::Health => &[
+            ("j/k", "move"),
+            ("enter", "drill"),
+            ("a", "actions"),
+            ("^R", "refresh"),
+        ],
+        DetailTab::Instances => &[
+            ("j/k", "cursor"),
+            ("s", "ssm shell"),
+            ("i", "info"),
+            ("y", "yank id"),
+            ("x", "terminate"),
+            ("a", "actions"),
+            ("^R", "refresh"),
+        ],
+        DetailTab::Events => &[
+            ("j/k", "scroll"),
+            ("/", "filter"),
+            ("n/N", "next"),
+            ("L", "level"),
+            ("w", "window"),
+            ("T", "time"),
+            ("^R", "refresh"),
+        ],
+        DetailTab::Metrics => &[
+            ("[ ]", "range"),
+            ("hover", "values"),
+            ("R", "auto-refresh"),
+            ("a", "actions"),
+            ("^R", "refresh"),
+        ],
+        DetailTab::Queue => &[
+            ("j/k", "Main/DLQ"),
+            ("enter", "view"),
+            ("d", "DLQ"),
+            ("^R", "refresh"),
+        ],
+        DetailTab::Logs => &[
+            ("^R", "snapshot"),
+            ("s", "live-stream"),
+            ("/", "filter"),
+        ],
+        DetailTab::Config => &[
+            ("j/k", "move"),
+            ("enter", "edit"),
+            ("r", "rename"),
+            ("n", "new"),
+            ("x", "delete"),
+            ("a", "actions"),
+            ("^R", "refresh"),
+        ],
     }
+}
+
+/// Keys that behave identically on every Detail tab. Appended after the
+/// tab-specific set so the strip always ends `tab · ? · esc`.
+const DETAIL_GLOBAL_KEYS: &[(&str, &str)] = &[("tab", "tabs"), ("?", "help"), ("esc", "back")];
+
+/// Build the Detail footer key strip, lazygit-style: a bold tab name,
+/// then `key`/`label` pairs where the key is bold + bright and the label
+/// muted, separated by a thin dim `·`. The visual key/label contrast lets
+/// the operator scan keys without the strip needing extra width.
+fn render_detail_keystrip(tab: DetailTab, theme: &Theme) -> Line<'static> {
+    let key_style = Style::default()
+        .fg(theme.text)
+        .add_modifier(Modifier::BOLD);
+    let label_style = Style::default().fg(theme.muted);
+    let sep_style = Style::default().fg(theme.border_idle);
+    let mut spans: Vec<Span> = vec![Span::styled(
+        format!(" {} ", tab.title().to_uppercase()),
+        Style::default()
+            .fg(theme.title)
+            .add_modifier(Modifier::BOLD),
+    )];
+    for (i, (key, label)) in detail_tab_keys(tab)
+        .iter()
+        .chain(DETAIL_GLOBAL_KEYS.iter())
+        .enumerate()
+    {
+        spans.push(Span::styled(
+            if i == 0 { " " } else { " · " },
+            sep_style,
+        ));
+        spans.push(Span::styled(*key, key_style));
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(*label, label_style));
+    }
+    Line::from(spans)
 }
 
 struct DetailFooterState {
@@ -6809,6 +6903,15 @@ fn hint_glyph(icons: IconStyle) -> &'static str {
     }
 }
 
+/// "Newer platform version available" glyph — `↑` in unicode/powerline,
+/// `^` in ascii. Flags stale platforms in the envs-table PLATFORM column.
+fn stale_glyph(icons: IconStyle) -> &'static str {
+    match icons {
+        IconStyle::Ascii => "^",
+        _ => "↑",
+    }
+}
+
 /// Severity-stripe glyph for toast notification bodies. Half-block
 /// `▎` in unicode/powerline, `|` in ascii.
 fn stripe_glyph(icons: IconStyle) -> &'static str {
@@ -7349,6 +7452,47 @@ mod tests {
     }
 
     #[test]
+    fn stale_glyph_falls_back_in_ascii() {
+        assert_eq!(super::stale_glyph(IconStyle::Ascii), "^");
+        assert_eq!(super::stale_glyph(IconStyle::Unicode), "↑");
+    }
+
+    #[test]
+    fn detail_keystrip_has_no_duplicate_keys() {
+        for tab in [
+            DetailTab::Health,
+            DetailTab::Events,
+            DetailTab::Instances,
+            DetailTab::Metrics,
+            DetailTab::Queue,
+            DetailTab::Logs,
+            DetailTab::Config,
+        ] {
+            assert!(
+                !detail_tab_keys(tab).is_empty(),
+                "no tab-specific keys for {tab:?}"
+            );
+            let mut seen = std::collections::HashSet::new();
+            for (key, _) in detail_tab_keys(tab).iter().chain(DETAIL_GLOBAL_KEYS.iter()) {
+                assert!(
+                    seen.insert(*key),
+                    "key {key:?} listed twice on the {tab:?} strip"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn render_detail_keystrip_carries_tab_name_and_global_keys() {
+        let theme = Theme::dark();
+        let line = render_detail_keystrip(DetailTab::Config, &theme);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("CONFIG"), "missing tab name: {text:?}");
+        assert!(text.contains("rename"), "missing tab-specific key: {text:?}");
+        assert!(text.contains("esc"), "missing global key: {text:?}");
+    }
+
+    #[test]
     fn hint_glyph_falls_back_in_ascii() {
         assert_eq!(super::hint_glyph(IconStyle::Ascii), "? ");
         assert_eq!(super::hint_glyph(IconStyle::Unicode), "💡 ");
@@ -7786,6 +7930,7 @@ mod tests {
                 health: health.into(),
                 cname: "".into(),
                 platform: "".into(),
+                solution_stack: "".into(),
                 version_label: "".into(),
                 updated: None,
                 id: None,
@@ -7815,6 +7960,7 @@ mod tests {
                 health: health.into(),
                 cname: "".into(),
                 platform: "".into(),
+                solution_stack: "".into(),
                 version_label: "".into(),
                 updated: None,
                 id: None,

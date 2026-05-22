@@ -597,6 +597,7 @@ mod tests {
             status: "Updating".into(),
             health: "Red".into(),
             platform: "Java 17".into(),
+            solution_stack: String::new(),
             tier: tier.into(),
             cname: String::new(),
             version_label: String::new(),

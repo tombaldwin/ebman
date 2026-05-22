@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.5.0] — Rollback, config drift, and a structural cleanup
+
+The user-facing additions are config-drift and rollback tooling
+(`:rollback`, `:config-diff`, `:changes`) plus a stale-platform nag and
+an animated splash. Under the hood, a large decomposition of `app.rs` —
+the generation guard, the message-handling layer, the spawn helpers, and
+the `App` struct itself.
+
+### Added
+- **`:rollback`** — redeploys the environment's previously-deployed version label. Scans the env's recent events for the prior label, then opens the standard deploy-confirm modal so the operator sees + confirms the target and the 5-second undo window applies.
+- **`:config-diff ENV`** — compares the selected environment's operator-set option settings against `ENV`'s, listing every namespace/key whose value differs (the two configs are fetched in parallel; `unset` is normalised so absent-vs-empty doesn't read as a diff).
+- **`:changes`** — a newest-first deploy + configuration-change timeline for the selected env, drawn from `DescribeEvents` with routine health/scaling noise filtered out.
+- **Config-tab key rename** — `r` on the Config tab edits a tag / env-var *key* in place; commit dispatches set-new + remove-old in one `UpdateOptionSettings` / `UpdateTags` call, carrying the value across.
+- **Stale-platform surfacing** — environments running a superseded solution stack are flagged amber with an `↑` glyph in the `PLATFORM` column (and on the Detail Health tab), driven by a `ListAvailableSolutionStacks` lookup. The AWS console nags about this; ebman was previously silent.
+- **Animated splash screen** — an 8-bit pixel-art scene (an angry giant chomping a beanstalk, four-frame animation) replaces the plain boot banner, and also appears on the About screen. The layout degrades gracefully on small terminals.
+
+### Changed
+- **Detail footer key strip** — restructured lazygit-style: keys render bold/bright against muted labels with a thin `·` separator, and the global keys (`tab` / `?` / `esc`) are appended consistently on every tab instead of being listed ad-hoc per tab.
+
+### Internal
+- **`app.rs` decomposition.** The stale-result generation guard is centralised — `AppMsg::generation()` is checked once in `handle_msg` instead of 39 hand-copied `if gen != self.generation` blocks. The ~1,140-line `handle_msg` is split into a thin router plus one `handle_*` method per variant in a new `app/msg.rs`. A generic `spawn_aws` helper absorbs the clone / spawn / map-err / send boilerplate of 23 single-call spawn helpers. 16 `App` fields are grouped into three sub-structs (`CompletionState`, `HelpState`, `EventPanel`).
+- Stale-platform staleness is precomputed in `rebuild_view` (cached `env → newer version`) rather than re-parsed per row per frame.
+
+### Test foundation
+- 415 tests. New coverage: solution-stack family/version parsing + the stale comparison, the Detail key-strip builder, `AppMsg::generation()`, the `:rollback` previous-version scan, and the `:config-diff` namespace comparison.
+
 ## [0.4.1] — Config-editor polish
 
 Two fixes from a post-0.4.0 code review of the Config-tab editor.

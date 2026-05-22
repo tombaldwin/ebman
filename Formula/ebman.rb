@@ -11,7 +11,7 @@
 class Ebman < Formula
   desc "k9s-style TUI for AWS Elastic Beanstalk"
   homepage "https://github.com/tombaldwin/ebman"
-  version "0.4.1"
+  version "0.5.0"
   license "MIT OR Apache-2.0"
 
   if OS.mac?

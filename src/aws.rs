@@ -156,6 +156,11 @@ pub struct Environment {
     pub status: String,
     pub health: String,
     pub platform: String, // family + version, e.g. "Java 17"
+    /// Raw solution-stack name as reported by EB, e.g. `64bit Amazon Linux
+    /// 2023 v6.1.0 running Node.js 18`. Empty for platform-ARN / custom-
+    /// platform envs that don't report a solution stack. Drives the
+    /// stale-platform comparison against `ListAvailableSolutionStacks`.
+    pub solution_stack: String,
     pub tier: String,     // "Web" / "Worker" / "?"
     pub cname: String,
     pub version_label: String,
@@ -2740,9 +2745,24 @@ impl AwsClient {
         }
         Ok(all)
     }
+
+    /// Flat list of every solution-stack name available in this region
+    /// (`ListAvailableSolutionStacks`). Drives the stale-platform check:
+    /// an env whose stack has a lower version than the newest stack in
+    /// the same family is flagged in the table.
+    pub async fn list_solution_stacks(&self) -> Result<Vec<String>> {
+        let resp = self
+            .client
+            .list_available_solution_stacks()
+            .send()
+            .await
+            .wrap_err("ListAvailableSolutionStacks failed")?;
+        Ok(resp.solution_stacks.unwrap_or_default())
+    }
 }
 
 fn map_env(e: aws_sdk_elasticbeanstalk::types::EnvironmentDescription) -> Environment {
+    let solution_stack = e.solution_stack_name.clone().unwrap_or_default();
     let raw_platform = e
         .solution_stack_name
         .clone()
@@ -2766,6 +2786,7 @@ fn map_env(e: aws_sdk_elasticbeanstalk::types::EnvironmentDescription) -> Enviro
             .map(|h| h.as_str().to_string())
             .unwrap_or_else(|| "-".into()),
         platform: platform_family(&raw_platform),
+        solution_stack,
         tier,
         cname: e.cname.unwrap_or_default(),
         version_label: e.version_label.unwrap_or_default(),
@@ -2826,6 +2847,67 @@ fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
         }
     }
     a.cmp(b)
+}
+
+/// Split a solution-stack name into `(family_key, version)`. The family key
+/// is the stack name with its `vX.Y.Z` token removed and surrounding
+/// whitespace collapsed, so two stacks that differ only in version share a
+/// key (e.g. `64bit Amazon Linux 2023 v6.1.0 running Node.js 18` →
+/// `("64bit Amazon Linux 2023 running Node.js 18", "6.1.0")`). Returns
+/// `None` when no `vN.N…` token is present — platform-ARN / custom-platform
+/// envs have no solution stack and so can't be version-compared.
+pub fn stack_family_version(stack: &str) -> Option<(String, String)> {
+    let version_token = stack.split_whitespace().find(|tok| {
+        tok.strip_prefix('v')
+            .map(|rest| {
+                !rest.is_empty()
+                    && rest
+                        .split('.')
+                        .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+            })
+            .unwrap_or(false)
+    })?;
+    let version = version_token.trim_start_matches('v').to_string();
+    let key = stack
+        .split_whitespace()
+        .filter(|tok| *tok != version_token)
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some((key, version))
+}
+
+/// Build a `family_key → newest version` map from a flat
+/// `ListAvailableSolutionStacks` listing. Stacks with no version token are
+/// skipped.
+pub fn latest_stack_versions(stacks: &[String]) -> std::collections::HashMap<String, String> {
+    let mut out: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for s in stacks {
+        if let Some((key, ver)) = stack_family_version(s) {
+            match out.get(&key) {
+                Some(cur) if compare_versions(&ver, cur) != std::cmp::Ordering::Greater => {}
+                _ => {
+                    out.insert(key, ver);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// If a strictly-newer version of `env_stack`'s platform family exists in
+/// `latest`, return that version. `None` when the env is already current,
+/// has no parseable stack, or its family isn't in the listing.
+pub fn newer_stack_version(
+    env_stack: &str,
+    latest: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let (key, ver) = stack_family_version(env_stack)?;
+    let newest = latest.get(&key)?;
+    if compare_versions(newest, &ver) == std::cmp::Ordering::Greater {
+        Some(newest.clone())
+    } else {
+        None
+    }
 }
 
 pub async fn list_environments_in_region(
@@ -2956,6 +3038,78 @@ mod tests {
     fn platform_family_handles_empty_and_unknown() {
         assert_eq!(platform_family(""), "");
         assert_eq!(platform_family("just a string"), "just a string");
+    }
+
+    #[test]
+    fn stack_family_version_splits_solution_stack() {
+        assert_eq!(
+            stack_family_version("64bit Amazon Linux 2023 v6.1.0 running Node.js 18"),
+            Some((
+                "64bit Amazon Linux 2023 running Node.js 18".to_string(),
+                "6.1.0".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn stack_family_version_rejects_versionless() {
+        assert_eq!(stack_family_version(""), None);
+        assert_eq!(stack_family_version("some platform with no version"), None);
+        // A leading-v word that isn't a dotted number must not be mistaken
+        // for the version token.
+        assert_eq!(stack_family_version("running via vN stack"), None);
+    }
+
+    #[test]
+    fn latest_stack_versions_keeps_newest_per_family() {
+        let stacks = vec![
+            "64bit Amazon Linux 2 v3.1.0 running Node.js 14".to_string(),
+            "64bit Amazon Linux 2 v3.10.0 running Node.js 14".to_string(),
+            "64bit Amazon Linux 2 v3.2.0 running Node.js 14".to_string(),
+            "64bit Amazon Linux 2023 v6.1.0 running Node.js 18".to_string(),
+        ];
+        let latest = latest_stack_versions(&stacks);
+        assert_eq!(
+            latest.get("64bit Amazon Linux 2 running Node.js 14"),
+            Some(&"3.10.0".to_string())
+        );
+        assert_eq!(
+            latest.get("64bit Amazon Linux 2023 running Node.js 18"),
+            Some(&"6.1.0".to_string())
+        );
+    }
+
+    #[test]
+    fn newer_stack_version_flags_only_superseded() {
+        let latest = latest_stack_versions(&[
+            "64bit Amazon Linux 2023 v6.1.0 running Node.js 18".to_string(),
+        ]);
+        // Older patch → flagged.
+        assert_eq!(
+            newer_stack_version(
+                "64bit Amazon Linux 2023 v6.0.3 running Node.js 18",
+                &latest
+            ),
+            Some("6.1.0".to_string())
+        );
+        // Already current → not flagged.
+        assert_eq!(
+            newer_stack_version(
+                "64bit Amazon Linux 2023 v6.1.0 running Node.js 18",
+                &latest
+            ),
+            None
+        );
+        // Different family (Node 18 vs 20) → not flagged.
+        assert_eq!(
+            newer_stack_version(
+                "64bit Amazon Linux 2023 v1.0.0 running Node.js 20",
+                &latest
+            ),
+            None
+        );
+        // No parseable stack → not flagged.
+        assert_eq!(newer_stack_version("", &latest), None);
     }
 
     #[test]
