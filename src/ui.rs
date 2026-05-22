@@ -584,6 +584,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 cursor,
             } => draw_apps_action_menu(f, f.area(), app, &app_name, &env_names, cursor),
             Overlay::ReportBug { body } => draw_report_bug_overlay(f, f.area(), app, &body),
+            Overlay::About(opened) => draw_about(f, f.area(), app, opened),
         }
     }
     if app.mode == Mode::Palette {
@@ -1236,6 +1237,82 @@ fn draw_text_dump_overlay(f: &mut Frame, area: Rect, app: &App, title: &str, tex
         )),
         chunks[1],
     );
+}
+
+/// `:about` overlay — the project card, topped with the animated
+/// 8-bit angry-giant-grabs-the-beanstalk scene. The animation frame
+/// is derived from `opened.elapsed()` (the `anim` ticker wakes the
+/// draw loop while this overlay is up). On a popup too short for the
+/// scene, the card degrades to text-only.
+fn draw_about(f: &mut Frame, area: Rect, app: &App, opened: std::time::Instant) {
+    let popup = centered_rect(64, 90, area);
+    f.render_widget(Clear, popup);
+    let theme = &app.theme;
+    let outer = titled_block(&app.theme, "about ebman", true, app.theme.title)
+        .padding(Padding::horizontal(1));
+    let inner = outer.inner(popup);
+    f.render_widget(outer, popup);
+
+    let mut lines: Vec<Line> = Vec::new();
+    // Animated giant scene — ~30 ms-per-unit frame clock so the A↔B
+    // cycle matches the boot splash. Shown only when the popup has
+    // room for the 13-row scene plus the text block.
+    let scene_h = crate::GIANT_FRAME_A.len() as u16;
+    if inner.height >= scene_h + 14 {
+        let frame = (opened.elapsed().as_millis() / 30) as u64;
+        lines.push(Line::from(""));
+        lines.extend(crate::splash_giant_lines(frame));
+    }
+    lines.push(Line::from(""));
+
+    let title_style = Style::default()
+        .fg(theme.title)
+        .add_modifier(Modifier::BOLD);
+    let muted = Style::default().fg(theme.muted);
+    let text = Style::default().fg(theme.text);
+    let accent = Style::default().fg(theme.title_alt);
+    let centered = |span: Span<'static>| Line::from(span).alignment(Alignment::Center);
+
+    lines.push(centered(Span::styled(
+        format!("ebman {}", env!("CARGO_PKG_VERSION")),
+        title_style,
+    )));
+    lines.push(centered(Span::styled(
+        "k9s-style TUI for AWS Elastic Beanstalk".to_string(),
+        muted,
+    )));
+    lines.push(Line::from(""));
+    lines.push(centered(Span::styled(
+        "Built by Tom Baldwin · Polymorphism Ltd".to_string(),
+        accent,
+    )));
+    lines.push(centered(Span::styled(
+        "https://polymorphism.co.uk".to_string(),
+        muted,
+    )));
+    lines.push(Line::from(""));
+    for row in [
+        "Source:   https://github.com/tombaldwin/ebman",
+        "License:  MIT OR Apache-2.0",
+        "Crates:   https://crates.io/crates/ebman",
+    ] {
+        lines.push(centered(Span::styled(row.to_string(), text)));
+    }
+    lines.push(Line::from(""));
+    for row in [
+        "Polymorphism Ltd builds operations tools for teams",
+        "running EB / ECS / Lambda at scale. Hire us, fork the",
+        "code, or just tell us what's missing — happy either way.",
+    ] {
+        lines.push(centered(Span::styled(row.to_string(), muted)));
+    }
+    lines.push(Line::from(""));
+    lines.push(centered(Span::styled(
+        "esc / q to close".to_string(),
+        muted,
+    )));
+
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 fn draw_saved_configs_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
