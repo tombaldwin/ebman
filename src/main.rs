@@ -107,7 +107,7 @@ async fn main() -> Result<()> {
     // Animate the splash while App::new resolves (config load + STS + first
     // SDK setup). Keep the splash visible for at least SPLASH_MIN_DURATION even
     // if App::new returns sooner — gives the user a chance to actually see it.
-    const SPLASH_MIN_DURATION: std::time::Duration = std::time::Duration::from_secs(3);
+    const SPLASH_MIN_DURATION: std::time::Duration = std::time::Duration::from_secs(5);
 
     let splash_started = std::time::Instant::now();
     let mut splash_frame: u64 = 0;
@@ -372,6 +372,105 @@ const SPLASH_LOGO: &[&str] = &[
     "███████ ██████  ██      ██ ██   ██ ██   ████",
 ];
 
+/// 8-bit pixel-art splash scene — an angry giant clutching a
+/// beanstalk (the `ebman` = Elastic *Beanstalk* gag). Each glyph is
+/// a palette key, not a literal; the renderer paints every
+/// non-space key as a full-block `█` cell coloured via
+/// [`splash_pixel`]. Two frames cycle for a "tug + glare" loop.
+/// Authored deliberately chunky — NES-sprite aesthetic. Rows need
+/// not be equal length; the renderer pads to the widest row.
+///
+/// Palette keys: G/g/h giant skin + shadow + highlight · B brow ·
+/// W eye-white · P pupil (angry red) · M mouth · K tusk ·
+/// T/t beanstalk stem · L/l leaf · D/d ground.
+const GIANT_FRAME_A: &[&str] = &[
+    "         ggGGGGGGGGGGGGGGGGGGgg          ",
+    "        gGGBBB  GGGGGG  BBBGGGg          ",
+    "        GGGG BBBB    BBBB GGGG           ",
+    "        GGh  WPW G  G WPW  hGG           ",
+    "        gGGg  gg GGGG gg  gGGg           ",
+    "         GGg  MMMMMMMMMM  gGG            ",
+    "          gG K MMMMMMMM K Gg             ",
+    "             lLl  tTt  lLl               ",
+    "          GGGGGGGGGGGGGGGGGGGG           ",
+    "         GGgg    tTt    ggGG             ",
+    "          GGGGGGGGGGGGGGGGGGGG           ",
+    "                  tTt                    ",
+    "  DDDDDDDDDDDDDDdtTtdDDDDDDDDDDDDDDDD     ",
+];
+
+/// Second frame — brows slammed lower, eyes narrowed to angry
+/// slits, mouth open wider (roar), fist shifted + the stalk leaning
+/// as the giant yanks it. Cycling A↔B reads as a tug.
+const GIANT_FRAME_B: &[&str] = &[
+    "         ggGGGGGGGGGGGGGGGGGGgg          ",
+    "        gGGBBBBGGGGGGGGBBBBGGGg          ",
+    "        GGGGBBBBBB  BBBBBB GGGG          ",
+    "        GGh  BPB G  G BPB  hGG           ",
+    "        gGGg  gg GGGG gg  gGGg           ",
+    "         GG  MMMMMMMMMMMM  GG            ",
+    "         gG K MMMMMMMMMM K Gg            ",
+    "            lLl   tTt    Ll              ",
+    "         GGGGGGGGGGGGGGGGGGGG            ",
+    "        GGgg   tTt     ggGG              ",
+    "         GGGGGGGGGGGGGGGGGGGG            ",
+    "                 t Tt                   ",
+    "  DDDDDDDDDDDDDDdtTtdDDDDDDDDDDDDDDDD     ",
+];
+
+/// Map a pixel-art palette key to an RGB colour. `None` = a
+/// transparent cell (rendered as a blank space).
+fn splash_pixel(key: char) -> Option<(u8, u8, u8)> {
+    Some(match key {
+        'G' => (124, 168, 99),  // giant skin — sickly ogre green
+        'g' => (82, 116, 68),   // giant skin shadow
+        'h' => (162, 200, 136), // giant skin highlight
+        'B' => (38, 46, 33),    // heavy brow
+        'W' => (244, 244, 228), // eye white
+        'P' => (214, 52, 46),   // pupil — angry red
+        'M' => (58, 22, 26),    // mouth interior
+        'K' => (238, 236, 214), // tusk
+        'T' => (74, 150, 58),   // beanstalk stem
+        't' => (46, 102, 42),   // beanstalk stem shadow
+        'L' => (120, 196, 80),  // leaf
+        'l' => (64, 134, 52),   // leaf shadow
+        'D' => (116, 84, 58),   // ground / dirt
+        'd' => (78, 56, 40),    // dirt shadow
+        _ => return None,
+    })
+}
+
+/// Build the coloured lines for the giant scene at `frame`. Each
+/// non-transparent cell is a `█` block in its palette colour. Used
+/// by the boot splash and by the `:about` overlay.
+pub(crate) fn splash_giant_lines(frame: u64) -> Vec<ratatui::text::Line<'static>> {
+    use ratatui::layout::Alignment;
+    use ratatui::style::{Color, Style};
+    use ratatui::text::{Line, Span};
+    let frames = [GIANT_FRAME_A, GIANT_FRAME_B];
+    // ~0.45 s per frame at 30 ms ticks — a slow, deliberate tug.
+    let scene = frames[(frame as usize / 15) % frames.len()];
+    let width = scene.iter().map(|r| r.chars().count()).max().unwrap_or(0);
+    scene
+        .iter()
+        .map(|row| {
+            let chars: Vec<char> = row.chars().collect();
+            let spans: Vec<Span> = (0..width)
+                .map(|col| {
+                    let key = chars.get(col).copied().unwrap_or(' ');
+                    match splash_pixel(key) {
+                        Some((r, g, b)) => {
+                            Span::styled("█", Style::default().fg(Color::Rgb(r, g, b)))
+                        }
+                        None => Span::raw(" "),
+                    }
+                })
+                .collect();
+            Line::from(spans).alignment(Alignment::Center)
+        })
+        .collect()
+}
+
 fn draw_splash(terminal: &mut Tui, frame: u64, icons: &str) -> Result<()> {
     use ratatui::layout::{Alignment, Constraint, Direction, Layout};
     use ratatui::style::{Color, Modifier, Style};
@@ -380,12 +479,17 @@ fn draw_splash(terminal: &mut Tui, frame: u64, icons: &str) -> Result<()> {
 
     terminal.draw(|f| {
         let area = f.area();
+        // The pixel-art giant scene needs vertical + horizontal room;
+        // on a small terminal fall back to the compact text splash so
+        // the card never overflows.
+        let show_scene = area.height >= 32 && area.width >= 56;
+        let card_h: u16 = if show_scene { 28 } else { 14 };
         let v = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Percentage(28),
-                Constraint::Length(14),
-                Constraint::Percentage(28),
+                Constraint::Min(0),
+                Constraint::Length(card_h),
+                Constraint::Min(0),
             ])
             .split(area);
         let h = Layout::default()
@@ -399,6 +503,11 @@ fn draw_splash(terminal: &mut Tui, frame: u64, icons: &str) -> Result<()> {
 
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(""));
+        // 8-bit angry-giant-grabs-the-beanstalk scene above the wordmark.
+        if show_scene {
+            lines.extend(splash_giant_lines(frame));
+            lines.push(Line::from(""));
+        }
         // Per-character hue-shift gives a horizontal gradient that scrolls
         // through cool tones (cyan → blue → purple → magenta) as `frame` advances.
         let powerline = icons == "powerline";
@@ -704,13 +813,57 @@ fn dirs_log_dir() -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{cli_esc, hsl_to_rgb, prune_old_crash_reports};
+    use super::{
+        cli_esc, hsl_to_rgb, prune_old_crash_reports, splash_giant_lines, splash_pixel,
+        GIANT_FRAME_A, GIANT_FRAME_B,
+    };
 
     #[test]
     fn cli_esc_escapes_quotes_and_backslashes() {
         assert_eq!(cli_esc("hello"), "hello");
         assert_eq!(cli_esc("a\"b"), "a\\\"b");
         assert_eq!(cli_esc("a\\b"), "a\\\\b");
+    }
+
+    #[test]
+    fn splash_pixel_maps_keys_and_treats_space_as_transparent() {
+        // Every key used in the art frames must resolve to a colour.
+        for frame in [GIANT_FRAME_A, GIANT_FRAME_B] {
+            for row in frame {
+                for ch in row.chars() {
+                    if ch != ' ' {
+                        assert!(
+                            splash_pixel(ch).is_some(),
+                            "art key '{ch}' has no palette entry"
+                        );
+                    }
+                }
+            }
+        }
+        assert_eq!(splash_pixel(' '), None);
+    }
+
+    #[test]
+    fn splash_giant_lines_renders_full_scene_and_animates() {
+        // Both frames render every art row.
+        let a = splash_giant_lines(0);
+        let b = splash_giant_lines(15); // crosses into frame B at /15
+        assert_eq!(a.len(), GIANT_FRAME_A.len());
+        assert_eq!(b.len(), GIANT_FRAME_B.len());
+        // The two frames must actually differ, or it's not animating.
+        let render = |ls: &[ratatui::text::Line]| {
+            ls.iter()
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_ne!(render(&a), render(&b), "frames A and B should differ");
+        // The cycle returns to frame A.
+        assert_eq!(render(&splash_giant_lines(30)), render(&a));
     }
 
     #[test]

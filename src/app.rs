@@ -255,6 +255,11 @@ pub enum Overlay {
         /// late events for stale sessions are dropped on arrival.
         session_id: u64,
     },
+    /// `:about` / `:credits` — the project card with the animated
+    /// 8-bit giant-grabs-the-beanstalk scene. The `Instant` is the
+    /// open time; the renderer derives the animation frame from its
+    /// elapsed time, and the `anim` ticker is woken while it's open.
+    About(std::time::Instant),
 }
 
 pub const LOG_TAIL_MAX_LINES: usize = 2000;
@@ -1767,6 +1772,7 @@ impl App {
                 _ = anim.tick(), if self.loading_since.is_some()
                     || !self.toasts.is_empty()
                     || self.pending_dispatch.is_some()
+                    || matches!(self.current_overlay, Some(Overlay::About(_)))
                     || self.loading_visible_until.map(|t| Instant::now() < t).unwrap_or(false) => {
                     // Wake the draw loop so the spinner can advance, toasts
                     // expire promptly, the cancel-window countdown stays
@@ -4372,24 +4378,9 @@ impl App {
     }
 
     fn open_about_overlay(&mut self) {
-        let body = format!(
-            "ebman {version}\n\
-             k9s-style TUI for AWS Elastic Beanstalk.\n\n\
-             Built by Tom Baldwin · Polymorphism Ltd\n\
-             https://polymorphism.co.uk\n\n\
-             Source:    https://github.com/tombaldwin/ebman\n\
-             License:   MIT OR Apache-2.0\n\
-             Crates:    https://crates.io/crates/ebman\n\n\
-             Polymorphism Ltd builds operations tools for teams running\n\
-             EB / ECS / Lambda at scale. Hire us, fork the code, or just\n\
-             tell us what's missing — happy either way.\n\n\
-             esc / q to close.",
-            version = env!("CARGO_PKG_VERSION"),
-        );
-        self.current_overlay = Some(Overlay::TextDump {
-            title: "about ebman".to_string(),
-            body,
-        });
+        // The card content is built by `draw_about`; the overlay just
+        // carries the open time so the giant scene can animate.
+        self.current_overlay = Some(Overlay::About(Instant::now()));
     }
 
     fn toggle_pin_selected(&mut self) {
