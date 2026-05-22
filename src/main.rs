@@ -573,6 +573,13 @@ pub(crate) fn splash_giant_lines(frame: u64) -> Vec<ratatui::text::Line<'static>
         .collect()
 }
 
+/// Pure: whether the boot splash has room for the pixel-art giant
+/// scene. Below this it falls back to the compact text-only card.
+/// The thresholds match the scene-mode card (64×34).
+pub(crate) fn splash_shows_scene(w: u16, h: u16) -> bool {
+    w >= 68 && h >= 34
+}
+
 fn draw_splash(terminal: &mut Tui, frame: u64, icons: &str) -> Result<()> {
     use ratatui::layout::{Alignment, Constraint, Direction, Layout};
     use ratatui::style::{Color, Modifier, Style};
@@ -586,8 +593,10 @@ fn draw_splash(terminal: &mut Tui, frame: u64, icons: &str) -> Result<()> {
         // above the text; a smaller one falls back to a compact
         // text-only card so the splash never overflows. The card is
         // sized to its content and centred.
-        let show_scene = area.width >= 68 && area.height >= 34;
-        let (card_w, card_h): (u16, u16) = if show_scene { (64, 32) } else { (52, 9) };
+        let show_scene = splash_shows_scene(area.width, area.height);
+        // Card carries 2 rows of slack over its content so a future
+        // text tweak can't silently clip.
+        let (card_w, card_h): (u16, u16) = if show_scene { (64, 34) } else { (52, 9) };
         let v = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -885,8 +894,19 @@ fn dirs_log_dir() -> std::path::PathBuf {
 mod tests {
     use super::{
         cli_esc, hsl_to_rgb, prune_old_crash_reports, splash_giant_lines, splash_pixel,
-        GIANT_FRAME_1, GIANT_FRAME_2, GIANT_FRAME_3, GIANT_FRAME_4,
+        splash_shows_scene, GIANT_FRAME_1, GIANT_FRAME_2, GIANT_FRAME_3, GIANT_FRAME_4,
     };
+
+    #[test]
+    fn splash_shows_scene_gates_on_terminal_size() {
+        // Roomy → scene.
+        assert!(splash_shows_scene(120, 50));
+        assert!(splash_shows_scene(68, 34)); // exact threshold
+                                             // Too narrow / too short → text-only fallback.
+        assert!(!splash_shows_scene(67, 50));
+        assert!(!splash_shows_scene(120, 33));
+        assert!(!splash_shows_scene(40, 20));
+    }
 
     #[test]
     fn cli_esc_escapes_quotes_and_backslashes() {
