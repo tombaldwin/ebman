@@ -159,6 +159,135 @@ impl App {
         self.open_form(form);
     }
 
+    /// `:scaling-triggers` — modal form for the env's metric-based
+    /// autoscaling trigger (`aws:autoscaling:trigger`): which CloudWatch
+    /// metric to watch, the statistic / unit / period, the breach
+    /// duration, the lower + upper thresholds, and how many instances to
+    /// add or remove on a breach. Pre-fills with the env's current
+    /// trigger; a field left blank is left unchanged (see
+    /// `Form::to_option_settings`).
+    pub(crate) fn cmd_scaling_triggers(&mut self) {
+        let Some(env) = self.selected_env().cloned() else {
+            self.error_message = Some("no env selected".into());
+            return;
+        };
+        let ns = "aws:autoscaling:trigger";
+        let measures = vec![
+            "CPUUtilization".to_string(),
+            "NetworkOut".to_string(),
+            "NetworkIn".to_string(),
+            "Latency".to_string(),
+            "RequestCount".to_string(),
+            "HealthyHostCount".to_string(),
+            "UnhealthyHostCount".to_string(),
+            "DiskReadBytes".to_string(),
+            "DiskWriteBytes".to_string(),
+            "DiskReadOps".to_string(),
+            "DiskWriteOps".to_string(),
+        ];
+        let stats = vec![
+            "Average".to_string(),
+            "Maximum".to_string(),
+            "Minimum".to_string(),
+            "Sum".to_string(),
+        ];
+        let fields = vec![
+            crate::form::FormField::select(
+                "measure",
+                "Metric",
+                measures,
+                Some("CloudWatch metric the trigger watches"),
+            ),
+            crate::form::FormField::select(
+                "statistic",
+                "Statistic",
+                stats,
+                Some("how the metric is aggregated over the period"),
+            ),
+            crate::form::FormField::text(
+                "unit",
+                "Unit",
+                Some("metric unit — e.g. Percent (CPU), Bytes (Network), Count"),
+            ),
+            crate::form::FormField::integer(
+                "period",
+                "Period (min)",
+                Some("measurement period in minutes"),
+                Some(1),
+                Some(600),
+                true,
+            ),
+            crate::form::FormField::integer(
+                "breach",
+                "Breach duration (min)",
+                Some("minutes a threshold must be breached before scaling"),
+                Some(1),
+                Some(600),
+                true,
+            ),
+            crate::form::FormField::integer(
+                "lower_threshold",
+                "Lower threshold",
+                Some("scale down when the metric falls below this"),
+                None,
+                None,
+                true,
+            ),
+            crate::form::FormField::integer(
+                "upper_threshold",
+                "Upper threshold",
+                Some("scale up when the metric rises above this"),
+                None,
+                None,
+                true,
+            ),
+            crate::form::FormField::integer(
+                "lower_increment",
+                "Lower scale increment",
+                Some("instances to add/remove on a lower breach (e.g. -1)"),
+                None,
+                None,
+                true,
+            ),
+            crate::form::FormField::integer(
+                "upper_increment",
+                "Upper scale increment",
+                Some("instances to add/remove on an upper breach (e.g. 1)"),
+                None,
+                None,
+                true,
+            ),
+        ];
+        let form = crate::form::Form::loading(
+            format!("scaling triggers — {}", env.name),
+            env.name.clone(),
+            "scaling-triggers update".to_string(),
+            fields,
+            crate::form::FormSubmit::OptionSettings {
+                mappings: vec![
+                    ("measure".into(), ns.into(), "MeasureName".into()),
+                    ("statistic".into(), ns.into(), "Statistic".into()),
+                    ("unit".into(), ns.into(), "Unit".into()),
+                    ("period".into(), ns.into(), "Period".into()),
+                    ("breach".into(), ns.into(), "BreachDuration".into()),
+                    ("lower_threshold".into(), ns.into(), "LowerThreshold".into()),
+                    ("upper_threshold".into(), ns.into(), "UpperThreshold".into()),
+                    (
+                        "lower_increment".into(),
+                        ns.into(),
+                        "LowerBreachScaleIncrement".into(),
+                    ),
+                    (
+                        "upper_increment".into(),
+                        ns.into(),
+                        "UpperBreachScaleIncrement".into(),
+                    ),
+                ],
+            },
+        );
+        self.open_form(form);
+    }
+
     /// `:rds-attach` — modal form that couples an RDS instance to the env
     /// via the `aws:rds:dbinstance` namespace; EB provisions the database
     /// on the next environment update. If an RDS instance is already
