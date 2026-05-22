@@ -17,14 +17,14 @@ class Ebman < Formula
   if OS.mac?
     if Hardware::CPU.arm?
       url "https://github.com/tombaldwin/ebman/releases/download/v#{version}/ebman-v#{version}-aarch64-apple-darwin.tar.gz"
-      sha256 "8f9a4852a9a4cfcfb2eb364768e4828ad631d33ab8bdeef587ea6f2f6ef459f4"
+      sha256 "68176c4b357a7868d1453d77abb5a6a9cd92eda39f9a9ffc3244bdad35eb39ad"
     else
       url "https://github.com/tombaldwin/ebman/releases/download/v#{version}/ebman-v#{version}-x86_64-apple-darwin.tar.gz"
-      sha256 "69ffd2ba7957eb5aff281797fb538d827a37ed08a1101c17ae579c00dfc432df"
+      sha256 "2c1b87fe194beee97a198ff5e9c32cee4cec69b4eca3c2df91a02595650103da"
     end
   elsif OS.linux?
     url "https://github.com/tombaldwin/ebman/releases/download/v#{version}/ebman-v#{version}-x86_64-unknown-linux-gnu.tar.gz"
-    sha256 "69e6b3514c99a1d52ae755b3fe77ca88128f5919d02d46dfada040bfd74c33be"
+    sha256 "4a5ec57e05c13eaa0e03424843e0579546c3dc5c66f64f1b8677f7b801f1b8f0"
   end
 
   depends_on "curl" # used by the live-log-tail S3 fetcher
