@@ -13,4 +13,5 @@
 
 pub mod font_probe;
 pub mod overlay;
+pub mod theme;
 pub mod util;
