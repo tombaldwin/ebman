@@ -20,13 +20,15 @@ whatever notifier they want.
 
 ### Removed (breaking)
 - **`webhook_url` removed.** The single-URL POST on Red transitions had been flagged as "too rigid for real ops workflows" in the BACKLOG; replacing it with a proper Slack block-kit integration would have been a whole new feature, while the audit log + `tracing::warn!` already carry the same data with timestamps. The `webhook_url = "…"` config key is now silently ignored (no warning — the parser drops unknown keys); the `:settings` form no longer surfaces the field; the `fire_webhook` curl shell-out and `build_webhook_payload` JSON encoder are gone. Replacement: a `stage=event kind=red_transition env=… application=… health=…` line written to `~/.cache/ebman/audit.log` for every Red transition, plus a structured `tracing::warn!` with env / application / health / region fields. Tail the audit log to drive a Slack / PagerDuty / pager notifier of your own.
+- **`:minimap` removed.** The corner mini-map overlay (one coloured cell per env, driven by health) was operationally redundant — every signal it carried was already in the main table. `App.show_minimap`, the `:minimap on|off` command, and the `draw_minimap` renderer (50 lines) are gone. The setting is silently ignored if a saved state.toml has `show_minimap = true`.
+- **Custom keybindings (`keys.toml`) removed.** `~/.config/ebman/keys.toml` parsed F1-F12 and uppercase-letter aliases to `:commands`, but the underlying need (discoverable per-key dispatch) is served by `Ctrl-K` palette + per-context help. The `src/keys.rs` module, the `App.custom_keys` field, the `lookup_custom_key` hook in `handle_event`, and the README's keys.toml example + storage-list entry are gone. If a `keys.toml` exists it's silently ignored.
 
 ### Internal
 - **`return Err(e).wrap_err_with(...)?` cleanup** in the multipart abort path — the `?` already short-circuits the function, so the explicit `return` was dead.
 - **Existing deploy-from-path test migrates to a tempfile** so the same chain-of-stages assertions apply to the new streaming API.
 
 ### Test foundation
-- 429 tests. New: `should_multipart_crosses_threshold`, `plan_part_lengths_exact_multiple` / `_partial_last_part` / `_zero_and_under_one_part`, `upload_bundle_uses_multipart_when_size_meets_threshold`, `upload_bundle_aborts_multipart_on_upload_part_failure`. Removed: `webhook_payload_escapes_quotes_and_backslashes` / `_handles_missing_account` (feature gone).
+- 425 tests. New: `should_multipart_crosses_threshold`, `plan_part_lengths_exact_multiple` / `_partial_last_part` / `_zero_and_under_one_part`, `upload_bundle_uses_multipart_when_size_meets_threshold`, `upload_bundle_aborts_multipart_on_upload_part_failure`. Removed: `webhook_payload_escapes_quotes_and_backslashes` / `_handles_missing_account` (feature gone); 4 `keys.rs` parse tests (module gone).
 
 ## [0.6.0] — Interactive triage and form-driven config
 

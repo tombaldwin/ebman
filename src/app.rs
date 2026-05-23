@@ -760,16 +760,11 @@ pub struct App {
     /// task. Apps-scope batch ops (future expansion) will fan across
     /// every env in every selected app.
     pub apps_selected: BTreeSet<String>,
-    /// Render a small corner mini-map showing one coloured cell per env.
-    /// Off by default — toggled via `:minimap on|off`.
-    pub show_minimap: bool,
     /// Currently-focused panel. Drives j/k routing and footer hints.
     pub focus: Focus,
     /// Regions to fan refreshes across. Empty = single-region mode (only the
     /// AwsClient's region). Populated by `:region all`.
     pub multi_regions: Vec<String>,
-    /// User-defined key bindings parsed from `~/.config/ebman/keys.toml`.
-    pub custom_keys: crate::keys::CustomKeys,
     pub detail: Option<DetailState>,
     pub action_flow: Option<ActionFlow>,
     pub dlq: Option<DlqState>,
@@ -1467,10 +1462,8 @@ impl App {
             },
             multi_selected: BTreeSet::new(),
             apps_selected: BTreeSet::new(),
-            show_minimap: false,
             focus: Focus::Table,
             multi_regions: Vec::new(),
-            custom_keys: crate::keys::load(),
             detail: None,
             action_flow: None,
             dlq: None,
@@ -1643,10 +1636,8 @@ impl App {
             },
             multi_selected: BTreeSet::new(),
             apps_selected: BTreeSet::new(),
-            show_minimap: false,
             focus: Focus::Table,
             multi_regions: Vec::new(),
-            custom_keys: Default::default(),
             detail: None,
             action_flow: None,
             dlq: None,
@@ -3154,14 +3145,6 @@ impl App {
             }
             Mode::Form => self.handle_form_key(key),
             Mode::Normal => {
-                // Custom keybindings — checked first so a user-bound key
-                // overrides any built-in fallthrough. Only F1-F12 and
-                // uppercase single-letters are accepted by the parser, which
-                // limits collision risk with existing bindings.
-                if let Some(command) = self.lookup_custom_key(&key) {
-                    self.execute_command(&command);
-                    return;
-                }
                 match key.code {
                     KeyCode::Char('q') => self.quit = true,
                     // `U` undoes a pending action dispatch during the
@@ -3445,21 +3428,6 @@ impl App {
                 }
             }
         }
-    }
-
-    /// Resolve a Normal-mode key event against the user's `keys.toml`.
-    /// Currently supports F1–F12 and single uppercase letters; returns the
-    /// command body (without `:`) when bound.
-    fn lookup_custom_key(&self, key: &KeyEvent) -> Option<String> {
-        if !key.modifiers.is_empty() && !key.modifiers.contains(KeyModifiers::SHIFT) {
-            return None;
-        }
-        let spec = match key.code {
-            KeyCode::F(n) if (1..=12).contains(&n) => format!("F{n}"),
-            KeyCode::Char(c) if c.is_ascii_uppercase() => c.to_string(),
-            _ => return None,
-        };
-        self.custom_keys.bindings.get(&spec).cloned()
     }
 
     /// Apply a `ControlOp` received over the control socket. Snapshot ops
@@ -9354,14 +9322,6 @@ impl App {
             "alarm-create" => self.cmd_alarm_create(&rest),
             "alarm-delete" => self.cmd_alarm_delete(&rest),
             "config-inspect" => self.cmd_config_inspect(&rest),
-            "minimap" => {
-                self.show_minimap = parse_toggle(rest.first().copied(), self.show_minimap);
-                self.status_message = Some(if self.show_minimap {
-                    "minimap ON".into()
-                } else {
-                    "minimap off".into()
-                });
-            }
             "deselect" | "select-clear" => {
                 let n = self.multi_selected.len();
                 self.multi_selected.clear();

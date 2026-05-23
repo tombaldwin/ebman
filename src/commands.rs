@@ -728,12 +728,6 @@ pub const COMMANDS: &[CommandSpec] = &[
         CommandKind::ZeroArg,
     ),
     cmd(
-        "minimap",
-        ":minimap on|off — corner mini-map of env health",
-        Category::View,
-        CommandKind::Prefill("minimap "),
-    ),
-    cmd(
         "readonly",
         ":readonly on|off — toggle destructive-action lockout",
         Category::View,
@@ -941,7 +935,7 @@ mod tests {
             };
             // Only scan the pattern section (left of `=>`), so the arm
             // body can't fool us with string literals that happen to
-            // look like names ("events panel ON", "minimap off", etc.).
+            // look like names ("events panel ON", "redact off", etc.).
             let pattern = &trimmed[..arrow_pos];
             let mut rest = pattern;
             while let Some(open) = rest.find('"') {

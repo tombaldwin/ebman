@@ -768,6 +768,27 @@ Tier definitions:
 
 Items list `Depends on:` only when another backlog or done item is a real prerequisite.
 
+### Code review — 2026-05-23
+
+Findings from a full review of the codebase against the 0.7.0 batch + recent trims. Three parallel surveys (ui.rs, app.rs / handle_event, aws.rs) cross-referenced with the BACKLOG and CHANGELOG. Items split into a **0.7.1 patch** bucket (real bugs + low-cost polish) and an **0.8 feature** bucket (new operator-value features not previously tracked).
+
+#### 0.7.1 patch candidates — bugs and polish
+
+- [ ] **Paginate `DescribeApplicationVersions`** (`src/aws.rs:2437`) — single page only. Orgs with >1000 versions per app see truncated `:versions`, broken `:rollback` against old labels, and missing entries in deploy-preview lookups. Most user-visible bug in the codebase. Fix: add the `next_token` loop, mirror the shape already in `list_secrets` / `list_certificates` / `describe_alarms`. Needs a mocked-AWS test exercising the multi-page path.
+- [ ] **Paginate `ListAvailableSolutionStacks`** (`src/aws.rs:2954`) — single page. AWS returns ~80 stacks in one page today so unlikely to bite in practice, but architecturally incomplete and pins the stale-platform feature to whatever the first page returns. Same shape fix as above.
+- [ ] **Theme-correctness sweep — hardcoded `Color::Black` / `Color::White` in pill rendering.** The earlier "theme-correct colours (~100 sites)" pass missed ~20 sites in `src/ui.rs` around lines 2349, 2364, 2392, 3004, 3243, 3251, 3391, 3401, 3406, 4700, 4847, 4882, 5412, 7709–7726, 8055, 8080, 8294, 8315, 8385. The `theme.contrast_text(bg)` helper already exists; these sites just don't call it. Light + high-contrast themes render unreadable text in those cells. Pure mechanical sweep.
+- [ ] **Help routing for `Picker` and `LogTail` overlays.** Both modes advertise `?` in their footer key-strips but have no dedicated `draw_help_*` renderer. Pressing `?` currently falls back to the global help — confusing because the surrounding modes have context-scoped help. Symmetric with `draw_help_action` / `draw_help_dlq` / `draw_help_detail` / `draw_help_saved_configs`.
+- [ ] **Drop vestigial `session_id` on `Overlay::WhyRed` and `Overlay::LogTail`.** Both variants carry per-overlay session counters that predate `AppMsg::generation()` (task #135). Late results would be dropped by the centralised guard anyway — the per-overlay tracking is redundant and adds threading noise. No bug; dead weight. Small refactor.
+- [ ] **Centralise overlay sizing.** Every overlay picks its own `centered_rect(W, H)` independently — 50×60 for picker, 85×80 for logtail, 60×70 for palette, etc. No shared sizing system; the UI feels less coherent than it should. A `centered_overlay(category, frame)` helper (`Text` / `Interactive` / `Form`) that picks the rect for the content category would unify the look without dictating per-overlay decisions. Polish-tier.
+
+#### 0.8 feature candidates — new operator-value features
+
+- [ ] **`:logs-insights QUERY`** — CloudWatch Logs Insights against the env's discovered log groups. `:logs-tail` is great for live; Insights is what operators reach for during post-incident analysis (regex doesn't cut it for "p99 latency for /checkout in the last hour"). New `aws-sdk-cloudwatchlogs` calls `StartQuery` / `GetQueryResults`; overlay polls until `Complete` then renders the result rows. Operator value: real EB-operator gap that `:logs-tail` doesn't close.
+- [ ] **`:envs-by-version LABEL`** — given a version label, list every env across every accessible account/region running it. Useful when a bad build slips into prod and the question is "what's the blast radius?". Reuses the existing `:org-health` + `:find-env` fan-out machinery; result is one row per env with account / region / health.
+- [ ] **`:deploy --dry-run`** — run `:deploy --from PATH` through `CreateApplicationVersion` (validates bundle, S3 upload) but skip `UpdateEnvironment`. Catches malformed bundles / manifest errors before traffic moves. Optional pair with the new multipart upload — for huge bundles, dry-run still streams to S3 (real cost) but is honest about that in the help text.
+- [ ] **Pre-deploy snapshot + auto-rollback safety net.** Capture the env's current option settings + version label into a typed snapshot on every `:deploy`; the existing 5-second undo window (post-0.3.5) extends to "auto-rollback if env doesn't reach Green within N minutes". Opt-in per deploy via `:deploy --auto-rollback 5m`. Real value during canary-style production deploys.
+- [ ] **`:env-diff-time ENV TIMESTAMP`** — config drift but vs the same env at a prior time, not vs a sibling. Reconstructs option-settings history from `ConfigurationDeployment` events. Genuine post-mortem value: "what changed between this morning when it was working and now?".
+
 ### Top priority — console-parity + peer-TUI polish (2026-05-21)
 
 Surfaced by a critical console-vs-ebman + ebman-vs-peer-TUI comparison. Ranked by user-value-per-hour. The smaller ergonomics items in particular (autocompletion, did-you-mean, first-run hint) are the gap that makes ebman look unpolished next to k9s / lazygit — high impact, low cost.
@@ -863,9 +884,9 @@ Gaps surfaced during the 2026-05-19 console-vs-ebman comparison. Each entry is a
 Honest list of features that landed during expansion sprints but aren't earning their maintenance cost. Don't remove unilaterally; flag for review.
 
 - ~~**Webhook on Red transition**~~ — Trimmed (2026-05-23). The `webhook_url` config option, the `:settings` form field, the `fire_webhook` `curl` shell-out, and the `build_webhook_payload` JSON encoder are all gone. Red-transition events now emit a `tracing::warn!` with structured fields (env / application / health / region) and write a `stage=event kind=red_transition env=… application=… health=…` line to the audit log at `~/.cache/ebman/audit.log` — operators can tail that file and pipe to whatever notifier they want (Slack, PagerDuty, pages, whatever). README documents the audit-log path under the `notify_bell = …` section. Net: −2 webhook tests, +0 (the tracing/audit emission is well-covered by the audit-log path already).
-- **Custom keybindings (`keys.toml`)** — supports F1-F12 and uppercase aliases to `:commands`. Almost no one will write this file; the underlying need (palette + per-context hints) is served by `Ctrl-K`.
+- ~~**Custom keybindings (`keys.toml`)**~~ — Trimmed (2026-05-23). `src/keys.rs` deleted; `mod keys`, `App.custom_keys`, `lookup_custom_key`, and its dispatch site in `handle_event` all gone. README's `keys.toml` config example and storage-list entry removed; feature-bullet's "custom keybindings" mention dropped. Need is served by `Ctrl-K` palette + per-context hints. Net: −4 tests (the keys-parse tests went with the module).
 - **Multi-region overview / org-wide health / cross-account search** — useful in theory; most teams operate in one account+region day-to-day. The `aws::list_environments_in_region` fan-out helper is the real win, retain that.
-- **Embedded mini-map (`:minimap`)** — cute corner overlay; no operational signal beyond what the main table already shows.
+- ~~**Embedded mini-map (`:minimap`)**~~ — Trimmed (2026-05-23). `App.show_minimap` field, `:minimap` command arm + commands-registry entry, and the `draw_minimap` renderer (50 lines) all removed. README entry dropped. Cute corner overlay with no operational signal beyond what the main table already shows.
 - **Asciinema recorder (deferred in BACKLOG)** — keep deferred; standalone replay infrastructure is its own product.
 
 ---
