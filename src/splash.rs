@@ -381,9 +381,7 @@ pub const SPLASH_SCENE_COLS: usize = 20;
 /// fits inside the boot splash's 3 s minimum duration with the
 /// final bud frame holding for ~500 ms before the table appears.
 pub fn splash_scene_lines(frame: u64) -> Vec<ratatui::text::Line<'static>> {
-    use ratatui::layout::Alignment;
-    use ratatui::style::{Color, Style};
-    use ratatui::text::{Line, Span};
+    use ratatui::style::Color;
     const FRAMES: [&[&str]; 14] = [
         SPLASH_FRAME_0,
         SPLASH_FRAME_1,
@@ -406,25 +404,16 @@ pub fn splash_scene_lines(frame: u64) -> Vec<ratatui::text::Line<'static>> {
     // test pins the relationship so a future bump fails loud.
     const TICKS_PER_FRAME: usize = 6;
     let scene = FRAMES[(frame as usize / TICKS_PER_FRAME) % FRAMES.len()];
-    scene
-        .iter()
-        .map(|row| {
-            let chars: Vec<char> = row.chars().collect();
-            let spans: Vec<Span> = (0..SPLASH_SCENE_COLS)
-                .map(|col| {
-                    let key = chars.get(col).copied().unwrap_or('.');
-                    match splash_pixel(key) {
-                        // Two cells per pixel → square logical pixels.
-                        Some((r, g, b)) => {
-                            Span::styled("██", Style::default().fg(Color::Rgb(r, g, b)))
-                        }
-                        None => Span::raw("  "),
-                    }
-                })
-                .collect();
-            Line::from(spans).alignment(Alignment::Center)
-        })
-        .collect()
+    // The pixel→`██` rendering loop lives in tui-common::splash so
+    // pgman (and any future sibling) shares the same machinery. We
+    // wrap our local 6-key palette in a closure that hands back a
+    // ratatui Color so the generic renderer doesn't have to know
+    // about RGB tuples.
+    tui_common::splash::render_frame(
+        scene,
+        |key| splash_pixel(key).map(|(r, g, b)| Color::Rgb(r, g, b)),
+        SPLASH_SCENE_COLS,
+    )
 }
 
 /// Pure: whether the boot splash has room for the pixel-art scene.

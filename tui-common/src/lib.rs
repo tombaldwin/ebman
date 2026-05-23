@@ -13,5 +13,6 @@
 
 pub mod font_probe;
 pub mod overlay;
+pub mod splash;
 pub mod theme;
 pub mod util;
