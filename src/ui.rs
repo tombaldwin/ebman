@@ -2346,7 +2346,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: bool) {
                 .map(|(name, value)| {
                     let active = !app.filter.is_empty() && value == &app.filter;
                     let (fg, bg) = if active {
-                        (Color::Black, theme.title_alt)
+                        (theme.contrast_text(theme.title_alt), theme.title_alt)
                     } else {
                         (theme.muted, theme.row_alt_bg)
                     };
@@ -2361,7 +2361,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: bool) {
                     format!(" {name} "),
                     if active {
                         Style::default()
-                            .fg(Color::Black)
+                            .fg(theme.contrast_text(theme.title_alt))
                             .bg(theme.title_alt)
                             .add_modifier(Modifier::BOLD)
                     } else {
@@ -2389,7 +2389,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: bool) {
                     .fg(theme.title_alt)
                     .add_modifier(Modifier::BOLD),
             ),
-            pill(scope_label, Color::Black, theme.title),
+            pill(scope_label, theme.contrast_text(theme.title), theme.title),
         ]),
         Line::from(Span::styled(
             "<tab> scope  <?> help  <:> command  </> filter  <q> quit",
@@ -3001,7 +3001,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                                     Span::styled(
                                         format!(" {next_app_name} "),
                                         Style::default()
-                                            .fg(Color::Black)
+                                            .fg(theme.contrast_text(next_color))
                                             .bg(next_color)
                                             .add_modifier(Modifier::BOLD),
                                     ),
@@ -3240,7 +3240,7 @@ fn tier_cell(tier: &str, theme: &Theme) -> Cell<'static> {
         "Worker" => Cell::from(Line::from(vec![
             pill(
                 &format!("{worker_icon} {:<label_width$}", "Worker"),
-                Color::Black,
+                theme.contrast_text(theme.accent),
                 theme.accent,
             ),
             Span::raw(" "),
@@ -3248,7 +3248,7 @@ fn tier_cell(tier: &str, theme: &Theme) -> Cell<'static> {
         "Web" => Cell::from(Line::from(vec![
             pill(
                 &format!("{web_icon} {:<label_width$}", "Web"),
-                Color::Black,
+                theme.contrast_text(theme.title),
                 theme.title,
             ),
             Span::raw(" "),
@@ -3388,7 +3388,11 @@ fn status_pill_for(status: &str, theme: &Theme, alert: StatusAlert) -> Span<'sta
                     .fg(theme.health_yellow)
                     .add_modifier(Modifier::BOLD),
             ),
-            StatusAlert::None => pill("Ready", Color::Black, theme.status_ready),
+            StatusAlert::None => pill(
+                "Ready",
+                theme.contrast_text(theme.status_ready),
+                theme.status_ready,
+            ),
         }
     } else if ieq_any(status, &["updating", "launching"]) {
         // Slow blink draws the eye to in-flight lifecycle ops without
@@ -3398,12 +3402,16 @@ fn status_pill_for(status: &str, theme: &Theme, alert: StatusAlert) -> Span<'sta
         Span::styled(
             format!(" {status} "),
             Style::default()
-                .fg(Color::Black)
+                .fg(theme.contrast_text(theme.status_updating))
                 .bg(theme.status_updating)
                 .add_modifier(Modifier::BOLD | Modifier::SLOW_BLINK),
         )
     } else if ieq_any(status, &["terminating", "terminated"]) {
-        pill(status, Color::White, theme.status_terminating)
+        pill(
+            status,
+            theme.contrast_text(theme.status_terminating),
+            theme.status_terminating,
+        )
     } else {
         Span::styled(status.to_string(), Style::default().fg(theme.text))
     }
@@ -4697,7 +4705,11 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
 
     // Footer
     let auto_badge: Span<'static> = if footer_state.auto_refresh {
-        pill("AUTO", Color::Black, app.theme.health_green)
+        pill(
+            "AUTO",
+            app.theme.contrast_text(app.theme.health_green),
+            app.theme.health_green,
+        )
     } else {
         Span::raw("")
     };
@@ -4844,7 +4856,11 @@ fn render_tabs(tabs: &[DetailTab], active: usize, theme: &Theme) -> Line<'static
         for (i, t) in tabs.iter().enumerate() {
             let is_active = i == active;
             let bg = if is_active { active_bg } else { inactive_bg };
-            let fg = if is_active { Color::Black } else { theme.muted };
+            let fg = if is_active {
+                theme.contrast_text(active_bg)
+            } else {
+                theme.muted
+            };
             let label = format!(" {} {} ", tab_icon(*t, theme.icons), t.title());
             let mut style = Style::default().fg(fg).bg(bg);
             if is_active {
@@ -4879,7 +4895,7 @@ fn render_tabs(tabs: &[DetailTab], active: usize, theme: &Theme) -> Line<'static
             // Underline + bold + bg highlight — three signals so the active
             // tab is visible even in low-contrast / colorblind terminals.
             Style::default()
-                .fg(Color::Black)
+                .fg(theme.contrast_text(theme.border_active))
                 .bg(theme.border_active)
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
         } else {

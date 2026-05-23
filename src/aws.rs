@@ -2423,30 +2423,42 @@ impl AwsClient {
 
     /// List application versions for `application_name`, sorted newest-first
     /// by `date_created`. Each entry carries the version label and the
-    /// optional description text shown in the EB console.
+    /// optional description text shown in the EB console. Pages through
+    /// `next_token` so orgs with hundreds of historical versions see
+    /// everything in `:versions` and `:rollback` can find labels that
+    /// fall past the first page.
     pub async fn list_application_versions(
         &self,
         application_name: &str,
     ) -> Result<Vec<AppVersion>> {
-        let resp = self
-            .client
-            .describe_application_versions()
-            .application_name(application_name)
-            .send()
-            .await
-            .wrap_err("DescribeApplicationVersions failed")?;
-        let mut out: Vec<AppVersion> = resp
-            .application_versions
-            .unwrap_or_default()
-            .into_iter()
-            .map(|v| AppVersion {
-                label: v.version_label.unwrap_or_default(),
-                description: v.description.unwrap_or_default(),
-                created: v
-                    .date_created
-                    .and_then(|d| DateTime::from_timestamp(d.secs(), d.subsec_nanos())),
-            })
-            .collect();
+        let mut out: Vec<AppVersion> = Vec::new();
+        let mut next_token: Option<String> = None;
+        loop {
+            let mut req = self
+                .client
+                .describe_application_versions()
+                .application_name(application_name);
+            if let Some(t) = next_token.take() {
+                req = req.next_token(t);
+            }
+            let resp = req
+                .send()
+                .await
+                .wrap_err("DescribeApplicationVersions failed")?;
+            for v in resp.application_versions.unwrap_or_default() {
+                out.push(AppVersion {
+                    label: v.version_label.unwrap_or_default(),
+                    description: v.description.unwrap_or_default(),
+                    created: v
+                        .date_created
+                        .and_then(|d| DateTime::from_timestamp(d.secs(), d.subsec_nanos())),
+                });
+            }
+            match resp.next_token {
+                Some(t) if !t.is_empty() => next_token = Some(t),
+                _ => break,
+            }
+        }
         out.sort_by_key(|v| std::cmp::Reverse(v.created));
         Ok(out)
     }
@@ -3811,6 +3823,67 @@ mod tests {
         assert_eq!(e.tier, "Web", "tier normalises WebServer → Web");
         assert_eq!(e.platform, "Java 17");
         assert_eq!(e.version_label, "build-42");
+    }
+
+    #[tokio::test]
+    async fn list_application_versions_pages_through_next_token() {
+        // Pins the pagination invariant: orgs with hundreds of historical
+        // versions per app must see every entry in `:versions` and let
+        // `:rollback` find labels that fall past the first page. Two
+        // pages of mocked responses; the second carries no next_token so
+        // the loop terminates. Both pages' entries must appear in the
+        // returned Vec.
+        use aws_sdk_elasticbeanstalk::operation::describe_application_versions::DescribeApplicationVersionsOutput;
+        use aws_sdk_elasticbeanstalk::types::ApplicationVersionDescription;
+
+        let page1 = mock!(Client::describe_application_versions)
+            .match_requests(|req| {
+                req.application_name() == Some("uflexi") && req.next_token().is_none()
+            })
+            .then_output(|| {
+                DescribeApplicationVersionsOutput::builder()
+                    .application_versions(
+                        ApplicationVersionDescription::builder()
+                            .version_label("build-101")
+                            .description("first")
+                            .build(),
+                    )
+                    .application_versions(
+                        ApplicationVersionDescription::builder()
+                            .version_label("build-100")
+                            .description("zeroth")
+                            .build(),
+                    )
+                    .next_token("PAGE_2")
+                    .build()
+            });
+        let page2 = mock!(Client::describe_application_versions)
+            .match_requests(|req| req.next_token() == Some("PAGE_2"))
+            .then_output(|| {
+                DescribeApplicationVersionsOutput::builder()
+                    .application_versions(
+                        ApplicationVersionDescription::builder()
+                            .version_label("build-099")
+                            .description("rolled")
+                            .build(),
+                    )
+                    .build()
+            });
+        let eb = mock_client!(aws_sdk_elasticbeanstalk, [&page1, &page2]);
+        let client = client_with_eb(eb);
+
+        let versions = client
+            .list_application_versions("uflexi")
+            .await
+            .expect("ok");
+        let labels: Vec<&str> = versions.iter().map(|v| v.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            vec!["build-101", "build-100", "build-099"],
+            "all three versions from both pages should be returned",
+        );
+        assert_eq!(page1.num_calls(), 1, "first page fetched once");
+        assert_eq!(page2.num_calls(), 1, "second page fetched once");
     }
 
     // ── MultiSelect picker plumbing ─────────────────────────────────────

@@ -23,12 +23,16 @@ whatever notifier they want.
 - **`:minimap` removed.** The corner mini-map overlay (one coloured cell per env, driven by health) was operationally redundant — every signal it carried was already in the main table. `App.show_minimap`, the `:minimap on|off` command, and the `draw_minimap` renderer (50 lines) are gone. The setting is silently ignored if a saved state.toml has `show_minimap = true`.
 - **Custom keybindings (`keys.toml`) removed.** `~/.config/ebman/keys.toml` parsed F1-F12 and uppercase-letter aliases to `:commands`, but the underlying need (discoverable per-key dispatch) is served by `Ctrl-K` palette + per-context help. The `src/keys.rs` module, the `App.custom_keys` field, the `lookup_custom_key` hook in `handle_event`, and the README's keys.toml example + storage-list entry are gone. If a `keys.toml` exists it's silently ignored.
 
+### Fixed
+- **`DescribeApplicationVersions` now paginates.** Orgs with hundreds of historical versions per app saw truncated `:versions` lists and broken `:rollback` against labels that fell past the first page. `list_application_versions` now loops on `next_token` matching the existing pattern. Mocked-AWS test `list_application_versions_pages_through_next_token` covers the two-page case.
+- **Theme-correctness sweep — ~10 hardcoded `Color::Black` / `Color::White` foregrounds in `ui.rs` replaced with `theme.contrast_text(bg)`.** Filter chip, scope pill, group banner, Worker/Web tier pills, Ready / Updating / Terminating status pills, AUTO badge, and active-tab labels were rendering unreadable text on light + high-contrast themes (the corresponding `theme.title_alt` / `theme.title` / `theme.border_active` are dark colours in those themes). Pure rendering fix.
+
 ### Internal
 - **`return Err(e).wrap_err_with(...)?` cleanup** in the multipart abort path — the `?` already short-circuits the function, so the explicit `return` was dead.
 - **Existing deploy-from-path test migrates to a tempfile** so the same chain-of-stages assertions apply to the new streaming API.
 
 ### Test foundation
-- 425 tests. New: `should_multipart_crosses_threshold`, `plan_part_lengths_exact_multiple` / `_partial_last_part` / `_zero_and_under_one_part`, `upload_bundle_uses_multipart_when_size_meets_threshold`, `upload_bundle_aborts_multipart_on_upload_part_failure`. Removed: `webhook_payload_escapes_quotes_and_backslashes` / `_handles_missing_account` (feature gone); 4 `keys.rs` parse tests (module gone).
+- 426 tests. New: `should_multipart_crosses_threshold`, `plan_part_lengths_exact_multiple` / `_partial_last_part` / `_zero_and_under_one_part`, `upload_bundle_uses_multipart_when_size_meets_threshold`, `upload_bundle_aborts_multipart_on_upload_part_failure`, `list_application_versions_pages_through_next_token`. Removed: `webhook_payload_escapes_quotes_and_backslashes` / `_handles_missing_account` (feature gone); 4 `keys.rs` parse tests (module gone).
 
 ## [0.6.0] — Interactive triage and form-driven config
 
