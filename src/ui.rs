@@ -1485,6 +1485,23 @@ fn draw_alarms_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
     f.render_widget(p, popup);
 }
 
+/// Title for the `:why` triage overlay, framed by the env's current
+/// health. The overlay surfaces the same sections regardless of colour
+/// (recent events / alarms / instances / deploys / queues), but a green
+/// env shouldn't be asked "why is X red?" — that misreads as alarm.
+fn why_overlay_title(env_name: &str, health: &str) -> String {
+    if health.eq_ignore_ascii_case("Red") || health.eq_ignore_ascii_case("Severe") {
+        format!("why is {env_name} red?")
+    } else if health.eq_ignore_ascii_case("Yellow")
+        || health.eq_ignore_ascii_case("Warning")
+        || health.eq_ignore_ascii_case("Degraded")
+    {
+        format!("why is {env_name} amber?")
+    } else {
+        format!("{env_name} — recent activity")
+    }
+}
+
 fn draw_why_red_overlay(f: &mut Frame, area: Rect, app: &App) {
     let Some(crate::app::Overlay::WhyRed {
         env_name,
@@ -1810,7 +1827,13 @@ fn draw_why_red_overlay(f: &mut Frame, area: Rect, app: &App) {
     }
     push_close_hint(&mut lines, theme);
 
-    let title = format!("why is {env_name} red?");
+    let health = app
+        .environments
+        .iter()
+        .find(|e| &e.name == env_name)
+        .map(|e| e.health.as_str())
+        .unwrap_or("");
+    let title = why_overlay_title(env_name, health);
     let p = Paragraph::new(lines)
         .wrap(Wrap { trim: false })
         .block(titled_block(theme, &title, true, theme.title).padding(Padding::uniform(1)));
@@ -7529,6 +7552,25 @@ mod tests {
             "missing tab-specific key: {text:?}"
         );
         assert!(text.contains("esc"), "missing global key: {text:?}");
+    }
+
+    #[test]
+    fn why_overlay_title_is_framed_by_health() {
+        // Red / Severe → diagnostic framing.
+        assert_eq!(why_overlay_title("prod", "Red"), "why is prod red?");
+        assert_eq!(why_overlay_title("prod", "Severe"), "why is prod red?");
+        // Yellow family → amber framing (matches operator vocabulary).
+        assert_eq!(why_overlay_title("prod", "Yellow"), "why is prod amber?");
+        assert_eq!(why_overlay_title("prod", "Warning"), "why is prod amber?");
+        assert_eq!(why_overlay_title("prod", "Degraded"), "why is prod amber?");
+        // Green / Ok / Info / NoData / Pending / Grey / unknown / blank
+        // → neutral "recent activity" framing (operator's just looking).
+        assert_eq!(why_overlay_title("prod", "Green"), "prod — recent activity");
+        assert_eq!(why_overlay_title("prod", "Ok"), "prod — recent activity");
+        assert_eq!(why_overlay_title("prod", ""), "prod — recent activity");
+        // Health string is matched case-insensitively (EB's casing varies).
+        assert_eq!(why_overlay_title("prod", "red"), "why is prod red?");
+        assert_eq!(why_overlay_title("prod", "yellow"), "why is prod amber?");
     }
 
     #[test]
