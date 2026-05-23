@@ -1,0 +1,16 @@
+[package]
+name = "tui-common"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.91"
+authors = ["Tom Baldwin <tom@polymorphism.co.uk>"]
+description = "Shared TUI helpers used by ebman (and pgman). Internal — not published to crates.io."
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Keep deps minimal — anything that lands here is by definition supposed to
+# be reusable across more than one TUI, so app-specific deps (aws-sdk-*,
+# tokio-postgres, …) stay out.
+[dependencies]
+crossterm = "0.28"
+tracing = "0.1"

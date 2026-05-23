@@ -12,7 +12,19 @@ homepage = "https://github.com/tombaldwin/ebman"
 keywords = ["aws", "elasticbeanstalk", "tui", "ratatui"]
 categories = ["command-line-utilities"]
 
+# Workspace: the ebman package sits at the root alongside `tui-common`, a
+# shared crate of pure TUI helpers (font_probe today; more migrations
+# coming in 0.8). The sibling pgman repo is intended to depend on
+# `tui-common` via a git or path dep so fixes flow both ways instead of
+# being copy-pasted between repos.
+[workspace]
+members = ["tui-common"]
+# Default to building / testing both crates so `cargo test` from the
+# repo root sweeps everything without needing `--workspace`.
+default-members = [".", "tui-common"]
+
 [dependencies]
+tui-common = { path = "tui-common" }
 ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
