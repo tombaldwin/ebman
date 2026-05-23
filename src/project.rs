@@ -18,40 +18,60 @@
 //! application = "uflexi"    # filter envs to this app on launch
 //! filter  = "prod-"         # pre-fill the search filter
 //!
-//! # Per-env runbook URLs surface in :why's triage overlay. Merged
-//! # with the user-level `runbooks.ENV = …` entries from
-//! # ~/.config/ebman/config.toml; project entries win on collision.
 //! [runbooks]
-//! uflexi-prod = "https://wiki/runbooks/uflexi-prod"
+//! "uflexi-prod" = "https://wiki/runbooks/uflexi-prod"
 //! ```
 //!
-//! Pure parsing + lookup here; I/O is a thin wrapper at the bottom.
+//! Parsing uses `toml` + `serde` derive; unknown fields are accepted
+//! (forward-compat) so an older binary doesn't choke on a newer
+//! schema field. Both the inline `runbooks.NAME = "url"` and the
+//! `[runbooks]` table syntax parse — they're the same wire format
+//! to the `toml` crate.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use serde::Deserialize;
+
 /// Parsed contents of a `.ebman/ebman.toml`. Every field is optional;
 /// `None` means "fall back to the user-level config / AWS env defaults".
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
 pub struct ProjectConfig {
     /// AWS profile name to use. Overrides `AWS_PROFILE` and the
     /// `profile` from `~/.config/ebman/config.toml`.
+    #[serde(deserialize_with = "deserialize_non_empty", default)]
     pub profile: Option<String>,
     /// AWS region. Overrides `AWS_REGION` / `AWS_DEFAULT_REGION` and
     /// the `region` from `state.toml`.
+    #[serde(deserialize_with = "deserialize_non_empty", default)]
     pub region: Option<String>,
     /// Application name to pre-filter to. Operators in a single-app
     /// repo set this so launching ebman from that repo immediately
     /// scopes the table to the right envs.
+    #[serde(deserialize_with = "deserialize_non_empty", default)]
     pub application: Option<String>,
     /// Pre-fill the search filter. Useful when an app has many envs
     /// and the repo only deals with a subset (e.g. `prod-` to scope
     /// out staging / dev).
+    #[serde(deserialize_with = "deserialize_non_empty", default)]
     pub filter: Option<String>,
     /// Per-env runbook URLs. Merged with the user-level
     /// `runbooks.ENV = …` map from `config.toml`; project entries win
     /// on collision because the repo is the more-specific source.
     pub runbooks: HashMap<String, String>,
+}
+
+/// `serde` adapter that collapses empty-string values to `None`. The
+/// hand-rolled parser this replaced did the same so a stray
+/// `profile = ""` couldn't mask the user-level default; preserved
+/// here for back-compat with any project file that already uses it.
+fn deserialize_non_empty<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt: Option<String> = Option::deserialize(deserializer)?;
+    Ok(opt.filter(|s| !s.is_empty()))
 }
 
 /// Walk from `start` toward the filesystem root looking for a
@@ -72,66 +92,24 @@ pub fn config_path(project_root: &Path) -> PathBuf {
 }
 
 /// Pure: parse a `.ebman/ebman.toml` body into a `ProjectConfig`.
-/// Hand-rolled to match the existing `config.rs` / `state.rs` style —
-/// swap to `serde` + `toml` once the broader TOML-parser migration on
-/// the BACKLOG lands so all three files migrate together.
-///
-/// Tolerates: blank lines, `#` comments, surrounding `"` quotes on
-/// values, leading / trailing whitespace. Unknown keys are ignored so
-/// a future schema addition degrades gracefully on older binaries.
-/// `runbooks.ENV = "url"` dotted-key form follows the same shape as
-/// `config.toml`'s top-level `runbooks.ENV` lines.
-pub fn parse(text: &str) -> ProjectConfig {
-    let mut cfg = ProjectConfig::default();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') || line.starts_with('[') {
-            // Section headers are accepted-and-ignored (the dotted-key
-            // `runbooks.ENV = …` shape doesn't need a `[runbooks]`
-            // section, but TOML files written by hand often include
-            // one and we shouldn't choke on it).
-            continue;
-        }
-        let Some((key, raw_val)) = line.split_once('=') else {
-            continue;
-        };
-        let key = key.trim();
-        let value = raw_val.trim().trim_matches('"').to_string();
-        match key {
-            "profile" => cfg.profile = non_empty(value),
-            "region" => cfg.region = non_empty(value),
-            "application" => cfg.application = non_empty(value),
-            "filter" => cfg.filter = non_empty(value),
-            other if other.starts_with("runbooks.") => {
-                let env = other.trim_start_matches("runbooks.").trim();
-                if !env.is_empty() && !value.is_empty() {
-                    cfg.runbooks.insert(env.to_string(), value);
-                }
-            }
-            _ => {}
-        }
-    }
-    cfg
-}
-
-fn non_empty(s: String) -> Option<String> {
-    if s.is_empty() {
-        None
-    } else {
-        Some(s)
-    }
+/// Returns `None` on TOML syntax / schema errors so the caller can
+/// fall back to defaults silently — a corrupt file shouldn't refuse
+/// to launch ebman.
+pub fn parse(text: &str) -> Option<ProjectConfig> {
+    toml::from_str(text).ok()
 }
 
 /// Discover and load the project config starting from the current
-/// working directory. Returns `None` when no `.ebman/` ancestor exists
-/// or the file is unreadable / blank. I/O errors swallowed silently —
-/// a corrupt file shouldn't refuse to launch ebman.
+/// working directory. Returns `None` when no `.ebman/` ancestor exists,
+/// the file is unreadable, or the TOML is malformed. I/O errors and
+/// parse errors are both swallowed — a corrupt file shouldn't refuse
+/// to launch ebman, just silently fall back to user-level config.
 pub fn load_from_cwd() -> Option<ProjectConfig> {
     let cwd = std::env::current_dir().ok()?;
     let root = find_root(&cwd)?;
     let path = config_path(&root);
     let text = std::fs::read_to_string(&path).ok()?;
-    Some(parse(&text))
+    parse(&text)
 }
 
 #[cfg(test)]
@@ -147,7 +125,7 @@ region = "us-west-1"
 application = "uflexi"
 filter = "prod-"
 "#;
-        let cfg = parse(text);
+        let cfg = parse(text).expect("ok");
         assert_eq!(cfg.profile.as_deref(), Some("prod"));
         assert_eq!(cfg.region.as_deref(), Some("us-west-1"));
         assert_eq!(cfg.application.as_deref(), Some("uflexi"));
@@ -156,13 +134,12 @@ filter = "prod-"
     }
 
     #[test]
-    fn parse_runbooks_dotted_keys() {
+    fn parse_runbooks_inline_dotted_keys() {
         let text = r#"
-[runbooks]
-runbooks.uflexi-prod = "https://wiki/uflexi-prod"
-runbooks.uflexi-staging = "https://wiki/uflexi-staging"
+runbooks."uflexi-prod" = "https://wiki/uflexi-prod"
+runbooks."uflexi-staging" = "https://wiki/uflexi-staging"
 "#;
-        let cfg = parse(text);
+        let cfg = parse(text).expect("ok");
         assert_eq!(
             cfg.runbooks.get("uflexi-prod").map(String::as_str),
             Some("https://wiki/uflexi-prod"),
@@ -174,24 +151,36 @@ runbooks.uflexi-staging = "https://wiki/uflexi-staging"
     }
 
     #[test]
-    fn parse_ignores_unknown_keys_and_blanks() {
-        // Unknown keys + comments + blank lines + section headers
-        // mustn't break parsing. Forward-compat: a future schema field
-        // shouldn't blow up older binaries.
+    fn parse_runbooks_table_syntax() {
+        // The `[runbooks]` table form should parse too — `toml`
+        // treats both as the same wire format.
         let text = r#"
-# header comment
+[runbooks]
+"uflexi-prod" = "https://wiki/uflexi-prod"
+"#;
+        let cfg = parse(text).expect("ok");
+        assert_eq!(
+            cfg.runbooks.get("uflexi-prod").map(String::as_str),
+            Some("https://wiki/uflexi-prod"),
+        );
+    }
 
+    #[test]
+    fn parse_ignores_unknown_keys() {
+        // Forward-compat: a future schema field shouldn't blow up
+        // older binaries. `#[serde(default)]` at the struct level
+        // means missing fields are fine; unknown fields are accepted.
+        let text = r#"
 future_setting = "whatever"
-[unused_section]
 profile = "prod"
 "#;
-        let cfg = parse(text);
+        let cfg = parse(text).expect("ok");
         assert_eq!(cfg.profile.as_deref(), Some("prod"));
     }
 
     #[test]
     fn parse_empty_returns_defaults() {
-        let cfg = parse("");
+        let cfg = parse("").expect("ok");
         assert_eq!(cfg, ProjectConfig::default());
     }
 
@@ -199,9 +188,16 @@ profile = "prod"
     fn parse_skips_empty_string_values() {
         // `profile = ""` should yield `None`, not `Some("")` — otherwise
         // an empty override would mask the user-level setting.
-        let cfg = parse("profile = \"\"\nregion = \"\"\n");
+        let cfg = parse("profile = \"\"\nregion = \"\"\n").expect("ok");
         assert_eq!(cfg.profile, None);
         assert_eq!(cfg.region, None);
+    }
+
+    #[test]
+    fn parse_invalid_toml_returns_none() {
+        // Malformed TOML → None so the caller falls back to defaults.
+        assert_eq!(parse("profile = unquoted"), None);
+        assert_eq!(parse("[unterminated"), None);
     }
 
     #[test]
