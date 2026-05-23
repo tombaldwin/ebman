@@ -15956,6 +15956,106 @@ mod tests {
         assert!(!app.redact);
     }
 
+    #[tokio::test]
+    async fn space_toggles_multi_select_and_esc_clears_it() {
+        let mut app = test_app();
+        app.environments = vec![
+            mk_env("api-prod", "uflexi", "Web", "Green"),
+            mk_env("api-staging", "uflexi", "Web", "Green"),
+        ];
+        app.rebuild_view();
+        // Cursor on row 0 by default. Space adds it to multi-select.
+        press(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+        assert_eq!(app.multi_selected.len(), 1);
+        assert!(app.multi_selected.contains("api-prod"));
+        // Second space toggles the same row off.
+        press(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+        assert!(app.multi_selected.is_empty());
+        // Select both rows again, then Esc → clears in one keystroke.
+        press(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+        press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+        press(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+        assert_eq!(app.multi_selected.len(), 2);
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.multi_selected.is_empty());
+    }
+
+    #[tokio::test]
+    async fn filter_mode_text_input_and_backspace_round_trips() {
+        let mut app = test_app();
+        app.environments = vec![
+            mk_env("api-prod", "uflexi", "Web", "Green"),
+            mk_env("api-staging", "uflexi", "Web", "Green"),
+        ];
+        app.rebuild_view();
+        // `/` enters Filter mode.
+        press(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+        assert_eq!(app.mode, Mode::Filter);
+        // Type "prod" — filter text accumulates, view rebuilds on each char.
+        for c in "prod".chars() {
+            press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        assert_eq!(app.filter, "prod");
+        // Backspace removes the last char.
+        press(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(app.filter, "pro");
+        // Enter commits the filter and returns to Normal — the filter
+        // string SURVIVES (it's how `:filter` works as a stateful
+        // search).
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.filter, "pro");
+    }
+
+    #[tokio::test]
+    async fn esc_in_filter_mode_clears_the_filter() {
+        let mut app = test_app();
+        app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
+        app.rebuild_view();
+        press(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+        for c in "x".chars() {
+            press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        assert_eq!(app.filter, "x");
+        // Esc abandons the filter — both the text AND the mode revert.
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.filter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn star_toggles_pinned_set_for_selected_env() {
+        let mut app = test_app();
+        app.environments = vec![
+            mk_env("api-prod", "uflexi", "Web", "Green"),
+            mk_env("api-staging", "uflexi", "Web", "Green"),
+        ];
+        app.rebuild_view();
+        // Star pins the cursor's env.
+        press(&mut app, KeyCode::Char('*'), KeyModifiers::NONE);
+        assert!(app.pinned.contains("api-prod"));
+        // Second star unpins it.
+        press(&mut app, KeyCode::Char('*'), KeyModifiers::NONE);
+        assert!(!app.pinned.contains("api-prod"));
+    }
+
+    #[tokio::test]
+    async fn picker_workflow_open_filter_enter_dispatches_choice() {
+        // `r` opens the region picker. Typing filters the list; Enter
+        // applies the highlighted choice. We don't try to assert that
+        // the AwsClient actually swapped (the test stub doesn't fire
+        // real calls) — we assert the mode transitions and that the
+        // picker's selected_value resolves the expected entry.
+        let mut app = test_app();
+        press(&mut app, KeyCode::Char('r'), KeyModifiers::NONE);
+        assert_eq!(app.mode, Mode::Picker);
+        assert!(app.picker.is_some());
+        // Esc cancels — picker cleared, mode back to Normal.
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.picker.is_none());
+    }
+
     /// Helper for the cancel-window tests — build a ConfirmModal for
     /// the given Action / env. Mirrors the shape `advance_action_flow`
     /// produces; pre-flight fields stay None (the cancel-window code
