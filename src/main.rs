@@ -362,202 +362,431 @@ fn cli_esc(s: &str) -> String {
 
 const SPLASH_SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-// 8-bit pixel-art splash scene — an angry giant chomping a
-// beanstalk (the `ebman` = Elastic *Beanstalk* gag: a giant
-// devouring the thing).
+// 8-bit pixel-art splash scene — a beanstalk growing out of its pot
+// (the `ebman` = Elastic *Beanstalk* gag: watch the thing sprout).
 //
 // Each glyph in a frame is a palette key, not a literal. The
-// renderer ([`splash_giant_lines`]) paints every non-space key as a
+// renderer ([`splash_scene_lines`]) paints every non-`.` key as a
 // **two-cell** `██` block coloured via [`splash_pixel`] — two cells
 // wide so each logical pixel is roughly square (terminal cells are
-// ~1:2). Transparent keys render as two blank cells.
+// ~1:2). The `.` key is transparent (rendered as two blank cells).
 //
-// Four frames cycle a chomp: jaws-wide → closing → CHOMP → opening.
-// Only the forehead wrinkles (rows 3-4), the eyes (rows 7-9) and
-// the mouth (rows 12-13) animate — the furrow deepens toward the
-// bite. Everything else, the head outline and the whole leafy
-// beanstalk (rows 14-23), is identical across every frame, so the
-// beanstalk stays rooted and still while the giant glares, furrows
-// and chomps.
+// Eight frames take the env from bare pot to full bloom: empty pot
+// → first leaf → stem rising → side leaves → upper stem → upper
+// leaf cluster → second-tier branches → bud crowning the top. The
+// pot stays rooted across every frame so the growing motion reads
+// against a fixed anchor.
 //
-// Palette keys: G/g/h giant skin + shadow + highlight · B brow ·
-// W eye-white · P pupil (angry red) · M mouth · K tusk ·
-// T/t beanstalk stem · L/l leaf · D/d ground. Rows need not be
-// equal length — the renderer pads to the widest row.
+// Palette keys: `#` outline (dark green) · `G` leaf · `L` leaf
+// highlight · `F` bud · `P` pot · `T` soil. All frames are 20×20.
 
-/// Frame 1 — JAWS WIDE. Eyes glaring, mouth gaping over the leafy
-/// crown of the (static) beanstalk.
-const GIANT_FRAME_1: &[&str] = &[
-    "          hGGGGGGGGGGg        ",
-    "        hGGGGGGGGGGGGGGGg      ",
-    "       hGGGGGGGGGGGGGGGGGg     ",
-    "      hGGggggGGGGGGggggGGGg    ",
-    "      GGGGGGGggggggGGGGGGGg    ",
-    "      GGBBBBGGGGGGGGBBBBGGg    ",
-    "      GGGGBBBBGGGGBBBBGGGGGg   ",
-    "      GGGWWWWWGGGGWWWWWGGGGg   ",
-    "      GgGWWPPWGGggGWWPPWGGgg   ",
-    "      GgGWWWWWGgggGWWWWWGGGg   ",
-    "      GggGGGGGGGgggGGGGGGGgg   ",
-    "      GggGKKGGGGGGGGKKGGGGgg   ",
-    "      GgGKMMMMLLMMMMMMKGGGGg   ",
-    "      GgGKMMMMTTMMMMMMKGGGGg   ",
-    "       GgGGGGGTTGGGGGGGGGgg    ",
-    "        GgggGGtTtGGGGGGGgg     ",
-    "         GggGGtTtGGGGGGgg      ",
-    "        lLLltttTTtttlLLl       ",
-    "          GGgtTTtgGG          ",
-    "           GgtTTtgG           ",
-    "         lLLltTTt             ",
-    "             tTTtlLLl         ",
-    "             tTTt             ",
-    "  DDDDDDDDDDDDtTTtDDDDDDDDDD  ",
+// Frame index → growth stage. The 8 keyframes from the JSON design
+// source are at indices 0, 1, 3, 5, 7, 9, 11, 13; the 6 in-between
+// frames (indices 2, 4, 6, 8, 10, 12) smooth the largest visual jumps
+// (stem extending, leaf clusters forming, bud emerging). Visual cycle:
+// empty pot → sprout pixel → stem rises → first leaves bud and fill
+// → upper sprout rises → upper leaves bud and fill → bud crowns the top.
+
+const SPLASH_FRAME_0: &[&str] = &[
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....############....",
+    "....#TTTTTTTTTT#....",
+    "....#PPPPPPPPPP#....",
+    ".....##########.....",
 ];
 
-/// Frame 2 — CLOSING. Eyes flick to the food, mouth half-shut, a
-/// forehead furrow forming as the strain begins.
-const GIANT_FRAME_2: &[&str] = &[
-    "          hGGGGGGGGGGg        ",
-    "        hGGGGGGGGGGGGGGGg      ",
-    "       hGGGGGGGGGGGGGGGGGg     ",
-    "      hGGggggGGGGGGggggGGGg    ",
-    "      GGGGGGGggggggGGGGGGGg    ",
-    "      GGBBBBGGGGGGGGBBBBGGg    ",
-    "      GGGGBBBBGGGGBBBBGGGGGg   ",
-    "      GGGWWWWWGGGGWWWWWGGGGg   ",
-    "      GgGWWWPWGGggGWPWWWGGgg   ",
-    "      GgGWWWWWGgggGWWWWWGGGg   ",
-    "      GggGGGGGGGgggGGGGGGGgg   ",
-    "      GggGKKGGGGGGGGKKGGGGgg   ",
-    "      GgGKGMMMLLMMMMMGKGGGGg   ",
-    "      GgGKGMMMTTMMMMMGKGGGGg   ",
-    "       GgGGGGGTTGGGGGGGGGgg    ",
-    "        GgggGGtTtGGGGGGGgg     ",
-    "         GggGGtTtGGGGGGgg      ",
-    "        lLLltttTTtttlLLl       ",
-    "          GGgtTTtgGG          ",
-    "           GgtTTtgG           ",
-    "         lLLltTTt             ",
-    "             tTTtlLLl         ",
-    "             tTTt             ",
-    "  DDDDDDDDDDDDtTTtDDDDDDDDDD  ",
+const SPLASH_FRAME_1: &[&str] = &[
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    ".........G..........",
+    "....############....",
+    "....#TTTTTTTTTT#....",
+    "....#PPPPPPPPPP#....",
+    ".....##########.....",
 ];
 
-/// Frame 3 — CHOMP. Eyes screwed to angry slits, mouth clamped shut
-/// on the vine, forehead furrowed deep with the effort. The bite.
-const GIANT_FRAME_3: &[&str] = &[
-    "          hGGGGGGGGGGg        ",
-    "        hGGGGGGGGGGGGGGGg      ",
-    "       hGggggGGGGGGggggGGg     ",
-    "      hGGGGgggGGGGgggGGGGGg    ",
-    "      GGGGGGGggggggGGGGGGGg    ",
-    "      GGBBBBGGGGGGGGBBBBGGg    ",
-    "      GGGGBBBBGGGGBBBBGGGGGg   ",
-    "      GGGBBBBBGGGGBBBBBGGGGg   ",
-    "      GgGWPPWWGGggGWWPPWGGgg   ",
-    "      GgGGWWWGGgggGGWWWGGGGg   ",
-    "      GggGGGGGGGgggGGGGGGGgg   ",
-    "      GggGKKGGGGGGGGKKGGGGgg   ",
-    "      GgGKGGGGGGGGGGGGKGGGGg   ",
-    "      GgGKMMMMMMMMMMMMKGGGGg   ",
-    "       GgGGGGGTTGGGGGGGGGgg    ",
-    "        GgggGGtTtGGGGGGGgg     ",
-    "         GggGGtTtGGGGGGgg      ",
-    "        lLLltttTTtttlLLl       ",
-    "          GGgtTTtgGG          ",
-    "           GgtTTtgG           ",
-    "         lLLltTTt             ",
-    "             tTTtlLLl         ",
-    "             tTTt             ",
-    "  DDDDDDDDDDDDtTTtDDDDDDDDDD  ",
+// In-between: sprout extends to a 2-pixel stem before the wings appear.
+const SPLASH_FRAME_2: &[&str] = &[
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    ".........G..........",
+    ".........#..........",
+    "....############....",
+    "....#TTTTTTTTTT#....",
+    "....#PPPPPPPPPP#....",
+    ".....##########.....",
 ];
 
-/// Frame 4 — OPENING. Eyes widen back to a glare, mouth parting for
-/// the next mouthful, the forehead furrow easing off.
-const GIANT_FRAME_4: &[&str] = &[
-    "          hGGGGGGGGGGg        ",
-    "        hGGGGGGGGGGGGGGGg      ",
-    "       hGGGGGGGGGGGGGGGGGg     ",
-    "      hGGggggGGGGGGggggGGGg    ",
-    "      GGGGGGGggggggGGGGGGGg    ",
-    "      GGBBBBGGGGGGGGBBBBGGg    ",
-    "      GGGGBBBBGGGGBBBBGGGGGg   ",
-    "      GGGWWWWWGGGGWWWWWGGGGg   ",
-    "      GgGWWPPWGGggGWWPPWGGgg   ",
-    "      GgGWWWWWGgggGWWWWWGGGg   ",
-    "      GggGGGGGGGgggGGGGGGGgg   ",
-    "      GggGKKGGGGGGGGKKGGGGgg   ",
-    "      GgGKGMMMLLMMMMMGKGGGGg   ",
-    "      GgGKGMMMTTMMMMMGKGGGGg   ",
-    "       GgGGGGGTTGGGGGGGGGgg    ",
-    "        GgggGGtTtGGGGGGGgg     ",
-    "         GggGGtTtGGGGGGgg      ",
-    "        lLLltttTTtttlLLl       ",
-    "          GGgtTTtgGG          ",
-    "           GgtTTtgG           ",
-    "         lLLltTTt             ",
-    "             tTTtlLLl         ",
-    "             tTTt             ",
-    "  DDDDDDDDDDDDtTTtDDDDDDDDDD  ",
+const SPLASH_FRAME_3: &[&str] = &[
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "........G#G.........",
+    ".........#..........",
+    ".........#..........",
+    "....############....",
+    "....#TTTTTTTTTT#....",
+    "....#PPPPPPPPPP#....",
+    ".....##########.....",
+];
+
+// In-between: wings shed, stem grows another two rows.
+const SPLASH_FRAME_4: &[&str] = &[
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    ".........G..........",
+    ".........#..........",
+    ".........#..........",
+    ".........#..........",
+    "....############....",
+    "....#TTTTTTTTTT#....",
+    "....#PPPPPPPPPP#....",
+    ".....##########.....",
+];
+
+const SPLASH_FRAME_5: &[&str] = &[
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    ".........G..........",
+    ".........#..........",
+    ".........#..........",
+    ".........#..........",
+    ".........#..........",
+    ".........#..........",
+    "....############....",
+    "....#TTTTTTTTTT#....",
+    "....#PPPPPPPPPP#....",
+    ".....##########.....",
+];
+
+// In-between: small leaf bud forming at the top of the stem before
+// the full cluster fills in.
+const SPLASH_FRAME_6: &[&str] = &[
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "........###.........",
+    ".......#GGG#........",
+    "........###.........",
+    ".........#..........",
+    ".........#..........",
+    ".........#..........",
+    "....############....",
+    "....#TTTTTTTTTT#....",
+    "....#PPPPPPPPPP#....",
+    ".....##########.....",
+];
+
+const SPLASH_FRAME_7: &[&str] = &[
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    ".......#######......",
+    "......#GGGGGGG#.....",
+    ".......#GGLGG#......",
+    "........#####.......",
+    ".........#..........",
+    ".........#..........",
+    "....############....",
+    "....#TTTTTTTTTT#....",
+    "....#PPPPPPPPPP#....",
+    ".....##########.....",
+];
+
+// In-between: upper sprout begins to climb above the lower cluster.
+const SPLASH_FRAME_8: &[&str] = &[
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    ".........G..........",
+    ".........#..........",
+    ".......#######......",
+    "......#GGGGGGG#.....",
+    ".......#GGLGG#......",
+    "........#####.......",
+    ".........#..........",
+    ".........#..........",
+    "....############....",
+    "....#TTTTTTTTTT#....",
+    "....#PPPPPPPPPP#....",
+    ".....##########.....",
+];
+
+const SPLASH_FRAME_9: &[&str] = &[
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    ".........G..........",
+    ".........#..........",
+    ".........#..........",
+    ".........#..........",
+    ".........#..........",
+    ".........#..........",
+    ".......#######......",
+    "......#GGGGGGG#.....",
+    ".......#GGLGG#......",
+    "........#####.......",
+    ".........#..........",
+    ".........#..........",
+    "....############....",
+    "....#TTTTTTTTTT#....",
+    "....#PPPPPPPPPP#....",
+    ".....##########.....",
+];
+
+// In-between: small upper bud forms before the branched upper cluster.
+const SPLASH_FRAME_10: &[&str] = &[
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    ".........G..........",
+    "........###.........",
+    ".......#GGG#........",
+    "........###.........",
+    ".........#..........",
+    ".........#..........",
+    ".......#######......",
+    "......#GGGGGGG#.....",
+    ".......#GGLGG#......",
+    "........#####.......",
+    ".........#..........",
+    ".........#..........",
+    "....############....",
+    "....#TTTTTTTTTT#....",
+    "....#PPPPPPPPPP#....",
+    ".....##########.....",
+];
+
+const SPLASH_FRAME_11: &[&str] = &[
+    "....................",
+    "....................",
+    "....................",
+    "....................",
+    ".........G..........",
+    "......##.#.##.......",
+    ".....#GG#G#GG#......",
+    ".....#GLGGGLG#......",
+    "......##.#.##.......",
+    ".........#..........",
+    ".......#######......",
+    "......#GGGGGGG#.....",
+    ".......#GGLGG#......",
+    "........#####.......",
+    ".........#..........",
+    ".........#..........",
+    "....############....",
+    "....#TTTTTTTTTT#....",
+    "....#PPPPPPPPPP#....",
+    ".....##########.....",
+];
+
+// In-between: stem extends one row above the upper cluster before
+// the bud forms its cap.
+const SPLASH_FRAME_12: &[&str] = &[
+    "....................",
+    "....................",
+    "....................",
+    ".........G..........",
+    ".........#..........",
+    "......##.#.##.......",
+    ".....#GG#G#GG#......",
+    ".....#GLGGGLG#......",
+    "......##.#.##.......",
+    ".........#..........",
+    ".......#######......",
+    "......#GGGGGGG#.....",
+    ".......#GGLGG#......",
+    "........#####.......",
+    ".........#..........",
+    ".........#..........",
+    "....############....",
+    "....#TTTTTTTTTT#....",
+    "....#PPPPPPPPPP#....",
+    ".....##########.....",
+];
+
+const SPLASH_FRAME_13: &[&str] = &[
+    "....................",
+    ".........##.........",
+    "........#FF#........",
+    ".........##.........",
+    ".........#..........",
+    "......##.#.##.......",
+    ".....#GG#G#GG#......",
+    ".....#GLGGGLG#......",
+    "......##.#.##.......",
+    ".........#..........",
+    ".......#######......",
+    "......#GGGGGGG#.....",
+    ".......#GGLGG#......",
+    "........#####.......",
+    ".........#..........",
+    ".........#..........",
+    "....############....",
+    "....#TTTTTTTTTT#....",
+    "....#PPPPPPPPPP#....",
+    ".....##########.....",
 ];
 
 /// Map a pixel-art palette key to an RGB colour. `None` = a
 /// transparent cell (rendered as two blank cells).
-///
-/// The giant's skin is a cool stone-grey — deliberately *not*
-/// green, so the green beanstalk it's chomping stays visible as it
-/// passes over the face / neck instead of disappearing into it.
 fn splash_pixel(key: char) -> Option<(u8, u8, u8)> {
     Some(match key {
-        'G' => (138, 142, 150), // giant skin — cool stone grey
-        'g' => (92, 96, 106),   // giant skin shadow
-        'h' => (176, 180, 188), // giant skin highlight
-        'B' => (30, 34, 40),    // heavy brow
-        'W' => (246, 246, 232), // eye white
-        'P' => (222, 54, 46),   // pupil — angry red
-        'M' => (52, 16, 22),    // mouth interior
-        'K' => (240, 238, 216), // tusk
-        'T' => (96, 188, 66),   // beanstalk stem — bright, pops on grey
-        't' => (52, 124, 46),   // beanstalk stem shadow
-        'L' => (146, 220, 96),  // leaf
-        'l' => (78, 158, 60),   // leaf shadow
-        'D' => (122, 88, 58),   // ground / dirt
-        'd' => (82, 60, 40),    // dirt shadow
+        '#' => (28, 107, 46),   // outline (dark green)
+        'G' => (76, 192, 106),  // leaf body
+        'L' => (139, 224, 156), // leaf highlight
+        'F' => (255, 208, 36),  // bud (yellow)
+        'P' => (184, 115, 46),  // pot (brown)
+        'T' => (107, 67, 33),   // soil (dark brown)
         _ => return None,
     })
 }
 
-/// Number of art rows in the giant scene (every frame is the same
+/// Number of art rows in the splash scene (every frame is the same
 /// height). Used by callers to size the splash card / about popup.
-pub(crate) const GIANT_SCENE_ROWS: usize = GIANT_FRAME_1.len();
+pub(crate) const SPLASH_SCENE_ROWS: usize = SPLASH_FRAME_0.len();
 
-/// Build the coloured lines for the giant scene at `frame`. Each
+/// Number of art columns per frame. Every frame is exactly this
+/// wide; the renderer relies on that to avoid per-frame jitter when
+/// alignment recentres. Doubled (×2) at render time so logical
+/// pixels are roughly square in the terminal cell grid.
+pub(crate) const SPLASH_SCENE_COLS: usize = 20;
+
+/// Build the coloured lines for the splash scene at `frame`. Each
 /// non-transparent pixel is a **two-cell** `██` block in its palette
 /// colour, so the logical pixels are roughly square. Used by the
 /// boot splash and the `:about` overlay.
-pub(crate) fn splash_giant_lines(frame: u64) -> Vec<ratatui::text::Line<'static>> {
+///
+/// 14 frames cycle at ≈180 ms each (6 30 ms ticks); a full grow
+/// cycle takes ~2.5 s so the whole empty-pot-to-bloom animation
+/// fits inside the boot splash's 3 s minimum duration with the
+/// final bud frame holding for ~500 ms before the table appears.
+/// The 8 JSON keyframes (indices 0, 1, 3, 5, 7, 9, 11, 13) are
+/// interleaved with 6 hand-drawn in-betweens (2, 4, 6, 8, 10, 12)
+/// to smooth the largest visual jumps — stem extending, leaf
+/// clusters filling in, bud cap forming.
+pub(crate) fn splash_scene_lines(frame: u64) -> Vec<ratatui::text::Line<'static>> {
     use ratatui::layout::Alignment;
     use ratatui::style::{Color, Style};
     use ratatui::text::{Line, Span};
-    let frames = [GIANT_FRAME_1, GIANT_FRAME_2, GIANT_FRAME_3, GIANT_FRAME_4];
-    // ~0.3 s per frame at 30 ms ticks — a brisk four-step tug cycle.
-    let scene = frames[(frame as usize / 10) % frames.len()];
-    // Pad every row to the widest row across ALL frames (not just the
-    // current one) — a per-frame width would re-centre each frame and
-    // make the whole sprite jitter sideways between frames.
-    let width = frames
-        .iter()
-        .flat_map(|f| f.iter())
-        .map(|r| r.chars().count())
-        .max()
-        .unwrap_or(0);
+    const FRAMES: [&[&str]; 14] = [
+        SPLASH_FRAME_0,
+        SPLASH_FRAME_1,
+        SPLASH_FRAME_2,
+        SPLASH_FRAME_3,
+        SPLASH_FRAME_4,
+        SPLASH_FRAME_5,
+        SPLASH_FRAME_6,
+        SPLASH_FRAME_7,
+        SPLASH_FRAME_8,
+        SPLASH_FRAME_9,
+        SPLASH_FRAME_10,
+        SPLASH_FRAME_11,
+        SPLASH_FRAME_12,
+        SPLASH_FRAME_13,
+    ];
+    // 14 frames × 6 ticks × 30 ms = 2520 ms. Cycle completes inside
+    // the 3 s SPLASH_MIN_DURATION so the final bud frame lands before
+    // the splash dismisses. The `splash_animation_completes_within_min_duration`
+    // test pins the relationship so a future bump fails loud.
+    const TICKS_PER_FRAME: usize = 6;
+    let scene = FRAMES[(frame as usize / TICKS_PER_FRAME) % FRAMES.len()];
     scene
         .iter()
         .map(|row| {
             let chars: Vec<char> = row.chars().collect();
-            let spans: Vec<Span> = (0..width)
+            let spans: Vec<Span> = (0..SPLASH_SCENE_COLS)
                 .map(|col| {
-                    let key = chars.get(col).copied().unwrap_or(' ');
+                    let key = chars.get(col).copied().unwrap_or('.');
                     match splash_pixel(key) {
                         // Two cells per pixel → square logical pixels.
                         Some((r, g, b)) => {
@@ -572,11 +801,12 @@ pub(crate) fn splash_giant_lines(frame: u64) -> Vec<ratatui::text::Line<'static>
         .collect()
 }
 
-/// Pure: whether the boot splash has room for the pixel-art giant
-/// scene. Below this it falls back to the compact text-only card.
-/// The thresholds match the scene-mode card (64×34).
+/// Pure: whether the boot splash has room for the pixel-art scene.
+/// Below this it falls back to the compact text-only card. Scene is
+/// 40 cells wide (20 px × 2) and 20 rows tall; the threshold is the
+/// card chrome budget (+ borders / padding) on top.
 pub(crate) fn splash_shows_scene(w: u16, h: u16) -> bool {
-    w >= 68 && h >= 34
+    w >= 48 && h >= 30
 }
 
 fn draw_splash(terminal: &mut Tui, frame: u64, icons: &str) -> Result<()> {
@@ -595,7 +825,7 @@ fn draw_splash(terminal: &mut Tui, frame: u64, icons: &str) -> Result<()> {
         let show_scene = splash_shows_scene(area.width, area.height);
         // Card carries 2 rows of slack over its content so a future
         // text tweak can't silently clip.
-        let (card_w, card_h): (u16, u16) = if show_scene { (64, 34) } else { (52, 9) };
+        let (card_w, card_h): (u16, u16) = if show_scene { (46, 30) } else { (52, 9) };
         let v = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -617,7 +847,7 @@ fn draw_splash(terminal: &mut Tui, frame: u64, icons: &str) -> Result<()> {
         lines.push(Line::from(""));
         // 8-bit angry-giant-eats-the-beanstalk scene above the text.
         if show_scene {
-            lines.extend(splash_giant_lines(frame));
+            lines.extend(splash_scene_lines(frame));
             lines.push(Line::from(""));
         }
         // In Powerline mode (resolved by `font_probe` before this runs, so
@@ -892,18 +1122,37 @@ fn dirs_log_dir() -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        cli_esc, hsl_to_rgb, prune_old_crash_reports, splash_giant_lines, splash_pixel,
-        splash_shows_scene, GIANT_FRAME_1, GIANT_FRAME_2, GIANT_FRAME_3, GIANT_FRAME_4,
+        cli_esc, hsl_to_rgb, prune_old_crash_reports, splash_pixel, splash_scene_lines,
+        splash_shows_scene, SPLASH_FRAME_0, SPLASH_FRAME_1, SPLASH_FRAME_10, SPLASH_FRAME_11,
+        SPLASH_FRAME_12, SPLASH_FRAME_13, SPLASH_FRAME_2, SPLASH_FRAME_3, SPLASH_FRAME_4,
+        SPLASH_FRAME_5, SPLASH_FRAME_6, SPLASH_FRAME_7, SPLASH_FRAME_8, SPLASH_FRAME_9,
     };
+
+    const ALL_SPLASH_FRAMES: [&[&str]; 14] = [
+        SPLASH_FRAME_0,
+        SPLASH_FRAME_1,
+        SPLASH_FRAME_2,
+        SPLASH_FRAME_3,
+        SPLASH_FRAME_4,
+        SPLASH_FRAME_5,
+        SPLASH_FRAME_6,
+        SPLASH_FRAME_7,
+        SPLASH_FRAME_8,
+        SPLASH_FRAME_9,
+        SPLASH_FRAME_10,
+        SPLASH_FRAME_11,
+        SPLASH_FRAME_12,
+        SPLASH_FRAME_13,
+    ];
 
     #[test]
     fn splash_shows_scene_gates_on_terminal_size() {
         // Roomy → scene.
         assert!(splash_shows_scene(120, 50));
-        assert!(splash_shows_scene(68, 34)); // exact threshold
+        assert!(splash_shows_scene(48, 30)); // exact threshold
                                              // Too narrow / too short → text-only fallback.
-        assert!(!splash_shows_scene(67, 50));
-        assert!(!splash_shows_scene(120, 33));
+        assert!(!splash_shows_scene(47, 50));
+        assert!(!splash_shows_scene(120, 29));
         assert!(!splash_shows_scene(40, 20));
     }
 
@@ -915,12 +1164,13 @@ mod tests {
     }
 
     #[test]
-    fn splash_pixel_maps_keys_and_treats_space_as_transparent() {
-        // Every key used in the art frames must resolve to a colour.
-        for frame in [GIANT_FRAME_1, GIANT_FRAME_2, GIANT_FRAME_3, GIANT_FRAME_4] {
+    fn splash_pixel_maps_keys_and_treats_dot_as_transparent() {
+        // Every key used in the art frames must resolve to a colour
+        // (apart from `.`, which is transparent by design).
+        for frame in ALL_SPLASH_FRAMES {
             for row in frame {
                 for ch in row.chars() {
-                    if ch != ' ' {
+                    if ch != '.' {
                         assert!(
                             splash_pixel(ch).is_some(),
                             "art key '{ch}' has no palette entry"
@@ -929,33 +1179,49 @@ mod tests {
                 }
             }
         }
-        assert_eq!(splash_pixel(' '), None);
+        assert_eq!(splash_pixel('.'), None);
     }
 
     #[test]
-    fn all_giant_frames_are_the_same_height() {
-        // Frames must agree on row count — the head silhouette is
-        // meant to stay fixed while only the expressive rows change.
-        let h = GIANT_FRAME_1.len();
-        for f in [GIANT_FRAME_2, GIANT_FRAME_3, GIANT_FRAME_4] {
+    fn all_splash_frames_have_identical_dimensions() {
+        // Frames must agree on row count *and* column count — the
+        // pot anchor is meant to stay rooted while only the plant
+        // above it changes, so any frame-to-frame size shift would
+        // re-centre and read as a jitter.
+        let h = SPLASH_FRAME_0.len();
+        for f in ALL_SPLASH_FRAMES {
             assert_eq!(f.len(), h, "frame height mismatch");
+            for row in f {
+                assert_eq!(
+                    row.chars().count(),
+                    super::SPLASH_SCENE_COLS,
+                    "row width mismatch in frame: {row:?}"
+                );
+            }
         }
     }
 
+    /// Mirrors `splash_scene_lines`'s internal constant so the cycle
+    /// probes match the actual frame stride.
+    const TICKS_PER_FRAME: u64 = 6;
+
+    /// Total number of frames in the animation cycle. Mirrors the
+    /// FRAMES array length in `splash_scene_lines`.
+    const FRAME_COUNT: u64 = 14;
+
     #[test]
-    fn splash_giant_frames_render_identical_width() {
+    fn splash_scene_frames_render_identical_width() {
         // Every frame must render to the same total cell width, or
         // centre-alignment shifts the sprite sideways between frames
-        // (a visible jitter). Guards the global-width padding.
+        // (a visible jitter).
         let line_w = |l: &ratatui::text::Line| -> usize {
             l.spans.iter().map(|s| s.content.chars().count()).sum()
         };
-        let widths: Vec<usize> = [0_u64, 10, 20, 30]
-            .iter()
-            .map(|&f| {
-                let ls = splash_giant_lines(f);
-                // Every row within a frame is already the same width;
-                // sample the first.
+        // Probe one frame from each cycle slot; the sampled tick
+        // offsets span the full N-frame cycle.
+        let widths: Vec<usize> = (0..FRAME_COUNT)
+            .map(|i| {
+                let ls = splash_scene_lines(i * TICKS_PER_FRAME);
                 line_w(&ls[0])
             })
             .collect();
@@ -966,10 +1232,11 @@ mod tests {
     }
 
     #[test]
-    fn splash_giant_lines_renders_full_scene_and_animates() {
-        // Include the foreground colour, not just the glyph — the
-        // frames animate by recolouring cells (eyes glare↔slits,
-        // mouth open↔shut), so a glyph-only compare would miss it.
+    fn splash_scene_lines_renders_full_scene_and_animates() {
+        // Include the foreground colour as well as the glyph — the
+        // animation is mostly composition (more pixels appear as the
+        // beanstalk grows), so a glyph-only compare may miss subtle
+        // recolours; a (color, glyph) compare catches both.
         let render = |ls: &[ratatui::text::Line]| {
             ls.iter()
                 .map(|l| {
@@ -981,24 +1248,39 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         // Every frame renders every art row.
-        let f1 = splash_giant_lines(0);
-        assert_eq!(f1.len(), GIANT_FRAME_1.len());
-        // The four cycle slots are not all identical — it animates.
-        let f2 = render(&splash_giant_lines(10));
-        let f3 = render(&splash_giant_lines(20));
-        let f4 = render(&splash_giant_lines(30));
-        let f1r = render(&f1);
+        let f0 = splash_scene_lines(0);
+        assert_eq!(f0.len(), SPLASH_FRAME_0.len());
+        // Probe several cycle slots — at least one pair must differ.
+        let r0 = render(&f0);
+        let r5 = render(&splash_scene_lines(5 * TICKS_PER_FRAME));
+        let r13 = render(&splash_scene_lines(13 * TICKS_PER_FRAME));
         assert!(
-            f1r != f2 || f1r != f3 || f1r != f4,
+            r0 != r5 || r0 != r13,
             "frames should differ — scene is not animating"
         );
-        // The 4-frame cycle wraps back to frame 1.
-        assert_eq!(render(&splash_giant_lines(40)), f1r);
-        // Square pixels: a painted cell is the two-block "██".
-        assert!(f1
+        // The cycle wraps back to frame 0 after FRAME_COUNT × TICKS_PER_FRAME.
+        assert_eq!(
+            render(&splash_scene_lines(FRAME_COUNT * TICKS_PER_FRAME)),
+            r0
+        );
+        // Square pixels: a painted cell is the two-block "██" (sampled
+        // from the last frame which has the most pixels lit).
+        assert!(splash_scene_lines(13 * TICKS_PER_FRAME)
             .iter()
             .flat_map(|l| l.spans.iter())
             .any(|s| s.content.as_ref() == "██"));
+    }
+
+    #[test]
+    fn splash_animation_completes_within_min_duration() {
+        // Pin the speed-up: one full cycle should finish in less than
+        // the splash's 3 s minimum duration, so the boot splash always
+        // lands on the final-bloom frame before the table replaces it.
+        let cycle_ms = FRAME_COUNT * TICKS_PER_FRAME * 30;
+        assert!(
+            cycle_ms < 3000,
+            "cycle is {cycle_ms} ms — exceeds 3 s splash duration; bump TICKS_PER_FRAME down"
+        );
     }
 
     #[test]
