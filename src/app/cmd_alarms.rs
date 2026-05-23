@@ -29,10 +29,6 @@ impl App {
                 return;
             }
         };
-        if self.read_only {
-            self.error_message = Some("read-only mode — alarm-create disabled".into());
-            return;
-        }
         let Some((metric_name, default_op, stat)) = alarm_kind_to_metric(kind) else {
             self.error_message = Some(format!(
                 "unknown KIND '{kind}'  (valid: health, 4xx, 5xx, latency)"
@@ -48,6 +44,9 @@ impl App {
             self.error_message = Some("no env selected".into());
             return;
         };
+        if self.deny_write(&env.name, "alarm-create") {
+            return;
+        }
         let env_name = env.name.clone();
         let alarm_name = name.to_string();
         let metric_name = metric_name.to_string();
@@ -112,15 +111,14 @@ impl App {
                 self.error_message = Some("usage: :alarm-delete NAME".into());
             }
             Some(name) => {
-                if self.read_only {
-                    self.error_message = Some("read-only mode — alarm-delete disabled".into());
-                    return;
-                }
                 let alarm_name = name.to_string();
                 let env_name = self
                     .selected_env()
                     .map(|e| e.name.clone())
                     .unwrap_or_else(|| "?".into());
+                if self.deny_write(&env_name, "alarm-delete") {
+                    return;
+                }
                 let target = format!("{env_name}/{alarm_name}");
                 write_audit_line(
                     self.context.account_id.as_deref(),

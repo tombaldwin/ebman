@@ -4015,14 +4015,13 @@ impl App {
     /// confirm modal for it — so the operator sees + confirms the
     /// target, and the 5s undo window still applies.
     pub(crate) fn cmd_rollback(&mut self) {
-        if self.read_only {
-            self.error_message = Some("read-only mode — rollback disabled".into());
-            return;
-        }
         let Some(env) = self.selected_env().cloned() else {
             self.error_message = Some("no env selected".into());
             return;
         };
+        if self.deny_write(&env.name, "rollback") {
+            return;
+        }
         let env_name = env.name.clone();
         let current_version = env.version_label.clone();
         let aws = self.aws.clone();
@@ -4121,8 +4120,7 @@ impl App {
             self.error_message = Some("no env selected".into());
             return;
         };
-        if self.read_only {
-            self.error_message = Some("read-only mode — :env-edit disabled".into());
+        if self.deny_write(&env.name, ":env-edit") {
             return;
         }
         if self.pending_env_edit.is_some() {
@@ -5347,8 +5345,11 @@ impl App {
     /// list). Refuses in read-only mode so the operator isn't left
     /// typing a value that can't be dispatched.
     fn start_config_edit(&mut self) {
-        if self.read_only {
-            self.error_message = Some("read-only mode — config editing disabled".into());
+        let env_name = match self.detail.as_ref() {
+            Some(d) => d.env_name.clone(),
+            None => return,
+        };
+        if self.deny_write(&env_name, "config editing") {
             return;
         }
         let Some(detail) = self.detail.as_mut() else {
@@ -5508,8 +5509,11 @@ impl App {
     /// an env var (the more common edit target). The buffer is typed
     /// as `KEY=VALUE`.
     fn start_config_add(&mut self) {
-        if self.read_only {
-            self.error_message = Some("read-only mode — config editing disabled".into());
+        let env_name = match self.detail.as_ref() {
+            Some(d) => d.env_name.clone(),
+            None => return,
+        };
+        if self.deny_write(&env_name, "config editing") {
             return;
         }
         let Some(detail) = self.detail.as_mut() else {
@@ -5542,8 +5546,11 @@ impl App {
     /// commit dispatches a remove-old + set-new (keeping the value)
     /// as one `UpdateOptionSettings` / `UpdateTags` call.
     fn start_config_rename(&mut self) {
-        if self.read_only {
-            self.error_message = Some("read-only mode — config editing disabled".into());
+        let env_name = match self.detail.as_ref() {
+            Some(d) => d.env_name.clone(),
+            None => return,
+        };
+        if self.deny_write(&env_name, "config editing") {
             return;
         }
         let Some(detail) = self.detail.as_mut() else {
@@ -5574,8 +5581,11 @@ impl App {
     /// removal waits for the `y` confirmation (see the
     /// `config_delete_confirm` interception in the key handler).
     fn arm_config_delete(&mut self) {
-        if self.read_only {
-            self.error_message = Some("read-only mode — config editing disabled".into());
+        let env_name = match self.detail.as_ref() {
+            Some(d) => d.env_name.clone(),
+            None => return,
+        };
+        if self.deny_write(&env_name, "config editing") {
             return;
         }
         let Some(detail) = self.detail.as_mut() else {
@@ -6116,8 +6126,11 @@ impl App {
     }
 
     fn spawn_dlq_resend_selected(&mut self) {
-        if self.read_only {
-            self.error_message = Some("read-only mode — resend disabled".into());
+        let env_name = match self.dlq.as_ref() {
+            Some(d) => d.env_name.clone(),
+            None => return,
+        };
+        if self.deny_write(&env_name, "resend") {
             return;
         }
         let Some(dlq) = self.dlq.as_mut() else { return };
@@ -6168,8 +6181,7 @@ impl App {
     }
 
     fn spawn_dlq_purge(&mut self, env_name: String, dlq_url: String) {
-        if self.read_only {
-            self.error_message = Some("read-only mode — purge disabled".into());
+        if self.deny_write(&env_name, "purge") {
             return;
         }
         write_audit_line(
@@ -6200,8 +6212,11 @@ impl App {
     /// after a successful send) counts toward `failures` and is logged;
     /// the batch keeps going. Result lands as `DlqOp::Replayed`.
     fn spawn_dlq_replay_batch(&mut self, messages: Vec<crate::aws::QueueMessage>) {
-        if self.read_only {
-            self.error_message = Some("read-only mode — replay disabled".into());
+        let env_name = match self.dlq.as_ref() {
+            Some(d) => d.env_name.clone(),
+            None => return,
+        };
+        if self.deny_write(&env_name, "replay") {
             return;
         }
         let Some(dlq) = self.dlq.as_ref() else { return };
@@ -6301,13 +6316,11 @@ impl App {
     }
 
     fn open_action_menu(&mut self) {
-        if self.read_only {
-            self.error_message =
-                Some("read-only mode — actions are disabled (:readonly off to enable)".into());
-            return;
-        }
-        if self.target_env_for_action().is_none() {
+        let Some(target) = self.target_env_for_action() else {
             self.status_message = Some("no env selected".into());
+            return;
+        };
+        if self.deny_write(&target.name, "action menu") {
             return;
         }
         let mut list_state = ListState::default();
@@ -6540,8 +6553,7 @@ impl App {
         // reads self.selected_env() for the env_name; the form captured its
         // env at open time so we dispatch by-value here. Inlining keeps the
         // form's env binding authoritative.
-        if self.read_only {
-            self.error_message = Some("read-only mode — form submit disabled".into());
+        if self.deny_write(&env_name, "form submit") {
             self.form = None;
             self.mode = Mode::Normal;
             return;
@@ -6915,6 +6927,29 @@ impl App {
             }
         }
         false
+    }
+
+    /// Enforce the read-only gate for a destructive action against
+    /// `env_name`. Returns `true` (and sets `self.error_message` to a
+    /// "<reason> — <verb> disabled" toast) when the env is locked;
+    /// `false` (no side effects) otherwise. Designed to be the single
+    /// guard at the top of every `spawn_*`-style destructive helper:
+    ///
+    /// ```ignore
+    /// if self.deny_write(&env.name, "rollback") { return; }
+    /// ```
+    ///
+    /// Saves duplicating the `is_read_only_for` + `read_only_reason`
+    /// + `error_message` triplet at every call site (~25 of them).
+    pub fn deny_write(&mut self, env_name: &str, verb: &str) -> bool {
+        if !self.is_read_only_for(env_name) {
+            return false;
+        }
+        let reason = self
+            .read_only_reason(env_name)
+            .unwrap_or_else(|| "read-only mode".into());
+        self.error_message = Some(format!("{reason} — {verb} disabled"));
+        true
     }
 
     /// Human-readable explanation of *why* an env is read-only, used
@@ -7450,8 +7485,7 @@ impl App {
     /// parser joins rest with single spaces; the overlay passes the raw
     /// template name).
     fn spawn_config_apply_template(&mut self, env_name: String, template: String) {
-        if self.read_only {
-            self.error_message = Some("read-only mode — config-apply disabled".into());
+        if self.deny_write(&env_name, "config-apply") {
             return;
         }
         let aws = self.aws.clone();
@@ -7484,8 +7518,12 @@ impl App {
     /// `spawn_config_apply_template`; bypasses the typed-command parser so
     /// the overlay can pass template names with embedded spaces.
     fn spawn_config_delete_template(&mut self, app_name: String, template: String) {
-        if self.read_only {
-            self.error_message = Some("read-only mode — config-delete disabled".into());
+        // config-delete is app-scoped, not env-scoped — the template
+        // lives at the application level. Per-account safety still
+        // applies; per-env doesn't. The global / account-pin gate fires
+        // via `deny_write` with an empty env name (which never matches
+        // any `safety_envs` key).
+        if self.deny_write("", "config-delete") {
             return;
         }
         let aws = self.aws.clone();
@@ -7641,14 +7679,13 @@ impl App {
         to_set: Vec<(String, String, String)>,
         to_remove: Vec<(String, String)>,
     ) {
-        if self.read_only {
-            self.error_message = Some(format!("read-only mode — {summary} disabled"));
-            return;
-        }
         let Some(env) = self.selected_env().cloned() else {
             self.error_message = Some("no env selected".into());
             return;
         };
+        if self.deny_write(&env.name, &summary) {
+            return;
+        }
         if to_set.is_empty() && to_remove.is_empty() {
             self.error_message = Some(format!(
                 "{summary}: nothing to do (no options to set or remove)"
@@ -7714,14 +7751,13 @@ impl App {
         description: Option<String>,
         and_deploy: bool,
     ) {
-        if self.read_only {
-            self.error_message = Some("read-only mode — deploy-from-s3 disabled".into());
-            return;
-        }
         let Some(env) = self.selected_env().cloned() else {
             self.error_message = Some("no env selected".into());
             return;
         };
+        if self.deny_write(&env.name, "deploy-from-s3") {
+            return;
+        }
         // Derive label from the S3 key's basename if not pinned. Same
         // convention as the local-path flow so the audit log + version list
         // are consistent across the two sources.
@@ -8011,14 +8047,13 @@ impl App {
     /// `force` also requests `DeleteSourceBundle=true` so the underlying
     /// `.zip` is removed from the env's storage bucket.
     fn spawn_delete_app_version(&mut self, label: String, force: bool) {
-        if self.read_only {
-            self.error_message = Some("read-only mode — delete-version disabled".into());
-            return;
-        }
         let Some(env) = self.selected_env().cloned() else {
             self.error_message = Some("no env selected".into());
             return;
         };
+        if self.deny_write(&env.name, "delete-version") {
+            return;
+        }
         let application = env.application.clone();
         let force_str = if force { " (+source bundle)" } else { "" };
         let detail = format!(
@@ -8200,14 +8235,13 @@ impl App {
     /// and `to_remove` follow EB semantics: the API allows both in a single
     /// call; we surface a summary toast either way.
     fn spawn_tag_update(&mut self, to_add: Vec<(String, String)>, to_remove: Vec<String>) {
-        if self.read_only {
-            self.error_message = Some("read-only mode — tag edits disabled".into());
-            return;
-        }
         let Some(env) = self.selected_env().cloned() else {
             self.error_message = Some("no env selected".into());
             return;
         };
+        if self.deny_write(&env.name, "tag edits") {
+            return;
+        }
         let Some(arn) = env.arn.clone() else {
             self.error_message = Some(format!("env {} has no ARN — re-fetch and retry", env.name));
             return;
@@ -8643,15 +8677,13 @@ impl App {
     }
 
     fn open_parameterised_action(&mut self, action: Action, params: ParameterisedAction) {
-        if self.read_only {
-            self.error_message =
-                Some("read-only mode — actions disabled (:readonly off to enable)".into());
-            return;
-        }
         let Some(env) = self.selected_env().cloned() else {
             self.error_message = Some("no env selected".into());
             return;
         };
+        if self.deny_write(&env.name, action.label()) {
+            return;
+        }
         // The preflight (impact preview + last-3 events) is gated by
         // `Action::wants_preflight()` — single source of truth, see
         // `mode_action.rs`. Every ConfirmModal construction site must

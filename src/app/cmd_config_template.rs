@@ -17,14 +17,13 @@ impl App {
                     Some("usage: :config-save <template-name>  (uses selected env)".into());
             }
             Some(template) => {
-                if self.read_only {
-                    self.error_message = Some("read-only mode — config-save disabled".into());
-                    return;
-                }
                 let Some(env) = self.selected_env().cloned() else {
                     self.error_message = Some("no env selected".into());
                     return;
                 };
+                if self.deny_write(&env.name, "config-save") {
+                    return;
+                }
                 let Some(env_id) = env.id.clone() else {
                     self.error_message = Some("env has no internal ID — refresh and retry".into());
                     return;
