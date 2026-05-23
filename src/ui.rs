@@ -1260,7 +1260,7 @@ enum AboutLayout {
 /// cover the bordered block, padding, and ~2 rows/cols of slack so
 /// content never butts against the card edge.
 fn about_layout(w: u16, h: u16, text_h: u16) -> AboutLayout {
-    let scene_h = crate::SPLASH_SCENE_ROWS as u16;
+    let scene_h = crate::splash::SPLASH_SCENE_ROWS as u16;
     if w >= ABOUT_SCENE_W + 6 && h >= scene_h + text_h + 6 {
         AboutLayout::Stacked
     } else if w >= ABOUT_SCENE_W + ABOUT_TEXT_W + 8 && h >= scene_h + 4 {
@@ -1332,7 +1332,7 @@ fn draw_about(f: &mut Frame, area: Rect, app: &App, opened: std::time::Instant) 
     )));
 
     // Pick a layout for the terminal, then size the popup to match.
-    let scene_h = crate::SPLASH_SCENE_ROWS as u16;
+    let scene_h = crate::splash::SPLASH_SCENE_ROWS as u16;
     let text_h = text_lines.len() as u16;
     let layout = about_layout(area.width, area.height, text_h);
     let (pw, ph) = match layout {
@@ -1357,7 +1357,7 @@ fn draw_about(f: &mut Frame, area: Rect, app: &App, opened: std::time::Instant) 
     match layout {
         AboutLayout::Stacked => {
             let mut all: Vec<Line> = vec![Line::from("")];
-            all.extend(crate::splash_scene_lines(frame));
+            all.extend(crate::splash::splash_scene_lines(frame));
             all.push(Line::from(""));
             all.extend(text_lines);
             f.render_widget(Paragraph::new(all), inner);
@@ -1374,7 +1374,7 @@ fn draw_about(f: &mut Frame, area: Rect, app: &App, opened: std::time::Instant) 
             // Scene with a one-row margin above; the column is sized
             // one row taller than the scene, so a row also falls below.
             let mut scene = vec![Line::from("")];
-            scene.extend(crate::splash_scene_lines(frame));
+            scene.extend(crate::splash::splash_scene_lines(frame));
             f.render_widget(Paragraph::new(scene), cols[0]);
             // Text vertically centred in the same column height.
             let mut col_text: Vec<Line> = Vec::new();
