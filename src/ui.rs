@@ -2802,18 +2802,17 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                             } else {
                                 0
                             };
-                            // When the env is otherwise alerting (Red /
-                            // Severe health, or worker with DLQ > 0), mute
-                            // the `Ready` pill — `Ready` means "no
-                            // lifecycle op in flight", NOT "everything's
-                            // fine". A bright green pill on a Red-tinted
-                            // row competes with the actual alert signals.
-                            let alerting = dlq > 0
-                                || e.health.eq_ignore_ascii_case("Red")
-                                || e.health.eq_ignore_ascii_case("Severe");
+                            // Tier the `Ready` pill by the env's actual
+                            // alert level — `Ready` is EB's operational
+                            // state, not a health verdict. A green pill
+                            // on a Red row reads as "fine"; render it in
+                            // the health colour so the column matches
+                            // reality. Updating / Terminating are kept as
+                            // their own distinctive pills.
+                            let alert = status_alert(&e.health, dlq);
                             if dlq > 0 {
                                 Cell::from(Line::from(vec![
-                                    status_pill_for(&e.status, &theme, alerting),
+                                    status_pill_for(&e.status, &theme, alert),
                                     Span::styled(
                                         format!(" {}{dlq}", warn_glyph(theme.icons).trim_end()),
                                         Style::default()
@@ -2822,7 +2821,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                                     ),
                                 ]))
                             } else {
-                                Cell::from(status_pill_for(&e.status, &theme, alerting))
+                                Cell::from(status_pill_for(&e.status, &theme, alert))
                             }
                         }
                         "HEALTH" => Cell::from(health_dot(&e.health, &theme)),
@@ -3395,32 +3394,68 @@ fn tier_icons(icons: IconStyle) -> (&'static str, &'static str) {
     }
 }
 
+/// Severity of the "this env is alerting" signal, used to colour-tier
+/// the `Ready` status pill. `Ready` is EB's *operational* state
+/// ("no lifecycle op in flight"), not a health verdict — so a bright
+/// green pill on an env whose health is Red reads as "everything fine"
+/// when it isn't. Pure classification: `Red` for Red/Severe health,
+/// `Yellow` for the warning band or any non-empty DLQ on a worker,
+/// `None` otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusAlert {
+    None,
+    Yellow,
+    Red,
+}
+
+/// Pure classifier: what alert tier the `Ready` pill should render in
+/// for an env with the given health string + worker-DLQ depth.
+pub fn status_alert(health: &str, dlq: i64) -> StatusAlert {
+    if health.eq_ignore_ascii_case("Red") || health.eq_ignore_ascii_case("Severe") {
+        StatusAlert::Red
+    } else if health.eq_ignore_ascii_case("Yellow")
+        || health.eq_ignore_ascii_case("Warning")
+        || health.eq_ignore_ascii_case("Degraded")
+        || dlq > 0
+    {
+        StatusAlert::Yellow
+    } else {
+        StatusAlert::None
+    }
+}
+
 /// Render a status string as a coloured pill. Wrapper around
 /// [`status_pill_for`] for callers that don't care about the alerting
 /// distinction (Detail header, etc.).
 fn status_pill(status: &str, theme: &Theme) -> Span<'static> {
-    status_pill_for(status, theme, false)
+    status_pill_for(status, theme, StatusAlert::None)
 }
 
 /// Variant of [`status_pill`] that knows whether the env is otherwise
-/// alerting (Red health or worker with DLQ > 0). When `muted` is true,
-/// the `Ready` pill renders in a dim muted style instead of bright green
-/// — `Ready` means "no lifecycle op in flight" per EB, NOT "everything
-/// is fine". Muting it stops the green pill from competing with the
-/// health-dot / row-tint / `⚠N` chip when the env is actually alerting.
-/// Other statuses (Updating / Terminating) are unaffected — they
-/// already signal "something happening" and the operator wants the full
-/// colour cue.
-fn status_pill_for(status: &str, theme: &Theme, muted: bool) -> Span<'static> {
+/// alerting. When `alert` is `Yellow` / `Red`, the `Ready` pill renders
+/// in the health colour (bold) instead of bright green — `Ready` means
+/// "no lifecycle op in flight" per EB, NOT "everything is fine". A
+/// green pill on a Red-tinted row gives the wrong at-a-glance read.
+/// Updating / Terminating are unaffected — they already carry a strong
+/// "something happening" signal that the operator wants to see in full.
+fn status_pill_for(status: &str, theme: &Theme, alert: StatusAlert) -> Span<'static> {
     // Case-insensitive match without allocating a lowercase copy per
     // call — the table renderer hits this once per env-row per frame.
     if status.eq_ignore_ascii_case("ready") {
-        if muted {
-            // Dimmed text rather than a coloured pill so the eye lands
-            // on the alert signals instead of the green pill.
-            Span::styled(" Ready ", Style::default().fg(theme.muted))
-        } else {
-            pill("Ready", Color::Black, theme.status_ready)
+        match alert {
+            StatusAlert::Red => Span::styled(
+                " Ready ",
+                Style::default()
+                    .fg(theme.health_red)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            StatusAlert::Yellow => Span::styled(
+                " Ready ",
+                Style::default()
+                    .fg(theme.health_yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            StatusAlert::None => pill("Ready", Color::Black, theme.status_ready),
         }
     } else if ieq_any(status, &["updating", "launching"]) {
         // Slow blink draws the eye to in-flight lifecycle ops without
@@ -7680,6 +7715,27 @@ mod tests {
             "missing tab-specific key: {text:?}"
         );
         assert!(text.contains("esc"), "missing global key: {text:?}");
+    }
+
+    #[test]
+    fn status_alert_tiers_by_health_and_dlq() {
+        // Red / Severe → red, regardless of DLQ.
+        assert_eq!(status_alert("Red", 0), StatusAlert::Red);
+        assert_eq!(status_alert("Severe", 0), StatusAlert::Red);
+        assert_eq!(status_alert("severe", 99), StatusAlert::Red);
+        // Yellow band → yellow.
+        assert_eq!(status_alert("Yellow", 0), StatusAlert::Yellow);
+        assert_eq!(status_alert("Warning", 0), StatusAlert::Yellow);
+        assert_eq!(status_alert("Degraded", 0), StatusAlert::Yellow);
+        // Green env with worker DLQ items → yellow (warning, not alarm).
+        assert_eq!(status_alert("Green", 1), StatusAlert::Yellow);
+        assert_eq!(status_alert("Ok", 50), StatusAlert::Yellow);
+        // Healthy env, no DLQ → no alert tier.
+        assert_eq!(status_alert("Green", 0), StatusAlert::None);
+        assert_eq!(status_alert("Ok", 0), StatusAlert::None);
+        assert_eq!(status_alert("", 0), StatusAlert::None);
+        // Red health *with* DLQ stays Red (Red wins over Yellow).
+        assert_eq!(status_alert("Red", 200), StatusAlert::Red);
     }
 
     #[test]
