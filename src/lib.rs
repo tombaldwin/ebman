@@ -29,6 +29,7 @@ pub mod mode_detail;
 pub mod mode_dlq;
 pub mod plugins;
 pub mod profiles;
+pub mod project;
 pub mod report_bug;
 pub mod shell;
 pub mod splash;
