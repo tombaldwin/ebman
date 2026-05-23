@@ -24,6 +24,7 @@ impl AppMsg {
             | SolutionStacks { gen, .. }
             | AppLatestVersions { gen, .. }
             | WorkerQueueCheck { gen, .. }
+            | EnvInstanceCountsCheck { gen, .. }
             | Events { gen, .. }
             | DetailEvents { gen, .. }
             | ActionResult { gen, .. }
@@ -85,6 +86,9 @@ impl App {
             AppMsg::SolutionStacks { result, .. } => self.handle_solution_stacks(result),
             AppMsg::AppLatestVersions { results, .. } => self.handle_app_latest_versions(results),
             AppMsg::WorkerQueueCheck { results, .. } => self.handle_worker_queue_check(results),
+            AppMsg::EnvInstanceCountsCheck { results, .. } => {
+                self.handle_env_instance_counts(results)
+            }
             AppMsg::Events { result, .. } => self.handle_events(result),
             AppMsg::DetailEvents {
                 env_name, result, ..
@@ -335,6 +339,18 @@ impl App {
         // during apply_refresh used the *previous* tick's cache. Workers
         // newly above DLQ=0 join the alert pill on the next draw.
         self.alerts = compute_red_alerts(&self.environments, &self.worker_dlq_depths);
+    }
+
+    fn handle_env_instance_counts(
+        &mut self,
+        results: Vec<(String, crate::aws::EnvInstanceCounts)>,
+    ) {
+        // Same shape as the DLQ cache: full rebuild per refresh so envs
+        // whose instances reach Green clear back to a healthy count.
+        self.env_instance_counts.clear();
+        for (env_name, counts) in results {
+            self.env_instance_counts.insert(env_name, counts);
+        }
     }
 
     fn handle_events(&mut self, result: Result<Vec<EbEvent>, String>) {

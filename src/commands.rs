@@ -169,6 +169,18 @@ pub const COMMANDS: &[CommandSpec] = &[
         CommandKind::Prefill("find-env "),
     ),
     cmd(
+        "envs-by-version",
+        ":envs-by-version LABEL — fleet-wide blast-radius for a bad build",
+        Category::Navigation,
+        CommandKind::Prefill("envs-by-version "),
+    ),
+    cmd(
+        "logs-insights",
+        ":logs-insights [--window 30m|1h|6h|24h|7d] QUERY — run a CW Logs Insights query against the env's log groups",
+        Category::Inspection,
+        CommandKind::Prefill("logs-insights "),
+    ),
+    cmd(
         "org-health",
         ":org-health — aggregate env / red counts per profile + AssumeRole account",
         Category::Navigation,
