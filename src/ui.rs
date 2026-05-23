@@ -1239,8 +1239,8 @@ fn draw_text_dump_overlay(f: &mut Frame, area: Rect, app: &App, title: &str, tex
     );
 }
 
-/// Rendered width of the giant scene (30 art pixels × 2 cells).
-const ABOUT_SCENE_W: u16 = 60;
+/// Rendered width of the splash scene (20 art pixels × 2 cells).
+const ABOUT_SCENE_W: u16 = 40;
 /// Width budget for the `:about` project-text block.
 const ABOUT_TEXT_W: u16 = 58;
 
@@ -1260,7 +1260,7 @@ enum AboutLayout {
 /// cover the bordered block, padding, and ~2 rows/cols of slack so
 /// content never butts against the card edge.
 fn about_layout(w: u16, h: u16, text_h: u16) -> AboutLayout {
-    let scene_h = crate::GIANT_SCENE_ROWS as u16;
+    let scene_h = crate::SPLASH_SCENE_ROWS as u16;
     if w >= ABOUT_SCENE_W + 6 && h >= scene_h + text_h + 6 {
         AboutLayout::Stacked
     } else if w >= ABOUT_SCENE_W + ABOUT_TEXT_W + 8 && h >= scene_h + 4 {
@@ -1332,7 +1332,7 @@ fn draw_about(f: &mut Frame, area: Rect, app: &App, opened: std::time::Instant) 
     )));
 
     // Pick a layout for the terminal, then size the popup to match.
-    let scene_h = crate::GIANT_SCENE_ROWS as u16;
+    let scene_h = crate::SPLASH_SCENE_ROWS as u16;
     let text_h = text_lines.len() as u16;
     let layout = about_layout(area.width, area.height, text_h);
     let (pw, ph) = match layout {
@@ -1357,7 +1357,7 @@ fn draw_about(f: &mut Frame, area: Rect, app: &App, opened: std::time::Instant) 
     match layout {
         AboutLayout::Stacked => {
             let mut all: Vec<Line> = vec![Line::from("")];
-            all.extend(crate::splash_giant_lines(frame));
+            all.extend(crate::splash_scene_lines(frame));
             all.push(Line::from(""));
             all.extend(text_lines);
             f.render_widget(Paragraph::new(all), inner);
@@ -1374,7 +1374,7 @@ fn draw_about(f: &mut Frame, area: Rect, app: &App, opened: std::time::Instant) 
             // Scene with a one-row margin above; the column is sized
             // one row taller than the scene, so a row also falls below.
             let mut scene = vec![Line::from("")];
-            scene.extend(crate::splash_giant_lines(frame));
+            scene.extend(crate::splash_scene_lines(frame));
             f.render_widget(Paragraph::new(scene), cols[0]);
             // Text vertically centred in the same column height.
             let mut col_text: Vec<Line> = Vec::new();
@@ -8135,18 +8135,20 @@ mod tests {
     #[test]
     fn about_layout_picks_by_terminal_size() {
         // text_h ~15 — a representative project-text height.
+        // ABOUT_SCENE_W is 40; thresholds: Stacked needs w >= 46,
+        // SideBySide needs w >= 40 + 58 + 8 = 106.
         let th = 15;
         // Roomy → scene stacked above text.
         assert_eq!(about_layout(120, 60, th), AboutLayout::Stacked);
         // Wide but short → scene beside text.
         assert_eq!(about_layout(140, 30, th), AboutLayout::SideBySide);
         // Small both ways → text only.
-        assert_eq!(about_layout(50, 20, th), AboutLayout::TextOnly);
+        assert_eq!(about_layout(40, 20, th), AboutLayout::TextOnly);
         // Wide enough to stack but the scene won't fit width-wise
         // for side-by-side either → text only.
-        assert_eq!(about_layout(64, 60, th), AboutLayout::TextOnly);
+        assert_eq!(about_layout(44, 60, th), AboutLayout::TextOnly);
         // Tall enough but too narrow for the scene → text only.
-        assert_eq!(about_layout(62, 60, th), AboutLayout::TextOnly);
+        assert_eq!(about_layout(42, 60, th), AboutLayout::TextOnly);
     }
 
     #[test]
