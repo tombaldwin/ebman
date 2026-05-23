@@ -931,6 +931,14 @@ pub struct App {
     /// Per-environment runbook URLs from `config.toml`'s `runbooks.ENV`
     /// keys. Surfaced in the `:why` triage overlay; empty when unset.
     pub runbooks: std::collections::HashMap<String, String>,
+    /// Per-env read-only locks (config.toml `safety.envs.NAME.read_only`).
+    /// `Some(true)` blocks destructive actions against the named env
+    /// even when the global `--read-only` toggle is off.
+    pub safety_envs: std::collections::HashMap<String, bool>,
+    /// Per-account read-only locks (config.toml
+    /// `safety.accounts.NAME.read_only`). Matched against the active
+    /// account name (the `:account NAME` key or the AWS profile name).
+    pub safety_accounts: std::collections::HashMap<String, bool>,
     /// Named AssumeRole accounts loaded from `config.toml`'s
     /// `accounts.NAME.*` keys. `:account NAME` consults this map first;
     /// if the name matches, builds an `AwsClient` via STS AssumeRole.
@@ -1564,6 +1572,8 @@ impl App {
             cfg_icons_raw: config.icons.clone(),
             profile_themes: config.profile_themes.clone(),
             runbooks: config.runbooks.clone(),
+            safety_envs: config.safety_envs.clone(),
+            safety_accounts: config.safety_accounts.clone(),
             accounts: config.accounts.clone(),
             base_theme_name: config.theme.clone(),
             newly_red: HashSet::new(),
@@ -1750,6 +1760,8 @@ impl App {
             cfg_icons_raw: config.icons.clone(),
             profile_themes: config.profile_themes.clone(),
             runbooks: config.runbooks.clone(),
+            safety_envs: config.safety_envs.clone(),
+            safety_accounts: config.safety_accounts.clone(),
             accounts: config.accounts.clone(),
             base_theme_name: config.theme.clone(),
             newly_red: HashSet::new(),
@@ -7020,7 +7032,59 @@ impl App {
             // whatever was loaded.
             accounts: self.accounts.clone(),
             runbooks: self.runbooks.clone(),
+            safety_envs: self.safety_envs.clone(),
+            safety_accounts: self.safety_accounts.clone(),
         }
+    }
+
+    /// Resolve the effective read-only lock for a destructive action
+    /// against `env_name`. Layered:
+    ///
+    /// 1. Global `--read-only` flag / `:readonly on` (master switch).
+    /// 2. Per-env safety pin (`safety.envs.NAME.read_only = true` in
+    ///    config.toml).
+    /// 3. Per-account safety pin (`safety.accounts.NAME.read_only = true`)
+    ///    matched against the active profile name.
+    ///
+    /// Any of these returning `true` blocks the action; the operator-
+    /// facing error message can differentiate via `read_only_reason`.
+    pub fn is_read_only_for(&self, env_name: &str) -> bool {
+        if self.read_only {
+            return true;
+        }
+        if self.safety_envs.get(env_name).copied().unwrap_or(false) {
+            return true;
+        }
+        if let Some(profile) = self.context.profile.as_deref() {
+            if self.safety_accounts.get(profile).copied().unwrap_or(false) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Human-readable explanation of *why* an env is read-only, used
+    /// in the toast / footer when a destructive action is blocked.
+    /// Returns `None` when the env isn't locked (caller shouldn't have
+    /// called this; defensive return). The three reasons are ordered
+    /// to match `is_read_only_for`'s precedence.
+    pub fn read_only_reason(&self, env_name: &str) -> Option<String> {
+        if self.read_only {
+            return Some("read-only mode (global toggle)".into());
+        }
+        if self.safety_envs.get(env_name).copied().unwrap_or(false) {
+            return Some(format!(
+                "read-only mode (env pinned via safety.envs.{env_name})"
+            ));
+        }
+        if let Some(profile) = self.context.profile.as_deref() {
+            if self.safety_accounts.get(profile).copied().unwrap_or(false) {
+                return Some(format!(
+                    "read-only mode (account pinned via safety.accounts.{profile})"
+                ));
+            }
+        }
+        None
     }
 
     /// Per-profile theme override. Looks at the active profile (from
@@ -7934,14 +7998,17 @@ impl App {
         description: Option<String>,
         and_deploy: bool,
     ) {
-        if self.read_only {
-            self.error_message = Some("read-only mode — deploy-from-local disabled".into());
-            return;
-        }
         let Some(env) = self.selected_env().cloned() else {
             self.error_message = Some("no env selected".into());
             return;
         };
+        if self.is_read_only_for(&env.name) {
+            let reason = self
+                .read_only_reason(&env.name)
+                .unwrap_or_else(|| "read-only mode".into());
+            self.error_message = Some(format!("{reason} — deploy-from-local disabled"));
+            return;
+        }
         // Path resolution: ~ expansion + check file exists + size.
         // The bundle is streamed from disk by the AWS layer, not slurped
         // here — keeps RAM flat regardless of bundle size and lets the
@@ -8639,11 +8706,14 @@ impl App {
         let Some(inst) = d.instances.get(idx).cloned() else {
             return;
         };
-        if self.read_only {
-            self.error_message = Some("read-only mode — terminate disabled".into());
+        let env_name = d.env_name.clone();
+        if self.is_read_only_for(&env_name) {
+            let reason = self
+                .read_only_reason(&env_name)
+                .unwrap_or_else(|| "read-only mode".into());
+            self.error_message = Some(format!("{reason} — terminate-instance disabled"));
             return;
         }
-        let env_name = d.env_name.clone();
         let id = inst.id.clone();
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
@@ -8956,6 +9026,18 @@ impl App {
     }
 
     fn spawn_action(&mut self, modal: ConfirmModal) {
+        // Per-env / per-account read-only locks short-circuit the
+        // dispatch before any AWS call. `read_only_reason` returns
+        // the specific cause (global toggle vs. config-pinned env vs.
+        // pinned account) so the toast tells the operator exactly
+        // which knob is keeping them safe.
+        if self.is_read_only_for(&modal.target_env) {
+            let reason = self
+                .read_only_reason(&modal.target_env)
+                .unwrap_or_else(|| "read-only mode".into());
+            self.error_message = Some(format!("{reason} — {} disabled", modal.action.label()));
+            return;
+        }
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
@@ -15966,6 +16048,48 @@ mod tests {
             frame.contains("—"),
             "expected em-dash placeholder for env with no counts; got:\n{frame}"
         );
+    }
+
+    #[tokio::test]
+    async fn is_read_only_for_layers_global_env_and_account() {
+        // Global toggle wins over everything — even an env not in the
+        // pin map.
+        let mut app = test_app();
+        app.read_only = true;
+        assert!(app.is_read_only_for("any-env"));
+        assert!(app.read_only_reason("any-env").unwrap().contains("global"));
+
+        // Global off + per-env pin → that one env is locked, others
+        // aren't.
+        let mut app = test_app();
+        app.safety_envs.insert("uflexi-prod".into(), true);
+        app.safety_envs.insert("uflexi-staging".into(), false);
+        assert!(app.is_read_only_for("uflexi-prod"));
+        assert!(!app.is_read_only_for("uflexi-staging"));
+        assert!(!app.is_read_only_for("uflexi-dev"));
+        assert!(app
+            .read_only_reason("uflexi-prod")
+            .unwrap()
+            .contains("safety.envs.uflexi-prod"));
+
+        // Global off + per-account pin → every env in that profile is
+        // locked.
+        let mut app = test_app();
+        app.context.profile = Some("prod-acct".into());
+        app.safety_accounts.insert("prod-acct".into(), true);
+        assert!(app.is_read_only_for("any-env"));
+        assert!(app
+            .read_only_reason("any-env")
+            .unwrap()
+            .contains("safety.accounts.prod-acct"));
+        // Switching profile away clears the lock.
+        app.context.profile = Some("dev-acct".into());
+        assert!(!app.is_read_only_for("any-env"));
+
+        // Nothing pinned → unlocked + reason is None.
+        let app = test_app();
+        assert!(!app.is_read_only_for("any-env"));
+        assert!(app.read_only_reason("any-env").is_none());
     }
 
     #[tokio::test]

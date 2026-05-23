@@ -297,6 +297,14 @@ accounts.prod.role_arn = "arn:aws:iam::111122223333:role/EbmanReadOnly"
 accounts.prod.source_profile = "default"
 accounts.prod.region = "eu-west-2"
 # accounts.prod.external_id = "..."
+
+# Per-env / per-account read-only locks. Borrowed from pgman's safety
+# system. When pinned here, destructive actions against the env (or
+# anything under the named account) are refused even when the global
+# `--read-only` toggle is off. The global toggle is still the master
+# switch; these add granular pins on top.
+safety.envs.uflexi-prod.read_only = true
+safety.accounts.prod.read_only = true
 ```
 
 `~/.config/ebman/commands.toml` (optional) — user plugin commands. Each `:NAME` substitutes `{name}` / `{cname}` / `{application}` / `{tier}` / `{region}` / `{profile}` placeholders and yanks the rendered command to the clipboard.

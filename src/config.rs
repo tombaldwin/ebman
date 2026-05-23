@@ -34,6 +34,17 @@ pub struct Config {
     /// operator wants surfaced during triage. Lines in `config.toml` use
     /// `runbooks.ENV = "https://…"`. Shown in the `:why` overlay.
     pub runbooks: std::collections::HashMap<String, String>,
+    /// Per-env read-only locks. When `safety_envs.get(env_name) ==
+    /// Some(true)`, destructive actions against that env are refused
+    /// even when the global `--read-only` toggle is off. Borrowed from
+    /// pgman's `safety.databases.NAME.read_only` pattern. Lines in
+    /// `config.toml` use `safety.envs.NAME.read_only = true`.
+    pub safety_envs: std::collections::HashMap<String, bool>,
+    /// Per-account read-only locks. Same shape as `safety_envs` but
+    /// matched against the *active account name* (the `:account NAME`
+    /// key for AssumeRole'd accounts, or the AWS profile name
+    /// otherwise). Lines use `safety.accounts.NAME.read_only = true`.
+    pub safety_accounts: std::collections::HashMap<String, bool>,
 }
 
 /// A named `sts:AssumeRole` target. The operator typically pins one of
@@ -64,6 +75,8 @@ impl Default for Config {
             profile_themes: std::collections::HashMap::new(),
             accounts: std::collections::HashMap::new(),
             runbooks: std::collections::HashMap::new(),
+            safety_envs: std::collections::HashMap::new(),
+            safety_accounts: std::collections::HashMap::new(),
         }
     }
 }
@@ -153,6 +166,32 @@ pub fn parse(text: &str) -> Config {
                     _ => {}
                 }
             }
+            // `safety.envs.NAME.read_only = true` and
+            // `safety.accounts.NAME.read_only = true`. Only one field
+            // today (read_only); the dotted shape leaves room for
+            // future fields (statement_timeout-equivalent, etc.).
+            other if other.starts_with("safety.envs.") => {
+                let rest = other.trim_start_matches("safety.envs.");
+                let Some((name, field)) = rest.split_once('.') else {
+                    continue;
+                };
+                if field.trim() == "read_only" {
+                    if let Some(b) = parse_bool(&value) {
+                        cfg.safety_envs.insert(name.to_string(), b);
+                    }
+                }
+            }
+            other if other.starts_with("safety.accounts.") => {
+                let rest = other.trim_start_matches("safety.accounts.");
+                let Some((name, field)) = rest.split_once('.') else {
+                    continue;
+                };
+                if field.trim() == "read_only" {
+                    if let Some(b) = parse_bool(&value) {
+                        cfg.safety_accounts.insert(name.to_string(), b);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -219,6 +258,20 @@ pub fn serialize(cfg: &Config) -> String {
         pairs.sort_by(|a, b| a.0.cmp(b.0));
         for (env, url) in pairs {
             out.push_str(&format!("runbooks.{env} = \"{url}\"\n"));
+        }
+    }
+    if !cfg.safety_envs.is_empty() {
+        let mut pairs: Vec<(&String, &bool)> = cfg.safety_envs.iter().collect();
+        pairs.sort_by(|a, b| a.0.cmp(b.0));
+        for (env, ro) in pairs {
+            out.push_str(&format!("safety.envs.{env}.read_only = {ro}\n"));
+        }
+    }
+    if !cfg.safety_accounts.is_empty() {
+        let mut pairs: Vec<(&String, &bool)> = cfg.safety_accounts.iter().collect();
+        pairs.sort_by(|a, b| a.0.cmp(b.0));
+        for (acct, ro) in pairs {
+            out.push_str(&format!("safety.accounts.{acct}.read_only = {ro}\n"));
         }
     }
     out
@@ -355,6 +408,31 @@ accounts.staging.external_id = "abc-xyz"
     }
 
     #[test]
+    fn parse_safety_envs_and_accounts() {
+        let cfg = parse(
+            "safety.envs.uflexi-prod.read_only = true\n\
+             safety.envs.uflexi-staging.read_only = false\n\
+             safety.accounts.prod.read_only = true\n",
+        );
+        assert_eq!(cfg.safety_envs.get("uflexi-prod"), Some(&true));
+        assert_eq!(cfg.safety_envs.get("uflexi-staging"), Some(&false));
+        assert_eq!(cfg.safety_accounts.get("prod"), Some(&true));
+        // Unknown field under safety.envs.NAME is ignored.
+        let cfg = parse("safety.envs.x.future_field = \"whatever\"\n");
+        assert!(cfg.safety_envs.is_empty());
+    }
+
+    #[test]
+    fn safety_round_trips_through_serialize() {
+        let mut cfg = Config::default();
+        cfg.safety_envs.insert("uflexi-prod".into(), true);
+        cfg.safety_accounts.insert("prod".into(), true);
+        let reparsed = parse(&serialize(&cfg));
+        assert_eq!(reparsed.safety_envs.get("uflexi-prod"), Some(&true));
+        assert_eq!(reparsed.safety_accounts.get("prod"), Some(&true));
+    }
+
+    #[test]
     fn parse_writes_profile_themes_into_config() {
         // End-to-end check: a config file with `profile_themes = "..."`
         // ends up in cfg.profile_themes correctly.
@@ -403,6 +481,8 @@ accounts.staging.external_id = "abc-xyz"
             profile_themes,
             accounts: std::collections::HashMap::new(),
             runbooks: std::collections::HashMap::new(),
+            safety_envs: std::collections::HashMap::new(),
+            safety_accounts: std::collections::HashMap::new(),
         };
 
         let body = serialize(&cfg);
