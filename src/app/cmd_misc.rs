@@ -177,9 +177,10 @@ impl App {
                 );
             }
             Some(arn) => {
-                if self.read_only {
-                    self.error_message =
-                        Some("read-only mode — custom-platform-delete disabled".into());
+                // Custom platforms are account-scoped, not env-scoped —
+                // an empty env name in deny_write fires the global /
+                // account pin but doesn't match any per-env entry.
+                if self.deny_write("", "custom-platform-delete") {
                     return;
                 }
                 let arn = arn.to_string();
