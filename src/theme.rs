@@ -1,5 +1,11 @@
 use ratatui::style::Color;
 
+// `IconStyle` and the WCAG contrast picker live in `tui-common::theme`
+// so the sibling pgman repo can share the same vocabulary. Re-exported
+// here so existing `crate::theme::IconStyle` / `theme.contrast_text(bg)`
+// call sites keep working unchanged.
+pub use tui_common::theme::IconStyle;
+
 #[derive(Debug, Clone)]
 pub struct Theme {
     pub name: &'static str,
@@ -36,18 +42,6 @@ pub struct Theme {
 
     // Icons preference
     pub icons: IconStyle,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IconStyle {
-    Unicode,
-    Ascii,
-    /// Opt-in glyph set for terminals using a Powerline-patched or Nerd Font.
-    /// Uses U+E0B0+ separators in headers/breadcrumbs/footers; otherwise
-    /// behaves like Unicode for icons whose Powerline equivalent isn't a
-    /// clear win. When the font isn't installed the user sees unknown-glyph
-    /// boxes — opting in is explicit so that's acceptable.
-    Powerline,
 }
 
 impl Default for Theme {
@@ -208,24 +202,12 @@ impl Theme {
     }
 
     /// Returns black or white depending on which gives better contrast
-    /// against `bg`. Uses the WCAG perceived-luminance formula
-    /// (0.299·R + 0.587·G + 0.114·B), thresholded at 140/255 to favour
-    /// black text on coloured pill backgrounds. Falls back to `text`
-    /// for non-RGB Color variants (Black/White/Reset/etc.) so themed
-    /// pill text stays readable across reflowed terminals that re-map
-    /// the 16-colour palette.
+    /// against `bg`. Thin wrapper over the shared WCAG-luminance picker
+    /// in `tui-common::theme`; the non-RGB fallback uses this theme's
+    /// primary `text` colour so themed pill text stays readable across
+    /// reflowed terminals that re-map the 16-colour palette.
     pub fn contrast_text(&self, bg: Color) -> Color {
-        match bg {
-            Color::Rgb(r, g, b) => {
-                let luminance = (299 * r as u32 + 587 * g as u32 + 114 * b as u32) / 1000;
-                if luminance > 140 {
-                    Color::Black
-                } else {
-                    Color::White
-                }
-            }
-            _ => self.text,
-        }
+        tui_common::theme::contrast_text_for(bg, self.text)
     }
 
     /// Parse a theme by name. Returns the matched theme plus an optional warning
