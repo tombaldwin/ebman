@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.0] — Streaming bundle upload, automated publish, webhook trim
+
+A short release focused on operator hygiene — lifts the 5 GiB deploy ceiling
+without holding the bundle in RAM, automates the manual `cargo publish` step
+that lapsed twice in the 0.4.x line, and trims the half-built single-URL
+webhook in favour of a tracing + audit-log signal operators can wire to
+whatever notifier they want.
+
+### Added
+- **`:deploy --from` streams from disk and uses multipart above 64 MiB.** The previous path read the whole bundle into RAM via `std::fs::read` and used a single `PutObject` capped at 5 GiB. Now `AwsClient::upload_bundle` streams via `ByteStream::from_path` below the threshold and switches to multipart in 16 MiB chunks above it (`CreateMultipartUpload → UploadPart×N → CompleteMultipartUpload`), with `AbortMultipartUpload` on every failure path so S3 doesn't accumulate orphaned parts. Peak RAM is one part regardless of bundle size; the 5 GiB ceiling becomes 10,000 × 16 MiB = 160 GiB headroom, well above S3's 5 TiB object cap. Pure helpers `should_multipart` + `plan_part_lengths`; a mocked-AWS happy-path test exercises the three multipart calls, and a separate abort-on-failure test pins the orphan-prevention invariant.
+- **`cargo publish` runs from the release workflow.** A new `crates_io` job in `.github/workflows/release.yml` fires on the `release: published` event (not tag push) so the maintainer still reviews the draft GitHub Release before crates.io is updated — once published, crates.io can't be unpublished, so the human gate matters. Gated on the `CARGO_REGISTRY_TOKEN` secret; skipped on forks. Tag-push runs build the matrix + attach the draft release as before. Closes the recurring "forgot to `cargo publish`" gap that left 0.4.0 / 0.4.1 GitHub-only.
+
+### Removed (breaking)
+- **`webhook_url` removed.** The single-URL POST on Red transitions had been flagged as "too rigid for real ops workflows" in the BACKLOG; replacing it with a proper Slack block-kit integration would have been a whole new feature, while the audit log + `tracing::warn!` already carry the same data with timestamps. The `webhook_url = "…"` config key is now silently ignored (no warning — the parser drops unknown keys); the `:settings` form no longer surfaces the field; the `fire_webhook` curl shell-out and `build_webhook_payload` JSON encoder are gone. Replacement: a `stage=event kind=red_transition env=… application=… health=…` line written to `~/.cache/ebman/audit.log` for every Red transition, plus a structured `tracing::warn!` with env / application / health / region fields. Tail the audit log to drive a Slack / PagerDuty / pager notifier of your own.
+
+### Internal
+- **`return Err(e).wrap_err_with(...)?` cleanup** in the multipart abort path — the `?` already short-circuits the function, so the explicit `return` was dead.
+- **Existing deploy-from-path test migrates to a tempfile** so the same chain-of-stages assertions apply to the new streaming API.
+
+### Test foundation
+- 429 tests. New: `should_multipart_crosses_threshold`, `plan_part_lengths_exact_multiple` / `_partial_last_part` / `_zero_and_under_one_part`, `upload_bundle_uses_multipart_when_size_meets_threshold`, `upload_bundle_aborts_multipart_on_upload_part_failure`. Removed: `webhook_payload_escapes_quotes_and_backslashes` / `_handles_missing_account` (feature gone).
+
 ## [0.6.0] — Interactive triage and form-driven config
 
 User-facing: an interactive `:why` overlay (cursor + drill into every

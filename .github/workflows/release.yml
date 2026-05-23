@@ -4,6 +4,14 @@ on:
   push:
     tags:
       - 'v*'
+  # `release: published` fires when the maintainer flips the draft
+  # release (created by the tag-push run below) to published. The
+  # crates_io job below is gated on this event so cargo publish only
+  # runs after the maintainer has sanity-checked the GitHub Release
+  # artefacts — once published, crates.io can't be unpublished, so the
+  # human gate matters.
+  release:
+    types: [published]
 
 # When a new tag like `v0.2.0` is pushed:
 #   1. Build a release binary on each target platform.
@@ -12,6 +20,11 @@ on:
 # Homebrew can then point at the macOS aarch64 / x86_64 tarballs by URL +
 # SHA-256. The workflow uses softprops/action-gh-release which is the
 # de-facto standard for this pattern and re-uses GITHUB_TOKEN.
+#
+# Once the maintainer publishes the draft release, the `crates_io` job
+# runs `cargo publish` so crates.io is kept in sync with the GitHub
+# Release without a manual `cargo publish` step (which was forgotten
+# for 0.4.0 / 0.4.1 — see BACKLOG).
 
 permissions:
   contents: write
@@ -23,6 +36,11 @@ env:
 jobs:
   build:
     name: build ${{ matrix.target }}
+    # Only run on tag push — the release.published event reruns the
+    # whole workflow but the build matrix already produced the artefacts
+    # on the original tag-push run. Skipping here saves ~10 min of CI
+    # time per published release.
+    if: github.event_name == 'push'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -65,6 +83,9 @@ jobs:
   publish:
     name: publish release
     needs: build
+    # Tag-push only — the draft release attach is part of the build
+    # phase. The release.published event doesn't need to re-run this.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -86,3 +107,41 @@ jobs:
           # once they've sanity-checked the artefacts.
           draft: true
           generate_release_notes: true
+
+  crates_io:
+    # Publish to crates.io once the maintainer has reviewed the draft
+    # GitHub Release and flipped it to published. Gated on the
+    # `CARGO_REGISTRY_TOKEN` repository secret — when the secret isn't
+    # configured the step is skipped (rather than failing), so forks /
+    # scratch installations that don't own the crate don't fail loudly.
+    #
+    # Two earlier releases (0.4.0 / 0.4.1) shipped as GitHub Releases
+    # only because the manual `cargo publish` step was forgotten; the
+    # in-app update-check polls crates.io, so the gap surfaced as a
+    # stale "latest" reported back to users. Automating closes that
+    # gap. The release.published trigger keeps the maintainer in the
+    # loop — crates.io can't be unpublished, so the human gate matters.
+    name: publish to crates.io
+    if: github.event_name == 'release' && !github.event.repository.fork
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The release event payload's `tag_name` is what was published;
+          # check out exactly that ref so cargo publishes the released
+          # code, not whatever HEAD happens to be at workflow-fire time.
+          ref: ${{ github.event.release.tag_name }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
+            echo "CARGO_REGISTRY_TOKEN not set — skipping crates.io publish"
+            exit 0
+          fi
+          # `--locked` matches the build matrix's lockfile pinning so a
+          # workflow that built clean from Cargo.lock publishes the same
+          # resolved dependency graph.
+          cargo publish --locked

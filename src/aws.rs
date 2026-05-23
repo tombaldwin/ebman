@@ -2490,25 +2490,173 @@ impl AwsClient {
             .ok_or_else(|| eyre!("CreateStorageLocation returned no S3Bucket"))
     }
 
-    /// Single-shot S3 PutObject for an application bundle. The 5 GiB API
-    /// ceiling covers the vast majority of EB source bundles; bundles
-    /// larger than that need multipart upload, which is a follow-on.
-    /// `bytes` carries the whole file; caller is responsible for reading.
-    pub async fn put_application_bundle(
+    /// Upload an application bundle from disk to S3. Bundles below
+    /// [`MULTIPART_THRESHOLD`] use a single streaming `PutObject` so RAM
+    /// stays flat regardless of file size; larger bundles use multipart
+    /// upload in [`MULTIPART_PART_SIZE`] chunks, lifting the single-call
+    /// 5 GiB ceiling and bounding peak RAM at one part. On any failure
+    /// during a multipart upload we issue `AbortMultipartUpload` so S3
+    /// reclaims the partial parts rather than billing for orphans.
+    pub async fn upload_bundle(
         &self,
         bucket: &str,
         key: &str,
-        bytes: Vec<u8>,
+        path: &std::path::Path,
+    ) -> Result<()> {
+        self.upload_bundle_with(bucket, key, path, MULTIPART_THRESHOLD, MULTIPART_PART_SIZE)
+            .await
+    }
+
+    /// Same as [`upload_bundle`] but lets the caller pin the threshold
+    /// and part size. Intended for tests; production code calls
+    /// `upload_bundle` which fixes both at module-level constants.
+    pub async fn upload_bundle_with(
+        &self,
+        bucket: &str,
+        key: &str,
+        path: &std::path::Path,
+        multipart_threshold: u64,
+        part_size: u64,
     ) -> Result<()> {
         use aws_sdk_s3::primitives::ByteStream;
-        self.s3
-            .put_object()
+        let metadata = tokio::fs::metadata(path)
+            .await
+            .wrap_err_with(|| format!("stat bundle {}", path.display()))?;
+        let size = metadata.len();
+        if !should_multipart(size, multipart_threshold) {
+            // Single PutObject. `ByteStream::from_path` streams from disk
+            // in the SDK's default chunk size — no Vec<u8> of the whole
+            // file is allocated.
+            let body = ByteStream::from_path(path)
+                .await
+                .wrap_err_with(|| format!("read {}", path.display()))?;
+            self.s3
+                .put_object()
+                .bucket(bucket)
+                .key(key)
+                .body(body)
+                .send()
+                .await
+                .wrap_err_with(|| format!("S3 PutObject {bucket}/{key} failed"))?;
+            return Ok(());
+        }
+        // Multipart path.
+        let create = self
+            .s3
+            .create_multipart_upload()
             .bucket(bucket)
             .key(key)
-            .body(ByteStream::from(bytes))
             .send()
             .await
-            .wrap_err_with(|| format!("S3 PutObject {bucket}/{key} failed"))?;
+            .wrap_err_with(|| format!("S3 CreateMultipartUpload {bucket}/{key} failed"))?;
+        let upload_id = create
+            .upload_id()
+            .ok_or_else(|| eyre!("CreateMultipartUpload returned no UploadId"))?
+            .to_string();
+
+        // Per-part upload. We read each chunk into a Vec<u8> sized to
+        // the part — RAM = one part, regardless of file size. On any
+        // failure mid-loop we abort the upload so S3 doesn't accumulate
+        // orphaned parts.
+        let plan = plan_part_lengths(size, part_size);
+        let mut completed_parts: Vec<aws_sdk_s3::types::CompletedPart> =
+            Vec::with_capacity(plan.len());
+        // tokio::fs::File implements AsyncReadExt; we read exact chunks.
+        use tokio::io::AsyncReadExt;
+        let mut file = match tokio::fs::File::open(path).await {
+            Ok(f) => f,
+            Err(e) => {
+                // Best-effort abort — propagate the original open error.
+                let _ = self
+                    .s3
+                    .abort_multipart_upload()
+                    .bucket(bucket)
+                    .key(key)
+                    .upload_id(&upload_id)
+                    .send()
+                    .await;
+                return Err(eyre!("open {} for multipart upload: {e}", path.display()));
+            }
+        };
+        for (idx, part_len) in plan.iter().enumerate() {
+            let part_number = (idx + 1) as i32;
+            let mut buf = vec![0u8; *part_len as usize];
+            if let Err(e) = file.read_exact(&mut buf).await {
+                let _ = self
+                    .s3
+                    .abort_multipart_upload()
+                    .bucket(bucket)
+                    .key(key)
+                    .upload_id(&upload_id)
+                    .send()
+                    .await;
+                return Err(eyre!(
+                    "read part {part_number} from {}: {e}",
+                    path.display()
+                ));
+            }
+            let resp = match self
+                .s3
+                .upload_part()
+                .bucket(bucket)
+                .key(key)
+                .upload_id(&upload_id)
+                .part_number(part_number)
+                .body(ByteStream::from(buf))
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = self
+                        .s3
+                        .abort_multipart_upload()
+                        .bucket(bucket)
+                        .key(key)
+                        .upload_id(&upload_id)
+                        .send()
+                        .await;
+                    return Err(e).wrap_err_with(|| {
+                        format!("S3 UploadPart {part_number} of {bucket}/{key} failed")
+                    });
+                }
+            };
+            let e_tag = resp
+                .e_tag()
+                .ok_or_else(|| eyre!("UploadPart {part_number} returned no ETag"))?
+                .to_string();
+            completed_parts.push(
+                aws_sdk_s3::types::CompletedPart::builder()
+                    .part_number(part_number)
+                    .e_tag(e_tag)
+                    .build(),
+            );
+        }
+
+        let completed = aws_sdk_s3::types::CompletedMultipartUpload::builder()
+            .set_parts(Some(completed_parts))
+            .build();
+        if let Err(e) = self
+            .s3
+            .complete_multipart_upload()
+            .bucket(bucket)
+            .key(key)
+            .upload_id(&upload_id)
+            .multipart_upload(completed)
+            .send()
+            .await
+        {
+            let _ = self
+                .s3
+                .abort_multipart_upload()
+                .bucket(bucket)
+                .key(key)
+                .upload_id(&upload_id)
+                .send()
+                .await;
+            return Err(e)
+                .wrap_err_with(|| format!("S3 CompleteMultipartUpload {bucket}/{key} failed"));
+        }
         Ok(())
     }
 
@@ -2896,6 +3044,46 @@ fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     a.cmp(b)
 }
 
+/// Switch to multipart upload when the bundle is at least this large.
+/// 64 MiB is well above the SDK's default chunked-read window so the
+/// streaming PutObject path handles "normal" bundles comfortably; above
+/// this threshold the multipart path's recoverability (partial parts can
+/// be retried) starts to matter, and the 5 GiB single-PutObject ceiling
+/// looms.
+pub const MULTIPART_THRESHOLD: u64 = 64 * 1024 * 1024;
+
+/// Per-part chunk size for multipart uploads. S3's minimum part size is
+/// 5 MiB (except the last part); 16 MiB gives us 320 GiB headroom under
+/// the 10,000-part ceiling, well above S3's 5 TiB object cap.
+pub const MULTIPART_PART_SIZE: u64 = 16 * 1024 * 1024;
+
+/// Decide whether a bundle of `size` bytes should go through multipart.
+/// Pure for tests; production code calls this with [`MULTIPART_THRESHOLD`].
+pub fn should_multipart(size: u64, threshold: u64) -> bool {
+    size >= threshold
+}
+
+/// Plan the per-part lengths for a multipart upload of a file of
+/// `total_size` bytes using `part_size` bytes per part. The last part is
+/// whatever's left (>= 1 byte, < part_size) unless `total_size` is an
+/// exact multiple. Empty input (`total_size == 0`) yields an empty plan.
+/// Pure — for tests and for the upload loop itself.
+pub fn plan_part_lengths(total_size: u64, part_size: u64) -> Vec<u64> {
+    if total_size == 0 || part_size == 0 {
+        return Vec::new();
+    }
+    let full = total_size / part_size;
+    let remainder = total_size % part_size;
+    let mut out = Vec::with_capacity(full as usize + if remainder > 0 { 1 } else { 0 });
+    for _ in 0..full {
+        out.push(part_size);
+    }
+    if remainder > 0 {
+        out.push(remainder);
+    }
+    out
+}
+
 /// Split a solution-stack name into `(family_key, version)`. The family key
 /// is the stack name with its `vX.Y.Z` token removed and surrounding
 /// whitespace collapsed, so two stacks that differ only in version share a
@@ -3163,6 +3351,196 @@ mod tests {
             derive_dlq_url("https://sqs.us-east-1.amazonaws.com/123/awseb-e-foo-queue"),
             Some("https://sqs.us-east-1.amazonaws.com/123/awseb-e-foo-queue-dlq".to_string())
         );
+    }
+
+    #[test]
+    fn should_multipart_crosses_threshold() {
+        assert!(!should_multipart(0, 64));
+        assert!(!should_multipart(63, 64));
+        assert!(should_multipart(64, 64));
+        assert!(should_multipart(1_000_000, 64));
+    }
+
+    #[test]
+    fn plan_part_lengths_exact_multiple() {
+        // 48 bytes, 16-byte parts → three full parts, no remainder.
+        assert_eq!(plan_part_lengths(48, 16), vec![16, 16, 16]);
+    }
+
+    #[test]
+    fn plan_part_lengths_partial_last_part() {
+        // 17 bytes, 8-byte parts → 8 + 8 + 1.
+        assert_eq!(plan_part_lengths(17, 8), vec![8, 8, 1]);
+    }
+
+    #[test]
+    fn plan_part_lengths_zero_and_under_one_part() {
+        // Zero input yields no parts (no upload to make).
+        assert!(plan_part_lengths(0, 16).is_empty());
+        // File smaller than one part is still one part.
+        assert_eq!(plan_part_lengths(5, 16), vec![5]);
+        // Defensive: zero part_size yields no plan (caller guard).
+        assert!(plan_part_lengths(100, 0).is_empty());
+    }
+
+    #[tokio::test]
+    async fn upload_bundle_uses_multipart_when_size_meets_threshold() {
+        // Mocks the three multipart calls (CreateMultipartUpload →
+        // UploadPart×N → CompleteMultipartUpload) and feeds upload_bundle
+        // a 17-byte tempfile with an 8-byte part size + 1-byte threshold,
+        // so we exercise three parts (8, 8, 1) without holding hundreds
+        // of MiB in test memory.
+        use aws_sdk_s3::operation::complete_multipart_upload::CompleteMultipartUploadOutput;
+        use aws_sdk_s3::operation::create_multipart_upload::CreateMultipartUploadOutput;
+        use aws_sdk_s3::operation::upload_part::UploadPartOutput;
+
+        const BUCKET: &str = "elasticbeanstalk-eu-west-2-123";
+        const KEY: &str = "applications/big-app/v1";
+        const UPLOAD_ID: &str = "test-upload-id";
+
+        let cmu_rule = mock!(aws_sdk_s3::Client::create_multipart_upload)
+            .match_requests(|req| req.bucket() == Some(BUCKET) && req.key() == Some(KEY))
+            .then_output(|| {
+                CreateMultipartUploadOutput::builder()
+                    .upload_id(UPLOAD_ID)
+                    .build()
+            });
+
+        // One rule per UploadPart call — aws-smithy-mocks enforces
+        // sequential rule matching by default, so a single rule reused
+        // across N calls would only match the first call. We assert the
+        // part number per rule to pin the order as well as the count.
+        let up_rule_1 = mock!(aws_sdk_s3::Client::upload_part)
+            .match_requests(|req| {
+                req.bucket() == Some(BUCKET)
+                    && req.key() == Some(KEY)
+                    && req.upload_id() == Some(UPLOAD_ID)
+                    && req.part_number() == Some(1)
+            })
+            .then_output(|| UploadPartOutput::builder().e_tag("\"etag-1\"").build());
+        let up_rule_2 = mock!(aws_sdk_s3::Client::upload_part)
+            .match_requests(|req| {
+                req.bucket() == Some(BUCKET)
+                    && req.key() == Some(KEY)
+                    && req.upload_id() == Some(UPLOAD_ID)
+                    && req.part_number() == Some(2)
+            })
+            .then_output(|| UploadPartOutput::builder().e_tag("\"etag-2\"").build());
+        let up_rule_3 = mock!(aws_sdk_s3::Client::upload_part)
+            .match_requests(|req| {
+                req.bucket() == Some(BUCKET)
+                    && req.key() == Some(KEY)
+                    && req.upload_id() == Some(UPLOAD_ID)
+                    && req.part_number() == Some(3)
+            })
+            .then_output(|| UploadPartOutput::builder().e_tag("\"etag-3\"").build());
+
+        let cmpu_rule = mock!(aws_sdk_s3::Client::complete_multipart_upload)
+            .match_requests(|req| {
+                req.bucket() == Some(BUCKET)
+                    && req.key() == Some(KEY)
+                    && req.upload_id() == Some(UPLOAD_ID)
+                    && req.multipart_upload().map(|m| m.parts().len()) == Some(3)
+            })
+            .then_output(|| CompleteMultipartUploadOutput::builder().build());
+
+        let s3 = mock_client!(
+            aws_sdk_s3,
+            [&cmu_rule, &up_rule_1, &up_rule_2, &up_rule_3, &cmpu_rule]
+        );
+        let cfg = SdkConfig::builder()
+            .region(Region::new("us-east-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        let client = AwsClient::for_tests(
+            Client::new(&cfg),
+            SqsClient::new(&cfg),
+            CwClient::new(&cfg),
+            CwLogsClient::new(&cfg),
+            s3,
+            Ec2Client::new(&cfg),
+        );
+
+        let tmp =
+            std::env::temp_dir().join(format!("ebman-test-multipart-{}.bin", std::process::id()));
+        let bytes = vec![0xABu8; 17];
+        std::fs::write(&tmp, &bytes).expect("write tempfile");
+        let res = client.upload_bundle_with(BUCKET, KEY, &tmp, 1, 8).await;
+        let _ = std::fs::remove_file(&tmp);
+        res.expect("multipart upload should succeed");
+
+        assert_eq!(cmu_rule.num_calls(), 1, "CreateMultipartUpload");
+        assert_eq!(up_rule_1.num_calls(), 1, "UploadPart #1");
+        assert_eq!(up_rule_2.num_calls(), 1, "UploadPart #2");
+        assert_eq!(up_rule_3.num_calls(), 1, "UploadPart #3");
+        assert_eq!(cmpu_rule.num_calls(), 1, "CompleteMultipartUpload");
+    }
+
+    #[tokio::test]
+    async fn upload_bundle_aborts_multipart_on_upload_part_failure() {
+        // Pins the orphan-prevention invariant: when UploadPart fails
+        // mid-flight, the upload loop must issue AbortMultipartUpload
+        // before returning the error, otherwise S3 would accumulate
+        // partial-upload storage charges that never roll up to a
+        // CompleteMultipartUpload.
+        use aws_sdk_s3::operation::create_multipart_upload::CreateMultipartUploadOutput;
+        use aws_sdk_s3::operation::upload_part::{UploadPartError, UploadPartOutput};
+        use aws_smithy_mocks::mock;
+
+        const BUCKET: &str = "elasticbeanstalk-eu-west-2-123";
+        const KEY: &str = "applications/abort-test/v1";
+        const UPLOAD_ID: &str = "test-abort-upload-id";
+
+        let cmu_rule = mock!(aws_sdk_s3::Client::create_multipart_upload).then_output(|| {
+            CreateMultipartUploadOutput::builder()
+                .upload_id(UPLOAD_ID)
+                .build()
+        });
+        // First UploadPart succeeds, second fails. We test the worst
+        // case where some parts have already landed in S3 — the abort
+        // is what reclaims them.
+        let up_ok = mock!(aws_sdk_s3::Client::upload_part)
+            .match_requests(|req| req.part_number() == Some(1))
+            .then_output(|| UploadPartOutput::builder().e_tag("\"etag-1\"").build());
+        let up_fail = mock!(aws_sdk_s3::Client::upload_part)
+            .match_requests(|req| req.part_number() == Some(2))
+            .then_error(|| {
+                UploadPartError::unhandled(
+                    aws_smithy_types::error::ErrorMetadata::builder().build(),
+                )
+            });
+        let abort_rule = mock!(aws_sdk_s3::Client::abort_multipart_upload)
+            .match_requests(|req| {
+                req.bucket() == Some(BUCKET)
+                    && req.key() == Some(KEY)
+                    && req.upload_id() == Some(UPLOAD_ID)
+            })
+            .then_output(|| {
+                aws_sdk_s3::operation::abort_multipart_upload::AbortMultipartUploadOutput::builder()
+                    .build()
+            });
+
+        let s3 = mock_client!(aws_sdk_s3, [&cmu_rule, &up_ok, &up_fail, &abort_rule]);
+        let cfg = SdkConfig::builder()
+            .region(Region::new("us-east-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        let client = AwsClient::for_tests(
+            Client::new(&cfg),
+            SqsClient::new(&cfg),
+            CwClient::new(&cfg),
+            CwLogsClient::new(&cfg),
+            s3,
+            Ec2Client::new(&cfg),
+        );
+
+        let tmp = std::env::temp_dir().join(format!("ebman-test-abort-{}.bin", std::process::id()));
+        std::fs::write(&tmp, vec![0xCDu8; 16]).expect("write tempfile");
+        // threshold=1 forces multipart; part_size=8 → 2 parts (8 + 8).
+        let res = client.upload_bundle_with(BUCKET, KEY, &tmp, 1, 8).await;
+        let _ = std::fs::remove_file(&tmp);
+        assert!(res.is_err(), "upload should surface UploadPart failure");
+        assert_eq!(abort_rule.num_calls(), 1, "AbortMultipartUpload must fire");
     }
 
     #[test]
@@ -3963,11 +4341,18 @@ mod tests {
             .expect("CreateStorageLocation should return the managed bucket");
         assert_eq!(bucket, BUCKET);
 
-        // Stage 2
-        client
-            .put_application_bundle(&bucket, KEY, bundle_bytes.clone())
-            .await
-            .expect("PutObject should succeed");
+        // Stage 2 — write the bundle to a tempfile and let upload_bundle
+        // stream it. Threshold is set very high so this exercises the
+        // single-PutObject path (the multipart path is covered by a
+        // separate test below).
+        let tmp =
+            std::env::temp_dir().join(format!("ebman-test-bundle-{}.zip", std::process::id()));
+        std::fs::write(&tmp, &bundle_bytes).expect("write tempfile");
+        let upload_res = client
+            .upload_bundle_with(&bucket, KEY, &tmp, u64::MAX, 8 * 1024 * 1024)
+            .await;
+        let _ = std::fs::remove_file(&tmp);
+        upload_res.expect("PutObject should succeed");
 
         // Stage 3
         client

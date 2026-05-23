@@ -917,9 +917,6 @@ pub struct App {
     pub last_rendered_buffer: Option<ratatui::buffer::Buffer>,
     pub notify_bell: bool,
     pub required_tags: Vec<String>,
-    /// Webhook URL invoked once per env that transitions into Red on refresh.
-    /// `None` disables the feature.
-    pub webhook_url: Option<String>,
     /// The raw `icons = …` string from `config.toml` (before resolution to
     /// [`crate::theme::IconStyle`]). Kept verbatim so `:settings` can round-trip
     /// values like `"auto"` without flattening them to the resolved style.
@@ -1545,7 +1542,6 @@ impl App {
             last_rendered_buffer: None,
             notify_bell: config.notify_bell,
             required_tags: config.required_tags,
-            webhook_url: config.webhook_url,
             cfg_icons_raw: config.icons.clone(),
             profile_themes: config.profile_themes.clone(),
             runbooks: config.runbooks.clone(),
@@ -1718,7 +1714,6 @@ impl App {
             last_rendered_buffer: None,
             notify_bell: config.notify_bell,
             required_tags: config.required_tags.clone(),
-            webhook_url: config.webhook_url.clone(),
             cfg_icons_raw: config.icons.clone(),
             profile_themes: config.profile_themes.clone(),
             runbooks: config.runbooks.clone(),
@@ -6734,7 +6729,7 @@ impl App {
     /// form values back into a [`Config`], write it to disk, and update the
     /// live `App` state so theme / icons / refresh interval changes take
     /// effect immediately. Other fields (notify_bell, required_tags,
-    /// webhook_url, redact, grouped, extra_regions) are updated in place but
+    /// redact, grouped, extra_regions) are updated in place but
     /// only take effect on the next refresh / restart depending on what
     /// reads them — see the field docs.
     fn submit_local_config(&mut self) {
@@ -6982,14 +6977,6 @@ impl App {
         regions_field.value = snapshot.extra_regions.join(",");
         fields.push(regions_field);
 
-        let mut webhook_field = FormField::text(
-            "webhook_url",
-            "Webhook URL",
-            Some::<String>("POSTed on Red transitions; blank = disabled".into()),
-        );
-        webhook_field.value = snapshot.webhook_url.clone().unwrap_or_default();
-        fields.push(webhook_field);
-
         let form = Form::loading(
             "settings",
             String::new(),
@@ -7016,7 +7003,6 @@ impl App {
             icons: self.cfg_icons_raw.clone(),
             notify_bell: self.notify_bell,
             required_tags: self.required_tags.clone(),
-            webhook_url: self.webhook_url.clone(),
             profile_themes: self.profile_themes.clone(),
             // Accounts live in config.toml only — :settings doesn't
             // surface them in the form (the assume-role schema would
@@ -7098,7 +7084,6 @@ impl App {
         self.extra_regions = cfg.extra_regions.clone();
         self.notify_bell = cfg.notify_bell;
         self.required_tags = cfg.required_tags.clone();
-        self.webhook_url = cfg.webhook_url.clone();
         // Theme swap invalidates the cached per-app colour assignments —
         // those store final `Color` values, not palette indices, so they'd
         // otherwise carry the old palette into the new theme's rendering.
@@ -7947,16 +7932,20 @@ impl App {
             self.error_message = Some("no env selected".into());
             return;
         };
-        // Path resolution: ~ expansion + check file exists + read bytes.
+        // Path resolution: ~ expansion + check file exists + size.
+        // The bundle is streamed from disk by the AWS layer, not slurped
+        // here — keeps RAM flat regardless of bundle size and lets the
+        // multipart path handle anything above MULTIPART_THRESHOLD.
         let resolved = expand_tilde(&path);
-        let bytes = match std::fs::read(&resolved) {
-            Ok(b) => b,
+        let resolved_path = std::path::PathBuf::from(&resolved);
+        let size = match std::fs::metadata(&resolved_path) {
+            Ok(m) => m.len(),
             Err(e) => {
                 self.error_message = Some(format!("can't read {resolved}: {e}"));
                 return;
             }
         };
-        if bytes.is_empty() {
+        if size == 0 {
             self.error_message = Some(format!("{resolved} is empty"));
             return;
         }
@@ -7976,13 +7965,10 @@ impl App {
             self.context.profile.as_deref(),
             &self.context.region,
             &format!(
-                "stage=dispatched action=DeployFromLocal target={env_name} label={label} bytes={} and_deploy={and_deploy}",
-                bytes.len()
+                "stage=dispatched action=DeployFromLocal target={env_name} label={label} bytes={size} and_deploy={and_deploy}"
             ),
         );
         self.push_pending(summary.clone(), env_name.clone());
-        // In-flight ack lives on the pending pill; completion toasts.
-        let _ = bytes.len(); // size already in pending row's summary
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
@@ -8020,8 +8006,8 @@ impl App {
             };
             // Key: `applications/<app>/<label>` mirrors EB's own layout.
             let key = format!("applications/{app_name}/{label_for_msg}");
-            if let Err(e) = aws.put_application_bundle(&bucket, &key, bytes).await {
-                let err = format!("s3-put: {}", flatten_err("put_application_bundle", e));
+            if let Err(e) = aws.upload_bundle(&bucket, &key, &resolved_path).await {
+                let err = format!("s3-put: {}", flatten_err("upload_bundle", e));
                 finish_deploy_from_local(
                     &tx,
                     gen,
@@ -10348,16 +10334,27 @@ impl App {
                         .unwrap_or(false);
                     if is_red(&e.health) && !prev_red {
                         self.newly_red.insert(e.name.clone());
-                        if let Some(url) = self.webhook_url.clone() {
-                            fire_webhook(
-                                url,
-                                e.name.clone(),
-                                e.application.clone(),
-                                e.health.clone(),
-                                self.context.region.clone(),
-                                self.context.account_id.clone(),
-                            );
-                        }
+                        // Surface the transition via tracing + the audit log
+                        // so operators can wire their own notifier (Slack,
+                        // pager, etc.) off the audit stream. The previous
+                        // built-in `webhook_url` POST was trimmed — too rigid
+                        // for real ops workflows.
+                        tracing::warn!(
+                            env = %e.name,
+                            application = %e.application,
+                            health = %e.health,
+                            region = %self.context.region,
+                            "env transitioned into Red",
+                        );
+                        write_audit_line(
+                            self.context.account_id.as_deref(),
+                            self.context.profile.as_deref(),
+                            &self.context.region,
+                            &format!(
+                                "stage=event kind=red_transition env={} application={} health={}",
+                                e.name, e.application, e.health
+                            ),
+                        );
                     }
                 }
                 // Compute health + status deltas before swapping prev maps.
@@ -10625,62 +10622,6 @@ pub fn compute_traffic_warning(env: &Environment) -> Option<String> {
         return Some(format!("env is currently {}", env.health));
     }
     None
-}
-
-/// Render a small JSON payload describing a Red transition and fire a POST
-/// via `curl` (already in the toolchain budget for log-tail). The fire is
-/// detached — we don't await it, don't care about the response, just want to
-/// nudge the configured webhook so a Slack / collector can react. The text
-/// is escaped just enough to survive single-line JSON; env / app names from
-/// EB are restricted to alphanumeric + `-_.` so the escape is conservative.
-fn fire_webhook(
-    url: String,
-    env: String,
-    application: String,
-    health: String,
-    region: String,
-    account: Option<String>,
-) {
-    let payload = build_webhook_payload(&env, &application, &health, &region, account.as_deref());
-    tokio::spawn(async move {
-        use tokio::process::Command;
-        let _ = Command::new("curl")
-            .args([
-                "-s",
-                "-S",
-                "--max-time",
-                "10",
-                "-X",
-                "POST",
-                "-H",
-                "Content-Type: application/json",
-                "-d",
-            ])
-            .arg(&payload)
-            .arg(&url)
-            .output()
-            .await;
-    });
-}
-
-/// Format the webhook payload as a flat JSON object. Public for tests so we
-/// can pin down the shape independently of the network code.
-pub fn build_webhook_payload(
-    env: &str,
-    application: &str,
-    health: &str,
-    region: &str,
-    account: Option<&str>,
-) -> String {
-    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
-    format!(
-        "{{\"event\":\"env_red\",\"env\":\"{}\",\"application\":\"{}\",\"health\":\"{}\",\"region\":\"{}\",\"account\":\"{}\"}}",
-        esc(env),
-        esc(application),
-        esc(health),
-        esc(region),
-        esc(account.unwrap_or("")),
-    )
 }
 
 /// Recognise AWS throttling error messages. The SDK surfaces these via the
@@ -14475,27 +14416,6 @@ mod tests {
     fn traffic_warning_flags_red_health() {
         let e = fake_env_with("prod", "Ready", "Red", Some(120));
         assert!(super::compute_traffic_warning(&e).unwrap().contains("Red"));
-    }
-
-    #[test]
-    fn webhook_payload_escapes_quotes_and_backslashes() {
-        let p = super::build_webhook_payload(
-            "my\"env",
-            "my\\app",
-            "Red",
-            "eu-west-2",
-            Some("123456789012"),
-        );
-        assert!(p.contains("\"event\":\"env_red\""));
-        assert!(p.contains("my\\\"env"));
-        assert!(p.contains("my\\\\app"));
-        assert!(p.contains("\"account\":\"123456789012\""));
-    }
-
-    #[test]
-    fn webhook_payload_handles_missing_account() {
-        let p = super::build_webhook_payload("env", "app", "Red", "us-east-1", None);
-        assert!(p.contains("\"account\":\"\""));
     }
 
     #[test]
