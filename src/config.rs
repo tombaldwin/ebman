@@ -16,10 +16,6 @@ pub struct Config {
     pub icons: String,
     pub notify_bell: bool,
     pub required_tags: Vec<String>,
-    /// Optional URL to POST a small JSON payload to when an env transitions
-    /// into Red health. Use anything that accepts a webhook (Slack, Discord,
-    /// custom collector). Disabled when unset.
-    pub webhook_url: Option<String>,
     /// Per-profile theme override. Key = AWS profile name, value = theme
     /// name (matches the same names `theme = …` accepts). Lets the
     /// operator pin a high-contrast / dark / light theme to a specific
@@ -65,7 +61,6 @@ impl Default for Config {
             icons: "unicode".into(),
             notify_bell: false,
             required_tags: Vec::new(),
-            webhook_url: None,
             profile_themes: std::collections::HashMap::new(),
             accounts: std::collections::HashMap::new(),
             runbooks: std::collections::HashMap::new(),
@@ -123,14 +118,6 @@ pub fn parse(text: &str) -> Config {
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
                     .collect();
-            }
-            "webhook_url" => {
-                let v = value.trim();
-                cfg.webhook_url = if v.is_empty() {
-                    None
-                } else {
-                    Some(v.to_string())
-                };
             }
             "profile_themes" => {
                 // Format: `prod:high-contrast,staging:dark,default:light`.
@@ -213,9 +200,6 @@ pub fn serialize(cfg: &Config) -> String {
             "required_tags = \"{}\"\n",
             cfg.required_tags.join(",")
         ));
-    }
-    if let Some(url) = &cfg.webhook_url {
-        out.push_str(&format!("webhook_url = \"{url}\"\n"));
     }
     if !cfg.profile_themes.is_empty() {
         // Sort entries so repeated serialize cycles don't churn the file
@@ -416,7 +400,6 @@ accounts.staging.external_id = "abc-xyz"
             icons: "powerline".into(),
             notify_bell: true,
             required_tags: vec!["Owner".into(), "Env".into()],
-            webhook_url: Some("https://hooks.example/abc".into()),
             profile_themes,
             accounts: std::collections::HashMap::new(),
             runbooks: std::collections::HashMap::new(),
@@ -432,7 +415,6 @@ accounts.staging.external_id = "abc-xyz"
         assert_eq!(reparsed.icons, cfg.icons);
         assert_eq!(reparsed.notify_bell, cfg.notify_bell);
         assert_eq!(reparsed.required_tags, cfg.required_tags);
-        assert_eq!(reparsed.webhook_url, cfg.webhook_url);
         assert_eq!(reparsed.profile_themes, cfg.profile_themes);
     }
 
@@ -446,6 +428,5 @@ accounts.staging.external_id = "abc-xyz"
         assert_eq!(reparsed.icons, cfg.icons);
         assert!(reparsed.extra_regions.is_empty());
         assert!(reparsed.required_tags.is_empty());
-        assert!(reparsed.webhook_url.is_none());
     }
 }

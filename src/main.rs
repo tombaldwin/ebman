@@ -355,8 +355,8 @@ async fn run_ctl_cli(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Minimal JSON-string escape for CLI output. Mirrors the webhook payload
-/// escape — quotes and backslashes only; EB names don't contain control chars.
+/// Minimal JSON-string escape for CLI output. Quotes and backslashes only;
+/// EB names don't contain control chars.
 fn cli_esc(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }

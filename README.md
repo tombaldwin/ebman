@@ -280,8 +280,13 @@ notify_bell = false
 # Tag policy — flag envs missing any of these tags in the Config tab.
 required_tags = "Owner,Project"
 
-# Webhook URL to POST to when an env transitions to Red.
-webhook_url = ""
+# Red-transition notifications — ebman emits a `tracing::warn!` and writes
+# a `stage=event kind=red_transition env=…` line to the audit log at
+# `~/.cache/ebman/audit.log` for every env that transitions into Red.
+# Wire your own notifier (Slack, PagerDuty, …) by tailing that file. The
+# previous built-in `webhook_url` POST was trimmed — single-URL POST was
+# too rigid for real ops workflows, and the audit log already carried the
+# same data with timestamps.
 
 # AssumeRole targets reachable via `:account NAME`. One stanza per
 # account. `source_profile` carries the base creds for the

@@ -277,13 +277,6 @@ impl Form {
                         .filter(|s| !s.is_empty())
                         .collect();
                 }
-                "webhook_url" => {
-                    cfg.webhook_url = if value.is_empty() {
-                        None
-                    } else {
-                        Some(value.to_string())
-                    };
-                }
                 _ => {}
             }
         }
@@ -798,16 +791,6 @@ mod tests {
                     option_cursor: 0,
                     option_annotations: None,
                 },
-                FormField {
-                    key: "webhook_url".into(),
-                    label: "Webhook".into(),
-                    value: "  ".into(),
-                    kind: FieldKind::Text,
-                    help: None,
-                    error: None,
-                    option_cursor: 0,
-                    option_annotations: None,
-                },
             ],
             cursor: 0,
             state: FormState::Ready,
@@ -823,8 +806,6 @@ mod tests {
         assert!(updated.notify_bell);
         assert_eq!(updated.required_tags, vec!["Owner", "Env"]);
         assert!(updated.extra_regions.is_empty());
-        // Whitespace-only webhook → None.
-        assert!(updated.webhook_url.is_none());
     }
 
     #[test]
