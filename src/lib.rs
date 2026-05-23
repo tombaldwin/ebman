@@ -18,11 +18,12 @@ pub mod control;
 pub mod cost_cache;
 pub mod form;
 
-// `font_probe` lives in the shared `tui-common` crate so the sibling
-// pgman repo can depend on the same code. Re-exported here so existing
-// `crate::font_probe::*` paths (and `ebman::font_probe::*` from the
-// bin) keep working unchanged.
+// `font_probe` and `overlay` live in the shared `tui-common` crate so
+// the sibling pgman repo can depend on the same code. Re-exported here
+// so existing `crate::font_probe::*` / `crate::overlay::*` paths (and
+// the `ebman::*` paths from the bin) keep working unchanged.
 pub use tui_common::font_probe;
+pub use tui_common::overlay;
 pub mod mode_action;
 pub mod mode_detail;
 pub mod mode_dlq;
