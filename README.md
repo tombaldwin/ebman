@@ -309,6 +309,26 @@ description = "Yank a tunnel command into clipboard"
 
 `~/.config/ebman/state.toml` is managed by the app — filter / sort / cursor position / named filters / saved views / pinned envs / custom metrics live there.
 
+`<repo>/.ebman/ebman.toml` (optional) — project-local pinning. Commit
+this to git so a team launches ebman from the repo with the right
+profile / region / filter pre-applied. Walks up from cwd to find the
+`.ebman/` directory, so running ebman from any subdirectory of the
+project works. Profile / region win over `~/.config/ebman/state.toml`
+when both are set. Per-env runbook URLs merge with the user-level
+`runbooks.ENV = …` map — project entries win on collision.
+
+```toml
+# <repo>/.ebman/ebman.toml — commit this. Credentials still come from
+# ~/.aws/credentials, never this file.
+profile = "prod"          # AWS profile to use
+region  = "us-west-1"     # AWS region
+application = "uflexi"    # filter envs to this app on launch
+filter  = "prod-"         # pre-fill the search filter
+
+[runbooks]
+runbooks.uflexi-prod = "https://wiki/runbooks/uflexi-prod"
+```
+
 ## Headless interface (`--control-socket`)
 
 Launch ebman with `--control-socket PATH` to expose a Unix-socket interface. A second binary, `ebman ctl <op>`, is the one-shot client (defaults to `~/.cache/ebman/control.sock`).
@@ -327,6 +347,7 @@ Useful for integration tests, screenshot capture, scripted workflows.
 
 - `~/.config/ebman/config.toml` — user configuration (see above).
 - `~/.config/ebman/commands.toml` — optional plugin commands.
+- `<repo>/.ebman/ebman.toml` — optional project-local pinning (profile / region / filter / runbooks). Walked up from cwd.
 - `~/.config/ebman/state.toml` — persisted UI state: profile, region, filter, sort, grouping, redact, selected env, named filters, saved views, pinned envs, aliases, hidden columns, custom metrics. No credentials.
 - `~/.cache/ebman/ebman.log` — application log; rotates as needed. Set `RUST_LOG=debug` for verbose output.
 - `~/.cache/ebman/audit.log` — every dispatched action and outcome (account, profile, region, action, target). Rotates at 1 MiB to `audit.log.1`.

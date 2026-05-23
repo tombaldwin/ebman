@@ -1386,14 +1386,26 @@ async fn init_client(
 impl App {
     pub async fn new(config: Config) -> Result<Self> {
         let persisted = state::load();
+        // Project config: optional `.ebman/ebman.toml` walked up from
+        // cwd. Profile / region from the project win over persisted
+        // state so a repo can pin its working context; everything
+        // else (filter, application, runbooks) merges in further down
+        // once `app` is constructed.
+        let project = crate::project::load_from_cwd();
+        let project_profile = project.as_ref().and_then(|p| p.profile.clone());
+        let project_region = project.as_ref().and_then(|p| p.region.clone());
         tracing::info!(
             target: "ebman::state",
             persisted_profile = ?persisted.profile,
             persisted_region = ?persisted.region,
+            project_profile = ?project_profile,
+            project_region = ?project_region,
             "state::load"
         );
+        let effective_profile = project_profile.or_else(|| persisted.profile.clone());
+        let effective_region = project_region.or_else(|| persisted.region.clone());
         let (aws, override_profile, override_region, identity_warning) =
-            init_client(persisted.profile.clone(), persisted.region.clone()).await?;
+            init_client(effective_profile, effective_region).await?;
         let aws = Arc::new(aws);
         let context = aws.context.clone();
         tracing::info!(
@@ -1587,6 +1599,21 @@ impl App {
         // the resolved profile. Done here (after `context` is populated)
         // so the initial frame already shows the right palette.
         app.maybe_apply_profile_theme();
+        // Apply the rest of the project config (filter / application
+        // prefill, runbook merge) after the App is fully constructed.
+        // Project entries win over user-level runbooks because the
+        // repo is the more-specific source.
+        if let Some(proj) = project {
+            if let Some(filter) = proj.filter {
+                app.filter = filter;
+            } else if let Some(app_name) = proj.application {
+                // Treat `application` as a filter prefill when no
+                // explicit `filter` was set — pre-scopes the table to
+                // a single-app repo's envs without a hard pin.
+                app.filter = app_name;
+            }
+            app.runbooks.extend(proj.runbooks);
+        }
         Ok(app)
     }
 
