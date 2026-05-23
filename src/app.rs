@@ -2511,6 +2511,38 @@ impl App {
                 return;
             }
             if let Some(overlay) = self.current_overlay.as_ref() {
+                // Drill-in actions transition out of the overlay into
+                // another mode. Evaluated first so the overlay's q/esc
+                // close semantics still apply on the fallback path.
+                let drill_dlq: Option<(String, String, String)> = match overlay {
+                    Overlay::WhyRed {
+                        env_name,
+                        tier,
+                        queues,
+                        ..
+                    } if matches!(key.code, KeyCode::Char('d'))
+                        && tier.eq_ignore_ascii_case("Worker") =>
+                    {
+                        queues
+                            .as_ref()
+                            .and_then(|r| r.as_ref().ok())
+                            .and_then(|qs| {
+                                qs.dlq_url.clone().map(|du| {
+                                    (
+                                        env_name.clone(),
+                                        qs.main_url.clone().unwrap_or_default(),
+                                        du,
+                                    )
+                                })
+                            })
+                    }
+                    _ => None,
+                };
+                if let Some((env_name, main_url, dlq_url)) = drill_dlq {
+                    self.current_overlay = None;
+                    self.open_dlq_from_why(env_name, main_url, dlq_url);
+                    return;
+                }
                 let universal = matches!(key.code, KeyCode::Esc | KeyCode::Char('q'));
                 let variant_extra = match overlay {
                     Overlay::Describe(_) => {
@@ -5817,6 +5849,30 @@ impl App {
         let dlq = DlqState {
             env_name: detail.env_name.clone(),
             main_queue_url: main_url,
+            dlq_url,
+            messages: Vec::new(),
+            list_state: ListState::default(),
+            loading: false,
+            error: None,
+            confirm_purge: false,
+            purge_typed: String::new(),
+            viewing: QueueView::Dlq,
+            confirm_delete_idx: None,
+            replay_input: None,
+        };
+        self.dlq = Some(dlq);
+        self.mode = Mode::Dlq;
+        self.spawn_dlq_fetch();
+    }
+
+    /// Open the DLQ viewer for an env outside the Detail flow — used
+    /// when drilling in from the `:why` overlay, which already has the
+    /// env's queue URLs from its `WhyRedQueues` fetch and shouldn't make
+    /// the operator detour through Detail's Queue tab first.
+    fn open_dlq_from_why(&mut self, env_name: String, main_queue_url: String, dlq_url: String) {
+        let dlq = DlqState {
+            env_name,
+            main_queue_url,
             dlq_url,
             messages: Vec::new(),
             list_state: ListState::default(),

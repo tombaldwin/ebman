@@ -1825,6 +1825,21 @@ fn draw_why_red_overlay(f: &mut Frame, area: Rect, app: &App) {
             }
         }
     }
+    // Drill-in hint: when the env has a Worker DLQ available, `d` jumps
+    // into the DLQ viewer (examine / purge / replay) without the operator
+    // having to navigate through Detail first.
+    let dlq_available = is_worker
+        && matches!(
+            queues,
+            Some(Ok(qs)) if qs.dlq_url.is_some()
+        );
+    if dlq_available {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            " d → open DLQ viewer (examine / purge / replay)",
+            Style::default().fg(theme.muted),
+        )));
+    }
     push_close_hint(&mut lines, theme);
 
     let health = app
