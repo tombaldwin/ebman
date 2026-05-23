@@ -779,6 +779,12 @@ pub struct App {
     /// render's `⚠ DLQ:N` chip on Worker rows. Missing entry = "not
     /// checked yet" (don't fire an alert on cold state).
     pub worker_dlq_depths: std::collections::HashMap<String, i64>,
+    /// Per-env `(healthy, total)` instance counts, populated by
+    /// `spawn_env_instance_counts` after each refresh tick. Drives the
+    /// `INST` column on the main env table. Missing entry = "not
+    /// checked yet"; rendered as `—`. `EnvInstanceCounts { 0, 0 }` is
+    /// a real value ("env reports no instances") and renders as `0/0`.
+    pub env_instance_counts: std::collections::HashMap<String, crate::aws::EnvInstanceCounts>,
     /// Cost Explorer integration is opt-in via `:cost on`. Toggling
     /// flips this + triggers a fetch (or a stale-cache load); the
     /// envs-table COST column renders only while this is true.
@@ -996,6 +1002,13 @@ enum AppMsg {
     WorkerQueueCheck {
         gen: u64,
         results: Vec<(String, i64)>,
+    },
+    /// Per-env `(healthy, total)` instance counts, fanned out after
+    /// `Refresh` lands via `spawn_env_instance_counts`. Failed envs are
+    /// absent. Feeds the `INST` column on the main table.
+    EnvInstanceCountsCheck {
+        gen: u64,
+        results: Vec<(String, crate::aws::EnvInstanceCounts)>,
     },
     Rebuild(Result<Box<AwsClient>, String>),
     Identity {
@@ -1490,6 +1503,7 @@ impl App {
             hover_row: None,
             alerts: 0,
             worker_dlq_depths: std::collections::HashMap::new(),
+            env_instance_counts: std::collections::HashMap::new(),
             cost_enabled: persisted.cost_enabled.unwrap_or(false),
             costs: std::collections::HashMap::new(),
             costs_fetched_at: None,
@@ -1661,6 +1675,7 @@ impl App {
             hover_row: None,
             alerts: 0,
             worker_dlq_depths: std::collections::HashMap::new(),
+            env_instance_counts: std::collections::HashMap::new(),
             cost_enabled: false,
             costs: std::collections::HashMap::new(),
             costs_fetched_at: None,
@@ -9047,6 +9062,23 @@ impl App {
                 }
                 Some(needle) => self.cmd_find_env(needle),
             },
+            "envs-by-version" => match rest.first().copied() {
+                None => {
+                    self.error_message = Some(
+                        "usage: :envs-by-version <label>  (scans every AWS profile + AssumeRole account for envs running that exact version label)"
+                            .into(),
+                    );
+                }
+                Some(label) => self.cmd_envs_by_version(label),
+            },
+            "logs-insights" => {
+                // Pass the whole remainder verbatim. `cmd_logs_insights`
+                // parses the optional `--window WINDOW` prefix; everything
+                // after is the Insights query (spacing + punctuation kept
+                // exactly as the operator typed it).
+                let args = rest.join(" ");
+                self.cmd_logs_insights(&args);
+            }
             "account" => self.cmd_account(&rest),
             "profile" | "p" => self.cmd_profile(&rest),
             "sort" => self.cmd_sort(&rest),
@@ -9851,6 +9883,48 @@ impl App {
         });
     }
 
+    /// Fan `DescribeEnvironmentHealth` across every env on each refresh
+    /// tick to populate the `INST` column. Skips Terminated / Terminating
+    /// envs (EB returns AccessDenied-ish errors for them) and silently
+    /// drops failures so a single env's API blip doesn't poison the
+    /// whole batch. Same shape as `spawn_worker_queue_check`.
+    fn spawn_env_instance_counts(&self) {
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let targets: Vec<String> = self
+            .environments
+            .iter()
+            .filter(|e| {
+                // EB rejects DescribeEnvironmentHealth for envs in
+                // terminal lifecycle states — no instances to count.
+                !matches!(
+                    e.status.as_str(),
+                    "Terminated" | "Terminating" | "Launching"
+                )
+            })
+            .map(|e| e.name.clone())
+            .collect();
+        if targets.is_empty() {
+            return;
+        }
+        tokio::spawn(async move {
+            use futures::future::join_all;
+            let futs = targets.into_iter().map(|env| {
+                let aws = aws.clone();
+                async move {
+                    aws.fetch_env_instance_counts(&env)
+                        .await
+                        .ok()
+                        .map(|counts| (env, counts))
+                }
+            });
+            let results: Vec<(String, crate::aws::EnvInstanceCounts)> =
+                join_all(futs).await.into_iter().flatten().collect();
+            let _ = tx.send(AppMsg::EnvInstanceCountsCheck { gen, results });
+        });
+    }
+
     fn spawn_events(&mut self) {
         // Scope the events panel to the currently-selected env so it tells
         // the user about *this* env, not the entire account. Falls back to
@@ -10392,6 +10466,11 @@ impl App {
                 // alert count + the in-row `⚠ DLQ:N` chip on the next
                 // draw.
                 self.spawn_worker_queue_check();
+                // Same fan-out shape for the INST column: per-env
+                // `DescribeEnvironmentHealth` summarised down to
+                // `(healthy, total)`. Cache rebuilt from results in
+                // `handle_env_instance_counts`.
+                self.spawn_env_instance_counts();
             }
             Err(msg) => {
                 tracing::error!(error = %msg, "refresh failed");
@@ -15824,6 +15903,41 @@ mod tests {
         assert!(
             frame.contains("api-prod-canary"),
             "rendered frame should show seeded env name; got:\n{frame}"
+        );
+    }
+
+    #[tokio::test]
+    async fn render_main_table_includes_inst_column_header_and_data() {
+        // INST column should appear in the main table header by default
+        // (not in hidden_cols) and render the per-env counts when the
+        // env_instance_counts cache has data, em-dash when it doesn't.
+        let mut app = test_app();
+        app.environments = vec![
+            mk_env("api-prod", "uflexi", "Web", "Green"),
+            mk_env("api-staging", "uflexi", "Web", "Green"),
+        ];
+        // Seed counts: prod has 3/3 healthy, staging unknown (no entry).
+        app.env_instance_counts.insert(
+            "api-prod".into(),
+            crate::aws::EnvInstanceCounts {
+                healthy: 3,
+                total: 3,
+            },
+        );
+        app.rebuild_view();
+        let frame = render(&mut app, 160, 24);
+        assert!(
+            frame.contains("INST"),
+            "expected INST column header in rendered frame; got:\n{frame}"
+        );
+        assert!(
+            frame.contains("3/3"),
+            "expected '3/3' for env with seeded counts; got:\n{frame}"
+        );
+        // Staging has no counts entry → em-dash placeholder.
+        assert!(
+            frame.contains("—"),
+            "expected em-dash placeholder for env with no counts; got:\n{frame}"
         );
     }
 

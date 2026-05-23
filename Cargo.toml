@@ -58,6 +58,10 @@ aws-sdk-cloudwatch = { version = "1", features = ["test-util"] }
 aws-sdk-cloudwatchlogs = { version = "1", features = ["test-util"] }
 aws-sdk-s3 = { version = "1", features = ["test-util"] }
 aws-sdk-ec2 = { version = "1", features = ["test-util"] }
+aws-sdk-acm = { version = "1", features = ["test-util"] }
+aws-sdk-organizations = { version = "1.110.0", features = ["test-util"] }
+aws-sdk-costexplorer = { version = "1", features = ["test-util"] }
+aws-sdk-secretsmanager = { version = "1", features = ["test-util"] }
 
 [profile.release]
 lto = "thin"

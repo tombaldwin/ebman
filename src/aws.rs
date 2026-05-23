@@ -206,10 +206,42 @@ pub struct LogEvent {
     pub message: String,
 }
 
+/// One result row from a CloudWatch Logs Insights query. Each entry is
+/// a (field-name, value) pair — Insights returns fields in query-order,
+/// so the Vec preserves that order rather than a HashMap.
+#[derive(Clone, Debug)]
+pub struct InsightsRow {
+    pub fields: Vec<(String, String)>,
+}
+
+/// The completed payload of an Insights query — result rows plus the
+/// scan statistics (records_matched / records_scanned). Scanned is what
+/// AWS bills against; surfacing it in the overlay footer makes the cost
+/// of broad queries visible.
+#[derive(Clone, Debug)]
+pub struct InsightsResults {
+    pub rows: Vec<InsightsRow>,
+    pub records_scanned: i64,
+    pub records_matched: i64,
+}
+
 #[derive(Clone, Debug)]
 pub struct Identity {
     pub account_id: Option<String>,
     pub caller_arn: Option<String>,
+}
+
+/// Per-env summary of instance health, as surfaced in the `INST` column
+/// of the main env table. `healthy` is the count EB classifies as Green
+/// (Ok + Info — both are "passing health checks", Info just means an
+/// operation is in progress on an otherwise-healthy instance); `total`
+/// is the sum across every health bucket the env reports. `total == 0`
+/// is a real signal (env has no instances right now, e.g. mid-launch),
+/// rendered as `0/0` in the table.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EnvInstanceCounts {
+    pub healthy: i32,
+    pub total: i32,
 }
 
 pub struct AwsClient {
@@ -1875,6 +1907,102 @@ impl AwsClient {
         Ok((out, next_since))
     }
 
+    /// Run a CloudWatch Logs Insights query against `log_groups` over the
+    /// `[start_ms, end_ms]` window. Starts the query via `StartQuery`, polls
+    /// `GetQueryResults` every 2 seconds until the status leaves
+    /// Scheduled/Running, and returns the final result rows + scan stats.
+    /// The terminal Failed / Cancelled / Timeout states surface as a clean
+    /// error rather than empty rows so the caller can show the right toast.
+    pub async fn run_insights_query(
+        &self,
+        log_groups: &[String],
+        start_ms: i64,
+        end_ms: i64,
+        query: &str,
+    ) -> Result<InsightsResults> {
+        use aws_sdk_cloudwatchlogs::types::QueryStatus;
+        // StartQuery's start_time / end_time are epoch *seconds*, not ms.
+        let start_s = start_ms / 1000;
+        let end_s = end_ms / 1000;
+        let mut req = self
+            .cw_logs
+            .start_query()
+            .start_time(start_s)
+            .end_time(end_s)
+            .query_string(query);
+        for g in log_groups {
+            req = req.log_group_names(g);
+        }
+        let start_resp = req.send().await.wrap_err("StartQuery failed")?;
+        let query_id = start_resp
+            .query_id
+            .ok_or_else(|| eyre!("StartQuery returned no query_id"))?;
+
+        // Poll every 2s. Insights queries are server-side timed (max 15
+        // min by default) so we don't need our own watchdog; the API
+        // surfaces Timeout when the server gives up.
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let resp = self
+                .cw_logs
+                .get_query_results()
+                .query_id(&query_id)
+                .send()
+                .await
+                .wrap_err("GetQueryResults failed")?;
+            let status = resp.status.clone();
+            let scanned = resp
+                .statistics
+                .as_ref()
+                .map(|s| s.records_scanned as i64)
+                .unwrap_or(0);
+            let matched = resp
+                .statistics
+                .as_ref()
+                .map(|s| s.records_matched as i64)
+                .unwrap_or(0);
+            match status {
+                Some(QueryStatus::Scheduled) | Some(QueryStatus::Running) => continue,
+                Some(QueryStatus::Complete) => {
+                    let rows: Vec<InsightsRow> = resp
+                        .results
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|fields| InsightsRow {
+                            fields: fields
+                                .into_iter()
+                                .map(|f| (f.field.unwrap_or_default(), f.value.unwrap_or_default()))
+                                .collect(),
+                        })
+                        .collect();
+                    return Ok(InsightsResults {
+                        rows,
+                        records_scanned: scanned,
+                        records_matched: matched,
+                    });
+                }
+                Some(QueryStatus::Failed) => {
+                    return Err(eyre!("Insights query failed"));
+                }
+                Some(QueryStatus::Cancelled) => {
+                    return Err(eyre!("Insights query was cancelled"));
+                }
+                Some(QueryStatus::Timeout) => {
+                    return Err(eyre!("Insights query timed out (server-side 15min cap)"));
+                }
+                Some(other) => {
+                    return Err(eyre!(
+                        "unexpected Insights query status: {}",
+                        other.as_str()
+                    ));
+                }
+                None => {
+                    return Err(eyre!("Insights query returned no status"));
+                }
+            }
+        }
+    }
+
     /// Delete one or more CloudWatch alarms by name.
     pub async fn delete_alarms(&self, names: &[String]) -> Result<()> {
         if names.is_empty() {
@@ -2841,6 +2969,26 @@ impl AwsClient {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
+    /// `DescribeEnvironmentHealth` summarised down to a `(healthy, total)`
+    /// pair for the INST column on the main table. Lightweight compared to
+    /// `DescribeInstancesHealth` (one call returns aggregated counts; no
+    /// per-instance attributes). Fanned across every env on each refresh
+    /// tick — typical accounts have ≤ 50 envs which is well under the
+    /// EB API's per-second budget.
+    pub async fn fetch_env_instance_counts(&self, env_name: &str) -> Result<EnvInstanceCounts> {
+        let resp = self
+            .client
+            .describe_environment_health()
+            .environment_name(env_name)
+            .attribute_names(
+                aws_sdk_elasticbeanstalk::types::EnvironmentHealthAttribute::InstancesHealth,
+            )
+            .send()
+            .await
+            .wrap_err("DescribeEnvironmentHealth failed")?;
+        Ok(summarise_instance_health(resp.instances_health.as_ref()))
+    }
+
     pub async fn list_instances(&self, env_name: &str) -> Result<Vec<Instance>> {
         let resp = self
             .client
@@ -3054,6 +3202,162 @@ fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
         }
     }
     a.cmp(b)
+}
+
+/// Pure: roll up EB's per-bucket `InstanceHealthSummary` into the
+/// `(healthy, total)` shape the INST column wants. `healthy` is `ok +
+/// info` (both Green per EB's docs — Info just means an operation is in
+/// progress on an otherwise-healthy instance, not a problem signal).
+/// `total` is the sum across every bucket including Grey buckets like
+/// `no_data` / `unknown` / `pending` so an env that's mid-launch
+/// reports `0/N` rather than `0/0`. Missing input (`None`) and
+/// all-None buckets render as `EnvInstanceCounts::default()` (0/0).
+pub fn summarise_instance_health(
+    summary: Option<&aws_sdk_elasticbeanstalk::types::InstanceHealthSummary>,
+) -> EnvInstanceCounts {
+    let Some(s) = summary else {
+        return EnvInstanceCounts::default();
+    };
+    let g = |v: Option<i32>| v.unwrap_or(0);
+    let ok = g(s.ok);
+    let info = g(s.info);
+    let healthy = ok + info;
+    let total = g(s.no_data)
+        + g(s.unknown)
+        + g(s.pending)
+        + ok
+        + info
+        + g(s.warning)
+        + g(s.degraded)
+        + g(s.severe);
+    EnvInstanceCounts { healthy, total }
+}
+
+/// Pure: parse a time-window spec for `:logs-insights --window WINDOW`.
+/// Accepts `<n><unit>` with unit `m` / `h` / `d` — e.g. `30m`, `6h`, `7d`.
+/// Returns the window length in *milliseconds* so callers can subtract
+/// from `Utc::now().timestamp_millis()` directly. Returns `None` for
+/// malformed input or non-positive values so the caller surfaces a
+/// usage error instead of silently substituting a wrong window. Same
+/// grammar as `parse_replay_spec` in `mode_dlq.rs` — kept consistent
+/// so operators only have to learn one time-window vocabulary.
+pub fn parse_window_ms(input: &str) -> Option<i64> {
+    let s = input.trim().to_lowercase();
+    if s.is_empty() {
+        return None;
+    }
+    let unit = s.chars().last()?;
+    let num: i64 = s[..s.len() - unit.len_utf8()].parse().ok()?;
+    if num <= 0 {
+        return None;
+    }
+    let ms = match unit {
+        'm' => num * 60_000,
+        'h' => num * 60 * 60_000,
+        'd' => num * 24 * 60 * 60_000,
+        _ => return None,
+    };
+    Some(ms)
+}
+
+/// Pure: render an `InsightsResults` payload to a multi-line string
+/// suitable for a TextOverlay body. Columns are field names from the
+/// first row (Insights guarantees every row has the same field set in
+/// the same order), each cell width-padded against the column max so
+/// the result reads like a table. Long values are truncated to keep
+/// the overlay readable. Empty input renders as a "no rows matched"
+/// stub plus the scan stats — same shape so the overlay never collapses.
+pub fn format_insights_results(
+    results: &InsightsResults,
+    query: &str,
+    log_groups: &[String],
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "query: {query}\nlog groups: {}\nmatched: {} / scanned: {}\n",
+        if log_groups.is_empty() {
+            "(none)".to_string()
+        } else {
+            log_groups.join(", ")
+        },
+        results.records_matched,
+        results.records_scanned,
+    ));
+    out.push_str(&"─".repeat(60));
+    out.push('\n');
+    if results.rows.is_empty() {
+        out.push_str("(no rows matched the query)\n");
+        return out;
+    }
+    // Skip the synthetic `@ptr` Insights field — it's a record locator
+    // for the API to drill back to individual events, not useful in the
+    // operator-facing overlay. Drop it from every row consistently.
+    let headers: Vec<String> = results.rows[0]
+        .fields
+        .iter()
+        .map(|(k, _)| k.clone())
+        .filter(|k| k != "@ptr")
+        .collect();
+    // Per-column max-width pass — bounded at 60 cells so a single huge
+    // message field doesn't push every other column off-screen.
+    const COL_MAX: usize = 60;
+    let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
+    for row in &results.rows {
+        for (i, h) in headers.iter().enumerate() {
+            if let Some((_, v)) = row.fields.iter().find(|(k, _)| k == h) {
+                let cells = v.chars().count().min(COL_MAX);
+                if cells > widths[i] {
+                    widths[i] = cells;
+                }
+            }
+        }
+    }
+    // Header row.
+    let mut header_line = String::new();
+    for (i, h) in headers.iter().enumerate() {
+        if i > 0 {
+            header_line.push_str("  ");
+        }
+        header_line.push_str(&format!("{:<w$}", h, w = widths[i]));
+    }
+    out.push_str(&header_line);
+    out.push('\n');
+    // Separator.
+    let mut sep_line = String::new();
+    for (i, w) in widths.iter().enumerate() {
+        if i > 0 {
+            sep_line.push_str("  ");
+        }
+        sep_line.push_str(&"─".repeat(*w));
+    }
+    out.push_str(&sep_line);
+    out.push('\n');
+    // Data rows.
+    for row in &results.rows {
+        let mut line = String::new();
+        for (i, h) in headers.iter().enumerate() {
+            if i > 0 {
+                line.push_str("  ");
+            }
+            let raw = row
+                .fields
+                .iter()
+                .find(|(k, _)| k == h)
+                .map(|(_, v)| v.as_str())
+                .unwrap_or("");
+            let trimmed: String = if raw.chars().count() > COL_MAX {
+                let mut s: String = raw.chars().take(COL_MAX.saturating_sub(1)).collect();
+                s.push('…');
+                s
+            } else {
+                raw.to_string()
+            };
+            line.push_str(&format!("{:<w$}", trimmed, w = widths[i]));
+        }
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out
 }
 
 /// Switch to multipart upload when the bundle is at least this large.
@@ -3395,6 +3699,162 @@ mod tests {
         assert!(plan_part_lengths(100, 0).is_empty());
     }
 
+    #[test]
+    fn summarise_instance_health_rolls_up_buckets() {
+        use aws_sdk_elasticbeanstalk::types::InstanceHealthSummary;
+
+        // Mixed: 2 ok + 1 info = 3 healthy; total adds severity buckets.
+        let s = InstanceHealthSummary::builder()
+            .ok(2)
+            .info(1)
+            .warning(1)
+            .degraded(0)
+            .severe(1)
+            .pending(0)
+            .no_data(0)
+            .unknown(0)
+            .build();
+        let counts = super::summarise_instance_health(Some(&s));
+        assert_eq!(counts.healthy, 3, "ok + info");
+        assert_eq!(counts.total, 5, "ok + info + warning + degraded + severe");
+
+        // All-Grey buckets contribute to total but not to healthy.
+        let s = InstanceHealthSummary::builder()
+            .pending(2)
+            .no_data(1)
+            .build();
+        let counts = super::summarise_instance_health(Some(&s));
+        assert_eq!(counts.healthy, 0);
+        assert_eq!(counts.total, 3);
+
+        // None input → 0/0 default.
+        let counts = super::summarise_instance_health(None);
+        assert_eq!(counts.healthy, 0);
+        assert_eq!(counts.total, 0);
+
+        // All-empty summary → 0/0 (rare in practice but defensive).
+        let s = InstanceHealthSummary::builder().build();
+        let counts = super::summarise_instance_health(Some(&s));
+        assert_eq!(counts.healthy, 0);
+        assert_eq!(counts.total, 0);
+    }
+
+    #[test]
+    fn parse_window_ms_accepts_minutes_hours_days() {
+        assert_eq!(super::parse_window_ms("30m"), Some(30 * 60_000));
+        assert_eq!(super::parse_window_ms("1h"), Some(60 * 60_000));
+        assert_eq!(super::parse_window_ms("6h"), Some(6 * 60 * 60_000));
+        assert_eq!(super::parse_window_ms("24h"), Some(24 * 60 * 60_000));
+        assert_eq!(super::parse_window_ms("7d"), Some(7 * 24 * 60 * 60_000));
+        // Whitespace-trimmed.
+        assert_eq!(super::parse_window_ms("  2h  "), Some(2 * 60 * 60_000));
+        // Case-insensitive on unit.
+        assert_eq!(super::parse_window_ms("3H"), Some(3 * 60 * 60_000));
+    }
+
+    #[test]
+    fn parse_window_ms_rejects_malformed_input() {
+        // Empty.
+        assert_eq!(super::parse_window_ms(""), None);
+        // Missing unit.
+        assert_eq!(super::parse_window_ms("30"), None);
+        // Missing number.
+        assert_eq!(super::parse_window_ms("h"), None);
+        // Unknown unit (y / w / s).
+        assert_eq!(super::parse_window_ms("1y"), None);
+        assert_eq!(super::parse_window_ms("2w"), None);
+        assert_eq!(super::parse_window_ms("60s"), None);
+        // Non-positive — silently substituting 0 would surprise the operator.
+        assert_eq!(super::parse_window_ms("0h"), None);
+        assert_eq!(super::parse_window_ms("-1h"), None);
+        // Garbage.
+        assert_eq!(super::parse_window_ms("hour"), None);
+    }
+
+    #[test]
+    fn format_insights_results_renders_table() {
+        let results = InsightsResults {
+            rows: vec![
+                InsightsRow {
+                    fields: vec![
+                        ("@timestamp".into(), "2026-05-23T10:00:00Z".into()),
+                        ("@message".into(), "POST /checkout 200 42ms".into()),
+                        ("@ptr".into(), "CWL_PTR_X".into()),
+                    ],
+                },
+                InsightsRow {
+                    fields: vec![
+                        ("@timestamp".into(), "2026-05-23T10:00:01Z".into()),
+                        ("@message".into(), "GET /healthcheck 200 1ms".into()),
+                        ("@ptr".into(), "CWL_PTR_Y".into()),
+                    ],
+                },
+            ],
+            records_scanned: 1234,
+            records_matched: 2,
+        };
+        let body = super::format_insights_results(
+            &results,
+            "fields @timestamp, @message",
+            &["/aws/elasticbeanstalk/prod/var/log/web.stdout.log".to_string()],
+        );
+        assert!(
+            body.contains("matched: 2 / scanned: 1234"),
+            "stats line present"
+        );
+        assert!(body.contains("@timestamp"), "@timestamp header present");
+        assert!(body.contains("@message"), "@message header present");
+        // @ptr is a record-locator field — always dropped from operator-facing output.
+        assert!(
+            !body.contains("@ptr"),
+            "@ptr field should be filtered out of the rendered table"
+        );
+        assert!(body.contains("POST /checkout"), "first row body present");
+        assert!(body.contains("GET /healthcheck"), "second row body present");
+    }
+
+    #[test]
+    fn format_insights_results_empty_input_shows_no_rows_stub() {
+        let results = InsightsResults {
+            rows: vec![],
+            records_scanned: 1000,
+            records_matched: 0,
+        };
+        let body = super::format_insights_results(
+            &results,
+            "fields @message | filter @message like /never/",
+            &["/aws/elasticbeanstalk/prod/var/log/web.stdout.log".to_string()],
+        );
+        assert!(body.contains("no rows matched"), "empty-input stub fires");
+        assert!(
+            body.contains("matched: 0 / scanned: 1000"),
+            "stats line still present"
+        );
+    }
+
+    #[test]
+    fn format_insights_results_truncates_long_values() {
+        // A 200-character message should get truncated to ≤ COL_MAX (60)
+        // so the table doesn't dominate the overlay.
+        let huge = "x".repeat(200);
+        let results = InsightsResults {
+            rows: vec![InsightsRow {
+                fields: vec![("@message".into(), huge.clone())],
+            }],
+            records_scanned: 1,
+            records_matched: 1,
+        };
+        let body = super::format_insights_results(&results, "fields @message", &[]);
+        assert!(
+            !body.contains(&huge),
+            "raw 200-char value should not appear untouched"
+        );
+        assert!(
+            body.contains("…"),
+            "truncation marker should signal the cut to the operator"
+        );
+    }
+
     #[tokio::test]
     async fn upload_bundle_uses_multipart_when_size_meets_threshold() {
         // Mocks the three multipart calls (CreateMultipartUpload →
@@ -3641,6 +4101,218 @@ mod tests {
             S3Client::new(&cfg),
             Ec2Client::new(&cfg),
         )
+    }
+
+    /// Build a base `AwsClient` then swap in a mocked sub-client for one of
+    /// the secondary services (ACM / Organizations / Cost Explorer /
+    /// Secrets Manager). Field access works because the `tests` module
+    /// is a child of `aws`, so the private sub-client fields are visible.
+    /// The macro saves repeating six SDK-config lines per test.
+    macro_rules! client_with_sub {
+        ($field:ident = $value:expr) => {{
+            let cfg = aws_config::SdkConfig::builder()
+                .region(Region::new("us-east-1"))
+                .behavior_version(aws_config::BehaviorVersion::latest())
+                .build();
+            let mut c = AwsClient::for_tests(
+                Client::new(&cfg),
+                SqsClient::new(&cfg),
+                CwClient::new(&cfg),
+                CwLogsClient::new(&cfg),
+                S3Client::new(&cfg),
+                Ec2Client::new(&cfg),
+            );
+            c.$field = $value;
+            c
+        }};
+    }
+
+    #[tokio::test]
+    async fn list_secrets_maps_secretlistentry_to_summary() {
+        // Pins the happy path through ListSecrets — field-by-field
+        // mapping from `SecretListEntry` to `SecretSummary`, sort by
+        // last_changed desc, and the optional `name_filter` substring
+        // match. Caught here because `:secrets` is the operator's
+        // entry into Secrets Manager and a silent field-rename in the
+        // SDK output would break the picker without a compile error.
+        use aws_sdk_secretsmanager::operation::list_secrets::ListSecretsOutput;
+        use aws_sdk_secretsmanager::types::SecretListEntry;
+        use aws_smithy_types::DateTime as SmithyDt;
+
+        let rule = mock!(aws_sdk_secretsmanager::Client::list_secrets).then_output(|| {
+            ListSecretsOutput::builder()
+                .secret_list(
+                    SecretListEntry::builder()
+                        .name("prod/db-password")
+                        .arn("arn:aws:secretsmanager:us-east-1:123:secret:prod/db-password-AbCdEf")
+                        .description("Production DB master password")
+                        .last_changed_date(SmithyDt::from_secs(1_700_000_000))
+                        .build(),
+                )
+                .secret_list(
+                    SecretListEntry::builder()
+                        .name("staging/api-key")
+                        .arn("arn:aws:secretsmanager:us-east-1:123:secret:staging/api-key-XyZ")
+                        // Older timestamp than prod/db-password — should
+                        // sort below in the result.
+                        .last_changed_date(SmithyDt::from_secs(1_600_000_000))
+                        .build(),
+                )
+                .build()
+        });
+        let secrets = mock_client!(aws_sdk_secretsmanager, [&rule]);
+        let client = client_with_sub!(secrets = secrets);
+
+        let all = client.list_secrets(None).await.expect("ok");
+        assert_eq!(all.len(), 2);
+        // Newest first.
+        assert_eq!(all[0].name, "prod/db-password");
+        assert_eq!(all[1].name, "staging/api-key");
+        // Description + last_changed survived the round-trip.
+        assert_eq!(
+            all[0].description.as_deref(),
+            Some("Production DB master password")
+        );
+        assert!(all[0].last_changed.is_some());
+    }
+
+    #[tokio::test]
+    async fn list_certificates_filters_to_issued_and_extracts_domain() {
+        // Pins two contract points: (1) ListCertificates is called with
+        // `CertificateStatus::Issued` so revoked / pending / expired
+        // certs don't show up in the `:listener-edit` picker, and (2)
+        // the response's `domain_name` lands in `AcmCert.domain`.
+        use aws_sdk_acm::operation::list_certificates::ListCertificatesOutput;
+        use aws_sdk_acm::types::{CertificateStatus, CertificateSummary};
+
+        let rule = mock!(aws_sdk_acm::Client::list_certificates)
+            .match_requests(|req| {
+                req.certificate_statuses()
+                    .contains(&CertificateStatus::Issued)
+            })
+            .then_output(|| {
+                ListCertificatesOutput::builder()
+                    .certificate_summary_list(
+                        CertificateSummary::builder()
+                            .certificate_arn("arn:aws:acm:us-east-1:123:certificate/abcd")
+                            .domain_name("*.example.com")
+                            .build(),
+                    )
+                    .certificate_summary_list(
+                        CertificateSummary::builder()
+                            .certificate_arn("arn:aws:acm:us-east-1:123:certificate/efgh")
+                            .domain_name("api.example.com")
+                            .build(),
+                    )
+                    .build()
+            });
+        let acm = mock_client!(aws_sdk_acm, [&rule]);
+        let client = client_with_sub!(acm = acm);
+
+        let certs = client.list_certificates().await.expect("ok");
+        assert_eq!(certs.len(), 2);
+        // Sorted by domain.
+        assert_eq!(certs[0].domain, "*.example.com");
+        assert_eq!(certs[1].domain, "api.example.com");
+        assert_eq!(rule.num_calls(), 1, "ListCertificates fired once");
+    }
+
+    #[tokio::test]
+    async fn list_org_accounts_sorts_active_first_then_by_name() {
+        // The overlay puts ACTIVE accounts at the top so the operator
+        // sees switchable accounts before suspended/closed ones. Pins
+        // both the field mapping and the sort.
+        use aws_sdk_organizations::operation::list_accounts::ListAccountsOutput;
+        use aws_sdk_organizations::types::{Account, AccountStatus};
+
+        let rule = mock!(aws_sdk_organizations::Client::list_accounts).then_output(|| {
+            ListAccountsOutput::builder()
+                .accounts(
+                    Account::builder()
+                        .id("999999999999")
+                        .name("zzz-closed")
+                        .email("zzz@example.com")
+                        .status(AccountStatus::Suspended)
+                        .build(),
+                )
+                .accounts(
+                    Account::builder()
+                        .id("222222222222")
+                        .name("staging")
+                        .email("staging@example.com")
+                        .status(AccountStatus::Active)
+                        .build(),
+                )
+                .accounts(
+                    Account::builder()
+                        .id("111111111111")
+                        .name("prod")
+                        .email("prod@example.com")
+                        .status(AccountStatus::Active)
+                        .build(),
+                )
+                .build()
+        });
+        let org = mock_client!(aws_sdk_organizations, [&rule]);
+        let client = client_with_sub!(org = org);
+
+        let accounts = client.list_org_accounts().await.expect("ok");
+        assert_eq!(accounts.len(), 3);
+        // ACTIVE first, sorted by name within status.
+        assert_eq!(accounts[0].name, "prod");
+        assert_eq!(accounts[1].name, "staging");
+        assert_eq!(accounts[2].name, "zzz-closed");
+    }
+
+    #[tokio::test]
+    async fn fetch_env_costs_extracts_env_name_from_tag_group_key() {
+        // Cost Explorer encodes the tag group key as
+        // `elasticbeanstalk:environment-name$<value>`; the prefix split
+        // and the f64 amount parse are the load-bearing bits to pin.
+        // Also asserts the metric / granularity / group-by shape on the
+        // request, since silently switching from Monthly to Daily would
+        // wreck the cache assumptions in cost_cache.rs.
+        use aws_sdk_costexplorer::operation::get_cost_and_usage::GetCostAndUsageOutput;
+        use aws_sdk_costexplorer::types::{Granularity, Group, MetricValue, ResultByTime};
+
+        let rule = mock!(aws_sdk_costexplorer::Client::get_cost_and_usage)
+            .match_requests(|req| {
+                req.granularity() == Some(&Granularity::Monthly)
+                    && req.metrics().iter().any(|m| m == "UnblendedCost")
+                    && req
+                        .group_by()
+                        .iter()
+                        .any(|g| g.key() == Some("elasticbeanstalk:environment-name"))
+            })
+            .then_output(|| {
+                let mut metrics = std::collections::HashMap::new();
+                metrics.insert(
+                    "UnblendedCost".to_string(),
+                    MetricValue::builder().amount("150.25").unit("USD").build(),
+                );
+                GetCostAndUsageOutput::builder()
+                    .results_by_time(
+                        ResultByTime::builder()
+                            .groups(
+                                Group::builder()
+                                    .keys("elasticbeanstalk:environment-name$uflexi-prod")
+                                    .set_metrics(Some(metrics))
+                                    .build(),
+                            )
+                            .build(),
+                    )
+                    .build()
+            });
+        let cost = mock_client!(aws_sdk_costexplorer, [&rule]);
+        let client = client_with_sub!(cost = cost);
+
+        let costs = client.fetch_env_costs().await.expect("ok");
+        assert_eq!(costs.len(), 1);
+        assert_eq!(costs[0].env_name, "uflexi-prod");
+        assert!(
+            (costs[0].cost_usd - 150.25).abs() < f64::EPSILON,
+            "amount parsed from string"
+        );
     }
 
     // ── Regression #1 ────────────────────────────────────────────────────

@@ -604,7 +604,7 @@ fn draw_form(f: &mut Frame, area: Rect, app: &App) {
     let Some(form) = app.form.as_ref() else {
         return;
     };
-    let popup = centered_rect(60, 70, area);
+    let popup = centered_overlay(OverlaySize::Text, area);
     f.render_widget(Clear, popup);
     let theme = &app.theme;
     let outer = titled_block(theme, &form.title, true, theme.title_alt);
@@ -792,7 +792,7 @@ fn draw_form(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_palette(f: &mut Frame, area: Rect, app: &App) {
-    let popup = centered_rect(60, 70, area);
+    let popup = centered_overlay(OverlaySize::Picker, area);
     f.render_widget(Clear, popup);
     let theme = &app.theme;
     // Single frame around the whole palette (input + list + footer). The
@@ -970,7 +970,7 @@ fn draw_saved_configs_interactive(
     cursor: usize,
     confirm_delete: bool,
 ) {
-    let popup = centered_rect(60, 70, area);
+    let popup = centered_overlay(OverlaySize::Picker, area);
     f.render_widget(Clear, popup);
     let theme = &app.theme;
     let target = app
@@ -1135,7 +1135,7 @@ fn draw_log_tail_overlay(f: &mut Frame, area: Rect, app: &App) {
     else {
         return;
     };
-    let popup = centered_rect(85, 80, area);
+    let popup = centered_overlay(OverlaySize::Wide, area);
     f.render_widget(Clear, popup);
     let theme = &app.theme;
     // Format each event as `HH:MM:SS  STREAM_TAIL  message`. Stream names
@@ -1212,7 +1212,7 @@ fn draw_log_tail_overlay(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_text_dump_overlay(f: &mut Frame, area: Rect, app: &App, title: &str, text: &str) {
-    let popup = centered_rect(70, 70, area);
+    let popup = centered_overlay(OverlaySize::Text, area);
     f.render_widget(Clear, popup);
     let theme = &app.theme;
     let lines: Vec<Line> = text
@@ -1392,7 +1392,7 @@ fn draw_about(f: &mut Frame, area: Rect, app: &App, opened: std::time::Instant) 
 }
 
 fn draw_saved_configs_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
-    let popup = centered_rect(60, 70, area);
+    let popup = centered_overlay(OverlaySize::Picker, area);
     f.render_widget(Clear, popup);
     let theme = &app.theme;
     let mut lines: Vec<Line> = text
@@ -1431,7 +1431,7 @@ fn push_close_hint(lines: &mut Vec<Line<'static>>, theme: &Theme) {
 }
 
 fn draw_diff_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
-    let popup = centered_rect(80, 70, area);
+    let popup = centered_overlay(OverlaySize::Wide, area);
     f.render_widget(Clear, popup);
     let theme = &app.theme;
     let mut lines: Vec<Line> = text
@@ -1457,7 +1457,7 @@ fn draw_diff_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
 }
 
 fn draw_alarms_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
-    let popup = centered_rect(70, 70, area);
+    let popup = centered_overlay(OverlaySize::Text, area);
     f.render_widget(Clear, popup);
     let theme = &app.theme;
     let mut lines: Vec<Line> = text
@@ -1580,7 +1580,7 @@ fn draw_why_red_overlay(f: &mut Frame, area: Rect, app: &mut App) {
     // pass can mark items[cursor]'s line, and the key handler reading
     // App.why_items knows what to drill into on Enter.
     let mut items: Vec<(crate::app::WhyItem, usize)> = Vec::new();
-    let popup = centered_rect(78, 80, area);
+    let popup = centered_overlay(OverlaySize::Wide, area);
     f.render_widget(Clear, popup);
     let theme = &app.theme;
     let now = chrono::Utc::now();
@@ -1983,7 +1983,7 @@ fn draw_apps_action_menu(
     cursor: usize,
 ) {
     let theme = &app.theme;
-    let popup = centered_rect(40, 30, area);
+    let popup = centered_overlay(OverlaySize::Small, area);
     f.render_widget(Clear, popup);
     let n_envs = env_names.len();
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -2039,7 +2039,7 @@ fn draw_apps_action_menu(
 /// don't reflow into unreadable wrap.
 fn draw_report_bug_overlay(f: &mut Frame, area: Rect, app: &App, body: &str) {
     let theme = &app.theme;
-    let popup = centered_rect(80, 80, area);
+    let popup = centered_overlay(OverlaySize::Wide, area);
     f.render_widget(Clear, popup);
     let mut lines: Vec<Line<'static>> = body
         .lines()
@@ -2105,7 +2105,7 @@ fn draw_report_bug_overlay(f: &mut Frame, area: Rect, app: &App, body: &str) {
 }
 
 fn draw_history_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
-    let popup = centered_rect(60, 70, area);
+    let popup = centered_overlay(OverlaySize::Text, area);
     f.render_widget(Clear, popup);
     let mut lines: Vec<Line> = text
         .lines()
@@ -2124,7 +2124,7 @@ fn draw_history_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
 }
 
 fn draw_whatsnew(f: &mut Frame, area: Rect, app: &App, text: &str) {
-    let popup = centered_rect(60, 70, area);
+    let popup = centered_overlay(OverlaySize::Text, area);
     f.render_widget(Clear, popup);
     let lines: Vec<Line> = text
         .lines()
@@ -2148,7 +2148,7 @@ fn draw_whatsnew(f: &mut Frame, area: Rect, app: &App, text: &str) {
 }
 
 fn draw_describe(f: &mut Frame, area: Rect, app: &App, text: &str) {
-    let popup = centered_rect(60, 70, area);
+    let popup = centered_overlay(OverlaySize::Text, area);
     f.render_widget(Clear, popup);
     let lines: Vec<Line> = text
         .lines()
@@ -2585,6 +2585,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
         ("TIER", SortKey::App),
         ("STATUS", SortKey::Status),
         ("HEALTH", SortKey::Health),
+        ("INST", SortKey::Health),
         ("TREND", SortKey::Health),
         ("PLATFORM", SortKey::Version),
         ("VERSION", SortKey::Version),
@@ -2819,6 +2820,22 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                             }
                         }
                         "HEALTH" => Cell::from(health_dot(&e.health, &theme)),
+                        "INST" => {
+                            // `healthy/total` if the per-env counts have
+                            // landed for this refresh; em-dash placeholder
+                            // otherwise (and on the very first frame
+                            // before the fan-out completes). Cell colour
+                            // tiers by ratio: all healthy = green, any
+                            // unhealthy but some healthy = yellow,
+                            // zero healthy with instances present = red,
+                            // empty env = muted.
+                            let counts = app.env_instance_counts.get(&e.name).copied();
+                            let (text, color) = format_instance_counts(counts, &theme);
+                            Cell::from(Span::styled(
+                                text,
+                                Style::default().fg(color).add_modifier(Modifier::BOLD),
+                            ))
+                        }
                         "TREND" => Cell::from(sparkline_for(
                             app.history.get(&e.name),
                             &theme,
@@ -3102,6 +3119,9 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
             "TIER" => Constraint::Length(11),
             "STATUS" => Constraint::Length(10),
             "HEALTH" => Constraint::Length(3),
+            // " 99/99 " worst case = 7 cells incl. trailing pad. Most envs
+            // are single-digit on each side so we sit at 4-5 typical width.
+            "INST" => Constraint::Length(7),
             "TREND" => Constraint::Length(12),
             "PLATFORM" => Constraint::Percentage(15),
             "VERSION" => Constraint::Percentage(10),
@@ -3339,6 +3359,34 @@ pub enum StatusAlert {
     None,
     Yellow,
     Red,
+}
+
+/// Pure: render the `INST` column for an env. `counts == None` means
+/// the per-env fan-out hasn't landed yet — show an em-dash placeholder
+/// in `theme.muted` so the column doesn't read as "0/0 (broken)".
+/// `(0, 0)` is "env has no instances" (mid-launch or fully scaled
+/// down) — `0/0` in `theme.muted`. Otherwise the cell colour-tiers:
+/// `healthy == total` → `theme.health_green` (all good); `healthy >
+/// 0 && healthy < total` → `theme.health_yellow` (partial); `healthy
+/// == 0 && total > 0` → `theme.health_red` (everything's down).
+pub fn format_instance_counts(
+    counts: Option<crate::aws::EnvInstanceCounts>,
+    theme: &Theme,
+) -> (String, Color) {
+    let Some(c) = counts else {
+        return ("—".into(), theme.muted);
+    };
+    let text = format!("{}/{}", c.healthy, c.total);
+    let color = if c.total == 0 {
+        theme.muted
+    } else if c.healthy == c.total {
+        theme.health_green
+    } else if c.healthy == 0 {
+        theme.health_red
+    } else {
+        theme.health_yellow
+    };
+    (text, color)
 }
 
 /// Pure classifier: what alert tier the `Ready` pill should render in
@@ -3739,7 +3787,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
 
 fn draw_help(f: &mut Frame, area: Rect, app: &mut App) {
     let theme = &app.theme;
-    let popup = centered_rect(70, 70, area);
+    let popup = centered_overlay(OverlaySize::Text, area);
     f.render_widget(Clear, popup);
     // Per-context help: when the user pressed `?` inside Detail / DLQ /
     // Action / Shell, show only the keys relevant to that screen. The
@@ -4229,7 +4277,7 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
     };
     match flow {
         ActionFlow::Menu { list_state } => {
-            let popup = centered_rect(50, 40, area);
+            let popup = centered_overlay(OverlaySize::Small, area);
             f.render_widget(Clear, popup);
             let layout = Layout::default()
                 .direction(Direction::Vertical)
@@ -4276,7 +4324,7 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
             );
         }
         ActionFlow::SwapTarget { source, picker } => {
-            let popup = centered_rect(50, 60, area);
+            let popup = centered_overlay(OverlaySize::Picker, area);
             f.render_widget(Clear, popup);
             let layout = Layout::default()
                 .direction(Direction::Vertical)
@@ -4338,7 +4386,7 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
             );
         }
         ActionFlow::Confirm(modal) => {
-            let popup = centered_rect(60, 35, area);
+            let popup = centered_overlay(OverlaySize::Small, area);
             f.render_widget(Clear, popup);
             let accent = if modal.action.destructive() {
                 theme.health_red
@@ -6495,7 +6543,7 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
     let Some(picker) = app.picker.as_mut() else {
         return;
     };
-    let popup = centered_rect(50, 60, area);
+    let popup = centered_overlay(OverlaySize::Picker, area);
     f.render_widget(Clear, popup);
 
     let layout = Layout::default()
@@ -7611,6 +7659,53 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         .split(v[1])[1]
 }
 
+/// Standard overlay size categories. Single source of truth so every
+/// overlay reads the same proportions and the TUI feels coherent
+/// across modal modes — previously each overlay independently picked
+/// `centered_rect(W, H)` with arbitrary values (50×60, 60×70, 70×70,
+/// 78×80, 85×80, …) and the visual variation didn't match meaningful
+/// content differences.
+///
+/// Categories are picked by content shape, not by overlay name, so a
+/// future overlay can route to whichever category fits without
+/// negotiating with the rest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlaySize {
+    /// Small modal — Y/N confirm, brief menu / picker. Sized so the
+    /// content takes the eye but the surrounding context is still
+    /// visible (the operator hasn't lost where they were).
+    Small,
+    /// Picker / palette / input + list. Just enough room for a
+    /// dozen rows of fuzzy-match candidates.
+    Picker,
+    /// Read-only text dump (events, alarms, history, help, …).
+    /// Comfortable reading width without dominating the screen.
+    Text,
+    /// Wide content — log tail, diagnostics, side-by-side diffs,
+    /// the bug-report payload. These need horizontal space the
+    /// table-shape Text category doesn't have.
+    Wide,
+}
+
+/// Pick a centered rect for a given overlay category. The size
+/// values live here in one place so re-tuning every overlay is a
+/// single-line change.
+pub fn centered_overlay(size: OverlaySize, area: Rect) -> Rect {
+    let (w, h) = overlay_dims(size);
+    centered_rect(w, h, area)
+}
+
+/// Pure helper: percent dimensions per category. Extracted for
+/// testability and so the size table is grep-able in one place.
+pub fn overlay_dims(size: OverlaySize) -> (u16, u16) {
+    match size {
+        OverlaySize::Small => (50, 40),
+        OverlaySize::Picker => (60, 60),
+        OverlaySize::Text => (70, 70),
+        OverlaySize::Wide => (85, 80),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7620,6 +7715,37 @@ mod tests {
         assert_eq!(super::warn_glyph(IconStyle::Ascii), "! ");
         assert_eq!(super::warn_glyph(IconStyle::Unicode), "⚠ ");
         assert_eq!(super::warn_glyph(IconStyle::Powerline), "⚠ ");
+    }
+
+    #[test]
+    fn overlay_dims_ordering_makes_sense() {
+        // Each category is strictly bigger than the previous one on at
+        // least one axis. If a future change accidentally inverts this
+        // (e.g. Small > Picker), the visual hierarchy breaks.
+        let (sw, sh) = super::overlay_dims(super::OverlaySize::Small);
+        let (pw, ph) = super::overlay_dims(super::OverlaySize::Picker);
+        let (tw, th) = super::overlay_dims(super::OverlaySize::Text);
+        let (ww, wh) = super::overlay_dims(super::OverlaySize::Wide);
+        assert!(sw <= pw && sh <= ph, "Picker not smaller than Small");
+        assert!(pw <= tw && ph <= th, "Text not bigger than Picker");
+        assert!(tw <= ww && th <= wh, "Wide not bigger than Text");
+    }
+
+    #[test]
+    fn overlay_dims_are_within_legal_percent_range() {
+        // Categories are stored as integer percentages; > 100 would
+        // panic ratatui's Layout, < 10 would render an invisibly tiny
+        // popup. Pin both ends.
+        for size in [
+            super::OverlaySize::Small,
+            super::OverlaySize::Picker,
+            super::OverlaySize::Text,
+            super::OverlaySize::Wide,
+        ] {
+            let (w, h) = super::overlay_dims(size);
+            assert!((10..=100).contains(&w), "{size:?} width {w} out of range");
+            assert!((10..=100).contains(&h), "{size:?} height {h} out of range");
+        }
     }
 
     #[test]
@@ -7685,6 +7811,99 @@ mod tests {
         assert_eq!(status_alert("", 0), StatusAlert::None);
         // Red health *with* DLQ stays Red (Red wins over Yellow).
         assert_eq!(status_alert("Red", 200), StatusAlert::Red);
+    }
+
+    #[test]
+    fn format_instance_counts_tiers_by_ratio() {
+        use crate::aws::EnvInstanceCounts;
+        let theme = crate::theme::Theme::dark();
+
+        // Missing data → em-dash + muted (avoids "0/0 = broken" misread).
+        assert_eq!(format_instance_counts(None, &theme).0, "—");
+        assert_eq!(format_instance_counts(None, &theme).1, theme.muted);
+
+        // Empty env (no instances right now) → muted, not red.
+        let (text, color) = format_instance_counts(
+            Some(EnvInstanceCounts {
+                healthy: 0,
+                total: 0,
+            }),
+            &theme,
+        );
+        assert_eq!(text, "0/0");
+        assert_eq!(color, theme.muted);
+
+        // All healthy → green.
+        let (text, color) = format_instance_counts(
+            Some(EnvInstanceCounts {
+                healthy: 3,
+                total: 3,
+            }),
+            &theme,
+        );
+        assert_eq!(text, "3/3");
+        assert_eq!(color, theme.health_green);
+
+        // Partial (some healthy, some not) → yellow.
+        let (text, color) = format_instance_counts(
+            Some(EnvInstanceCounts {
+                healthy: 2,
+                total: 3,
+            }),
+            &theme,
+        );
+        assert_eq!(text, "2/3");
+        assert_eq!(color, theme.health_yellow);
+
+        // None healthy with instances present → red.
+        let (text, color) = format_instance_counts(
+            Some(EnvInstanceCounts {
+                healthy: 0,
+                total: 1,
+            }),
+            &theme,
+        );
+        assert_eq!(text, "0/1");
+        assert_eq!(color, theme.health_red);
+    }
+
+    #[test]
+    fn status_pill_for_alerting_returns_text_without_pill_bg() {
+        // Pins the 0.6 visual fix (commit bf64ce0): when an env is in an
+        // alert tier (Red / Yellow), the `Ready` pill must render as
+        // styled text — fg = health colour, no bg — so the row's red /
+        // yellow tint shows through. A solid-green pill on an alerting
+        // row reads as "fine" at a glance, which the fix exists to stop.
+        let theme = crate::theme::Theme::dark();
+
+        let red = super::status_pill_for("Ready", &theme, super::StatusAlert::Red);
+        assert_eq!(
+            red.style.fg,
+            Some(theme.health_red),
+            "Red alert: fg = theme.health_red"
+        );
+        assert!(
+            red.style.bg.is_none(),
+            "Red alert: no bg (so row tint shows through), got {:?}",
+            red.style.bg,
+        );
+
+        let yellow = super::status_pill_for("Ready", &theme, super::StatusAlert::Yellow);
+        assert_eq!(yellow.style.fg, Some(theme.health_yellow));
+        assert!(
+            yellow.style.bg.is_none(),
+            "Yellow alert: no bg, got {:?}",
+            yellow.style.bg,
+        );
+
+        // No alert: the bright-green Ready pill (with explicit bg) is
+        // still what we want.
+        let none = super::status_pill_for("Ready", &theme, super::StatusAlert::None);
+        assert_eq!(
+            none.style.bg,
+            Some(theme.status_ready),
+            "No alert: solid green pill"
+        );
     }
 
     #[test]
