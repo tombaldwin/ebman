@@ -59,6 +59,7 @@ mod cmd_overlay;
 mod cmd_settings;
 mod cmd_view;
 mod cmd_write;
+mod mode_keys;
 mod msg;
 pub use crate::mode_dlq::{DlqState, QueueView};
 
@@ -2689,160 +2690,13 @@ impl App {
         }
 
         match self.mode {
-            Mode::Filter => match key.code {
-                KeyCode::Esc => {
-                    self.filter.clear();
-                    self.mode = Mode::Normal;
-                    self.rebuild_view();
-                }
-                KeyCode::Enter => self.mode = Mode::Normal,
-                KeyCode::Backspace => {
-                    self.filter.pop();
-                    self.rebuild_view();
-                }
-                KeyCode::Char(c) if is_text_input(&key) => {
-                    self.filter.push(c);
-                    self.rebuild_view();
-                }
-                _ => {}
-            },
-            Mode::Help => match key.code {
-                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
-                    // Restore the screen the user was on before opening
-                    // help. `pre_help_mode` is set at every `?` keypress; if
-                    // somehow missing, fall back to Normal so we don't get
-                    // stuck in Help.
-                    self.mode = self.help.pre_mode.take().unwrap_or(Mode::Normal);
-                    if let Some(overlay) = self.help.pre_overlay.take() {
-                        self.current_overlay = Some(overlay);
-                    }
-                    self.help.scroll = 0;
-                }
-                KeyCode::Char('j') | KeyCode::Down => {
-                    // Clamp to the last-known content bound so scrolling
-                    // past the end doesn't accumulate phantom offsets.
-                    self.help.scroll = self.help.scroll.saturating_add(1).min(self.help.max_scroll);
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    self.help.scroll = self.help.scroll.saturating_sub(1);
-                }
-                _ => {}
-            },
-            Mode::Command => match key.code {
-                KeyCode::Esc => {
-                    self.command_input.clear();
-                    self.completion.origin = None;
-                    self.mode = Mode::Normal;
-                }
-                KeyCode::Enter => {
-                    let cmd = self.command_input.clone();
-                    self.command_input.clear();
-                    self.completion.origin = None;
-                    self.mode = Mode::Normal;
-                    self.execute_command(&cmd);
-                }
-                KeyCode::Backspace => {
-                    // Reset the completion cycle — the operator
-                    // is editing, not cycling. Same intent as
-                    // typing a new character.
-                    self.completion.origin = None;
-                    self.command_input.pop();
-                }
-                KeyCode::Tab => self.command_completion_step(1),
-                KeyCode::BackTab => self.command_completion_step(-1),
-                KeyCode::Char(c) if is_text_input(&key) => {
-                    // Any printable key resets the completion
-                    // cycle so the operator's next Tab starts a
-                    // fresh search.
-                    self.completion.origin = None;
-                    self.command_input.push(c);
-                }
-                _ => {}
-            },
-            Mode::Shell => {
-                self.handle_shell_key(key);
-            }
-            Mode::Palette => match key.code {
-                KeyCode::Esc => {
-                    self.mode = Mode::Normal;
-                    self.palette_input.clear();
-                }
-                KeyCode::Down => self.palette_move(1),
-                KeyCode::Up => self.palette_move(-1),
-                KeyCode::Enter => self.palette_execute(),
-                KeyCode::Backspace => {
-                    self.palette_input.pop();
-                    self.palette_refilter();
-                }
-                KeyCode::Char(c) if is_text_input(&key) => {
-                    self.palette_input.push(c);
-                    self.palette_refilter();
-                }
-                _ => {}
-            },
-            Mode::QuickJump => match key.code {
-                KeyCode::Esc => {
-                    self.quickjump_input.clear();
-                    self.mode = Mode::Normal;
-                }
-                KeyCode::Enter => {
-                    self.quickjump_input.clear();
-                    self.mode = Mode::Normal;
-                }
-                KeyCode::Backspace => {
-                    self.quickjump_input.pop();
-                    self.quickjump_apply();
-                }
-                KeyCode::Char(c) if is_text_input(&key) => {
-                    self.quickjump_input.push(c);
-                    self.quickjump_apply();
-                }
-                _ => {}
-            },
-            Mode::Picker => match key.code {
-                KeyCode::Esc => {
-                    self.picker = None;
-                    self.mode = Mode::Normal;
-                }
-                KeyCode::Enter => {
-                    if let Some(picker) = self.picker.take() {
-                        let kind = picker.kind;
-                        if let Some(value) = picker.selected_value() {
-                            self.apply_picker_choice(kind, value);
-                        }
-                    }
-                    self.mode = Mode::Normal;
-                }
-                KeyCode::Down | KeyCode::Char('j')
-                    if !key.modifiers.contains(KeyModifiers::CONTROL) =>
-                {
-                    if let Some(p) = self.picker.as_mut() {
-                        p.move_selection(1);
-                    }
-                }
-                KeyCode::Up | KeyCode::Char('k')
-                    if !key.modifiers.contains(KeyModifiers::CONTROL) =>
-                {
-                    if let Some(p) = self.picker.as_mut() {
-                        p.move_selection(-1);
-                    }
-                }
-                KeyCode::Backspace => {
-                    if let Some(p) = self.picker.as_mut() {
-                        p.filter.pop();
-                    }
-                }
-                KeyCode::Char(c) if is_text_input(&key) => {
-                    if let Some(p) = self.picker.as_mut() {
-                        p.filter.push(c);
-                        let filt = p.filtered();
-                        if !filt.iter().any(|i| Some(*i) == p.list_state.selected()) {
-                            p.list_state.select(filt.first().copied());
-                        }
-                    }
-                }
-                _ => {}
-            },
+            Mode::Filter => self.handle_filter_key(key),
+            Mode::Help => self.handle_help_key(key),
+            Mode::Command => self.handle_command_key(key),
+            Mode::Shell => self.handle_shell_key(key),
+            Mode::Palette => self.handle_palette_key(key),
+            Mode::QuickJump => self.handle_quickjump_key(key),
+            Mode::Picker => self.handle_picker_key(key),
             Mode::Detail => {
                 // If a search is being typed (events or logs tab), capture keys there first.
                 if self
