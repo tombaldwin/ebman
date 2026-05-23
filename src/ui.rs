@@ -1511,10 +1511,7 @@ fn format_why_event(e: &crate::aws::Event) -> String {
                 .to_string()
         })
         .unwrap_or_else(|| "(unknown time)".into());
-    format!(
-        "event @ {when}\nseverity: {}\n\n{}\n\nesc / q to close",
-        e.severity, e.message
-    )
+    format!("event @ {when}\nseverity: {}\n\n{}", e.severity, e.message)
 }
 
 /// Formatted detail text for a `:why` alarm drill.
@@ -1526,7 +1523,6 @@ fn format_why_alarm(a: &crate::aws::CwAlarm) -> String {
     if !a.state_reason.is_empty() {
         out.push_str(&format!("\nreason:\n{}\n", a.state_reason));
     }
-    out.push_str("\nesc / q to close");
     out
 }
 
@@ -1542,7 +1538,6 @@ fn format_why_instance(i: &crate::aws::Instance) -> String {
             out.push_str(&format!("  - {c}\n"));
         }
     }
-    out.push_str("\nesc / q to close");
     out
 }
 
@@ -1560,7 +1555,6 @@ fn format_why_deploy(v: &crate::aws::AppVersion) -> String {
     if !v.description.is_empty() {
         out.push_str(&format!("\n{}\n", v.description));
     }
-    out.push_str("\nesc / q to close");
     out
 }
 

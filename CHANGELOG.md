@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.6.0] — Interactive triage and form-driven config
+
+User-facing: an interactive `:why` overlay (cursor + drill into every
+section), three new modal forms over the long-tail config namespaces
+(`:rds-attach` / `:listener-edit` / `:scaling-triggers`), a safe-ify
+`:rds-detach`, time-windowed DLQ replay, a per-env runbook hint in
+`:why`, and a STATUS pill that tells the truth about an env's health.
+Internal: the form-submit path now safely round-trips pre-filled edit
+forms so a blank field doesn't clobber an existing setting.
+
+### Added
+- **`:why` is interactive.** Cursor + drill across every section: ↑↓ / j k navigate the events / alarms / instances / deploys / queues / DLQ-peek rows; `Enter` drills in. Events, alarms, instances, and deploys pop open `Overlay::Describe` with formatted detail (full event text, alarm reason, instance health + causes, version description); queue / DLQ rows jump straight to the DLQ viewer (examine / `r` resend / `R` replay / `x` delete / `p` purge). `d` remains a shortcut for the DLQ drill. The overlay title now matches health — `why is X red?` for Red/Severe, `why is X amber?` for Yellow/Warning/Degraded, `X — recent activity` otherwise.
+- **`R` in the DLQ viewer: time-windowed replay.** A spec prompt accepts `all`, a count (`20`), or a window (`30m` / `1h` / `24h` / `7d`); `spawn_dlq_replay_batch` sends each selected message to the main queue then deletes it from the DLQ, oldest-first, counting partial failures and refetching on completion. Scope-honest: "all" means all currently-peeked messages — SQS has no cheap full-queue enumeration, so a deep DLQ replays a page at a time.
+- **`:rds-attach`** — modal form over `aws:rds:dbinstance` (engine / instance class / storage / master user+password / deletion policy / Multi-AZ). Pre-fills if a DB is already attached, so it doubles as an edit form: a field left blank is dropped from the update (see `Form::to_option_settings`), so editing the instance class without retyping the password is safe.
+- **`:rds-detach ENV`** — typed-name confirm; sets `DBDeletionPolicy = Snapshot` so the database survives env termination (EB takes a final snapshot then). Honest about what it isn't: EB has no decoupling operation, and the command's help + toast say so.
+- **`:listener-edit PORT`** — modal cert-rotation form for an ALB listener. A single MultiSelect loads live ACM certificates (new `aws-sdk-acm` dependency + `acm:ListCertificates`), pre-selected with the listener's current `SSLCertificateArns`; submit writes the new set through the option-settings path.
+- **`:scaling-triggers`** — 9-field modal form over `aws:autoscaling:trigger`: metric / statistic / unit / period / breach duration / lower+upper thresholds / scale increments. Pre-fills with the env's current trigger; blank fields are kept as-is so the operator can tune one knob.
+- **Per-env runbook hint.** `config.toml` `runbooks.ENV = "https://…"` lines parse into a map round-tripped through `Form::to_option_settings`; the `:why` overlay shows a bold `runbook <url>` line at the very top so the responder sees it first.
+- **Stale-platform surfacing.** Envs running a superseded solution stack are flagged amber with an `↑` glyph in the `PLATFORM` column (and on the Detail Health tab). Driven by a one-shot `ListAvailableSolutionStacks` lookup; the comparison is precomputed in `rebuild_view` so the render path stays O(1) per row.
+
+### Changed
+- **`STATUS` pill colour-tiers by alert level.** `Ready` is EB's *operational* state ("no lifecycle op in flight"), not a health verdict, so the bright green pill on a Red-tinted row read as "everything fine" when it wasn't. New pure `status_alert(health, dlq)` returns `Red` (health Red/Severe), `Yellow` (health Yellow/Warning/Degraded or worker DLQ > 0), or `None`; `Ready` now renders in the health colour for the alerting tiers. `Updating` / `Terminating` are unchanged — they already carry their own strong signal.
+
+### Internal
+- **`Form::to_option_settings` drops empty text fields.** Previously only empty `allow_empty` integers were skipped; a blank text field would send an empty value to EB. Critical for pre-filled edit forms — EB redacts secrets like `DBPassword`, so they pre-fill blank and would be clobbered without this. A genuinely-required field left blank is still caught: EB rejects with a clear "option required". Fixes a real footgun in the `:rds-attach` edit path.
+- Drill-in Describe text no longer duplicates the close hint — `draw_describe`'s title already says it.
+
+### Test foundation
+- 425 tests. New coverage: DLQ replay parsing + index selection (+5), `runbooks.ENV` config parse + serialize round-trip (+2), the empty-text form skip (+1), `why_overlay_title` health framing (+1), `status_alert` tiering (+1).
+
 ## [0.5.0] — Rollback, config drift, and a structural cleanup
 
 The user-facing additions are config-drift and rollback tooling
