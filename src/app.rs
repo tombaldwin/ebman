@@ -215,6 +215,10 @@ pub enum Overlay {
         /// window we asked for".
         dlq_messages: Option<Result<Vec<crate::aws::QueueMessage>, String>>,
         session_id: u64,
+        /// Cursor over the drillable items rendered in the overlay. The
+        /// renderer maintains the parallel `App.why_items` list in lockstep,
+        /// so the key handler can look up `why_items[cursor]` on `Enter`.
+        cursor: usize,
     },
     /// Scrubbed bug-report payload from `:report-bug`. The operator
     /// chooses how to deliver: `y` copies to clipboard (paste into a
@@ -264,6 +268,23 @@ pub enum Overlay {
 }
 
 pub const LOG_TAIL_MAX_LINES: usize = 2000;
+
+/// One drillable row in the `:why` triage overlay. The renderer pushes
+/// these in lockstep with the lines it emits (events / alarms /
+/// instances / deploys / queues / dlq), and writes the list to
+/// `App.why_items` so the key handler can act on `items[cursor]` when
+/// the operator presses `Enter`.
+#[derive(Debug, Clone)]
+pub enum WhyItem {
+    /// Pop up `Overlay::Describe` with the formatted detail text. Used
+    /// for events / alarms / instances / deploys — read-only examination.
+    Describe(String),
+    /// Jump to the DLQ viewer (where the operator can examine / purge /
+    /// replay). Used for the worker-queues summary row + DLQ message
+    /// peek rows. The env name + queue URLs are read from the active
+    /// `Overlay::WhyRed` at drill time.
+    OpenDlq,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToastKind {
@@ -860,6 +881,10 @@ pub struct App {
     /// `AppMsg::WhyRed{Events,Alarms,Instances,Deploys}` for a prior
     /// invocation get dropped when this counter has moved on.
     pub why_red_session: u64,
+    /// Drillable items rendered in the active `:why` overlay, written by
+    /// `draw_why_red_overlay` and read by the overlay's key handler on
+    /// `Enter`. Empty whenever the overlay isn't a `WhyRed`.
+    pub why_items: Vec<WhyItem>,
     /// Newer ebman release advertised by crates.io, if any. Populated by the
     /// fire-and-forget update-check task that runs once at startup.
     pub update_available: Option<crate::update_check::LatestRelease>,
@@ -1510,6 +1535,7 @@ impl App {
             log_tail_task: None,
             log_tail_session: 0,
             why_red_session: 0,
+            why_items: Vec::new(),
             update_available: None,
             reload_requested: false,
             pending_shell_target: None,
@@ -1682,6 +1708,7 @@ impl App {
             log_tail_task: None,
             log_tail_session: 0,
             why_red_session: 0,
+            why_items: Vec::new(),
             update_available: None,
             reload_requested: false,
             pending_shell_target: None,
@@ -2509,6 +2536,69 @@ impl App {
             ) {
                 self.handle_report_bug_key(key);
                 return;
+            }
+            // `:why` cursor navigation — handled before the generic overlay
+            // close logic so j/k/↑/↓ in the overlay scroll its items
+            // instead of being ignored. The cursor lives on the overlay;
+            // `App.why_items` (written by the renderer) sets the bound.
+            if let Some(Overlay::WhyRed { cursor, .. }) = self.current_overlay.as_mut() {
+                let item_count = self.why_items.len();
+                let moved = match key.code {
+                    KeyCode::Char('j') | KeyCode::Down if item_count > 0 => {
+                        *cursor = cursor.saturating_add(1).min(item_count - 1);
+                        true
+                    }
+                    KeyCode::Char('k') | KeyCode::Up if *cursor > 0 => {
+                        *cursor -= 1;
+                        true
+                    }
+                    _ => false,
+                };
+                if moved {
+                    return;
+                }
+            }
+            // `:why` Enter drill — extract the action under an immutable
+            // borrow, then release it before mutating the overlay/mode.
+            if matches!(key.code, KeyCode::Enter) {
+                let drill: Option<(WhyItem, String, Option<String>, Option<String>)> =
+                    if let Some(Overlay::WhyRed {
+                        cursor,
+                        queues,
+                        env_name,
+                        ..
+                    }) = self.current_overlay.as_ref()
+                    {
+                        self.why_items.get(*cursor).cloned().map(|item| {
+                            let qs = queues.as_ref().and_then(|r| r.as_ref().ok());
+                            (
+                                item,
+                                env_name.clone(),
+                                qs.and_then(|q| q.main_url.clone()),
+                                qs.and_then(|q| q.dlq_url.clone()),
+                            )
+                        })
+                    } else {
+                        None
+                    };
+                if let Some((item, env_name, main_url_opt, dlq_url_opt)) = drill {
+                    match item {
+                        WhyItem::Describe(text) => {
+                            self.current_overlay = Some(Overlay::Describe(text));
+                        }
+                        WhyItem::OpenDlq => {
+                            if let Some(dlq_url) = dlq_url_opt {
+                                self.current_overlay = None;
+                                self.open_dlq_from_why(
+                                    env_name,
+                                    main_url_opt.unwrap_or_default(),
+                                    dlq_url,
+                                );
+                            }
+                        }
+                    }
+                    return;
+                }
             }
             if let Some(overlay) = self.current_overlay.as_ref() {
                 // Drill-in actions transition out of the overlay into
@@ -3621,6 +3711,7 @@ impl App {
             queues: None,
             dlq_messages: None,
             session_id,
+            cursor: 0,
         });
         self.spawn_why_red_events(env_name.clone(), session_id);
         self.spawn_why_red_alarms(env_name.clone(), session_id);
