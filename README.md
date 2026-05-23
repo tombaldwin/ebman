@@ -17,7 +17,7 @@ Browse environments, drill into events / instances / metrics / queue / config, s
 - **Bulk ops** — `space` multi-selects; `:batch-rebuild`, `:batch-restart`, `:batch-deploy LABEL`, `:batch-tag KEY VALUE`, `:batch-untag KEY`, `:batch-set-option NAMESPACE OPTION VALUE` all fan out in parallel with per-env audit + pending pill rows.
 - **Safety** — `--read-only` CLI flag or `:readonly on` disables every write surface; destructive actions (Terminate, DLQ purge) require typed-name confirmation; pre-flight dry-run shows impact (N instances across M AZs) + last 3 events before authorising; recent-change / mid-deploy traffic warnings in the confirm modal.
 - **Audit log** — every dispatched action and its outcome are appended to `~/.cache/ebman/audit.log`; rotates at 1 MiB.
-- **Power-user ergonomics** — fuzzy command palette (`Ctrl-K`) across commands / envs / saved views / plugins, named filters + saved views, custom keybindings (`F1-F12` and uppercase letters via `~/.config/ebman/keys.toml`), plugin commands (`~/.config/ebman/commands.toml`), in-app `:loglevel` reload, `:diff` between envs.
+- **Power-user ergonomics** — fuzzy command palette (`Ctrl-K`) across commands / envs / saved views / plugins, named filters + saved views, plugin commands (`~/.config/ebman/commands.toml`), in-app `:loglevel` reload, `:diff` between envs.
 - **Headless / scriptable** — `--control-socket PATH` exposes a Unix-socket interface; `ebman ctl <op>` is a one-shot client (`screen` / `state` / `key <spec>` / `cmd <:cmd>`).
 - **Non-interactive CLI** — `ebman envs [--json]` / `ebman action rebuild --env NAME` / `ebman ctl ...` for scripts and CI.
 
@@ -159,7 +159,6 @@ Type `:` to open the command bar. Tab-completion is not implemented, but `Ctrl-K
 - `:cols list|hide NAME|show NAME|reset` — manage columns.
 - `:pin` — pin / unpin selected env.
 - `:alias NAME LABEL` / `:alias-drop NAME` — local env aliases.
-- `:minimap on|off` — corner mini-map of env health.
 - `:loglevel LEVEL` — live-reload the tracing filter.
 
 ### Per-env inspection
@@ -300,15 +299,6 @@ accounts.prod.region = "eu-west-2"
 # accounts.prod.external_id = "..."
 ```
 
-`~/.config/ebman/keys.toml` (optional) — custom keybindings:
-
-```toml
-# Aliases must be F1-F12 or an uppercase A-Z; map to a :command.
-F1 = "refresh"
-F2 = "region us-east-1"
-Q = "history"
-```
-
 `~/.config/ebman/commands.toml` (optional) — user plugin commands. Each `:NAME` substitutes `{name}` / `{cname}` / `{application}` / `{tier}` / `{region}` / `{profile}` placeholders and yanks the rendered command to the clipboard.
 
 ```toml
@@ -336,7 +326,6 @@ Useful for integration tests, screenshot capture, scripted workflows.
 ## What's stored locally
 
 - `~/.config/ebman/config.toml` — user configuration (see above).
-- `~/.config/ebman/keys.toml` — optional custom keybindings.
 - `~/.config/ebman/commands.toml` — optional plugin commands.
 - `~/.config/ebman/state.toml` — persisted UI state: profile, region, filter, sort, grouping, redact, selected env, named filters, saved views, pinned envs, aliases, hidden columns, custom metrics. No credentials.
 - `~/.cache/ebman/ebman.log` — application log; rotates as needed. Set `RUST_LOG=debug` for verbose output.

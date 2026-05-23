@@ -3219,67 +3219,6 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
         f.render_widget(Clear, row);
         f.render_widget(para, row);
     }
-
-    if app.show_minimap {
-        draw_minimap(f, area, app);
-    }
-}
-
-/// Render a small picture-in-picture minimap of all envs in the top-right
-/// corner of the table area. Each env is a single coloured cell driven by
-/// health (Green / Yellow / Red / Grey). Capped to a 4-row × 30-column box
-/// so it doesn't dominate narrow terminals; if there are more envs than
-/// fit, the rest are dropped.
-fn draw_minimap(f: &mut Frame, area: Rect, app: &App) {
-    let theme = &app.theme;
-    let envs = &app.environments;
-    if envs.is_empty() {
-        return;
-    }
-    let max_w: u16 = area.width.saturating_sub(2).min(30);
-    let max_h: u16 = 4.min(area.height.saturating_sub(2));
-    if max_w == 0 || max_h == 0 {
-        return;
-    }
-    let capacity = (max_w as usize) * (max_h as usize);
-    let to_show: Vec<&crate::aws::Environment> = envs.iter().take(capacity).collect();
-    let needed_w: u16 = (to_show.len() as u16).min(max_w);
-    let rows_needed: u16 = (to_show.len() as u16).div_ceil(max_w);
-    let rows: u16 = rows_needed.min(max_h);
-    let map_rect = Rect {
-        x: area.x + area.width.saturating_sub(needed_w + 2),
-        y: area.y + 1,
-        width: needed_w + 2,
-        height: rows + 2,
-    };
-    f.render_widget(Clear, map_rect);
-    f.render_widget(
-        rounded_block(theme, false)
-            .border_style(Style::default().fg(theme.muted))
-            .title(Span::styled(
-                " minimap ",
-                Style::default().fg(theme.title_alt),
-            )),
-        map_rect,
-    );
-    for (i, e) in to_show.iter().enumerate() {
-        let row_idx = (i as u16) / max_w;
-        let col_idx = (i as u16) % max_w;
-        if row_idx >= rows {
-            break;
-        }
-        let cell = Rect {
-            x: map_rect.x + 1 + col_idx,
-            y: map_rect.y + 1 + row_idx,
-            width: 1,
-            height: 1,
-        };
-        let color = health_color(&e.health, theme);
-        f.render_widget(
-            Paragraph::new(Span::styled("█", Style::default().fg(color))),
-            cell,
-        );
-    }
 }
 
 fn tier_cell(tier: &str, theme: &Theme) -> Cell<'static> {
