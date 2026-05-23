@@ -1502,7 +1502,69 @@ fn why_overlay_title(env_name: &str, health: &str) -> String {
     }
 }
 
-fn draw_why_red_overlay(f: &mut Frame, area: Rect, app: &App) {
+/// Formatted detail text for a `:why` event drill (Enter on an event).
+fn format_why_event(e: &crate::aws::Event) -> String {
+    let when =
+        e.at.map(|t| {
+            t.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M:%S %Z")
+                .to_string()
+        })
+        .unwrap_or_else(|| "(unknown time)".into());
+    format!(
+        "event @ {when}\nseverity: {}\n\n{}\n\nesc / q to close",
+        e.severity, e.message
+    )
+}
+
+/// Formatted detail text for a `:why` alarm drill.
+fn format_why_alarm(a: &crate::aws::CwAlarm) -> String {
+    let mut out = format!(
+        "alarm: {}\nstate:  {}\nmetric: {}/{}\n",
+        a.name, a.state, a.namespace, a.metric_name
+    );
+    if !a.state_reason.is_empty() {
+        out.push_str(&format!("\nreason:\n{}\n", a.state_reason));
+    }
+    out.push_str("\nesc / q to close");
+    out
+}
+
+/// Formatted detail text for a `:why` instance drill.
+fn format_why_instance(i: &crate::aws::Instance) -> String {
+    let mut out = format!(
+        "instance: {}\nhealth:   {}  ({})\ntype:     {}\nAZ:       {}\n",
+        i.id, i.health, i.color, i.instance_type, i.availability_zone
+    );
+    if !i.causes.is_empty() {
+        out.push_str("\ncauses:\n");
+        for c in &i.causes {
+            out.push_str(&format!("  - {c}\n"));
+        }
+    }
+    out.push_str("\nesc / q to close");
+    out
+}
+
+/// Formatted detail text for a `:why` deploy drill.
+fn format_why_deploy(v: &crate::aws::AppVersion) -> String {
+    let when = v
+        .created
+        .map(|t| {
+            t.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M:%S %Z")
+                .to_string()
+        })
+        .unwrap_or_else(|| "(unknown time)".into());
+    let mut out = format!("version:     {}\ndeployed at: {when}\n", v.label);
+    if !v.description.is_empty() {
+        out.push_str(&format!("\n{}\n", v.description));
+    }
+    out.push_str("\nesc / q to close");
+    out
+}
+
+fn draw_why_red_overlay(f: &mut Frame, area: Rect, app: &mut App) {
     let Some(crate::app::Overlay::WhyRed {
         env_name,
         tier,
@@ -1512,12 +1574,18 @@ fn draw_why_red_overlay(f: &mut Frame, area: Rect, app: &App) {
         deploys,
         queues,
         dlq_messages,
+        cursor,
         ..
     }) = app.current_overlay.as_ref()
     else {
         return;
     };
+    let cursor = *cursor;
     let is_worker = tier.eq_ignore_ascii_case("Worker");
+    // Drillable items tracked alongside lines so the post-render highlight
+    // pass can mark items[cursor]'s line, and the key handler reading
+    // App.why_items knows what to drill into on Enter.
+    let mut items: Vec<(crate::app::WhyItem, usize)> = Vec::new();
     let popup = centered_rect(78, 80, area);
     f.render_widget(Clear, popup);
     let theme = &app.theme;
@@ -1580,6 +1648,10 @@ fn draw_why_red_overlay(f: &mut Frame, area: Rect, app: &App) {
                         "WARN" => Style::default().fg(theme.health_yellow),
                         _ => Style::default().fg(theme.muted),
                     };
+                    items.push((
+                        crate::app::WhyItem::Describe(format_why_event(e)),
+                        lines.len(),
+                    ));
                     lines.push(Line::from(vec![
                         Span::styled(format!(" {when}  "), Style::default().fg(theme.muted)),
                         Span::styled(format!("{:<5}", e.severity), sev_style),
@@ -1624,6 +1696,10 @@ fn draw_why_red_overlay(f: &mut Frame, area: Rect, app: &App) {
                         "OK" => ("OK   ", Style::default().fg(theme.health_green)),
                         _ => ("INS  ", Style::default().fg(theme.muted)),
                     };
+                    items.push((
+                        crate::app::WhyItem::Describe(format_why_alarm(a)),
+                        lines.len(),
+                    ));
                     lines.push(Line::from(vec![
                         Span::raw(" "),
                         Span::styled(tag.to_string(), style),
@@ -1689,6 +1765,9 @@ fn draw_why_red_overlay(f: &mut Frame, area: Rect, app: &App) {
                 } else {
                     Style::default().fg(theme.text)
                 };
+                if q.dlq_url.is_some() {
+                    items.push((crate::app::WhyItem::OpenDlq, lines.len()));
+                }
                 lines.push(Line::from(Span::styled(dlq_line, dlq_style)));
                 // DLQ peek — only renders when there's something to peek
                 // at. Empty result = "DLQ is clean" (no header line);
@@ -1718,6 +1797,7 @@ fn draw_why_red_overlay(f: &mut Frame, area: Rect, app: &App) {
                                     .sent_at
                                     .map(|t| humanize_age(now.signed_duration_since(t)))
                                     .unwrap_or_else(|| "—".into());
+                                items.push((crate::app::WhyItem::OpenDlq, lines.len()));
                                 lines.push(Line::from(vec![
                                     Span::styled(
                                         format!("   {}.", i + 1),
@@ -1765,6 +1845,10 @@ fn draw_why_red_overlay(f: &mut Frame, area: Rect, app: &App) {
                         "Green" => Style::default().fg(theme.health_green),
                         _ => Style::default().fg(theme.muted),
                     };
+                    items.push((
+                        crate::app::WhyItem::Describe(format_why_instance(i)),
+                        lines.len(),
+                    ));
                     lines.push(Line::from(vec![
                         Span::raw(" "),
                         Span::styled(i.id.clone(), Style::default().fg(theme.text)),
@@ -1820,26 +1904,50 @@ fn draw_why_red_overlay(f: &mut Frame, area: Rect, app: &App) {
                             Style::default().fg(theme.muted),
                         ));
                     }
+                    items.push((
+                        crate::app::WhyItem::Describe(format_why_deploy(v)),
+                        lines.len(),
+                    ));
                     lines.push(Line::from(spans));
                 }
             }
         }
     }
-    // Drill-in hint: when the env has a Worker DLQ available, `d` jumps
-    // into the DLQ viewer (examine / purge / replay) without the operator
-    // having to navigate through Detail first.
+    // Cursor highlight: prepend a ▶ glyph to the active item's line.
+    // Out-of-range cursor (e.g. items shrank under it) clamps to the last
+    // item; an empty items list skips highlighting altogether.
+    if !items.is_empty() {
+        let active = cursor.min(items.len() - 1);
+        let (_, line_idx) = items[active];
+        if let Some(line) = lines.get_mut(line_idx) {
+            let original = std::mem::take(line);
+            let mut spans: Vec<Span<'static>> = Vec::with_capacity(original.spans.len() + 1);
+            spans.push(Span::styled(
+                "▶",
+                Style::default()
+                    .fg(theme.title_alt)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            spans.extend(original.spans);
+            *line = Line::from(spans);
+        }
+    }
+
+    // Drill-in / navigation hint.
     let dlq_available = is_worker
         && matches!(
             queues,
             Some(Ok(qs)) if qs.dlq_url.is_some()
         );
+    lines.push(Line::from(""));
+    let mut hint = String::from(" ↑↓ / j k  navigate    ↵ Enter  drill in");
     if dlq_available {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            " d → open DLQ viewer (examine / purge / replay)",
-            Style::default().fg(theme.muted),
-        )));
+        hint.push_str("    d  open DLQ viewer");
     }
+    lines.push(Line::from(Span::styled(
+        hint,
+        Style::default().fg(theme.muted),
+    )));
     push_close_hint(&mut lines, theme);
 
     let health = app
@@ -1853,6 +1961,11 @@ fn draw_why_red_overlay(f: &mut Frame, area: Rect, app: &App) {
         .wrap(Wrap { trim: false })
         .block(titled_block(theme, &title, true, theme.title).padding(Padding::uniform(1)));
     f.render_widget(p, popup);
+
+    // Hand the items list to the key handler now that the overlay borrow
+    // (env_name / events / alarms / ... destructured at the top) is no
+    // longer needed.
+    app.why_items = items.into_iter().map(|(item, _)| item).collect();
 }
 
 fn truncate_for_display(s: &str, max: usize) -> String {
