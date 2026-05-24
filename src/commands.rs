@@ -604,6 +604,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         CommandKind::Prefill("alarm-delete "),
     ),
     cmd(
+        "alarm-history",
+        ":alarm-history NAME — recent CloudWatch alarm transition timeline (StateUpdate / ConfigurationUpdate / Action entries, newest first)",
+        Category::VersionsConfigsAlarms,
+        CommandKind::Prefill("alarm-history "),
+    ),
+    cmd(
         "custom-platform-delete",
         ":custom-platform-delete ARN — delete a custom EB platform (fails if any env uses it)",
         Category::VersionsConfigsAlarms,
