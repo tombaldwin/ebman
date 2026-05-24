@@ -4045,6 +4045,45 @@ impl App {
     /// `:changes` — config-change timeline for the selected env: the
     /// deploy + configuration-update events from `DescribeEvents`,
     /// newest-first, with routine health/scaling noise filtered out.
+    /// `:lineage` — chronological deploy timeline for the selected env.
+    /// Where `:changes` mixes deploy events with config-change events,
+    /// `:lineage` filters to deploys only (events that carry a
+    /// `version_label`), collapses consecutive same-label events into
+    /// one row, and shows the inter-deploy gap (`Δ`) plus deploy span
+    /// (`took`). Answers "what was deployed at HH:MM" during incident
+    /// review — the cut that's currently a manual scan through
+    /// `:changes` mixed output.
+    pub(crate) fn cmd_lineage(&mut self) {
+        let env_opt = if let Some(d) = self.detail.as_ref() {
+            Some(d.env_name.clone())
+        } else {
+            self.selected_env().map(|e| e.name.clone())
+        };
+        let Some(env_name) = env_opt else {
+            self.error_message = Some("no env selected".into());
+            return;
+        };
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        self.status_message = Some(format!("fetching deploy lineage for {env_name}…"));
+        tokio::spawn(async move {
+            let result = aws
+                .list_events_for_env(&env_name, 100)
+                .await
+                .map_err(|e| flatten_err("list_events_for_env", e));
+            let body = match result {
+                Ok(events) => format_lineage(&env_name, &events),
+                Err(e) => format!("lineage: {e}\n\nesc / q to close"),
+            };
+            let _ = tx.send(AppMsg::TextOverlay {
+                gen,
+                title: format!("lineage — {env_name}"),
+                body,
+            });
+        });
+    }
+
     pub(crate) fn cmd_changes(&mut self) {
         let env_opt = if let Some(d) = self.detail.as_ref() {
             Some(d.env_name.clone())
@@ -9335,6 +9374,7 @@ impl App {
             "deploy" => self.cmd_deploy(&rest),
             "rollback" => self.cmd_rollback(),
             "changes" => self.cmd_changes(),
+            "lineage" => self.cmd_lineage(),
             "delete-version" => self.cmd_delete_version(&rest),
             "upgrade" => self.cmd_upgrade(&rest),
             "clone" => self.cmd_clone(&rest),
@@ -10868,6 +10908,107 @@ pub(crate) fn render_changes_overlay(env: &str, events: &[EbEvent]) -> String {
             .map(|v| format!("  [{v}]"))
             .unwrap_or_default();
         body.push_str(&format!("{ts}{ver}\n    {}\n\n", e.message));
+    }
+    body.push_str("esc / q to close");
+    body
+}
+
+/// One row in the `:lineage` overlay — a single deploy, identified
+/// by its version label. The two timestamps bracket the deploy's
+/// event group (earliest event = "deploy started", latest = "deploy
+/// completed"); the gap to the *next-older* deploy is computed at
+/// render time so the row stays cheap to compare.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LineageRow {
+    pub label: String,
+    pub first_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Pure: collapse the env's recent events into one row per distinct
+/// deploy. Events come in newest-first; this walks them oldest-first
+/// so consecutive same-label events fold into one row carrying the
+/// span (first → last) of that deploy's event group, then reverses
+/// the result so callers see newest-first. Events without a
+/// `version_label` are dropped — `:lineage` is the deploy-only cut
+/// of the event history.
+pub(crate) fn build_lineage(events: &[EbEvent]) -> Vec<LineageRow> {
+    let mut oldest_first: Vec<&EbEvent> = events
+        .iter()
+        .filter(|e| {
+            e.version_label
+                .as_deref()
+                .map(|v| !v.is_empty())
+                .unwrap_or(false)
+        })
+        .collect();
+    oldest_first.reverse();
+    let mut rows: Vec<LineageRow> = Vec::new();
+    for e in oldest_first {
+        // Safe to unwrap: the filter above guarantees a non-empty label.
+        let label = e.version_label.clone().unwrap();
+        match rows.last_mut() {
+            Some(last) if last.label == label => {
+                if let Some(t) = e.at {
+                    last.last_at = Some(t);
+                }
+            }
+            _ => rows.push(LineageRow {
+                label,
+                first_at: e.at,
+                last_at: e.at,
+            }),
+        }
+    }
+    rows.into_iter().rev().collect()
+}
+
+/// Render the `:lineage` overlay — one row per deploy, newest first,
+/// with the deploy's span (`took`) and the gap to the next-older
+/// deploy (`Δ since previous`). Empty event window produces a stub
+/// matching the `:changes` style so the operator isn't left wondering
+/// whether the fetch silently failed.
+pub(crate) fn format_lineage(env: &str, events: &[EbEvent]) -> String {
+    let rows = build_lineage(events);
+    if rows.is_empty() {
+        return format!(
+            "Deploy lineage — {env}\n\n\
+             No deploys in the recent event window.\n\n\
+             esc / q to close"
+        );
+    }
+    let mut body = format!(
+        "Deploy lineage — {env}\n\
+         {} deploy(s), newest first.  Δ = gap between deploy starts.\n\n",
+        rows.len()
+    );
+    for (i, row) in rows.iter().enumerate() {
+        let ts = row
+            .first_at
+            .map(|t| t.format("%Y-%m-%d %H:%M:%SZ").to_string())
+            .unwrap_or_else(|| "—".into());
+        body.push_str(&format!("  ▸ {ts}  {}\n", row.label));
+        if let (Some(f), Some(l)) = (row.first_at, row.last_at) {
+            let span = l - f;
+            if span.num_seconds() > 0 {
+                body.push_str(&format!(
+                    "       took {}\n",
+                    humanize_short_age(Duration::from_secs(span.num_seconds() as u64))
+                ));
+            }
+        }
+        if let Some(next) = rows.get(i + 1) {
+            if let (Some(this), Some(prev)) = (row.first_at, next.first_at) {
+                let gap = this - prev;
+                if gap.num_seconds() > 0 {
+                    body.push_str(&format!(
+                        "       Δ {} since previous deploy\n",
+                        humanize_short_age(Duration::from_secs(gap.num_seconds() as u64))
+                    ));
+                }
+            }
+        }
+        body.push('\n');
     }
     body.push_str("esc / q to close");
     body
@@ -15221,6 +15362,96 @@ mod tests {
         assert!(body.contains("Deploying new version"));
         assert!(body.contains("[build-9]"));
         assert!(!body.contains("health transitioned"));
+    }
+
+    #[test]
+    fn build_lineage_collapses_consecutive_same_label_events() {
+        // EB emits multiple events per deploy (started / instance OK /
+        // env update completed). `build_lineage` must collapse them
+        // into one row carrying the full first→last span. Newest-first
+        // input → newest-first output.
+        use chrono::TimeZone;
+        let ts = |y, mo, d, h, mi| chrono::Utc.with_ymd_and_hms(y, mo, d, h, mi, 0).unwrap();
+        let mk = |t, vl: &str| crate::aws::Event {
+            at: Some(t),
+            env: "e".into(),
+            application: "a".into(),
+            message: "deploy event".into(),
+            severity: "INFO".into(),
+            version_label: Some(vl.into()),
+        };
+        // 3 events for build-9 (latest deploy) then 2 for build-8.
+        let evs = vec![
+            mk(ts(2026, 5, 24, 12, 7), "build-9"),
+            mk(ts(2026, 5, 24, 12, 5), "build-9"),
+            mk(ts(2026, 5, 24, 12, 0), "build-9"),
+            mk(ts(2026, 5, 24, 11, 3), "build-8"),
+            mk(ts(2026, 5, 24, 11, 0), "build-8"),
+        ];
+        let rows = super::build_lineage(&evs);
+        assert_eq!(rows.len(), 2, "expected 2 distinct deploys, got {rows:?}");
+        // Newest first: build-9 then build-8.
+        assert_eq!(rows[0].label, "build-9");
+        assert_eq!(rows[1].label, "build-8");
+        // first_at = earliest, last_at = latest within the group.
+        assert_eq!(rows[0].first_at, Some(ts(2026, 5, 24, 12, 0)));
+        assert_eq!(rows[0].last_at, Some(ts(2026, 5, 24, 12, 7)));
+        assert_eq!(rows[1].first_at, Some(ts(2026, 5, 24, 11, 0)));
+        assert_eq!(rows[1].last_at, Some(ts(2026, 5, 24, 11, 3)));
+    }
+
+    #[test]
+    fn build_lineage_drops_events_without_version_label() {
+        // Events without a version_label (routine health transitions,
+        // scaling notices) must not produce phantom rows.
+        let ev = |vl: Option<&str>| crate::aws::Event {
+            at: None,
+            env: "e".into(),
+            application: "a".into(),
+            message: "noise".into(),
+            severity: "INFO".into(),
+            version_label: vl.map(String::from),
+        };
+        let evs = vec![ev(None), ev(Some("")), ev(None)];
+        assert!(super::build_lineage(&evs).is_empty());
+    }
+
+    #[test]
+    fn format_lineage_shows_gap_and_span_between_deploys() {
+        // Δ-since-previous and `took` lines appear when timestamps
+        // allow the maths. Empty event window → stub body so the
+        // operator isn't left wondering whether the fetch failed.
+        use chrono::TimeZone;
+        let ts = |h, mi| chrono::Utc.with_ymd_and_hms(2026, 5, 24, h, mi, 0).unwrap();
+        let mk = |t, vl: &str| crate::aws::Event {
+            at: Some(t),
+            env: "e".into(),
+            application: "a".into(),
+            message: "deploy event".into(),
+            severity: "INFO".into(),
+            version_label: Some(vl.into()),
+        };
+        // Empty input → stub.
+        assert!(super::format_lineage("prod", &[]).contains("No deploys"));
+        // Two deploys: build-9 12:00→12:05 (took 5m), build-8 at 10:00
+        // (gap of 2h since previous from build-9's POV).
+        let evs = vec![
+            mk(ts(12, 5), "build-9"),
+            mk(ts(12, 0), "build-9"),
+            mk(ts(10, 0), "build-8"),
+        ];
+        let body = super::format_lineage("prod", &evs);
+        // Both labels appear, newest first.
+        let p9 = body.find("build-9").expect("build-9 row");
+        let p8 = body.find("build-8").expect("build-8 row");
+        assert!(p9 < p8, "build-9 should come before build-8 (newest first)");
+        // Span row visible for build-9 (5min).
+        assert!(body.contains("took"), "expected `took` span line, got:\n{body}");
+        // Δ-since-previous visible for build-9 → 2h gap.
+        assert!(
+            body.contains("Δ"),
+            "expected `Δ since previous` line, got:\n{body}"
+        );
     }
 
     #[test]
