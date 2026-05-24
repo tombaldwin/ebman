@@ -12,6 +12,19 @@ on:
   # human gate matters.
   release:
     types: [published]
+  # Manual re-run, e.g. when CARGO_REGISTRY_TOKEN was missing on the
+  # first `release.published` fire and the crates_io job no-op'd.
+  # Run from `main` (which has this trigger), passing the tag to
+  # publish as an input:
+  #   gh workflow run release.yml -f tag=v0.7.0
+  # Build + publish-to-GH-release stay gated on `push` (artefacts
+  # already exist for the tag); only the crates_io job re-fires.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish to crates.io (e.g. v0.7.0)'
+        required: true
+        type: string
 
 # When a new tag like `v0.2.0` is pushed:
 #   1. Build a release binary on each target platform.
@@ -122,15 +135,17 @@ jobs:
     # gap. The release.published trigger keeps the maintainer in the
     # loop — crates.io can't be unpublished, so the human gate matters.
     name: publish to crates.io
-    if: github.event_name == 'release' && !github.event.repository.fork
+    if: (github.event_name == 'release' || github.event_name == 'workflow_dispatch') && !github.event.repository.fork
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           # The release event payload's `tag_name` is what was published;
-          # check out exactly that ref so cargo publishes the released
-          # code, not whatever HEAD happens to be at workflow-fire time.
-          ref: ${{ github.event.release.tag_name }}
+          # workflow_dispatch passes the tag via `inputs.tag`. Either
+          # way we check out exactly that ref so cargo publishes the
+          # released code, not whatever HEAD happens to be at workflow-
+          # fire time.
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: cargo publish
