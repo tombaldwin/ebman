@@ -294,6 +294,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         CommandKind::ZeroArg,
     ),
     cmd(
+        "lineage",
+        ":lineage — deploy-only timeline for the selected env: one row per version label, newest first, with Δ between consecutive deploys",
+        Category::Inspection,
+        CommandKind::ZeroArg,
+    ),
+    cmd(
         "explain",
         ":explain — diagnose the last IAM AccessDenied via iam:SimulatePrincipalPolicy.  :explain ARN ACTION evaluates explicit pairs.",
         Category::Inspection,
