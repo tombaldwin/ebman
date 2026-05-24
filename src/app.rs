@@ -562,6 +562,13 @@ pub enum PickerKind {
     /// LogTail streaming overlay so the operator can switch the tailed
     /// group without typing the full ARN.
     LogGroup,
+    /// Picker over the env's instances when `:ssh` is invoked without
+    /// a target. Source is `Detail.instances` — the operator must
+    /// have the Detail view open + the Instances tab loaded, or pass
+    /// an explicit `:ssh i-abc` instance ID. Avoids adding a spawn
+    /// path just for `:ssh`-from-cold; the operator's already on
+    /// Detail/Instances when they reach for an SSM session.
+    SshInstance,
 }
 
 pub struct Picker {
@@ -603,6 +610,7 @@ impl Picker {
             PickerKind::Profile => " select profile ",
             PickerKind::Region => " select region ",
             PickerKind::LogGroup => " select log group ",
+            PickerKind::SshInstance => " select instance for SSM session ",
         }
     }
 
@@ -4045,6 +4053,52 @@ impl App {
     /// `:changes` — config-change timeline for the selected env: the
     /// deploy + configuration-update events from `DescribeEvents`,
     /// newest-first, with routine health/scaling noise filtered out.
+    /// `:ssh [INSTANCE-ID]` — open an SSM Session Manager session into
+    /// one of the selected env's instances. With an arg (`:ssh i-abc`)
+    /// the target is taken verbatim; with no arg, a picker opens over
+    /// `Detail.instances` if the operator has the env's Detail view
+    /// open with the Instances tab loaded (otherwise a clear error
+    /// points them at the missing precondition). Either path routes
+    /// to the existing `pending_shell_target → open_embedded_shell`
+    /// machinery — same TUI-suspend/resume + alt-screen dance as
+    /// pressing `s` on Detail/Instances. Requires the AWS CLI +
+    /// `session-manager-plugin` on PATH (the SDK can't substitute —
+    /// SSM start-session uses a binary side-channel).
+    pub(crate) fn cmd_ssh(&mut self, rest: &[&str]) {
+        match rest.first().copied() {
+            Some(id) => {
+                if !id.starts_with("i-") {
+                    self.error_message = Some(format!(
+                        "expected an EC2 instance ID (`i-…`), got '{id}'"
+                    ));
+                    return;
+                }
+                self.pending_shell_target = Some(id.to_string());
+                self.status_message = Some(format!("opening SSM session to {id}…"));
+            }
+            None => {
+                // Picker path. Source from Detail.instances rather than
+                // spawning a fresh DescribeInstancesHealth — keeps the
+                // command boundary-free of new async machinery, and the
+                // operator's typical journey already passes through
+                // Detail/Instances on the way to a session.
+                let instances: Vec<String> = self
+                    .detail
+                    .as_ref()
+                    .map(|d| d.instances.iter().map(|i| i.id.clone()).collect())
+                    .unwrap_or_default();
+                if instances.is_empty() {
+                    self.error_message = Some(
+                        "no cached instances — open the env's Detail/Instances tab first, or pass an ID (`:ssh i-abc`)".into(),
+                    );
+                    return;
+                }
+                self.picker = Some(Picker::new(PickerKind::SshInstance, instances, None));
+                self.mode = Mode::Picker;
+            }
+        }
+    }
+
     /// `:lineage` — chronological deploy timeline for the selected env.
     /// Where `:changes` mixes deploy events with config-change events,
     /// `:lineage` filters to deploys only (events that carry a
@@ -9375,6 +9429,7 @@ impl App {
             "rollback" => self.cmd_rollback(),
             "changes" => self.cmd_changes(),
             "lineage" => self.cmd_lineage(),
+            "ssh" => self.cmd_ssh(&rest),
             "delete-version" => self.cmd_delete_version(&rest),
             "upgrade" => self.cmd_upgrade(&rest),
             "clone" => self.cmd_clone(&rest),
@@ -9718,6 +9773,13 @@ impl App {
                     _ => return,
                 };
                 self.spawn_logs_tail(env, Some(value));
+            }
+            PickerKind::SshInstance => {
+                // Same flow as pressing `s` on Detail/Instances — the
+                // main loop tick consumes `pending_shell_target` and
+                // handles the TUI suspend/resume + alt-screen dance.
+                self.pending_shell_target = Some(value.clone());
+                self.status_message = Some(format!("opening SSM session to {value}…"));
             }
         }
     }
@@ -15923,6 +15985,51 @@ mod tests {
         // CNAMEs become blocks; the canonical envname-portion shouldn't survive.
         assert!(!out.contains("prod.elb.amazonaws.com"));
         assert!(out.contains("▓"));
+    }
+
+    #[tokio::test]
+    async fn ssh_with_instance_id_arg_queues_pending_shell_target() {
+        // `:ssh i-abc` is the direct path: just stages the target and
+        // lets the main-loop tick pick it up. No picker, no fetch.
+        let mut app = test_app();
+        app.execute_command("ssh i-0abc1234567890def");
+        assert_eq!(
+            app.pending_shell_target.as_deref(),
+            Some("i-0abc1234567890def")
+        );
+        assert!(app.error_message.is_none(), "unexpected: {:?}", app.error_message);
+        assert!(app.mode == Mode::Normal, "ssh-with-arg should not change mode");
+    }
+
+    #[tokio::test]
+    async fn ssh_rejects_non_instance_id_arg() {
+        // A typo'd arg ("staging") looks like an env name, not an EC2 ID.
+        // Better to refuse than to attempt an SSM session against
+        // garbage and get an opaque CLI error.
+        let mut app = test_app();
+        app.execute_command("ssh staging-web");
+        assert!(app.pending_shell_target.is_none());
+        let err = app.error_message.as_deref().unwrap_or("");
+        assert!(
+            err.contains("instance ID") && err.contains("staging-web"),
+            "expected guidance + offending value, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ssh_no_arg_without_detail_errors_clearly() {
+        // Without an arg and without Detail/Instances loaded, there's
+        // nothing to populate the picker with. Surface that the
+        // operator either needs to open Detail or pass an ID — don't
+        // silently no-op.
+        let mut app = test_app();
+        app.execute_command("ssh");
+        assert!(app.picker.is_none());
+        let err = app.error_message.as_deref().unwrap_or("");
+        assert!(
+            err.contains("Detail") || err.contains("instance ID"),
+            "expected guidance about Detail/Instances or instance ID, got: {err}"
+        );
     }
 
     #[tokio::test]

@@ -300,6 +300,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         CommandKind::ZeroArg,
     ),
     cmd(
+        "ssh",
+        ":ssh [i-abc] — open an SSM Session Manager session into an env instance. With an instance ID, targets it directly; without, opens a picker over cached Detail/Instances. Needs `aws` CLI + session-manager-plugin on PATH.",
+        Category::Inspection,
+        CommandKind::Prefill("ssh "),
+    ),
+    cmd(
         "explain",
         ":explain — diagnose the last IAM AccessDenied via iam:SimulatePrincipalPolicy.  :explain ARN ACTION evaluates explicit pairs.",
         Category::Inspection,
