@@ -159,4 +159,9 @@ jobs:
           # `--locked` matches the build matrix's lockfile pinning so a
           # workflow that built clean from Cargo.lock publishes the same
           # resolved dependency graph.
-          cargo publish --locked
+          #
+          # `-p ebman` scopes the publish to the bin crate — the workspace
+          # also contains `tui-common` (publish = false, shared with the
+          # sibling pgman project) which cargo would otherwise try to
+          # publish and refuse, failing the whole run.
+          cargo publish -p ebman --locked
