@@ -9217,9 +9217,42 @@ impl App {
                     self.status_message = Some(format!(":<plugin>  {}", names.join(", ")));
                 }
             }
-            "diff" => match rest.first() {
-                None => self.error_message = Some("usage: :diff <env-name>".into()),
-                Some(target) => {
+            "diff" => match (rest.first(), rest.get(1)) {
+                (None, _) => {
+                    self.error_message = Some(
+                        "usage: :diff ENV  (selected ↔ ENV)  |  :diff ENV-A ENV-B  (name both)"
+                            .into(),
+                    );
+                }
+                // Two-arg form: both envs named explicitly, so no
+                // implicit selected-env side. Useful for picking
+                // env-A ↔ env-B from a different scope than what's
+                // currently selected.
+                (Some(a), Some(b)) => {
+                    if a == b {
+                        self.error_message =
+                            Some("pick two different envs to compare".into());
+                        return;
+                    }
+                    let Some(left) = self.environments.iter().find(|e| e.name == **a).cloned()
+                    else {
+                        self.error_message =
+                            Some(format!("no env named '{a}' in current view"));
+                        return;
+                    };
+                    let Some(right) = self.environments.iter().find(|e| e.name == **b).cloned()
+                    else {
+                        self.error_message =
+                            Some(format!("no env named '{b}' in current view"));
+                        return;
+                    };
+                    self.current_overlay =
+                        Some(Overlay::Diff(diff_envs(&left, &right, self.redact)));
+                }
+                // Legacy single-arg form: selected (or detail-pane) env
+                // compared against the named arg. Preserves the
+                // existing behaviour every operator already knows.
+                (Some(target), None) => {
                     let left_opt = if let Some(d) = self.detail.as_ref() {
                         Some(d.env_snapshot.clone())
                     } else {
@@ -9229,10 +9262,15 @@ impl App {
                         self.error_message = Some("no env selected".into());
                         return;
                     };
+                    if left.name == **target {
+                        self.error_message =
+                            Some("pick a different env to compare against".into());
+                        return;
+                    }
                     let right = self
                         .environments
                         .iter()
-                        .find(|e| e.name == *target)
+                        .find(|e| e.name == **target)
                         .cloned();
                     match right {
                         None => {
@@ -15618,6 +15656,61 @@ mod tests {
         // CNAMEs become blocks; the canonical envname-portion shouldn't survive.
         assert!(!out.contains("prod.elb.amazonaws.com"));
         assert!(out.contains("▓"));
+    }
+
+    #[tokio::test]
+    async fn diff_two_arg_form_opens_overlay_for_named_envs() {
+        // `:diff ENV-A ENV-B` is the post-0.8 shape that lets the
+        // operator name both sides without first selecting one of
+        // them. Verifies the new two-arg dispatch lands the Diff
+        // overlay without complaining about "no env selected".
+        let mut app = test_app();
+        app.environments = vec![
+            mk_env("staging", "uflexi", "Web", "Green"),
+            mk_env("prod", "uflexi", "Web", "Green"),
+        ];
+        app.rebuild_view();
+        // Deliberately leave no selection — the two-arg form should
+        // ignore the selected-env fallback entirely.
+        app.execute_command("diff staging prod");
+        assert!(
+            matches!(app.current_overlay, Some(Overlay::Diff(_))),
+            "expected Overlay::Diff, got {:?}",
+            app.current_overlay.is_some()
+        );
+        assert!(app.error_message.is_none(), "unexpected error: {:?}", app.error_message);
+    }
+
+    #[tokio::test]
+    async fn diff_two_arg_form_rejects_same_env_twice() {
+        // `:diff ENV ENV` is a typo, not a request — surface a clear
+        // error rather than silently comparing an env against itself.
+        let mut app = test_app();
+        app.environments = vec![mk_env("prod", "uflexi", "Web", "Green")];
+        app.rebuild_view();
+        app.execute_command("diff prod prod");
+        assert!(app.current_overlay.is_none(), "shouldn't open overlay for same-env diff");
+        let err = app.error_message.as_deref().unwrap_or("");
+        assert!(
+            err.contains("different envs"),
+            "expected 'different envs' guidance, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn diff_two_arg_form_errors_on_unknown_env() {
+        // Missing env-B → no overlay, clear error message naming the
+        // missing env so the operator knows which arg to fix.
+        let mut app = test_app();
+        app.environments = vec![mk_env("staging", "uflexi", "Web", "Green")];
+        app.rebuild_view();
+        app.execute_command("diff staging missing-env");
+        assert!(app.current_overlay.is_none());
+        let err = app.error_message.as_deref().unwrap_or("");
+        assert!(
+            err.contains("missing-env"),
+            "expected error to name the missing env, got: {err}"
+        );
     }
 
     #[test]
