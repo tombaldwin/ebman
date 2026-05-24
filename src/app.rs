@@ -2998,6 +2998,22 @@ impl App {
                     {
                         self.cycle_metrics_range(-1);
                     }
+                    // ] / [ on the main env table cycle through the saved
+                    // filter chips above the table. Operators with
+                    // named_filters get a one-key flip between them
+                    // instead of typing `:filter NAME` each time. Guard on
+                    // `detail.is_none()` so Detail-pane bindings (which
+                    // also use ] / [) keep working.
+                    KeyCode::Char(']')
+                        if self.detail.is_none() && !self.named_filters.is_empty() =>
+                    {
+                        self.cycle_named_filter(1);
+                    }
+                    KeyCode::Char('[')
+                        if self.detail.is_none() && !self.named_filters.is_empty() =>
+                    {
+                        self.cycle_named_filter(-1);
+                    }
                     KeyCode::Char('/')
                         if matches!(
                             self.detail.as_ref().map(|d| d.tab()),
@@ -5944,6 +5960,43 @@ impl App {
                 detail.events_scroll = pos as u16;
                 return;
             }
+        }
+    }
+
+    /// Cycle through saved (`named_filters`) chips above the env
+    /// table. `delta = +1` → next chip; `-1` → previous; both wrap.
+    /// "Active" is derived from `app.filter == named_filters[name]`
+    /// (the chip bar's own active-test), so cycling lands on the
+    /// chip immediately to the right/left of whichever is currently
+    /// applied. If no chip is active (operator typed a freeform
+    /// filter or none at all), starts at index 0 / -1 depending on
+    /// direction. No-op when there are no saved filters — the
+    /// keybind itself is guarded against the empty case, this guard
+    /// is belt-and-braces.
+    fn cycle_named_filter(&mut self, delta: i32) {
+        if self.named_filters.is_empty() {
+            return;
+        }
+        // BTreeMap iteration is sorted by key, so the cycle order
+        // matches the chip-bar render order. Keep them in sync.
+        let names: Vec<String> = self.named_filters.keys().cloned().collect();
+        let cur_idx = if self.filter.is_empty() {
+            None
+        } else {
+            names
+                .iter()
+                .position(|n| self.named_filters.get(n).map(|v| v == &self.filter).unwrap_or(false))
+        };
+        let next = match cur_idx {
+            Some(i) => (i as i32 + delta).rem_euclid(names.len() as i32) as usize,
+            None if delta >= 0 => 0,
+            None => names.len() - 1,
+        };
+        let chosen = &names[next];
+        if let Some(value) = self.named_filters.get(chosen).cloned() {
+            self.filter = value;
+            self.rebuild_view();
+            self.status_message = Some(format!("filter: {chosen}"));
         }
     }
 
@@ -16245,6 +16298,59 @@ mod tests {
         // CNAMEs become blocks; the canonical envname-portion shouldn't survive.
         assert!(!out.contains("prod.elb.amazonaws.com"));
         assert!(out.contains("▓"));
+    }
+
+    #[tokio::test]
+    async fn cycle_named_filter_wraps_forward_through_saved_filters() {
+        // Three named filters: cycling forward from "dev" → "prod" →
+        // "staging" → back to "dev". Cycle order follows BTreeMap
+        // iteration (alphabetical), matching the chip-bar render.
+        let mut app = test_app();
+        app.named_filters.insert("dev".into(), "tag:env=dev".into());
+        app.named_filters
+            .insert("prod".into(), "tag:env=prod".into());
+        app.named_filters
+            .insert("staging".into(), "tag:env=staging".into());
+        // Start on "dev".
+        app.filter = "tag:env=dev".into();
+        app.cycle_named_filter(1);
+        assert_eq!(app.filter, "tag:env=prod");
+        app.cycle_named_filter(1);
+        assert_eq!(app.filter, "tag:env=staging");
+        // Wraps back to first.
+        app.cycle_named_filter(1);
+        assert_eq!(app.filter, "tag:env=dev");
+    }
+
+    #[tokio::test]
+    async fn cycle_named_filter_wraps_backward_and_handles_no_active() {
+        // Backward from "dev" wraps to "staging" (last in sort).
+        let mut app = test_app();
+        app.named_filters.insert("dev".into(), "tag:env=dev".into());
+        app.named_filters
+            .insert("staging".into(), "tag:env=staging".into());
+        app.filter = "tag:env=dev".into();
+        app.cycle_named_filter(-1);
+        assert_eq!(app.filter, "tag:env=staging");
+        // No active filter (freeform or empty) → forward goes to first,
+        // backward goes to last.
+        app.filter = "some-random-text".into();
+        app.cycle_named_filter(1);
+        assert_eq!(app.filter, "tag:env=dev", "forward-with-no-active → first");
+        app.filter = "some-random-text".into();
+        app.cycle_named_filter(-1);
+        assert_eq!(app.filter, "tag:env=staging", "backward-with-no-active → last");
+    }
+
+    #[tokio::test]
+    async fn cycle_named_filter_noop_with_empty_filters() {
+        // Cycling when there are no saved filters shouldn't crash or
+        // mutate state. The keybind guard already short-circuits, but
+        // the method itself is the actual safety net.
+        let mut app = test_app();
+        app.filter = "keep-me".into();
+        app.cycle_named_filter(1);
+        assert_eq!(app.filter, "keep-me");
     }
 
     #[tokio::test]
