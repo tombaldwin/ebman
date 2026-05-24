@@ -288,6 +288,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         CommandKind::Prefill("config-diff "),
     ),
     cmd(
+        "config-diff-local",
+        ":config-diff-local [NAME] — diff the deployed env against a local EB CLI saved config under `.elasticbeanstalk/saved_configs/`. No arg auto-picks the lone file; with multiple, name one.",
+        Category::Inspection,
+        CommandKind::Prefill("config-diff-local "),
+    ),
+    cmd(
         "changes",
         ":changes — deploy + config-change timeline for the selected env (from its event history, newest first)",
         Category::Inspection,

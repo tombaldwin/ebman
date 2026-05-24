@@ -4446,6 +4446,113 @@ impl App {
         });
     }
 
+    /// `:config-diff-local [NAME]` — diff the deployed env's current
+    /// option settings against a local EB CLI saved config (the YAML
+    /// under `.elasticbeanstalk/saved_configs/<NAME>.cfg.yml`). With
+    /// no arg, auto-picks the lone config if there's exactly one;
+    /// with multiple, errors and lists names so the operator can
+    /// pick. Bridges EB CLI users into ebman: answers "is what I
+    /// committed still what's deployed" without rerunning
+    /// `eb config get` and eyeballing the diff.
+    pub(crate) fn cmd_config_diff_local(&mut self, rest: &[&str]) {
+        let Some(env) = self.selected_env().cloned() else {
+            self.error_message = Some("no env selected".into());
+            return;
+        };
+        let cwd = match std::env::current_dir() {
+            Ok(p) => p,
+            Err(e) => {
+                self.error_message = Some(format!("can't read cwd: {e}"));
+                return;
+            }
+        };
+        let path = match rest.first().copied() {
+            Some(name) => match crate::saved_config::resolve_saved_config(&cwd, name) {
+                Ok(p) => p,
+                Err(e) => {
+                    self.error_message = Some(format!("config-diff-local: {e}"));
+                    return;
+                }
+            },
+            None => {
+                let configs = match crate::saved_config::discover_saved_configs(&cwd) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        self.error_message = Some(format!("config-diff-local: {e}"));
+                        return;
+                    }
+                };
+                match configs.len() {
+                    0 => {
+                        self.error_message = Some(format!(
+                            "no .elasticbeanstalk/saved_configs/*.cfg.yml under {}",
+                            cwd.display()
+                        ));
+                        return;
+                    }
+                    1 => configs.into_iter().next().unwrap(),
+                    _ => {
+                        let names: Vec<String> = configs
+                            .iter()
+                            .map(|p| crate::saved_config::saved_config_name(p))
+                            .collect();
+                        self.error_message = Some(format!(
+                            "multiple saved configs — pick one: :config-diff-local <{}>",
+                            names.join(" | ")
+                        ));
+                        return;
+                    }
+                }
+            }
+        };
+        let yaml = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                self.error_message = Some(format!("reading {}: {e}", path.display()));
+                return;
+            }
+        };
+        let local_opts = match crate::saved_config::parse_saved_config(&yaml) {
+            Ok(o) => o,
+            Err(e) => {
+                self.error_message =
+                    Some(format!("parsing {}: {e}", path.display()));
+                return;
+            }
+        };
+        let local_name = crate::saved_config::saved_config_name(&path);
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let (app_name, env_name) = (env.application.clone(), env.name.clone());
+        let env_name_for_title = env_name.clone();
+        let local_name_for_title = local_name.clone();
+        self.status_message = Some(format!(
+            "comparing {env_name} ↔ saved config '{local_name}'…"
+        ));
+        tokio::spawn(async move {
+            let result = aws
+                .fetch_env_configuration_options(&app_name, &env_name)
+                .await
+                .map_err(|e| flatten_err("fetch_env_configuration_options", e));
+            let body = match result {
+                Ok(deployed) => {
+                    let diffs = diff_config_options(&local_opts, &deployed);
+                    let left_label = format!("local:{local_name}");
+                    render_config_diff_overlay(&left_label, &env_name, &diffs)
+                }
+                Err(e) => format!("config-diff-local: {e}\n\nesc / q to close"),
+            };
+            let _ = tx.send(AppMsg::TextOverlay {
+                gen,
+                title: format!(
+                    "config-diff-local — {env_name_for_title} ↔ {local_name_for_title}"
+                ),
+                body,
+            });
+        });
+    }
+
     /// `:config-diff ENV` — compare the selected env's option-settings
     /// against `ENV`'s, showing every setting that differs. Answers
     /// "why does staging differ from prod?". Fetches both envs'
@@ -9321,6 +9428,7 @@ impl App {
             "rds-detach" => self.cmd_rds_detach(&rest),
             "options" => self.cmd_options(&rest),
             "config-diff" => self.cmd_config_diff(&rest),
+            "config-diff-local" => self.cmd_config_diff_local(&rest),
             "explain" => self.cmd_explain(&rest),
             "env-edit" => self.cmd_env_edit(),
             "secrets" => self.cmd_secrets(&rest),
