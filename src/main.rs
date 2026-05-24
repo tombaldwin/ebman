@@ -15,6 +15,7 @@ use ebman::{app::App, aws, config, control, font_probe, splash, util, LogReloadH
 async fn main() -> Result<()> {
     // Handle CLI flags before any TUI / logging setup so they print cleanly.
     let mut read_only = false;
+    let mut demo = false;
     let mut control_socket: Option<std::path::PathBuf> = None;
     let args: Vec<String> = std::env::args().skip(1).collect();
     // Subcommand support: `ebman envs [--json]`, `ebman action ACTION --env NAME --yes`,
@@ -42,6 +43,7 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
             "--read-only" => read_only = true,
+            "--demo" => demo = true,
             "--control-socket" => {
                 control_socket = iter.next().map(std::path::PathBuf::from);
                 if control_socket.is_none() {
@@ -78,24 +80,33 @@ async fn main() -> Result<()> {
     // if App::new returns sooner — gives the user a chance to actually see it.
     const SPLASH_MIN_DURATION: std::time::Duration = std::time::Duration::from_secs(3);
 
-    let splash_started = std::time::Instant::now();
-    let mut splash_frame: u64 = 0;
-    let mut interval = tokio::time::interval(std::time::Duration::from_millis(30));
-    let mut new_app_fut = Box::pin(App::new(cfg));
-    let mut app_ready: Option<App> = None;
-    let mut app_inst = loop {
-        tokio::select! {
-            biased;
-            res = &mut new_app_fut, if app_ready.is_none() => {
-                app_ready = Some(res?);
-            }
-            _ = interval.tick() => {
-                draw_splash(&mut terminal, splash_frame, &splash_icons)?;
-                splash_frame = splash_frame.wrapping_add(1);
-                if app_ready.is_some() && splash_started.elapsed() >= SPLASH_MIN_DURATION {
-                    break app_ready
-                        .take()
-                        .expect("app_ready was Some, just checked above");
+    let mut app_inst = if demo {
+        // `--demo` mode: no STS round-trip, no `state::load`, no
+        // splash animation. Constructing the App is synchronous and
+        // instant — show a single splash frame so the screen isn't
+        // blank during the (tiny) construction time, then break out.
+        draw_splash(&mut terminal, 0, &splash_icons)?;
+        App::new_demo(cfg)
+    } else {
+        let splash_started = std::time::Instant::now();
+        let mut splash_frame: u64 = 0;
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(30));
+        let mut new_app_fut = Box::pin(App::new(cfg));
+        let mut app_ready: Option<App> = None;
+        loop {
+            tokio::select! {
+                biased;
+                res = &mut new_app_fut, if app_ready.is_none() => {
+                    app_ready = Some(res?);
+                }
+                _ = interval.tick() => {
+                    draw_splash(&mut terminal, splash_frame, &splash_icons)?;
+                    splash_frame = splash_frame.wrapping_add(1);
+                    if app_ready.is_some() && splash_started.elapsed() >= SPLASH_MIN_DURATION {
+                        break app_ready
+                            .take()
+                            .expect("app_ready was Some, just checked above");
+                    }
                 }
             }
         }
@@ -158,6 +169,10 @@ FLAGS:
     -V, --version           Print version and exit.
     -h, --help              Print this help and exit.
         --read-only         Start with destructive actions disabled (also toggleable with :readonly).
+        --demo              Run with a hand-crafted synthetic fleet (no AWS calls, no disk reads).
+                            Use for screenshots / VHS recordings / talk demos that shouldn't show
+                            real account data. Drill-into-other-tabs may show stub errors — main
+                            table + Detail/Health is the supported surface.
         --control-socket P  Open a Unix socket at P for remote control (off by default).
                             Pair with `ebman ctl <op>` to drive the running session.
 

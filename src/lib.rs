@@ -24,6 +24,7 @@ pub mod form;
 // the `ebman::*` paths from the bin) keep working unchanged.
 pub use tui_common::font_probe;
 pub use tui_common::overlay;
+pub mod demo_fixture;
 pub mod mode_action;
 pub mod mode_detail;
 pub mod mode_dlq;

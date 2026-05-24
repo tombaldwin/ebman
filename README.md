@@ -118,6 +118,7 @@ Without a Nerd Font, stick to `icons = "unicode"` (the default) — everything s
 ```bash
 ebman                                  # launch the TUI
 ebman --read-only                      # disable all write surfaces (audit-friendly)
+ebman --demo                           # synthetic fleet (no AWS calls) — for screenshots / VHS
 ebman --control-socket ~/.cache/ebman/control.sock   # expose the ctl interface
 ebman envs --json                      # non-interactive: print env list as JSON
 ebman action rebuild --env myenv --yes # non-interactive: dispatch a rebuild
