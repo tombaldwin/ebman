@@ -4053,6 +4053,82 @@ impl App {
     /// `:changes` — config-change timeline for the selected env: the
     /// deploy + configuration-update events from `DescribeEvents`,
     /// newest-first, with routine health/scaling noise filtered out.
+    /// `:ssm-run "<shell-command>"` — fan a shell command out across
+    /// the selected env's instances via SSM Run Command, poll the
+    /// per-instance results, and land them in a TextOverlay. Sources
+    /// the target list from cached `Detail.instances` (same as `:ssh`'s
+    /// no-arg form) — if Detail isn't open with the Instances tab
+    /// loaded, surfaces a clear error. The command runs as the SSM
+    /// agent's default user (root on most EB AMIs); operators should
+    /// treat this as a write operation and prefer read-only probes
+    /// (e.g. `:ssm-run "uptime"`, `:ssm-run "ls /var/log"`) over
+    /// state-mutating shells. Hard-capped at 60s wall-clock per
+    /// command to keep the overlay from hanging on a stuck instance.
+    pub(crate) fn cmd_ssm_run(&mut self, rest: &[&str]) {
+        // The shell command is everything after `:ssm-run`. Rejoin
+        // tokens with single spaces — the operator can quote-wrap to
+        // preserve internal whitespace if needed. EB CLI's
+        // `eb ssh -c '...'` uses the same shape.
+        if rest.is_empty() {
+            self.error_message = Some(
+                "usage: :ssm-run \"<shell-command>\"  (fans the command out across the env's instances; quotes preserve whitespace)".into(),
+            );
+            return;
+        }
+        let command_str = rest.join(" ");
+        let trimmed = command_str
+            .trim_matches(|c: char| c == '"' || c == '\'')
+            .to_string();
+        if trimmed.is_empty() {
+            self.error_message = Some("empty command — nothing to run".into());
+            return;
+        }
+        let instances: Vec<String> = self
+            .detail
+            .as_ref()
+            .map(|d| d.instances.iter().map(|i| i.id.clone()).collect())
+            .unwrap_or_default();
+        if instances.is_empty() {
+            self.error_message = Some(
+                "no cached instances — open the env's Detail/Instances tab first so :ssm-run knows what to target".into(),
+            );
+            return;
+        }
+        // Treat as a write so the global read-only / per-env safety
+        // pin gates it. The selected env name is the natural owner.
+        let env_name = self
+            .detail
+            .as_ref()
+            .map(|d| d.env_name.clone())
+            .unwrap_or_default();
+        if self.deny_write(&env_name, "ssm-run") {
+            return;
+        }
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let command_for_render = trimmed.clone();
+        let n = instances.len();
+        self.status_message = Some(format!(
+            "running `{trimmed}` on {n} instance(s)…"
+        ));
+        tokio::spawn(async move {
+            let result = aws
+                .run_shell_command(&instances, &trimmed, 60)
+                .await
+                .map_err(|e| flatten_err("run_shell_command", e));
+            let body = match result {
+                Ok(rows) => format_ssm_results(&command_for_render, &rows),
+                Err(e) => format!("ssm-run: {e}\n\nesc / q to close"),
+            };
+            let _ = tx.send(AppMsg::TextOverlay {
+                gen,
+                title: "ssm-run".into(),
+                body,
+            });
+        });
+    }
+
     /// `:ssh [INSTANCE-ID]` — open an SSM Session Manager session into
     /// one of the selected env's instances. With an arg (`:ssh i-abc`)
     /// the target is taken verbatim; with no arg, a picker opens over
@@ -9430,6 +9506,7 @@ impl App {
             "changes" => self.cmd_changes(),
             "lineage" => self.cmd_lineage(),
             "ssh" => self.cmd_ssh(&rest),
+            "ssm-run" => self.cmd_ssm_run(&rest),
             "delete-version" => self.cmd_delete_version(&rest),
             "upgrade" => self.cmd_upgrade(&rest),
             "clone" => self.cmd_clone(&rest),
@@ -12157,6 +12234,81 @@ fn diff_envs(left: &Environment, right: &Environment, redact_on: bool) -> String
         ));
     }
     out
+}
+
+/// Render the `:ssm-run` overlay — one section per instance with
+/// status / exit-code header, then stdout, then stderr if present.
+/// Long buffers are line-truncated at 50 lines per stream (operator
+/// can rerun with `tail -n 200 logfile` or similar if they need
+/// more); per-line truncation at 200 chars keeps the overlay legible
+/// when a single line is huge. Empty rows produce a stub.
+pub(crate) fn format_ssm_results(
+    command: &str,
+    rows: &[crate::aws::SsmRunResult],
+) -> String {
+    if rows.is_empty() {
+        return format!(
+            "ssm-run — `{command}`\n\nNo instances targeted.\n\nesc / q to close"
+        );
+    }
+    const MAX_LINES_PER_STREAM: usize = 50;
+    const MAX_LINE_CHARS: usize = 200;
+    let truncate_line = |line: &str| -> String {
+        if line.chars().count() <= MAX_LINE_CHARS {
+            line.to_string()
+        } else {
+            let mut out: String = line.chars().take(MAX_LINE_CHARS - 1).collect();
+            out.push('…');
+            out
+        }
+    };
+    let truncate_block = |block: &str| -> String {
+        let lines: Vec<&str> = block.lines().collect();
+        if lines.len() <= MAX_LINES_PER_STREAM {
+            return lines
+                .iter()
+                .map(|l| truncate_line(l))
+                .collect::<Vec<_>>()
+                .join("\n");
+        }
+        let head = lines
+            .iter()
+            .take(MAX_LINES_PER_STREAM)
+            .map(|l| truncate_line(l))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!(
+            "{head}\n… ({} more lines truncated)",
+            lines.len() - MAX_LINES_PER_STREAM
+        )
+    };
+    let mut body = format!(
+        "ssm-run — `{command}`\n\
+         {} instance(s)\n\n",
+        rows.len()
+    );
+    for r in rows {
+        body.push_str(&format!(
+            "─── {} [{}, exit={}] ───\n",
+            r.instance_id, r.status, r.exit_code
+        ));
+        if r.stdout.is_empty() && r.stderr.is_empty() {
+            body.push_str("  (no output)\n");
+        }
+        if !r.stdout.is_empty() {
+            body.push_str("stdout:\n");
+            body.push_str(&truncate_block(&r.stdout));
+            body.push('\n');
+        }
+        if !r.stderr.is_empty() {
+            body.push_str("stderr:\n");
+            body.push_str(&truncate_block(&r.stderr));
+            body.push('\n');
+        }
+        body.push('\n');
+    }
+    body.push_str("esc / q to close");
+    body
 }
 
 /// Render the `:alarm-history` overlay — one row per history entry,
@@ -16084,6 +16236,96 @@ mod tests {
         assert!(
             err.contains("missing-env"),
             "expected error to name the missing env, got: {err}"
+        );
+    }
+
+    #[test]
+    fn format_ssm_results_renders_per_instance_sections() {
+        // Two instances with different statuses → each gets its own
+        // header (instance id + status + exit code) and stdout/stderr
+        // sections. Empty-output instance shows the `(no output)` stub
+        // so the operator can distinguish "ran cleanly, said nothing"
+        // from "didn't run".
+        let rows = vec![
+            crate::aws::SsmRunResult {
+                instance_id: "i-aaa".into(),
+                status: "Success".into(),
+                exit_code: 0,
+                stdout: "hello world\nline two".into(),
+                stderr: String::new(),
+            },
+            crate::aws::SsmRunResult {
+                instance_id: "i-bbb".into(),
+                status: "Failed".into(),
+                exit_code: 2,
+                stdout: String::new(),
+                stderr: "permission denied".into(),
+            },
+        ];
+        let body = super::format_ssm_results("uptime", &rows);
+        // Command line surfaced in header.
+        assert!(body.contains("`uptime`"));
+        // Both per-instance section headers present with exit codes.
+        assert!(body.contains("i-aaa [Success, exit=0]"));
+        assert!(body.contains("i-bbb [Failed, exit=2]"));
+        // stdout content present.
+        assert!(body.contains("hello world"));
+        assert!(body.contains("line two"));
+        // stderr content present.
+        assert!(body.contains("permission denied"));
+    }
+
+    #[test]
+    fn format_ssm_results_truncates_long_output() {
+        // A 100-line stdout blob must collapse to MAX_LINES_PER_STREAM
+        // (50) + a "… (N more lines truncated)" footer so the overlay
+        // stays scannable.
+        let stdout: String = (0..100).map(|i| format!("line {i}\n")).collect();
+        let rows = vec![crate::aws::SsmRunResult {
+            instance_id: "i-aaa".into(),
+            status: "Success".into(),
+            exit_code: 0,
+            stdout,
+            stderr: String::new(),
+        }];
+        let body = super::format_ssm_results("seq 0 99", &rows);
+        // Truncation footer cites the number of dropped lines.
+        assert!(
+            body.contains("50 more lines truncated"),
+            "expected truncation footer, got body:\n{body}"
+        );
+        // Last preserved line is `line 49`, not `line 99`.
+        assert!(body.contains("line 49"));
+        assert!(!body.contains("line 99"));
+    }
+
+    #[test]
+    fn format_ssm_results_empty_rows_produces_stub() {
+        let body = super::format_ssm_results("uptime", &[]);
+        assert!(body.contains("No instances targeted"));
+    }
+
+    #[tokio::test]
+    async fn ssm_run_without_args_errors_clearly() {
+        let mut app = test_app();
+        app.execute_command("ssm-run");
+        let err = app.error_message.as_deref().unwrap_or("");
+        assert!(
+            err.contains("usage:") && err.contains("shell-command"),
+            "expected usage hint, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ssm_run_without_detail_errors_with_instances_guidance() {
+        // No Detail open → no cached instances → command should refuse
+        // rather than silently no-op.
+        let mut app = test_app();
+        app.execute_command("ssm-run \"uptime\"");
+        let err = app.error_message.as_deref().unwrap_or("");
+        assert!(
+            err.contains("Detail") && err.contains("Instances"),
+            "expected Detail/Instances guidance, got: {err}"
         );
     }
 

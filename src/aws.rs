@@ -10,6 +10,7 @@ use aws_sdk_organizations::Client as OrgClient;
 use aws_sdk_s3::Client as S3Client;
 use aws_sdk_secretsmanager::Client as SecretsClient;
 use aws_sdk_sqs::Client as SqsClient;
+use aws_sdk_ssm::Client as SsmClient;
 use aws_sdk_sts::Client as StsClient;
 use chrono::{DateTime, Utc};
 use color_eyre::eyre::{eyre, Result, WrapErr};
@@ -35,6 +36,22 @@ pub struct CwAlarm {
     pub state_reason: String,
     pub metric_name: String,
     pub namespace: String,
+}
+
+/// One per-instance result returned by [`AwsClient::run_shell_command`].
+/// `status` is the SSM CommandInvocationStatus string verbatim
+/// (`Success` / `Failed` / `Cancelled` / `TimedOut` / `Pending` /
+/// `InProgress` / `Delayed`) so the renderer can colour by it. The
+/// stdout / stderr buffers cap at SSM's per-invocation limit (~24 KiB
+/// each by default) — anything larger is signalled via the
+/// `*_url` fields on the API which we don't currently follow.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SsmRunResult {
+    pub instance_id: String,
+    pub status: String,
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
 }
 
 /// One row in a CloudWatch alarm's recent history, surfaced by
@@ -282,6 +299,9 @@ pub struct AwsClient {
     /// ACM client. Region-scoped — `:listener-edit` lists the region's
     /// certificates for the SSL-cert picker.
     acm: AcmClient,
+    /// SSM client. Region-scoped — `:ssm-run` sends a shell command to
+    /// the env's instances and aggregates the per-instance results.
+    ssm: SsmClient,
     config: SdkConfig,
     pub context: AwsContext,
 }
@@ -490,6 +510,7 @@ impl AwsClient {
             iam,
             secrets,
             acm: AcmClient::new(&config),
+            ssm: SsmClient::new(&config),
             config,
             context: AwsContext {
                 region,
@@ -587,6 +608,7 @@ impl AwsClient {
             iam,
             secrets,
             acm: AcmClient::new(&config),
+            ssm: SsmClient::new(&config),
             config,
             context: AwsContext {
                 region,
@@ -659,6 +681,7 @@ impl AwsClient {
             iam,
             secrets,
             acm: AcmClient::new(&config),
+            ssm: SsmClient::new(&config),
             config,
             context: AwsContext {
                 region: "us-east-1".to_string(),
@@ -2014,6 +2037,121 @@ impl AwsClient {
                 }
             }
         }
+    }
+
+    /// Send a shell command to `instance_ids` via SSM Run Command
+    /// (`AWS-RunShellScript` document), poll per-instance results until
+    /// every invocation reaches a terminal status, and return the
+    /// aggregated rows. `wall_clock_secs` bounds total time and feeds
+    /// into the SSM-side `TimeoutSeconds` parameter (the server kills
+    /// commands that don't start running within that window).
+    ///
+    /// The poll loop sleeps 2s between cycles — the same cadence
+    /// `run_insights_query` uses. SSM has no aggregate "all done" call
+    /// the way Insights does, so we poll `GetCommandInvocation` per
+    /// instance per cycle and drop instances out of the wait set once
+    /// they're terminal. Returns once every instance is terminal *or*
+    /// the wall-clock deadline has passed (operator gets best-effort
+    /// partial results either way).
+    pub async fn run_shell_command(
+        &self,
+        instance_ids: &[String],
+        command: &str,
+        wall_clock_secs: u64,
+    ) -> Result<Vec<SsmRunResult>> {
+        use aws_sdk_ssm::types::CommandInvocationStatus;
+        if instance_ids.is_empty() {
+            return Err(eyre!("run_shell_command: no instance ids"));
+        }
+        // Cap the per-command timeout at 600s (SSM's default upper
+        // bound for non-MaintenanceWindow runs is 2880s; staying well
+        // under it avoids surprising server-side rejections).
+        let ssm_timeout = wall_clock_secs.min(600) as i32;
+        let mut send = self
+            .ssm
+            .send_command()
+            .document_name("AWS-RunShellScript")
+            .timeout_seconds(ssm_timeout)
+            .parameters("commands", vec![command.to_string()]);
+        for id in instance_ids {
+            send = send.instance_ids(id);
+        }
+        let send_resp = send.send().await.wrap_err("SendCommand failed")?;
+        let command_id = send_resp
+            .command
+            .and_then(|c| c.command_id)
+            .ok_or_else(|| eyre!("SendCommand returned no command_id"))?;
+
+        // Track which instances are still pending. SSM needs ~a second
+        // before invocations become queryable; the loop's first iteration
+        // tolerates an InvocationDoesNotExist error.
+        let mut pending: std::collections::HashSet<String> =
+            instance_ids.iter().cloned().collect();
+        let mut completed: Vec<SsmRunResult> = Vec::new();
+        let deadline = std::time::Instant::now()
+            + std::time::Duration::from_secs(wall_clock_secs);
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            // Snapshot so we can mutate `pending` inside the loop.
+            let cycle: Vec<String> = pending.iter().cloned().collect();
+            for id in cycle {
+                let resp = self
+                    .ssm
+                    .get_command_invocation()
+                    .command_id(&command_id)
+                    .instance_id(&id)
+                    .send()
+                    .await;
+                let invocation = match resp {
+                    Ok(o) => o,
+                    Err(_) => {
+                        // InvocationDoesNotExist on the first cycle is
+                        // expected. Skip and retry next cycle.
+                        continue;
+                    }
+                };
+                let status = invocation.status.clone();
+                let terminal = matches!(
+                    status,
+                    Some(CommandInvocationStatus::Success)
+                        | Some(CommandInvocationStatus::Failed)
+                        | Some(CommandInvocationStatus::Cancelled)
+                        | Some(CommandInvocationStatus::TimedOut)
+                );
+                if !terminal {
+                    continue;
+                }
+                pending.remove(&id);
+                completed.push(SsmRunResult {
+                    instance_id: id,
+                    status: status
+                        .map(|s| s.as_str().to_string())
+                        .unwrap_or_else(|| "?".into()),
+                    exit_code: invocation.response_code,
+                    stdout: invocation.standard_output_content.unwrap_or_default(),
+                    stderr: invocation.standard_error_content.unwrap_or_default(),
+                });
+            }
+            if pending.is_empty() || std::time::Instant::now() >= deadline {
+                break;
+            }
+        }
+        // Anything left in `pending` after the deadline gets a synthetic
+        // "TimedOut(local)" row so the operator sees which instances
+        // didn't finish in the wall-clock window.
+        for id in pending {
+            completed.push(SsmRunResult {
+                instance_id: id,
+                status: "TimedOut(local)".into(),
+                exit_code: -1,
+                stdout: String::new(),
+                stderr: "ebman wall-clock timeout — instance didn't reach a terminal status in time"
+                    .into(),
+            });
+        }
+        // Sort by instance id so output is deterministic across runs.
+        completed.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
+        Ok(completed)
     }
 
     /// Fetch the recent history for a single CloudWatch alarm. Returns
