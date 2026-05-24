@@ -24,7 +24,12 @@ members = ["tui-common"]
 default-members = [".", "tui-common"]
 
 [dependencies]
-tui-common = { path = "tui-common" }
+# Local `path` for dev so changes flow without a republish; `version`
+# resolves the dep at publish time (cargo strips the `path` and uses
+# the crates.io copy of `tb-tui-common`). `package = "tb-tui-common"`
+# lets every existing `use tui_common::*` line keep working — the
+# manifest key (`tui-common`) is what Rust imports as `tui_common`.
+tui-common = { path = "tui-common", version = "0.1.0", package = "tb-tui-common" }
 ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }

@@ -1,12 +1,17 @@
 [package]
-name = "tui-common"
+name = "tb-tui-common"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.91"
 authors = ["Tom Baldwin <tom@polymorphism.co.uk>"]
-description = "Shared TUI helpers used by ebman (and pgman). Internal — not published to crates.io."
+description = "Shared TUI helpers (Powerline probe, overlay sizing, theme contrast, splash render, atomic-write) reused by ebman and pgman."
 license = "MIT OR Apache-2.0"
-publish = false
+repository = "https://github.com/tombaldwin/ebman"
+homepage = "https://github.com/tombaldwin/ebman"
+documentation = "https://docs.rs/tb-tui-common"
+keywords = ["tui", "ratatui", "terminal", "k9s"]
+categories = ["command-line-interface", "command-line-utilities"]
+readme = "README.md"
 
 # Keep deps minimal — anything that lands here is by definition supposed to
 # be reusable across more than one TUI, so app-specific deps (aws-sdk-*,
