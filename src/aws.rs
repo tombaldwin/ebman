@@ -2085,11 +2085,9 @@ impl AwsClient {
         // Track which instances are still pending. SSM needs ~a second
         // before invocations become queryable; the loop's first iteration
         // tolerates an InvocationDoesNotExist error.
-        let mut pending: std::collections::HashSet<String> =
-            instance_ids.iter().cloned().collect();
+        let mut pending: std::collections::HashSet<String> = instance_ids.iter().cloned().collect();
         let mut completed: Vec<SsmRunResult> = Vec::new();
-        let deadline = std::time::Instant::now()
-            + std::time::Duration::from_secs(wall_clock_secs);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wall_clock_secs);
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             // Snapshot so we can mutate `pending` inside the loop.
@@ -2145,8 +2143,9 @@ impl AwsClient {
                 status: "TimedOut(local)".into(),
                 exit_code: -1,
                 stdout: String::new(),
-                stderr: "ebman wall-clock timeout — instance didn't reach a terminal status in time"
-                    .into(),
+                stderr:
+                    "ebman wall-clock timeout — instance didn't reach a terminal status in time"
+                        .into(),
             });
         }
         // Sort by instance id so output is deterministic across runs.
