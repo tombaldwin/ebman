@@ -306,6 +306,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         CommandKind::Prefill("ssh "),
     ),
     cmd(
+        "ssm-run",
+        ":ssm-run \"<shell-command>\" — fan a shell command across the env's instances via SSM Run Command (AWS-RunShellScript). Targets are sourced from cached Detail/Instances. 60s wall-clock cap. Gated by read-only / per-env safety pin.",
+        Category::Inspection,
+        CommandKind::Prefill("ssm-run "),
+    ),
+    cmd(
         "explain",
         ":explain — diagnose the last IAM AccessDenied via iam:SimulatePrincipalPolicy.  :explain ARN ACTION evaluates explicit pairs.",
         Category::Inspection,
