@@ -1643,7 +1643,10 @@ fn draw_why_red_overlay(f: &mut Frame, area: Rect, app: &mut App) {
                 Style::default().fg(bucket_fg).add_modifier(Modifier::BOLD),
             ),
             Span::styled("/mo  ", Style::default().fg(theme.muted)),
-            Span::styled("(Cost Explorer, last 30d)", Style::default().fg(theme.muted)),
+            Span::styled(
+                "(Cost Explorer, last 30d)",
+                Style::default().fg(theme.muted),
+            ),
         ]));
         lines.push(blank());
     }

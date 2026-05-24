@@ -4125,9 +4125,7 @@ impl App {
         let gen = self.generation;
         let command_for_render = trimmed.clone();
         let n = instances.len();
-        self.status_message = Some(format!(
-            "running `{trimmed}` on {n} instance(s)…"
-        ));
+        self.status_message = Some(format!("running `{trimmed}` on {n} instance(s)…"));
         tokio::spawn(async move {
             let result = aws
                 .run_shell_command(&instances, &trimmed, 60)
@@ -4160,9 +4158,8 @@ impl App {
         match rest.first().copied() {
             Some(id) => {
                 if !id.starts_with("i-") {
-                    self.error_message = Some(format!(
-                        "expected an EC2 instance ID (`i-…`), got '{id}'"
-                    ));
+                    self.error_message =
+                        Some(format!("expected an EC2 instance ID (`i-…`), got '{id}'"));
                     return;
                 }
                 self.pending_shell_target = Some(id.to_string());
@@ -4531,8 +4528,7 @@ impl App {
         let local_opts = match crate::saved_config::parse_saved_config(&yaml) {
             Ok(o) => o,
             Err(e) => {
-                self.error_message =
-                    Some(format!("parsing {}: {e}", path.display()));
+                self.error_message = Some(format!("parsing {}: {e}", path.display()));
                 return;
             }
         };
@@ -4561,9 +4557,7 @@ impl App {
             };
             let _ = tx.send(AppMsg::TextOverlay {
                 gen,
-                title: format!(
-                    "config-diff-local — {env_name_for_title} ↔ {local_name_for_title}"
-                ),
+                title: format!("config-diff-local — {env_name_for_title} ↔ {local_name_for_title}"),
                 body,
             });
         });
@@ -5983,9 +5977,12 @@ impl App {
         let cur_idx = if self.filter.is_empty() {
             None
         } else {
-            names
-                .iter()
-                .position(|n| self.named_filters.get(n).map(|v| v == &self.filter).unwrap_or(false))
+            names.iter().position(|n| {
+                self.named_filters
+                    .get(n)
+                    .map(|v| v == &self.filter)
+                    .unwrap_or(false)
+            })
         };
         let next = match cur_idx {
             Some(i) => (i as i32 + delta).rem_euclid(names.len() as i32) as usize,
@@ -9560,20 +9557,17 @@ impl App {
                 // currently selected.
                 (Some(a), Some(b)) => {
                     if a == b {
-                        self.error_message =
-                            Some("pick two different envs to compare".into());
+                        self.error_message = Some("pick two different envs to compare".into());
                         return;
                     }
                     let Some(left) = self.environments.iter().find(|e| e.name == **a).cloned()
                     else {
-                        self.error_message =
-                            Some(format!("no env named '{a}' in current view"));
+                        self.error_message = Some(format!("no env named '{a}' in current view"));
                         return;
                     };
                     let Some(right) = self.environments.iter().find(|e| e.name == **b).cloned()
                     else {
-                        self.error_message =
-                            Some(format!("no env named '{b}' in current view"));
+                        self.error_message = Some(format!("no env named '{b}' in current view"));
                         return;
                     };
                     self.current_overlay =
@@ -9593,8 +9587,7 @@ impl App {
                         return;
                     };
                     if left.name == **target {
-                        self.error_message =
-                            Some("pick a different env to compare against".into());
+                        self.error_message = Some("pick a different env to compare against".into());
                         return;
                     }
                     let right = self
@@ -12403,14 +12396,9 @@ fn diff_envs(left: &Environment, right: &Environment, redact_on: bool) -> String
 /// can rerun with `tail -n 200 logfile` or similar if they need
 /// more); per-line truncation at 200 chars keeps the overlay legible
 /// when a single line is huge. Empty rows produce a stub.
-pub(crate) fn format_ssm_results(
-    command: &str,
-    rows: &[crate::aws::SsmRunResult],
-) -> String {
+pub(crate) fn format_ssm_results(command: &str, rows: &[crate::aws::SsmRunResult]) -> String {
     if rows.is_empty() {
-        return format!(
-            "ssm-run — `{command}`\n\nNo instances targeted.\n\nesc / q to close"
-        );
+        return format!("ssm-run — `{command}`\n\nNo instances targeted.\n\nesc / q to close");
     }
     const MAX_LINES_PER_STREAM: usize = 50;
     const MAX_LINE_CHARS: usize = 200;
@@ -12497,10 +12485,9 @@ pub(crate) fn format_alarm_history(
         entries.len()
     );
     for e in entries {
-        let ts = e
-            .at
-            .map(|t| t.format("%Y-%m-%d %H:%M:%SZ").to_string())
-            .unwrap_or_else(|| "—".into());
+        let ts =
+            e.at.map(|t| t.format("%Y-%m-%d %H:%M:%SZ").to_string())
+                .unwrap_or_else(|| "—".into());
         body.push_str(&format!("{ts}  [{}]\n    {}\n\n", e.kind, e.summary));
     }
     body.push_str("esc / q to close");
@@ -15857,7 +15844,10 @@ mod tests {
         let p8 = body.find("build-8").expect("build-8 row");
         assert!(p9 < p8, "build-9 should come before build-8 (newest first)");
         // Span row visible for build-9 (5min).
-        assert!(body.contains("took"), "expected `took` span line, got:\n{body}");
+        assert!(
+            body.contains("took"),
+            "expected `took` span line, got:\n{body}"
+        );
         // Δ-since-previous visible for build-9 → 2h gap.
         assert!(
             body.contains("Δ"),
@@ -16339,7 +16329,10 @@ mod tests {
         assert_eq!(app.filter, "tag:env=dev", "forward-with-no-active → first");
         app.filter = "some-random-text".into();
         app.cycle_named_filter(-1);
-        assert_eq!(app.filter, "tag:env=staging", "backward-with-no-active → last");
+        assert_eq!(
+            app.filter, "tag:env=staging",
+            "backward-with-no-active → last"
+        );
     }
 
     #[tokio::test]
@@ -16363,8 +16356,15 @@ mod tests {
             app.pending_shell_target.as_deref(),
             Some("i-0abc1234567890def")
         );
-        assert!(app.error_message.is_none(), "unexpected: {:?}", app.error_message);
-        assert!(app.mode == Mode::Normal, "ssh-with-arg should not change mode");
+        assert!(
+            app.error_message.is_none(),
+            "unexpected: {:?}",
+            app.error_message
+        );
+        assert!(
+            app.mode == Mode::Normal,
+            "ssh-with-arg should not change mode"
+        );
     }
 
     #[tokio::test]
@@ -16418,7 +16418,11 @@ mod tests {
             "expected Overlay::Diff, got {:?}",
             app.current_overlay.is_some()
         );
-        assert!(app.error_message.is_none(), "unexpected error: {:?}", app.error_message);
+        assert!(
+            app.error_message.is_none(),
+            "unexpected error: {:?}",
+            app.error_message
+        );
     }
 
     #[tokio::test]
@@ -16429,7 +16433,10 @@ mod tests {
         app.environments = vec![mk_env("prod", "uflexi", "Web", "Green")];
         app.rebuild_view();
         app.execute_command("diff prod prod");
-        assert!(app.current_overlay.is_none(), "shouldn't open overlay for same-env diff");
+        assert!(
+            app.current_overlay.is_none(),
+            "shouldn't open overlay for same-env diff"
+        );
         let err = app.error_message.as_deref().unwrap_or("");
         assert!(
             err.contains("different envs"),

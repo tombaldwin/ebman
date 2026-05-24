@@ -49,7 +49,10 @@ fn coerce_value(v: &serde_yml::Value) -> String {
         Value::Bool(b) => b.to_string(),
         Value::Number(n) => n.to_string(),
         Value::String(s) => s.clone(),
-        other => serde_yml::to_string(other).unwrap_or_default().trim().to_string(),
+        other => serde_yml::to_string(other)
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
     }
 }
 
@@ -98,9 +101,9 @@ pub fn discover_saved_configs(cwd: &Path) -> Result<Vec<PathBuf>> {
         return Ok(Vec::new());
     }
     let mut out = Vec::new();
-    for entry in std::fs::read_dir(&dir).wrap_err_with(|| {
-        format!("reading saved-configs directory {}", dir.display())
-    })? {
+    for entry in std::fs::read_dir(&dir)
+        .wrap_err_with(|| format!("reading saved-configs directory {}", dir.display()))?
+    {
         let entry = entry?;
         let path = entry.path();
         // EB CLI writes `<name>.cfg.yml`; tolerate plain `.yml` too in
@@ -258,7 +261,12 @@ EnvironmentConfigurationMetadata:
         let found = discover_saved_configs(tmp.path()).expect("discovers");
         assert_eq!(found.len(), 2, "expected 2 yml files, got {found:?}");
         // Sorted: a before b.
-        assert!(found[0].file_name().unwrap().to_str().unwrap().starts_with("a"));
+        assert!(found[0]
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("a"));
     }
 
     #[test]
@@ -277,7 +285,10 @@ EnvironmentConfigurationMetadata:
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let path = base.join(format!("ebman-saved-cfg-test-{nanos}-{:?}", std::thread::current().id()));
+        let path = base.join(format!(
+            "ebman-saved-cfg-test-{nanos}-{:?}",
+            std::thread::current().id()
+        ));
         std::fs::create_dir_all(&path)?;
         Ok(TempDir { path })
     }
