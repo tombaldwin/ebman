@@ -20,6 +20,19 @@ Built for operators who triage EB envs daily and don't want the AWS console roun
   (https://github.com/charmbracelet/vhs) for a deterministic gif.
 -->
 
+## Triage workflow
+
+Production env goes red at 3am. From your terminal:
+
+1. `ebman` — launch; `prod-api` shows up tinted red in the table
+2. `/prod-api` `↵` — jump to it
+3. `!` — open `:why`: recent events / alarms / instance health / last deploys, all in one overlay
+4. `:diff prod-api staging-api` — confirm staging is still on the previous version
+5. `:rollback` — redeploy the last-known-good version label, with a 5-second undo window
+6. Action + outcome land in `~/.cache/ebman/audit.log`
+
+Five keystrokes to triage, one command to fix. The AWS-console alternative is a minimum of five page-loads, two tabs, and zero audit trail.
+
 ## Highlights
 
 - **Live env table** with sort, filter, group-by-app, health sparkline (trend window auto-labelled), severity tints, mouse support. `Tab` cycles between Envs and Apps scope.
@@ -34,6 +47,19 @@ Built for operators who triage EB envs daily and don't want the AWS console roun
 - **Power-user ergonomics** — fuzzy command palette (`Ctrl-K`) across commands / envs / saved views / plugins, named filters + saved views, plugin commands (`~/.config/ebman/commands.toml`), in-app `:loglevel` reload, `:diff` between envs.
 - **Headless / scriptable** — `--control-socket PATH` exposes a Unix-socket interface; `ebman ctl <op>` is a one-shot client (`screen` / `state` / `key <spec>` / `cmd <:cmd>`).
 - **Non-interactive CLI** — `ebman envs [--json]` / `ebman action rebuild --env NAME` / `ebman ctl ...` for scripts and CI.
+
+## Why ebman?
+
+You probably already have one of these:
+
+| Tool | What it's good at | Where it falls short for daily EB triage |
+| --- | --- | --- |
+| **AWS Console** | Approachable, complete UI surface. | Page loads, eventually-consistent state, 5 tabs to triage one env. Fine for occasional ops, painful at 3am. |
+| **`eb` CLI** | A single project's deploy flow (`eb deploy`, `eb logs`). | No multi-env view, no live drill-down, no diff between envs, no SQS DLQ workflow. |
+| **`aws elasticbeanstalk`** | Raw API access, scriptable. | You build the workflow out of `--query` / `jq` pipelines yourself. No live updates, no triage view. |
+| **k9s + EKS** | The pattern this tool is modelled on. | Doesn't exist for Elastic Beanstalk. |
+
+ebman is k9s-for-EB: keyboard-driven, drill-down-first, focused on operators who triage red envs daily and want one screen for "what's wrong" and "what changed". The nearest peer in the broader Rust-TUI / k9s-style space is [`e1s`](https://github.com/keidarcy/e1s) (k9s-for-ECS); ebman is broader on the write surface and adds multi-account fan-out, an audit log, per-env safety pins, and an embedded SSM-session pane.
 
 ## Install
 
