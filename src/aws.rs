@@ -37,6 +37,19 @@ pub struct CwAlarm {
     pub namespace: String,
 }
 
+/// One row in a CloudWatch alarm's recent history, surfaced by
+/// `:alarm-history`. `kind` is the API's HistoryItemType string —
+/// `StateUpdate` (the transitions an operator usually wants),
+/// `ConfigurationUpdate` (someone edited the threshold), or `Action`
+/// (the alarm fired its SNS / autoscaling action). `summary` is the
+/// short human-readable line CloudWatch emits per item.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AlarmHistoryEntry {
+    pub at: Option<DateTime<Utc>>,
+    pub kind: String,
+    pub summary: String,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct MetricSeries {
     pub id: String,    // stable, e.g. "health"
@@ -2001,6 +2014,41 @@ impl AwsClient {
                 }
             }
         }
+    }
+
+    /// Fetch the recent history for a single CloudWatch alarm. Returns
+    /// rows newest-first (matches the SDK's default ordering). `kind`
+    /// distinguishes StateUpdate / ConfigurationUpdate / Action so the
+    /// renderer can colour or filter by entry type. `max_records` caps
+    /// the page size — the SDK enforces a server-side max of 100, so
+    /// callers wanting more would need to follow the `next_token`
+    /// (deferred until anyone needs it).
+    pub async fn fetch_alarm_history(
+        &self,
+        alarm_name: &str,
+        max_records: i32,
+    ) -> Result<Vec<AlarmHistoryEntry>> {
+        let resp = self
+            .cw
+            .describe_alarm_history()
+            .alarm_name(alarm_name)
+            .max_records(max_records)
+            .send()
+            .await
+            .wrap_err("DescribeAlarmHistory failed")?;
+        let mut out = Vec::new();
+        for item in resp.alarm_history_items.unwrap_or_default() {
+            let at = item
+                .timestamp
+                .and_then(|ts| DateTime::<Utc>::from_timestamp(ts.secs(), ts.subsec_nanos()));
+            let kind = item
+                .history_item_type
+                .map(|t| t.as_str().to_string())
+                .unwrap_or_else(|| "?".into());
+            let summary = item.history_summary.unwrap_or_default();
+            out.push(AlarmHistoryEntry { at, kind, summary });
+        }
+        Ok(out)
     }
 
     /// Delete one or more CloudWatch alarms by name.

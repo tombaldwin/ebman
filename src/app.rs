@@ -9426,6 +9426,7 @@ impl App {
             "managed-window" => self.cmd_managed_window(&rest),
             "alarm-create" => self.cmd_alarm_create(&rest),
             "alarm-delete" => self.cmd_alarm_delete(&rest),
+            "alarm-history" => self.cmd_alarm_history(&rest),
             "config-inspect" => self.cmd_config_inspect(&rest),
             "deselect" | "select-clear" => {
                 let n = self.multi_selected.len();
@@ -12094,6 +12095,41 @@ fn diff_envs(left: &Environment, right: &Environment, redact_on: bool) -> String
         ));
     }
     out
+}
+
+/// Render the `:alarm-history` overlay — one row per history entry,
+/// newest first, with timestamp + kind + summary. Kind is the API's
+/// HistoryItemType (StateUpdate / ConfigurationUpdate / Action) and is
+/// shown verbatim so an operator scanning the timeline can spot e.g.
+/// `ConfigurationUpdate` entries that explain a state change. Empty
+/// result yields a stub body so the operator isn't left wondering
+/// whether the fetch silently failed.
+pub(crate) fn format_alarm_history(
+    alarm_name: &str,
+    entries: &[crate::aws::AlarmHistoryEntry],
+) -> String {
+    if entries.is_empty() {
+        return format!(
+            "Alarm history — {alarm_name}\n\n\
+             No history items in the recent window.\n\
+             (CloudWatch retains alarm history for 90 days.)\n\n\
+             esc / q to close"
+        );
+    }
+    let mut body = format!(
+        "Alarm history — {alarm_name}\n\
+         {} entries, newest first.\n\n",
+        entries.len()
+    );
+    for e in entries {
+        let ts = e
+            .at
+            .map(|t| t.format("%Y-%m-%d %H:%M:%SZ").to_string())
+            .unwrap_or_else(|| "—".into());
+        body.push_str(&format!("{ts}  [{}]\n    {}\n\n", e.kind, e.summary));
+    }
+    body.push_str("esc / q to close");
+    body
 }
 
 fn format_alarms(result: Result<Vec<CwAlarm>, String>) -> String {
@@ -15942,6 +15978,53 @@ mod tests {
             err.contains("missing-env"),
             "expected error to name the missing env, got: {err}"
         );
+    }
+
+    #[test]
+    fn format_alarm_history_renders_entries_and_empty_stub() {
+        use chrono::TimeZone;
+        let ts = |h, mi| chrono::Utc.with_ymd_and_hms(2026, 5, 24, h, mi, 0).unwrap();
+        let mk = |t, kind: &str, summary: &str| crate::aws::AlarmHistoryEntry {
+            at: Some(t),
+            kind: kind.into(),
+            summary: summary.into(),
+        };
+        // Empty entries → stub body + the 90-day retention hint so an
+        // operator looking at an alarm with no recent transitions
+        // doesn't assume the fetch broke.
+        let stub = super::format_alarm_history("high-cpu", &[]);
+        assert!(stub.contains("No history items"));
+        assert!(stub.contains("90 days"));
+        // Real entries → each row carries timestamp, kind in brackets,
+        // and the summary line. Order preserved (newest-first per the
+        // SDK's default).
+        let entries = vec![
+            mk(ts(12, 5), "StateUpdate", "Alarm updated from OK to ALARM"),
+            mk(ts(11, 0), "ConfigurationUpdate", "Threshold changed to 80"),
+        ];
+        let body = super::format_alarm_history("high-cpu", &entries);
+        assert!(body.contains("[StateUpdate]"));
+        assert!(body.contains("[ConfigurationUpdate]"));
+        assert!(body.contains("Alarm updated from OK to ALARM"));
+        assert!(body.contains("Threshold changed to 80"));
+        // Newest-first preserved: StateUpdate appears before ConfigurationUpdate.
+        let p_state = body.find("StateUpdate").unwrap();
+        let p_cfg = body.find("ConfigurationUpdate").unwrap();
+        assert!(p_state < p_cfg);
+    }
+
+    #[test]
+    fn format_alarm_history_handles_missing_timestamp() {
+        // A history item without a timestamp shouldn't blank out the
+        // row — render `—` so the kind/summary still scan.
+        let entries = vec![crate::aws::AlarmHistoryEntry {
+            at: None,
+            kind: "StateUpdate".into(),
+            summary: "Alarm went ALARM".into(),
+        }];
+        let body = super::format_alarm_history("high-cpu", &entries);
+        assert!(body.contains("—"));
+        assert!(body.contains("Alarm went ALARM"));
     }
 
     #[test]

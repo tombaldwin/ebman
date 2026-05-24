@@ -5,6 +5,10 @@
 //!
 //! Eighth slice of the `execute_command` split. Same parent-module
 //! visibility pattern as the other `cmd_*` sub-modules.
+//!
+//! Read-side `:alarm-history NAME` lives here too — same alarm-namespace
+//! and uses the same `cw` client, so co-locating the dispatch beats a
+//! third file.
 
 use super::{alarm_kind_to_metric, flatten_err, write_audit_line, App, AppMsg};
 
@@ -161,5 +165,41 @@ impl App {
                 });
             }
         }
+    }
+
+    /// `:alarm-history NAME` — recent transition timeline for one
+    /// alarm. Fetches up to 50 history items via `DescribeAlarmHistory`,
+    /// newest-first, and lands them as a TextOverlay. Read-only — no
+    /// confirms / write gates needed. Operator typically gets the
+    /// alarm name from `:alarms` first.
+    pub(crate) fn cmd_alarm_history(&mut self, rest: &[&str]) {
+        let Some(name) = rest.first().copied() else {
+            self.error_message = Some(
+                "usage: :alarm-history NAME  (alarm name — see :alarms for the env's alarms)"
+                    .into(),
+            );
+            return;
+        };
+        let name = name.to_string();
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        self.status_message = Some(format!("fetching alarm history for {name}…"));
+        let name_for_title = name.clone();
+        tokio::spawn(async move {
+            let result = aws
+                .fetch_alarm_history(&name, 50)
+                .await
+                .map_err(|e| flatten_err("fetch_alarm_history", e));
+            let body = match result {
+                Ok(items) => super::format_alarm_history(&name, &items),
+                Err(e) => format!("alarm-history: {e}\n\nesc / q to close"),
+            };
+            let _ = tx.send(AppMsg::TextOverlay {
+                gen,
+                title: format!("alarm history — {name_for_title}"),
+                body,
+            });
+        });
     }
 }
