@@ -35,18 +35,21 @@ Five keystrokes to triage, one command to fix. The AWS-console alternative is a 
 
 ## Highlights
 
-- **Live env table** with sort, filter, group-by-app, health sparkline (trend window auto-labelled), severity tints, mouse support. `Tab` cycles between Envs and Apps scope.
-- **Drill-down per env** — opens to a **Health rollup tab** (drillable: `j`/`k` walks items, `Enter` jumps to source). Other tabs: Events (regex-searchable), Instances (with health causes + embedded SSM shell), Metrics (CloudWatch line charts; custom metrics with arbitrary dimensions), Queue (Worker tier; main + DLQ stats with viewer), Logs (one-shot snapshot or real `tail -f` from CW Logs), Config (tags + env vars read-only, plus cost estimate).
-- **Red-env triage** — `:why` (or `!` on the selected env) opens a four-section diagnostic overlay: recent events, alarms, instance health, recent deploys. Worker envs also get a main + DLQ peek. Updating envs are labelled with the *kind* of update in flight (deploy / config / scale); an env with active CW alarms no longer renders as plain green "Ready". Worker envs with a non-empty DLQ flip Red even when EB calls them healthy.
-- **Daily-driver write surface** — env vars (`:env set/unset`), tags (`:tag`/`:untag`), version deploy from existing label or local zip / S3 (`:deploy --from`, with `--preview` for a side-by-side current-vs-candidate overlay), saved-config CRUD, CloudWatch alarms CRUD, log streaming toggle, notifications endpoint, managed-update window, ALB scheme, instance type, key pair, IAM roles, deployment policy, rolling-update settings, health-check URL, capacity (`:capacity` — Min / Max / Instance type / Cooldown in one modal), plus a generic `:set-option NAMESPACE OPTION VALUE` escape hatch.
-- **Worker / SQS workflow** — DLQ viewer with per-message resend (`r`), strict-typed purge (`p`), bulk delete (`x`), peek-and-tail with long-polling.
-- **Multi-region / multi-account** — `:region all` fans across every configured region in parallel; `:account NAME` switches via `sts:AssumeRole` (configure `accounts.NAME` in `config.toml`); `:accounts` lists AWS-Organizations child accounts; `:find-env` and `:org-health` both fan across `~/.aws` profiles **and** configured AssumeRole accounts.
-- **Bulk ops** — `space` multi-selects; `:batch-rebuild`, `:batch-restart`, `:batch-deploy LABEL`, `:batch-tag KEY VALUE`, `:batch-untag KEY`, `:batch-set-option NAMESPACE OPTION VALUE` all fan out in parallel with per-env audit + pending pill rows.
-- **Safety** — `--read-only` CLI flag or `:readonly on` disables every write surface; destructive actions (Terminate, DLQ purge) require typed-name confirmation; pre-flight dry-run shows impact (N instances across M AZs) + last 3 events before authorising; recent-change / mid-deploy traffic warnings in the confirm modal.
-- **Audit log** — every dispatched action and its outcome are appended to `~/.cache/ebman/audit.log`; rotates at 1 MiB.
-- **Power-user ergonomics** — fuzzy command palette (`Ctrl-K`) across commands / envs / saved views / plugins, named filters + saved views, plugin commands (`~/.config/ebman/commands.toml`), in-app `:loglevel` reload, `:diff` between envs.
-- **Headless / scriptable** — `--control-socket PATH` exposes a Unix-socket interface; `ebman ctl <op>` is a one-shot client (`screen` / `state` / `key <spec>` / `cmd <:cmd>`).
-- **Non-interactive CLI** — `ebman envs [--json]` / `ebman action rebuild --env NAME` / `ebman ctl ...` for scripts and CI.
+- **Live env table** with sort / filter / group-by-app / health sparkline / severity tints / mouse support.
+- **Per-env drill-down** — tabs for Health / Events / Instances / Metrics / Queue / Logs / Config.
+- **Red-env triage** — `:why` opens a one-screen diagnostic: recent events + alarms + instance health + last deploys, with a DLQ peek for Worker envs.
+- **Honest health** — envs with alarms in ALARM, DLQs with messages, or stale platforms surface on the row itself, not behind a tab.
+- **Forensics** — `:diff env-A env-B` for option-setting deltas, `:lineage` for the deploy timeline, `:alarm-history NAME` for CW state transitions, `:config-diff-local` against a local EB CLI saved config.
+- **Cost-aware** — opt-in `:cost on` adds a per-env $ column from Cost Explorer; same number surfaces in `:why` and Detail/Health.
+- **Daily-driver writes** — env vars, tags, deploys (label / local zip / S3, with `--preview`), saved configs, CW alarms CRUD, ALB scheme, instance type, capacity, deployment policy, plus a generic `:set-option` escape hatch.
+- **Worker / SQS** — DLQ viewer with resend, typed-name purge, bulk delete, peek-and-tail.
+- **SSM** — `:ssh i-abc` opens an embedded session; `:ssm-run "<cmd>"` fans a shell command across the env's instances and aggregates per-instance status / exit code / stdout / stderr.
+- **Multi-account / multi-region** — `:region all` parallel queries, `:account NAME` via `sts:AssumeRole`, `:find-env` / `:org-health` walk every `~/.aws` profile + configured account.
+- **Bulk ops** — `space` multi-selects, then `:batch-*` fans out in parallel with audit + pending-pill rows.
+- **Safety** — `--read-only` flag, typed-name confirms for destructive actions, pre-flight dry-runs, per-env / per-account read-only pins via `safety.envs.NAME` in `config.toml`.
+- **Audit log** at `~/.cache/ebman/audit.log` — every action + outcome, rotated at 1 MiB.
+- **Power-user** — `Ctrl-K` palette, named filters with `]` / `[` cycle, plugin commands (`~/.config/ebman/commands.toml`).
+- **Headless / scriptable** — `--control-socket PATH` exposes a Unix socket; `ebman envs --json`, `ebman action rebuild --env NAME`, `ebman ctl screen / state / cmd <:cmd>` for scripts and CI.
 
 ## Why ebman?
 
