@@ -31,6 +31,7 @@ pub mod plugins;
 pub mod profiles;
 pub mod project;
 pub mod report_bug;
+pub mod saved_config;
 pub mod shell;
 pub mod splash;
 pub mod sso;
