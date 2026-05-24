@@ -788,6 +788,15 @@ pub struct App {
     /// render's `⚠ DLQ:N` chip on Worker rows. Missing entry = "not
     /// checked yet" (don't fire an alert on cold state).
     pub worker_dlq_depths: std::collections::HashMap<String, i64>,
+    /// `--demo` mode flag. Suppresses the periodic refresh (`spawn_refresh`
+    /// becomes a no-op) and the update-check (`spawn_update_check` likewise)
+    /// so hand-crafted fixture data from `demo_fixture::install` stays put.
+    /// All other paths run as normal — keybinds work, overlays render — so
+    /// VHS / asciinema captures show the genuine UI surface. Drill-into-
+    /// other-tabs (`:why`, Detail/Events, …) still fire against the stub
+    /// AwsClient and may return empty or errored data; closing that gap
+    /// is a separate piece of work (spawn-site gating).
+    pub demo_mode: bool,
     /// Per-env `(healthy, total)` instance counts, populated by
     /// `spawn_env_instance_counts` after each refresh tick. Drives the
     /// `INST` column on the main env table. Missing entry = "not
@@ -1532,6 +1541,7 @@ impl App {
             hover_row: None,
             alerts: 0,
             worker_dlq_depths: std::collections::HashMap::new(),
+            demo_mode: false,
             env_instance_counts: std::collections::HashMap::new(),
             cost_enabled: persisted.cost_enabled.unwrap_or(false),
             costs: std::collections::HashMap::new(),
@@ -1636,15 +1646,32 @@ impl App {
         Ok(app)
     }
 
-    /// Synchronous test-only constructor. Skips `init_client` (no AWS
+    /// Runtime constructor for `--demo` mode. Wraps `for_tests` with a
+    /// stub `AwsClient` and an explicit `demo_mode = true` so the
+    /// refresh / update-check spawns become no-ops. Then asks the
+    /// hand-crafted fixture to populate `environments` / events /
+    /// instance counts / cost data so the main table renders with
+    /// believable content. Synchronous — no AWS calls, no disk I/O
+    /// (state.load is skipped via the for_tests path).
+    pub fn new_demo(config: Config) -> Self {
+        let mut app = Self::for_tests(crate::aws::AwsClient::stub(), config);
+        app.demo_mode = true;
+        crate::demo_fixture::install(&mut app);
+        app
+    }
+
+    /// Synchronous AWS-free constructor. Skips `init_client` (no AWS
     /// round-trip), `state::load` (no disk read — caller passes a fresh
     /// empty state), and the spawn_identity / spawn_refresh kickoffs.
     /// The caller is responsible for providing a pre-built `AwsClient`
-    /// (typically via `AwsClient::for_tests` with mocked sub-clients).
+    /// (typically via `AwsClient::for_tests` or `AwsClient::stub()`).
     /// `msg_tx` / `msg_rx` are created here so `handle_event` can fire
     /// spawn helpers that send AppMsg variants without panicking;
     /// callers can drain `msg_rx` to inspect dispatched messages.
-    #[cfg(test)]
+    ///
+    /// Two consumers today: the unit-test harness (`#[cfg(test)]`
+    /// builds) and the runtime `--demo` mode constructor (`new_demo`,
+    /// which builds on top of this + a hand-crafted fixture).
     pub fn for_tests(aws: crate::aws::AwsClient, config: Config) -> Self {
         let aws = Arc::new(aws);
         let context = aws.context.clone();
@@ -1721,6 +1748,7 @@ impl App {
             hover_row: None,
             alerts: 0,
             worker_dlq_depths: std::collections::HashMap::new(),
+            demo_mode: false,
             env_instance_counts: std::collections::HashMap::new(),
             cost_enabled: false,
             costs: std::collections::HashMap::new(),
@@ -10064,6 +10092,11 @@ impl App {
     }
 
     fn spawn_update_check(&mut self) {
+        // No outbound network in `--demo` mode — VHS captures shouldn't
+        // pulse a "latest version available" toast partway through.
+        if self.demo_mode {
+            return;
+        }
         let tx = self.msg_tx.clone();
         tokio::spawn(async move {
             let result = crate::update_check::check_async().await;
@@ -10090,6 +10123,12 @@ impl App {
     }
 
     fn spawn_refresh(&mut self) {
+        // `--demo` mode pins the fixture data in place — refresh would
+        // call into the stub AwsClient, get empty results, and blank
+        // the table. Skip entirely.
+        if self.demo_mode {
+            return;
+        }
         if matches!(self.load_state, LoadState::Loading) {
             return;
         }
@@ -10646,7 +10685,7 @@ impl App {
 
     /// Recompute the cached filtered/display slices. Call after any change to
     /// filter, sort, grouping, or the env list.
-    fn rebuild_view(&mut self) {
+    pub fn rebuild_view(&mut self) {
         // Filtered indexes.
         self.cached_filtered.clear();
         if self.filter.is_empty() {
