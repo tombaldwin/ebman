@@ -376,10 +376,13 @@ pub const SPLASH_SCENE_COLS: usize = 20;
 /// colour, so the logical pixels are roughly square. Used by the
 /// boot splash and the `:about` overlay.
 ///
-/// 14 frames cycle at ≈180 ms each (6 30 ms ticks); a full grow
-/// cycle takes ~2.5 s so the whole empty-pot-to-bloom animation
-/// fits inside the boot splash's 3 s minimum duration with the
-/// final bud frame holding for ~500 ms before the table appears.
+/// 14 frames advance at ≈180 ms each (6 30 ms ticks); the grow phase
+/// (empty pot → bud) takes ~2.5 s so it fits inside the boot splash's
+/// 3 s minimum duration. After the grow phase finishes the final
+/// bud-blossom frame lingers for an extra ~2 s
+/// (`FINAL_FRAME_HOLD_TICKS`) before wrapping back to the empty pot
+/// — gives the bloom time to land visually in the looping `:about`
+/// view rather than snapping straight back to the empty pot.
 pub fn splash_scene_lines(frame: u64) -> Vec<ratatui::text::Line<'static>> {
     use ratatui::style::Color;
     const FRAMES: [&[&str]; 14] = [
@@ -398,12 +401,24 @@ pub fn splash_scene_lines(frame: u64) -> Vec<ratatui::text::Line<'static>> {
         SPLASH_FRAME_12,
         SPLASH_FRAME_13,
     ];
-    // 14 frames × 6 ticks × 30 ms = 2520 ms. Cycle completes inside
-    // the 3 s SPLASH_MIN_DURATION so the final bud frame lands before
-    // the splash dismisses. The `splash_animation_completes_within_min_duration`
-    // test pins the relationship so a future bump fails loud.
+    // 14 frames × 6 ticks × 30 ms = 2520 ms for the grow phase, well
+    // inside the 3 s SPLASH_MIN_DURATION (so the boot splash always
+    // lands on the bud frame). Then 67 ticks × 30 ms ≈ 2 s of hold on
+    // the last frame before the cycle wraps — only visible in the
+    // looping `:about` view since the boot splash dismisses during
+    // the hold anyway. Total cycle: 4530 ms.
     const TICKS_PER_FRAME: usize = 6;
-    let scene = FRAMES[(frame as usize / TICKS_PER_FRAME) % FRAMES.len()];
+    const FINAL_FRAME_HOLD_TICKS: usize = 67;
+    let grow_ticks = FRAMES.len() * TICKS_PER_FRAME;
+    let cycle_ticks = grow_ticks + FINAL_FRAME_HOLD_TICKS;
+    let tick = (frame as usize) % cycle_ticks;
+    let scene_idx = if tick < grow_ticks {
+        tick / TICKS_PER_FRAME
+    } else {
+        // Hold phase: stay on the final bloom frame.
+        FRAMES.len() - 1
+    };
+    let scene = FRAMES[scene_idx];
     // The pixel→`██` rendering loop lives in tui-common::splash so
     // pgman (and any future sibling) shares the same machinery. We
     // wrap our local 6-key palette in a closure that hands back a
@@ -450,12 +465,14 @@ mod tests {
         SPLASH_FRAME_13,
     ];
 
-    /// Mirrors `splash_scene_lines`'s internal constant so the cycle
-    /// probes match the actual frame stride.
+    /// Mirrors `splash_scene_lines`'s internal constants so the cycle
+    /// probes match the actual frame stride / hold duration.
     const TICKS_PER_FRAME: u64 = 6;
     /// Total number of frames in the animation cycle. Mirrors the
     /// FRAMES array length in `splash_scene_lines`.
     const FRAME_COUNT: u64 = 14;
+    /// Hold-on-last-frame tick count. Mirrors `FINAL_FRAME_HOLD_TICKS`.
+    const FINAL_FRAME_HOLD_TICKS: u64 = 67;
 
     #[test]
     fn splash_shows_scene_gates_on_terminal_size() {
@@ -555,11 +572,10 @@ mod tests {
             r0 != r5 || r0 != r13,
             "frames should differ — scene is not animating"
         );
-        // The cycle wraps back to frame 0 after FRAME_COUNT × TICKS_PER_FRAME.
-        assert_eq!(
-            render(&splash_scene_lines(FRAME_COUNT * TICKS_PER_FRAME)),
-            r0
-        );
+        // The full cycle wraps back to frame 0 after the grow phase
+        // PLUS the hold-on-last-frame tail.
+        let cycle_ticks = FRAME_COUNT * TICKS_PER_FRAME + FINAL_FRAME_HOLD_TICKS;
+        assert_eq!(render(&splash_scene_lines(cycle_ticks)), r0);
         // Square pixels: a painted cell is the two-block "██" (sampled
         // from the last frame which has the most pixels lit).
         assert!(splash_scene_lines(13 * TICKS_PER_FRAME)
@@ -569,14 +585,66 @@ mod tests {
     }
 
     #[test]
-    fn splash_animation_completes_within_min_duration() {
-        // Pin the speed-up: one full cycle should finish in less than
-        // the splash's 3 s minimum duration, so the boot splash always
-        // lands on the final-bloom frame before the table replaces it.
-        let cycle_ms = FRAME_COUNT * TICKS_PER_FRAME * 30;
+    fn last_frame_holds_for_two_seconds_before_wrapping() {
+        // Pin the hold behaviour: every tick inside the hold window
+        // renders the bud-blossom frame, but the very next tick after
+        // the hold ends wraps back to the empty-pot frame.
+        let render = |ls: &[ratatui::text::Line]| {
+            ls.iter()
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| format!("{:?}{}", s.style.fg, s.content))
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+        };
+        let grow_ticks = FRAME_COUNT * TICKS_PER_FRAME;
+        let bud_frame = render(&splash_scene_lines(grow_ticks - 1));
+        // First tick of the hold window — still bud.
+        assert_eq!(render(&splash_scene_lines(grow_ticks)), bud_frame);
+        // Middle of the hold window — still bud.
+        assert_eq!(
+            render(&splash_scene_lines(grow_ticks + FINAL_FRAME_HOLD_TICKS / 2)),
+            bud_frame
+        );
+        // Last tick of the hold window — still bud.
+        assert_eq!(
+            render(&splash_scene_lines(grow_ticks + FINAL_FRAME_HOLD_TICKS - 1)),
+            bud_frame
+        );
+        // One tick past the hold window — wrapped back to frame 0.
+        let pot_frame = render(&splash_scene_lines(0));
+        assert_eq!(
+            render(&splash_scene_lines(grow_ticks + FINAL_FRAME_HOLD_TICKS)),
+            pot_frame
+        );
+    }
+
+    #[test]
+    fn last_frame_hold_is_approximately_two_seconds() {
+        // Pin the design intent: the hold is ~2 s in wall-clock time
+        // (animation tick = 30 ms). If a future bump knocks the hold
+        // below 1.5 s or above 2.5 s, that's almost certainly a bug.
+        let hold_ms = FINAL_FRAME_HOLD_TICKS * 30;
         assert!(
-            cycle_ms < 3000,
-            "cycle is {cycle_ms} ms — exceeds 3 s splash duration; bump TICKS_PER_FRAME down"
+            (1500..=2500).contains(&hold_ms),
+            "hold is {hold_ms} ms — should sit near 2 s"
+        );
+    }
+
+    #[test]
+    fn splash_grow_phase_completes_within_min_duration() {
+        // Pin the speed-up: the GROW phase (empty pot → bud) should
+        // finish in less than the splash's 3 s minimum duration so
+        // the boot splash always lands on the final-bloom frame
+        // before the table replaces it. The hold-on-last-frame tail
+        // continues past 3 s but only the looping `:about` view ever
+        // sees it — the boot splash dismisses during the hold.
+        let grow_ms = FRAME_COUNT * TICKS_PER_FRAME * 30;
+        assert!(
+            grow_ms < 3000,
+            "grow phase is {grow_ms} ms — exceeds 3 s splash duration; bump TICKS_PER_FRAME down"
         );
     }
 }
