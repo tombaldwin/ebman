@@ -1615,6 +1615,39 @@ fn draw_why_red_overlay(f: &mut Frame, area: Rect, app: &mut App) {
         lines.push(blank());
     }
 
+    // Cost (when `:cost on` has populated `app.costs`). Two reasons cost
+    // belongs at the top: (a) "are we paying for this red env to be
+    // wrong" is a question that *should* take a quarter-second to
+    // answer during triage, and (b) the bucket-tint (green / muted /
+    // red, identical to the COST column's bucket rules) gives the
+    // responder a coarse signal alongside health. Only rendered when
+    // cost data is loaded — keeps the overlay shape stable for
+    // operators who haven't enabled cost tracking.
+    if let Some(cost) = app.costs.get(env_name).copied() {
+        let bucket_fg = if cost >= 500.0 {
+            theme.health_red
+        } else if cost >= 50.0 {
+            theme.text
+        } else {
+            theme.health_green
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                " cost     ",
+                Style::default()
+                    .fg(theme.title_alt)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("${cost:.0}"),
+                Style::default().fg(bucket_fg).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("/mo  ", Style::default().fg(theme.muted)),
+            Span::styled("(Cost Explorer, last 30d)", Style::default().fg(theme.muted)),
+        ]));
+        lines.push(blank());
+    }
+
     // 1. RECENT EVENTS (last 30 minutes — the window where "what went
     // wrong" usually shows up; older events are noise during triage).
     lines.push(section("recent events (last 30 min)"));
@@ -5054,6 +5087,27 @@ fn draw_detail_health(f: &mut Frame, area: Rect, detail: &crate::app::DetailStat
                     .add_modifier(Modifier::BOLD),
             ));
         }
+    }
+    // Cost suffix — when `:cost on` has populated app.costs, append
+    // a `cost: $NN/mo` chip to the status line so spend lives alongside
+    // health in the same scanline. Same bucket palette as the COST
+    // column + `:why` overlay (green / muted / red) for cross-view
+    // consistency. Hidden when cost tracking isn't enabled — keeps
+    // the line layout stable for operators who don't care about cost.
+    if let Some(cost) = app.costs.get(&env.name).copied() {
+        let bucket_fg = if cost >= 500.0 {
+            theme.health_red
+        } else if cost >= 50.0 {
+            theme.text
+        } else {
+            theme.health_green
+        };
+        status_line.push(Span::raw("   "));
+        status_line.push(Span::styled("cost: ", Style::default().fg(theme.muted)));
+        status_line.push(Span::styled(
+            format!("${cost:.0}/mo"),
+            Style::default().fg(bucket_fg).add_modifier(Modifier::BOLD),
+        ));
     }
     lines.push(Line::from(status_line));
     lines.push(Line::raw(""));
