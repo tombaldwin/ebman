@@ -1,13 +1,14 @@
-# Homebrew formula for ebman.
+# Homebrew formula for ebman — k9s-style TUI for AWS Elastic Beanstalk.
 #
-# Usage (until tap is published):
-#   brew install --formula ./Formula/ebman.rb
+# This in-repo copy is for `brew install --formula ./Formula/ebman.rb`
+# (local-checkout install). The canonical user-facing install path is
+# the tap at https://github.com/tombaldwin/homebrew-tap:
+#   brew tap tombaldwin/tap
+#   brew install ebman
 #
-# When a `v*` tag is pushed, the `release` workflow attaches per-target tarballs
-# to the GitHub Release. The `url` / `sha256` fields below must be bumped to
-# match each new release — `scripts/update-formula.sh` (not yet written) can
-# be the home for that bumping later. The current numbers are stubs and will
-# need updating before the formula resolves.
+# Bumping for a new release: run `scripts/update-formula.sh vX.Y.Z` —
+# it computes SHA-256s from the GitHub Release tarballs and writes
+# both this file and the tap's Formula/ebman.rb in one go.
 class Ebman < Formula
   desc "k9s-style TUI for AWS Elastic Beanstalk"
   homepage "https://github.com/tombaldwin/ebman"
