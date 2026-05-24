@@ -1,10 +1,24 @@
 # ebman
 
-A k9s-style terminal UI for AWS Elastic Beanstalk.
+[![crates.io](https://img.shields.io/crates/v/ebman.svg)](https://crates.io/crates/ebman)
+[![downloads](https://img.shields.io/crates/d/ebman.svg)](https://crates.io/crates/ebman)
+[![CI](https://github.com/tombaldwin/ebman/actions/workflows/ci.yml/badge.svg)](https://github.com/tombaldwin/ebman/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![homebrew](https://img.shields.io/badge/homebrew-tombaldwin%2Ftap-orange.svg)](https://github.com/tombaldwin/homebrew-tap)
 
-Browse environments, drill into events / instances / metrics / queue / config, stream CloudWatch logs, edit env vars / option settings, deploy new versions — all without leaving the terminal.
+**A k9s-style TUI for AWS Elastic Beanstalk.** Triage red envs, stream logs, edit option settings, deploy new versions — all from the keyboard. If you've used k9s with Kubernetes, the muscle memory carries: `:` for commands, `/` to filter, `Enter` to drill in, `?` for context-aware help.
 
-<!-- screenshot here once the maintainer can capture a real frame -->
+Built for operators who triage EB envs daily and don't want the AWS console round-trip — or the `eb deploy ; aws elasticbeanstalk describe-events --max-items 50 | jq ...` shell-pipeline every time something goes red.
+
+<!--
+  Hero asset to drop in here:
+    * Preferred: 15–20s asciinema cast or VHS gif showing launch → drill into
+      an env → `:why` overlay → `:diff staging prod`.
+    * Acceptable: 3-up static screenshot row (main table / `:why` overlay /
+      Detail/Health) + a single big `:why` shot under it.
+  Capture with `asciinema rec demo.cast` then convert via `agg`, or with VHS
+  (https://github.com/charmbracelet/vhs) for a deterministic gif.
+-->
 
 ## Highlights
 
