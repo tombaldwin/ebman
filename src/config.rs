@@ -45,6 +45,15 @@ pub struct Config {
     /// key for AssumeRole'd accounts, or the AWS profile name
     /// otherwise). Lines use `safety.accounts.NAME.read_only = true`.
     pub safety_accounts: std::collections::HashMap<String, bool>,
+    /// Optional outbound webhook for audit-line fan-out. Each audit
+    /// line written to `~/.cache/ebman/audit.log` is also POSTed to
+    /// this URL as JSON (fire-and-forget; failures don't block or
+    /// alarm). Body shape: `{"text": "<audit line>", "action": "...",
+    /// "target": "...", "account": "...", "profile": "...", "region":
+    /// "...", "at": "<rfc3339>"}`. The top-level `text` makes the
+    /// body Slack-incoming-webhook-compatible out of the box. Lines
+    /// in `config.toml` use `notify_webhook = "https://..."`.
+    pub notify_webhook: Option<String>,
 }
 
 /// A named `sts:AssumeRole` target. The operator typically pins one of
@@ -77,6 +86,7 @@ impl Default for Config {
             runbooks: std::collections::HashMap::new(),
             safety_envs: std::collections::HashMap::new(),
             safety_accounts: std::collections::HashMap::new(),
+            notify_webhook: None,
         }
     }
 }
@@ -124,6 +134,12 @@ pub fn parse(text: &str) -> Config {
                 if let Some(b) = parse_bool(&value) {
                     cfg.notify_bell = b;
                 }
+            }
+            "notify_webhook" => {
+                // Empty string disables; treat the same as the key
+                // being absent so a `notify_webhook = ""` line acts as
+                // an explicit off-switch without removing the key.
+                cfg.notify_webhook = if value.is_empty() { None } else { Some(value) };
             }
             "required_tags" => {
                 cfg.required_tags = value
@@ -234,6 +250,9 @@ pub fn serialize(cfg: &Config) -> String {
     out.push_str(&format!("theme = \"{}\"\n", cfg.theme));
     out.push_str(&format!("icons = \"{}\"\n", cfg.icons));
     out.push_str(&format!("notify_bell = {}\n", cfg.notify_bell));
+    if let Some(url) = &cfg.notify_webhook {
+        out.push_str(&format!("notify_webhook = \"{url}\"\n"));
+    }
     if !cfg.required_tags.is_empty() {
         out.push_str(&format!(
             "required_tags = \"{}\"\n",
@@ -483,6 +502,7 @@ accounts.staging.external_id = "abc-xyz"
             runbooks: std::collections::HashMap::new(),
             safety_envs: std::collections::HashMap::new(),
             safety_accounts: std::collections::HashMap::new(),
+            notify_webhook: Some("https://hooks.slack.com/services/EXAMPLE".into()),
         };
 
         let body = serialize(&cfg);
@@ -496,6 +516,7 @@ accounts.staging.external_id = "abc-xyz"
         assert_eq!(reparsed.notify_bell, cfg.notify_bell);
         assert_eq!(reparsed.required_tags, cfg.required_tags);
         assert_eq!(reparsed.profile_themes, cfg.profile_themes);
+        assert_eq!(reparsed.notify_webhook, cfg.notify_webhook);
     }
 
     #[test]
