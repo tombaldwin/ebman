@@ -23,19 +23,54 @@ use std::sync::{Arc, Mutex};
 
 use portable_pty::{CommandBuilder, MasterPty, PtyPair, PtySize};
 
-/// A live embedded shell session. `parser` is the virtual terminal state,
-/// `writer` is the PTY master input side, `_child` keeps the subprocess
-/// alive for the lifetime of this struct.
+/// A live embedded shell session. `parser` is the virtual terminal state.
+/// The PTY-side fields (`writer`, `master`, `child`) are `Option` because
+/// `--demo` mode constructs a fake session that pre-loads canned content
+/// into the parser without spawning a real subprocess. For real sessions
+/// all three are populated; for demo sessions all three are `None`.
 pub struct ShellSession {
     pub parser: Arc<Mutex<vt100::Parser>>,
-    pub writer: Box<dyn Write + Send>,
-    pub master: Box<dyn MasterPty + Send>,
-    pub child: Box<dyn portable_pty::Child + Send + Sync>,
+    pub writer: Option<Box<dyn Write + Send>>,
+    pub master: Option<Box<dyn MasterPty + Send>>,
+    pub child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
     /// Human label shown in the pane title (e.g. the instance id).
     pub label: String,
     /// Output-reader background task. `Some` until the subprocess exits
     /// and the reader returns; then the run loop can decide to close.
+    /// Demo sessions keep this `true` for the session's lifetime — they
+    /// can't "die" because there's no subprocess.
     pub reader_alive: Arc<std::sync::atomic::AtomicBool>,
+    /// "Typewriter" state for demo sessions — bytes the
+    /// `tick_demo_typer` call drains into `parser` incrementally so
+    /// the pane animates as if a real shell were echoing typed input
+    /// + producing output. `None` for real sessions (which get bytes
+    /// from the PTY reader thread).
+    pub demo_typer: Option<Mutex<DemoTyperState>>,
+}
+
+/// Bookkeeping for the demo-mode typewriter. Bytes get fed into
+/// `parser` by `ShellSession::tick_demo_typer`, called from the run
+/// loop's 30 fps `shell_tick`. The pacing model is simple: drain
+/// `CHARS_PER_TICK` bytes per tick, and after a chunk that contained a
+/// newline, hold for `NEWLINE_PAUSE_TICKS` ticks before resuming.
+/// Tuning targets ~3-5 seconds total for a typical session transcript.
+pub struct DemoTyperState {
+    bytes: Vec<u8>,
+    pos: usize,
+    skip_ticks: u8,
+}
+
+impl DemoTyperState {
+    /// Characters to drain into the parser per shell_tick.
+    /// 2 chars @ ~30fps ≈ 60 cps — feels like a real fast typist's
+    /// pace. Higher (e.g. 6) looks robot-fast; lower (e.g. 1) looks
+    /// labored.
+    const CHARS_PER_TICK: usize = 2;
+    /// Extra ticks (no emit) to hold after a newline. Gives each
+    /// command/output line a beat of dwell before the next starts.
+    /// 6 ticks * 33ms ≈ 200ms — closer to a natural "command landed,
+    /// reading the output" beat than the prior 100ms.
+    const NEWLINE_PAUSE_TICKS: u8 = 6;
 }
 
 impl ShellSession {
@@ -106,28 +141,100 @@ impl ShellSession {
 
         Ok(Self {
             parser,
-            writer,
-            master,
-            child,
+            writer: Some(writer),
+            master: Some(master),
+            child: Some(child),
             label,
             reader_alive,
+            demo_typer: None,
         })
     }
 
-    /// Forward bytes from a keyboard event to the PTY master.
-    pub fn send(&mut self, bytes: &[u8]) -> std::io::Result<()> {
-        self.writer.write_all(bytes)?;
-        self.writer.flush()
+    /// Build a fake demo-mode session: a `vt100::Parser` that will be
+    /// fed `content` incrementally by `tick_demo_typer`, no real PTY
+    /// behind it. The typewriter pacing makes the pane animate as
+    /// the operator-realistic commands type themselves out — VHS
+    /// captures look like a real session rather than a static dump.
+    /// Keystrokes into a demo session are silently dropped (`send()`
+    /// no-ops when `writer` is `None`); F12 (and Esc, demo-only)
+    /// detaches as usual.
+    pub fn demo(label: String, content: &str, rows: u16, cols: u16) -> Self {
+        let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 1000)));
+        let demo_typer = Some(Mutex::new(DemoTyperState {
+            bytes: content.as_bytes().to_vec(),
+            pos: 0,
+            skip_ticks: 0,
+        }));
+        Self {
+            parser,
+            writer: None,
+            master: None,
+            child: None,
+            label,
+            // Demo sessions stay alive until the operator detaches.
+            reader_alive: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            demo_typer,
+        }
     }
 
-    /// Resize the PTY to match a new pane size. No-op on failure.
+    /// Drain a chunk of the demo session's pending bytes into the
+    /// parser. No-op for real sessions (which have `demo_typer = None`)
+    /// and for demo sessions that have already played out their full
+    /// content. The run loop's `shell_tick` (~30 fps when a shell is
+    /// open) calls this every frame so the typewriter animates at the
+    /// expected pace.
+    pub fn tick_demo_typer(&self) {
+        let Some(typer_mtx) = self.demo_typer.as_ref() else {
+            return;
+        };
+        let Ok(mut s) = typer_mtx.lock() else { return };
+        if s.skip_ticks > 0 {
+            s.skip_ticks -= 1;
+            return;
+        }
+        if s.pos >= s.bytes.len() {
+            return;
+        }
+        let end = (s.pos + DemoTyperState::CHARS_PER_TICK).min(s.bytes.len());
+        let chunk: Vec<u8> = s.bytes[s.pos..end].to_vec();
+        s.pos = end;
+        let had_newline = chunk.contains(&b'\n');
+        // Drop the typer lock before grabbing parser to avoid a
+        // theoretical deadlock if anything ever takes them in the
+        // opposite order. Today nothing does, but cheap insurance.
+        drop(s);
+        if let Ok(mut p) = self.parser.lock() {
+            p.process(&chunk);
+        }
+        if had_newline {
+            if let Ok(mut s) = typer_mtx.lock() {
+                s.skip_ticks = DemoTyperState::NEWLINE_PAUSE_TICKS;
+            }
+        }
+    }
+
+    /// Forward bytes from a keyboard event to the PTY master. No-op on a
+    /// demo session (no PTY behind it).
+    pub fn send(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        if let Some(writer) = self.writer.as_mut() {
+            writer.write_all(bytes)?;
+            writer.flush()?;
+        }
+        Ok(())
+    }
+
+    /// Resize the PTY to match a new pane size. No-op on failure. For a
+    /// demo session, only the parser's `set_size` runs (no PTY to
+    /// resize).
     pub fn resize(&self, rows: u16, cols: u16) {
-        let _ = self.master.resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        });
+        if let Some(master) = self.master.as_ref() {
+            let _ = master.resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            });
+        }
         if let Ok(mut p) = self.parser.lock() {
             p.set_size(rows, cols);
         }
@@ -135,15 +242,20 @@ impl ShellSession {
 
     /// True when the subprocess has exited and the reader thread has
     /// returned. The run loop checks this each frame and tears down the
-    /// session when the user's `exit` / ^D propagates.
+    /// session when the user's `exit` / ^D propagates. Demo sessions
+    /// never report dead (they're closed explicitly via F12 + the
+    /// existing `close_shell_session` path).
     pub fn is_dead(&self) -> bool {
         !self.reader_alive.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Best-effort kill of the subprocess. Called when the user explicitly
     /// closes the pane (vs. F12 detach which keeps the session live).
+    /// No-op on a demo session.
     pub fn kill(&mut self) {
-        let _ = self.child.kill();
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+        }
     }
 }
 

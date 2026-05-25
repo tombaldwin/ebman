@@ -27,7 +27,10 @@ use std::collections::HashMap;
 use chrono::{TimeZone, Utc};
 
 use crate::app::App;
-use crate::aws::{CwAlarm, EnvInstanceCounts, Environment, Event as EbEvent};
+use crate::aws::{
+    AppVersion, CwAlarm, EnvInstanceCounts, Environment, Event as EbEvent, Instance, QueueStats,
+    WorkerQueues,
+};
 
 /// Anchor timestamp the fixture is computed against. Stable across
 /// runs so VHS recordings show the same "Last refresh" / event
@@ -128,6 +131,189 @@ fn envs() -> Vec<Environment> {
     ]
 }
 
+/// Per-env filtered slice of the fleet's events. Detail/Events
+/// consumes this in demo mode so it renders without a live
+/// `list_events_for_env` round-trip. Once `:why` spawn-gating
+/// lands, that overlay will reuse the same accessor.
+pub fn events_for_env(env_name: &str) -> Vec<EbEvent> {
+    events().into_iter().filter(|e| e.env == env_name).collect()
+}
+
+/// Canned ssm-session content for `--demo` mode's fake shell pane.
+/// Written as a single `\r\n`-terminated string so the resulting
+/// vt100::Parser screen reads like a real SSM session: the AWS CLI's
+/// session-id banner, then a few short interactive commands an
+/// operator would actually run during a Red-env triage (`uptime`,
+/// `tail` on the EB engine log, etc.). The trailing prompt is left
+/// blinking so the pane looks live; F12 detaches as usual.
+pub fn canned_ssm_session(instance_id: &str) -> String {
+    // Short session-id matching what `aws ssm start-session` prints.
+    let session_id = format!("tom-demo-{}", &instance_id[2..10.min(instance_id.len())]);
+    let mut lines = Vec::<String>::new();
+    let push = |lines: &mut Vec<String>, s: &str| {
+        lines.push(s.to_string());
+    };
+    push(
+        &mut lines,
+        &format!("Starting session with SessionId: {session_id}"),
+    );
+    push(&mut lines, "");
+    push(&mut lines, "sh-4.2$ uptime");
+    push(
+        &mut lines,
+        " 14:30:15 up 3 days,  4:22,  1 user,  load average: 0.42, 0.38, 0.31",
+    );
+    push(&mut lines, "sh-4.2$ tail -3 /var/log/eb-engine/health.log");
+    push(&mut lines, "2026-05-24T14:27:42Z [WARN]  5xx rate 12.7%");
+    push(
+        &mut lines,
+        "2026-05-24T14:28:55Z [ERROR] health Yellow → Red",
+    );
+    push(&mut lines, "sh-4.2$ ");
+    // vt100 wants \r\n line endings (it's emulating an xterm).
+    lines.join("\r\n")
+}
+
+/// Per-env filtered slice of the fleet's alarms. Matches by alarm-
+/// name prefix against the env name since the fixture-side alarms
+/// encode their owning env that way. Used by `spawn_detail_alarms`
+/// and `spawn_why_red_alarms` in demo mode.
+pub fn alarms_for_env(env_name: &str) -> Vec<CwAlarm> {
+    alarms()
+        .into_iter()
+        .filter(|a| a.name.starts_with(env_name))
+        .collect()
+}
+
+/// Per-application recent-deploys history. Used by
+/// `spawn_detail_recent_versions` and `spawn_why_red_deploys` in
+/// demo mode. Newest first, matching the live API's sort order; the
+/// labels line up with the fleet's `version_label` values so an
+/// operator scanning `:why` sees "what shipped last, on which env".
+pub fn deploys_for_app(app_name: &str) -> Vec<AppVersion> {
+    if app_name != "ledgerly" {
+        return Vec::new();
+    }
+    let now = fixture_now();
+    let mk = |label: &str, desc: &str, ago_min: i64| AppVersion {
+        label: label.into(),
+        description: desc.into(),
+        created: Some(now - chrono::Duration::minutes(ago_min)),
+    };
+    vec![
+        mk("build-825", "feat: new dashboard widget", 12),
+        mk("build-823", "fix: backoff on 429 from upstream", 47),
+        mk("build-820", "chore: bump otel-collector", 192),
+        mk("build-817", "perf: cache HEAD on hot path", 1500),
+        mk("build-814", "feat: add reconciler retry policy", 4320),
+    ]
+}
+
+/// Per-env synthetic worker-queue stats. Worker envs return both
+/// a main + DLQ stat block; non-Worker envs return defaults (no
+/// URLs, no stats). Used by `spawn_detail_queues` and
+/// `spawn_why_red_queues` in demo mode.
+pub fn worker_queues_for_env(env_name: &str) -> WorkerQueues {
+    match env_name {
+        "ledgerly-batch" => WorkerQueues {
+            main_url: Some(
+                "https://sqs.us-east-1.amazonaws.com/123456789012/ledgerly-batch".into(),
+            ),
+            dlq_url: Some(
+                "https://sqs.us-east-1.amazonaws.com/123456789012/ledgerly-batch-dlq".into(),
+            ),
+            main_stats: Some(QueueStats {
+                visible: 7,
+                in_flight: 3,
+                delayed: 0,
+            }),
+            dlq_stats: Some(QueueStats {
+                visible: 12,
+                in_flight: 0,
+                delayed: 0,
+            }),
+        },
+        "ledgerly-prod-worker" => WorkerQueues {
+            main_url: Some(
+                "https://sqs.us-east-1.amazonaws.com/123456789012/ledgerly-prod-worker".into(),
+            ),
+            dlq_url: Some(
+                "https://sqs.us-east-1.amazonaws.com/123456789012/ledgerly-prod-worker-dlq".into(),
+            ),
+            main_stats: Some(QueueStats {
+                visible: 4,
+                in_flight: 2,
+                delayed: 0,
+            }),
+            dlq_stats: Some(QueueStats::default()),
+        },
+        "ledgerly-staging-worker" => WorkerQueues {
+            main_url: Some(
+                "https://sqs.us-east-1.amazonaws.com/123456789012/ledgerly-staging-worker".into(),
+            ),
+            dlq_url: Some(
+                "https://sqs.us-east-1.amazonaws.com/123456789012/ledgerly-staging-worker-dlq"
+                    .into(),
+            ),
+            main_stats: Some(QueueStats::default()),
+            dlq_stats: Some(QueueStats::default()),
+        },
+        _ => WorkerQueues::default(),
+    }
+}
+
+/// Per-env synthetic instance list, used by `spawn_detail_instances`
+/// when in demo mode so Detail/Instances renders without firing an
+/// AWS call. EC2-ID format (`i-` + 17 hex) matches the post-2017
+/// long-form IDs operators see in production. Envs not listed here
+/// return an empty Vec (Grey envs / envs with no instances yet).
+pub fn instances_for(env_name: &str) -> Vec<Instance> {
+    let now = fixture_now();
+    let mk = |id: &str, health: &str, color: &str, az: &str, ago_min: i64| Instance {
+        id: id.into(),
+        health: health.into(),
+        color: color.into(),
+        causes: Vec::new(),
+        instance_type: "t3.medium".into(),
+        availability_zone: az.into(),
+        launched_at: Some(now - chrono::Duration::minutes(ago_min)),
+    };
+    match env_name {
+        "ledgerly-staging-api" => vec![
+            mk("i-0abc123def456789a", "Severe", "Red", "us-east-1a", 84),
+            mk("i-0bcd234ef567890ab", "Ok", "Green", "us-east-1b", 84),
+        ],
+        "ledgerly-batch" => vec![
+            mk(
+                "i-0cde345f6789012bc",
+                "Warning",
+                "Yellow",
+                "us-east-1a",
+                240,
+            ),
+            mk("i-0def4567890123cde", "Ok", "Green", "us-east-1b", 240),
+        ],
+        "ledgerly-prod-api" => vec![
+            mk("i-0ef56789012345def", "Ok", "Green", "us-east-1a", 1500),
+            mk("i-0f6789012345678ef", "Ok", "Green", "us-east-1b", 1500),
+            mk("i-01234567890abcdef", "Ok", "Green", "us-east-1c", 1500),
+        ],
+        "ledgerly-prod-worker" => vec![
+            mk("i-0234567890abcdef0", "Ok", "Green", "us-east-1a", 1500),
+            mk("i-03456789012abcdef", "Ok", "Green", "us-east-1b", 1500),
+        ],
+        "ledgerly-staging-worker" => vec![
+            mk("i-04567890abcdef012", "Ok", "Green", "us-east-1a", 84),
+            mk("i-05678901abcdef234", "Ok", "Green", "us-east-1b", 84),
+        ],
+        "ledgerly-canary-api" => vec![
+            // Canary mid-deploy — one of two is being replaced.
+            mk("i-067890abcdef34567", "Pending", "Grey", "us-east-1a", 2),
+        ],
+        _ => Vec::new(),
+    }
+}
+
 /// Recent events the events panel + `:why` overlay surface. Picked so
 /// the staging-api Red transition has a story (deploy → health
 /// degraded → no recovery) the operator can read in 10 seconds.
@@ -195,13 +381,9 @@ fn events() -> Vec<EbEvent> {
     ]
 }
 
-// Kept (and `#[allow(dead_code)]`'d) for the next-step spawn-site
-// gating work — once `:why` / `:alarms` / Detail/Instances learn to
-// short-circuit their async fetches in demo mode, this is the data
-// they'll inject. The `fixture_red_env_has_an_alarm_and_a_health_event`
-// test exercises the data shape so a future spawn-gating commit
-// doesn't ship with surprises.
-#[allow(dead_code)]
+/// Fleet-wide alarms — consumed via `alarms_for_env` by the spawn-
+/// site gates in `spawn_detail_alarms` / `spawn_why_red_alarms` so
+/// the live fetches don't hit the stub AwsClient in demo mode.
 fn alarms() -> Vec<CwAlarm> {
     vec![
         CwAlarm {
