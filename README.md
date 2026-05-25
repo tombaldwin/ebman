@@ -10,15 +10,9 @@
 
 Built for operators who triage EB envs daily and don't want the AWS console round-trip — or the `eb deploy ; aws elasticbeanstalk describe-events --max-items 50 | jq ...` shell-pipeline every time something goes red.
 
-<!--
-  Hero asset to drop in here:
-    * Preferred: 15–20s asciinema cast or VHS gif showing launch → drill into
-      an env → `:why` overlay → `:diff staging prod`.
-    * Acceptable: 3-up static screenshot row (main table / `:why` overlay /
-      Detail/Health) + a single big `:why` shot under it.
-  Capture with `asciinema rec demo.cast` then convert via `agg`, or with VHS
-  (https://github.com/charmbracelet/vhs) for a deterministic gif.
--->
+![ebman demo — filter → :why → drill into Detail/Instances → embedded SSM session](demo.gif)
+
+> Captured from `ebman --demo`, the synthetic-fleet mode that ships with the binary. Regenerate the gif with `vhs demo.tape` after a code change.
 
 ## Triage workflow
 
