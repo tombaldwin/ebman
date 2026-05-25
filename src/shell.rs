@@ -43,8 +43,8 @@ pub struct ShellSession {
     /// "Typewriter" state for demo sessions — bytes the
     /// `tick_demo_typer` call drains into `parser` incrementally so
     /// the pane animates as if a real shell were echoing typed input
-    /// + producing output. `None` for real sessions (which get bytes
-    /// from the PTY reader thread).
+    /// and producing output. `None` for real sessions (which get
+    /// bytes from the PTY reader thread).
     pub demo_typer: Option<Mutex<DemoTyperState>>,
 }
 
