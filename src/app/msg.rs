@@ -44,6 +44,7 @@ impl AppMsg {
             | WhyRedDlqMessages { gen, .. }
             | PreflightEvents { gen, .. }
             | VersionPreview { gen, .. }
+            | HealthCheckProbe { gen, .. }
             | RollbackTarget { gen, .. }
             | DetailTags { gen, .. }
             | DeployFromLocal { gen, .. }
@@ -155,6 +156,9 @@ impl App {
             AppMsg::VersionPreview {
                 env_name, result, ..
             } => self.handle_version_preview(env_name, result),
+            AppMsg::HealthCheckProbe {
+                env_name, result, ..
+            } => self.handle_health_check_probe(env_name, result),
             AppMsg::RollbackTarget {
                 env_name,
                 current_version,
@@ -714,6 +718,21 @@ impl App {
             Ok(body) => body,
             Err(e) => format!("version preview unavailable: {e}"),
         });
+    }
+
+    /// Stuff the pre-deploy health-check probe outcome into the
+    /// modal — clears the loading flag either way. Same drop-on-
+    /// floor contract as `handle_version_preview` for cases where
+    /// the modal closed mid-flight.
+    fn handle_health_check_probe(&mut self, env_name: String, result: Result<(), String>) {
+        let Some(ActionFlow::Confirm(modal)) = self.action_flow.as_mut() else {
+            return;
+        };
+        if modal.target_env != env_name {
+            return;
+        }
+        modal.loading_health_check = false;
+        modal.health_check_probe = Some(result);
     }
 
     fn handle_rollback_target(
