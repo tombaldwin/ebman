@@ -558,12 +558,46 @@ pub const PENDING_COMPLETED_TTL: Duration = Duration::from_secs(60);
 /// just before a Deploy fires. `previous_version_label` is what the
 /// env was running at capture time — the rollback target. `taken_at`
 /// is wall-clock; the watchdog uses it for status reporting ("armed
-/// 3m ago, 2m to deadline"). In-memory only; not persisted.
+/// 3m ago, 2m to deadline"). Persisted to state.toml so a cross-
+/// session `:rollback` still has a target.
 #[derive(Debug, Clone)]
 pub struct DeploySnapshot {
     pub env_name: String,
     pub previous_version_label: String,
     pub taken_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl DeploySnapshot {
+    /// On-disk shape — `"label|RFC3339-ts"`. Pipe separator keeps the
+    /// existing line-oriented state.toml parser happy. The pipe is
+    /// illegal inside an EB version label (EB rejects `|` per its
+    /// version-label validator), so there's no escaping needed.
+    pub fn to_persisted(&self) -> String {
+        format!(
+            "{}|{}",
+            self.previous_version_label,
+            self.taken_at.to_rfc3339()
+        )
+    }
+
+    /// Inverse of `to_persisted`. Returns `None` for malformed lines
+    /// so the loader can silently drop them — better to lose one
+    /// stale entry than to abort the App-init path.
+    pub fn parse_persisted(env_name: &str, raw: &str) -> Option<Self> {
+        let (label, ts_str) = raw.split_once('|')?;
+        let label = label.trim();
+        if label.is_empty() {
+            return None;
+        }
+        let taken_at = chrono::DateTime::parse_from_rfc3339(ts_str.trim())
+            .ok()?
+            .with_timezone(&chrono::Utc);
+        Some(Self {
+            env_name: env_name.to_string(),
+            previous_version_label: label.to_string(),
+            taken_at,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1569,7 +1603,17 @@ impl App {
             hover_row: None,
             alerts: 0,
             worker_dlq_depths: std::collections::HashMap::new(),
-            deploy_snapshots: std::collections::HashMap::new(),
+            // Restore persisted snapshots so a cross-session `:rollback`
+            // / auto-rollback still has a target. Malformed lines are
+            // silently skipped — better to drop one stale entry than
+            // abort the App-init path.
+            deploy_snapshots: persisted
+                .deploy_snapshots
+                .iter()
+                .filter_map(|(env, raw)| {
+                    DeploySnapshot::parse_persisted(env, raw).map(|s| (env.clone(), s))
+                })
+                .collect(),
             demo_mode: false,
             env_instance_counts: std::collections::HashMap::new(),
             cost_enabled: persisted.cost_enabled.unwrap_or(false),
@@ -10189,6 +10233,11 @@ impl App {
             cost_enabled: Some(self.cost_enabled),
             aliases: self.aliases.clone(),
             saved_views: self.saved_views.clone(),
+            deploy_snapshots: self
+                .deploy_snapshots
+                .iter()
+                .map(|(env, snap)| (env.clone(), snap.to_persisted()))
+                .collect(),
             hidden_cols: self.hidden_cols.clone(),
             custom_metrics: self.custom_metrics.clone(),
         });
@@ -16756,6 +16805,41 @@ mod tests {
             err.contains("Detail") || err.contains("instance ID"),
             "expected guidance about Detail/Instances or instance ID, got: {err}"
         );
+    }
+
+    #[test]
+    fn deploy_snapshot_round_trips_through_persisted_form() {
+        // Capture → serialize → parse must produce a snapshot equal
+        // (up to chrono precision) to the original. The pipe separator
+        // doesn't collide with any legal version-label character.
+        use chrono::TimeZone;
+        let original = DeploySnapshot {
+            env_name: "prod-api".into(),
+            previous_version_label: "build-825".into(),
+            taken_at: chrono::Utc
+                .with_ymd_and_hms(2026, 5, 25, 14, 30, 0)
+                .unwrap(),
+        };
+        let raw = original.to_persisted();
+        assert_eq!(raw, "build-825|2026-05-25T14:30:00+00:00");
+        let parsed = DeploySnapshot::parse_persisted("prod-api", &raw).expect("parses");
+        assert_eq!(parsed.env_name, original.env_name);
+        assert_eq!(
+            parsed.previous_version_label,
+            original.previous_version_label
+        );
+        assert_eq!(parsed.taken_at, original.taken_at);
+    }
+
+    #[test]
+    fn deploy_snapshot_parse_persisted_rejects_garbage() {
+        // No pipe, missing timestamp, malformed RFC3339 — all return
+        // None so the App-init loop silently drops bad lines rather
+        // than aborting startup.
+        assert!(DeploySnapshot::parse_persisted("e", "nopipe").is_none());
+        assert!(DeploySnapshot::parse_persisted("e", "|2026-05-25T14:30:00Z").is_none());
+        assert!(DeploySnapshot::parse_persisted("e", "label|not-a-timestamp").is_none());
+        assert!(DeploySnapshot::parse_persisted("e", "label|").is_none());
     }
 
     #[tokio::test]
