@@ -516,85 +516,27 @@ impl App {
     /// disarms with a status toast (env is Green) or dispatches a
     /// rollback redeploy back to the captured pre-deploy snapshot's
     /// previous version.
+    /// Deadline tokio task fired — kick a manual refresh so
+    /// `apply_refresh` (the single source of truth for watchdog
+    /// outcomes) can evaluate against fresh health. We deliberately
+    /// don't inline the dispatch here: that earlier shape read
+    /// possibly-stale cached health and could trigger a spurious
+    /// rollback when the next refresh would have shown Green. The
+    /// trade-off is up to one refresh-roundtrip of extra latency
+    /// past the deadline before dispatch, which is well below the
+    /// human-noticeable threshold for an alert-and-rollback flow.
     fn handle_auto_rollback_check(&mut self, env_name: String) {
-        // The early-disarm path in apply_refresh may already have
-        // cleared this slot (the operator's deploy reached Green
-        // before the deadline). If so, the deadline-timer fire is a
-        // no-op — no double-rollback, no confused status message.
+        // Slot may have been drained already (apply_refresh early-
+        // disarm fired between the tokio task starting and this
+        // message landing). If so, nothing to do.
         if !self.armed_watchdogs.contains_key(&env_name) {
             return;
         }
-        // Disarm immediately if the env reached Green by the deadline.
-        // Healthy outcomes are by far the common case; surface the
-        // success so the operator sees the watchdog did its job.
-        let health = self
-            .environments
-            .iter()
-            .find(|e| e.name == env_name)
-            .map(|e| e.health.clone())
-            .unwrap_or_default();
-        if health.eq_ignore_ascii_case("Green") || health.eq_ignore_ascii_case("Ok") {
-            self.armed_watchdogs.remove(&env_name);
-            self.status_message = Some(format!(
-                "auto-rollback for {env_name}: env is {health}, no rollback needed"
-            ));
-            // Snapshot stays in place — operator can still `:rollback-deploy`
-            // manually if they change their mind.
-            return;
-        }
-        // Non-Green at the deadline. Look up the snapshot we captured
-        // pre-deploy; if there isn't one, surface that instead of
-        // silently no-op'ing.
-        let Some(snapshot) = self.deploy_snapshots.get(&env_name).cloned() else {
-            self.error_message = Some(format!(
-                "auto-rollback for {env_name}: no pre-deploy snapshot; manual rollback required"
-            ));
-            return;
-        };
-        // Read-only / per-env safety pin gate. If the operator pinned
-        // this env to read-only mid-deploy, respect that — auto-
-        // rollback shouldn't punch through a deliberate safety lock.
-        if self.deny_write(&env_name, "auto-rollback") {
-            return;
-        }
-        // Audit the dispatch + redeploy the previous version. Reuses
-        // the existing `deploy_version` aws call + ActionResult
-        // plumbing so the operator sees the rollback in :pending,
-        // the events panel, and the audit log alongside any manual
-        // dispatch.
-        self.armed_watchdogs.remove(&env_name);
-        let label = snapshot.previous_version_label.clone();
-        let aws = self.aws.clone();
-        let tx = self.msg_tx.clone();
-        let gen = self.generation;
-        let account = self.context.account_id.clone();
-        let profile = self.context.profile.clone();
-        let region = self.context.region.clone();
-        super::write_audit_line(
-            account.as_deref(),
-            profile.as_deref(),
-            &region,
-            &format!(
-                "stage=dispatched action=AutoRollback target={env_name} version={label} health={health}"
-            ),
-        );
-        self.push_pending("Auto-rollback", env_name.clone());
-        self.status_message = Some(format!(
-            "auto-rollback for {env_name}: redeploying {label} (env was {health})"
-        ));
-        let env_for_msg = env_name.clone();
-        tokio::spawn(async move {
-            let result = aws
-                .deploy_version(&env_name, &label)
-                .await
-                .map_err(|e| super::flatten_err("deploy_version", e));
-            let _ = tx.send(AppMsg::ActionResult {
-                gen,
-                action: super::Action::Deploy,
-                env_name: env_for_msg,
-                result,
-            });
-        });
+        // Kick the refresh. The watchdog stays armed in the meantime
+        // so a second deadline tokio (e.g. operator re-armed) doesn't
+        // get confused. Refresh result lands → apply_refresh →
+        // watchdog decision pass.
+        self.spawn_refresh();
     }
 
     fn handle_dry_run_result(&mut self, env_name: String, result: Result<Vec<Instance>, String>) {

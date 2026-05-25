@@ -2511,6 +2511,19 @@ impl App {
         self.status_message_pinned = true;
     }
 
+    /// Error-message counterpart to `pin_status`. Sets
+    /// `error_message` AND raises `status_message_pinned` so the
+    /// next `apply_refresh` doesn't wipe it (the "no-snapshot"
+    /// branch of the refresh clear path gates BOTH status and error
+    /// behind the pinned flag). Used by paths that surface
+    /// permanent-until-acknowledged conditions — e.g. dispatch_auto_rollback's
+    /// "no pre-deploy snapshot" branch, which can fire from inside
+    /// apply_refresh and would otherwise be cleared in the same tick.
+    pub fn pin_error(&mut self, msg: impl Into<String>) {
+        self.error_message = Some(msg.into());
+        self.status_message_pinned = true;
+    }
+
     fn push_toast(&mut self, kind: ToastKind, text: String) {
         // Dedupe: if an identical toast (same kind + text) is already on
         // screen, refresh its timestamp instead of stacking a duplicate.
@@ -6341,6 +6354,69 @@ impl App {
             self.rebuild_view();
             self.status_message = Some(format!("filter: {chosen}"));
         }
+    }
+
+    /// Dispatch an auto-rollback redeploy for `env_name`. Single
+    /// source of truth for the rollback dispatch — `apply_refresh`
+    /// calls this when an armed watchdog's deadline has passed and
+    /// the freshly-applied env is still non-Green. Earlier shape
+    /// had this inline in `handle_auto_rollback_check`, which read
+    /// possibly-stale cached health; making `apply_refresh` the
+    /// decision point eliminates that race.
+    ///
+    /// Caller contracts: env is in the cached fleet, env is non-
+    /// Green, watchdog slot exists. The "no snapshot" + read-only
+    /// gating paths are handled here (drain the watchdog + surface
+    /// an error / status) so caller logic stays simple.
+    pub(crate) fn dispatch_auto_rollback(&mut self, env_name: String, health: String) {
+        let Some(snapshot) = self.deploy_snapshots.get(&env_name).cloned() else {
+            // pin_error so the warning survives apply_refresh's auto-
+            // clear — when this fires *from* apply_refresh (the
+            // common case), the unpinned error_message would
+            // otherwise be wiped on the same tick.
+            self.pin_error(format!(
+                "auto-rollback for {env_name}: no pre-deploy snapshot; manual rollback required"
+            ));
+            self.armed_watchdogs.remove(&env_name);
+            return;
+        };
+        if self.deny_write(&env_name, "auto-rollback") {
+            self.armed_watchdogs.remove(&env_name);
+            return;
+        }
+        self.armed_watchdogs.remove(&env_name);
+        let label = snapshot.previous_version_label.clone();
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let account = self.context.account_id.clone();
+        let profile = self.context.profile.clone();
+        let region = self.context.region.clone();
+        write_audit_line(
+            account.as_deref(),
+            profile.as_deref(),
+            &region,
+            &format!(
+                "stage=dispatched action=AutoRollback target={env_name} version={label} health={health}"
+            ),
+        );
+        self.push_pending("Auto-rollback", env_name.clone());
+        self.pin_status(format!(
+            "auto-rollback for {env_name}: redeploying {label} (env was {health})"
+        ));
+        let env_for_msg = env_name.clone();
+        tokio::spawn(async move {
+            let result = aws
+                .deploy_version(&env_name, &label)
+                .await
+                .map_err(|e| flatten_err("deploy_version", e));
+            let _ = tx.send(AppMsg::ActionResult {
+                gen,
+                action: Action::Deploy,
+                env_name: env_for_msg,
+                result,
+            });
+        });
     }
 
     fn cycle_metrics_range(&mut self, delta: i32) {
@@ -11283,24 +11359,36 @@ impl App {
                 self.environments = envs;
                 self.resort_envs();
 
-                // Early-disarm pass for armed auto-rollback watchdogs:
-                // any env that reached Green on this refresh tick gets
-                // its watchdog cleared so the operator sees the
-                // recovery acknowledged the moment it happens, rather
-                // than at the deadline. The deadline timer also still
-                // fires, but `handle_auto_rollback_check` will find
-                // the slot empty and become a no-op.
-                let armed_envs: Vec<String> = self.armed_watchdogs.keys().cloned().collect();
-                for env_name in armed_envs {
-                    let healthy = self
+                // Watchdog decision pass — single source of truth for
+                // auto-rollback outcomes. Every armed watchdog gets
+                // evaluated against the *freshly-applied* env list
+                // (line above), eliminating the stale-cache race the
+                // earlier "deadline handler dispatches inline" design
+                // had: the deadline `tokio::spawn` now just sends an
+                // `AutoRollbackCheck` message whose handler kicks a
+                // manual refresh, so by the time we reach here the
+                // health field is current.
+                //
+                // Three outcomes per armed env:
+                //   1. Env is Green/Ok → drain, pin status.
+                //   2. Env still non-Green AND deadline passed →
+                //      dispatch the rollback redeploy.
+                //   3. Else → keep armed; check again next refresh.
+                let armed: Vec<(String, chrono::DateTime<chrono::Utc>)> = self
+                    .armed_watchdogs
+                    .iter()
+                    .map(|(env, w)| (env.clone(), w.deadline_at))
+                    .collect();
+                let now = chrono::Utc::now();
+                for (env_name, deadline_at) in armed {
+                    let health = self
                         .environments
                         .iter()
                         .find(|e| e.name == env_name)
-                        .map(|e| {
-                            e.health.eq_ignore_ascii_case("Green")
-                                || e.health.eq_ignore_ascii_case("Ok")
-                        })
-                        .unwrap_or(false);
+                        .map(|e| e.health.clone())
+                        .unwrap_or_default();
+                    let healthy =
+                        health.eq_ignore_ascii_case("Green") || health.eq_ignore_ascii_case("Ok");
                     if healthy {
                         self.armed_watchdogs.remove(&env_name);
                         // pin_status survives the same-tick auto-clear
@@ -11310,7 +11398,13 @@ impl App {
                         self.pin_status(format!(
                             "auto-rollback for {env_name}: env reached Green, watchdog disarmed"
                         ));
+                    } else if now >= deadline_at {
+                        // Deadline reached, env still bad. Dispatch
+                        // the redeploy using the just-refreshed health
+                        // so the audit line is accurate.
+                        self.dispatch_auto_rollback(env_name, health);
                     }
+                    // else: still armed, next refresh re-evaluates.
                 }
 
                 let live: HashSet<String> =
@@ -17057,18 +17151,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn auto_rollback_check_is_noop_after_early_disarm() {
-        // The deadline timer always fires (it's a fire-and-forget
-        // tokio::spawn — no JoinHandle for cancellation). If the
-        // operator's deploy reached Green earlier and apply_refresh
-        // cleared the watchdog, the deadline tick must be a no-op
-        // — no double rollback, no confused status.
+    async fn auto_rollback_check_is_noop_when_no_watchdog_armed() {
+        // The deadline timer always fires (fire-and-forget
+        // `tokio::spawn`, no JoinHandle for cancellation). If
+        // apply_refresh's early-disarm pass already drained the
+        // slot, the deadline message arriving later must be a no-op
+        // — no spurious refresh, no pending row, no status churn.
         let mut app = test_app();
         app.environments = vec![mk_env("prod", "shop", "Web", "Green")];
-        // armed_watchdogs intentionally empty (early-disarmed).
-        // deploy_snapshots intentionally populated to prove that even
-        // with a usable snapshot we DON'T fire when watchdog isn't
-        // armed.
+        // armed_watchdogs intentionally empty. deploy_snapshots
+        // intentionally populated to prove that even with a usable
+        // snapshot we don't fire when the slot's clean.
         app.deploy_snapshots.insert(
             "prod".into(),
             DeploySnapshot {
@@ -17078,34 +17171,31 @@ mod tests {
             },
         );
         let pending_before = app.pending_actions.len();
+        let load_before = app.load_state;
         app.handle_msg(AppMsg::AutoRollbackCheck {
             gen: app.generation,
             env_name: "prod".into(),
         });
-        // No status, no error, no pending row.
         assert_eq!(
             app.pending_actions.len(),
             pending_before,
             "noop check shouldn't push pending"
         );
+        // No refresh kicked: load_state should be unchanged. (A
+        // spurious refresh wouldn't directly hurt operators but
+        // would burn an API call per stale deadline tick.)
+        assert_eq!(
+            app.load_state, load_before,
+            "noop check shouldn't kick a refresh"
+        );
     }
 
     #[tokio::test]
-    async fn auto_rollback_disarms_when_env_reaches_green_by_deadline() {
-        // Pre-condition: snapshot captured before deploy + watchdog
-        // armed. By the deadline the env's Green. Handler should
-        // surface "no rollback needed" + drain the watchdog without
-        // dispatching a deploy.
+    async fn apply_refresh_disarms_armed_watchdog_when_env_reaches_green() {
+        // The refresh decision path's headline outcome — operator's
+        // deploy succeeded, env Green, watchdog disarms with a
+        // status toast.
         let mut app = test_app();
-        app.environments = vec![mk_env("prod", "shop", "Web", "Green")];
-        app.deploy_snapshots.insert(
-            "prod".into(),
-            DeploySnapshot {
-                env_name: "prod".into(),
-                previous_version_label: "build-old".into(),
-                taken_at: chrono::Utc::now(),
-            },
-        );
         let now = chrono::Utc::now();
         app.armed_watchdogs.insert(
             "prod".into(),
@@ -17113,103 +17203,70 @@ mod tests {
                 env_name: "prod".into(),
                 target_label: "build-old".into(),
                 armed_at: now,
-                deadline_at: now,
+                deadline_at: now + chrono::Duration::seconds(300),
             },
         );
-        // Drain the channel so the status_message comparison below
-        // isn't muddled by anything from test_app construction.
-        while app.msg_rx.try_recv().is_ok() {}
-        app.handle_msg(AppMsg::AutoRollbackCheck {
-            gen: app.generation,
-            env_name: "prod".into(),
-        });
+        app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Green")]));
+        assert!(
+            app.armed_watchdogs.is_empty(),
+            "Green refresh should disarm"
+        );
         let status = app.status_message.as_deref().unwrap_or("");
-        assert!(
-            status.contains("no rollback needed"),
-            "expected disarm message, got: {status}"
-        );
-        // No deploy should have been dispatched.
-        let dispatched = std::iter::from_fn(|| app.msg_rx.try_recv().ok()).any(|m| {
-            matches!(
-                m,
-                AppMsg::ActionResult {
-                    action: Action::Deploy,
-                    ..
-                }
-            )
-        });
-        assert!(
-            !dispatched,
-            "auto-rollback should not dispatch when env is Green"
-        );
+        assert!(status.contains("watchdog disarmed"));
     }
 
     #[tokio::test]
-    async fn auto_rollback_dispatches_when_env_is_non_green_at_deadline() {
-        // Inverse: env is Red at the deadline → handler dispatches
-        // an Auto-rollback redeploy (lands as a pending pill +
-        // status_message naming the version being redeployed).
+    async fn apply_refresh_dispatches_rollback_when_deadline_passed_and_env_non_green() {
+        // Refresh tick after the deadline + env still bad → dispatch.
+        // The decision uses the freshly-applied env health, eliminating
+        // the stale-cache race the inline-dispatch shape had.
         let mut app = test_app();
-        app.environments = vec![mk_env("prod", "shop", "Web", "Red")];
-        app.deploy_snapshots.insert(
-            "prod".into(),
-            DeploySnapshot {
-                env_name: "prod".into(),
-                previous_version_label: "build-old".into(),
-                taken_at: chrono::Utc::now(),
-            },
-        );
         let now = chrono::Utc::now();
         app.armed_watchdogs.insert(
             "prod".into(),
             ArmedWatchdog {
                 env_name: "prod".into(),
                 target_label: "build-old".into(),
-                armed_at: now,
-                deadline_at: now,
+                armed_at: now - chrono::Duration::seconds(600),
+                deadline_at: now - chrono::Duration::seconds(1),
+            },
+        );
+        app.deploy_snapshots.insert(
+            "prod".into(),
+            DeploySnapshot {
+                env_name: "prod".into(),
+                previous_version_label: "build-old".into(),
+                taken_at: now - chrono::Duration::seconds(600),
             },
         );
         let pending_before = app.pending_actions.len();
-        app.handle_msg(AppMsg::AutoRollbackCheck {
-            gen: app.generation,
-            env_name: "prod".into(),
-        });
-        // The dispatch path's status_message names the rollback
-        // target and the env's health at the time of the check.
-        let status = app.status_message.as_deref().unwrap_or("");
+        app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Red")]));
         assert!(
-            status.contains("redeploying build-old"),
-            "expected rollback dispatch status, got: {status}"
+            app.armed_watchdogs.is_empty(),
+            "dispatch should drain the watchdog"
         );
-        assert!(
-            status.contains("Red"),
-            "expected health to surface in dispatch status, got: {status}"
-        );
-        // A pending action row should have been added.
         assert_eq!(
             app.pending_actions.len(),
             pending_before + 1,
-            "Auto-rollback should push a pending entry"
+            "rollback dispatch should push a pending row"
         );
-        assert!(
-            app.pending_actions
-                .iter()
-                .any(|p| p.label.contains("Auto-rollback") && p.target == "prod"),
-            "pending row should be labelled Auto-rollback for prod"
-        );
+        assert!(app
+            .pending_actions
+            .iter()
+            .any(|p| p.label.contains("Auto-rollback") && p.target == "prod"));
+        let status = app.status_message.as_deref().unwrap_or("");
+        assert!(status.contains("redeploying build-old"));
+        assert!(status.contains("Red"));
     }
 
     #[tokio::test]
-    async fn auto_rollback_no_op_when_no_snapshot_exists() {
-        // Edge case: AutoRollbackCheck fires but no snapshot was
-        // captured (e.g. deploy raced with an env-list refresh that
-        // hadn't seen the env yet). Handler surfaces a clear error
-        // pointing the operator at manual rollback.
+    async fn apply_refresh_keeps_watchdog_armed_before_deadline_even_when_non_green() {
+        // Refresh tick while still inside the auto-rollback window
+        // and env still bad → watchdog stays armed for the next
+        // refresh to re-evaluate. Pins the "don't dispatch early"
+        // invariant — deploys often run Yellow for a minute before
+        // settling Green.
         let mut app = test_app();
-        app.environments = vec![mk_env("prod", "shop", "Web", "Red")];
-        // deploy_snapshots intentionally empty; watchdog armed so the
-        // handler reaches the snapshot-lookup branch (vs the
-        // early-disarmed no-op branch).
         let now = chrono::Utc::now();
         app.armed_watchdogs.insert(
             "prod".into(),
@@ -17217,17 +17274,56 @@ mod tests {
                 env_name: "prod".into(),
                 target_label: "build-old".into(),
                 armed_at: now,
-                deadline_at: now,
+                deadline_at: now + chrono::Duration::seconds(300),
             },
         );
-        app.handle_msg(AppMsg::AutoRollbackCheck {
-            gen: app.generation,
-            env_name: "prod".into(),
-        });
+        app.deploy_snapshots.insert(
+            "prod".into(),
+            DeploySnapshot {
+                env_name: "prod".into(),
+                previous_version_label: "build-old".into(),
+                taken_at: now,
+            },
+        );
+        let pending_before = app.pending_actions.len();
+        app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Yellow")]));
+        assert!(
+            app.armed_watchdogs.contains_key("prod"),
+            "Yellow + pre-deadline must keep watchdog armed"
+        );
+        assert_eq!(
+            app.pending_actions.len(),
+            pending_before,
+            "no dispatch before the deadline"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_refresh_errors_when_deadline_passed_but_no_snapshot() {
+        // Edge case: deadline expired + env non-Green + no captured
+        // snapshot. Surface a clear error pointing the operator at
+        // manual rollback rather than silently no-op.
+        let mut app = test_app();
+        let now = chrono::Utc::now();
+        app.armed_watchdogs.insert(
+            "prod".into(),
+            ArmedWatchdog {
+                env_name: "prod".into(),
+                target_label: "build-old".into(),
+                armed_at: now - chrono::Duration::seconds(600),
+                deadline_at: now - chrono::Duration::seconds(1),
+            },
+        );
+        // deploy_snapshots intentionally empty.
+        app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Red")]));
         let err = app.error_message.as_deref().unwrap_or("");
         assert!(
             err.contains("no pre-deploy snapshot"),
             "expected missing-snapshot guidance, got: {err}"
+        );
+        assert!(
+            app.armed_watchdogs.is_empty(),
+            "missing-snapshot path still drains the watchdog"
         );
     }
 
