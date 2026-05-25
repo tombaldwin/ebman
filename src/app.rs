@@ -1048,6 +1048,13 @@ pub struct App {
     /// on screen to the control plane.
     pub last_rendered_buffer: Option<ratatui::buffer::Buffer>,
     pub notify_bell: bool,
+    /// Mirror of `Config::notify_webhook`. The actual fan-out
+    /// reads from the global `NOTIFY_WEBHOOK_URL` `OnceLock` so
+    /// `write_audit_line` (a free fn called from 36 sites) doesn't
+    /// need a `&self` borrow. We hold it on App too just so
+    /// `:settings`-style round-trips can serialise the current
+    /// value back to config.toml.
+    pub notify_webhook: Option<String>,
     pub required_tags: Vec<String>,
     /// The raw `icons = …` string from `config.toml` (before resolution to
     /// [`crate::theme::IconStyle`]). Kept verbatim so `:settings` can round-trip
@@ -1541,6 +1548,13 @@ async fn init_client(
 
 impl App {
     pub async fn new(config: Config) -> Result<Self> {
+        // Stash the notify-webhook URL globally before any audit
+        // line could be written. OnceLock::set is no-op on second
+        // call so calling App::new twice in the same process (e.g.
+        // a test harness) doesn't crash, but does mean the FIRST
+        // App's webhook wins — fine for production where there's
+        // only ever one App.
+        let _ = NOTIFY_WEBHOOK_URL.set(config.notify_webhook.clone());
         let persisted = state::load();
         // Project config: optional `.ebman/ebman.toml` walked up from
         // cwd. Profile / region from the project win over persisted
@@ -1759,6 +1773,7 @@ impl App {
             shell_return_mode: Mode::Normal,
             last_rendered_buffer: None,
             notify_bell: config.notify_bell,
+            notify_webhook: config.notify_webhook.clone(),
             required_tags: config.required_tags,
             cfg_icons_raw: config.icons.clone(),
             profile_themes: config.profile_themes.clone(),
@@ -1980,6 +1995,7 @@ impl App {
             shell_return_mode: Mode::Normal,
             last_rendered_buffer: None,
             notify_bell: config.notify_bell,
+            notify_webhook: config.notify_webhook.clone(),
             required_tags: config.required_tags.clone(),
             cfg_icons_raw: config.icons.clone(),
             profile_themes: config.profile_themes.clone(),
@@ -7794,6 +7810,7 @@ impl App {
             runbooks: self.runbooks.clone(),
             safety_envs: self.safety_envs.clone(),
             safety_accounts: self.safety_accounts.clone(),
+            notify_webhook: self.notify_webhook.clone(),
         }
     }
 
@@ -13766,6 +13783,133 @@ fn write_audit_line(account: Option<&str>, profile: Option<&str>, region: &str, 
     {
         let _ = f.write_all(line.as_bytes());
     }
+    // Fan-out to the configured webhook, if any. Sync-callable
+    // (just spawns a detached tokio task) so call sites don't
+    // have to change. Failures are logged via tracing and never
+    // alarm the operator — the local audit file is the source of
+    // truth; the webhook is a convenience fan-out.
+    if let Some(url) = NOTIFY_WEBHOOK_URL.get().and_then(|o| o.as_deref()) {
+        fire_audit_webhook(url, account, profile, region, detail, &when);
+    }
+}
+
+/// Process-wide webhook URL. Set once at App startup from the
+/// resolved Config; read from `write_audit_line` (which is sync
+/// and called from many places, so threading it through every
+/// call site would be invasive churn). The `Option` layer lets
+/// the operator explicitly disable via `notify_webhook = ""` or
+/// by omitting the key entirely.
+pub(crate) static NOTIFY_WEBHOOK_URL: std::sync::OnceLock<Option<String>> =
+    std::sync::OnceLock::new();
+
+/// Build the JSON body that goes to `notify_webhook`. Pure +
+/// deterministic so the shape is unit-testable. Top-level `text`
+/// gets the rendered audit line so the body is
+/// Slack-incoming-webhook-compatible out of the box; the other
+/// keys give consumers structured fields for routing / filtering.
+pub(crate) fn build_audit_webhook_body(
+    account: Option<&str>,
+    profile: Option<&str>,
+    region: &str,
+    detail: &str,
+    when: &str,
+) -> String {
+    let text = format!(
+        "[ebman] {} account={} profile={} region={} {}",
+        when,
+        account.unwrap_or("-"),
+        profile.unwrap_or("-"),
+        region,
+        detail,
+    );
+    format!(
+        "{{\"text\":\"{}\",\"at\":\"{}\",\"account\":\"{}\",\"profile\":\"{}\",\"region\":\"{}\",\"detail\":\"{}\"}}",
+        json_escape(&text),
+        json_escape(when),
+        json_escape(account.unwrap_or("")),
+        json_escape(profile.unwrap_or("")),
+        json_escape(region),
+        json_escape(detail),
+    )
+}
+
+/// Fire-and-forget webhook POST. Shells out to curl so we don't
+/// pull in an HTTP-client dep (same pattern as `fetch_url_text`).
+/// 10s cap so a slow webhook can't accumulate hung curls. The
+/// caller must be inside a tokio runtime; every audit-line site
+/// in ebman is, so this is fine in practice.
+fn fire_audit_webhook(
+    url: &str,
+    account: Option<&str>,
+    profile: Option<&str>,
+    region: &str,
+    detail: &str,
+    when: &str,
+) {
+    let body = build_audit_webhook_body(account, profile, region, detail, when);
+    let url = url.to_string();
+    // `tokio::spawn` requires an active runtime; ebman's audit
+    // sites all live under the `#[tokio::main]` umbrella. If we
+    // somehow end up off-runtime (test code, etc.), the spawn
+    // panics — wrap in a `Handle::try_current()` guard so we
+    // silently skip rather than crash.
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    tokio::spawn(async move {
+        use tokio::process::Command;
+        let result = Command::new("curl")
+            .args([
+                "-s",
+                "-S",
+                "-X",
+                "POST",
+                "-H",
+                "Content-Type: application/json",
+                "--max-time",
+                "10",
+                "--data-binary",
+                "@-",
+            ])
+            .arg(&url)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn();
+        let Ok(mut child) = result else {
+            tracing::warn!(
+                target: "ebman::notify",
+                url = %url,
+                "audit webhook: could not spawn curl"
+            );
+            return;
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            let _ = stdin.write_all(body.as_bytes()).await;
+            let _ = stdin.shutdown().await;
+        }
+        match child.wait_with_output().await {
+            Ok(out) if out.status.success() => {}
+            Ok(out) => {
+                tracing::warn!(
+                    target: "ebman::notify",
+                    url = %url,
+                    status = ?out.status.code(),
+                    stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+                    "audit webhook returned non-zero"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "ebman::notify",
+                    url = %url,
+                    error = %e,
+                    "audit webhook curl exited with error"
+                );
+            }
+        }
+    });
 }
 
 /// If `path` exists and is larger than `max_bytes`, move it to `path.1`
@@ -17790,6 +17934,71 @@ mod tests {
             }
             _ => panic!("expected confirm modal still open"),
         }
+    }
+
+    #[test]
+    fn build_audit_webhook_body_has_slack_compatible_text_plus_structured_fields() {
+        // Slack incoming webhooks consume a top-level `text` field;
+        // anything else is metadata for other consumers. Both must
+        // be present in the body so a single endpoint can serve both.
+        let body = super::build_audit_webhook_body(
+            Some("123456789012"),
+            Some("prod"),
+            "us-east-1",
+            "stage=request action=Deploy target=prod-api",
+            "2026-05-25T12:00:00Z",
+        );
+        assert!(body.starts_with('{') && body.ends_with('}'));
+        assert!(
+            body.contains("\"text\":\"[ebman]"),
+            "missing slack-shaped text field"
+        );
+        assert!(body.contains("\"at\":\"2026-05-25T12:00:00Z\""));
+        assert!(body.contains("\"account\":\"123456789012\""));
+        assert!(body.contains("\"profile\":\"prod\""));
+        assert!(body.contains("\"region\":\"us-east-1\""));
+        assert!(body.contains("\"detail\":\"stage=request action=Deploy target=prod-api\""));
+    }
+
+    #[test]
+    fn build_audit_webhook_body_dashes_missing_account_and_profile_in_text() {
+        // When account / profile aren't known (early init, unset
+        // creds), the rendered text uses `-` placeholders so the
+        // line is still readable in a Slack channel.
+        let body = super::build_audit_webhook_body(
+            None,
+            None,
+            "eu-west-1",
+            "stage=event kind=red_transition env=prod-api",
+            "2026-05-25T12:00:00Z",
+        );
+        assert!(
+            body.contains("account=- profile=- region=eu-west-1"),
+            "missing dash placeholders in text, got: {body}"
+        );
+        // But the structured fields use empty strings, not "-",
+        // so consumers can distinguish "unknown" from "literal dash".
+        assert!(body.contains("\"account\":\"\""));
+        assert!(body.contains("\"profile\":\"\""));
+    }
+
+    #[test]
+    fn build_audit_webhook_body_escapes_quotes_in_detail() {
+        // Audit detail occasionally embeds quoted strings; the body
+        // must stay valid JSON after escaping.
+        let body = super::build_audit_webhook_body(
+            None,
+            None,
+            "us-east-1",
+            "stage=event message=\"deploy started\"",
+            "2026-05-25T12:00:00Z",
+        );
+        // The escaped string appears once inside the `text` field's
+        // value and once inside `detail` — both must escape.
+        assert!(body.contains("\\\"deploy started\\\""));
+        // Round-trip via serde_yml's JSON-tolerant path: should parse.
+        let _: serde_yml::Value = serde_yml::from_str(&body)
+            .expect("webhook body must be parseable JSON / YAML-superset");
     }
 
     #[tokio::test]
