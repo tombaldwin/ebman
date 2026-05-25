@@ -405,6 +405,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         CommandKind::Prefill("deploy "),
     ),
     cmd(
+        "promote-env",
+        ":promote-env SOURCE TARGET [--auto-rollback Nm] [--wait-for-green Nm] — ship SOURCE's currently-deployed version label to TARGET in one dispatch; opens the deploy confirm on TARGET with the same watchdog/wait flags as :deploy. Refuses if SOURCE has no version, or if SOURCE's version is already on TARGET.",
+        Category::Lifecycle,
+        CommandKind::Prefill("promote-env "),
+    ),
+    cmd(
         "rollback",
         ":rollback [--to LABEL] [--auto-rollback Nm] — redeploy the previous version. No arg uses the captured pre-deploy snapshot (falls back to event-history scan). --to LABEL targets a specific version. --auto-rollback arms a roll-forward watchdog.",
         Category::Lifecycle,

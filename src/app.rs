@@ -9646,6 +9646,21 @@ impl App {
             self.error_message = Some("no env selected".into());
             return;
         };
+        self.open_parameterised_action_on(env, action, params);
+    }
+
+    /// Variant of `open_parameterised_action` that targets an
+    /// explicit env rather than the currently-selected one. Used by
+    /// commands like `:promote-env SOURCE TARGET` where the
+    /// destination is named in the command itself, not implied by
+    /// the table cursor. The `selected_env()`-based wrapper is the
+    /// common path; this is the cursor-independent escape hatch.
+    pub(crate) fn open_parameterised_action_on(
+        &mut self,
+        env: crate::aws::Environment,
+        action: Action,
+        params: ParameterisedAction,
+    ) {
         if self.deny_write(&env.name, action.label()) {
             return;
         }
@@ -10428,6 +10443,7 @@ impl App {
             "delete-version" => self.cmd_delete_version(&rest),
             "upgrade" => self.cmd_upgrade(&rest),
             "clone" => self.cmd_clone(&rest),
+            "promote-env" => self.cmd_promote_env(&rest),
             "scale" => self.cmd_scale(&rest),
             "stop" => self.cmd_stop(),
             "start" => self.cmd_start(),
@@ -17960,6 +17976,124 @@ mod tests {
         );
         let (env, _remaining) = soonest_watching_deploy(&map, now).expect("not empty");
         assert_eq!(env, "sooner");
+    }
+
+    #[tokio::test]
+    async fn promote_env_opens_deploy_confirm_on_target_with_sources_version() {
+        // `:promote-env staging prod` takes staging's current
+        // version_label, opens the deploy confirm on PROD (not the
+        // selected env), and threads the label as deploy_version.
+        let mut app = test_app();
+        let mut staging = mk_env("staging", "shop", "Web", "Green");
+        staging.version_label = "build-900".into();
+        let mut prod = mk_env("prod", "shop", "Web", "Green");
+        prod.version_label = "build-820".into();
+        app.environments = vec![staging, prod];
+        app.rebuild_view();
+        // Cursor is on staging — the modal must still target prod
+        // because the command names target explicitly, not via the
+        // table cursor.
+        app.table_state.select(Some(0));
+        app.execute_command("promote-env staging prod");
+        match &app.action_flow {
+            Some(ActionFlow::Confirm(modal)) => {
+                assert_eq!(modal.target_env, "prod");
+                assert_eq!(modal.deploy_version.as_deref(), Some("build-900"));
+                assert!(matches!(modal.action, Action::Deploy));
+            }
+            _ => panic!("expected confirm modal open on target"),
+        }
+    }
+
+    #[tokio::test]
+    async fn promote_env_composes_with_watchdog_flags() {
+        // The full daily gesture: ship staging → prod with both
+        // safety nets armed. Both fields must thread through.
+        let mut app = test_app();
+        let mut staging = mk_env("staging", "shop", "Web", "Green");
+        staging.version_label = "build-900".into();
+        let prod = mk_env("prod", "shop", "Web", "Green");
+        app.environments = vec![staging, prod];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        app.execute_command("promote-env staging prod --auto-rollback 10m --wait-for-green 5m");
+        match &app.action_flow {
+            Some(ActionFlow::Confirm(modal)) => {
+                assert_eq!(modal.target_env, "prod");
+                assert_eq!(modal.deploy_version.as_deref(), Some("build-900"));
+                assert_eq!(modal.auto_rollback_secs, Some(600));
+                assert_eq!(modal.wait_for_green_secs, Some(300));
+            }
+            _ => panic!("expected confirm modal open"),
+        }
+    }
+
+    #[tokio::test]
+    async fn promote_env_refuses_when_versions_match() {
+        // Idempotent-deploy guard: if SOURCE's version is already on
+        // TARGET there's nothing to promote.
+        let mut app = test_app();
+        let mut staging = mk_env("staging", "shop", "Web", "Green");
+        staging.version_label = "build-900".into();
+        let mut prod = mk_env("prod", "shop", "Web", "Green");
+        prod.version_label = "build-900".into();
+        app.environments = vec![staging, prod];
+        app.rebuild_view();
+        app.execute_command("promote-env staging prod");
+        let err = app.error_message.as_deref().unwrap_or("");
+        assert!(
+            err.contains("already deployed to prod"),
+            "expected idempotent guard, got: {err}"
+        );
+        assert!(app.action_flow.is_none(), "no modal on no-op");
+    }
+
+    #[tokio::test]
+    async fn promote_env_refuses_when_source_has_no_version() {
+        // Brand-new env with no deploy yet — nothing to ship.
+        let mut app = test_app();
+        let mut staging = mk_env("staging", "shop", "Web", "Pending");
+        staging.version_label = String::new();
+        let prod = mk_env("prod", "shop", "Web", "Green");
+        app.environments = vec![staging, prod];
+        app.rebuild_view();
+        app.execute_command("promote-env staging prod");
+        let err = app.error_message.as_deref().unwrap_or("");
+        assert!(
+            err.contains("no version deployed"),
+            "expected no-version refusal, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn promote_env_refuses_same_source_and_target() {
+        // Operator typo guard.
+        let mut app = test_app();
+        let mut staging = mk_env("staging", "shop", "Web", "Green");
+        staging.version_label = "build-900".into();
+        app.environments = vec![staging];
+        app.rebuild_view();
+        app.execute_command("promote-env staging staging");
+        let err = app.error_message.as_deref().unwrap_or("");
+        assert!(
+            err.contains("must be different"),
+            "expected same-env refusal, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn promote_env_refuses_unknown_env() {
+        let mut app = test_app();
+        let mut staging = mk_env("staging", "shop", "Web", "Green");
+        staging.version_label = "build-900".into();
+        app.environments = vec![staging];
+        app.rebuild_view();
+        app.execute_command("promote-env staging nope");
+        let err = app.error_message.as_deref().unwrap_or("");
+        assert!(
+            err.contains("no env named 'nope'"),
+            "expected unknown-env refusal, got: {err}"
+        );
     }
 
     #[tokio::test]
