@@ -187,8 +187,11 @@ FLAGS:
 
 SUBCOMMANDS:
     envs [--json]                                List environments in current profile / region.
-    action ACTION --env NAME [--yes]             Run an action (rebuild|restart|terminate) on an env.
+    action ACTION --env NAME [--yes]             Run an action (rebuild|restart|terminate|deploy) on an env.
                                                   Terminate requires --yes to confirm.
+                                                  Deploy requires --version LABEL; supports
+                                                  --wait-for-green Nm and --auto-rollback Nm.
+                                                  Exit codes: 0 ok, 1 aws err, 2 usage, 4 wait-timeout, 5 rolled-back.
     ctl <screen|key|cmd|state|reload> [args]     Talk to a running ebman via --control-socket.
                                                   `reload` re-execs the binary (rebuild first via
                                                   `cargo build --release`). Use --socket PATH to
@@ -241,19 +244,70 @@ async fn run_envs_cli(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// One tick's worth of decision for the `action deploy` polling
+/// loop. Pure — no AWS, no clock, no I/O — so the exit-code
+/// matrix is unit-testable.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PollDecision {
+    /// Env hasn't crossed Green and no deadline has elapsed yet.
+    KeepPolling,
+    /// Env reached Green/Ok — exit 0.
+    Success,
+    /// `--wait-for-green` deadline elapsed but rollback hasn't
+    /// fired (either no rollback flag, or its deadline is later).
+    /// Caller emits a milestone log and keeps polling if rollback
+    /// is still pending; otherwise exits with the timeout code.
+    WaitForGreenTimeout,
+    /// `--auto-rollback` deadline elapsed and env still non-Green.
+    /// Caller dispatches the snapshot redeploy + exits with the
+    /// rollback code.
+    DispatchRollback,
+}
+
+pub(crate) fn decide_poll(
+    health: &str,
+    elapsed_secs: u64,
+    wait_for_green_secs: Option<u64>,
+    auto_rollback_secs: Option<u64>,
+    wait_for_green_timeout_emitted: bool,
+) -> PollDecision {
+    if health.eq_ignore_ascii_case("Green") || health.eq_ignore_ascii_case("Ok") {
+        return PollDecision::Success;
+    }
+    if let Some(d) = auto_rollback_secs {
+        if elapsed_secs >= d {
+            return PollDecision::DispatchRollback;
+        }
+    }
+    if let Some(d) = wait_for_green_secs {
+        if elapsed_secs >= d && !wait_for_green_timeout_emitted {
+            return PollDecision::WaitForGreenTimeout;
+        }
+    }
+    PollDecision::KeepPolling
+}
+
 async fn run_action_cli(args: &[String]) -> Result<()> {
-    // Expected shape: ebman action ACTION --env NAME [--yes]
+    // Expected shape: ebman action ACTION --env NAME [--yes] [...flags]
     let action_name = args.get(1).map(|s| s.as_str()).unwrap_or("");
     if action_name.is_empty() || action_name.starts_with('-') {
-        eprintln!("usage: ebman action <rebuild|restart|terminate> --env NAME [--yes]");
+        eprintln!(
+            "usage: ebman action <rebuild|restart|terminate|deploy> --env NAME [--version LABEL] [--yes] [--wait-for-green Nm] [--auto-rollback Nm]"
+        );
         std::process::exit(2);
     }
     let mut env_name: Option<String> = None;
+    let mut version: Option<String> = None;
+    let mut wait_for_green: Option<String> = None;
+    let mut auto_rollback: Option<String> = None;
     let mut yes = false;
     let mut iter = args.iter().skip(2);
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--env" => env_name = iter.next().cloned(),
+            "--version" => version = iter.next().cloned(),
+            "--wait-for-green" => wait_for_green = iter.next().cloned(),
+            "--auto-rollback" => auto_rollback = iter.next().cloned(),
             "--yes" => yes = true,
             other => {
                 eprintln!("ebman action: unknown flag '{other}'");
@@ -271,6 +325,11 @@ async fn run_action_cli(args: &[String]) -> Result<()> {
         std::process::exit(3);
     }
     let aws = aws::AwsClient::with(None, None).await?;
+
+    if action_name == "deploy" {
+        return run_action_deploy(&aws, &env, version, wait_for_green, auto_rollback).await;
+    }
+
     let result = match action_name {
         "rebuild" => aws.rebuild_env(&env).await,
         "restart" => aws.restart_app_server(&env).await,
@@ -288,6 +347,164 @@ async fn run_action_cli(args: &[String]) -> Result<()> {
         Err(e) => {
             eprintln!("err: {e}");
             std::process::exit(1);
+        }
+    }
+}
+
+/// `ebman action deploy --env X --version Y [--wait-for-green Nm]
+/// [--auto-rollback Nm]` — non-interactive CLI parity with the
+/// typed-command `:deploy` path. Exit codes are deliberately
+/// distinct so CI / shell wrappers can branch on outcome:
+///   0  — deploy dispatched (and reached Green if asked)
+///   1  — AWS-layer error (UpdateEnvironment, list_environments)
+///   2  — usage error (missing flags, malformed duration)
+///   4  — `--wait-for-green` deadline elapsed without Green
+///   5  — `--auto-rollback` deadline elapsed; rollback dispatched
+async fn run_action_deploy(
+    aws: &aws::AwsClient,
+    env: &str,
+    version: Option<String>,
+    wait_for_green: Option<String>,
+    auto_rollback: Option<String>,
+) -> Result<()> {
+    let Some(version) = version else {
+        eprintln!("ebman action deploy: --version LABEL is required");
+        std::process::exit(2);
+    };
+    // Same duration grammar as the TUI path so operators don't
+    // relearn it. `parse_window_ms` returns ms; divide for seconds.
+    let wait_for_green_secs = match wait_for_green {
+        Some(ref s) => match aws::parse_window_ms(s) {
+            Some(ms) => Some((ms / 1000) as u64),
+            None => {
+                eprintln!(
+                    "ebman action deploy: --wait-for-green expects a duration like `5m` / `30m` / `1h`"
+                );
+                std::process::exit(2);
+            }
+        },
+        None => None,
+    };
+    let auto_rollback_secs = match auto_rollback {
+        Some(ref s) => match aws::parse_window_ms(s) {
+            Some(ms) => Some((ms / 1000) as u64),
+            None => {
+                eprintln!(
+                    "ebman action deploy: --auto-rollback expects a duration like `5m` / `30m` / `1h`"
+                );
+                std::process::exit(2);
+            }
+        },
+        None => None,
+    };
+
+    // Capture pre-deploy snapshot — needed if --auto-rollback fires.
+    // Look up the env first to verify it exists and grab the current
+    // version_label.
+    let envs = aws
+        .list_environments()
+        .await
+        .map_err(|e| color_eyre::eyre::eyre!("list_environments: {e}"))?;
+    let snapshot = envs
+        .iter()
+        .find(|e| e.name == env)
+        .map(|e| e.version_label.clone());
+    let Some(snapshot_label) = snapshot else {
+        eprintln!("ebman action deploy: env '{env}' not found");
+        std::process::exit(2);
+    };
+    // If --auto-rollback is set but the env has no current version
+    // (e.g. brand-new env with no prior deploy), there's nothing to
+    // roll back to. Refuse upfront rather than letting the redeploy
+    // fail at AWS with a confusing error.
+    if auto_rollback_secs.is_some() && snapshot_label.is_empty() {
+        eprintln!(
+            "ebman action deploy: --auto-rollback requested but env '{env}' has no prior version to roll back to"
+        );
+        std::process::exit(2);
+    }
+
+    println!("dispatching deploy: env={env} version={version}");
+    if let Err(e) = aws.deploy_version(env, &version).await {
+        eprintln!("err: deploy_version: {e}");
+        std::process::exit(1);
+    }
+
+    // No polling flags → done. Same as the existing rebuild / restart
+    // path: dispatch and exit.
+    if wait_for_green_secs.is_none() && auto_rollback_secs.is_none() {
+        println!("ok: deploy on {env} dispatched (version={version})");
+        return Ok(());
+    }
+
+    let start = tokio::time::Instant::now();
+    let poll_interval = std::time::Duration::from_secs(5);
+    let mut wait_for_green_timeout_emitted = false;
+    println!(
+        "polling {env} every {}s for Green{}{}",
+        poll_interval.as_secs(),
+        wait_for_green_secs
+            .map(|s| format!(", wait-for-green={s}s"))
+            .unwrap_or_default(),
+        auto_rollback_secs
+            .map(|s| format!(", auto-rollback={s}s"))
+            .unwrap_or_default(),
+    );
+    loop {
+        tokio::time::sleep(poll_interval).await;
+        let envs = match aws.list_environments().await {
+            Ok(envs) => envs,
+            Err(e) => {
+                eprintln!("err: list_environments during poll: {e}");
+                std::process::exit(1);
+            }
+        };
+        let health = envs
+            .iter()
+            .find(|e| e.name == env)
+            .map(|e| e.health.clone())
+            .unwrap_or_default();
+        let elapsed = start.elapsed().as_secs();
+        match decide_poll(
+            &health,
+            elapsed,
+            wait_for_green_secs,
+            auto_rollback_secs,
+            wait_for_green_timeout_emitted,
+        ) {
+            PollDecision::KeepPolling => {
+                println!("poll t={elapsed}s health={health}");
+            }
+            PollDecision::Success => {
+                println!("ok: deploy on {env} reached Green at t={elapsed}s (version={version})");
+                return Ok(());
+            }
+            PollDecision::WaitForGreenTimeout => {
+                wait_for_green_timeout_emitted = true;
+                if auto_rollback_secs.is_none() {
+                    eprintln!(
+                        "timeout: deploy on {env} did not reach Green within {}s (health={health}, version={version})",
+                        wait_for_green_secs.unwrap_or(0)
+                    );
+                    std::process::exit(4);
+                }
+                // Rollback still pending — emit milestone, keep polling.
+                let remaining = auto_rollback_secs.unwrap_or(0).saturating_sub(elapsed);
+                println!(
+                    "wait-for-green timeout at t={elapsed}s (health={health}); continuing under auto-rollback ({remaining}s remaining)"
+                );
+            }
+            PollDecision::DispatchRollback => {
+                eprintln!(
+                    "auto-rollback firing on {env}: env still {health} at t={elapsed}s; redeploying snapshot version={snapshot_label}"
+                );
+                if let Err(e) = aws.deploy_version(env, &snapshot_label).await {
+                    eprintln!("err: rollback deploy_version: {e}");
+                    std::process::exit(1);
+                }
+                println!("ok: rollback dispatched on {env} (version={snapshot_label})");
+                std::process::exit(5);
+            }
         }
     }
 }
@@ -676,7 +893,105 @@ fn dirs_log_dir() -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{cli_esc, hsl_to_rgb, prune_old_crash_reports};
+    use super::{cli_esc, decide_poll, hsl_to_rgb, prune_old_crash_reports, PollDecision};
+
+    #[test]
+    fn decide_poll_green_returns_success_regardless_of_deadlines() {
+        // Green observation always wins — even if a deadline has
+        // also elapsed, the deploy is done.
+        assert_eq!(
+            decide_poll("Green", 600, Some(300), Some(600), false),
+            PollDecision::Success
+        );
+        assert_eq!(
+            decide_poll("Ok", 0, None, None, false),
+            PollDecision::Success
+        );
+        // Case-insensitive — EB sometimes returns "ok" lowercase.
+        assert_eq!(
+            decide_poll("ok", 0, Some(300), None, false),
+            PollDecision::Success
+        );
+    }
+
+    #[test]
+    fn decide_poll_keep_polling_before_any_deadline() {
+        // Env still non-Green and no deadline reached → keep going.
+        assert_eq!(
+            decide_poll("Red", 30, Some(300), Some(600), false),
+            PollDecision::KeepPolling
+        );
+        // No flags + non-Green also means keep polling — caller
+        // should have skipped the loop entirely if no flags set.
+        assert_eq!(
+            decide_poll("Yellow", 60, None, None, false),
+            PollDecision::KeepPolling
+        );
+    }
+
+    #[test]
+    fn decide_poll_wait_for_green_only_emits_timeout_once() {
+        // Only --wait-for-green set; deadline elapsed; emit timeout.
+        assert_eq!(
+            decide_poll("Red", 301, Some(300), None, false),
+            PollDecision::WaitForGreenTimeout
+        );
+        // After emission, don't fire again on subsequent ticks —
+        // caller already exited if no rollback, or logged + moved on.
+        assert_eq!(
+            decide_poll("Red", 350, Some(300), None, true),
+            PollDecision::KeepPolling
+        );
+    }
+
+    #[test]
+    fn decide_poll_rollback_wins_when_both_deadlines_passed() {
+        // Both deadlines passed → rollback (more aggressive remediation)
+        // wins. Even if wait-for-green hasn't emitted its timeout yet.
+        assert_eq!(
+            decide_poll("Red", 700, Some(300), Some(600), false),
+            PollDecision::DispatchRollback
+        );
+    }
+
+    #[test]
+    fn decide_poll_wait_then_rollback_sequence() {
+        // Typical "both flags, wait shorter" timeline:
+        //   t=200 → KeepPolling
+        //   t=350 → WaitForGreenTimeout (wait=300, rollback=600)
+        //   t=500 → KeepPolling (timeout already emitted)
+        //   t=601 → DispatchRollback
+        assert_eq!(
+            decide_poll("Red", 200, Some(300), Some(600), false),
+            PollDecision::KeepPolling
+        );
+        assert_eq!(
+            decide_poll("Red", 350, Some(300), Some(600), false),
+            PollDecision::WaitForGreenTimeout
+        );
+        assert_eq!(
+            decide_poll("Red", 500, Some(300), Some(600), true),
+            PollDecision::KeepPolling
+        );
+        assert_eq!(
+            decide_poll("Red", 601, Some(300), Some(600), true),
+            PollDecision::DispatchRollback
+        );
+    }
+
+    #[test]
+    fn decide_poll_rollback_only_no_intermediate_emission() {
+        // --auto-rollback alone → no wait-for-green emission ever;
+        // straight from KeepPolling to DispatchRollback at deadline.
+        assert_eq!(
+            decide_poll("Red", 100, None, Some(300), false),
+            PollDecision::KeepPolling
+        );
+        assert_eq!(
+            decide_poll("Red", 301, None, Some(300), false),
+            PollDecision::DispatchRollback
+        );
+    }
 
     #[test]
     fn cli_esc_escapes_quotes_and_backslashes() {

@@ -779,7 +779,7 @@ Lineup for the next minor. Theme is **complete the 0.9 auto-rollback story + red
 
 #### CI/CD ergonomics — SUPPORT
 - [x] **`:deploy LABEL --wait-for-green Nm`** — SHIPPED. Watcher armed at dispatch; apply_refresh pins success on Green or timeout error on deadline. Distinct header pill (`👁 watching`) from the armed-rollback pill. Composes with `--auto-rollback`.
-- [ ] **`ebman action deploy --env X --version Y --wait-for-green Nm --auto-rollback Mm`** — wire the non-interactive CLI surface to the same flags as the typed-command path. Today `ebman action` supports rebuild / restart / terminate; deploy doesn't have action-CLI parity. Closes the loop for fully-scripted operator workflows.
+- [x] **`ebman action deploy --env X --version Y --wait-for-green Nm --auto-rollback Mm`** — SHIPPED. Polls every 5s; pure decision helper `decide_poll()` covers the four-state matrix (KeepPolling / Success / WaitForGreenTimeout / DispatchRollback). Distinct exit codes (0/1/2/4/5) for CI branching.
 
 #### Operator polish — BONUS
 - [ ] **Pre-deploy diff inline in the confirm modal.** Today `:deploy LABEL` opens a confirm; the operator can press `:deploy LABEL --preview` first to see the diff, but that's a separate command. Compose: every deploy confirm modal automatically populates a "what changes" section (version label delta, option-setting delta if available, last 3 events from the candidate). Existing `:deploy --preview` overlay already has the rendering; just promote it into the confirm.
