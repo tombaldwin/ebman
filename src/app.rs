@@ -4319,7 +4319,7 @@ impl App {
     /// [`previous_version_label`]), and opens the standard deploy
     /// confirm modal for it — so the operator sees + confirms the
     /// target, and the 5s undo window still applies.
-    pub(crate) fn cmd_rollback(&mut self) {
+    pub(crate) fn cmd_rollback(&mut self, rest: &[&str]) {
         let Some(env) = self.selected_env().cloned() else {
             self.error_message = Some("no env selected".into());
             return;
@@ -4327,6 +4327,47 @@ impl App {
         if self.deny_write(&env.name, "rollback") {
             return;
         }
+        // `--auto-rollback Nm` arms the same watchdog as
+        // `:deploy LABEL --auto-rollback`. Composes with `--to LABEL`
+        // so the operator can dispatch "roll back to build-820,
+        // auto-roll-forward to build-823 if Green doesn't land
+        // within Nm". Same duration grammar (`parse_window_ms`).
+        let auto_rollback_secs = parse_named_arg::<String>(rest, "--auto-rollback").and_then(|s| {
+            let ms = crate::aws::parse_window_ms(&s)?;
+            Some((ms / 1000) as u64)
+        });
+        if rest.contains(&"--auto-rollback") && auto_rollback_secs.is_none() {
+            self.error_message =
+                Some("--auto-rollback expects a duration like `5m` / `30m` / `1h`".into());
+            return;
+        }
+
+        // `:rollback --to LABEL` — operator picked the target
+        // themselves. Skip snapshot detection + event-scan and
+        // route straight to the deploy confirm with the named
+        // label. EB will reject an unknown label downstream
+        // with a clear error, so no pre-validation is needed.
+        if let Some(target) = parse_named_arg::<String>(rest, "--to") {
+            if target.is_empty() {
+                self.error_message = Some("--to expects a version label".into());
+                return;
+            }
+            if target == env.version_label {
+                self.error_message = Some(format!("{target} is already the deployed version"));
+                return;
+            }
+            self.open_parameterised_action(
+                Action::Deploy,
+                ParameterisedAction {
+                    deploy_version: Some(target.clone()),
+                    auto_rollback_secs,
+                    ..Default::default()
+                },
+            );
+            self.status_message = Some(format!("rollback target: {target} (operator-specified)"));
+            return;
+        }
+
         let env_name = env.name.clone();
         let current_version = env.version_label.clone();
         // Prefer the captured pre-deploy snapshot if one exists —
@@ -4341,6 +4382,7 @@ impl App {
                     Action::Deploy,
                     ParameterisedAction {
                         deploy_version: Some(snapshot.previous_version_label.clone()),
+                        auto_rollback_secs,
                         ..Default::default()
                     },
                 );
@@ -4355,6 +4397,18 @@ impl App {
         // Fallback: scan the env's recent event history for the
         // most-recent version_label that differs from current. The
         // RollbackTarget message handler opens the confirm modal.
+        // The event-scan path doesn't currently thread `auto_rollback_secs`
+        // through `AppMsg::RollbackTarget` — surface a friendly
+        // refusal when the operator asked for it but we had to fall
+        // back to the scan, so they don't think their flag was
+        // honoured silently.
+        if auto_rollback_secs.is_some() {
+            self.error_message = Some(format!(
+                "--auto-rollback needs an in-memory snapshot for {env_name} — none captured. \
+                 Try `:rollback --to LABEL --auto-rollback Nm` to name the target explicitly."
+            ));
+            return;
+        }
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
@@ -10185,7 +10239,7 @@ impl App {
             "batch-set-option" => self.cmd_batch_set_option(&rest),
             "versions" => self.cmd_versions(),
             "deploy" => self.cmd_deploy(&rest),
-            "rollback" => self.cmd_rollback(),
+            "rollback" => self.cmd_rollback(&rest),
             "changes" => self.cmd_changes(),
             "lineage" => self.cmd_lineage(),
             "ssh" => self.cmd_ssh(&rest),
@@ -17164,6 +17218,97 @@ mod tests {
         assert!(
             app.deploy_snapshots.is_empty(),
             "context switch should drop deploy snapshots"
+        );
+    }
+
+    #[tokio::test]
+    async fn rollback_to_label_opens_confirm_for_named_label() {
+        // `:rollback --to LABEL` skips the snapshot+event-scan
+        // detection and routes straight to the deploy confirm. Pins
+        // that the operator's explicit choice wins over any captured
+        // snapshot.
+        let mut app = test_app();
+        app.environments = vec![mk_env("prod", "shop", "Web", "Red")];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        // Snapshot exists with a DIFFERENT label; --to must override.
+        app.deploy_snapshots.insert(
+            "prod".into(),
+            DeploySnapshot {
+                env_name: "prod".into(),
+                previous_version_label: "build-snap".into(),
+                taken_at: chrono::Utc::now(),
+            },
+        );
+        app.execute_command("rollback --to build-820");
+        // Confirm modal opened with the operator-named label.
+        match &app.action_flow {
+            Some(ActionFlow::Confirm(modal)) => {
+                assert_eq!(modal.deploy_version.as_deref(), Some("build-820"));
+                // No watchdog when --auto-rollback wasn't passed.
+                assert!(modal.auto_rollback_secs.is_none());
+            }
+            _ => panic!("expected confirm modal open"),
+        }
+    }
+
+    #[tokio::test]
+    async fn rollback_to_label_with_auto_rollback_threads_secs_through() {
+        // `:rollback --to LABEL --auto-rollback 5m` composes:
+        // confirm modal carries both the label AND the watchdog
+        // duration, so the operator can roll back AND arm a
+        // roll-forward in one dispatch.
+        let mut app = test_app();
+        app.environments = vec![mk_env("prod", "shop", "Web", "Red")];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        app.execute_command("rollback --to build-820 --auto-rollback 5m");
+        match &app.action_flow {
+            Some(ActionFlow::Confirm(modal)) => {
+                assert_eq!(modal.deploy_version.as_deref(), Some("build-820"));
+                assert_eq!(modal.auto_rollback_secs, Some(300));
+            }
+            _ => panic!("expected confirm modal open"),
+        }
+    }
+
+    #[tokio::test]
+    async fn rollback_to_same_label_as_deployed_refuses() {
+        // Typo / stale arg — operator passed the version already
+        // running. Surface a clear error rather than dispatching a
+        // no-op deploy.
+        let mut app = test_app();
+        let mut env = mk_env("prod", "shop", "Web", "Red");
+        env.version_label = "build-822".into();
+        app.environments = vec![env];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        app.execute_command("rollback --to build-822");
+        let err = app.error_message.as_deref().unwrap_or("");
+        assert!(
+            err.contains("already the deployed version"),
+            "expected idempotent guard, got: {err}"
+        );
+        assert!(app.action_flow.is_none(), "no confirm modal on no-op");
+    }
+
+    #[tokio::test]
+    async fn rollback_auto_rollback_without_snapshot_errors_clearly() {
+        // Operator asked for a watchdog but there's no snapshot to
+        // arm against and they didn't pass --to. The event-scan
+        // fallback path doesn't currently thread auto_rollback_secs,
+        // so surface a hint pointing at `--to LABEL` rather than
+        // silently dropping the flag.
+        let mut app = test_app();
+        app.environments = vec![mk_env("prod", "shop", "Web", "Red")];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        // deploy_snapshots intentionally empty.
+        app.execute_command("rollback --auto-rollback 5m");
+        let err = app.error_message.as_deref().unwrap_or("");
+        assert!(
+            err.contains("needs an in-memory snapshot") && err.contains("--to LABEL"),
+            "expected refusal + hint, got: {err}"
         );
     }
 
