@@ -526,6 +526,14 @@ fn enter_tui() -> Result<Tui> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    // Set the terminal window title via OSC 2. Most modern terminals
+    // (xterm / iTerm2 / Terminal.app / Ghostty / Alacritty / WezTerm /
+    // VS Code's terminal) honour this; ones that don't ignore the
+    // sequence silently. Done after EnterAlternateScreen so the
+    // shell's prompt-driven title is replaced cleanly; leave_tui
+    // doesn't restore the prior title — the next shell prompt's
+    // PS1-style title hook will overwrite anyway.
+    execute!(stdout, crossterm::terminal::SetTitle("ebman"))?;
     Ok(Terminal::new(CrosstermBackend::new(stdout))?)
 }
 
