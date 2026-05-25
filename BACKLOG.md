@@ -768,6 +768,28 @@ Tier definitions:
 
 Items list `Depends on:` only when another backlog or done item is a real prerequisite.
 
+### 0.10 candidates (2026-05-25)
+
+Lineup for the next minor. Theme is **complete the 0.9 auto-rollback story + reduce CLI friction for CI/CD-style use**. Each item is ranked tier (HEADLINE / SUPPORT / BONUS) by expected operator value. Pick the top 3-4 to ship; the rest can wait for 0.11.
+
+#### Auto-rollback observability — HEADLINE
+- [ ] **Armed-watchdog visibility in the UI.** Today the watchdog is invisible between arm-time toast and deadline fire — operator dispatches `:deploy --auto-rollback 5m`, gets one `pin_status` toast, then silence. Add three visibility surfaces: (a) a `:pending`-like row for each armed watchdog showing the countdown (`Auto-rollback armed: prod-api in 4m 22s, redeploys → build-823`); (b) a status-footer indicator when any watchdog is armed in the current context; (c) a new `:rollbacks-armed` command (alias `:rb-armed`) that dumps the full table — env / target_label / armed_at / deadline_at. Updates every refresh tick. Needs a render path + a way to format the live countdown — `ArmedWatchdog` already carries `deadline_at` so the math is trivial.
+- [ ] **`:abort-rollback [ENV]`** — explicit disarm command. No arg drains every armed watchdog in the current context; with an env name, just that one. Audit-logged as `action=AbortRollback target=ENV`. Useful when the operator changes their mind mid-window (e.g. realises the env's actually fine, or wants to extend the window manually). Small: probably 20 lines of code + 2 tests. The tokio deadline tokio task survives the abort (no JoinHandle for cancellation), but `apply_refresh`'s decision pass will find the slot empty and no-op.
+- [ ] **`:rollback --to LABEL [--auto-rollback Nm]`** — target a specific version label rather than the captured snapshot. Validates against `:versions` first so a typo'd label fails fast. Composes with `--auto-rollback Nm` so a rollback can itself arm a watchdog (operator dispatches "roll back to build-820, auto-roll-forward to build-823 if Green still doesn't land within 5m"). Mostly plumbing: extend cmd_rollback's arg parser, route through the existing deploy_version path.
+
+#### CI/CD ergonomics — SUPPORT
+- [ ] **`:deploy LABEL --wait-for-green Nm`** — block (via a status pill + spinner) until the env reaches Green, or until `Nm` elapses. Returns explicit success/timeout. Useful for ebman-action's `ebman action deploy --env X --wait-for-green` shape, which CI/CD pipelines can use as a deploy gate. Without it, the action returns as soon as `UpdateEnvironment` accepts the call — operators have to write their own polling loop. Different from `--auto-rollback` (which is async + reversible); `--wait-for-green` is a synchronous success signal.
+- [ ] **`ebman action deploy --env X --version Y --wait-for-green Nm --auto-rollback Mm`** — wire the non-interactive CLI surface to the same flags as the typed-command path. Today `ebman action` supports rebuild / restart / terminate; deploy doesn't have action-CLI parity. Closes the loop for fully-scripted operator workflows.
+
+#### Operator polish — BONUS
+- [ ] **Pre-deploy diff inline in the confirm modal.** Today `:deploy LABEL` opens a confirm; the operator can press `:deploy LABEL --preview` first to see the diff, but that's a separate command. Compose: every deploy confirm modal automatically populates a "what changes" section (version label delta, option-setting delta if available, last 3 events from the candidate). Existing `:deploy --preview` overlay already has the rendering; just promote it into the confirm.
+- [ ] **EB CLI `.elasticbeanstalk/config.yml` reader.** Project-local `.ebman/ebman.toml` shipped in 0.8 — extend by also reading the EB CLI's `.elasticbeanstalk/config.yml` (which most EB CLI users already have) for default profile / region / application. `.ebman/` overrides EB CLI if both exist. Bridges existing EB CLI workflows into ebman without an explicit copy step.
+- [ ] **`:notify` outbound integration.** The audit log at `~/.cache/ebman/audit.log` already records every action + the `kind=red_transition` event. Add an opt-in `notify_webhook = "..."` config that POSTs structured JSON (action / target / outcome / context) to the URL on each audit line. Tail-the-file pattern still works for operators who prefer pull; webhook is for push. Slack-compatible body format is the obvious shape.
+
+#### Skipped on purpose
+- **Watchdog UI as a graph / chart.** A countdown bar visualisation was considered but a text countdown ("4m 22s") is denser and reads at a glance. Defer unless an operator asks.
+- **Cross-region rollout (`:rollout LABEL --regions ...`).** Real value but big — multi-region coordination is its own design problem (parallel vs sequential, abort-on-first-Red, regional health threshold). Tracked as a "0.11 or 0.12 candidate" rather than committed.
+
 ### Feature candidates — competitive scan (2026-05-24)
 
 Ten new ideas surfaced by a backlog/peer-TUI review after the 0.7.0 ship. Ordered roughly by operator-value-per-hour. None overlap with already-tracked items; the niche items already on the backlog (custom-platform create, topology graph, Route 53, etc.) stay where they are. Sized for a 0.9 batch — pick from the top.
