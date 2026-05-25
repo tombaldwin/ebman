@@ -4669,6 +4669,29 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                     lines.push(Line::from(Span::styled(format!("    {raw}"), style)));
                 }
             }
+            // Pre-deploy health-check probe outcome. Silence is
+            // golden — only render when the probe found a problem.
+            // Failed probe doesn't block the deploy; auto-rollback
+            // is the catch-net, the warning is the heads-up.
+            if modal.loading_health_check {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "  probing health-check URL…",
+                    Style::default().fg(theme.muted),
+                )));
+            } else if let Some(Err(reason)) = &modal.health_check_probe {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    format!("  ⚠ health-check probe: {reason}"),
+                    Style::default()
+                        .fg(theme.health_yellow)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "    (deploy will proceed; consider --auto-rollback Nm if this matters)",
+                    Style::default().fg(theme.muted),
+                )));
+            }
             lines.push(Line::from(""));
             match modal.kind {
                 ConfirmKind::YesNo => {

@@ -255,6 +255,17 @@ pub struct ConfirmModal {
     /// shows a `fetching version metadata…` placeholder until the
     /// fetch lands.
     pub loading_version_preview: bool,
+    /// Result of the pre-deploy health-check probe. Same shape as
+    /// the other pre-flight fields — None while in flight or
+    /// never run, Some(Ok(())) when the probe was 2xx (silence is
+    /// golden; nothing rendered), Some(Err(reason)) when the
+    /// probe failed (non-2xx, timeout, connection error) and the
+    /// modal should render a yellow warning. The probe doesn't
+    /// block the deploy either way; it's a heads-up that the
+    /// footgun auto-rollback was built to rescue from is live.
+    pub health_check_probe: Option<Result<(), String>>,
+    /// True while `spawn_health_check_probe` is in flight.
+    pub loading_health_check: bool,
 }
 
 /// Helper carrying the optional parameters needed by the new parameterised

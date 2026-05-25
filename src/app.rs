@@ -1355,6 +1355,16 @@ enum AppMsg {
         env_name: String,
         result: Result<String, String>,
     },
+    /// Pre-deploy health-check probe outcome. `Ok(())` means the
+    /// probe was successful (2xx); `Err(reason)` means non-2xx /
+    /// timeout / connect error and the modal should render a
+    /// yellow warning so the operator can decide whether to
+    /// continue. Doesn't block the deploy either way.
+    HealthCheckProbe {
+        gen: u64,
+        env_name: String,
+        result: Result<(), String>,
+    },
     /// `:rollback` — the env's recent events came back; the handler
     /// scans them for the previously-deployed version label and opens
     /// the deploy-confirm modal for it.
@@ -8044,6 +8054,8 @@ impl App {
                         wait_for_green_secs: None,
                         version_preview: None,
                         loading_version_preview: false,
+                        health_check_probe: None,
+                        loading_health_check: false,
                     }));
                 }
                 KeyCode::Char(c) if is_text_input(&key) => {
@@ -8154,6 +8166,8 @@ impl App {
                     wait_for_green_secs: None,
                     version_preview: None,
                     loading_version_preview: false,
+                    health_check_probe: None,
+                    loading_health_check: false,
                 }));
                 if wants_preflight {
                     self.spawn_dry_run(env.name.clone());
@@ -8226,6 +8240,8 @@ impl App {
                     wait_for_green_secs: None,
                     version_preview: None,
                     loading_version_preview: false,
+                    health_check_probe: None,
+                    loading_health_check: false,
                 }));
             }
             _ => {
@@ -8250,6 +8266,8 @@ impl App {
                     wait_for_green_secs: None,
                     version_preview: None,
                     loading_version_preview: false,
+                    health_check_probe: None,
+                    loading_health_check: false,
                 }));
             }
         }
@@ -9300,6 +9318,49 @@ impl App {
         );
     }
 
+    /// Pre-deploy health-check probe for the confirm modal. Reads
+    /// the env's current `Application Healthcheck URL` option
+    /// (defaults to `/` if unset), composes a probe URL against
+    /// the env's CNAME, and HEADs it via curl with a 2s cap. The
+    /// outcome (success / non-2xx / timeout / refusal) is just a
+    /// warning surface; it doesn't block the deploy.
+    ///
+    /// Shells out to `curl` for the same reason `fetch_url_text`
+    /// and `fire_audit_webhook` do — keeps ebman HTTP-client-dep
+    /// free. Output is parsed to an HTTP status code (or classified
+    /// as a transport error) so the warning text can surface what
+    /// specifically failed.
+    fn spawn_health_check_probe(&mut self, app_name: String, env_name: String, cname: String) {
+        let env_for_msg = env_name.clone();
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        tokio::spawn(async move {
+            // Look up the configured health-check path. Missing or
+            // empty setting means EB defaults to `/`, so we probe
+            // the env root.
+            let path = match aws.fetch_env_option_settings(&app_name, &env_name).await {
+                Ok(opts) => opts
+                    .into_iter()
+                    .find(|(ns, name, _)| {
+                        ns == "aws:elasticbeanstalk:application"
+                            && name == "Application Healthcheck URL"
+                    })
+                    .map(|(_, _, v)| v)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "/".into()),
+                Err(_) => "/".into(),
+            };
+            let url = build_health_check_probe_url(&cname, &path);
+            let result = run_health_check_probe(&url).await;
+            let _ = tx.send(AppMsg::HealthCheckProbe {
+                gen,
+                env_name: env_for_msg,
+                result,
+            });
+        });
+    }
+
     /// Fire a single non-destructive action for batch mode. Unlike
     /// `spawn_action` this doesn't need a `ConfirmModal` — the user already
     /// opted in by typing `:batch-…`. Only Rebuild and RestartAppServer are
@@ -9696,7 +9757,17 @@ impl App {
             wait_for_green_secs: params.wait_for_green_secs,
             version_preview: None,
             loading_version_preview: wants_version_preview,
+            health_check_probe: None,
+            // Pre-deploy health-check probe only runs for Deploy
+            // confirms — we want to warn the operator if the env's
+            // current health-check-url is dead BEFORE they ship a
+            // new build over it. For non-Deploy actions, the probe
+            // is meaningless. Skipped in `--demo` mode because the
+            // synthetic CNAMEs would always fail DNS and pollute
+            // screencasts with a fake-warning red herring.
+            loading_health_check: wants_version_preview && !env.cname.is_empty() && !self.demo_mode,
         };
+        let needs_health_check_probe = modal.loading_health_check;
         self.action_flow = Some(ActionFlow::Confirm(modal));
         self.mode = Mode::Action;
         if wants_preflight {
@@ -9712,6 +9783,13 @@ impl App {
                     label,
                 );
             }
+        }
+        if needs_health_check_probe {
+            self.spawn_health_check_probe(
+                env.application.clone(),
+                env.name.clone(),
+                env.cname.clone(),
+            );
         }
     }
 
@@ -12311,6 +12389,90 @@ fn truncate_armed_cell(s: &str, n: usize) -> String {
     let mut out: String = s.chars().take(n.saturating_sub(1)).collect();
     out.push('…');
     out
+}
+
+/// Pure: compose a probe URL from a CNAME + a health-check path.
+/// EB CNAMEs are bare hostnames (`api-prod.eba.amazonaws.com`);
+/// the path may or may not start with a slash. We always emit a
+/// `http://` URL because EB envs aren't HTTPS by default and a
+/// missing TLS cert is a separate operator concern (the probe
+/// shouldn't false-positive on that). Operators with custom TLS
+/// can put their HTTPS CNAME directly into their LB listener
+/// config; the probe is a development-mode best-effort signal.
+pub fn build_health_check_probe_url(cname: &str, path: &str) -> String {
+    let path = if path.starts_with('/') {
+        path.to_string()
+    } else if path.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{path}")
+    };
+    format!("http://{cname}{path}")
+}
+
+/// Run the pre-deploy probe via curl: HEAD + 2s timeout + follow
+/// redirects (operators sometimes set the health-check-url to a
+/// path that 301s to the real handler). Returns `Ok(())` for any
+/// 2xx; `Err(<short reason>)` for non-2xx, timeout, or transport
+/// errors. The reason string is surfaced in the modal so the
+/// operator can decide whether the warning matters.
+pub(crate) async fn run_health_check_probe(url: &str) -> Result<(), String> {
+    use tokio::process::Command;
+    let out = Command::new("curl")
+        .args([
+            "-s",
+            "-o",
+            "/dev/null",
+            "-L",
+            "--max-time",
+            "2",
+            "-w",
+            "%{http_code}",
+            "-I",
+        ])
+        .arg(url)
+        .output()
+        .await
+        .map_err(|e| format!("could not invoke curl: {e}"))?;
+    if !out.status.success() {
+        // curl exit code 28 is the timeout; everything else is some
+        // form of connect/resolve/protocol error. Surface the
+        // stderr message when present so the operator gets a hint.
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let stderr = stderr.trim();
+        if !stderr.is_empty() {
+            return Err(stderr
+                .lines()
+                .next()
+                .unwrap_or("transport error")
+                .to_string());
+        }
+        return Err(format!("curl exit {}", out.status.code().unwrap_or(-1)));
+    }
+    let code_str = String::from_utf8_lossy(&out.stdout);
+    let code: u16 = code_str
+        .trim()
+        .parse()
+        .map_err(|_| format!("unparseable status `{}`", code_str.trim()))?;
+    classify_health_check_status(code)
+}
+
+/// Pure status-code classifier — surfaced as a separate helper so
+/// the matrix is unit-testable without invoking curl.
+pub(crate) fn classify_health_check_status(code: u16) -> Result<(), String> {
+    match code {
+        200..=299 => Ok(()),
+        0 => Err("no response (transport error)".into()),
+        300..=399 => Err(format!("HTTP {code} (redirect — curl was told to follow)")),
+        // 4xx / 5xx — the live URL responded but with an error.
+        // The most common offender is 404 (path not configured on
+        // the new app version) which is exactly the auto-rollback
+        // footgun we're trying to warn about.
+        400..=599 => Err(format!("HTTP {code}")),
+        // Forward-compat: any other range is a server doing
+        // something unusual. Surface it verbatim.
+        _ => Err(format!("HTTP {code}")),
+    }
 }
 
 /// Pure: "deploy has fully succeeded for this env" predicate.
@@ -17867,6 +18029,105 @@ mod tests {
         assert!(!super::deploy_settled_green("", ""));
     }
 
+    #[test]
+    fn build_health_check_probe_url_normalises_path() {
+        // Path starting with `/` passes through.
+        assert_eq!(
+            super::build_health_check_probe_url("api.example.com", "/healthz"),
+            "http://api.example.com/healthz"
+        );
+        // Path without leading `/` gets one prepended (covers operators
+        // who configure `healthz` rather than `/healthz` in EB).
+        assert_eq!(
+            super::build_health_check_probe_url("api.example.com", "healthz"),
+            "http://api.example.com/healthz"
+        );
+        // Empty path collapses to `/` — EB's default health check.
+        assert_eq!(
+            super::build_health_check_probe_url("api.example.com", ""),
+            "http://api.example.com/"
+        );
+        // Root path round-trips.
+        assert_eq!(
+            super::build_health_check_probe_url("api.example.com", "/"),
+            "http://api.example.com/"
+        );
+    }
+
+    #[test]
+    fn classify_health_check_status_treats_2xx_as_ok_and_others_as_warning() {
+        // 2xx range — all clear.
+        assert!(super::classify_health_check_status(200).is_ok());
+        assert!(super::classify_health_check_status(201).is_ok());
+        assert!(super::classify_health_check_status(299).is_ok());
+        // 0 means curl couldn't even connect.
+        let err = super::classify_health_check_status(0).unwrap_err();
+        assert!(err.contains("no response"));
+        // 3xx still warns because we already pass -L to curl;
+        // seeing a redirect in the final code means a loop.
+        let err = super::classify_health_check_status(301).unwrap_err();
+        assert!(err.contains("301"));
+        // 404 — the canonical auto-rollback footgun.
+        let err = super::classify_health_check_status(404).unwrap_err();
+        assert!(err.contains("404"));
+        // 5xx — server is up but failing.
+        let err = super::classify_health_check_status(503).unwrap_err();
+        assert!(err.contains("503"));
+    }
+
+    #[tokio::test]
+    async fn handle_health_check_probe_renders_warning_on_failure() {
+        // Probe failed → modal carries an `Err` so the UI renders
+        // the yellow warning line. Loading flag clears.
+        let mut app = test_app();
+        app.environments = vec![mk_env("prod", "shop", "Web", "Green")];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        app.execute_command("deploy build-900");
+        app.handle_msg(AppMsg::HealthCheckProbe {
+            gen: app.generation,
+            env_name: "prod".into(),
+            result: Err("HTTP 404".into()),
+        });
+        match &app.action_flow {
+            Some(ActionFlow::Confirm(modal)) => {
+                assert!(!modal.loading_health_check);
+                assert_eq!(
+                    modal.health_check_probe.as_ref().map(|r| r.is_err()),
+                    Some(true)
+                );
+            }
+            _ => panic!("expected confirm modal open"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_health_check_probe_silent_on_ok() {
+        // Probe succeeded → modal carries `Ok(())` and the UI
+        // renders nothing (silence is golden — the operator
+        // confirm flow stays uncluttered).
+        let mut app = test_app();
+        app.environments = vec![mk_env("prod", "shop", "Web", "Green")];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        app.execute_command("deploy build-900");
+        app.handle_msg(AppMsg::HealthCheckProbe {
+            gen: app.generation,
+            env_name: "prod".into(),
+            result: Ok(()),
+        });
+        match &app.action_flow {
+            Some(ActionFlow::Confirm(modal)) => {
+                assert!(!modal.loading_health_check);
+                assert_eq!(
+                    modal.health_check_probe.as_ref().map(|r| r.is_ok()),
+                    Some(true)
+                );
+            }
+            _ => panic!("expected confirm modal open"),
+        }
+    }
+
     #[tokio::test]
     async fn apply_refresh_drains_watching_deploy_on_green() {
         // Watcher armed; next apply_refresh sees Green → drain +
@@ -19431,6 +19692,8 @@ mod tests {
             wait_for_green_secs: None,
             version_preview: None,
             loading_version_preview: false,
+            health_check_probe: None,
+            loading_health_check: false,
         }
     }
 
