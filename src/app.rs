@@ -1941,6 +1941,11 @@ impl App {
                 _ = shell_tick.tick(), if self.current_shell.is_some() => {
                     // ~30 fps redraw while a shell pane is live so typed
                     // echo / backspace erase / vim frames render promptly.
+                    // Demo sessions also use this beat to drain their
+                    // canned bytes into the parser (typewriter animation).
+                    if let Some(shell) = self.current_shell.as_ref() {
+                        shell.tick_demo_typer();
+                    }
                 }
                 _ = anim.tick(), if self.loading_since.is_some()
                     || !self.toasts.is_empty()
@@ -2032,6 +2037,27 @@ impl App {
     /// the pane (state preserved). The session ends when the subprocess
     /// exits — typically via the user typing `exit` or `^D`.
     fn open_embedded_shell(&mut self, terminal: &mut Tui, instance_id: &str) -> Result<()> {
+        // Demo-mode short-circuit. The fixture's instance IDs are
+        // synthetic, the AwsClient is a stub, and `aws ssm start-
+        // session` would fail with "InstanceNotFound" (or hang
+        // waiting for the session-manager-plugin handshake). Instead
+        // spin up a fake `ShellSession` with a vt100::Parser
+        // pre-loaded with canned content (session banner + a few
+        // operator-realistic commands), and route into `Mode::Shell`
+        // exactly like a real session. VHS captures show a real-
+        // looking SSM pane; F12 detaches per the usual contract.
+        if self.demo_mode {
+            let size = terminal.size()?;
+            let rows = size.height.saturating_sub(2).max(4);
+            let cols = size.width.max(20);
+            let content = crate::demo_fixture::canned_ssm_session(instance_id);
+            let session =
+                crate::shell::ShellSession::demo(instance_id.to_string(), &content, rows, cols);
+            self.shell_return_mode = self.mode;
+            self.current_shell = Some(Box::new(session));
+            self.mode = Mode::Shell;
+            return Ok(());
+        }
         let region = self.context.region.clone();
         let profile = self
             .override_profile
@@ -2090,8 +2116,18 @@ impl App {
     /// Forward a key event to the running shell's PTY. Called only when
     /// `Mode::Shell` is active. F12 is consumed locally as the detach key.
     pub fn handle_shell_key(&mut self, key: KeyEvent) {
-        // F12 detaches without killing the subprocess.
-        if matches!(key.code, KeyCode::F(12)) {
+        // F12 detaches without killing the subprocess. Demo sessions
+        // (no real PTY behind them) also accept Esc as a detach — VHS
+        // can't emit F12 reliably, and there's no subprocess to
+        // forward bytes to anyway. Real sessions keep Esc forwarded
+        // to the PTY because vim / less / many TUIs need it.
+        let is_demo_session = self
+            .current_shell
+            .as_ref()
+            .is_some_and(|s| s.writer.is_none());
+        let detach = matches!(key.code, KeyCode::F(12))
+            || (is_demo_session && matches!(key.code, KeyCode::Esc));
+        if detach {
             self.mode = self.shell_return_mode;
             self.status_message = Some(
                 "detached from shell — F12 reattaches, or open shell again from Instances tab"
@@ -3646,6 +3682,16 @@ impl App {
     }
 
     fn spawn_why_red_queues(&self, app_name: String, env_name: String, session_id: u64) {
+        if self.demo_mode {
+            let result = Ok(crate::demo_fixture::worker_queues_for_env(&env_name));
+            let gen = self.generation;
+            let _ = self.msg_tx.send(AppMsg::WhyRedQueues {
+                gen,
+                session_id,
+                result,
+            });
+            return;
+        }
         self.spawn_aws(
             "describe_worker_queues",
             move |aws| async move { aws.describe_worker_queues(&app_name, &env_name).await },
@@ -3676,6 +3722,16 @@ impl App {
     }
 
     fn spawn_why_red_events(&self, env_name: String, session_id: u64) {
+        if self.demo_mode {
+            let result = Ok(crate::demo_fixture::events_for_env(&env_name));
+            let gen = self.generation;
+            let _ = self.msg_tx.send(AppMsg::WhyRedEvents {
+                gen,
+                session_id,
+                result,
+            });
+            return;
+        }
         self.spawn_aws(
             "list_events_for_env",
             move |aws| async move { aws.list_events_for_env(&env_name, 50).await },
@@ -3688,6 +3744,16 @@ impl App {
     }
 
     fn spawn_why_red_alarms(&self, env_name: String, session_id: u64) {
+        if self.demo_mode {
+            let result = Ok(crate::demo_fixture::alarms_for_env(&env_name));
+            let gen = self.generation;
+            let _ = self.msg_tx.send(AppMsg::WhyRedAlarms {
+                gen,
+                session_id,
+                result,
+            });
+            return;
+        }
         self.spawn_aws(
             "list_alarms_for_env",
             move |aws| async move { aws.list_alarms_for_env(&env_name).await },
@@ -3700,6 +3766,16 @@ impl App {
     }
 
     fn spawn_why_red_instances(&self, env_name: String, session_id: u64) {
+        if self.demo_mode {
+            let result = Ok(crate::demo_fixture::instances_for(&env_name));
+            let gen = self.generation;
+            let _ = self.msg_tx.send(AppMsg::WhyRedInstances {
+                gen,
+                session_id,
+                result,
+            });
+            return;
+        }
         self.spawn_aws(
             "list_instances",
             move |aws| async move { aws.list_instances(&env_name).await },
@@ -3712,6 +3788,16 @@ impl App {
     }
 
     fn spawn_why_red_deploys(&self, app_name: String, session_id: u64) {
+        if self.demo_mode {
+            let result = Ok(crate::demo_fixture::deploys_for_app(&app_name));
+            let gen = self.generation;
+            let _ = self.msg_tx.send(AppMsg::WhyRedDeploys {
+                gen,
+                session_id,
+                result,
+            });
+            return;
+        }
         self.spawn_aws(
             "list_application_versions",
             move |aws| async move { aws.list_application_versions(&app_name).await },
@@ -3733,6 +3819,20 @@ impl App {
         if let Some(d) = self.detail.as_mut() {
             d.loading_cw_alarms = true;
         }
+        // Demo-mode short-circuit (same pattern as
+        // spawn_detail_instances / spawn_detail_events). Inject
+        // fixture alarms so Detail/Health doesn't show an
+        // ugly "error: DescribeAlarms failed" row.
+        if self.demo_mode {
+            let result = Ok(crate::demo_fixture::alarms_for_env(&env_name));
+            let gen = self.generation;
+            let _ = self.msg_tx.send(AppMsg::DetailAlarms {
+                gen,
+                env_name,
+                result,
+            });
+            return;
+        }
         let env_for_msg = env_name.clone();
         self.spawn_aws(
             "list_alarms_for_env",
@@ -3750,6 +3850,16 @@ impl App {
     fn spawn_detail_recent_versions(&mut self, app_name: String, env_name: String) {
         if let Some(d) = self.detail.as_mut() {
             d.loading_recent_versions = true;
+        }
+        if self.demo_mode {
+            let result = Ok(crate::demo_fixture::deploys_for_app(&app_name));
+            let gen = self.generation;
+            let _ = self.msg_tx.send(AppMsg::DetailRecentVersions {
+                gen,
+                env_name,
+                result,
+            });
+            return;
         }
         self.spawn_aws(
             "list_application_versions",
@@ -6682,6 +6792,16 @@ impl App {
             d.loading_queues = true;
             d.error = None;
         }
+        if self.demo_mode {
+            let result = Ok(crate::demo_fixture::worker_queues_for_env(&env_name));
+            let gen = self.generation;
+            let _ = self.msg_tx.send(AppMsg::DetailQueues {
+                gen,
+                env_name,
+                result,
+            });
+            return;
+        }
         let env_for_msg = env_name.clone();
         self.spawn_aws(
             "describe_worker_queues",
@@ -6701,6 +6821,21 @@ impl App {
         if let Some(d) = self.detail.as_mut() {
             d.loading_events = true;
             d.error = None;
+        }
+        // Demo-mode short-circuit: filter the fixture's fleet-wide
+        // events down to this env, mirror what list_events_for_env
+        // would have returned. Same channel + msg variant the live
+        // path uses, so the rest of the rendering pipeline is
+        // untouched.
+        if self.demo_mode {
+            let result = Ok(crate::demo_fixture::events_for_env(&env_name));
+            let gen = self.generation;
+            let _ = self.msg_tx.send(AppMsg::DetailEvents {
+                gen,
+                env_name,
+                result,
+            });
+            return;
         }
         let env_for_msg = env_name.clone();
         self.spawn_aws(
@@ -9404,6 +9539,20 @@ impl App {
         if let Some(d) = self.detail.as_mut() {
             d.loading_instances = true;
             d.error = None;
+        }
+        // Demo-mode short-circuit: synthesise the fixture's per-env
+        // instance list and send the result message directly. Avoids
+        // firing list_instances against the stub AwsClient, which
+        // would error and leave Detail/Instances stuck on "loading…".
+        if self.demo_mode {
+            let result = Ok(crate::demo_fixture::instances_for(&env_name));
+            let gen = self.generation;
+            let _ = self.msg_tx.send(AppMsg::DetailInstances {
+                gen,
+                env_name,
+                result,
+            });
+            return;
         }
         let env_for_msg = env_name.clone();
         self.spawn_aws(

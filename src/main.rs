@@ -81,12 +81,21 @@ async fn main() -> Result<()> {
     const SPLASH_MIN_DURATION: std::time::Duration = std::time::Duration::from_secs(3);
 
     let mut app_inst = if demo {
-        // `--demo` mode: no STS round-trip, no `state::load`, no
-        // splash animation. Constructing the App is synchronous and
-        // instant — show a single splash frame so the screen isn't
-        // blank during the (tiny) construction time, then break out.
-        draw_splash(&mut terminal, 0, &splash_icons)?;
-        App::new_demo(cfg)
+        // `--demo` mode: no STS round-trip, no `state::load`. App
+        // construction is synchronous and instant — but still run the
+        // splash animation for SPLASH_MIN_DURATION so VHS / asciinema
+        // captures get the brand animation rather than jumping
+        // straight to the table.
+        let app = App::new_demo(cfg);
+        let splash_started = std::time::Instant::now();
+        let mut splash_frame: u64 = 0;
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(30));
+        while splash_started.elapsed() < SPLASH_MIN_DURATION {
+            interval.tick().await;
+            draw_splash(&mut terminal, splash_frame, &splash_icons)?;
+            splash_frame = splash_frame.wrapping_add(1);
+        }
+        app
     } else {
         let splash_started = std::time::Instant::now();
         let mut splash_frame: u64 = 0;
