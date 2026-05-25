@@ -6,15 +6,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-### Added
-- **`notify_webhook` outbound integration.** New opt-in `config.toml` setting `notify_webhook = "https://..."` (or `""` to disable) arms a fire-and-forget POST on every audit-log line. Body is Slack-incoming-webhook-shaped — a top-level `text` field renders the audit line for human-readable Slack channels, with structured sibling keys (`at`, `account`, `profile`, `region`, `detail`) for routing / filtering by other consumers. Shells out to `curl` (10s cap, same approach as `fetch_url_text`) so we don't add an HTTP-client dep. Webhook failures log via `tracing::warn!` but never alarm the operator — the local `audit.log` remains the source of truth.
-- **EB CLI `.elasticbeanstalk/config.yml` reader.** New `eb_cli` module walks up from cwd looking for the EB CLI's project-config marker directory and parses `config.yml` for default `profile` / `default_region` / `application_name`. Most EB CLI users already maintain this file; reading it lets ebman pick up the working context without forcing a duplicate `.ebman/ebman.toml` entry. Precedence: `.ebman/ebman.toml` > `.elasticbeanstalk/config.yml` > persisted `state.toml`. `application_name` fills in as a soft filter prefill when `.ebman/` hasn't set one. Parse errors / null values / unknown keys all silently fall back to defaults — a corrupt EB CLI file can't refuse to launch ebman.
-- **Pre-deploy preview inline in the confirm modal.** Every `:deploy LABEL` confirm modal now auto-fetches `list_application_versions` and renders the existing `format_deploy_preview` body (candidate label / age / description / rollback-warning when candidate is older than current) inside the modal — no separate `:deploy LABEL --preview` round-trip required. Loading placeholder while the fetch is in flight; failures inline as `version preview unavailable: <reason>` rather than leaving the slot blank.
-- **`ebman action deploy --env X --version Y [--wait-for-green Nm] [--auto-rollback Nm]`** — non-interactive CLI parity with the typed-command `:deploy`. Polls EB every 5s for Green/timeout/rollback resolution; pure decision helper `decide_poll()` is unit-tested across the full four-state matrix. Distinct exit codes for CI branching: 0 = ok, 1 = AWS error, 2 = usage error, 4 = wait-for-green timeout, 5 = auto-rollback dispatched. Same duration grammar as the TUI path (`5m` / `30m` / `1h`). Refuses upfront if `--auto-rollback` is set but the env has no prior version to roll back to. (`<TBD>`)
-- **`:deploy LABEL --wait-for-green Nm`** — pure-observability companion to `--auto-rollback`. Arms a watcher at dispatch; `apply_refresh` pins success (`✓ deploy reached Green: ENV`) when the env reaches Green or pins a timeout error if the deadline elapses while still non-Green. Different glyph + colour (`👁 watching ENV REMAINING`, theme.title) from the `⏱ rollback` pill so the operator can tell at a glance which kind of in-flight observer is on the env. Composes with `--auto-rollback` — both flags can be set on the same deploy.
+## [0.10.0] — Deploy story complete: safety nets, observability, CI parity
+
+This release completes the deploy story 0.9.0 started: every step
+of "ship a build" is now operator-observable, composable, and has
+a safety net. The auto-rollback watchdog (0.9.0) is joined by a
+wait-for-green watcher, an operator-named rollback target, an
+explicit abort, a header countdown pill, and a non-interactive
+CLI surface for CI/CD pipelines. Two more guardrails fire at
+confirm-time before a deploy commits: an inline version preview
+and a live health-check probe. Promotion across envs ships as
+`:promote-env STAGING PROD` so the daily staging→prod gesture is
+one dispatch. Outbound notifications fan audit lines to a
+Slack-shaped webhook; the EB CLI's `.elasticbeanstalk/config.yml`
+slots in as a config source so existing EB CLI users get
+working-context discovery for free.
+
+### Added — confirm-modal safety net
+
+- **Pre-deploy health-check probe.** Every `:deploy` confirm modal now fetches the env's `Application Healthcheck URL` option-setting, composes a probe URL against the env's CNAME, and HEADs it via curl (`-L --max-time 2 -I`) at confirm time — not dispatch. Silence on 2xx (modal stays clean); yellow `⚠ health-check probe: <reason>` line on non-2xx / timeout / transport error, plus a muted hint `(deploy will proceed; consider --auto-rollback Nm if this matters)`. Catches the canonical auto-rollback footgun (new version doesn't have the configured `/health` endpoint → instant Red after deploy) BEFORE the operator commits. Pure helpers `build_health_check_probe_url` + `classify_health_check_status` unit-tested across the path-normalisation + status-code matrix. Skipped in `--demo` mode so synthetic CNAMEs don't pollute screencasts. (`04e4eac`)
+- **Pre-deploy preview inline in the confirm modal.** Every `:deploy LABEL` confirm modal now auto-fetches `list_application_versions` and renders the existing `format_deploy_preview` body (candidate label / age / description / rollback-warning when candidate is older than current) inside the modal — no separate `:deploy LABEL --preview` round-trip required. Loading placeholder while the fetch is in flight; failures inline as `version preview unavailable: <reason>` rather than leaving the slot blank. (`5ef0a97`)
+
+### Added — deploy story
+
+- **`:promote-env SOURCE TARGET [--auto-rollback Nm] [--wait-for-green Nm]`** — one-command staging→prod promotion. Takes SOURCE's current `version_label`, opens the deploy confirm on TARGET (not the selected env), threads both watchdog flags. Routes through a new `open_parameterised_action_on(env, …)` escape hatch so the destination is named, not inferred from the table cursor. Refuses if SOURCE has no version, source==target, or SOURCE's version is already on TARGET. Config-options promotion (copying operator-set option-settings deltas alongside the version) is a deeper follow-on; today operators run `:config-diff SOURCE` first if they need to verify alignment. (`a1f3b7b`)
+- **`:deploy LABEL --wait-for-green Nm`** — pure-observability companion to `--auto-rollback`. Arms a watcher at dispatch; `apply_refresh` pins success (`✓ deploy reached Green: ENV`) when the env reaches Green or pins a timeout error if the deadline elapses while still non-Green. Different glyph + colour (`👁 watching ENV REMAINING`, theme.title) from the `⏱ rollback` pill so the operator can tell at a glance which kind of in-flight observer is on the env. Composes with `--auto-rollback` — both flags can be set on the same deploy. (`2328c83`)
 - **`:rollback --to LABEL [--auto-rollback Nm]`** — operator-named rollback target. Skips the snapshot/event-scan detection and routes straight to the deploy confirm with the named label. Composes with `--auto-rollback Nm` so the operator can dispatch "roll back to build-820, auto-roll-forward to build-823 if Green doesn't land within Nm" in one command. Validates non-empty target + refuses idempotent same-version rollbacks. (`021127c`)
 - **`:abort-rollback [ENV]`** — explicit disarm. No-arg drains every armed watchdog in the current context; with an env name, just that one. Audit-logged. (`0293fd3`)
 - **Armed-watchdog visibility.** Header countdown pill (`⏱ rollback prod-api in 4m22s`) plus `:rollbacks-armed` (alias `:rb-armed`) overlay listing every armed watchdog with env / target / armed-ago / deadline-in. Pure renderers covered by tests. (`3a81329`)
+
+### Added — CI / CD ergonomics
+
+- **`ebman action deploy --env X --version Y [--wait-for-green Nm] [--auto-rollback Nm]`** — non-interactive CLI parity with the typed-command `:deploy`. Polls EB every 5s for Green/timeout/rollback resolution; pure decision helper `decide_poll()` is unit-tested across the full four-state matrix. Distinct exit codes for CI branching: 0 = ok, 1 = AWS error, 2 = usage error, 4 = wait-for-green timeout, 5 = auto-rollback dispatched. Same duration grammar as the TUI path (`5m` / `30m` / `1h`). Refuses upfront if `--auto-rollback` is set but the env has no prior version to roll back to. (`fa6ba36`)
+- **`notify_webhook` outbound integration.** New opt-in `config.toml` setting `notify_webhook = "https://..."` (or `""` to disable) arms a fire-and-forget POST on every audit-log line. Body is Slack-incoming-webhook-shaped — a top-level `text` field renders the audit line for human-readable Slack channels, with structured sibling keys (`at`, `account`, `profile`, `region`, `detail`) for routing / filtering by other consumers. Shells out to `curl` (10s cap, same approach as `fetch_url_text`) so we don't add an HTTP-client dep. Webhook failures log via `tracing::warn!` but never alarm the operator — the local `audit.log` remains the source of truth. (`71f4bd3`)
+- **EB CLI `.elasticbeanstalk/config.yml` reader.** New `eb_cli` module walks up from cwd looking for the EB CLI's project-config marker directory and parses `config.yml` for default `profile` / `default_region` / `application_name`. Most EB CLI users already maintain this file; reading it lets ebman pick up the working context without forcing a duplicate `.ebman/ebman.toml` entry. Precedence: `.ebman/ebman.toml` > `.elasticbeanstalk/config.yml` > persisted `state.toml`. `application_name` fills in as a soft filter prefill when `.ebman/` hasn't set one. Parse errors / null values / unknown keys all silently fall back to defaults — a corrupt EB CLI file can't refuse to launch ebman. (`d8376e2`)
+
+### Fixed
+
+- **`Updating`+`Green` false-positive in deploy watchers.** EB briefly leaves `health=Green` while `status` flips to `Updating` right after `UpdateEnvironment`. Three watchers were checking health alone and false-positiving during that window: the auto-rollback watchdog (disarm before deploy rolled — safety net evaporates), the wait-for-green watcher (premature "✓ reached Green" pin), and the CLI `decide_poll` (exit 0 before deploy started — CI gates passing on rolling deploys). Fix: new pure `deploy_settled_green(status, health)` requiring BOTH `status=Ready` AND `health=Green/Ok`; all three sites now route through it. (`e705d54`)
 
 ## [0.9.0] — Pre-deploy snapshot + auto-rollback
 
@@ -518,7 +547,8 @@ Initial public release. Headline surface:
 - Published to crates.io as `ebman`.
 - Homebrew tap at `tombaldwin/homebrew-tap`.
 
-[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/tombaldwin/ebman/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/tombaldwin/ebman/compare/v0.8.1...v0.9.0
 [0.3.5]: https://github.com/tombaldwin/ebman/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/tombaldwin/ebman/compare/v0.3.3...v0.3.4
