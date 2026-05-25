@@ -224,8 +224,9 @@ Type `:` to open the command bar. Tab-completion is not implemented, but `Ctrl-K
 ### Write — env state
 
 - `:rebuild` / `:restart` / `:terminate` — action menu shortcuts (Terminate requires typed-name confirm).
-- `:deploy LABEL` — ship an existing application version to the selected env.
+- `:deploy LABEL` — ship an existing application version to the selected env. Every dispatch captures a pre-deploy snapshot (version label + timestamp) into `state.toml` so `:rollback` has a reliable target.
 - `:deploy LABEL --preview` — open a side-by-side overlay of the currently-deployed version vs the candidate (label, description, S3 source, timestamp + rollback / traffic warnings) without dispatching.
+- `:deploy LABEL --auto-rollback Nm` — arms a watchdog after dispatch. If the env reaches Green before the deadline (`5m` / `30m` / `1h` grammar), the watchdog disarms with a status toast. If not, ebman automatically redeploys the captured snapshot's previous version, with an audit-log entry. Respects per-env / per-account read-only safety pins.
 - `:deploy --from PATH [--label L] [--describe D] [--no-deploy]` — upload a local `.zip` (or `--from s3://bucket/key`), register a new version, optionally deploy.
 - `:upgrade [ARN]` — list compatible platforms; with ARN, dispatch the migration.
 - `:clone NEWNAME` — clone the selected env.

@@ -633,7 +633,9 @@ impl AwsClient {
     ///
     /// Also the underlying client used by `App::new_demo` — `--demo`
     /// mode wants the no-network behaviour without the cfg gate.
-    pub fn stub() -> Self {
+    /// `pub(crate)` because every caller (test code + `App::new_demo`)
+    /// lives in this crate; no need to expose to the bin or downstream.
+    pub(crate) fn stub() -> Self {
         let cfg = aws_config::SdkConfig::builder()
             .region(Region::new("us-east-1"))
             .behavior_version(aws_config::BehaviorVersion::latest())
@@ -648,7 +650,7 @@ impl AwsClient {
         )
     }
 
-    pub fn for_tests(
+    pub(crate) fn for_tests(
         client: Client,
         sqs: SqsClient,
         cw: CwClient,
