@@ -400,7 +400,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     ),
     cmd(
         "deploy",
-        ":deploy LABEL [--preview] [--auto-rollback Nm]  |  :deploy --from PATH [--label L] [--describe D] [--no-deploy]  — auto-rollback arms a watchdog that redeploys the captured pre-deploy snapshot if the env doesn't reach Green within N minutes",
+        ":deploy LABEL [--preview] [--auto-rollback Nm] [--wait-for-green Nm]  |  :deploy --from PATH [--label L] [--describe D] [--no-deploy]  — auto-rollback arms a watchdog that redeploys the captured pre-deploy snapshot if the env doesn't reach Green within N minutes; wait-for-green pins a success/timeout status when the deploy resolves",
         Category::Lifecycle,
         CommandKind::Prefill("deploy "),
     ),

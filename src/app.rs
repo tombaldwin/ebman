@@ -595,6 +595,21 @@ pub(crate) struct ArmedWatchdog {
     pub deadline_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// In-flight `--wait-for-green` tracker. Populated when the
+/// operator dispatches `:deploy LABEL --wait-for-green Nm` and
+/// drained by `apply_refresh` once the env either reaches Green
+/// (success) or the deadline elapses (timeout). Parallel to
+/// `ArmedWatchdog` but doesn't dispatch a follow-on action — its
+/// only outcome is a pinned status / error so the operator knows
+/// the deploy result without staring at the table.
+#[derive(Debug, Clone)]
+pub(crate) struct WatchingDeploy {
+    pub env_name: String,
+    pub target_label: String,
+    pub armed_at: chrono::DateTime<chrono::Utc>,
+    pub deadline_at: chrono::DateTime<chrono::Utc>,
+}
+
 impl DeploySnapshot {
     /// On-disk shape — `"label|RFC3339-ts"`. Pipe separator keeps the
     /// existing line-oriented state.toml parser happy. The pipe is
@@ -878,6 +893,14 @@ pub struct App {
     /// tokio task that drives the deadline is fire-and-forget;
     /// the in-flight visibility lives here.
     pub(crate) armed_watchdogs: std::collections::HashMap<String, ArmedWatchdog>,
+    /// In-flight `--wait-for-green` trackers keyed by env name. Populated
+    /// by `:deploy --wait-for-green Nm`; drained on either (a) the env
+    /// reaching Green on a refresh tick (success outcome) or (b) the
+    /// deadline elapsing without Green (timeout outcome). Either way the
+    /// outcome is a pinned status — no follow-on action like
+    /// `armed_watchdogs`. Both maps can be populated for the same env
+    /// when the operator passes both flags.
+    pub(crate) watching_deploys: std::collections::HashMap<String, WatchingDeploy>,
     /// `--demo` mode flag. Suppresses the periodic refresh (`spawn_refresh`
     /// becomes a no-op) and the update-check (`spawn_update_check` likewise)
     /// so hand-crafted fixture data from `demo_fixture::install` stays put.
@@ -1667,6 +1690,7 @@ impl App {
                 )
                 .collect(),
             armed_watchdogs: std::collections::HashMap::new(),
+            watching_deploys: std::collections::HashMap::new(),
             demo_mode: false,
             env_instance_counts: std::collections::HashMap::new(),
             cost_enabled: persisted.cost_enabled.unwrap_or(false),
@@ -1877,6 +1901,7 @@ impl App {
             worker_dlq_depths: std::collections::HashMap::new(),
             deploy_snapshots: std::collections::HashMap::new(),
             armed_watchdogs: std::collections::HashMap::new(),
+            watching_deploys: std::collections::HashMap::new(),
             demo_mode: false,
             env_instance_counts: std::collections::HashMap::new(),
             cost_enabled: false,
@@ -2080,6 +2105,7 @@ impl App {
                     || !self.toasts.is_empty()
                     || self.pending_dispatch.is_some()
                     || !self.armed_watchdogs.is_empty()
+                    || !self.watching_deploys.is_empty()
                     || matches!(self.current_overlay, Some(Overlay::About(_)))
                     || self.loading_visible_until.map(|t| Instant::now() < t).unwrap_or(false) => {
                     // Wake the draw loop so the spinner can advance, toasts
@@ -6424,6 +6450,13 @@ impl App {
     /// gating paths are handled here (drain the watchdog + surface
     /// an error / status) so caller logic stays simple.
     pub(crate) fn dispatch_auto_rollback(&mut self, env_name: String, health: String) {
+        // Always drain a parallel wait-for-green watcher when the
+        // rollback fires — otherwise the subsequent Green from the
+        // rolled-back version would pin "✓ deploy reached Green:
+        // ENV (build-900)" even though build-900 is the version we
+        // just rolled away from. The auto-rollback's own pin is
+        // the signal the operator should see.
+        self.watching_deploys.remove(&env_name);
         let Some(snapshot) = self.deploy_snapshots.get(&env_name).cloned() else {
             // pin_error so the warning survives apply_refresh's auto-
             // clear — when this fires *from* apply_refresh (the
@@ -7958,6 +7991,7 @@ impl App {
                         scale_min: None,
                         scale_max: None,
                         auto_rollback_secs: None,
+                        wait_for_green_secs: None,
                     }));
                 }
                 KeyCode::Char(c) if is_text_input(&key) => {
@@ -8065,6 +8099,7 @@ impl App {
                     scale_min: None,
                     scale_max: None,
                     auto_rollback_secs: None,
+                    wait_for_green_secs: None,
                 }));
                 if wants_preflight {
                     self.spawn_dry_run(env.name.clone());
@@ -8134,6 +8169,7 @@ impl App {
                     scale_min: None,
                     scale_max: None,
                     auto_rollback_secs: None,
+                    wait_for_green_secs: None,
                 }));
             }
             _ => {
@@ -8155,6 +8191,7 @@ impl App {
                     scale_min: None,
                     scale_max: None,
                     auto_rollback_secs: None,
+                    wait_for_green_secs: None,
                 }));
             }
         }
@@ -9539,6 +9576,7 @@ impl App {
             scale_min: params.scale_min,
             scale_max: params.scale_max,
             auto_rollback_secs: params.auto_rollback_secs,
+            wait_for_green_secs: params.wait_for_green_secs,
         };
         self.action_flow = Some(ActionFlow::Confirm(modal));
         self.mode = Mode::Action;
@@ -9817,6 +9855,35 @@ impl App {
                     tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
                     let _ = tx.send(AppMsg::AutoRollbackCheck { gen, env_name });
                 });
+            }
+            // Arm the wait-for-green tracker if requested. Pure
+            // observability — `apply_refresh` watches `watching_deploys`
+            // and pins the outcome (success on Green, error on timeout).
+            // No tokio task needed: apply_refresh runs on every refresh
+            // tick anyway and checks deadlines there. Orthogonal to
+            // auto-rollback so both flags can coexist.
+            if let Some(secs) = modal.wait_for_green_secs {
+                let target_label = modal.deploy_version.clone().unwrap_or_default();
+                let armed_at = chrono::Utc::now();
+                let deadline_at = armed_at + chrono::Duration::seconds(secs as i64);
+                self.watching_deploys.insert(
+                    modal.target_env.clone(),
+                    WatchingDeploy {
+                        env_name: modal.target_env.clone(),
+                        target_label,
+                        armed_at,
+                        deadline_at,
+                    },
+                );
+                // Don't clobber a "auto-rollback armed" message if
+                // both flags were set — append instead.
+                if let Some(existing) = self.status_message.as_mut() {
+                    existing.push_str(&format!("; watching for Green ({secs}s)"));
+                } else {
+                    self.status_message = Some(format!(
+                        "watching deploy: {secs}s to reach Green or report timeout"
+                    ));
+                }
             }
         }
         let aws = self.aws.clone();
@@ -11015,6 +11082,9 @@ impl App {
                 // also prevents a same-name env in the new context
                 // from being seen as "still armed" by apply_refresh.
                 self.armed_watchdogs.clear();
+                // Same reasoning applies to wait-for-green trackers:
+                // env-name keyed, context-scoped — drop on rebuild.
+                self.watching_deploys.clear();
                 // Pre-deploy snapshots are env-name keyed; clearing on
                 // context switch avoids :rollback in the new context
                 // picking up a label that doesn't exist there.
@@ -11462,6 +11532,51 @@ impl App {
                         self.dispatch_auto_rollback(env_name, health);
                     }
                     // else: still armed, next refresh re-evaluates.
+                }
+
+                // Wait-for-green watcher decision pass. Same shape as
+                // armed_watchdogs, but the resolution is purely
+                // observational — no follow-on dispatch. Three outcomes:
+                //   1. Env is Green/Ok → drain, pin success.
+                //   2. Deadline passed and env still non-Green → drain,
+                //      pin timeout error (operator decides next move).
+                //   3. Else → keep watching, re-check next refresh.
+                let watching: Vec<(String, chrono::DateTime<chrono::Utc>, String, u64)> = self
+                    .watching_deploys
+                    .iter()
+                    .map(|(env, w)| {
+                        let secs = (w.deadline_at - w.armed_at).num_seconds().max(0) as u64;
+                        (env.clone(), w.deadline_at, w.target_label.clone(), secs)
+                    })
+                    .collect();
+                for (env_name, deadline_at, target_label, total_secs) in watching {
+                    let health = self
+                        .environments
+                        .iter()
+                        .find(|e| e.name == env_name)
+                        .map(|e| e.health.clone())
+                        .unwrap_or_default();
+                    let healthy =
+                        health.eq_ignore_ascii_case("Green") || health.eq_ignore_ascii_case("Ok");
+                    if healthy {
+                        self.watching_deploys.remove(&env_name);
+                        let label_hint = if target_label.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" ({target_label})")
+                        };
+                        self.pin_status(format!("✓ deploy reached Green: {env_name}{label_hint}"));
+                    } else if now >= deadline_at {
+                        self.watching_deploys.remove(&env_name);
+                        let label_hint = if target_label.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" ({target_label})")
+                        };
+                        self.pin_error(format!(
+                            "deploy did not reach Green within {total_secs}s: {env_name}{label_hint} — health={health}"
+                        ));
+                    }
                 }
 
                 let live: HashSet<String> =
@@ -12031,6 +12146,24 @@ pub(crate) fn soonest_armed_rollback(
     now: chrono::DateTime<chrono::Utc>,
 ) -> Option<(String, String)> {
     let next = armed.values().min_by_key(|w| w.deadline_at)?;
+    let remaining_secs = (next.deadline_at - now).num_seconds();
+    let remaining_str = if remaining_secs <= 0 {
+        "now".to_string()
+    } else {
+        humanize_short_age(Duration::from_secs(remaining_secs as u64))
+    };
+    Some((next.env_name.clone(), remaining_str))
+}
+
+/// Soonest-resolving watching-deploy tracker's countdown — used by
+/// the header pill so the operator sees "👁 watching prod-api in
+/// 4m22s" for `:deploy --wait-for-green Nm`. Returns `None` when
+/// nothing is being watched. Parallel to `soonest_armed_rollback`.
+pub(crate) fn soonest_watching_deploy(
+    watching: &std::collections::HashMap<String, WatchingDeploy>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<(String, String)> {
+    let next = watching.values().min_by_key(|w| w.deadline_at)?;
     let remaining_secs = (next.deadline_at - now).num_seconds();
     let remaining_str = if remaining_secs <= 0 {
         "now".to_string()
@@ -17313,6 +17446,234 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deploy_wait_for_green_threads_secs_through_to_modal() {
+        // `:deploy LABEL --wait-for-green 5m` carries the duration
+        // into the ConfirmModal where spawn_action picks it up.
+        // No watcher is armed until the operator confirms — that's
+        // tested separately at the spawn_action layer.
+        let mut app = test_app();
+        app.environments = vec![mk_env("prod", "shop", "Web", "Green")];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        app.execute_command("deploy build-900 --wait-for-green 5m");
+        match &app.action_flow {
+            Some(ActionFlow::Confirm(modal)) => {
+                assert_eq!(modal.deploy_version.as_deref(), Some("build-900"));
+                assert_eq!(modal.wait_for_green_secs, Some(300));
+                assert!(modal.auto_rollback_secs.is_none());
+            }
+            _ => panic!("expected confirm modal open"),
+        }
+    }
+
+    #[tokio::test]
+    async fn deploy_wait_for_green_rejects_malformed_duration() {
+        // Same friendly-error pattern as `--auto-rollback`. `forever`
+        // isn't parseable, so refuse rather than silently dropping
+        // the flag.
+        let mut app = test_app();
+        app.environments = vec![mk_env("prod", "shop", "Web", "Green")];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        app.execute_command("deploy build-900 --wait-for-green forever");
+        let err = app.error_message.as_deref().unwrap_or("");
+        assert!(
+            err.contains("--wait-for-green") && err.contains("duration"),
+            "expected parse refusal, got: {err}"
+        );
+        assert!(
+            app.action_flow.is_none(),
+            "no modal should open on malformed duration"
+        );
+    }
+
+    #[tokio::test]
+    async fn deploy_with_both_flags_threads_both_through() {
+        // Operator wants both: "watch for Green, and roll back if it
+        // doesn't land". Modal carries both fields independently;
+        // spawn_action registers in both maps.
+        let mut app = test_app();
+        app.environments = vec![mk_env("prod", "shop", "Web", "Green")];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        app.execute_command("deploy build-900 --auto-rollback 10m --wait-for-green 5m");
+        match &app.action_flow {
+            Some(ActionFlow::Confirm(modal)) => {
+                assert_eq!(modal.deploy_version.as_deref(), Some("build-900"));
+                assert_eq!(modal.auto_rollback_secs, Some(600));
+                assert_eq!(modal.wait_for_green_secs, Some(300));
+            }
+            _ => panic!("expected confirm modal open"),
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_refresh_drains_watching_deploy_on_green() {
+        // Watcher armed; next apply_refresh sees Green → drain +
+        // pinned success. Operator sees "✓ deploy reached Green: prod"
+        // without having to stare at the table.
+        let mut app = test_app();
+        let now = chrono::Utc::now();
+        app.watching_deploys.insert(
+            "prod".into(),
+            WatchingDeploy {
+                env_name: "prod".into(),
+                target_label: "build-900".into(),
+                armed_at: now,
+                deadline_at: now + chrono::Duration::seconds(300),
+            },
+        );
+        app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Green")]));
+        assert!(
+            app.watching_deploys.is_empty(),
+            "Green should drain the watcher"
+        );
+        // The pin flag survives only one refresh tick — by the time
+        // apply_refresh returns, the message stays in the slot but the
+        // pinned flag has been reset. We assert on the message itself.
+        let pinned = app.status_message.as_deref().unwrap_or("");
+        assert!(
+            pinned.contains("reached Green") && pinned.contains("prod"),
+            "expected pinned success status, got: {pinned:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_refresh_drains_watching_deploy_on_timeout() {
+        // Watcher armed with a deadline already in the past; next
+        // apply_refresh with the env still non-Green → drain + pinned
+        // timeout error. The error pin survives the auto-clear at the
+        // bottom of apply_refresh.
+        let mut app = test_app();
+        let now = chrono::Utc::now();
+        app.watching_deploys.insert(
+            "prod".into(),
+            WatchingDeploy {
+                env_name: "prod".into(),
+                target_label: "build-900".into(),
+                armed_at: now - chrono::Duration::seconds(600),
+                deadline_at: now - chrono::Duration::seconds(60),
+            },
+        );
+        app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Red")]));
+        assert!(
+            app.watching_deploys.is_empty(),
+            "expired watcher should drain on timeout"
+        );
+        let pinned = app.error_message.as_deref().unwrap_or("");
+        assert!(
+            pinned.contains("did not reach Green") && pinned.contains("prod"),
+            "expected pinned timeout error, got: {pinned:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rebuild_clears_watching_deploys() {
+        // Context switch (account / region change) flushes
+        // env-scoped state. watching_deploys is env-name keyed, so
+        // it must drop alongside armed_watchdogs + deploy_snapshots.
+        let mut app = test_app();
+        app.watching_deploys.insert(
+            "prod".into(),
+            WatchingDeploy {
+                env_name: "prod".into(),
+                target_label: "build-900".into(),
+                armed_at: chrono::Utc::now(),
+                deadline_at: chrono::Utc::now() + chrono::Duration::seconds(300),
+            },
+        );
+        app.apply_rebuild(Ok(Box::new(crate::aws::AwsClient::stub())));
+        assert!(
+            app.watching_deploys.is_empty(),
+            "watching_deploys must clear on context rebuild"
+        );
+    }
+
+    #[test]
+    fn soonest_watching_deploy_picks_earliest_deadline() {
+        // Two watchers; pill shows the one firing first. Mirrors
+        // the soonest_armed_rollback contract.
+        let mut map: std::collections::HashMap<String, WatchingDeploy> =
+            std::collections::HashMap::new();
+        let now = chrono::Utc::now();
+        map.insert(
+            "later".into(),
+            WatchingDeploy {
+                env_name: "later".into(),
+                target_label: "v2".into(),
+                armed_at: now,
+                deadline_at: now + chrono::Duration::seconds(600),
+            },
+        );
+        map.insert(
+            "sooner".into(),
+            WatchingDeploy {
+                env_name: "sooner".into(),
+                target_label: "v1".into(),
+                armed_at: now,
+                deadline_at: now + chrono::Duration::seconds(120),
+            },
+        );
+        let (env, _remaining) = soonest_watching_deploy(&map, now).expect("not empty");
+        assert_eq!(env, "sooner");
+    }
+
+    #[tokio::test]
+    async fn dispatch_auto_rollback_also_drains_watching_deploys() {
+        // When the rollback watchdog fires, any parallel
+        // `--wait-for-green` watcher for the same env must drain
+        // too — otherwise the rolled-back version reaching Green
+        // would pin "✓ deploy reached Green: env (build-900)" even
+        // though build-900 is the version we just rolled away from.
+        let mut app = test_app();
+        app.environments = vec![mk_env("prod", "shop", "Web", "Red")];
+        app.rebuild_view();
+        // Both watchers armed for the same env.
+        app.deploy_snapshots.insert(
+            "prod".into(),
+            DeploySnapshot {
+                env_name: "prod".into(),
+                previous_version_label: "build-820".into(),
+                taken_at: chrono::Utc::now(),
+            },
+        );
+        app.armed_watchdogs.insert(
+            "prod".into(),
+            ArmedWatchdog {
+                env_name: "prod".into(),
+                target_label: "build-820".into(),
+                armed_at: chrono::Utc::now(),
+                deadline_at: chrono::Utc::now() - chrono::Duration::seconds(1),
+            },
+        );
+        app.watching_deploys.insert(
+            "prod".into(),
+            WatchingDeploy {
+                env_name: "prod".into(),
+                target_label: "build-900".into(),
+                armed_at: chrono::Utc::now(),
+                deadline_at: chrono::Utc::now() + chrono::Duration::seconds(300),
+            },
+        );
+        app.dispatch_auto_rollback("prod".into(), "Red".into());
+        assert!(
+            !app.watching_deploys.contains_key("prod"),
+            "rollback dispatch must drain the parallel wait-for-green watcher"
+        );
+        assert!(
+            !app.armed_watchdogs.contains_key("prod"),
+            "rollback dispatch must drain its own armed watchdog"
+        );
+    }
+
+    #[test]
+    fn soonest_watching_deploy_empty_returns_none() {
+        let map: std::collections::HashMap<String, WatchingDeploy> =
+            std::collections::HashMap::new();
+        assert!(soonest_watching_deploy(&map, chrono::Utc::now()).is_none());
+    }
+
+    #[tokio::test]
     async fn abort_rollback_named_env_disarms_just_that_one() {
         // Operator armed two; aborts only `staging`. `prod` stays
         // armed (and the deadline can still fire — apply_refresh
@@ -18449,6 +18810,7 @@ mod tests {
             scale_min: None,
             scale_max: None,
             auto_rollback_secs: None,
+            wait_for_green_secs: None,
         }
     }
 
