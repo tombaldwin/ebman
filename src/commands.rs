@@ -406,9 +406,9 @@ pub const COMMANDS: &[CommandSpec] = &[
     ),
     cmd(
         "rollback",
-        ":rollback — redeploy the env's previously-deployed version (found from its event history; opens the deploy confirm)",
+        ":rollback [--to LABEL] [--auto-rollback Nm] — redeploy the previous version. No arg uses the captured pre-deploy snapshot (falls back to event-history scan). --to LABEL targets a specific version. --auto-rollback arms a roll-forward watchdog.",
         Category::Lifecycle,
-        CommandKind::ZeroArg,
+        CommandKind::Prefill("rollback "),
     ),
     cmd(
         "upgrade",
