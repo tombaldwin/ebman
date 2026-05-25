@@ -43,6 +43,7 @@ impl AppMsg {
             | WhyRedQueues { gen, .. }
             | WhyRedDlqMessages { gen, .. }
             | PreflightEvents { gen, .. }
+            | VersionPreview { gen, .. }
             | RollbackTarget { gen, .. }
             | DetailTags { gen, .. }
             | DeployFromLocal { gen, .. }
@@ -151,6 +152,9 @@ impl App {
             AppMsg::PreflightEvents {
                 env_name, result, ..
             } => self.handle_preflight_events(env_name, result),
+            AppMsg::VersionPreview {
+                env_name, result, ..
+            } => self.handle_version_preview(env_name, result),
             AppMsg::RollbackTarget {
                 env_name,
                 current_version,
@@ -691,6 +695,25 @@ impl App {
         if let Ok(events) = result {
             modal.recent_events = Some(events);
         }
+    }
+
+    /// Stuff the rendered preview body into the modal slot — or
+    /// drop it on the floor if the modal closed / switched envs
+    /// while the fetch was in flight. A failed fetch is rendered
+    /// as an inline error message rather than left blank so the
+    /// operator knows the preview tried and failed.
+    fn handle_version_preview(&mut self, env_name: String, result: Result<String, String>) {
+        let Some(ActionFlow::Confirm(modal)) = self.action_flow.as_mut() else {
+            return;
+        };
+        if modal.target_env != env_name {
+            return;
+        }
+        modal.loading_version_preview = false;
+        modal.version_preview = Some(match result {
+            Ok(body) => body,
+            Err(e) => format!("version preview unavailable: {e}"),
+        });
     }
 
     fn handle_rollback_target(

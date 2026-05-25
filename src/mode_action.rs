@@ -185,6 +185,13 @@ pub const ACTIONS: &[Action] = &[
 /// the action flow immediately on Y-confirm — the pending-dispatch
 /// pill in the header carries the same signal, so the central modal
 /// became dead weight.
+// ConfirmModal has grown along with the action surface (deploy
+// preview + watchdogs + watching deploys + dry-run + recent
+// events). Boxing the variant would require touching every
+// pattern-match site for ~zero perceptible runtime benefit at
+// the modal's once-per-action allocation cadence. Allow rather
+// than absorb the churn.
+#[allow(clippy::large_enum_variant)]
 pub enum ActionFlow {
     Menu { list_state: ListState },
     SwapTarget { source: String, picker: Picker },
@@ -235,6 +242,19 @@ pub struct ConfirmModal {
     /// deploy. The operator opts in with
     /// `:deploy LABEL --wait-for-green 5m`.
     pub wait_for_green_secs: Option<u64>,
+    /// Pre-deploy preview body — formatted output of
+    /// `format_deploy_preview` (label / age / description /
+    /// rollback-warning when candidate is older than current).
+    /// Populated by `spawn_version_preview` after the modal opens
+    /// for `Action::Deploy`, so the operator sees what they're
+    /// about to ship inline rather than having to dispatch
+    /// `:deploy LABEL --preview` separately first. `None` for
+    /// every other action.
+    pub version_preview: Option<String>,
+    /// True while `spawn_version_preview` is in flight — the UI
+    /// shows a `fetching version metadata…` placeholder until the
+    /// fetch lands.
+    pub loading_version_preview: bool,
 }
 
 /// Helper carrying the optional parameters needed by the new parameterised

@@ -4639,6 +4639,36 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                     Style::default().fg(theme.muted),
                 )));
             }
+            // Inline version preview for deploys — saves the operator
+            // a separate `:deploy LABEL --preview` round-trip. Only
+            // populated for Action::Deploy; renders below the recent-
+            // events block. Indented to match the other modal blocks.
+            if modal.loading_version_preview {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "  fetching version metadata…",
+                    Style::default().fg(theme.muted),
+                )));
+            } else if let Some(preview) = &modal.version_preview {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "  pre-deploy preview:",
+                    Style::default().fg(theme.muted),
+                )));
+                for raw in preview.lines() {
+                    // The formatter prefixes warning lines with `⚠` (older-
+                    // candidate rollback hint, unknown-label refusal).
+                    // Match on the glyph to colour just those lines.
+                    let style = if raw.contains('⚠') {
+                        Style::default()
+                            .fg(theme.health_yellow)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme.text)
+                    };
+                    lines.push(Line::from(Span::styled(format!("    {raw}"), style)));
+                }
+            }
             lines.push(Line::from(""));
             match modal.kind {
                 ConfirmKind::YesNo => {

@@ -1340,6 +1340,14 @@ enum AppMsg {
         env_name: String,
         result: Result<Vec<EbEvent>, String>,
     },
+    /// Pre-deploy version preview for the confirm modal. Carries
+    /// the pre-rendered `format_deploy_preview` body so the
+    /// handler stays trivial — just stuff it into the modal slot.
+    VersionPreview {
+        gen: u64,
+        env_name: String,
+        result: Result<String, String>,
+    },
     /// `:rollback` — the env's recent events came back; the handler
     /// scans them for the previously-deployed version label and opens
     /// the deploy-confirm modal for it.
@@ -7992,6 +8000,8 @@ impl App {
                         scale_max: None,
                         auto_rollback_secs: None,
                         wait_for_green_secs: None,
+                        version_preview: None,
+                        loading_version_preview: false,
                     }));
                 }
                 KeyCode::Char(c) if is_text_input(&key) => {
@@ -8100,6 +8110,8 @@ impl App {
                     scale_max: None,
                     auto_rollback_secs: None,
                     wait_for_green_secs: None,
+                    version_preview: None,
+                    loading_version_preview: false,
                 }));
                 if wants_preflight {
                     self.spawn_dry_run(env.name.clone());
@@ -8170,6 +8182,8 @@ impl App {
                     scale_max: None,
                     auto_rollback_secs: None,
                     wait_for_green_secs: None,
+                    version_preview: None,
+                    loading_version_preview: false,
                 }));
             }
             _ => {
@@ -8192,6 +8206,8 @@ impl App {
                     scale_max: None,
                     auto_rollback_secs: None,
                     wait_for_green_secs: None,
+                    version_preview: None,
+                    loading_version_preview: false,
                 }));
             }
         }
@@ -9204,6 +9220,44 @@ impl App {
         );
     }
 
+    /// Kick off the version-list fetch for the Deploy confirm
+    /// modal's inline preview. Builds the `format_deploy_preview`
+    /// body off-thread so the spawn handler doesn't allocate; the
+    /// handler just stuffs the rendered string into the modal.
+    /// `current_label` may be empty for a brand-new env (first
+    /// deploy) — the formatter handles that gracefully.
+    fn spawn_version_preview(
+        &mut self,
+        app_name: String,
+        env_name: String,
+        current_label: String,
+        candidate_label: String,
+    ) {
+        let env_for_msg = env_name.clone();
+        let env_for_render = env_name.clone();
+        let candidate_for_render = candidate_label.clone();
+        self.spawn_aws(
+            "version_preview",
+            move |aws| async move { aws.list_application_versions(&app_name).await },
+            move |gen, result| {
+                let body = match result {
+                    Ok(versions) => Ok(format_deploy_preview(
+                        &env_for_render,
+                        &current_label,
+                        &candidate_for_render,
+                        &versions,
+                    )),
+                    Err(e) => Err(e),
+                };
+                AppMsg::VersionPreview {
+                    gen,
+                    env_name: env_for_msg,
+                    result: body,
+                }
+            },
+        );
+    }
+
     /// Fire a single non-destructive action for batch mode. Unlike
     /// `spawn_action` this doesn't need a `ConfirmModal` — the user already
     /// opted in by typing `:batch-…`. Only Rebuild and RestartAppServer are
@@ -9558,6 +9612,12 @@ impl App {
         // `mode_action.rs`. Every ConfirmModal construction site must
         // route through here so the rule can't drift.
         let wants_preflight = action.wants_preflight();
+        // For Deploy with a candidate label, pull the version
+        // metadata (label / age / description) and inline the
+        // existing `:deploy --preview` body in the modal. Saves
+        // the operator the separate `:deploy LABEL --preview`
+        // round-trip.
+        let wants_version_preview = action == Action::Deploy && params.deploy_version.is_some();
         let modal = ConfirmModal {
             action,
             target_env: env.name.clone(),
@@ -9569,7 +9629,7 @@ impl App {
             recent_events: None,
             loading_events: wants_preflight,
             traffic_warning: compute_traffic_warning(&env),
-            deploy_version: params.deploy_version,
+            deploy_version: params.deploy_version.clone(),
             upgrade_platform_arn: params.upgrade_platform_arn,
             upgrade_platform_label: params.upgrade_platform_label,
             clone_target: params.clone_target,
@@ -9577,12 +9637,24 @@ impl App {
             scale_max: params.scale_max,
             auto_rollback_secs: params.auto_rollback_secs,
             wait_for_green_secs: params.wait_for_green_secs,
+            version_preview: None,
+            loading_version_preview: wants_version_preview,
         };
         self.action_flow = Some(ActionFlow::Confirm(modal));
         self.mode = Mode::Action;
         if wants_preflight {
             self.spawn_dry_run(env.name.clone());
             self.spawn_preflight_events(env.name.clone());
+        }
+        if wants_version_preview {
+            if let Some(label) = params.deploy_version {
+                self.spawn_version_preview(
+                    env.application.clone(),
+                    env.name.clone(),
+                    env.version_label.clone(),
+                    label,
+                );
+            }
         }
     }
 
@@ -13720,6 +13792,8 @@ pub struct PendingDispatch {
 /// cancel window elapses. Mirrors the existing dispatch paths:
 /// `Single` re-uses [`App::spawn_action`]; the batch variants
 /// re-use the per-env `spawn_batch_*` helpers in a loop.
+// See the matching allow on `ActionFlow` — same trade-off.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone)]
 pub enum PendingDispatchKind {
     /// A single Y/TypeName-confirm dispatch — preserves the full
@@ -17619,6 +17693,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deploy_modal_opens_with_version_preview_loading_flag_set() {
+        // `:deploy LABEL` (no --preview) now sets
+        // `loading_version_preview` so the modal reserves space
+        // for the preview block. The actual fetch lands via
+        // `handle_version_preview` and unsets the flag.
+        let mut app = test_app();
+        app.environments = vec![mk_env("prod", "shop", "Web", "Green")];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        app.execute_command("deploy build-900");
+        match &app.action_flow {
+            Some(ActionFlow::Confirm(modal)) => {
+                assert!(
+                    modal.loading_version_preview,
+                    "Deploy modal must reserve space for the inline preview"
+                );
+                assert!(modal.version_preview.is_none());
+            }
+            _ => panic!("expected confirm modal open"),
+        }
+    }
+
+    #[tokio::test]
+    async fn deploy_modal_handle_version_preview_stuffs_body_in_slot() {
+        // Simulate the AppMsg landing — handler should clear the
+        // loading flag and store the body.
+        let mut app = test_app();
+        app.environments = vec![mk_env("prod", "shop", "Web", "Green")];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        app.execute_command("deploy build-900");
+        let body = "candidate: build-900\ncurrent: build-820\n".to_string();
+        app.handle_msg(AppMsg::VersionPreview {
+            gen: app.generation,
+            env_name: "prod".into(),
+            result: Ok(body.clone()),
+        });
+        match &app.action_flow {
+            Some(ActionFlow::Confirm(modal)) => {
+                assert!(!modal.loading_version_preview);
+                assert_eq!(modal.version_preview.as_deref(), Some(body.as_str()));
+            }
+            _ => panic!("expected confirm modal still open"),
+        }
+    }
+
+    #[tokio::test]
+    async fn deploy_modal_handle_version_preview_error_renders_inline() {
+        // AWS error should not leave the modal stuck in loading;
+        // the failure becomes a one-line inline message.
+        let mut app = test_app();
+        app.environments = vec![mk_env("prod", "shop", "Web", "Green")];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        app.execute_command("deploy build-900");
+        app.handle_msg(AppMsg::VersionPreview {
+            gen: app.generation,
+            env_name: "prod".into(),
+            result: Err("ListApplicationVersions throttled".into()),
+        });
+        match &app.action_flow {
+            Some(ActionFlow::Confirm(modal)) => {
+                assert!(!modal.loading_version_preview);
+                let preview = modal.version_preview.as_deref().unwrap_or("");
+                assert!(
+                    preview.contains("version preview unavailable")
+                        && preview.contains("throttled"),
+                    "expected inline error, got: {preview}"
+                );
+            }
+            _ => panic!("expected confirm modal still open"),
+        }
+    }
+
+    #[tokio::test]
     async fn dispatch_auto_rollback_also_drains_watching_deploys() {
         // When the rollback watchdog fires, any parallel
         // `--wait-for-green` watcher for the same env must drain
@@ -18811,6 +18960,8 @@ mod tests {
             scale_max: None,
             auto_rollback_secs: None,
             wait_for_green_secs: None,
+            version_preview: None,
+            loading_version_preview: false,
         }
     }
 
