@@ -109,6 +109,66 @@ impl App {
         }
     }
 
+    /// `:abort-rollback [ENV]` — explicit disarm. No arg drains
+    /// every armed watchdog in the current context; with an env
+    /// name, just that one. Audit-logged so a post-mortem can pin
+    /// down "operator aborted the rollback at HH:MM" even if the
+    /// auto-rollback never fired.
+    ///
+    /// The fire-and-forget tokio task that backs each watchdog
+    /// survives the abort — no JoinHandle for cancellation — but
+    /// `apply_refresh`'s decision pass will find the slot empty and
+    /// no-op when the deadline message lands. So aborts are
+    /// genuinely synchronous from the operator's perspective.
+    ///
+    /// Not gated by `deny_write`: aborting a rollback is a
+    /// "clean up state I previously armed" action, not a write to
+    /// AWS. Per-env safety pins added mid-window must not block the
+    /// operator from clearing the watchdog they themselves armed.
+    pub(crate) fn cmd_abort_rollback(&mut self, rest: &[&str]) {
+        match rest.first().copied() {
+            Some(env_name) => {
+                if self.armed_watchdogs.remove(env_name).is_some() {
+                    write_audit_line(
+                        self.context.account_id.as_deref(),
+                        self.context.profile.as_deref(),
+                        &self.context.region,
+                        &format!("stage=dispatched action=AbortRollback target={env_name}"),
+                    );
+                    self.pin_status(format!("aborted auto-rollback for {env_name}"));
+                } else {
+                    self.error_message = Some(format!(
+                        "no auto-rollback armed for '{env_name}' — try :rollbacks-armed"
+                    ));
+                }
+            }
+            None => {
+                if self.armed_watchdogs.is_empty() {
+                    self.pin_status("no auto-rollbacks armed to abort");
+                    return;
+                }
+                let names: Vec<String> = self.armed_watchdogs.keys().cloned().collect();
+                let n = names.len();
+                for env_name in &names {
+                    write_audit_line(
+                        self.context.account_id.as_deref(),
+                        self.context.profile.as_deref(),
+                        &self.context.region,
+                        &format!(
+                            "stage=dispatched action=AbortRollback target={env_name} reason=batch"
+                        ),
+                    );
+                }
+                self.armed_watchdogs.clear();
+                self.pin_status(format!(
+                    "aborted {n} auto-rollback{}: {}",
+                    if n == 1 { "" } else { "s" },
+                    names.join(", ")
+                ));
+            }
+        }
+    }
+
     /// `:rollbacks-armed` (alias `:rb-armed`) — dump the table of
     /// currently-armed `--auto-rollback` watchdogs. Each row shows
     /// env / target_label / armed_at age / remaining-until-deadline.

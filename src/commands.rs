@@ -373,6 +373,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         Category::Inspection,
         CommandKind::ZeroArg,
     ),
+    cmd(
+        "abort-rollback",
+        ":abort-rollback [ENV] — disarm an armed `--auto-rollback` watchdog (no arg drains all in the current context)",
+        Category::Lifecycle,
+        CommandKind::Prefill("abort-rollback "),
+    ),
     // ── Lifecycle actions ────────────────────────────────────────────────
     cmd(
         "rebuild",
