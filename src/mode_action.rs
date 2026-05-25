@@ -220,6 +220,13 @@ pub struct ConfirmModal {
     /// min/max overrides.
     pub scale_min: Option<i32>,
     pub scale_max: Option<i32>,
+    /// Auto-rollback watchdog deadline in seconds (Deploy only). When
+    /// `Some(N)`, a background task fires N seconds after dispatch
+    /// and — if the env hasn't reached Green by then — automatically
+    /// redeploys the captured `DeploySnapshot`'s previous version.
+    /// `None` is the default; the operator opts in with
+    /// `:deploy LABEL --auto-rollback 5m`.
+    pub auto_rollback_secs: Option<u64>,
 }
 
 /// Helper carrying the optional parameters needed by the new parameterised
@@ -234,6 +241,9 @@ pub struct ParameterisedAction {
     pub scale_max: Option<i32>,
     /// CNAME-swap target. Only meaningful for `Action::SwapCnames`.
     pub swap_with: Option<String>,
+    /// Deploy-only auto-rollback deadline in seconds. See
+    /// `ConfirmModal::auto_rollback_secs` for the contract.
+    pub auto_rollback_secs: Option<u64>,
 }
 
 #[derive(Clone, Debug)]

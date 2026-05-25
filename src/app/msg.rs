@@ -62,7 +62,8 @@ impl AppMsg {
             | TagUpdate { gen, .. }
             | DetailQueues { gen, .. }
             | DlqMessages { gen, .. }
-            | DlqActionResult { gen, .. } => Some(*gen),
+            | DlqActionResult { gen, .. }
+            | AutoRollbackCheck { gen, .. } => Some(*gen),
         }
     }
 }
@@ -122,6 +123,7 @@ impl App {
                 ..
             } => self.handle_app_versions(application, deployed_label, result),
             AppMsg::UpdateCheck(latest) => self.handle_update_check(latest),
+            AppMsg::AutoRollbackCheck { env_name, .. } => self.handle_auto_rollback_check(env_name),
             AppMsg::DryRunResult {
                 env_name, result, ..
             } => self.handle_dry_run_result(env_name, result),
@@ -507,6 +509,83 @@ impl App {
             tracing::info!(target: "ebman::update", current = env!("CARGO_PKG_VERSION"), latest = %release.version, "newer ebman released on crates.io");
             self.update_available = Some(release);
         }
+    }
+
+    /// Watchdog fired by `:deploy --auto-rollback Nm`. Reads the env's
+    /// cached health (populated by the refresh loop) and either
+    /// disarms with a status toast (env is Green) or dispatches a
+    /// rollback redeploy back to the captured pre-deploy snapshot's
+    /// previous version.
+    fn handle_auto_rollback_check(&mut self, env_name: String) {
+        // Disarm immediately if the env reached Green by the deadline.
+        // Healthy outcomes are by far the common case; surface the
+        // success so the operator sees the watchdog did its job.
+        let health = self
+            .environments
+            .iter()
+            .find(|e| e.name == env_name)
+            .map(|e| e.health.clone())
+            .unwrap_or_default();
+        if health.eq_ignore_ascii_case("Green") || health.eq_ignore_ascii_case("Ok") {
+            self.status_message = Some(format!(
+                "auto-rollback for {env_name}: env is {health}, no rollback needed"
+            ));
+            // Snapshot stays in place — operator can still `:rollback-deploy`
+            // manually if they change their mind.
+            return;
+        }
+        // Non-Green at the deadline. Look up the snapshot we captured
+        // pre-deploy; if there isn't one, surface that instead of
+        // silently no-op'ing.
+        let Some(snapshot) = self.deploy_snapshots.get(&env_name).cloned() else {
+            self.error_message = Some(format!(
+                "auto-rollback for {env_name}: no pre-deploy snapshot; manual rollback required"
+            ));
+            return;
+        };
+        // Read-only / per-env safety pin gate. If the operator pinned
+        // this env to read-only mid-deploy, respect that — auto-
+        // rollback shouldn't punch through a deliberate safety lock.
+        if self.deny_write(&env_name, "auto-rollback") {
+            return;
+        }
+        // Audit the dispatch + redeploy the previous version. Reuses
+        // the existing `deploy_version` aws call + ActionResult
+        // plumbing so the operator sees the rollback in :pending,
+        // the events panel, and the audit log alongside any manual
+        // dispatch.
+        let label = snapshot.previous_version_label.clone();
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let account = self.context.account_id.clone();
+        let profile = self.context.profile.clone();
+        let region = self.context.region.clone();
+        super::write_audit_line(
+            account.as_deref(),
+            profile.as_deref(),
+            &region,
+            &format!(
+                "stage=dispatched action=AutoRollback target={env_name} version={label} health={health}"
+            ),
+        );
+        self.push_pending("Auto-rollback", env_name.clone());
+        self.status_message = Some(format!(
+            "auto-rollback for {env_name}: redeploying {label} (env was {health})"
+        ));
+        let env_for_msg = env_name.clone();
+        tokio::spawn(async move {
+            let result = aws
+                .deploy_version(&env_name, &label)
+                .await
+                .map_err(|e| super::flatten_err("deploy_version", e));
+            let _ = tx.send(AppMsg::ActionResult {
+                gen,
+                action: super::Action::Deploy,
+                env_name: env_for_msg,
+                result,
+            });
+        });
     }
 
     fn handle_dry_run_result(&mut self, env_name: String, result: Result<Vec<Instance>, String>) {

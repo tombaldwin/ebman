@@ -39,7 +39,7 @@ impl App {
         match rest.first().copied() {
             None => {
                 self.error_message = Some(
-                    "usage: :deploy LABEL [--preview]  (existing version) | :deploy --from PATH [--label L] [--describe D] [--no-deploy]".into(),
+                    "usage: :deploy LABEL [--preview] [--auto-rollback Nm]  (existing version) | :deploy --from PATH [--label L] [--describe D] [--no-deploy]".into(),
                 );
             }
             Some(version) => {
@@ -50,15 +50,31 @@ impl App {
                         return;
                     };
                     self.spawn_deploy_preview(env, version.to_string());
-                } else {
-                    self.open_parameterised_action(
-                        Action::Deploy,
-                        ParameterisedAction {
-                            deploy_version: Some(version.to_string()),
-                            ..Default::default()
-                        },
-                    );
+                    return;
                 }
+                // Optional `--auto-rollback Nm` — at deadline, the
+                // watchdog checks env health and (if still non-Green)
+                // redeploys the captured pre-deploy snapshot. Same
+                // duration grammar as `parse_window_ms` / DLQ replay
+                // so operators don't relearn it.
+                let auto_rollback_secs = parse_named_arg::<String>(rest, "--auto-rollback")
+                    .and_then(|s| {
+                        let ms = crate::aws::parse_window_ms(&s)?;
+                        Some((ms / 1000) as u64)
+                    });
+                if rest.contains(&"--auto-rollback") && auto_rollback_secs.is_none() {
+                    self.error_message =
+                        Some("--auto-rollback expects a duration like `5m` / `30m` / `1h`".into());
+                    return;
+                }
+                self.open_parameterised_action(
+                    Action::Deploy,
+                    ParameterisedAction {
+                        deploy_version: Some(version.to_string()),
+                        auto_rollback_secs,
+                        ..Default::default()
+                    },
+                );
             }
         }
     }

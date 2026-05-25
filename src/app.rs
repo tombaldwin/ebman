@@ -554,6 +554,18 @@ pub const PENDING_COMPLETED_TTL: Duration = Duration::from_secs(60);
 // `DetailTab` / `LogTail` / `LogTailStage` / `DetailState` (+ impl)
 // moved to `crate::mode_detail` — re-exported from app.rs above.
 
+/// Snapshot of an env's pre-deploy state, captured by `spawn_action`
+/// just before a Deploy fires. `previous_version_label` is what the
+/// env was running at capture time — the rollback target. `taken_at`
+/// is wall-clock; the watchdog uses it for status reporting ("armed
+/// 3m ago, 2m to deadline"). In-memory only; not persisted.
+#[derive(Debug, Clone)]
+pub struct DeploySnapshot {
+    pub env_name: String,
+    pub previous_version_label: String,
+    pub taken_at: chrono::DateTime<chrono::Utc>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PickerKind {
     Profile,
@@ -788,6 +800,13 @@ pub struct App {
     /// render's `⚠ DLQ:N` chip on Worker rows. Missing entry = "not
     /// checked yet" (don't fire an alert on cold state).
     pub worker_dlq_depths: std::collections::HashMap<String, i64>,
+    /// Pre-deploy snapshots keyed by env name. Captured at deploy
+    /// dispatch time so `:rollback-deploy ENV` (and the watchdog
+    /// armed by `:deploy --auto-rollback Nm`) can redeploy whatever
+    /// version was running just before. In-memory only — lost on
+    /// app restart; the existing `:rollback` falls back to scanning
+    /// the env's event history. See `DeploySnapshot`.
+    pub deploy_snapshots: std::collections::HashMap<String, DeploySnapshot>,
     /// `--demo` mode flag. Suppresses the periodic refresh (`spawn_refresh`
     /// becomes a no-op) and the update-check (`spawn_update_check` likewise)
     /// so hand-crafted fixture data from `demo_fixture::install` stays put.
@@ -1299,6 +1318,15 @@ enum AppMsg {
     /// nag the user. We don't carry a generation — the message is anchored
     /// to the process, not a particular AWS context.
     UpdateCheck(Option<crate::update_check::LatestRelease>),
+    /// Watchdog deadline for `:deploy --auto-rollback Nm`. Fires once
+    /// `secs` after the deploy dispatched. Handler reads the env's
+    /// current cached health: if Green, the watchdog disarms with a
+    /// status toast; otherwise it dispatches a rollback deploy to
+    /// the captured `DeploySnapshot.previous_version_label`.
+    AutoRollbackCheck {
+        gen: u64,
+        env_name: String,
+    },
     /// Result of an `UpdateTagsForResource` call from `:tag` / `:untag`.
     /// On success we re-issue the Config-tab tag fetch so the UI reflects
     /// the new state immediately.
@@ -1541,6 +1569,7 @@ impl App {
             hover_row: None,
             alerts: 0,
             worker_dlq_depths: std::collections::HashMap::new(),
+            deploy_snapshots: std::collections::HashMap::new(),
             demo_mode: false,
             env_instance_counts: std::collections::HashMap::new(),
             cost_enabled: persisted.cost_enabled.unwrap_or(false),
@@ -1748,6 +1777,7 @@ impl App {
             hover_row: None,
             alerts: 0,
             worker_dlq_depths: std::collections::HashMap::new(),
+            deploy_snapshots: std::collections::HashMap::new(),
             demo_mode: false,
             env_instance_counts: std::collections::HashMap::new(),
             cost_enabled: false,
@@ -4186,6 +4216,32 @@ impl App {
         }
         let env_name = env.name.clone();
         let current_version = env.version_label.clone();
+        // Prefer the captured pre-deploy snapshot if one exists —
+        // more reliable than scanning events (which can hit the
+        // 100-event window cap on chatty envs and miss the actual
+        // previous version). The snapshot was taken right before
+        // the deploy we'd be rolling back from, so it's exactly
+        // what the operator means.
+        if let Some(snapshot) = self.deploy_snapshots.get(&env_name).cloned() {
+            if snapshot.previous_version_label != current_version {
+                self.open_parameterised_action(
+                    Action::Deploy,
+                    ParameterisedAction {
+                        deploy_version: Some(snapshot.previous_version_label.clone()),
+                        ..Default::default()
+                    },
+                );
+                let age = (chrono::Utc::now() - snapshot.taken_at).num_seconds();
+                self.status_message = Some(format!(
+                    "rollback target: {} (from snapshot taken {}s ago)",
+                    snapshot.previous_version_label, age
+                ));
+                return;
+            }
+        }
+        // Fallback: scan the env's recent event history for the
+        // most-recent version_label that differs from current. The
+        // RollbackTarget message handler opens the confirm modal.
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
@@ -7671,6 +7727,7 @@ impl App {
                         clone_target: None,
                         scale_min: None,
                         scale_max: None,
+                        auto_rollback_secs: None,
                     }));
                 }
                 KeyCode::Char(c) if is_text_input(&key) => {
@@ -7777,6 +7834,7 @@ impl App {
                     clone_target: None,
                     scale_min: None,
                     scale_max: None,
+                    auto_rollback_secs: None,
                 }));
                 if wants_preflight {
                     self.spawn_dry_run(env.name.clone());
@@ -7845,6 +7903,7 @@ impl App {
                     clone_target: None,
                     scale_min: None,
                     scale_max: None,
+                    auto_rollback_secs: None,
                 }));
             }
             _ => {
@@ -7865,6 +7924,7 @@ impl App {
                     clone_target: None,
                     scale_min: None,
                     scale_max: None,
+                    auto_rollback_secs: None,
                 }));
             }
         }
@@ -9248,6 +9308,7 @@ impl App {
             clone_target: params.clone_target,
             scale_min: params.scale_min,
             scale_max: params.scale_max,
+            auto_rollback_secs: params.auto_rollback_secs,
         };
         self.action_flow = Some(ActionFlow::Confirm(modal));
         self.mode = Mode::Action;
@@ -9465,6 +9526,47 @@ impl App {
                 .unwrap_or_else(|| "read-only mode".into());
             self.error_message = Some(format!("{reason} — {} disabled", modal.action.label()));
             return;
+        }
+        // For Deploy actions: snapshot the env's pre-deploy version
+        // label before dispatching, so :rollback-deploy and the
+        // optional `--auto-rollback Nm` watchdog know what to roll
+        // back TO. Skip if we don't have the env in our cached
+        // fleet (e.g. assume-role race where the modal opened
+        // before the refresh landed) — the existing :rollback can
+        // scan events as a fallback.
+        if modal.action == Action::Deploy {
+            if let Some(env) = self
+                .environments
+                .iter()
+                .find(|e| e.name == modal.target_env)
+            {
+                if !env.version_label.is_empty() {
+                    self.deploy_snapshots.insert(
+                        env.name.clone(),
+                        DeploySnapshot {
+                            env_name: env.name.clone(),
+                            previous_version_label: env.version_label.clone(),
+                            taken_at: chrono::Utc::now(),
+                        },
+                    );
+                }
+            }
+            // Arm the auto-rollback watchdog if requested. Fires once
+            // at the deadline; if the env still hasn't reached Green
+            // by then, the handler dispatches a rollback deploy back
+            // to the captured snapshot's previous version.
+            if let Some(secs) = modal.auto_rollback_secs {
+                let tx = self.msg_tx.clone();
+                let env_name = modal.target_env.clone();
+                let gen = self.generation;
+                self.status_message = Some(format!(
+                    "auto-rollback armed: {secs}s to reach Green or revert"
+                ));
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+                    let _ = tx.send(AppMsg::AutoRollbackCheck { gen, env_name });
+                });
+            }
         }
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
@@ -16657,6 +16759,115 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn auto_rollback_disarms_when_env_reaches_green_by_deadline() {
+        // Pre-condition: snapshot captured before deploy; env now
+        // Green. Watchdog fires AutoRollbackCheck → handler sees
+        // Green and surfaces a "no rollback needed" status without
+        // dispatching a deploy.
+        let mut app = test_app();
+        app.environments = vec![mk_env("prod", "shop", "Web", "Green")];
+        app.deploy_snapshots.insert(
+            "prod".into(),
+            DeploySnapshot {
+                env_name: "prod".into(),
+                previous_version_label: "build-old".into(),
+                taken_at: chrono::Utc::now(),
+            },
+        );
+        // Drain the channel so the status_message comparison below
+        // isn't muddled by anything from test_app construction.
+        while app.msg_rx.try_recv().is_ok() {}
+        app.handle_msg(AppMsg::AutoRollbackCheck {
+            gen: app.generation,
+            env_name: "prod".into(),
+        });
+        let status = app.status_message.as_deref().unwrap_or("");
+        assert!(
+            status.contains("no rollback needed"),
+            "expected disarm message, got: {status}"
+        );
+        // No deploy should have been dispatched.
+        let dispatched = std::iter::from_fn(|| app.msg_rx.try_recv().ok()).any(|m| {
+            matches!(
+                m,
+                AppMsg::ActionResult {
+                    action: Action::Deploy,
+                    ..
+                }
+            )
+        });
+        assert!(
+            !dispatched,
+            "auto-rollback should not dispatch when env is Green"
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_rollback_dispatches_when_env_is_non_green_at_deadline() {
+        // Inverse: env is Red at the deadline → handler dispatches
+        // an Auto-rollback redeploy (lands as a pending pill +
+        // status_message naming the version being redeployed).
+        let mut app = test_app();
+        app.environments = vec![mk_env("prod", "shop", "Web", "Red")];
+        app.deploy_snapshots.insert(
+            "prod".into(),
+            DeploySnapshot {
+                env_name: "prod".into(),
+                previous_version_label: "build-old".into(),
+                taken_at: chrono::Utc::now(),
+            },
+        );
+        let pending_before = app.pending_actions.len();
+        app.handle_msg(AppMsg::AutoRollbackCheck {
+            gen: app.generation,
+            env_name: "prod".into(),
+        });
+        // The dispatch path's status_message names the rollback
+        // target and the env's health at the time of the check.
+        let status = app.status_message.as_deref().unwrap_or("");
+        assert!(
+            status.contains("redeploying build-old"),
+            "expected rollback dispatch status, got: {status}"
+        );
+        assert!(
+            status.contains("Red"),
+            "expected health to surface in dispatch status, got: {status}"
+        );
+        // A pending action row should have been added.
+        assert_eq!(
+            app.pending_actions.len(),
+            pending_before + 1,
+            "Auto-rollback should push a pending entry"
+        );
+        assert!(
+            app.pending_actions
+                .iter()
+                .any(|p| p.label.contains("Auto-rollback") && p.target == "prod"),
+            "pending row should be labelled Auto-rollback for prod"
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_rollback_no_op_when_no_snapshot_exists() {
+        // Edge case: AutoRollbackCheck fires but no snapshot was
+        // captured (e.g. deploy raced with an env-list refresh that
+        // hadn't seen the env yet). Handler surfaces a clear error
+        // pointing the operator at manual rollback.
+        let mut app = test_app();
+        app.environments = vec![mk_env("prod", "shop", "Web", "Red")];
+        // deploy_snapshots intentionally empty.
+        app.handle_msg(AppMsg::AutoRollbackCheck {
+            gen: app.generation,
+            env_name: "prod".into(),
+        });
+        let err = app.error_message.as_deref().unwrap_or("");
+        assert!(
+            err.contains("no pre-deploy snapshot"),
+            "expected missing-snapshot guidance, got: {err}"
+        );
+    }
+
+    #[tokio::test]
     async fn diff_two_arg_form_opens_overlay_for_named_envs() {
         // `:diff ENV-A ENV-B` is the post-0.8 shape that lets the
         // operator name both sides without first selecting one of
@@ -17369,6 +17580,7 @@ mod tests {
             clone_target: None,
             scale_min: None,
             scale_max: None,
+            auto_rollback_secs: None,
         }
     }
 
