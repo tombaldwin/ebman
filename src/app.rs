@@ -2079,6 +2079,7 @@ impl App {
                 _ = anim.tick(), if self.loading_since.is_some()
                     || !self.toasts.is_empty()
                     || self.pending_dispatch.is_some()
+                    || !self.armed_watchdogs.is_empty()
                     || matches!(self.current_overlay, Some(Overlay::About(_)))
                     || self.loading_visible_until.map(|t| Instant::now() < t).unwrap_or(false) => {
                     // Wake the draw loop so the spinner can advance, toasts
@@ -10197,6 +10198,7 @@ impl App {
             "start" => self.cmd_start(),
             "abort" => self.cmd_abort(),
             "pending" | "in-flight" | "inflight" => self.cmd_pending(),
+            "rollbacks-armed" | "rb-armed" => self.cmd_rollbacks_armed(),
             "tag" => self.cmd_tag(&rest),
             "untag" => self.cmd_untag(&rest),
             "resources" | "res" => self.cmd_resources(),
@@ -11927,6 +11929,72 @@ pub(crate) fn format_lineage(env: &str, events: &[EbEvent]) -> String {
     }
     body.push_str("esc / q to close");
     body
+}
+
+/// Pure: render the `:rollbacks-armed` overlay body — one row per
+/// armed watchdog with env / target_label / armed_at age / time
+/// remaining until deadline. Sorted by deadline so the soonest-
+/// firing watchdog reads first.
+pub(crate) fn format_armed_rollbacks(
+    armed: &std::collections::HashMap<String, ArmedWatchdog>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> String {
+    if armed.is_empty() {
+        return "(no auto-rollbacks armed)\n\nesc / q to close".to_string();
+    }
+    let mut rows: Vec<&ArmedWatchdog> = armed.values().collect();
+    rows.sort_by_key(|w| w.deadline_at);
+    let mut body = String::new();
+    body.push_str("ENV                              TARGET            ARMED      DEADLINE IN\n");
+    body.push_str("─────────────────────────────────────────────────────────────────────────\n");
+    for w in rows {
+        let armed_ago = (now - w.armed_at).num_seconds().max(0) as u64;
+        let remaining_secs = (w.deadline_at - now).num_seconds();
+        let armed_str = humanize_short_age(Duration::from_secs(armed_ago));
+        let remaining_str = if remaining_secs <= 0 {
+            "fired / expired".to_string()
+        } else {
+            humanize_short_age(Duration::from_secs(remaining_secs as u64))
+        };
+        body.push_str(&format!(
+            "{:<32} {:<17} {:>5} ago  {}\n",
+            truncate_armed_cell(&w.env_name, 32),
+            truncate_armed_cell(&w.target_label, 17),
+            armed_str,
+            remaining_str,
+        ));
+    }
+    body.push_str("\nesc / q to close");
+    body
+}
+
+/// Soonest-firing armed watchdog's countdown — used by the header
+/// pill chain to show "⏱ rollback prod-api in 4m22s". Returns
+/// `None` when nothing is armed.
+pub(crate) fn soonest_armed_rollback(
+    armed: &std::collections::HashMap<String, ArmedWatchdog>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<(String, String)> {
+    let next = armed.values().min_by_key(|w| w.deadline_at)?;
+    let remaining_secs = (next.deadline_at - now).num_seconds();
+    let remaining_str = if remaining_secs <= 0 {
+        "now".to_string()
+    } else {
+        humanize_short_age(Duration::from_secs(remaining_secs as u64))
+    };
+    Some((next.env_name.clone(), remaining_str))
+}
+
+/// Cell truncator local to `format_armed_rollbacks`. Trailing `…`
+/// keeps the column alignment stable on long env names / version
+/// labels.
+fn truncate_armed_cell(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(n.saturating_sub(1)).collect();
+    out.push('…');
+    out
 }
 
 pub fn humanize_short_age(d: Duration) -> String {
@@ -17096,6 +17164,107 @@ mod tests {
             app.deploy_snapshots.is_empty(),
             "context switch should drop deploy snapshots"
         );
+    }
+
+    #[test]
+    fn format_armed_rollbacks_empty_returns_stub() {
+        let armed = std::collections::HashMap::new();
+        let body = super::format_armed_rollbacks(&armed, chrono::Utc::now());
+        assert!(body.contains("no auto-rollbacks armed"));
+    }
+
+    #[test]
+    fn format_armed_rollbacks_sorts_by_deadline_ascending() {
+        use chrono::TimeZone;
+        let now = chrono::Utc.with_ymd_and_hms(2026, 5, 25, 12, 0, 0).unwrap();
+        let mut armed = std::collections::HashMap::new();
+        // Two watchdogs — `staging-api` deadlines first.
+        armed.insert(
+            "prod-api".into(),
+            ArmedWatchdog {
+                env_name: "prod-api".into(),
+                target_label: "build-820".into(),
+                armed_at: now - chrono::Duration::seconds(60),
+                deadline_at: now + chrono::Duration::seconds(300),
+            },
+        );
+        armed.insert(
+            "staging-api".into(),
+            ArmedWatchdog {
+                env_name: "staging-api".into(),
+                target_label: "build-822".into(),
+                armed_at: now - chrono::Duration::seconds(30),
+                deadline_at: now + chrono::Duration::seconds(60),
+            },
+        );
+        let body = super::format_armed_rollbacks(&armed, now);
+        // The soonest deadline (staging-api, 1m left) appears first.
+        let p_staging = body.find("staging-api").expect("staging-api row");
+        let p_prod = body.find("prod-api").expect("prod-api row");
+        assert!(
+            p_staging < p_prod,
+            "soonest-firing row should sort first; got body:\n{body}"
+        );
+        // Target labels surface so the operator can pre-read what'd
+        // get redeployed.
+        assert!(body.contains("build-822"));
+        assert!(body.contains("build-820"));
+    }
+
+    #[test]
+    fn format_armed_rollbacks_expired_deadline_reads_as_expired() {
+        use chrono::TimeZone;
+        let now = chrono::Utc.with_ymd_and_hms(2026, 5, 25, 12, 0, 0).unwrap();
+        let mut armed = std::collections::HashMap::new();
+        armed.insert(
+            "prod-api".into(),
+            ArmedWatchdog {
+                env_name: "prod-api".into(),
+                target_label: "build-820".into(),
+                armed_at: now - chrono::Duration::seconds(600),
+                deadline_at: now - chrono::Duration::seconds(5),
+            },
+        );
+        let body = super::format_armed_rollbacks(&armed, now);
+        assert!(
+            body.contains("fired / expired"),
+            "expected expired marker, got: {body}"
+        );
+    }
+
+    #[test]
+    fn soonest_armed_rollback_picks_the_earliest_deadline() {
+        use chrono::TimeZone;
+        let now = chrono::Utc.with_ymd_and_hms(2026, 5, 25, 12, 0, 0).unwrap();
+        let mut armed = std::collections::HashMap::new();
+        armed.insert(
+            "later".into(),
+            ArmedWatchdog {
+                env_name: "later".into(),
+                target_label: "x".into(),
+                armed_at: now,
+                deadline_at: now + chrono::Duration::seconds(600),
+            },
+        );
+        armed.insert(
+            "sooner".into(),
+            ArmedWatchdog {
+                env_name: "sooner".into(),
+                target_label: "x".into(),
+                armed_at: now,
+                deadline_at: now + chrono::Duration::seconds(60),
+            },
+        );
+        let (env, remaining) = super::soonest_armed_rollback(&armed, now).expect("one armed");
+        assert_eq!(env, "sooner");
+        // Remaining is in humanize-short-age form — 60s renders as "1m".
+        assert!(remaining.contains('m') || remaining.contains('s'));
+    }
+
+    #[test]
+    fn soonest_armed_rollback_returns_none_when_empty() {
+        let armed = std::collections::HashMap::new();
+        assert!(super::soonest_armed_rollback(&armed, chrono::Utc::now()).is_none());
     }
 
     #[tokio::test]

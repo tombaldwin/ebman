@@ -109,6 +109,26 @@ impl App {
         }
     }
 
+    /// `:rollbacks-armed` (alias `:rb-armed`) — dump the table of
+    /// currently-armed `--auto-rollback` watchdogs. Each row shows
+    /// env / target_label / armed_at age / remaining-until-deadline.
+    /// Updates every refresh tick because the overlay re-renders
+    /// from `App.armed_watchdogs` every draw. Empty state yields a
+    /// status toast rather than a thin overlay.
+    pub(crate) fn cmd_rollbacks_armed(&mut self) {
+        if self.armed_watchdogs.is_empty() {
+            self.pin_status(
+                "no auto-rollbacks armed — `:deploy LABEL --auto-rollback Nm` arms one",
+            );
+            return;
+        }
+        let body = super::format_armed_rollbacks(&self.armed_watchdogs, chrono::Utc::now());
+        self.current_overlay = Some(Overlay::TextDump {
+            title: format!("auto-rollbacks armed ({})", self.armed_watchdogs.len()),
+            body,
+        });
+    }
+
     pub(crate) fn cmd_pending(&mut self) {
         if self.pending_actions.is_empty() {
             self.pin_status("no actions in flight or recently completed");
