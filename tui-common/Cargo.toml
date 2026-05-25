@@ -1,6 +1,6 @@
 [package]
 name = "tb-tui-common"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.91"
 authors = ["Tom Baldwin <tom@polymorphism.co.uk>"]
