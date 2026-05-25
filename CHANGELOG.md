@@ -6,6 +6,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.0] — Pre-deploy snapshot + auto-rollback
+
+Headline addition is `:deploy LABEL --auto-rollback Nm` — a
+canary-style safety net for production deploys. Every `:deploy`
+captures the env's pre-deploy `version_label` into a persisted
+snapshot; the `--auto-rollback Nm` flag arms a watchdog that
+redeploys that snapshot if the env hasn't reached Green by the
+deadline. Eliminates the "operator dispatched a bad version,
+walked away, came back to a Red prod" failure mode. Also folds
+in a code-review pass + an `:about`-overlay sizing fix that
+0.8.1 users would otherwise have to wait for.
+
+### Added
+- **`:deploy LABEL --auto-rollback Nm`** — arms a per-env watchdog after dispatch. Two outcomes: env reaches Green by the deadline → watchdog disarms with a `pin_status` toast; env still Red / Yellow at deadline → ebman automatically redeploys the captured snapshot's previous version. Same duration grammar as `:logs-insights --window` (`5m` / `30m` / `1h`). The auto-rollback respects per-env / per-account read-only safety pins (`safety.envs.NAME.read_only`) — if the operator pinned the env to read-only mid-window, the watchdog disarms with an error pointing at the lock rather than punching through. Audit-logged as `action=AutoRollback target=ENV version=LABEL health=HEALTH`. (`9392f25` + follow-ons)
+- **Pre-deploy snapshots persist to `state.toml`.** Every `:deploy` captures the env's current `version_label` into `App.deploy_snapshots` (in-memory) AND serialises to `state.toml` as `deploy_snapshot.ENV = "label|RFC3339-ts"` lines. Cross-session `:rollback` falls back to this snapshot (much more reliable than the event-history scan which has a 100-event window cap). Snapshots are dropped on context switch (account / region change) so a same-named env in another context can't trigger a stale-target rollback. (`8a877f2` + `6b1e339`)
+- **Early-disarm on Green refresh.** The watchdog used to wait the full N minutes even if the env recovered at minute 1. New `apply_refresh` decision pass drains the watchdog the moment the env crosses Green, with a `pin_status` disarm toast. Operator sees recovery acknowledged in real-time. (`204903c`)
+- **AWS-mock tests for new 0.8/0.9 SDK calls.** `fetch_alarm_history` (CloudWatch `DescribeAlarmHistory`) + `run_shell_command` (SSM `SendCommand` + `GetCommandInvocation` polling loop) both have mocked-AWS coverage now. The SSM polling-loop test uses `#[tokio::test(start_paused = true)]` so the 2 s poll interval doesn't actually sleep. (`60bfe25`)
+
+### Fixed
+- **`:about` overlay no longer wraps text mid-word.** The Stacked layout sized the popup at `ABOUT_SCENE_W + 6 = 46` cols, but the text lines were designed for `ABOUT_TEXT_W = 58`. "Polymorphism Ltd builds operations tools..." wrapped to "operations tools f / Hire u / what's missing — happ" with everything truncated. Popup now sizes to `max(scene, text) + 6 = 64`; the layout-picker threshold bumps accordingly. +3 regression tests. (`a10c913`)
+- **`armed_watchdogs` + `deploy_snapshots` no longer leak across context switches.** `apply_rebuild` (the account / region switch handler) now `.clear()`s both alongside the other context-scoped state. Previously a same-named env in the new context could be seen as "still armed" by the early-disarm pass, and the late deadline tokio — even though the generation guard drops it — could in principle have triggered a spurious rollback if timing aligned. (`6b1e339`)
+- **Same-tick race between deadline message + refresh result.** Earlier shape had `handle_auto_rollback_check` dispatching inline using cached health. If the deadline message landed before the refresh result, the handler read stale (Red) health and dispatched — even though the refresh would have shown Green. Inverted: deadline message now just kicks a manual refresh; `apply_refresh` is the single decision point and reads the freshly-applied health. Trade-off: up to one refresh-roundtrip of extra latency past the deadline before dispatch, well below the human-noticeable threshold. (`ac95d58`)
+- **`DeploySnapshot::parse_persisted` failures now emit a `tracing::warn!`.** Malformed state.toml entries were silently dropped before — confusing UX when the operator then ran `:rollback` and got "no snapshot" without knowing the file had one. (`6b1e339`)
+
+### Changed
+- **`:rollback` prefers the captured snapshot when one exists.** Snapshot lookup is O(1) in the in-memory map and more reliable than the existing event-history scan (which has a 100-event window cap that can miss the actual previous version on chatty envs). Falls back to the event scan when no snapshot exists. (`9392f25`)
+- **`AwsClient::stub()` / `AwsClient::for_tests()` / `App::for_tests()`** tightened from `pub` to `pub(crate)`. Every caller lives in this crate (test code + `App::new_demo`); no need to expose to downstream consumers. SemVer hygiene. (`6b1e339`)
+- **`DeploySnapshot` + `ArmedWatchdog`** are now `pub(crate)`. Used only as internal App state. (`6b1e339`)
+- **`run_shell_command` uses `tokio::time::Instant`** for the deadline so paused-clock tests can exercise the timeout branch. Production behaviour unchanged. (`60bfe25`)
+
+### Internal
+- **New `dispatch_auto_rollback(env_name, health)` helper** in app.rs — shared between `apply_refresh`'s expired-deadline path and (formerly) the inline handler. Single source of truth for the rollback dispatch shape. (`ac95d58`)
+- **New `pin_error(msg)` helper** symmetric to `pin_status`. Used by `dispatch_auto_rollback`'s "no snapshot" branch so the warning survives `apply_refresh`'s same-tick auto-clear. (`ac95d58`)
+- **Pre-commit hook tightened** to run `cargo clippy --all-targets -- -D warnings` (was `cargo fmt --check` only). Catches the doc-lint class that bounced CI on the f60ba3c push. (`b240d4f`)
+
+### Test foundation
+- 491 tests + 16 in tb-tui-common. New since 0.8.1: 4 AWS-mock tests for SSM + CW (`run_shell_command_collects_per_instance_result_on_success`, `run_shell_command_synthesises_local_timeout_when_deadline_passes`, `fetch_alarm_history_extracts_kind_and_summary`, `fetch_alarm_history_tolerates_missing_optional_fields`); 5 auto-rollback tests covering the decision matrix (disarm-on-Green, dispatch-on-deadline-non-Green, no-snapshot error path, keep-armed-before-deadline, noop-when-no-watchdog); 1 context-switch clear test; 2 persistence round-trip tests; 3 :about overlay-sizing regression tests.
+
 ## [0.8.1] — Demo mode, hero gif, terminal title
 
 A small point release on top of 0.8.0. Headline addition is
@@ -470,7 +508,8 @@ Initial public release. Headline surface:
 - Published to crates.io as `ebman`.
 - Homebrew tap at `tombaldwin/homebrew-tap`.
 
-[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/tombaldwin/ebman/compare/v0.8.1...v0.9.0
 [0.3.5]: https://github.com/tombaldwin/ebman/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/tombaldwin/ebman/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/tombaldwin/ebman/compare/v0.3.2...v0.3.3
