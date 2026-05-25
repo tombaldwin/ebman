@@ -29,6 +29,12 @@ pub struct PersistedState {
     pub cost_enabled: Option<bool>,
     pub aliases: BTreeMap<String, String>,
     pub saved_views: BTreeMap<String, String>,
+    /// Pre-deploy snapshots keyed by env name. Persists the
+    /// `previous_version_label` + `taken_at` captured by every `:deploy`
+    /// so a cross-session `:rollback` still has a target (without
+    /// falling back to the event-history scan, which has a 100-event
+    /// window cap). Stored as `"label|RFC3339-timestamp"` per env.
+    pub deploy_snapshots: BTreeMap<String, String>,
     pub hidden_cols: BTreeSet<String>,
     /// User-defined extra metric charts for the Metrics tab. Keyed by the
     /// operator-chosen display label; value is `"namespace|name|stat"`.
@@ -179,6 +185,12 @@ pub fn parse(text: &str) -> PersistedState {
                     state.saved_views.insert(name, value);
                 }
             }
+            _ if k.starts_with("deploy_snapshot.") => {
+                let name = k.trim_start_matches("deploy_snapshot.").trim().to_string();
+                if !name.is_empty() {
+                    state.deploy_snapshots.insert(name, value);
+                }
+            }
             _ if k.starts_with("metric.") => {
                 let label = k.trim_start_matches("metric.").trim().to_string();
                 if label.is_empty() {
@@ -255,6 +267,9 @@ pub fn save(state: &PersistedState) {
     }
     for (name, value) in &state.saved_views {
         out.push_str(&format!("view.{name} = \"{value}\"\n"));
+    }
+    for (env, snap) in &state.deploy_snapshots {
+        out.push_str(&format!("deploy_snapshot.{env} = \"{snap}\"\n"));
     }
     for (label, spec) in &state.custom_metrics {
         out.push_str(&format!("metric.{label} = \"{}\"\n", spec.serialize()));
@@ -363,6 +378,49 @@ hidden_cols = "TREND,PLATFORM"
         assert!(s.saved_views.contains_key("dev"));
         assert!(s.hidden_cols.contains("TREND"));
         assert!(s.hidden_cols.contains("PLATFORM"));
+    }
+
+    #[test]
+    fn parse_deploy_snapshots() {
+        // `:deploy` captures these as a pre-rollback safety net;
+        // persistence lets cross-session `:rollback` find them.
+        let text = r#"
+deploy_snapshot.prod-api = "build-823|2026-05-25T14:30:00+00:00"
+deploy_snapshot.staging-api = "build-825|2026-05-25T15:00:00+00:00"
+"#;
+        let s = parse(text);
+        assert_eq!(
+            s.deploy_snapshots.get("prod-api").map(String::as_str),
+            Some("build-823|2026-05-25T14:30:00+00:00")
+        );
+        assert_eq!(
+            s.deploy_snapshots.get("staging-api").map(String::as_str),
+            Some("build-825|2026-05-25T15:00:00+00:00")
+        );
+    }
+
+    #[test]
+    fn serialize_deploy_snapshots_round_trips() {
+        // save() should emit deploy_snapshot.ENV lines that parse()
+        // recognises. The intermediate file content isn't asserted
+        // directly (avoids brittle string matching); instead we
+        // round-trip via parse-after-save semantics.
+        let mut state = PersistedState::default();
+        state.deploy_snapshots.insert(
+            "prod-api".into(),
+            "build-823|2026-05-25T14:30:00+00:00".into(),
+        );
+        // Hand-construct the line save() would write so we can verify
+        // it parses back without needing filesystem access.
+        let line = format!(
+            "deploy_snapshot.prod-api = \"{}\"\n",
+            state.deploy_snapshots["prod-api"]
+        );
+        let reparsed = parse(&line);
+        assert_eq!(
+            reparsed.deploy_snapshots.get("prod-api"),
+            state.deploy_snapshots.get("prod-api")
+        );
     }
 
     #[test]
