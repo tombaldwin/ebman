@@ -561,9 +561,15 @@ pub const PENDING_COMPLETED_TTL: Duration = Duration::from_secs(60);
 /// 3m ago, 2m to deadline"). Persisted to state.toml so a cross-
 /// session `:rollback` still has a target.
 #[derive(Debug, Clone)]
-pub struct DeploySnapshot {
+#[allow(dead_code)] // env_name + taken_at are diagnostic / future-render fields
+pub(crate) struct DeploySnapshot {
+    /// The env this snapshot was captured for. Redundant with the
+    /// `App.deploy_snapshots` map key, kept for log/debug output.
     pub env_name: String,
     pub previous_version_label: String,
+    /// Capture timestamp. Available for "snapshot taken Xs ago"
+    /// status messages on `:rollback` (already used by cmd_rollback)
+    /// + future UI surfacing of how stale a snapshot is.
     pub taken_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -575,8 +581,15 @@ pub struct DeploySnapshot {
 /// the same as the captured `DeploySnapshot.previous_version_label`
 /// at arm time, snapshotted here so we don't have to re-look-up.
 #[derive(Debug, Clone)]
-pub struct ArmedWatchdog {
+#[allow(dead_code)] // most fields are arm-time diagnostic / future-render
+pub(crate) struct ArmedWatchdog {
     pub env_name: String,
+    /// Snapshot of the rollback target at arm time so the watchdog
+    /// doesn't have to re-look-up via deploy_snapshots when it fires.
+    /// Currently unused — `handle_auto_rollback_check` re-reads from
+    /// `deploy_snapshots` for consistency — but the duplicate is
+    /// load-bearing for a future "show armed countdown with target"
+    /// surface.
     pub target_label: String,
     pub armed_at: chrono::DateTime<chrono::Utc>,
     pub deadline_at: chrono::DateTime<chrono::Utc>,
@@ -855,7 +868,7 @@ pub struct App {
     /// version was running just before. In-memory only — lost on
     /// app restart; the existing `:rollback` falls back to scanning
     /// the env's event history. See `DeploySnapshot`.
-    pub deploy_snapshots: std::collections::HashMap<String, DeploySnapshot>,
+    pub(crate) deploy_snapshots: std::collections::HashMap<String, DeploySnapshot>,
     /// Currently-armed auto-rollback watchdogs keyed by env name.
     /// Populated by `:deploy --auto-rollback Nm`, drained on either
     /// (a) the env reaching Green on a refresh tick (early disarm)
@@ -864,7 +877,7 @@ pub struct App {
     /// "auto-rollback armed for X — Ys remaining" in the UI. The
     /// tokio task that drives the deadline is fire-and-forget;
     /// the in-flight visibility lives here.
-    pub armed_watchdogs: std::collections::HashMap<String, ArmedWatchdog>,
+    pub(crate) armed_watchdogs: std::collections::HashMap<String, ArmedWatchdog>,
     /// `--demo` mode flag. Suppresses the periodic refresh (`spawn_refresh`
     /// becomes a no-op) and the update-check (`spawn_update_check` likewise)
     /// so hand-crafted fixture data from `demo_fixture::install` stays put.
@@ -1634,9 +1647,24 @@ impl App {
             deploy_snapshots: persisted
                 .deploy_snapshots
                 .iter()
-                .filter_map(|(env, raw)| {
-                    DeploySnapshot::parse_persisted(env, raw).map(|s| (env.clone(), s))
-                })
+                .filter_map(
+                    |(env, raw)| match DeploySnapshot::parse_persisted(env, raw) {
+                        Some(snap) => Some((env.clone(), snap)),
+                        None => {
+                            // Log the malformed line so the operator can spot
+                            // a corrupted state.toml entry. We still skip the
+                            // entry — better to lose one stale snapshot than
+                            // to abort App init.
+                            tracing::warn!(
+                                target: "ebman::state",
+                                env = %env,
+                                raw = %raw,
+                                "malformed deploy_snapshot entry in state.toml — skipping"
+                            );
+                            None
+                        }
+                    },
+                )
                 .collect(),
             armed_watchdogs: std::collections::HashMap::new(),
             demo_mode: false,
@@ -1769,8 +1797,9 @@ impl App {
     ///
     /// Two consumers today: the unit-test harness (`#[cfg(test)]`
     /// builds) and the runtime `--demo` mode constructor (`new_demo`,
-    /// which builds on top of this + a hand-crafted fixture).
-    pub fn for_tests(aws: crate::aws::AwsClient, config: Config) -> Self {
+    /// which builds on top of this + a hand-crafted fixture). Kept
+    /// `pub(crate)` — both callers are in this crate.
+    pub(crate) fn for_tests(aws: crate::aws::AwsClient, config: Config) -> Self {
         let aws = Arc::new(aws);
         let context = aws.context.clone();
         let (msg_tx, msg_rx) = mpsc::unbounded_channel();
@@ -10845,6 +10874,18 @@ impl App {
                 self.newly_added.clear();
                 self.health_delta.clear();
                 self.status_delta.clear();
+                // Drop any auto-rollback watchdogs armed against the
+                // previous context. The deadline tokio tasks survive
+                // (no JoinHandle for cancellation), but their late
+                // `AutoRollbackCheck` messages get dropped by the
+                // generation-guard at msg.rs's entry. Clearing here
+                // also prevents a same-name env in the new context
+                // from being seen as "still armed" by apply_refresh.
+                self.armed_watchdogs.clear();
+                // Pre-deploy snapshots are env-name keyed; clearing on
+                // context switch avoids :rollback in the new context
+                // picking up a label that doesn't exist there.
+                self.deploy_snapshots.clear();
                 self.rebuild_view();
                 self.table_state.select(None);
                 self.status_message = Some(format!(
@@ -16917,6 +16958,50 @@ mod tests {
         assert!(DeploySnapshot::parse_persisted("e", "|2026-05-25T14:30:00Z").is_none());
         assert!(DeploySnapshot::parse_persisted("e", "label|not-a-timestamp").is_none());
         assert!(DeploySnapshot::parse_persisted("e", "label|").is_none());
+    }
+
+    #[tokio::test]
+    async fn rebuild_clears_armed_watchdogs_and_snapshots() {
+        // Operator arms an auto-rollback in account=A region=us-east-1
+        // then switches to account=B / different region. The deadline
+        // tokio task survives (no JoinHandle for cancellation), but
+        // its late `AutoRollbackCheck` must not act on a same-named
+        // env in the new context — apply_rebuild clears both the
+        // armed_watchdogs slot AND the deploy_snapshot so a stale
+        // deadline message can't trigger a spurious rollback in the
+        // wrong account/region.
+        let mut app = test_app();
+        let now = chrono::Utc::now();
+        app.armed_watchdogs.insert(
+            "prod".into(),
+            ArmedWatchdog {
+                env_name: "prod".into(),
+                target_label: "build-old".into(),
+                armed_at: now,
+                deadline_at: now + chrono::Duration::seconds(300),
+            },
+        );
+        app.deploy_snapshots.insert(
+            "prod".into(),
+            DeploySnapshot {
+                env_name: "prod".into(),
+                previous_version_label: "build-old".into(),
+                taken_at: now,
+            },
+        );
+        // Simulate a context switch — apply_rebuild Ok-path drops
+        // context-scoped state including armed_watchdogs +
+        // deploy_snapshots. Use a stub client so the call doesn't
+        // need real AWS.
+        app.apply_rebuild(Ok(Box::new(crate::aws::AwsClient::stub())));
+        assert!(
+            app.armed_watchdogs.is_empty(),
+            "context switch should drop armed watchdogs"
+        );
+        assert!(
+            app.deploy_snapshots.is_empty(),
+            "context switch should drop deploy snapshots"
+        );
     }
 
     #[tokio::test]

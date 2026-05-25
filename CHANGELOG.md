@@ -470,7 +470,7 @@ Initial public release. Headline surface:
 - Published to crates.io as `ebman`.
 - Homebrew tap at `tombaldwin/homebrew-tap`.
 
-[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.3.5...HEAD
+[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.8.1...HEAD
 [0.3.5]: https://github.com/tombaldwin/ebman/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/tombaldwin/ebman/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/tombaldwin/ebman/compare/v0.3.2...v0.3.3
