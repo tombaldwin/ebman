@@ -301,7 +301,10 @@ pub struct AwsClient {
     acm: AcmClient,
     /// SSM client. Region-scoped — `:ssm-run` sends a shell command to
     /// the env's instances and aggregates the per-instance results.
-    ssm: SsmClient,
+    /// `pub(crate)` so mock-AWS tests can override the field
+    /// post-construction (avoids threading SSM through every
+    /// `for_tests` call site).
+    pub(crate) ssm: SsmClient,
     config: SdkConfig,
     pub context: AwsContext,
 }
@@ -2090,7 +2093,14 @@ impl AwsClient {
         // tolerates an InvocationDoesNotExist error.
         let mut pending: std::collections::HashSet<String> = instance_ids.iter().cloned().collect();
         let mut completed: Vec<SsmRunResult> = Vec::new();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wall_clock_secs);
+        // `tokio::time::Instant` (vs `std::time::Instant`) so the
+        // deadline check advances with `tokio::time::pause + advance`
+        // under `#[tokio::test(start_paused = true)]` — otherwise the
+        // mocked clock advances tokio::sleep but not the real Instant
+        // the deadline was derived from, so paused-time tests can't
+        // exercise the timeout branch.
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_secs(wall_clock_secs);
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             // Snapshot so we can mutate `pending` inside the loop.
@@ -2133,7 +2143,7 @@ impl AwsClient {
                     stderr: invocation.standard_error_content.unwrap_or_default(),
                 });
             }
-            if pending.is_empty() || std::time::Instant::now() >= deadline {
+            if pending.is_empty() || tokio::time::Instant::now() >= deadline {
                 break;
             }
         }
@@ -4261,6 +4271,28 @@ mod tests {
         )
     }
 
+    /// SSM isn't an arg to `for_tests` (only EB / SQS / CW / CW Logs
+    /// / S3 / EC2 are — to keep that signature manageable across the
+    /// existing 11 call sites). Tests that need a mocked SSM client
+    /// override the field on the constructed AwsClient — the field
+    /// is `pub(crate)` for exactly this.
+    fn client_with_ssm(ssm: aws_sdk_ssm::Client) -> AwsClient {
+        let cfg = aws_config::SdkConfig::builder()
+            .region(Region::new("us-east-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        let mut c = AwsClient::for_tests(
+            Client::new(&cfg),
+            SqsClient::new(&cfg),
+            CwClient::new(&cfg),
+            CwLogsClient::new(&cfg),
+            S3Client::new(&cfg),
+            Ec2Client::new(&cfg),
+        );
+        c.ssm = ssm;
+        c
+    }
+
     fn client_with_eb_and_s3(eb: Client, s3: S3Client) -> AwsClient {
         let cfg = aws_config::SdkConfig::builder()
             .region(Region::new("us-east-1"))
@@ -5398,5 +5430,185 @@ mod tests {
             err.to_string().contains("DescribeSubnets"),
             "expected operation context, got {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn fetch_alarm_history_extracts_kind_and_summary() {
+        // Pins the field mapping from the SDK's AlarmHistoryItem onto
+        // ebman's AlarmHistoryEntry. If the SDK ever renames
+        // `history_item_type` → something else, this test breaks and
+        // the operator-visible `:alarm-history` overlay breaks with
+        // it. The mock returns one StateUpdate + one
+        // ConfigurationUpdate so both common kinds get an assertion.
+        use aws_sdk_cloudwatch::operation::describe_alarm_history::DescribeAlarmHistoryOutput;
+        use aws_sdk_cloudwatch::types::{AlarmHistoryItem, HistoryItemType};
+        use aws_smithy_types::DateTime as SdkDateTime;
+
+        let rule = mock!(aws_sdk_cloudwatch::Client::describe_alarm_history)
+            .match_requests(|req| {
+                req.alarm_name() == Some("high-cpu") && req.max_records() == Some(50)
+            })
+            .then_output(|| {
+                DescribeAlarmHistoryOutput::builder()
+                    .alarm_history_items(
+                        AlarmHistoryItem::builder()
+                            .alarm_name("high-cpu")
+                            .history_item_type(HistoryItemType::StateUpdate)
+                            .history_summary("Alarm updated from OK to ALARM")
+                            .timestamp(SdkDateTime::from_secs(1_716_640_000))
+                            .build(),
+                    )
+                    .alarm_history_items(
+                        AlarmHistoryItem::builder()
+                            .alarm_name("high-cpu")
+                            .history_item_type(HistoryItemType::ConfigurationUpdate)
+                            .history_summary("Threshold changed to 80")
+                            .timestamp(SdkDateTime::from_secs(1_716_530_000))
+                            .build(),
+                    )
+                    .build()
+            });
+        let cw = mock_client!(aws_sdk_cloudwatch, [&rule]);
+        let client = client_with_cw(cw);
+
+        let entries = client
+            .fetch_alarm_history("high-cpu", 50)
+            .await
+            .expect("ok");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].kind, "StateUpdate");
+        assert_eq!(entries[0].summary, "Alarm updated from OK to ALARM");
+        assert!(entries[0].at.is_some(), "timestamp coerced from SDK form");
+        assert_eq!(entries[1].kind, "ConfigurationUpdate");
+        assert_eq!(entries[1].summary, "Threshold changed to 80");
+    }
+
+    #[tokio::test]
+    async fn fetch_alarm_history_tolerates_missing_optional_fields() {
+        // Real CloudWatch sometimes returns items with missing kind /
+        // summary / timestamp (especially for older entries). The
+        // function must coerce to sensible defaults (`"?"` for an
+        // unknown kind, empty string for missing summary,
+        // `None` for missing timestamp) rather than panicking.
+        use aws_sdk_cloudwatch::operation::describe_alarm_history::DescribeAlarmHistoryOutput;
+        use aws_sdk_cloudwatch::types::AlarmHistoryItem;
+
+        let rule = mock!(aws_sdk_cloudwatch::Client::describe_alarm_history).then_output(|| {
+            DescribeAlarmHistoryOutput::builder()
+                .alarm_history_items(AlarmHistoryItem::builder().build())
+                .build()
+        });
+        let cw = mock_client!(aws_sdk_cloudwatch, [&rule]);
+        let client = client_with_cw(cw);
+
+        let entries = client.fetch_alarm_history("any", 10).await.expect("ok");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].kind, "?");
+        assert_eq!(entries[0].summary, "");
+        assert!(entries[0].at.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn run_shell_command_collects_per_instance_result_on_success() {
+        // Happy path: one instance, SendCommand returns a command_id,
+        // first GetCommandInvocation poll returns Success with
+        // stdout/stderr/exit_code. `start_paused = true` + advance()
+        // skips the actual 2s sleep so the test runs in ms.
+        use aws_sdk_ssm::operation::get_command_invocation::GetCommandInvocationOutput;
+        use aws_sdk_ssm::operation::send_command::SendCommandOutput;
+        use aws_sdk_ssm::types::{Command, CommandInvocationStatus};
+
+        const CMD_ID: &str = "01234567-89ab-cdef-0123-456789abcdef";
+
+        let send_rule = mock!(aws_sdk_ssm::Client::send_command)
+            .match_requests(|req| {
+                req.document_name() == Some("AWS-RunShellScript")
+                    && req.instance_ids().contains(&"i-aaa".to_string())
+            })
+            .then_output(|| {
+                SendCommandOutput::builder()
+                    .command(Command::builder().command_id(CMD_ID).build())
+                    .build()
+            });
+        let poll_rule = mock!(aws_sdk_ssm::Client::get_command_invocation)
+            .match_requests(|req| {
+                req.command_id() == Some(CMD_ID) && req.instance_id() == Some("i-aaa")
+            })
+            .then_output(|| {
+                GetCommandInvocationOutput::builder()
+                    .command_id(CMD_ID)
+                    .instance_id("i-aaa")
+                    .status(CommandInvocationStatus::Success)
+                    .response_code(0)
+                    .standard_output_content("up 3 days")
+                    .build()
+            });
+        let ssm = mock_client!(aws_sdk_ssm, [&send_rule, &poll_rule]);
+        let client = client_with_ssm(ssm);
+
+        // Background the run + advance the paused clock past the
+        // first 2s sleep so the poll fires.
+        let handle = tokio::spawn(async move {
+            client
+                .run_shell_command(&["i-aaa".to_string()], "uptime", 60)
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        let results = handle.await.unwrap().expect("ok");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].instance_id, "i-aaa");
+        assert_eq!(results[0].status, "Success");
+        assert_eq!(results[0].exit_code, 0);
+        assert_eq!(results[0].stdout, "up 3 days");
+        assert_eq!(results[0].stderr, "");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn run_shell_command_synthesises_local_timeout_when_deadline_passes() {
+        // If GetCommandInvocation keeps returning InProgress past the
+        // wall-clock deadline, the function emits a synthetic
+        // `TimedOut(local)` row for the still-pending instance rather
+        // than hanging. Pinning this catches regressions in the
+        // deadline-bound break of the poll loop.
+        use aws_sdk_ssm::operation::get_command_invocation::GetCommandInvocationOutput;
+        use aws_sdk_ssm::operation::send_command::SendCommandOutput;
+        use aws_sdk_ssm::types::{Command, CommandInvocationStatus};
+
+        const CMD_ID: &str = "deadbeef-0000-0000-0000-000000000000";
+
+        let send_rule = mock!(aws_sdk_ssm::Client::send_command).then_output(|| {
+            SendCommandOutput::builder()
+                .command(Command::builder().command_id(CMD_ID).build())
+                .build()
+        });
+        // Permanent InProgress — never resolves.
+        let stuck = mock!(aws_sdk_ssm::Client::get_command_invocation).then_output(|| {
+            GetCommandInvocationOutput::builder()
+                .command_id(CMD_ID)
+                .instance_id("i-stuck")
+                .status(CommandInvocationStatus::InProgress)
+                .response_code(0)
+                .build()
+        });
+        let ssm = mock_client!(aws_sdk_ssm, [&send_rule, &stuck]);
+        let client = client_with_ssm(ssm);
+
+        let handle = tokio::spawn(async move {
+            // 1s wall-clock — much shorter than the 2s poll interval
+            // so we hit the deadline on the FIRST loop iteration.
+            client
+                .run_shell_command(&["i-stuck".to_string()], "sleep 999", 1)
+                .await
+        });
+        // Advance well past the 1s deadline + the 2s poll interval.
+        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+        let results = handle.await.unwrap().expect("ok");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].instance_id, "i-stuck");
+        assert_eq!(
+            results[0].status, "TimedOut(local)",
+            "synthetic timeout row should signal which instance didn't finish"
+        );
+        assert_eq!(results[0].exit_code, -1);
     }
 }
