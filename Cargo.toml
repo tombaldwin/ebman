@@ -90,6 +90,11 @@ aws-sdk-acm = { version = "1", features = ["test-util"] }
 aws-sdk-organizations = { version = "1.110.0", features = ["test-util"] }
 aws-sdk-costexplorer = { version = "1", features = ["test-util"] }
 aws-sdk-secretsmanager = { version = "1", features = ["test-util"] }
+aws-sdk-ssm = { version = "1", features = ["test-util"] }
+# `test-util` enables `#[tokio::test(start_paused = true)]` + the
+# `tokio::time::pause/advance/sleep` mocked-clock surface that
+# `run_shell_command`'s polling-loop tests rely on.
+tokio = { version = "1", features = ["test-util"] }
 
 [profile.release]
 lto = "thin"
