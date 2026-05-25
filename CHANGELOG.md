@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+- **`:deploy LABEL --wait-for-green Nm`** — pure-observability companion to `--auto-rollback`. Arms a watcher at dispatch; `apply_refresh` pins success (`✓ deploy reached Green: ENV`) when the env reaches Green or pins a timeout error if the deadline elapses while still non-Green. Different glyph + colour (`👁 watching ENV REMAINING`, theme.title) from the `⏱ rollback` pill so the operator can tell at a glance which kind of in-flight observer is on the env. Composes with `--auto-rollback` — both flags can be set on the same deploy.
+- **`:rollback --to LABEL [--auto-rollback Nm]`** — operator-named rollback target. Skips the snapshot/event-scan detection and routes straight to the deploy confirm with the named label. Composes with `--auto-rollback Nm` so the operator can dispatch "roll back to build-820, auto-roll-forward to build-823 if Green doesn't land within Nm" in one command. Validates non-empty target + refuses idempotent same-version rollbacks. (`021127c`)
+- **`:abort-rollback [ENV]`** — explicit disarm. No-arg drains every armed watchdog in the current context; with an env name, just that one. Audit-logged. (`0293fd3`)
+- **Armed-watchdog visibility.** Header countdown pill (`⏱ rollback prod-api in 4m22s`) plus `:rollbacks-armed` (alias `:rb-armed`) overlay listing every armed watchdog with env / target / armed-ago / deadline-in. Pure renderers covered by tests. (`3a81329`)
+
 ## [0.9.0] — Pre-deploy snapshot + auto-rollback
 
 Headline addition is `:deploy LABEL --auto-rollback Nm` — a

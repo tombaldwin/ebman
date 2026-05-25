@@ -227,6 +227,14 @@ pub struct ConfirmModal {
     /// `None` is the default; the operator opts in with
     /// `:deploy LABEL --auto-rollback 5m`.
     pub auto_rollback_secs: Option<u64>,
+    /// Wait-for-green deadline in seconds (Deploy only). When
+    /// `Some(N)`, a watcher is armed at dispatch and `apply_refresh`
+    /// emits a pinned status (success on Green, error on timeout)
+    /// the next time the env's health is observed. Orthogonal to
+    /// `auto_rollback_secs` — both flags can be set on the same
+    /// deploy. The operator opts in with
+    /// `:deploy LABEL --wait-for-green 5m`.
+    pub wait_for_green_secs: Option<u64>,
 }
 
 /// Helper carrying the optional parameters needed by the new parameterised
@@ -244,6 +252,9 @@ pub struct ParameterisedAction {
     /// Deploy-only auto-rollback deadline in seconds. See
     /// `ConfirmModal::auto_rollback_secs` for the contract.
     pub auto_rollback_secs: Option<u64>,
+    /// Deploy-only wait-for-green deadline in seconds. See
+    /// `ConfirmModal::wait_for_green_secs` for the contract.
+    pub wait_for_green_secs: Option<u64>,
 }
 
 #[derive(Clone, Debug)]

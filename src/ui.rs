@@ -185,6 +185,25 @@ fn build_chain_pills(app: &App) -> Vec<(String, Color, Color)> {
         };
         chain.push((label, fg(theme.health_yellow), theme.health_yellow));
     }
+    // Watching-deploy countdown — `:deploy LABEL --wait-for-green Nm`
+    // armed a watcher. Different glyph + colour from the armed-rollback
+    // pill so the operator can tell at a glance which kind of in-flight
+    // observer is on the env: "👁 watching" (just reports outcome) vs
+    // "⏱ rollback" (will redeploy on timeout). Blue/title colour reads
+    // as informational rather than alarming.
+    if let Some((env, remaining)) =
+        crate::app::soonest_watching_deploy(&app.watching_deploys, chrono::Utc::now())
+    {
+        let label = if app.watching_deploys.len() == 1 {
+            format!("👁 watching {env} {remaining}")
+        } else {
+            format!(
+                "👁 {} watching (next: {env} {remaining})",
+                app.watching_deploys.len()
+            )
+        };
+        chain.push((label, fg(theme.title), theme.title));
+    }
     let in_flight: Vec<&str> = app
         .pending_actions
         .iter()

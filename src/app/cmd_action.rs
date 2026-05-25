@@ -39,7 +39,7 @@ impl App {
         match rest.first().copied() {
             None => {
                 self.error_message = Some(
-                    "usage: :deploy LABEL [--preview] [--auto-rollback Nm]  (existing version) | :deploy --from PATH [--label L] [--describe D] [--no-deploy]".into(),
+                    "usage: :deploy LABEL [--preview] [--auto-rollback Nm] [--wait-for-green Nm]  (existing version) | :deploy --from PATH [--label L] [--describe D] [--no-deploy]".into(),
                 );
             }
             Some(version) => {
@@ -67,11 +67,28 @@ impl App {
                         Some("--auto-rollback expects a duration like `5m` / `30m` / `1h`".into());
                     return;
                 }
+                // Optional `--wait-for-green Nm` — `apply_refresh` arms
+                // a tracker at dispatch and pins success / timeout when
+                // the env reaches Green or the deadline passes. Pure
+                // observability — doesn't change the deploy itself.
+                // Orthogonal to `--auto-rollback`; both flags can be
+                // set on the same deploy.
+                let wait_for_green_secs = parse_named_arg::<String>(rest, "--wait-for-green")
+                    .and_then(|s| {
+                        let ms = crate::aws::parse_window_ms(&s)?;
+                        Some((ms / 1000) as u64)
+                    });
+                if rest.contains(&"--wait-for-green") && wait_for_green_secs.is_none() {
+                    self.error_message =
+                        Some("--wait-for-green expects a duration like `5m` / `30m` / `1h`".into());
+                    return;
+                }
                 self.open_parameterised_action(
                     Action::Deploy,
                     ParameterisedAction {
                         deploy_version: Some(version.to_string()),
                         auto_rollback_secs,
+                        wait_for_green_secs,
                         ..Default::default()
                     },
                 );
