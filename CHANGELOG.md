@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.8.1] — Demo mode, hero gif, terminal title
+
+A small point release on top of 0.8.0. Headline addition is
+`--demo` — a synthetic-fleet runtime that backs the README's
+animated demo gif and gives new users a no-AWS-required first
+launch. Also folds in a code-review fix from a real data-loss bug
+the demo mode would otherwise have introduced, plus the terminal-
+title polish that mirrors what k9s and lazygit do.
+
+### Added
+- **`ebman --demo`** — runs against a hand-crafted six-env `ledgerly` fleet (Web + Worker envs across Green / Yellow / Red / Updating health tiers; one Worker with a 12-deep DLQ) with no AWS calls, no disk reads. The whole UI surface stays usable: filter, sort, `:why` overlay, drill into Detail (Health / Events / Instances / Queue tabs are all fixture-populated), and `s` on Detail/Instances opens a fake SSM session whose canned content (banner + `uptime` + `tail` on the EB engine log) types itself out at ~60 cps. Spawn-site gates in `aws.rs` short-circuit every `list_*` / `describe_*` / `:why` fetch to fixture data so nothing falls through to the stub AwsClient. New `src/demo_fixture.rs` carries the data; new `App::new_demo(config)` + `App.demo_mode: bool` carry the runtime state.
+- **Terminal window title set to `ebman` on TUI entry.** Single OSC 2 escape via crossterm's `SetTitle` in `enter_tui()`. Honoured by xterm / iTerm2 / Terminal.app / Ghostty / Alacritty / WezTerm / VS Code's terminal; ignored silently by terminals that don't.
+- **`demo.gif` rendered into the README hero slot.** Captured via VHS against `--demo`; the `demo.tape` script lives next to it so future renders are one `vhs demo.tape` away.
+- **`scripts/update-formula.sh`** Homebrew bumper (already in 0.8.0; explicitly noted here because it now drives every release with no manual SHA fiddling).
+
+### Fixed
+- **`--demo` no longer clobbers `~/.config/ebman/state.toml` on exit.** The fixture sets a synthetic profile, region, env names, and `cost_enabled = true`. Pre-fix, `main.rs:122`'s `persist_state()` would unconditionally write that to the operator's real state file. Now `persist_state()` early-returns when `App.demo_mode` is true. +1 regression test.
+- **`:ssh` and `:ssm-run` now write to the audit log.** Other write-class commands (deploy / terminate / DLQ purge / alarm CRUD) already write `stage=dispatched` + `stage=completed` lines to `~/.cache/ebman/audit.log`. SSM Session Manager and Run Command are also write-class (a shell command can mutate state), and they're now in the log too — including the per-instance ok=N/total summary for `:ssm-run`.
+- **README L211's stale `:diff NAME` description** updated to advertise the post-0.8 two-arg form + the other 0.8 inspection commands (`:config-diff-local`, `:lineage`, `:alarm-history`, `:ssh`, `:ssm-run`).
+
+### Internal
+- **Pre-commit hook tightened** to also run `cargo clippy --all-targets -- -D warnings` (was: `cargo fmt --all -- --check` only). Caught the `+ producing output` doc-lint that bounced CI on the f60ba3c → f8ebc33 push and would otherwise have bounced future commits too. Lives at `.git/hooks/pre-commit` (local-only).
+- **`AwsClient::stub()` + `AwsClient::for_tests()`** lose their `#[cfg(test)]` gates — `App::new_demo` needs them at runtime.
+- **Cargo.toml workspace comment** updated to describe the shipped surface + the `tb-tui-common` rename + the pgman consumption path (was: "more migrations coming in 0.8" — anachronistic post-release).
+- **Status-line config** (`.claude/settings.local.json`) for a `ebman <version>` claude-code status line, untracked + maintainer-local.
+
 ## [0.8.0] — Workspace refactor, eight new commands, per-env safety pins
 
 Architecture: the bin became a lib+bin so a sibling `tui-common`
