@@ -165,6 +165,26 @@ fn build_chain_pills(app: &App) -> Vec<(String, Color, Color)> {
             theme.health_red,
         ));
     }
+    // Armed auto-rollback watchdog — operator dispatched `:deploy
+    // LABEL --auto-rollback Nm` and the deadline hasn't fired yet.
+    // Without this pill the operator has no visible signal between
+    // arm-time toast and deadline fire; with it, the countdown is
+    // always one glance away. Re-renders on the 100ms anim ticker
+    // (loading_visible_until / pending_dispatch already keep that
+    // alive when relevant; rebuild gates it on `!armed.is_empty()`).
+    if let Some((env, remaining)) =
+        crate::app::soonest_armed_rollback(&app.armed_watchdogs, chrono::Utc::now())
+    {
+        let label = if app.armed_watchdogs.len() == 1 {
+            format!("⏱ rollback {env} in {remaining}")
+        } else {
+            format!(
+                "⏱ {} rollbacks armed (next: {env} in {remaining})",
+                app.armed_watchdogs.len()
+            )
+        };
+        chain.push((label, fg(theme.health_yellow), theme.health_yellow));
+    }
     let in_flight: Vec<&str> = app
         .pending_actions
         .iter()

@@ -366,6 +366,13 @@ pub const COMMANDS: &[CommandSpec] = &[
         Category::Inspection,
         CommandKind::ZeroArg,
     ),
+    cmd_with_aliases(
+        "rollbacks-armed",
+        &["rb-armed"],
+        ":rollbacks-armed / :rb-armed — currently-armed `--auto-rollback` watchdogs (env, rollback target, time-to-deadline)",
+        Category::Inspection,
+        CommandKind::ZeroArg,
+    ),
     // ── Lifecycle actions ────────────────────────────────────────────────
     cmd(
         "rebuild",
