@@ -208,7 +208,12 @@ Type `:` to open the command bar. Tab-completion is not implemented, but `Ctrl-K
 ### Per-env inspection
 
 - `:why` — Red-env diagnostic overlay (recent events / alarms / instance health / recent deploys; main + DLQ peek for Worker envs). Bound to `!` on the env table.
-- `:diff NAME` — side-by-side env comparison.
+- `:diff NAME` — side-by-side env comparison against the selected env. `:diff ENV-A ENV-B` names both explicitly (post-0.8) so no selected-env fallback is needed.
+- `:config-diff ENV` — option-setting deltas between the selected env and `ENV`. `:config-diff-local [NAME]` diffs against a local EB CLI saved config under `.elasticbeanstalk/saved_configs/`.
+- `:lineage` — deploy-only timeline for the selected env (one row per version label, newest first, with Δ between deploys and `took` span).
+- `:alarm-history NAME` — recent CloudWatch alarm transitions (StateUpdate / ConfigurationUpdate / Action entries, newest first).
+- `:ssh [i-abc]` — open an embedded SSM Session Manager session into an env instance. No arg opens a picker over cached Detail/Instances.
+- `:ssm-run "<cmd>"` — fan a shell command across the env's instances via SSM Run Command; per-instance status / exit / stdout / stderr in one overlay.
 - `:resources` / `:res` — `DescribeEnvironmentResources` dump.
 - `:alarms` — CloudWatch alarms referencing the env.
 - `:versions` — application versions (deployed marker, total count, deploy hint).
