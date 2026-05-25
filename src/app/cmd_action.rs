@@ -120,6 +120,102 @@ impl App {
         }
     }
 
+    /// `:promote-env SOURCE TARGET [--auto-rollback Nm] [--wait-for-green Nm]`
+    /// — one-command "ship SOURCE's currently-deployed version to
+    /// TARGET". The version-label promotion is the common case
+    /// (staging is green, ship same build to prod); config-options
+    /// promotion is a deeper follow-on with its own design surface
+    /// (which settings to copy? operator-set only? defaults?) and
+    /// is tracked separately. Composes with the same watchdog flags
+    /// as `:deploy` so a daily "promote with safety net" gesture is
+    /// one dispatch.
+    ///
+    /// Routes through `open_parameterised_action_on` with TARGET as
+    /// the destination env, not the currently-selected one — so the
+    /// operator can promote without first hunting for TARGET in the
+    /// table.
+    pub(crate) fn cmd_promote_env(&mut self, rest: &[&str]) {
+        let usage = "usage: :promote-env SOURCE TARGET [--auto-rollback Nm] [--wait-for-green Nm]";
+        let Some(source_name) = rest.first().copied() else {
+            self.error_message = Some(usage.into());
+            return;
+        };
+        let Some(target_name) = rest.get(1).copied() else {
+            self.error_message = Some(usage.into());
+            return;
+        };
+        if source_name == target_name {
+            self.error_message = Some("source and target must be different envs".into());
+            return;
+        }
+        let Some(source) = self
+            .environments
+            .iter()
+            .find(|e| e.name == source_name)
+            .cloned()
+        else {
+            self.error_message = Some(format!("no env named '{source_name}' in the current view"));
+            return;
+        };
+        let Some(target) = self
+            .environments
+            .iter()
+            .find(|e| e.name == target_name)
+            .cloned()
+        else {
+            self.error_message = Some(format!("no env named '{target_name}' in the current view"));
+            return;
+        };
+        if source.version_label.is_empty() {
+            self.error_message = Some(format!(
+                "source env '{source_name}' has no version deployed — nothing to promote"
+            ));
+            return;
+        }
+        if source.version_label == target.version_label {
+            self.error_message = Some(format!(
+                "'{}' is already deployed to {target_name} — nothing to promote",
+                source.version_label
+            ));
+            return;
+        }
+        // Same flag parsing as `:deploy` so the duration grammar is
+        // identical across the deploy story.
+        let auto_rollback_secs = parse_named_arg::<String>(rest, "--auto-rollback").and_then(|s| {
+            let ms = crate::aws::parse_window_ms(&s)?;
+            Some((ms / 1000) as u64)
+        });
+        if rest.contains(&"--auto-rollback") && auto_rollback_secs.is_none() {
+            self.error_message =
+                Some("--auto-rollback expects a duration like `5m` / `30m` / `1h`".into());
+            return;
+        }
+        let wait_for_green_secs =
+            parse_named_arg::<String>(rest, "--wait-for-green").and_then(|s| {
+                let ms = crate::aws::parse_window_ms(&s)?;
+                Some((ms / 1000) as u64)
+            });
+        if rest.contains(&"--wait-for-green") && wait_for_green_secs.is_none() {
+            self.error_message =
+                Some("--wait-for-green expects a duration like `5m` / `30m` / `1h`".into());
+            return;
+        }
+        let label = source.version_label.clone();
+        self.open_parameterised_action_on(
+            target,
+            Action::Deploy,
+            ParameterisedAction {
+                deploy_version: Some(label.clone()),
+                auto_rollback_secs,
+                wait_for_green_secs,
+                ..Default::default()
+            },
+        );
+        self.status_message = Some(format!(
+            "promote: {label} from {source_name} → {target_name}"
+        ));
+    }
+
     pub(crate) fn cmd_clone(&mut self, rest: &[&str]) {
         match rest.first().copied() {
             None => {
