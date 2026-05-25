@@ -567,6 +567,21 @@ pub struct DeploySnapshot {
     pub taken_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// In-flight auto-rollback watchdog state. Inserted at deploy
+/// dispatch when `--auto-rollback Nm` is set, drained on early
+/// disarm (env reached Green by the next refresh) or on the
+/// deadline firing. The `target_label` is the version we'd
+/// redeploy if the env still isn't healthy at the deadline —
+/// the same as the captured `DeploySnapshot.previous_version_label`
+/// at arm time, snapshotted here so we don't have to re-look-up.
+#[derive(Debug, Clone)]
+pub struct ArmedWatchdog {
+    pub env_name: String,
+    pub target_label: String,
+    pub armed_at: chrono::DateTime<chrono::Utc>,
+    pub deadline_at: chrono::DateTime<chrono::Utc>,
+}
+
 impl DeploySnapshot {
     /// On-disk shape — `"label|RFC3339-ts"`. Pipe separator keeps the
     /// existing line-oriented state.toml parser happy. The pipe is
@@ -841,6 +856,15 @@ pub struct App {
     /// app restart; the existing `:rollback` falls back to scanning
     /// the env's event history. See `DeploySnapshot`.
     pub deploy_snapshots: std::collections::HashMap<String, DeploySnapshot>,
+    /// Currently-armed auto-rollback watchdogs keyed by env name.
+    /// Populated by `:deploy --auto-rollback Nm`, drained on either
+    /// (a) the env reaching Green on a refresh tick (early disarm)
+    /// or (b) the deadline firing `AutoRollbackCheck`. Used both
+    /// for `apply_refresh`'s early-disarm check and for surfacing
+    /// "auto-rollback armed for X — Ys remaining" in the UI. The
+    /// tokio task that drives the deadline is fire-and-forget;
+    /// the in-flight visibility lives here.
+    pub armed_watchdogs: std::collections::HashMap<String, ArmedWatchdog>,
     /// `--demo` mode flag. Suppresses the periodic refresh (`spawn_refresh`
     /// becomes a no-op) and the update-check (`spawn_update_check` likewise)
     /// so hand-crafted fixture data from `demo_fixture::install` stays put.
@@ -1614,6 +1638,7 @@ impl App {
                     DeploySnapshot::parse_persisted(env, raw).map(|s| (env.clone(), s))
                 })
                 .collect(),
+            armed_watchdogs: std::collections::HashMap::new(),
             demo_mode: false,
             env_instance_counts: std::collections::HashMap::new(),
             cost_enabled: persisted.cost_enabled.unwrap_or(false),
@@ -1822,6 +1847,7 @@ impl App {
             alerts: 0,
             worker_dlq_depths: std::collections::HashMap::new(),
             deploy_snapshots: std::collections::HashMap::new(),
+            armed_watchdogs: std::collections::HashMap::new(),
             demo_mode: false,
             env_instance_counts: std::collections::HashMap::new(),
             cost_enabled: false,
@@ -9595,14 +9621,35 @@ impl App {
                     );
                 }
             }
-            // Arm the auto-rollback watchdog if requested. Fires once
-            // at the deadline; if the env still hasn't reached Green
-            // by then, the handler dispatches a rollback deploy back
-            // to the captured snapshot's previous version.
+            // Arm the auto-rollback watchdog if requested. Two signals
+            // can fire: the env reaching Green on the next refresh
+            // tick (early disarm via apply_refresh — most common
+            // outcome) or the deadline timer firing AutoRollbackCheck.
+            // `armed_watchdogs` carries the in-flight state for both
+            // surfaces.
             if let Some(secs) = modal.auto_rollback_secs {
                 let tx = self.msg_tx.clone();
                 let env_name = modal.target_env.clone();
                 let gen = self.generation;
+                // Snapshot the rollback target now so the watchdog
+                // doesn't have to re-look it up later. The pre-deploy
+                // snapshot we just inserted is the source of truth.
+                let target_label = self
+                    .deploy_snapshots
+                    .get(&modal.target_env)
+                    .map(|s| s.previous_version_label.clone())
+                    .unwrap_or_default();
+                let armed_at = chrono::Utc::now();
+                let deadline_at = armed_at + chrono::Duration::seconds(secs as i64);
+                self.armed_watchdogs.insert(
+                    modal.target_env.clone(),
+                    ArmedWatchdog {
+                        env_name: modal.target_env.clone(),
+                        target_label,
+                        armed_at,
+                        deadline_at,
+                    },
+                );
                 self.status_message = Some(format!(
                     "auto-rollback armed: {secs}s to reach Green or revert"
                 ));
@@ -11194,6 +11241,36 @@ impl App {
 
                 self.environments = envs;
                 self.resort_envs();
+
+                // Early-disarm pass for armed auto-rollback watchdogs:
+                // any env that reached Green on this refresh tick gets
+                // its watchdog cleared so the operator sees the
+                // recovery acknowledged the moment it happens, rather
+                // than at the deadline. The deadline timer also still
+                // fires, but `handle_auto_rollback_check` will find
+                // the slot empty and become a no-op.
+                let armed_envs: Vec<String> = self.armed_watchdogs.keys().cloned().collect();
+                for env_name in armed_envs {
+                    let healthy = self
+                        .environments
+                        .iter()
+                        .find(|e| e.name == env_name)
+                        .map(|e| {
+                            e.health.eq_ignore_ascii_case("Green")
+                                || e.health.eq_ignore_ascii_case("Ok")
+                        })
+                        .unwrap_or(false);
+                    if healthy {
+                        self.armed_watchdogs.remove(&env_name);
+                        // pin_status survives the same-tick auto-clear
+                        // at the bottom of apply_refresh — without it
+                        // the disarm message gets wiped before the
+                        // operator ever sees it.
+                        self.pin_status(format!(
+                            "auto-rollback for {env_name}: env reached Green, watchdog disarmed"
+                        ));
+                    }
+                }
 
                 let live: HashSet<String> =
                     self.environments.iter().map(|e| e.name.clone()).collect();
@@ -16843,10 +16920,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refresh_early_disarms_armed_watchdog_when_env_goes_green() {
+        // Operator runs `:deploy --auto-rollback 5m` → watchdog
+        // armed. Two refresh ticks later, the env reaches Green.
+        // apply_refresh should clear the watchdog and surface the
+        // disarm to the operator — without waiting for the 5m timer.
+        let mut app = test_app();
+        let now = chrono::Utc::now();
+        app.armed_watchdogs.insert(
+            "prod".into(),
+            ArmedWatchdog {
+                env_name: "prod".into(),
+                target_label: "build-old".into(),
+                armed_at: now,
+                deadline_at: now + chrono::Duration::seconds(300),
+            },
+        );
+        // Refresh delivers a Green prod env.
+        app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Green")]));
+        assert!(
+            app.armed_watchdogs.is_empty(),
+            "Green refresh should clear the armed watchdog"
+        );
+        let status = app.status_message.as_deref().unwrap_or("");
+        assert!(
+            status.contains("watchdog disarmed"),
+            "expected disarm status, got: {status}"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_leaves_watchdog_armed_when_env_still_non_green() {
+        // Inverse: env is Red on the refresh tick → watchdog stays
+        // armed (the deadline timer is the next checkpoint).
+        let mut app = test_app();
+        let now = chrono::Utc::now();
+        app.armed_watchdogs.insert(
+            "prod".into(),
+            ArmedWatchdog {
+                env_name: "prod".into(),
+                target_label: "build-old".into(),
+                armed_at: now,
+                deadline_at: now + chrono::Duration::seconds(300),
+            },
+        );
+        app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Red")]));
+        assert!(
+            app.armed_watchdogs.contains_key("prod"),
+            "Red refresh must leave watchdog armed"
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_rollback_check_is_noop_after_early_disarm() {
+        // The deadline timer always fires (it's a fire-and-forget
+        // tokio::spawn — no JoinHandle for cancellation). If the
+        // operator's deploy reached Green earlier and apply_refresh
+        // cleared the watchdog, the deadline tick must be a no-op
+        // — no double rollback, no confused status.
+        let mut app = test_app();
+        app.environments = vec![mk_env("prod", "shop", "Web", "Green")];
+        // armed_watchdogs intentionally empty (early-disarmed).
+        // deploy_snapshots intentionally populated to prove that even
+        // with a usable snapshot we DON'T fire when watchdog isn't
+        // armed.
+        app.deploy_snapshots.insert(
+            "prod".into(),
+            DeploySnapshot {
+                env_name: "prod".into(),
+                previous_version_label: "build-old".into(),
+                taken_at: chrono::Utc::now(),
+            },
+        );
+        let pending_before = app.pending_actions.len();
+        app.handle_msg(AppMsg::AutoRollbackCheck {
+            gen: app.generation,
+            env_name: "prod".into(),
+        });
+        // No status, no error, no pending row.
+        assert_eq!(
+            app.pending_actions.len(),
+            pending_before,
+            "noop check shouldn't push pending"
+        );
+    }
+
+    #[tokio::test]
     async fn auto_rollback_disarms_when_env_reaches_green_by_deadline() {
-        // Pre-condition: snapshot captured before deploy; env now
-        // Green. Watchdog fires AutoRollbackCheck → handler sees
-        // Green and surfaces a "no rollback needed" status without
+        // Pre-condition: snapshot captured before deploy + watchdog
+        // armed. By the deadline the env's Green. Handler should
+        // surface "no rollback needed" + drain the watchdog without
         // dispatching a deploy.
         let mut app = test_app();
         app.environments = vec![mk_env("prod", "shop", "Web", "Green")];
@@ -16856,6 +17019,16 @@ mod tests {
                 env_name: "prod".into(),
                 previous_version_label: "build-old".into(),
                 taken_at: chrono::Utc::now(),
+            },
+        );
+        let now = chrono::Utc::now();
+        app.armed_watchdogs.insert(
+            "prod".into(),
+            ArmedWatchdog {
+                env_name: "prod".into(),
+                target_label: "build-old".into(),
+                armed_at: now,
+                deadline_at: now,
             },
         );
         // Drain the channel so the status_message comparison below
@@ -16901,6 +17074,16 @@ mod tests {
                 taken_at: chrono::Utc::now(),
             },
         );
+        let now = chrono::Utc::now();
+        app.armed_watchdogs.insert(
+            "prod".into(),
+            ArmedWatchdog {
+                env_name: "prod".into(),
+                target_label: "build-old".into(),
+                armed_at: now,
+                deadline_at: now,
+            },
+        );
         let pending_before = app.pending_actions.len();
         app.handle_msg(AppMsg::AutoRollbackCheck {
             gen: app.generation,
@@ -16939,7 +17122,19 @@ mod tests {
         // pointing the operator at manual rollback.
         let mut app = test_app();
         app.environments = vec![mk_env("prod", "shop", "Web", "Red")];
-        // deploy_snapshots intentionally empty.
+        // deploy_snapshots intentionally empty; watchdog armed so the
+        // handler reaches the snapshot-lookup branch (vs the
+        // early-disarmed no-op branch).
+        let now = chrono::Utc::now();
+        app.armed_watchdogs.insert(
+            "prod".into(),
+            ArmedWatchdog {
+                env_name: "prod".into(),
+                target_label: "build-old".into(),
+                armed_at: now,
+                deadline_at: now,
+            },
+        );
         app.handle_msg(AppMsg::AutoRollbackCheck {
             gen: app.generation,
             env_name: "prod".into(),

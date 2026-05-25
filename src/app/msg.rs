@@ -517,6 +517,13 @@ impl App {
     /// rollback redeploy back to the captured pre-deploy snapshot's
     /// previous version.
     fn handle_auto_rollback_check(&mut self, env_name: String) {
+        // The early-disarm path in apply_refresh may already have
+        // cleared this slot (the operator's deploy reached Green
+        // before the deadline). If so, the deadline-timer fire is a
+        // no-op — no double-rollback, no confused status message.
+        if !self.armed_watchdogs.contains_key(&env_name) {
+            return;
+        }
         // Disarm immediately if the env reached Green by the deadline.
         // Healthy outcomes are by far the common case; surface the
         // success so the operator sees the watchdog did its job.
@@ -527,6 +534,7 @@ impl App {
             .map(|e| e.health.clone())
             .unwrap_or_default();
         if health.eq_ignore_ascii_case("Green") || health.eq_ignore_ascii_case("Ok") {
+            self.armed_watchdogs.remove(&env_name);
             self.status_message = Some(format!(
                 "auto-rollback for {env_name}: env is {health}, no rollback needed"
             ));
@@ -554,6 +562,7 @@ impl App {
         // plumbing so the operator sees the rollback in :pending,
         // the events panel, and the audit log alongside any manual
         // dispatch.
+        self.armed_watchdogs.remove(&env_name);
         let label = snapshot.previous_version_label.clone();
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
