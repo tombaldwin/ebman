@@ -16,6 +16,7 @@ pub mod commands;
 pub mod config;
 pub mod control;
 pub mod cost_cache;
+pub mod eb_cli;
 pub mod form;
 
 // `font_probe` and `overlay` live in the shared `tui-common` crate so

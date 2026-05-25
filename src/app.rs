@@ -1550,16 +1550,30 @@ impl App {
         let project = crate::project::load_from_cwd();
         let project_profile = project.as_ref().and_then(|p| p.profile.clone());
         let project_region = project.as_ref().and_then(|p| p.region.clone());
+        // EB CLI config (`.elasticbeanstalk/config.yml`) is a
+        // secondary source — fills in profile / region / application
+        // only when the higher-precedence `.ebman/` file doesn't.
+        // Most EB CLI users already maintain this file, so reading
+        // it avoids forcing a duplicate `.ebman/` entry.
+        let eb_cli = crate::eb_cli::load_from_cwd();
+        let eb_cli_profile = eb_cli.as_ref().and_then(|c| c.profile.clone());
+        let eb_cli_region = eb_cli.as_ref().and_then(|c| c.region.clone());
         tracing::info!(
             target: "ebman::state",
             persisted_profile = ?persisted.profile,
             persisted_region = ?persisted.region,
             project_profile = ?project_profile,
             project_region = ?project_region,
+            eb_cli_profile = ?eb_cli_profile,
+            eb_cli_region = ?eb_cli_region,
             "state::load"
         );
-        let effective_profile = project_profile.or_else(|| persisted.profile.clone());
-        let effective_region = project_region.or_else(|| persisted.region.clone());
+        let effective_profile = project_profile
+            .or(eb_cli_profile)
+            .or_else(|| persisted.profile.clone());
+        let effective_region = project_region
+            .or(eb_cli_region)
+            .or_else(|| persisted.region.clone());
         let (aws, override_profile, override_region, identity_warning) =
             init_client(effective_profile, effective_region).await?;
         let aws = Arc::new(aws);
@@ -1800,6 +1814,17 @@ impl App {
                 app.filter = app_name;
             }
             app.runbooks.extend(proj.runbooks);
+        }
+        // EB CLI application name fills in as a filter prefill when
+        // `.ebman/` hasn't already set one. Same "soft scope" intent
+        // as the project-config path. `.ebman/` always wins because
+        // it's the more explicit, ebman-native source.
+        if app.filter.is_empty() {
+            if let Some(eb) = eb_cli {
+                if let Some(app_name) = eb.application {
+                    app.filter = app_name;
+                }
+            }
         }
         Ok(app)
     }
