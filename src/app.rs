@@ -10199,6 +10199,7 @@ impl App {
             "abort" => self.cmd_abort(),
             "pending" | "in-flight" | "inflight" => self.cmd_pending(),
             "rollbacks-armed" | "rb-armed" => self.cmd_rollbacks_armed(),
+            "abort-rollback" => self.cmd_abort_rollback(&rest),
             "tag" => self.cmd_tag(&rest),
             "untag" => self.cmd_untag(&rest),
             "resources" | "res" => self.cmd_resources(),
@@ -17164,6 +17165,99 @@ mod tests {
             app.deploy_snapshots.is_empty(),
             "context switch should drop deploy snapshots"
         );
+    }
+
+    #[tokio::test]
+    async fn abort_rollback_named_env_disarms_just_that_one() {
+        // Operator armed two; aborts only `staging`. `prod` stays
+        // armed (and the deadline can still fire — apply_refresh
+        // will decide as normal).
+        let mut app = test_app();
+        let now = chrono::Utc::now();
+        for env in ["prod", "staging"] {
+            app.armed_watchdogs.insert(
+                env.into(),
+                ArmedWatchdog {
+                    env_name: env.into(),
+                    target_label: "build-820".into(),
+                    armed_at: now,
+                    deadline_at: now + chrono::Duration::seconds(300),
+                },
+            );
+        }
+        app.execute_command("abort-rollback staging");
+        assert!(
+            !app.armed_watchdogs.contains_key("staging"),
+            "named env should be drained"
+        );
+        assert!(
+            app.armed_watchdogs.contains_key("prod"),
+            "other env's watchdog must stay armed"
+        );
+        let status = app.status_message.as_deref().unwrap_or("");
+        assert!(
+            status.contains("aborted auto-rollback for staging"),
+            "expected confirm in status, got: {status}"
+        );
+    }
+
+    #[tokio::test]
+    async fn abort_rollback_named_env_not_armed_errors_clearly() {
+        // Typo or stale name → no silent drain. Operator gets a
+        // pointer at `:rollbacks-armed` to see what's actually
+        // armed.
+        let mut app = test_app();
+        app.execute_command("abort-rollback ghost");
+        let err = app.error_message.as_deref().unwrap_or("");
+        assert!(
+            err.contains("no auto-rollback armed for 'ghost'") && err.contains("rollbacks-armed"),
+            "expected not-armed + discovery hint, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn abort_rollback_no_args_drains_every_watchdog() {
+        // No arg → drain all. Status names them so the operator can
+        // see what was cleared.
+        let mut app = test_app();
+        let now = chrono::Utc::now();
+        for env in ["a", "b", "c"] {
+            app.armed_watchdogs.insert(
+                env.into(),
+                ArmedWatchdog {
+                    env_name: env.into(),
+                    target_label: "x".into(),
+                    armed_at: now,
+                    deadline_at: now + chrono::Duration::seconds(300),
+                },
+            );
+        }
+        app.execute_command("abort-rollback");
+        assert!(
+            app.armed_watchdogs.is_empty(),
+            "drain-all clears everything"
+        );
+        let status = app.status_message.as_deref().unwrap_or("");
+        assert!(status.contains("aborted 3 auto-rollbacks"), "got: {status}");
+        // Each named env surfaces in the toast.
+        for env in ["a", "b", "c"] {
+            assert!(
+                status.contains(env),
+                "expected {env} in status, got: {status}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn abort_rollback_no_args_empty_is_a_noop_status() {
+        // Operator runs `:abort-rollback` with nothing armed → soft
+        // status, not an error. Avoids surprising the operator who
+        // just wanted to sanity-check.
+        let mut app = test_app();
+        app.execute_command("abort-rollback");
+        let status = app.status_message.as_deref().unwrap_or("");
+        assert!(status.contains("no auto-rollbacks armed to abort"));
+        assert!(app.error_message.is_none());
     }
 
     #[test]
