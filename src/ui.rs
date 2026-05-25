@@ -1262,7 +1262,12 @@ enum AboutLayout {
 /// content never butts against the card edge.
 fn about_layout(w: u16, h: u16, text_h: u16) -> AboutLayout {
     let scene_h = crate::splash::SPLASH_SCENE_ROWS as u16;
-    if w >= ABOUT_SCENE_W + 6 && h >= scene_h + text_h + 6 {
+    // Stacked uses the wider of scene-vs-text as its popup width so
+    // the text lines don't wrap mid-word. Only pick Stacked if the
+    // terminal can actually accommodate that width — otherwise fall
+    // through to TextOnly (which is always narrower).
+    let stacked_w = ABOUT_SCENE_W.max(ABOUT_TEXT_W) + 6;
+    if w >= stacked_w && h >= scene_h + text_h + 6 {
         AboutLayout::Stacked
     } else if w >= ABOUT_SCENE_W + ABOUT_TEXT_W + 8 && h >= scene_h + 4 {
         AboutLayout::SideBySide
@@ -1337,7 +1342,12 @@ fn draw_about(f: &mut Frame, area: Rect, app: &App, opened: std::time::Instant) 
     let text_h = text_lines.len() as u16;
     let layout = about_layout(area.width, area.height, text_h);
     let (pw, ph) = match layout {
-        AboutLayout::Stacked => (ABOUT_SCENE_W + 6, scene_h + text_h + 6),
+        // Stacked uses the wider of scene-vs-text as the popup width.
+        // Without this, the text lines (designed for ABOUT_TEXT_W
+        // ≈ 58 cols) wrap mid-word inside an ABOUT_SCENE_W ≈ 40-col
+        // frame — "operations tools f / Hire u / what's missing —
+        // happ" with everything truncated.
+        AboutLayout::Stacked => (ABOUT_SCENE_W.max(ABOUT_TEXT_W) + 6, scene_h + text_h + 6),
         AboutLayout::SideBySide => (ABOUT_SCENE_W + ABOUT_TEXT_W + 8, scene_h + 4),
         AboutLayout::TextOnly => (ABOUT_TEXT_W + 6, text_h + 4),
     };
@@ -8105,7 +8115,8 @@ mod tests {
     #[test]
     fn about_layout_picks_by_terminal_size() {
         // text_h ~15 — a representative project-text height.
-        // ABOUT_SCENE_W is 40; thresholds: Stacked needs w >= 46,
+        // ABOUT_SCENE_W is 40, ABOUT_TEXT_W is 58; thresholds:
+        // Stacked needs w >= max(40, 58) + 6 = 64,
         // SideBySide needs w >= 40 + 58 + 8 = 106.
         let th = 15;
         // Roomy → scene stacked above text.
@@ -8114,11 +8125,17 @@ mod tests {
         assert_eq!(about_layout(140, 30, th), AboutLayout::SideBySide);
         // Small both ways → text only.
         assert_eq!(about_layout(40, 20, th), AboutLayout::TextOnly);
-        // Wide enough to stack but the scene won't fit width-wise
-        // for side-by-side either → text only.
+        // Wide enough to stack but too narrow for side-by-side → text only.
         assert_eq!(about_layout(44, 60, th), AboutLayout::TextOnly);
         // Tall enough but too narrow for the scene → text only.
         assert_eq!(about_layout(42, 60, th), AboutLayout::TextOnly);
+        // 50 cols would have picked Stacked under the old 46-col
+        // threshold, but the text lines need 58 cols to render
+        // without mid-word wrap. Must fall through to TextOnly.
+        assert_eq!(about_layout(50, 60, th), AboutLayout::TextOnly);
+        // Right at the new Stacked boundary.
+        assert_eq!(about_layout(64, 60, th), AboutLayout::Stacked);
+        assert_eq!(about_layout(63, 60, th), AboutLayout::TextOnly);
     }
 
     #[test]
