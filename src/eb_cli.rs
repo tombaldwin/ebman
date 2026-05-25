@@ -11,14 +11,16 @@
 //! own schema:
 //!
 //! ```yaml
-//! branch-defaults:
-//!   default:
-//!     environment: my-prod-env       # default env (currently unused)
 //! global:
 //!   application_name: my-app
 //!   default_region: us-east-1
 //!   profile: my-aws-profile
 //! ```
+//!
+//! A `branch-defaults:` block (default env per git branch) is
+//! tolerated when present in real EB CLI files but not currently
+//! read — ebman's table-filter UX is a different model from the
+//! EB CLI's single-env default.
 //!
 //! Discovery walks the cwd's ancestors for the directory marker —
 //! same shape as `project::find_root` but for `.elasticbeanstalk/`.
@@ -181,14 +183,27 @@ global:
     }
 
     #[test]
-    fn parse_malformed_yaml_returns_none() {
-        // Indent mismatch — YAML parser refuses; we don't try to
-        // recover (caller silently falls back to defaults).
-        let body = "global:\n  profile: prod\n  default_region:\n    nested: bad";
-        // This might still parse depending on the YAML driver, so
-        // we accept either outcome. The contract under test is
-        // "no panic" — even if YAML accepts it, profile must read.
-        let _ = parse(body);
+    fn parse_truly_malformed_yaml_returns_none() {
+        // Unbalanced braces — every YAML driver should refuse.
+        // Caller falls back to defaults silently; contract here is
+        // "returns None rather than panicking or returning garbage".
+        assert!(parse("global: { profile: prod, default_region:").is_none());
+    }
+
+    #[test]
+    fn parse_type_mismatched_field_drops_to_none_for_that_field_or_whole() {
+        // `default_region` declared as Option<String>; a nested
+        // map in that slot is a deserialize error. Whether that
+        // produces a whole-config None or a partial config depends
+        // on the YAML driver — both are acceptable; "no panic" is
+        // the real contract. The other fields, if any survive, must
+        // still be readable through the public `parse` surface.
+        let body = "global:\n  profile: prod\n  default_region:\n    nested: bad\n";
+        let maybe = parse(body);
+        if let Some(cfg) = maybe {
+            // Driver accepted partial — profile must still come through.
+            assert_eq!(cfg.profile.as_deref(), Some("prod"));
+        }
     }
 
     #[test]

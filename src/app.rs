@@ -11622,14 +11622,13 @@ impl App {
                     .collect();
                 let now = chrono::Utc::now();
                 for (env_name, deadline_at) in armed {
-                    let health = self
+                    let (status, health) = self
                         .environments
                         .iter()
                         .find(|e| e.name == env_name)
-                        .map(|e| e.health.clone())
+                        .map(|e| (e.status.clone(), e.health.clone()))
                         .unwrap_or_default();
-                    let healthy =
-                        health.eq_ignore_ascii_case("Green") || health.eq_ignore_ascii_case("Ok");
+                    let healthy = deploy_settled_green(&status, &health);
                     if healthy {
                         self.armed_watchdogs.remove(&env_name);
                         // pin_status survives the same-tick auto-clear
@@ -11664,14 +11663,13 @@ impl App {
                     })
                     .collect();
                 for (env_name, deadline_at, target_label, total_secs) in watching {
-                    let health = self
+                    let (status, health) = self
                         .environments
                         .iter()
                         .find(|e| e.name == env_name)
-                        .map(|e| e.health.clone())
+                        .map(|e| (e.status.clone(), e.health.clone()))
                         .unwrap_or_default();
-                    let healthy =
-                        health.eq_ignore_ascii_case("Green") || health.eq_ignore_ascii_case("Ok");
+                    let healthy = deploy_settled_green(&status, &health);
                     if healthy {
                         self.watching_deploys.remove(&env_name);
                         let label_hint = if target_label.is_empty() {
@@ -11688,7 +11686,7 @@ impl App {
                             format!(" ({target_label})")
                         };
                         self.pin_error(format!(
-                            "deploy did not reach Green within {total_secs}s: {env_name}{label_hint} — health={health}"
+                            "deploy did not reach Green within {total_secs}s: {env_name}{label_hint} — status={status} health={health}"
                         ));
                     }
                 }
@@ -12297,6 +12295,25 @@ fn truncate_armed_cell(s: &str, n: usize) -> String {
     let mut out: String = s.chars().take(n.saturating_sub(1)).collect();
     out.push('…');
     out
+}
+
+/// Pure: "deploy has fully succeeded for this env" predicate.
+/// Both conditions matter — `UpdateEnvironment` momentarily
+/// leaves `health=Green` while `status` flips to `Updating`,
+/// so a watcher that only checks health would false-positive
+/// during that window and disarm a rollback (or report
+/// success) before the deploy has actually settled. Single
+/// source of truth shared by the rollback-watchdog pass, the
+/// wait-for-green pass, and the non-interactive CLI's
+/// `decide_poll`.
+///
+/// Truthy when:
+/// - `status` is `Ready` (case-insensitive, EB's settled state)
+/// - `health` is `Green` or `Ok` (case-insensitive, EB's two
+///   "all-clear" terms across enhanced vs legacy reporting)
+pub fn deploy_settled_green(status: &str, health: &str) -> bool {
+    status.eq_ignore_ascii_case("Ready")
+        && (health.eq_ignore_ascii_case("Green") || health.eq_ignore_ascii_case("Ok"))
 }
 
 pub fn humanize_short_age(d: Duration) -> String {
@@ -17748,6 +17765,90 @@ mod tests {
             }
             _ => panic!("expected confirm modal open"),
         }
+    }
+
+    #[tokio::test]
+    async fn apply_refresh_keeps_watching_when_status_is_updating_even_if_health_is_green() {
+        // Regression: EB leaves health=Green briefly while status
+        // flips to Updating right after UpdateEnvironment. The
+        // watcher must NOT report success during that window —
+        // otherwise the operator gets a false "✓ deploy reached
+        // Green" pin before the deploy has actually started.
+        let mut app = test_app();
+        let now = chrono::Utc::now();
+        app.watching_deploys.insert(
+            "prod".into(),
+            WatchingDeploy {
+                env_name: "prod".into(),
+                target_label: "build-900".into(),
+                armed_at: now,
+                deadline_at: now + chrono::Duration::seconds(300),
+            },
+        );
+        let mut env = mk_env("prod", "shop", "Web", "Green");
+        env.status = "Updating".into();
+        app.apply_refresh(Ok(vec![env]));
+        assert!(
+            app.watching_deploys.contains_key("prod"),
+            "Updating+Green is mid-deploy — watcher must remain armed"
+        );
+        let pinned = app.status_message.as_deref().unwrap_or("");
+        assert!(
+            !pinned.contains("reached Green"),
+            "must not pin success during Updating, got: {pinned:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_refresh_keeps_armed_watchdog_when_status_is_updating_even_if_health_is_green() {
+        // Same regression for the auto-rollback watchdog: a brief
+        // Updating+Green window must not disarm the watchdog —
+        // otherwise the rollback safety net evaporates before the
+        // deploy has actually rolled.
+        let mut app = test_app();
+        let now = chrono::Utc::now();
+        app.deploy_snapshots.insert(
+            "prod".into(),
+            DeploySnapshot {
+                env_name: "prod".into(),
+                previous_version_label: "build-820".into(),
+                taken_at: now,
+            },
+        );
+        app.armed_watchdogs.insert(
+            "prod".into(),
+            ArmedWatchdog {
+                env_name: "prod".into(),
+                target_label: "build-820".into(),
+                armed_at: now,
+                deadline_at: now + chrono::Duration::seconds(300),
+            },
+        );
+        let mut env = mk_env("prod", "shop", "Web", "Green");
+        env.status = "Updating".into();
+        app.apply_refresh(Ok(vec![env]));
+        assert!(
+            app.armed_watchdogs.contains_key("prod"),
+            "Updating+Green is mid-deploy — watchdog must remain armed"
+        );
+    }
+
+    #[test]
+    fn deploy_settled_green_requires_both_status_ready_and_health_green_or_ok() {
+        assert!(super::deploy_settled_green("Ready", "Green"));
+        assert!(super::deploy_settled_green("Ready", "Ok"));
+        assert!(super::deploy_settled_green("ready", "green")); // case-insensitive
+        assert!(super::deploy_settled_green("READY", "OK"));
+        // Status mismatch — false even if health is Green.
+        assert!(!super::deploy_settled_green("Updating", "Green"));
+        assert!(!super::deploy_settled_green("Launching", "Ok"));
+        assert!(!super::deploy_settled_green("Terminating", "Green"));
+        // Health mismatch — false even if status is Ready.
+        assert!(!super::deploy_settled_green("Ready", "Red"));
+        assert!(!super::deploy_settled_green("Ready", "Yellow"));
+        assert!(!super::deploy_settled_green("Ready", "Severe"));
+        // Both wrong.
+        assert!(!super::deploy_settled_green("", ""));
     }
 
     #[tokio::test]

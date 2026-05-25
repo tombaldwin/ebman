@@ -265,13 +265,19 @@ pub(crate) enum PollDecision {
 }
 
 pub(crate) fn decide_poll(
+    status: &str,
     health: &str,
     elapsed_secs: u64,
     wait_for_green_secs: Option<u64>,
     auto_rollback_secs: Option<u64>,
     wait_for_green_timeout_emitted: bool,
 ) -> PollDecision {
-    if health.eq_ignore_ascii_case("Green") || health.eq_ignore_ascii_case("Ok") {
+    // Both status=Ready AND health=Green/Ok required — EB
+    // briefly leaves health Green while status flips to
+    // Updating right after UpdateEnvironment, so a check on
+    // health alone false-positives during the transition.
+    // See `ebman::app::deploy_settled_green`.
+    if ebman::app::deploy_settled_green(status, health) {
         return PollDecision::Success;
     }
     if let Some(d) = auto_rollback_secs {
@@ -459,13 +465,14 @@ async fn run_action_deploy(
                 std::process::exit(1);
             }
         };
-        let health = envs
+        let (status, health) = envs
             .iter()
             .find(|e| e.name == env)
-            .map(|e| e.health.clone())
+            .map(|e| (e.status.clone(), e.health.clone()))
             .unwrap_or_default();
         let elapsed = start.elapsed().as_secs();
         match decide_poll(
+            &status,
             &health,
             elapsed,
             wait_for_green_secs,
@@ -473,7 +480,7 @@ async fn run_action_deploy(
             wait_for_green_timeout_emitted,
         ) {
             PollDecision::KeepPolling => {
-                println!("poll t={elapsed}s health={health}");
+                println!("poll t={elapsed}s status={status} health={health}");
             }
             PollDecision::Success => {
                 println!("ok: deploy on {env} reached Green at t={elapsed}s (version={version})");
@@ -483,7 +490,7 @@ async fn run_action_deploy(
                 wait_for_green_timeout_emitted = true;
                 if auto_rollback_secs.is_none() {
                     eprintln!(
-                        "timeout: deploy on {env} did not reach Green within {}s (health={health}, version={version})",
+                        "timeout: deploy on {env} did not reach Green within {}s (status={status}, health={health}, version={version})",
                         wait_for_green_secs.unwrap_or(0)
                     );
                     std::process::exit(4);
@@ -491,12 +498,12 @@ async fn run_action_deploy(
                 // Rollback still pending — emit milestone, keep polling.
                 let remaining = auto_rollback_secs.unwrap_or(0).saturating_sub(elapsed);
                 println!(
-                    "wait-for-green timeout at t={elapsed}s (health={health}); continuing under auto-rollback ({remaining}s remaining)"
+                    "wait-for-green timeout at t={elapsed}s (status={status}, health={health}); continuing under auto-rollback ({remaining}s remaining)"
                 );
             }
             PollDecision::DispatchRollback => {
                 eprintln!(
-                    "auto-rollback firing on {env}: env still {health} at t={elapsed}s; redeploying snapshot version={snapshot_label}"
+                    "auto-rollback firing on {env}: env still status={status} health={health} at t={elapsed}s; redeploying snapshot version={snapshot_label}"
                 );
                 if let Err(e) = aws.deploy_version(env, &snapshot_label).await {
                     eprintln!("err: rollback deploy_version: {e}");
@@ -896,21 +903,38 @@ mod tests {
     use super::{cli_esc, decide_poll, hsl_to_rgb, prune_old_crash_reports, PollDecision};
 
     #[test]
-    fn decide_poll_green_returns_success_regardless_of_deadlines() {
-        // Green observation always wins — even if a deadline has
-        // also elapsed, the deploy is done.
+    fn decide_poll_green_plus_ready_returns_success_regardless_of_deadlines() {
+        // Settled-green observation always wins — even if a
+        // deadline has also elapsed, the deploy is done.
         assert_eq!(
-            decide_poll("Green", 600, Some(300), Some(600), false),
+            decide_poll("Ready", "Green", 600, Some(300), Some(600), false),
             PollDecision::Success
         );
         assert_eq!(
-            decide_poll("Ok", 0, None, None, false),
+            decide_poll("Ready", "Ok", 0, None, None, false),
             PollDecision::Success
         );
-        // Case-insensitive — EB sometimes returns "ok" lowercase.
+        // Case-insensitive on both status + health.
         assert_eq!(
-            decide_poll("ok", 0, Some(300), None, false),
+            decide_poll("ready", "ok", 0, Some(300), None, false),
             PollDecision::Success
+        );
+    }
+
+    #[test]
+    fn decide_poll_green_during_updating_is_not_success() {
+        // EB leaves health=Green briefly while status flips to
+        // Updating right after UpdateEnvironment. Must keep polling
+        // — a Success here would false-positive disarm before the
+        // deploy actually starts rolling.
+        assert_eq!(
+            decide_poll("Updating", "Green", 5, Some(300), Some(600), false),
+            PollDecision::KeepPolling
+        );
+        // Same for Launching (initial env creation) and Terminating.
+        assert_eq!(
+            decide_poll("Launching", "Green", 5, Some(300), None, false),
+            PollDecision::KeepPolling
         );
     }
 
@@ -918,13 +942,13 @@ mod tests {
     fn decide_poll_keep_polling_before_any_deadline() {
         // Env still non-Green and no deadline reached → keep going.
         assert_eq!(
-            decide_poll("Red", 30, Some(300), Some(600), false),
+            decide_poll("Ready", "Red", 30, Some(300), Some(600), false),
             PollDecision::KeepPolling
         );
         // No flags + non-Green also means keep polling — caller
         // should have skipped the loop entirely if no flags set.
         assert_eq!(
-            decide_poll("Yellow", 60, None, None, false),
+            decide_poll("Updating", "Yellow", 60, None, None, false),
             PollDecision::KeepPolling
         );
     }
@@ -933,13 +957,13 @@ mod tests {
     fn decide_poll_wait_for_green_only_emits_timeout_once() {
         // Only --wait-for-green set; deadline elapsed; emit timeout.
         assert_eq!(
-            decide_poll("Red", 301, Some(300), None, false),
+            decide_poll("Ready", "Red", 301, Some(300), None, false),
             PollDecision::WaitForGreenTimeout
         );
         // After emission, don't fire again on subsequent ticks —
         // caller already exited if no rollback, or logged + moved on.
         assert_eq!(
-            decide_poll("Red", 350, Some(300), None, true),
+            decide_poll("Ready", "Red", 350, Some(300), None, true),
             PollDecision::KeepPolling
         );
     }
@@ -949,7 +973,7 @@ mod tests {
         // Both deadlines passed → rollback (more aggressive remediation)
         // wins. Even if wait-for-green hasn't emitted its timeout yet.
         assert_eq!(
-            decide_poll("Red", 700, Some(300), Some(600), false),
+            decide_poll("Ready", "Red", 700, Some(300), Some(600), false),
             PollDecision::DispatchRollback
         );
     }
@@ -962,19 +986,19 @@ mod tests {
         //   t=500 → KeepPolling (timeout already emitted)
         //   t=601 → DispatchRollback
         assert_eq!(
-            decide_poll("Red", 200, Some(300), Some(600), false),
+            decide_poll("Updating", "Yellow", 200, Some(300), Some(600), false),
             PollDecision::KeepPolling
         );
         assert_eq!(
-            decide_poll("Red", 350, Some(300), Some(600), false),
+            decide_poll("Ready", "Red", 350, Some(300), Some(600), false),
             PollDecision::WaitForGreenTimeout
         );
         assert_eq!(
-            decide_poll("Red", 500, Some(300), Some(600), true),
+            decide_poll("Ready", "Red", 500, Some(300), Some(600), true),
             PollDecision::KeepPolling
         );
         assert_eq!(
-            decide_poll("Red", 601, Some(300), Some(600), true),
+            decide_poll("Ready", "Red", 601, Some(300), Some(600), true),
             PollDecision::DispatchRollback
         );
     }
@@ -984,11 +1008,11 @@ mod tests {
         // --auto-rollback alone → no wait-for-green emission ever;
         // straight from KeepPolling to DispatchRollback at deadline.
         assert_eq!(
-            decide_poll("Red", 100, None, Some(300), false),
+            decide_poll("Updating", "Yellow", 100, None, Some(300), false),
             PollDecision::KeepPolling
         );
         assert_eq!(
-            decide_poll("Red", 301, None, Some(300), false),
+            decide_poll("Ready", "Red", 301, None, Some(300), false),
             PollDecision::DispatchRollback
         );
     }
