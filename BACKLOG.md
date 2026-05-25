@@ -783,7 +783,7 @@ Lineup for the next minor. Theme is **complete the 0.9 auto-rollback story + red
 
 #### Operator polish — BONUS
 - [x] **Pre-deploy diff inline in the confirm modal.** SHIPPED. Every Deploy confirm modal now auto-fetches `list_application_versions` + inlines the `format_deploy_preview` body (candidate label / age / description / rollback-warning when older). The standalone `:deploy LABEL --preview` overlay still exists for explicit diff-only review.
-- [ ] **EB CLI `.elasticbeanstalk/config.yml` reader.** Project-local `.ebman/ebman.toml` shipped in 0.8 — extend by also reading the EB CLI's `.elasticbeanstalk/config.yml` (which most EB CLI users already have) for default profile / region / application. `.ebman/` overrides EB CLI if both exist. Bridges existing EB CLI workflows into ebman without an explicit copy step.
+- [x] **EB CLI `.elasticbeanstalk/config.yml` reader.** SHIPPED. New `eb_cli` module walks up from cwd to find `.elasticbeanstalk/config.yml`, parses YAML, exposes `profile` / `region` / `application`. Precedence: `.ebman/` > EB CLI > persisted state. Application name falls in as a soft filter prefill when `.ebman/` hasn't set one.
 - [ ] **`:notify` outbound integration.** The audit log at `~/.cache/ebman/audit.log` already records every action + the `kind=red_transition` event. Add an opt-in `notify_webhook = "..."` config that POSTs structured JSON (action / target / outcome / context) to the URL on each audit line. Tail-the-file pattern still works for operators who prefer pull; webhook is for push. Slack-compatible body format is the obvious shape.
 
 #### Skipped on purpose
