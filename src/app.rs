@@ -890,7 +890,6 @@ pub struct App {
     pub command_input: String,
     pub completion: CompletionState,
     pub quickjump_input: String,
-    pub named_filters: BTreeMap<String, String>,
     pub extra_regions: Vec<String>,
     pub event_panel: EventPanel,
     /// Env names the user has marked for batch action via `space`. Cleared on
@@ -1749,7 +1748,6 @@ impl App {
             command_input: String::new(),
             completion: CompletionState::default(),
             quickjump_input: String::new(),
-            named_filters: persisted.named_filters,
             extra_regions: config.extra_regions,
             event_panel: EventPanel {
                 events: Vec::new(),
@@ -2003,7 +2001,6 @@ impl App {
             command_input: String::new(),
             completion: CompletionState::default(),
             quickjump_input: String::new(),
-            named_filters: std::collections::BTreeMap::new(),
             extra_regions: config.extra_regions.clone(),
             event_panel: EventPanel {
                 events: Vec::new(),
@@ -3379,21 +3376,18 @@ impl App {
                     {
                         self.cycle_metrics_range(-1);
                     }
-                    // ] / [ on the main env table cycle through the saved
-                    // filter chips above the table. Operators with
-                    // named_filters get a one-key flip between them
-                    // instead of typing `:filter NAME` each time. Guard on
+                    // ] / [ on the main env table cycle through the saved-
+                    // view chips above the table. Operators with saved
+                    // views get a one-key flip between them instead of
+                    // typing `:view NAME` (or `:filter NAME` for legacy
+                    // filter-only views) each time. Guard on
                     // `detail.is_none()` so Detail-pane bindings (which
                     // also use ] / [) keep working.
-                    KeyCode::Char(']')
-                        if self.detail.is_none() && !self.named_filters.is_empty() =>
-                    {
-                        self.cycle_named_filter(1);
+                    KeyCode::Char(']') if self.detail.is_none() && !self.saved_views.is_empty() => {
+                        self.cycle_saved_view(1);
                     }
-                    KeyCode::Char('[')
-                        if self.detail.is_none() && !self.named_filters.is_empty() =>
-                    {
-                        self.cycle_named_filter(-1);
+                    KeyCode::Char('[') if self.detail.is_none() && !self.saved_views.is_empty() => {
+                        self.cycle_saved_view(-1);
                     }
                     KeyCode::Char('/')
                         if matches!(
@@ -6545,30 +6539,37 @@ impl App {
         }
     }
 
-    /// Cycle through saved (`named_filters`) chips above the env
-    /// table. `delta = +1` → next chip; `-1` → previous; both wrap.
-    /// "Active" is derived from `app.filter == named_filters[name]`
-    /// (the chip bar's own active-test), so cycling lands on the
-    /// chip immediately to the right/left of whichever is currently
+    /// Cycle through saved-view chips above the env table.
+    /// `delta = +1` → next chip; `-1` → previous; both wrap.
+    /// "Active" is derived from comparing the current filter to
+    /// each view's encoded `filter=` portion — matches the chip
+    /// bar's own active-test, so cycling lands on the chip
+    /// immediately to the right/left of whichever is currently
     /// applied. If no chip is active (operator typed a freeform
-    /// filter or none at all), starts at index 0 / -1 depending on
-    /// direction. No-op when there are no saved filters — the
-    /// keybind itself is guarded against the empty case, this guard
-    /// is belt-and-braces.
-    fn cycle_named_filter(&mut self, delta: i32) {
-        if self.named_filters.is_empty() {
+    /// filter or none at all), starts at index 0 / -1 depending
+    /// on direction.
+    ///
+    /// Replaced the earlier `cycle_named_filter` (0.11 and prior)
+    /// when saved-views unified into a single store in 0.12.
+    /// Loading a view applies the full encoded snapshot via
+    /// `apply_view`, so cycling can change sort / group / scope
+    /// alongside the filter — the BACKLOG-promised "tab"
+    /// behavior. Filter-only views (the legacy migration case)
+    /// only change the filter, leaving sort/group/scope alone.
+    fn cycle_saved_view(&mut self, delta: i32) {
+        if self.saved_views.is_empty() {
             return;
         }
         // BTreeMap iteration is sorted by key, so the cycle order
         // matches the chip-bar render order. Keep them in sync.
-        let names: Vec<String> = self.named_filters.keys().cloned().collect();
+        let names: Vec<String> = self.saved_views.keys().cloned().collect();
         let cur_idx = if self.filter.is_empty() {
             None
         } else {
             names.iter().position(|n| {
-                self.named_filters
+                self.saved_views
                     .get(n)
-                    .map(|v| v == &self.filter)
+                    .map(|encoded| view_filter_value(encoded) == self.filter)
                     .unwrap_or(false)
             })
         };
@@ -6577,11 +6578,10 @@ impl App {
             None if delta >= 0 => 0,
             None => names.len() - 1,
         };
-        let chosen = &names[next];
-        if let Some(value) = self.named_filters.get(chosen).cloned() {
-            self.filter = value;
-            self.rebuild_view();
-            self.status_message = Some(format!("filter: {chosen}"));
+        let chosen = names[next].clone();
+        if let Some(snap) = self.saved_views.get(&chosen).cloned() {
+            apply_view(self, &snap);
+            self.status_message = Some(format!("view: {chosen}"));
         }
     }
 
@@ -10944,7 +10944,6 @@ impl App {
             events_visible: Some(self.event_panel.visible),
             event_time_format: Some(self.event_panel.time_format),
             selected_env: selected,
-            named_filters: self.named_filters.clone(),
             pinned: self.pinned.clone(),
             pinned_apps: self.pinned_apps.clone(),
             cost_enabled: Some(self.cost_enabled),
@@ -14220,6 +14219,33 @@ fn encode_view(app: &App) -> String {
     };
     parts.push(format!("scope={scope}"));
     parts.join(";")
+}
+
+/// Encode a filter-only saved view — the value `:save NAME` writes
+/// to `saved_views`. Omits `sort=`, `grouped=`, `scope=` so loading
+/// the view doesn't perturb the operator's current sort / group /
+/// scope state. `apply_view` ignores missing fields, so a
+/// filter-only view is a safe no-touch-other-state operation.
+///
+/// Used by the legacy `:save` command (filter-only save) and by
+/// the state.toml backward-compat path that promotes old
+/// `filter.NAME = "..."` lines into saved_views.
+pub fn encode_filter_only_view(filter: &str) -> String {
+    format!("filter={filter}")
+}
+
+/// Pure: extract the filter portion of an encoded saved view.
+/// Returns the empty string when the view doesn't include a
+/// `filter=` part (which means "no filter" — operator wanted the
+/// view to clear whatever filter was set). Used by the chip-bar
+/// active-check + the cycle keybind.
+pub fn view_filter_value(encoded: &str) -> &str {
+    for part in encoded.split(';') {
+        if let Some(rest) = part.trim().strip_prefix("filter=") {
+            return rest;
+        }
+    }
+    ""
 }
 
 fn apply_view(app: &mut App, snap: &str) {
@@ -18035,45 +18061,86 @@ mod tests {
         assert!(out.contains("▓"));
     }
 
+    #[test]
+    fn encode_filter_only_view_emits_just_the_filter_part() {
+        // The encoded form must omit sort/grouped/scope so loading
+        // doesn't perturb those — `apply_view` "missing fields
+        // untouched" semantics depend on it.
+        let encoded = super::encode_filter_only_view("tag:env=prod");
+        assert_eq!(encoded, "filter=tag:env=prod");
+        // Empty filter — still emits `filter=` so load semantics
+        // are consistent (filter clears to empty).
+        assert_eq!(super::encode_filter_only_view(""), "filter=");
+    }
+
+    #[test]
+    fn view_filter_value_extracts_filter_or_empty() {
+        assert_eq!(
+            super::view_filter_value("filter=tag:env=prod"),
+            "tag:env=prod"
+        );
+        // Filter portion in the middle of a full view.
+        assert_eq!(
+            super::view_filter_value("sort=name:asc;filter=tag:env=prod;grouped=false"),
+            "tag:env=prod",
+        );
+        // No filter portion → empty (operator's view that doesn't
+        // touch the filter).
+        assert_eq!(super::view_filter_value("sort=name:asc;grouped=true"), "");
+        // Empty encoded → empty filter.
+        assert_eq!(super::view_filter_value(""), "");
+        // Leading whitespace on a part is tolerated (matches the
+        // tolerant parse in `apply_view`).
+        assert_eq!(super::view_filter_value("sort=name:asc; filter=foo"), "foo",);
+    }
+
     #[tokio::test]
-    async fn cycle_named_filter_wraps_forward_through_saved_filters() {
-        // Three named filters: cycling forward from "dev" → "prod" →
+    async fn cycle_saved_view_wraps_forward_through_saved_views() {
+        // Three saved views: cycling forward from "dev" → "prod" →
         // "staging" → back to "dev". Cycle order follows BTreeMap
         // iteration (alphabetical), matching the chip-bar render.
         let mut app = test_app();
-        app.named_filters.insert("dev".into(), "tag:env=dev".into());
-        app.named_filters
-            .insert("prod".into(), "tag:env=prod".into());
-        app.named_filters
-            .insert("staging".into(), "tag:env=staging".into());
+        app.saved_views
+            .insert("dev".into(), super::encode_filter_only_view("tag:env=dev"));
+        app.saved_views.insert(
+            "prod".into(),
+            super::encode_filter_only_view("tag:env=prod"),
+        );
+        app.saved_views.insert(
+            "staging".into(),
+            super::encode_filter_only_view("tag:env=staging"),
+        );
         // Start on "dev".
         app.filter = "tag:env=dev".into();
-        app.cycle_named_filter(1);
+        app.cycle_saved_view(1);
         assert_eq!(app.filter, "tag:env=prod");
-        app.cycle_named_filter(1);
+        app.cycle_saved_view(1);
         assert_eq!(app.filter, "tag:env=staging");
         // Wraps back to first.
-        app.cycle_named_filter(1);
+        app.cycle_saved_view(1);
         assert_eq!(app.filter, "tag:env=dev");
     }
 
     #[tokio::test]
-    async fn cycle_named_filter_wraps_backward_and_handles_no_active() {
+    async fn cycle_saved_view_wraps_backward_and_handles_no_active() {
         // Backward from "dev" wraps to "staging" (last in sort).
         let mut app = test_app();
-        app.named_filters.insert("dev".into(), "tag:env=dev".into());
-        app.named_filters
-            .insert("staging".into(), "tag:env=staging".into());
+        app.saved_views
+            .insert("dev".into(), super::encode_filter_only_view("tag:env=dev"));
+        app.saved_views.insert(
+            "staging".into(),
+            super::encode_filter_only_view("tag:env=staging"),
+        );
         app.filter = "tag:env=dev".into();
-        app.cycle_named_filter(-1);
+        app.cycle_saved_view(-1);
         assert_eq!(app.filter, "tag:env=staging");
         // No active filter (freeform or empty) → forward goes to first,
         // backward goes to last.
         app.filter = "some-random-text".into();
-        app.cycle_named_filter(1);
+        app.cycle_saved_view(1);
         assert_eq!(app.filter, "tag:env=dev", "forward-with-no-active → first");
         app.filter = "some-random-text".into();
-        app.cycle_named_filter(-1);
+        app.cycle_saved_view(-1);
         assert_eq!(
             app.filter, "tag:env=staging",
             "backward-with-no-active → last"
@@ -18081,14 +18148,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cycle_named_filter_noop_with_empty_filters() {
-        // Cycling when there are no saved filters shouldn't crash or
+    async fn cycle_saved_view_noop_with_empty_views() {
+        // Cycling when there are no saved views shouldn't crash or
         // mutate state. The keybind guard already short-circuits, but
         // the method itself is the actual safety net.
         let mut app = test_app();
         app.filter = "keep-me".into();
-        app.cycle_named_filter(1);
+        app.cycle_saved_view(1);
         assert_eq!(app.filter, "keep-me");
+    }
+
+    #[tokio::test]
+    async fn cycle_saved_view_with_full_view_applies_sort_and_group_too() {
+        // The point of unifying named_filters into saved_views: a
+        // full view's encoded payload changes sort + group + scope
+        // alongside the filter. This is the gh-dash-style "tabs"
+        // behavior the BACKLOG had been promising since 2026-05-24.
+        let mut app = test_app();
+        // Filter-only view (from :save).
+        app.saved_views
+            .insert("dev".into(), super::encode_filter_only_view("tag:env=dev"));
+        // Full view (from :save-view) — flips sort to App + groups.
+        app.saved_views.insert(
+            "by-app".into(),
+            "filter=tag:env=prod;sort=app:asc;grouped=true;scope=envs".into(),
+        );
+        app.filter = "tag:env=dev".into();
+        app.grouped = false;
+        app.cycle_saved_view(1); // dev → by-app
+        assert_eq!(app.filter, "tag:env=prod");
+        assert!(
+            app.grouped,
+            "full view must apply its grouped=true alongside the filter"
+        );
     }
 
     #[tokio::test]

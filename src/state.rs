@@ -19,7 +19,6 @@ pub struct PersistedState {
     /// `EventTimeFormat` default (UTC). Stored as `"utc"|"local"|"age"`.
     pub event_time_format: Option<crate::app::EventTimeFormat>,
     pub selected_env: Option<String>,
-    pub named_filters: BTreeMap<String, String>,
     pub pinned: BTreeSet<String>,
     pub pinned_apps: BTreeSet<String>,
     /// Cost Explorer column toggle. Defaults to `None` (off) so the
@@ -153,9 +152,21 @@ pub fn parse(text: &str) -> PersistedState {
             }
             "selected_env" => state.selected_env = Some(value),
             _ if k.starts_with("filter.") => {
+                // Legacy named-filter entries from ebman ≤ 0.11. Promote
+                // them into the unified `saved_views` store using the
+                // filter-only encoding so the operator's existing
+                // shortcuts keep working — `]` / `[` cycle picks them
+                // up alongside any full views. If the same name also
+                // exists as `view.NAME`, the explicit `view.*` wins
+                // (preserves operator intent on the off chance both
+                // are present). First serialize-after-load drops the
+                // `filter.*` lines and writes only `view.*` going
+                // forward.
                 let name = k.trim_start_matches("filter.").trim().to_string();
-                if !name.is_empty() {
-                    state.named_filters.insert(name, value);
+                if !name.is_empty() && !state.saved_views.contains_key(&name) {
+                    state
+                        .saved_views
+                        .insert(name, crate::app::encode_filter_only_view(&value));
                 }
             }
             "pinned" => {
@@ -248,9 +259,6 @@ pub fn save(state: &PersistedState) {
     if let Some(s) = &state.selected_env {
         out.push_str(&format!("selected_env = \"{s}\"\n"));
     }
-    for (name, value) in &state.named_filters {
-        out.push_str(&format!("filter.{name} = \"{value}\"\n"));
-    }
     if !state.pinned.is_empty() {
         let joined: Vec<&str> = state.pinned.iter().map(String::as_str).collect();
         out.push_str(&format!("pinned = \"{}\"\n", joined.join(",")));
@@ -340,19 +348,52 @@ selected_env = "my-env"
     }
 
     #[test]
-    fn parse_named_filters() {
+    fn parse_legacy_filter_lines_promote_into_saved_views() {
+        // Backward-compat: ebman ≤ 0.11 wrote `filter.NAME = "..."`
+        // for saved filters; 0.12+ stores them as `view.NAME =
+        // "filter=..."`. The parser promotes the legacy form into
+        // `saved_views` using the filter-only encoding so existing
+        // state.toml files keep working.
         let text = r#"
 filter.dev = "production"
 filter.prod = "live"
 "#;
         let s = parse(text);
         assert_eq!(
-            s.named_filters.get("dev").map(String::as_str),
-            Some("production")
+            s.saved_views.get("dev").map(String::as_str),
+            Some("filter=production")
         );
         assert_eq!(
-            s.named_filters.get("prod").map(String::as_str),
-            Some("live")
+            s.saved_views.get("prod").map(String::as_str),
+            Some("filter=live")
+        );
+    }
+
+    #[test]
+    fn parse_explicit_view_wins_over_legacy_filter_for_same_name() {
+        // If both `view.NAME = "..."` (new) and `filter.NAME = "..."`
+        // (legacy) exist for the same NAME, the explicit `view.*`
+        // form wins regardless of line order. This guards against
+        // a mid-migration state.toml where the operator's full view
+        // got overwritten by a legacy filter line.
+        let text = r#"
+filter.prod = "legacy-string"
+view.prod = "filter=new-string;sort=app:asc"
+"#;
+        let s = parse(text);
+        assert_eq!(
+            s.saved_views.get("prod").map(String::as_str),
+            Some("filter=new-string;sort=app:asc")
+        );
+        // And the reverse order — view.* first, filter.* second.
+        let text = r#"
+view.prod = "filter=new-string;sort=app:asc"
+filter.prod = "legacy-string"
+"#;
+        let s = parse(text);
+        assert_eq!(
+            s.saved_views.get("prod").map(String::as_str),
+            Some("filter=new-string;sort=app:asc")
         );
     }
 
