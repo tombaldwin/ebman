@@ -368,6 +368,90 @@ impl App {
     /// lands as a TextOverlay message; cancellable via Esc on the
     /// overlay (the spawned fetch carries on but its result is
     /// dropped at the overlay layer).
+    /// `:drift [ENV]` — terraform drift report for the named env
+    /// (or the selected env). Fetches the env's live option-
+    /// settings, compares against the tf-declared intent from the
+    /// cached tfstate, surfaces the diff in a TextDump overlay.
+    /// Subcommand `:drift refresh` re-reads tfstate from cwd
+    /// (useful after running `terraform apply` mid-session).
+    ///
+    /// Non-tf-managed envs surface a "not managed by terraform"
+    /// stub rather than an empty drift report — explicit signal
+    /// is better than ambiguous silence.
+    pub(crate) fn cmd_drift(&mut self, rest: &[&str]) {
+        // `:drift refresh` — re-read tfstate. Operator just ran
+        // `terraform apply` and wants to see the post-apply state
+        // without restarting ebman.
+        if rest.first().copied() == Some("refresh") {
+            self.tf_state = crate::terraform::load_from_cwd();
+            self.refresh_tf_managed_envs();
+            self.pin_status(match &self.tf_state {
+                Some(s) => format!("tfstate reloaded — {} tf-managed env(s)", s.envs.len()),
+                None => "tfstate reload: no tfstate found in cwd ancestors".into(),
+            });
+            return;
+        }
+        let target_name = rest.first().copied().map(String::from);
+        let env = match target_name.as_ref() {
+            Some(name) => {
+                let Some(e) = self.environments.iter().find(|e| &e.name == name) else {
+                    self.error_message = Some(format!(
+                        "no env named '{name}' in the current view — try :envs"
+                    ));
+                    return;
+                };
+                e.clone()
+            }
+            None => {
+                let Some(e) = self.selected_env().cloned() else {
+                    self.error_message =
+                        Some("no env selected — pass an env name: `:drift <env-name>`".into());
+                    return;
+                };
+                e
+            }
+        };
+        // Snapshot the tf state for the move into the spawn task —
+        // tfstate could be re-read mid-spawn via :drift refresh, but
+        // each :drift dispatch sees a consistent snapshot.
+        let tf_state_snapshot = self.tf_state.clone();
+        if tf_state_snapshot.is_none() {
+            self.pin_status(
+                "no terraform.tfstate found — run from a directory with .terraform/ or a tfstate file",
+            );
+            return;
+        }
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let env_name = env.name.clone();
+        let app_name = env.application.clone();
+        self.status_message = Some(format!("computing drift for {env_name}…"));
+        tokio::spawn(async move {
+            let tf_env = tf_state_snapshot
+                .as_ref()
+                .and_then(|s| s.env_by_name(&env_name).cloned());
+            let body = match tf_env {
+                None => crate::terraform::render_drift_text(&env_name, false, &[]),
+                Some(tf_env) => match aws.fetch_env_option_settings(&app_name, &env_name).await {
+                    Ok(opts) => {
+                        let drift = crate::terraform::compute_drift(&tf_env, &env, &opts);
+                        crate::terraform::render_drift_text(&env_name, true, &drift)
+                    }
+                    Err(e) => format!(
+                        "drift — failed to fetch live option settings:\n  {}\n\nesc / q to close",
+                        flatten_err("fetch_env_option_settings", e)
+                    ),
+                },
+            };
+            let _ = tx.send(AppMsg::TextOverlay {
+                gen,
+                title: format!("drift — {env_name}"),
+                body,
+            });
+        });
+    }
+
     pub(crate) fn cmd_lint(&mut self, rest: &[&str]) {
         // Pick the target env: explicit arg first, else selected env.
         let target_name = rest.first().copied().map(String::from);

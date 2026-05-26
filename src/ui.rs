@@ -2856,6 +2856,22 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                             .fg(drift_color)
                             .add_modifier(Modifier::BOLD),
                     ),
+                    // tf-managed badge: `ⓣ` (U+24E3) when the env
+                    // appears in the discovered tfstate. Lookup is
+                    // O(1) against the cached HashSet refreshed at
+                    // startup + on context switch. Operators see at
+                    // a glance which envs will drift after ebman-
+                    // side mutations.
+                    Span::styled(
+                        if app.tf_managed_envs.contains(&e.name) {
+                            "ⓣ "
+                        } else {
+                            ""
+                        },
+                        Style::default()
+                            .fg(theme.accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled(
                         display_name,
                         Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
@@ -4579,6 +4595,27 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                     Style::default()
                         .fg(theme.health_red)
                         .add_modifier(Modifier::BOLD),
+                )));
+            }
+            // tf-managed env warning: if the target appears in the
+            // cached tfstate, the operator's about to drift the tf
+            // state by mutating EB directly. Yellow not red — this
+            // is a heads-up, not a block. Rendered just below
+            // traffic_warning so state-level concerns stay grouped.
+            if app.tf_managed_envs.contains(&modal.target_env) {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "  {}env is terraform-managed — changes will drift on next plan/apply",
+                        warn_glyph(theme.icons)
+                    ),
+                    Style::default()
+                        .fg(theme.health_yellow)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "    :drift to see what will diverge",
+                    Style::default().fg(theme.muted),
                 )));
             }
             // Dry-run preview: instance count + AZ spread, when available.
