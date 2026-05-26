@@ -18804,6 +18804,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cmd_undo_uses_display_row_index_not_envs_vec_index() {
+        // Regression: when a filter is active, `selected_env()`
+        // reads from `display_rows()` not `environments`. The
+        // earlier cut of `cmd_undo` set `table_state` using the
+        // env-vec position, which targets the wrong row in a
+        // filtered view. This test pins that the dispatch reaches
+        // the right env after filtering shrinks the visible set.
+        let mut app = test_app();
+        let mut prod_api = mk_env("prod-api", "shop", "Web", "Green");
+        prod_api.application = "shop".into();
+        let mut staging_api = mk_env("staging-api", "shop", "Web", "Green");
+        staging_api.application = "shop".into();
+        let mut prod_web = mk_env("prod-web", "shop", "Web", "Green");
+        prod_web.application = "shop".into();
+        app.environments = vec![prod_api, staging_api, prod_web];
+        // Filter to only the "prod-" envs — display_rows now has
+        // 2 entries (env-vec indices 0 and 2), so the envs-vec
+        // index 2 (prod-web) maps to display-row index 1.
+        app.filter = "prod-".into();
+        app.rebuild_view();
+        // Captured undo targets prod-web (envs-vec idx 2).
+        app.undo_history.push_back(super::UndoEntry {
+            env_name: "prod-web".into(),
+            to_set: vec![(
+                "aws:autoscaling:launchconfiguration".into(),
+                "EC2KeyName".into(),
+                "bar".into(),
+            )],
+            to_remove: vec![],
+            original_summary: "keypair foo".into(),
+            captured_at: chrono::Utc::now(),
+        });
+        // Pre-undo: cursor on prod-api (display row 0). After
+        // dispatch the cursor should be restored.
+        app.table_state.select(Some(0));
+        app.execute_command("undo");
+        // No error message about wrong env or out-of-bounds; the
+        // dispatch should have reached the right target. The fix
+        // is sufficient if no error fires + cursor is restored.
+        assert!(
+            app.error_message.is_none(),
+            "expected dispatch to succeed, got error: {:?}",
+            app.error_message
+        );
+        assert_eq!(
+            app.table_state.selected(),
+            Some(0),
+            "cursor must be restored to the prior selection"
+        );
+    }
+
+    #[tokio::test]
+    async fn cmd_undo_refuses_with_hint_when_env_filtered_out() {
+        // Captured env exists in self.environments but is hidden
+        // by the active filter. Refuse with a hint pointing at
+        // the filter, and keep the entry on the deque so the
+        // operator can retry after clearing.
+        let mut app = test_app();
+        app.environments = vec![
+            mk_env("prod-api", "shop", "Web", "Green"),
+            mk_env("staging-api", "shop", "Web", "Green"),
+        ];
+        app.filter = "staging-".into();
+        app.rebuild_view();
+        app.undo_history.push_back(super::UndoEntry {
+            env_name: "prod-api".into(),
+            to_set: vec![("ns".into(), "k".into(), "v".into())],
+            to_remove: vec![],
+            original_summary: "keypair foo".into(),
+            captured_at: chrono::Utc::now(),
+        });
+        app.execute_command("undo");
+        let err = app.error_message.as_deref().unwrap_or("");
+        assert!(
+            err.contains("filtered out") && err.contains("clear the filter"),
+            "expected filter hint, got: {err}"
+        );
+        assert_eq!(
+            app.undo_history.len(),
+            1,
+            "entry must be put back on the deque so the operator can retry"
+        );
+    }
+
+    #[tokio::test]
     async fn cmd_undo_refuses_when_target_env_no_longer_visible() {
         // Captured entry references an env that's been filtered
         // out or terminated. Refuse rather than dispatch against
