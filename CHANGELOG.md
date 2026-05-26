@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-## [0.10.0] — Deploy story complete: safety nets, observability, CI parity
+## [0.10.0] — 2026-05-26 — Deploy story complete: safety nets, observability, CI parity
 
 This release completes the deploy story 0.9.0 started: every step
 of "ship a build" is now operator-observable, composable, and has
