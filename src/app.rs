@@ -1120,6 +1120,12 @@ pub struct App {
     /// Named `command_aliases` to disambiguate from the existing
     /// `App.aliases` (env-rename labels, state.toml-persisted).
     pub command_aliases: std::collections::HashMap<String, String>,
+    /// Operator-disabled lint rule IDs from `config.toml`'s
+    /// `lint.disable = "EBL001,EBL006"` line. Mirrored here so
+    /// :settings round-trips preserve operator-set disables on
+    /// save. The `ebman lint` CLI uses its own `config::load_lint_disables`
+    /// loader so the disables apply to both surfaces.
+    pub lint_disable: Vec<String>,
     pub required_tags: Vec<String>,
     /// The raw `icons = …` string from `config.toml` (before resolution to
     /// [`crate::theme::IconStyle`]). Kept verbatim so `:settings` can round-trip
@@ -1868,6 +1874,7 @@ impl App {
             notify_bell: config.notify_bell,
             notify_webhook: config.notify_webhook.clone(),
             command_aliases: config.command_aliases.clone(),
+            lint_disable: config.lint_disable.clone(),
             required_tags: config.required_tags,
             cfg_icons_raw: config.icons.clone(),
             profile_themes: config.profile_themes.clone(),
@@ -2092,6 +2099,7 @@ impl App {
             notify_bell: config.notify_bell,
             notify_webhook: config.notify_webhook.clone(),
             command_aliases: config.command_aliases.clone(),
+            lint_disable: config.lint_disable.clone(),
             required_tags: config.required_tags.clone(),
             cfg_icons_raw: config.icons.clone(),
             profile_themes: config.profile_themes.clone(),
@@ -7947,6 +7955,7 @@ impl App {
             safety_accounts: self.safety_accounts.clone(),
             notify_webhook: self.notify_webhook.clone(),
             command_aliases: self.command_aliases.clone(),
+            lint_disable: self.lint_disable.clone(),
         }
     }
 
