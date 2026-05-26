@@ -395,6 +395,11 @@ impl App {
         let gen = self.generation;
         let env_name = env.name.clone();
         let app_name = env.application.clone();
+        // Snapshot the user-level disables now — the project-level
+        // ones get read fresh inside the spawn so a mid-session
+        // edit to `.ebman/ebman.toml` takes effect without
+        // restarting ebman.
+        let user_disables = self.lint_disable.clone();
         self.status_message = Some(format!("running lint on {env_name}…"));
         tokio::spawn(async move {
             let body = match aws.fetch_env_option_settings(&app_name, &env_name).await {
@@ -406,10 +411,15 @@ impl App {
                         cost_usd_per_month: None,
                         latest_stack_version: None,
                     };
-                    // No operator-tunable disables yet — wired in
-                    // the BONUS-tier follow-on. Default to all v1
-                    // rules.
-                    let rules = crate::lint::default_rules(&[]);
+                    // Compose operator disables: user-level (from
+                    // App, mirrored from config.toml at startup) +
+                    // project-local (read fresh from cwd so a
+                    // mid-session edit to .ebman/ebman.toml takes
+                    // effect). Project disables extend; nothing
+                    // overrides.
+                    let mut disabled = user_disables.clone();
+                    disabled.extend(crate::project::load_lint_disables_from_cwd());
+                    let rules = crate::lint::default_rules(&disabled);
                     let issues = crate::lint::run_rules(&rules, &ctx);
                     render_lint_overlay(&env_name, &issues)
                 }
