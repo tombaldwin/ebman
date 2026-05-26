@@ -815,6 +815,20 @@ Surfaced by a post-0.10 review of the command surface + recent themes. Recent di
 - **Health-history sparklines on the main table.** Already shipped — the TREND column at `ui.rs:2925` renders the existing `sparkline_for(...)` glyph row from `App.health` history. Caught by review before this was tracked as a feature.
 - **Cross-fleet event tail (`:tail-events`).** Different from `:logs-tail` (log lines) — would tail EB events across all envs in the current context. Real but lower-leverage than the drift items above. Track if operators request it.
 
+### 0.12 candidates (2026-05-26)
+
+Theme: **workspace polish — saved views as real tabs + ergonomic gap closures**. Picks up the long-deferred saved-views unification and tightens a few rough edges from the 0.11 batch.
+
+#### Workspace polish — HEADLINE
+- [x] **Saved views unified** — SHIPPED (`bb7547b`). `named_filters` and `saved_views` collapsed into one store; `]` / `[` cycles full views (filter+sort+group+scope, not just filter); chip bar renders saved_views; legacy `filter.NAME = "..."` state.toml lines auto-promote via the filter-only encoding. `:save` / `:filter` / `:drop` / `:filters` and `:save-view` / `:view` / `:view-drop` / `:views` all operate on the same store. Pure helpers `encode_filter_only_view` + `view_filter_value` unit-tested.
+
+#### Ergonomic gap closures — SUPPORT
+- [x] **`:batch-set-option` captures undo** — SHIPPED (`76e54b6`). Closed the multi-env undo gap from 0.11: `spawn_batch_set_option` now does the same pre-write option-settings read + `build_undo_entry` + `AppMsg::UndoCaptured` dispatch as its single-env sibling, so each env in a batch contributes its own undo entry. Repeated `:undo` walks the batch backwards. Self-review caught a context-switch race (env terminated mid-batch); guarded with an upfront fleet-presence check + audit-logged skip.
+- ~~**OSC 8 terminal hyperlinks**~~ — Re-attempted with an actual experiment (vs the 0.11 assumption-based skip). Verified that ratatui 0.29 splits each escape byte into its own 1-cell-wide printing cell — a 24-byte OSC 8 opener eats 24 cells of layout space, pushing visible text past the buffer width. Regression test at `ui::tests::osc8_in_span_is_split_into_per_byte_cells_ratatui_0_29_limitation` pins the broken behavior; a future ratatui that adds zero-width control handling will fail the test and prompt us to revisit.
+
+#### Skipped on purpose — held for 0.13
+- **Cross-region rollout (`:rollout LABEL --regions r1,r2,r3 [--auto-rollback Nm]`)** — Held (2026-05-26). Real value but needs careful design: same-name vs explicit-mapping env discovery across regions, sequential vs parallel dispatch, partial-failure handling (region 1 ok, region 2 listing failed), per-region AwsClient construction, audit-log shape. Multiple reasonable shapes; warrants a dedicated session rather than tail-end of an autonomous run.
+
 ### Feature candidates — competitive scan (2026-05-24)
 
 Ten new ideas surfaced by a backlog/peer-TUI review after the 0.7.0 ship. Ordered roughly by operator-value-per-hour. None overlap with already-tracked items; the niche items already on the backlog (custom-platform create, topology graph, Route 53, etc.) stay where they are. Sized for a 0.9 batch — pick from the top.
