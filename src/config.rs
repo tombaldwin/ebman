@@ -54,6 +54,20 @@ pub struct Config {
     /// body Slack-incoming-webhook-compatible out of the box. Lines
     /// in `config.toml` use `notify_webhook = "https://..."`.
     pub notify_webhook: Option<String>,
+    /// User-defined command aliases. Key = the bare name typed
+    /// after `:` (no leading colon); value = the full command line
+    /// the alias expands to. Lines in `config.toml` use
+    /// `alias.NAME = "command line"`. Expansion happens in
+    /// `execute_command` before the dispatch match — args typed
+    /// after the alias name are appended to the expansion, so
+    /// `alias.dp = "deploy --auto-rollback 5m"` + `:dp build-900`
+    /// becomes `:deploy --auto-rollback 5m build-900`.
+    ///
+    /// Named `command_aliases` to distinguish from the existing
+    /// `:alias <env> <label>` env-rename feature (state.toml-
+    /// persisted, lives on `App.aliases`). Command aliases are
+    /// config.toml-only.
+    pub command_aliases: std::collections::HashMap<String, String>,
 }
 
 /// A named `sts:AssumeRole` target. The operator typically pins one of
@@ -87,6 +101,7 @@ impl Default for Config {
             safety_envs: std::collections::HashMap::new(),
             safety_accounts: std::collections::HashMap::new(),
             notify_webhook: None,
+            command_aliases: std::collections::HashMap::new(),
         }
     }
 }
@@ -197,6 +212,19 @@ pub fn parse(text: &str) -> Config {
                     }
                 }
             }
+            other if other.starts_with("alias.") => {
+                // `alias.NAME = "command line"`. The NAME comes
+                // after the dot; nested dots in NAME are rejected
+                // (would conflict with future hierarchical
+                // config-key plans). Empty NAME or empty value:
+                // skip silently — operators sometimes leave
+                // `alias. = ""` while editing.
+                let name = other.trim_start_matches("alias.").trim();
+                if name.is_empty() || name.contains('.') || value.is_empty() {
+                    continue;
+                }
+                cfg.command_aliases.insert(name.to_string(), value);
+            }
             other if other.starts_with("safety.accounts.") => {
                 let rest = other.trim_start_matches("safety.accounts.");
                 let Some((name, field)) = rest.split_once('.') else {
@@ -252,6 +280,15 @@ pub fn serialize(cfg: &Config) -> String {
     out.push_str(&format!("notify_bell = {}\n", cfg.notify_bell));
     if let Some(url) = &cfg.notify_webhook {
         out.push_str(&format!("notify_webhook = \"{url}\"\n"));
+    }
+    if !cfg.command_aliases.is_empty() {
+        // Sort so repeated serialize cycles don't churn the file
+        // when the HashMap iteration order shuffles.
+        let mut pairs: Vec<(&String, &String)> = cfg.command_aliases.iter().collect();
+        pairs.sort_by(|a, b| a.0.cmp(b.0));
+        for (name, expansion) in pairs {
+            out.push_str(&format!("alias.{name} = \"{expansion}\"\n"));
+        }
     }
     if !cfg.required_tags.is_empty() {
         out.push_str(&format!(
@@ -503,6 +540,15 @@ accounts.staging.external_id = "abc-xyz"
             safety_envs: std::collections::HashMap::new(),
             safety_accounts: std::collections::HashMap::new(),
             notify_webhook: Some("https://hooks.slack.com/services/EXAMPLE".into()),
+            command_aliases: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("dp".to_string(), "deploy --auto-rollback 5m".to_string());
+                m.insert(
+                    "shipit".to_string(),
+                    "promote-env staging prod --wait-for-green 5m".to_string(),
+                );
+                m
+            },
         };
 
         let body = serialize(&cfg);
@@ -517,6 +563,32 @@ accounts.staging.external_id = "abc-xyz"
         assert_eq!(reparsed.required_tags, cfg.required_tags);
         assert_eq!(reparsed.profile_themes, cfg.profile_themes);
         assert_eq!(reparsed.notify_webhook, cfg.notify_webhook);
+        assert_eq!(reparsed.command_aliases, cfg.command_aliases);
+    }
+
+    #[test]
+    fn parse_alias_lines_collect_into_command_aliases() {
+        let body = "alias.dp = \"deploy --auto-rollback 5m\"\nalias.foo = \"rebuild\"\n";
+        let cfg = parse(body);
+        assert_eq!(cfg.command_aliases.len(), 2);
+        assert_eq!(
+            cfg.command_aliases.get("dp").map(|s| s.as_str()),
+            Some("deploy --auto-rollback 5m"),
+        );
+        assert_eq!(
+            cfg.command_aliases.get("foo").map(|s| s.as_str()),
+            Some("rebuild"),
+        );
+    }
+
+    #[test]
+    fn parse_alias_rejects_dotted_names_and_empty_values() {
+        // Dotted alias names would conflict with hierarchical
+        // config-key conventions if we ever add `alias.NAME.field`
+        // style. Skip silently rather than erroring.
+        let body = "alias.dp.prod = \"deploy\"\nalias.empty = \"\"\nalias. = \"x\"\n";
+        let cfg = parse(body);
+        assert!(cfg.command_aliases.is_empty());
     }
 
     #[test]
