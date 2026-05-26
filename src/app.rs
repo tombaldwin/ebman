@@ -9698,6 +9698,27 @@ impl App {
         name: String,
         value: String,
     ) {
+        // Resolve the env's application name from the cached fleet
+        // — needed for the option-settings read that backs undo
+        // capture. If the env vanished mid-batch (context switch /
+        // termination race), we skip the dispatch with an audit
+        // line rather than firing a write against a stale name.
+        let Some(app_name) = self
+            .environments
+            .iter()
+            .find(|e| e.name == env)
+            .map(|e| e.application.clone())
+        else {
+            write_audit_line(
+                self.context.account_id.as_deref(),
+                self.context.profile.as_deref(),
+                &self.context.region,
+                &format!(
+                    "stage=skipped action=SetOption target={env} reason=\"env not in current view\""
+                ),
+            );
+            return;
+        };
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
@@ -9713,12 +9734,43 @@ impl App {
         let pending_label = format!("set-option {namespace}.{name}");
         self.push_pending(pending_label.clone(), env.clone());
         let env_for_msg = env.clone();
+        let env_for_undo = env.clone();
+        let pending_label_for_undo = pending_label.clone();
+        let to_set_for_undo: Vec<(String, String, String)> =
+            vec![(namespace.clone(), name.clone(), value.clone())];
         tokio::spawn(async move {
+            // Undo capture: read the env's current option-settings
+            // BEFORE the write so :undo can reverse this batch entry
+            // alongside any per-env writes. Read failure is non-
+            // blocking — the write still proceeds, undo just isn't
+            // captured for the affected env. Mirrors the safety-net
+            // semantics of `spawn_option_settings_update`.
+            let undo_entry = match aws
+                .fetch_env_option_settings(&app_name, &env_for_undo)
+                .await
+            {
+                Ok(opts) => Some(build_undo_entry(
+                    &env_for_undo,
+                    &pending_label_for_undo,
+                    &to_set_for_undo,
+                    &[],
+                    &opts,
+                )),
+                Err(_) => None,
+            };
             let settings = vec![(namespace, name, value)];
             let result = aws
                 .update_env_option_settings(&env, &settings, &[])
                 .await
                 .map_err(|e| flatten_err("update_env_option_settings", e));
+            // Only record undo on a successful write — otherwise
+            // :undo would "revert" a write that never landed. Same
+            // contract as the single-env spawn.
+            if result.is_ok() {
+                if let Some(entry) = undo_entry {
+                    let _ = tx.send(AppMsg::UndoCaptured { gen, entry });
+                }
+            }
             let _ = tx.send(AppMsg::OptionSettingsUpdate {
                 gen,
                 env_name: env_for_msg,
@@ -18826,6 +18878,32 @@ mod tests {
         );
         assert!(entry.to_set.is_empty());
         assert!(entry.to_remove.is_empty());
+    }
+
+    #[tokio::test]
+    async fn batch_set_option_skips_envs_no_longer_in_view() {
+        // Race: operator multi-selects envs A + B, fires
+        // :batch-set-option, then context switches before the
+        // batch loop reaches B. spawn_batch_set_option must skip
+        // (audit-log only) the env that's no longer in the
+        // cached fleet rather than dispatching a write against a
+        // stale name. Without this guard, the write fails at AWS
+        // with a confusing error.
+        let mut app = test_app();
+        app.environments = vec![mk_env("prod-api", "shop", "Web", "Green")];
+        app.rebuild_view();
+        // Dispatch against an env that's NOT in self.environments.
+        app.spawn_batch_set_option(
+            "vanished".into(),
+            "aws:elasticbeanstalk:application".into(),
+            "Application Healthcheck URL".into(),
+            "/healthz".into(),
+        );
+        // pending_actions should be empty — the write was skipped.
+        assert!(
+            app.pending_actions.iter().all(|p| p.target != "vanished"),
+            "expected no pending action for vanished env"
+        );
     }
 
     #[tokio::test]
