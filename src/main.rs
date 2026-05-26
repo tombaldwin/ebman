@@ -25,6 +25,7 @@ async fn main() -> Result<()> {
             "envs" => return run_envs_cli(&args).await,
             "action" => return run_action_cli(&args).await,
             "ctl" => return run_ctl_cli(&args).await,
+            "lint" => return run_lint_cli(&args).await,
             _ => {}
         }
     }
@@ -187,6 +188,14 @@ FLAGS:
 
 SUBCOMMANDS:
     envs [--json]                                List environments in current profile / region.
+    lint [--env NAME] [--json] [--severity LVL] [--rules ID1,ID2] [--quiet]
+                                                  Run the diagnostic rule engine against one env
+                                                  (or every env in the context) and emit findings
+                                                  as text or JSON. Non-zero exit when issues found.
+                                                  Useful for git hooks, CI gates, monitoring loops.
+                                                  Exit codes: 0 clean, 1 aws err, 2 usage, 3 issues.
+                                                  Operator disables via `lint.disable` in
+                                                  config.toml and project-local .ebman/ebman.toml.
     action ACTION --env NAME [--yes]             Run an action (rebuild|restart|terminate|deploy) on an env.
                                                   Terminate requires --yes to confirm.
                                                   Deploy requires --version LABEL; supports
@@ -205,6 +214,162 @@ CONFIG:
 KEYS:
     Once running, press '?' for the in-app help screen."
     );
+}
+
+/// `ebman lint [--env NAME] [--json] [--severity warn] [--rules ID1,ID2] [--quiet]`
+/// — scriptable surface for git hooks / CI gates / monitoring
+/// tools. Shares the rule engine in `ebman::lint` with the
+/// `:lint` TUI overlay; the only difference is the output
+/// format and the exit-code surface.
+///
+/// Exit codes (per the 0.13 CLI charter):
+/// - 0 clean (no issues at or above the filter severity)
+/// - 1 AWS-layer error
+/// - 2 usage error (unknown flag, bad severity, env not found)
+/// - 3 issues found (CI gate non-zero)
+///
+/// `--quiet` suppresses text output (paired with `--json`, or
+/// for "I just want the exit code" use cases). `--json` emits a
+/// single `{"issues":[...]}` blob to stdout — same shape the
+/// engine's `render_issues_json` produces.
+async fn run_lint_cli(args: &[String]) -> Result<()> {
+    let mut env_name: Option<String> = None;
+    let mut json = false;
+    let mut quiet = false;
+    let mut severity_filter: Option<ebman::lint::Severity> = None;
+    let mut rule_filter: Vec<String> = Vec::new();
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--env" => env_name = iter.next().cloned(),
+            "--json" => json = true,
+            "--quiet" => quiet = true,
+            "--severity" => {
+                let Some(v) = iter.next() else {
+                    eprintln!("ebman lint: --severity expects a value (info / warn / error)");
+                    std::process::exit(2);
+                };
+                let Some(sev) = ebman::lint::Severity::parse(v) else {
+                    eprintln!("ebman lint: unknown severity '{v}' (info / warn / error)");
+                    std::process::exit(2);
+                };
+                severity_filter = Some(sev);
+            }
+            "--rules" => {
+                let Some(v) = iter.next() else {
+                    eprintln!("ebman lint: --rules expects a comma-separated rule id list");
+                    std::process::exit(2);
+                };
+                rule_filter = v
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+            }
+            other => {
+                eprintln!("ebman lint: unknown flag '{other}'");
+                std::process::exit(2);
+            }
+        }
+    }
+
+    let aws = aws::AwsClient::with(None, None).await?;
+    let envs = aws
+        .list_environments()
+        .await
+        .map_err(|e| color_eyre::eyre::eyre!("list_environments: {e}"))?;
+
+    // If --env is given, scope to that single env. Otherwise run
+    // against every env in the current context — operators using
+    // `ebman lint --json | jq` for fleet-wide CI gating get a
+    // single combined report.
+    let targets: Vec<&ebman::aws::Environment> = match env_name.as_deref() {
+        Some(name) => {
+            let Some(env) = envs.iter().find(|e| e.name == name) else {
+                eprintln!("ebman lint: env '{name}' not found in current context");
+                std::process::exit(2);
+            };
+            vec![env]
+        }
+        None => envs.iter().collect(),
+    };
+
+    // Operator-tunable disables — compose user-level
+    // `lint.disable = "..."` from config.toml with project-local
+    // `[lint].disable = [...]` from .ebman/ebman.toml. Project
+    // entries extend the global set; nothing overrides (same
+    // mental model as the runbooks merge).
+    let mut disabled: Vec<String> = config::load_lint_disables();
+    disabled.extend(ebman::project::load_lint_disables_from_cwd());
+    let rules = ebman::lint::default_rules(&disabled);
+
+    let mut all_issues: Vec<ebman::lint::Issue> = Vec::new();
+    for env in targets {
+        // Per-env option-settings fetch. Errors on a single env
+        // get surfaced (eprintln to stderr) but don't abort the
+        // full run — partial reports are better than no report
+        // for CI use cases.
+        let opts = match aws
+            .fetch_env_option_settings(&env.application, &env.name)
+            .await
+        {
+            Ok(opts) => opts,
+            Err(e) => {
+                if !quiet {
+                    eprintln!(
+                        "warning: skipping {} — fetch_env_option_settings: {e}",
+                        env.name
+                    );
+                }
+                continue;
+            }
+        };
+        let ctx = ebman::lint::LintContext {
+            env,
+            options: &opts,
+            events: &[],
+            cost_usd_per_month: None,
+            latest_stack_version: None,
+        };
+        let mut issues = ebman::lint::run_rules(&rules, &ctx);
+        // Apply --severity floor.
+        if let Some(min) = severity_filter {
+            issues.retain(|i| i.severity >= min);
+        }
+        // Apply --rules whitelist (after severity so the two flags
+        // compose as expected — show only these rules, and only at
+        // this severity-or-higher).
+        if !rule_filter.is_empty() {
+            issues.retain(|i| rule_filter.contains(&i.rule_id));
+        }
+        all_issues.extend(issues);
+    }
+
+    // Output.
+    if !quiet {
+        if json {
+            println!("{}", ebman::lint::render_issues_json(&all_issues));
+        } else if all_issues.is_empty() {
+            println!("✓ No issues found");
+        } else {
+            for issue in &all_issues {
+                let sev = issue.severity.as_str();
+                let env_str = issue.env_name.as_deref().unwrap_or("-");
+                println!("{sev}\t{}\t{env_str}\t{}", issue.rule_id, issue.title);
+                if let Some(s) = &issue.suggestion {
+                    println!("\t→ {s}");
+                }
+            }
+        }
+    }
+
+    // Non-zero exit if any issues survived the filters. CI scripts
+    // get the natural `ebman lint && deploy` semantic.
+    if all_issues.is_empty() {
+        Ok(())
+    } else {
+        std::process::exit(3);
+    }
 }
 
 async fn run_envs_cli(args: &[String]) -> Result<()> {

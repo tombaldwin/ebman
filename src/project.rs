@@ -60,6 +60,20 @@ pub struct ProjectConfig {
     /// `runbooks.ENV = …` map from `config.toml`; project entries win
     /// on collision because the repo is the more-specific source.
     pub runbooks: HashMap<String, String>,
+    /// Lint rules disabled for this project. Merged with the
+    /// user-level `lint.disable = "..."` list from `config.toml`;
+    /// project disables extend (never override) the global set.
+    /// Reading from `[lint]` table syntax: `disable = ["EBL011",
+    /// "EBL004"]`.
+    pub lint: LintProjectConfig,
+}
+
+/// Project-level lint config. Currently just the disable list;
+/// severity overrides + per-env scoping can land here later.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct LintProjectConfig {
+    pub disable: Vec<String>,
 }
 
 /// `serde` adapter that collapses empty-string values to `None`. The
@@ -110,6 +124,14 @@ pub fn load_from_cwd() -> Option<ProjectConfig> {
     let path = config_path(&root);
     let text = std::fs::read_to_string(&path).ok()?;
     parse(&text)
+}
+
+/// Sugar for the `ebman lint` CLI: just the project-level
+/// `lint.disable` list, no other fields. Returns an empty Vec
+/// when no project config exists — the caller composes it with
+/// the user-level disables.
+pub fn load_lint_disables_from_cwd() -> Vec<String> {
+    load_from_cwd().map(|c| c.lint.disable).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -191,6 +213,28 @@ profile = "prod"
         let cfg = parse("profile = \"\"\nregion = \"\"\n").expect("ok");
         assert_eq!(cfg.profile, None);
         assert_eq!(cfg.region, None);
+    }
+
+    #[test]
+    fn parse_lint_disable_table_collects_into_vec() {
+        // Project-local `.ebman/ebman.toml` uses native TOML arrays
+        // for `lint.disable` (vs the CSV-in-string form used in the
+        // hand-parsed `~/.config/ebman/config.toml`). The serde
+        // deserialize handles the array form natively.
+        let text = r#"
+[lint]
+disable = ["EBL001", "EBL003"]
+"#;
+        let cfg = parse(text).expect("parse ok");
+        assert_eq!(cfg.lint.disable, vec!["EBL001", "EBL003"]);
+    }
+
+    #[test]
+    fn parse_missing_lint_section_yields_empty_disable() {
+        // Common case: no `[lint]` block at all. Default to empty.
+        let text = r#"profile = "prod""#;
+        let cfg = parse(text).expect("parse ok");
+        assert!(cfg.lint.disable.is_empty());
     }
 
     #[test]

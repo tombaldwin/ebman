@@ -68,6 +68,12 @@ pub struct Config {
     /// persisted, lives on `App.aliases`). Command aliases are
     /// config.toml-only.
     pub command_aliases: std::collections::HashMap<String, String>,
+    /// Lint rule IDs to skip globally. CSV-in-string form in
+    /// `config.toml`: `lint.disable = "EBL001,EBL006"`. Mirrors
+    /// the existing `extra_regions` / `required_tags` conventions.
+    /// Project-local `.ebman/ebman.toml` can extend (never
+    /// override) this set via `[lint]\ndisable = ["EBL001"]`.
+    pub lint_disable: Vec<String>,
 }
 
 /// A named `sts:AssumeRole` target. The operator typically pins one of
@@ -102,6 +108,7 @@ impl Default for Config {
             safety_accounts: std::collections::HashMap::new(),
             notify_webhook: None,
             command_aliases: std::collections::HashMap::new(),
+            lint_disable: Vec::new(),
         }
     }
 }
@@ -112,6 +119,13 @@ pub fn load() -> Config {
         return Config::default();
     };
     parse(&text)
+}
+
+/// Sugar for the `ebman lint` CLI: just the global
+/// `lint.disable` list, no other fields. Composed with the
+/// project-level disables in `project::load_lint_disables_from_cwd`.
+pub fn load_lint_disables() -> Vec<String> {
+    load().lint_disable
 }
 
 pub fn parse(text: &str) -> Config {
@@ -149,6 +163,13 @@ pub fn parse(text: &str) -> Config {
                 if let Some(b) = parse_bool(&value) {
                     cfg.notify_bell = b;
                 }
+            }
+            "lint.disable" => {
+                cfg.lint_disable = value
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
             }
             "notify_webhook" => {
                 // Empty string disables; treat the same as the key
@@ -280,6 +301,12 @@ pub fn serialize(cfg: &Config) -> String {
     out.push_str(&format!("notify_bell = {}\n", cfg.notify_bell));
     if let Some(url) = &cfg.notify_webhook {
         out.push_str(&format!("notify_webhook = \"{url}\"\n"));
+    }
+    if !cfg.lint_disable.is_empty() {
+        out.push_str(&format!(
+            "lint.disable = \"{}\"\n",
+            cfg.lint_disable.join(",")
+        ));
     }
     if !cfg.command_aliases.is_empty() {
         // Sort so repeated serialize cycles don't churn the file
@@ -549,6 +576,7 @@ accounts.staging.external_id = "abc-xyz"
                 );
                 m
             },
+            lint_disable: vec!["EBL003".into(), "EBL006".into()],
         };
 
         let body = serialize(&cfg);
@@ -564,6 +592,23 @@ accounts.staging.external_id = "abc-xyz"
         assert_eq!(reparsed.profile_themes, cfg.profile_themes);
         assert_eq!(reparsed.notify_webhook, cfg.notify_webhook);
         assert_eq!(reparsed.command_aliases, cfg.command_aliases);
+        assert_eq!(reparsed.lint_disable, cfg.lint_disable);
+    }
+
+    #[test]
+    fn parse_lint_disable_csv_collects_into_vec() {
+        let body = "lint.disable = \"EBL001, EBL003 ,EBL006\"\n";
+        let cfg = parse(body);
+        assert_eq!(cfg.lint_disable, vec!["EBL001", "EBL003", "EBL006"]);
+    }
+
+    #[test]
+    fn parse_lint_disable_skips_empty_tokens() {
+        // Trailing comma / double-comma should not produce empty
+        // rule IDs that would silently never match.
+        let body = "lint.disable = \"EBL001,,EBL003,\"\n";
+        let cfg = parse(body);
+        assert_eq!(cfg.lint_disable, vec!["EBL001", "EBL003"]);
     }
 
     #[test]
