@@ -948,6 +948,20 @@ pub struct App {
     /// the common case (no freeze active); `Some(...)` makes
     /// every destructive op refuse with the freeze's reason.
     pub(crate) deploy_freeze: Option<DeployFreeze>,
+    /// Parsed terraform.tfstate from a walk-up of cwd at App
+    /// construction time, refreshed on `apply_rebuild` (context
+    /// switch) and on `:drift refresh`. `None` when no tfstate
+    /// was discovered — the badge / drift overlay surfaces are
+    /// no-ops in that case. The full `TfState` is held (rather
+    /// than just a derived set) so `:drift ENV` can pull the
+    /// declared option_settings + version_label for the report.
+    pub(crate) tf_state: Option<crate::terraform::TfState>,
+    /// Cached `HashSet` of tf-managed env names — derived from
+    /// `tf_state` and kept in sync with it. Used by the env-table
+    /// render path for the `ⓣ` badge: O(1) lookup per row,
+    /// which matters when an operator has 50+ envs and the
+    /// renderer fires every frame.
+    pub(crate) tf_managed_envs: std::collections::HashSet<String>,
     /// Ring buffer of reversible option-settings writes captured
     /// just before each `spawn_option_settings_update` dispatch.
     /// `:undo` pops the most recent (back of the deque) and
@@ -1825,6 +1839,14 @@ impl App {
             armed_watchdogs: std::collections::HashMap::new(),
             watching_deploys: std::collections::HashMap::new(),
             deploy_freeze: None,
+            // Load tfstate from cwd at construction time. Failure
+            // is silent (`None`) — operators not using terraform
+            // shouldn't see any UI surface; operators with a
+            // discoverable tfstate get the badge + drift overlay
+            // immediately. Re-loaded on context switch (account /
+            // region change) and on `:drift refresh`.
+            tf_state: crate::terraform::load_from_cwd(),
+            tf_managed_envs: std::collections::HashSet::new(),
             undo_history: std::collections::VecDeque::new(),
             demo_mode: false,
             env_instance_counts: std::collections::HashMap::new(),
@@ -1942,6 +1964,9 @@ impl App {
                 }
             }
         }
+        // Derive the tf-managed name set from the loaded tfstate
+        // so the env-table badge can do O(1) lookups per row.
+        app.refresh_tf_managed_envs();
         Ok(app)
     }
 
@@ -2051,6 +2076,13 @@ impl App {
             armed_watchdogs: std::collections::HashMap::new(),
             watching_deploys: std::collections::HashMap::new(),
             deploy_freeze: None,
+            // Tests / demo mode don't probe the operator's cwd
+            // for tfstate — keeps test runs deterministic and
+            // prevents demo screencasts from leaking real fleet
+            // detail. Tests that exercise drift behavior set
+            // `app.tf_state` explicitly.
+            tf_state: None,
+            tf_managed_envs: std::collections::HashSet::new(),
             undo_history: std::collections::VecDeque::new(),
             demo_mode: false,
             env_instance_counts: std::collections::HashMap::new(),
@@ -10824,6 +10856,7 @@ impl App {
             "thaw-deploys" => self.cmd_thaw_deploys(),
             "undo" => self.cmd_undo(),
             "lint" => self.cmd_lint(&rest),
+            "drift" => self.cmd_drift(&rest),
             "tag" => self.cmd_tag(&rest),
             "untag" => self.cmd_untag(&rest),
             "resources" | "res" => self.cmd_resources(),
@@ -11126,6 +11159,19 @@ impl App {
             }
             Err(e) => self.error_message = Some(format!("clipboard error: {e}")),
         }
+    }
+
+    /// Recompute `tf_managed_envs` from the current `tf_state`.
+    /// Called at startup (after `App::new`'s tfstate load), on
+    /// `apply_rebuild` (context switch), and on the `:drift
+    /// refresh` operator gesture. Cheap — set construction is
+    /// O(n) over tf-managed env names; typically < 50.
+    pub(crate) fn refresh_tf_managed_envs(&mut self) {
+        self.tf_managed_envs = self
+            .tf_state
+            .as_ref()
+            .map(|s| s.managed_names())
+            .unwrap_or_default();
     }
 
     pub fn selected_env(&self) -> Option<&Environment> {
@@ -11595,6 +11641,14 @@ impl App {
                 // context — meaningless after a switch. Drop them
                 // alongside the other env-keyed state.
                 self.undo_history.clear();
+                // Re-read tfstate from cwd. The new context might
+                // be a different repo (operator cd'd between
+                // sessions of `ebman` left running, or switched
+                // account / region within the same shell);
+                // re-discovery ensures the tf-managed badge reflects
+                // the current project.
+                self.tf_state = crate::terraform::load_from_cwd();
+                self.refresh_tf_managed_envs();
                 self.rebuild_view();
                 self.table_state.select(None);
                 self.status_message = Some(format!(
@@ -19610,6 +19664,78 @@ mod tests {
             }
             _ => panic!("expected confirm modal still open"),
         }
+    }
+
+    #[tokio::test]
+    async fn refresh_tf_managed_envs_derives_set_from_tf_state() {
+        // The HashSet caching the tf-managed names should match
+        // `tf_state.managed_names()` after any mutation. Used by
+        // the env-table badge for O(1) per-row lookup.
+        let mut app = test_app();
+        assert!(app.tf_managed_envs.is_empty(), "starts empty");
+        app.tf_state = Some(crate::terraform::TfState {
+            envs: vec![
+                crate::terraform::TfEnv {
+                    name: "prod-api".into(),
+                    application: "shop".into(),
+                    version_label: "build-820".into(),
+                    options: vec![],
+                    tags: Default::default(),
+                },
+                crate::terraform::TfEnv {
+                    name: "prod-web".into(),
+                    application: "shop".into(),
+                    version_label: "build-820".into(),
+                    options: vec![],
+                    tags: Default::default(),
+                },
+            ],
+        });
+        app.refresh_tf_managed_envs();
+        assert_eq!(app.tf_managed_envs.len(), 2);
+        assert!(app.tf_managed_envs.contains("prod-api"));
+        assert!(app.tf_managed_envs.contains("prod-web"));
+        assert!(!app.tf_managed_envs.contains("staging-api"));
+        // Clearing tf_state should empty the set on next refresh.
+        app.tf_state = None;
+        app.refresh_tf_managed_envs();
+        assert!(app.tf_managed_envs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cmd_drift_refresh_reloads_tf_state_and_pins_status() {
+        // `:drift refresh` re-reads tfstate from cwd. We can't
+        // easily test the cwd discovery in isolation, but we
+        // can verify the command path completes + pins a status
+        // (either "reloaded N envs" or "no tfstate found").
+        let mut app = test_app();
+        app.environments = vec![mk_env("prod-api", "shop", "Web", "Green")];
+        app.rebuild_view();
+        app.execute_command("drift refresh");
+        // Status message should mention tfstate either way.
+        let msg = app.status_message.as_deref().unwrap_or("");
+        assert!(
+            msg.contains("tfstate"),
+            "expected tfstate status, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cmd_drift_with_no_tfstate_loaded_hints_at_discovery() {
+        // No tfstate cached → :drift surfaces a discovery hint
+        // rather than firing an empty drift report. Sets the
+        // operator on the right path (run from a tf project dir).
+        let mut app = test_app();
+        app.environments = vec![mk_env("prod-api", "shop", "Web", "Green")];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        app.tf_state = None;
+        app.execute_command("drift");
+        let msg = app.status_message.as_deref().unwrap_or("");
+        assert!(
+            msg.contains("no terraform.tfstate found"),
+            "expected discovery hint, got: {msg}"
+        );
     }
 
     #[test]
