@@ -1075,6 +1075,15 @@ pub struct App {
     /// `:settings`-style round-trips can serialise the current
     /// value back to config.toml.
     pub notify_webhook: Option<String>,
+    /// User-defined command aliases from `config.toml`'s
+    /// `alias.NAME = "expansion"` entries. Looked up in
+    /// `execute_command` before the dispatch match; an alias
+    /// expansion + the rest of the typed args become the new
+    /// command line, then re-parsed. Single-level expansion only
+    /// (no transitive chaining) to keep cycle detection simple.
+    /// Named `command_aliases` to disambiguate from the existing
+    /// `App.aliases` (env-rename labels, state.toml-persisted).
+    pub command_aliases: std::collections::HashMap<String, String>,
     pub required_tags: Vec<String>,
     /// The raw `icons = …` string from `config.toml` (before resolution to
     /// [`crate::theme::IconStyle`]). Kept verbatim so `:settings` can round-trip
@@ -1815,6 +1824,7 @@ impl App {
             last_rendered_buffer: None,
             notify_bell: config.notify_bell,
             notify_webhook: config.notify_webhook.clone(),
+            command_aliases: config.command_aliases.clone(),
             required_tags: config.required_tags,
             cfg_icons_raw: config.icons.clone(),
             profile_themes: config.profile_themes.clone(),
@@ -2038,6 +2048,7 @@ impl App {
             last_rendered_buffer: None,
             notify_bell: config.notify_bell,
             notify_webhook: config.notify_webhook.clone(),
+            command_aliases: config.command_aliases.clone(),
             required_tags: config.required_tags.clone(),
             cfg_icons_raw: config.icons.clone(),
             profile_themes: config.profile_themes.clone(),
@@ -7853,6 +7864,7 @@ impl App {
             safety_envs: self.safety_envs.clone(),
             safety_accounts: self.safety_accounts.clone(),
             notify_webhook: self.notify_webhook.clone(),
+            command_aliases: self.command_aliases.clone(),
         }
     }
 
@@ -10294,6 +10306,14 @@ impl App {
         if line.is_empty() {
             return;
         }
+        // Expand user-defined aliases first — `alias.dp = "deploy
+        // --auto-rollback 5m"` + `:dp build-900` becomes the line
+        // `deploy --auto-rollback 5m build-900`. Single-level
+        // expansion only so `alias.x = "x"` can't loop. The
+        // expansion is owned (String) because the borrowed `raw`
+        // doesn't outlive this scope.
+        let expanded = expand_command_alias(line, &self.command_aliases);
+        let line = expanded.as_str();
         let mut parts = line.split_whitespace();
         let Some(cmd) = parts.next() else { return };
         let rest: Vec<&str> = parts.collect();
@@ -12487,6 +12507,38 @@ fn truncate_armed_cell(s: &str, n: usize) -> String {
     let mut out: String = s.chars().take(n.saturating_sub(1)).collect();
     out.push('…');
     out
+}
+
+/// Pure: expand a typed command line through the operator's
+/// alias map. If the first whitespace-separated token matches a
+/// key, swap it for the alias's expansion and keep any remaining
+/// args (appended after the expansion). Single-level only — the
+/// expanded line is NOT re-checked for further aliases, so
+/// `alias.x = "x ..."` is safe (degenerates to "x ..." dispatched
+/// once). Non-alias lines pass through unchanged.
+///
+/// Owned `String` return so the caller can borrow `.as_str()`
+/// without lifetime gymnastics around the input slice.
+pub fn expand_command_alias(
+    line: &str,
+    aliases: &std::collections::HashMap<String, String>,
+) -> String {
+    let line = line.trim();
+    if aliases.is_empty() || line.is_empty() {
+        return line.to_string();
+    }
+    let mut parts = line.splitn(2, char::is_whitespace);
+    let first = match parts.next() {
+        Some(s) => s,
+        None => return line.to_string(),
+    };
+    let Some(expansion) = aliases.get(first) else {
+        return line.to_string();
+    };
+    match parts.next() {
+        Some(rest) => format!("{expansion} {rest}"),
+        None => expansion.clone(),
+    }
 }
 
 /// Pure: how many instances will be simultaneously unavailable
@@ -18409,6 +18461,73 @@ mod tests {
             }
             _ => panic!("expected confirm modal"),
         }
+    }
+
+    #[test]
+    fn expand_command_alias_pass_through_when_no_match() {
+        use std::collections::HashMap;
+        let mut aliases = HashMap::new();
+        aliases.insert("dp".to_string(), "deploy --auto-rollback 5m".to_string());
+        // No alias matched — line unchanged.
+        assert_eq!(super::expand_command_alias("rebuild", &aliases), "rebuild");
+        // Empty alias map — line unchanged.
+        assert_eq!(
+            super::expand_command_alias("deploy build-x", &HashMap::new()),
+            "deploy build-x"
+        );
+    }
+
+    #[test]
+    fn expand_command_alias_swaps_first_token_and_keeps_args() {
+        use std::collections::HashMap;
+        let mut aliases = HashMap::new();
+        aliases.insert("dp".to_string(), "deploy --auto-rollback 5m".to_string());
+        assert_eq!(
+            super::expand_command_alias("dp build-900", &aliases),
+            "deploy --auto-rollback 5m build-900"
+        );
+        // No args after alias — expansion stands alone.
+        assert_eq!(
+            super::expand_command_alias("dp", &aliases),
+            "deploy --auto-rollback 5m"
+        );
+    }
+
+    #[test]
+    fn expand_command_alias_does_not_chain_transitively() {
+        // Single-level expansion only. `dp → bare deploy` does NOT
+        // get re-expanded via a second-tier alias map lookup.
+        use std::collections::HashMap;
+        let mut aliases = HashMap::new();
+        aliases.insert("a".to_string(), "b stuff".to_string());
+        aliases.insert("b".to_string(), "c things".to_string());
+        assert_eq!(super::expand_command_alias("a", &aliases), "b stuff");
+        // No infinite loop on self-referential aliases.
+        let mut aliases = HashMap::new();
+        aliases.insert("loop".to_string(), "loop forever".to_string());
+        assert_eq!(
+            super::expand_command_alias("loop", &aliases),
+            "loop forever"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_command_uses_command_aliases() {
+        // End-to-end: define a command alias, dispatch it, expect
+        // the expansion to run. We probe via `:freeze-deploys`'s
+        // observable side-effect (the toast text) rather than
+        // having to mock a deploy.
+        let mut app = test_app();
+        app.command_aliases
+            .insert("emergency".into(), "freeze-deploys incident #1234".into());
+        app.execute_command("emergency");
+        assert!(app.deploy_freeze.is_some());
+        let reason = app
+            .deploy_freeze
+            .as_ref()
+            .map(|f| f.reason.clone())
+            .unwrap();
+        assert_eq!(reason, "incident #1234");
     }
 
     #[tokio::test]
