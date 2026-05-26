@@ -6,6 +6,104 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-05-26 — Triage ergonomics: freeze, undo, aliases, capacity preview
+
+Small but focused minor — picks up where 0.10 left off and
+extends the safety-net + observability themes into day-to-day
+config edits and incident triage. Every option-settings write
+is now reversible via `:undo`; mid-incident operators can lock
+the fleet with `:freeze-deploys "incident #N"`; the Deploy
+confirm modal grew a fourth signal (capacity impact) alongside
+the inline preview + health-check probe; and `alias.NAME = "…"`
+entries in `config.toml` let daily-driver shortcuts shrink to
+one keypress.
+
+### Added
+
+- **`:undo` for the last option-settings write.** Automatic
+  before-state capture on every `spawn_option_settings_update`
+  dispatch (covers `:set-option` / `:keypair` /
+  `:deployment-policy` / `:rolling-update` / `:health-check-url`
+  / `:env-edit` / `:capacity` / `:scaling-triggers` /
+  `:listener-edit` and the form-driven equivalents). 10-entry
+  ring buffer (`App.undo_history`); `:undo` pops the back and
+  re-dispatches the reverse-action via the same spawn — which
+  captures ITS own undo, so `:undo`+`:undo` is redo for free.
+  Empty-string-prior values reverse via `to_remove` (not empty
+  `to_set`) since EB doesn't distinguish unset from empty.
+  Cross-context cleared on `apply_rebuild`. Refuses cleanly when
+  the captured env is terminated OR filtered out of the current
+  view (in the latter case the entry is put back on the deque so
+  the operator can retry after clearing the filter). Pure
+  `build_undo_entry` helper unit-tested across the four
+  reverse-action shapes. (`aa253bd`, follow-up display-row-index
+  fix `7516200`)
+- **`:freeze-deploys [reason]` / `:thaw-deploys`.** Session-
+  scoped fleet-wide write-lock with an operator-supplied reason,
+  layered above the per-env / per-account `safety.*` pins in
+  `is_read_only_for`. Refusal toast surfaces reason + age
+  (`"deploys frozen (3m ago): incident #1234 — :thaw-deploys to
+  unfreeze"`). Audit-logged. Re-issue updates the reason in
+  place. Not persisted to `state.toml` (intentional — durable
+  pins use the existing `safety.*` mechanism). Useful during
+  incident triage to prevent accidental deploys mid-investigation.
+  (`f51168b`)
+- **Pre-deploy "estimated unavailability" line in the confirm
+  modal.** Fourth confirm-time signal alongside the impact
+  preview, version metadata, and health-check probe. Renders
+  `deploy plan: POLICY → max N/M instances unavailable` (yellow
+  if any unavailability, green if none) computed from the env's
+  deployment policy + batch settings + ASG max-size. Pure
+  `compute_unavailability_count` + `compute_batch_count` +
+  `format_unavailability_line` helpers covering all five EB
+  deployment policies (AllAtOnce / Rolling /
+  RollingWithAdditionalBatch / Immutable / TrafficSplitting)
+  plus an unknown-policy worst-case fallback. Skipped in
+  `--demo` mode. (`f1b5b2c`)
+- **Custom command aliases in `config.toml`.**
+  `alias.dp = "deploy --auto-rollback 5m"` entries expand on
+  command-bar entry before the dispatch match — `:dp build-900`
+  becomes `:deploy --auto-rollback 5m build-900`. Single-level
+  expansion only (no transitive chaining → no infinite-loop
+  footgun, no cycle-detection complexity). Pure
+  `expand_command_alias(line, aliases)` helper unit-tested.
+  Named `command_aliases` on Config + App to disambiguate from
+  the existing `:alias <env> <label>` env-rename feature (which
+  is state.toml-persisted and unaffected). (`c70c862`)
+
+### Fixed
+
+- **`:undo` table_state index mismatch under active filter or
+  grouping.** Code-review caught: `cmd_undo` set
+  `table_state.select(Some(idx))` using
+  `environments.iter().position(...)` — the env's index in the
+  unfiltered fleet vec — but `selected_env()` reads from
+  `display_rows()` (filtered + grouped view). The two index
+  spaces diverge whenever a filter is active or grouping
+  inserts separators, so the dispatch could target the wrong
+  env or hit out-of-bounds. Fix: look up the target in
+  `display_rows()` space. Also split "env not in view" into
+  two clearer refusals (terminated vs filtered out, with
+  the entry put back on the deque in the filtered-out case).
+  +2 regression tests. (`7516200`)
+
+### Skipped on purpose
+
+- **OSC 8 terminal hyperlinks.** ratatui 0.29 has no OSC 8
+  support — its cell-based buffer mis-handles escape sequences
+  and breaks width calculations. Workaround would require a
+  custom widget that bypasses ratatui's diff renderer per-line
+  (brittle). Design trade-off with no obvious winner. Revisit
+  if upstream ratatui adds native support.
+- **`:config-diff --at 1h|24h|7d`** (point-in-time config diff).
+  Re-audit caught a false premise in the BACKLOG entry: EB's
+  event API only carries free-text messages (`"Environment
+  configuration was updated successfully"`), no structured
+  before/after option-settings deltas. The "replay backward"
+  mechanic isn't implementable against EB's API surface. The
+  honest reshape (a `--window` flag on existing `:changes`)
+  duplicates 80% of `:changes` for marginal value.
+
 ## [0.10.0] — 2026-05-26 — Deploy story complete: safety nets, observability, CI parity
 
 This release completes the deploy story 0.9.0 started: every step
@@ -547,7 +645,8 @@ Initial public release. Headline surface:
 - Published to crates.io as `ebman`.
 - Homebrew tap at `tombaldwin/homebrew-tap`.
 
-[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/tombaldwin/ebman/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/tombaldwin/ebman/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/tombaldwin/ebman/compare/v0.8.1...v0.9.0
 [0.3.5]: https://github.com/tombaldwin/ebman/compare/v0.3.4...v0.3.5
