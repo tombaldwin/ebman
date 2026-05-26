@@ -610,6 +610,34 @@ pub(crate) struct WatchingDeploy {
     pub deadline_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// A captured undo entry — the reverse-action of a single
+/// option-settings write, ready to be re-dispatched by `:undo`.
+/// Captured by `spawn_option_settings_update` right before the
+/// write (via an extra DescribeConfigurationSettings call) so
+/// the operator can reverse the most recent edit even after EB
+/// has committed it.
+///
+/// `to_set` reverses the original write's NEW values back to
+/// their PRIOR values; `to_remove` reverses what was previously
+/// unset (so the reverse drops the key rather than leaving it
+/// as an empty string).
+#[derive(Debug, Clone)]
+pub(crate) struct UndoEntry {
+    pub env_name: String,
+    pub to_set: Vec<(String, String, String)>,
+    pub to_remove: Vec<(String, String)>,
+    /// One-line summary of what the ORIGINAL action was, so the
+    /// undo toast can read "undoing: keypair foo" rather than the
+    /// generic "option-settings update".
+    pub original_summary: String,
+    pub captured_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Cap on the undo-history deque. Bounds memory while still
+/// covering most operator workflows — a long incident might
+/// run 4-5 config edits in a row; 10 is a generous ceiling.
+pub(crate) const UNDO_HISTORY_CAP: usize = 10;
+
 /// Session-scoped temporary write-lock set by `:freeze-deploys`.
 /// Layered above the per-env / per-account safety pins in
 /// `is_read_only_for` so destructive ops refuse fleet-wide
@@ -921,6 +949,15 @@ pub struct App {
     /// the common case (no freeze active); `Some(...)` makes
     /// every destructive op refuse with the freeze's reason.
     pub(crate) deploy_freeze: Option<DeployFreeze>,
+    /// Ring buffer of reversible option-settings writes captured
+    /// just before each `spawn_option_settings_update` dispatch.
+    /// `:undo` pops the most recent (back of the deque) and
+    /// dispatches its reverse-action. Capped at `UNDO_HISTORY_CAP`;
+    /// older entries fall off the front when the cap is hit.
+    /// Session-scoped — not persisted. Cross-context state is
+    /// cleared on `apply_rebuild` alongside the other env-keyed
+    /// state.
+    pub(crate) undo_history: std::collections::VecDeque<UndoEntry>,
     /// `--demo` mode flag. Suppresses the periodic refresh (`spawn_refresh`
     /// becomes a no-op) and the update-check (`spawn_update_check` likewise)
     /// so hand-crafted fixture data from `demo_fixture::install` stays put.
@@ -1404,6 +1441,13 @@ enum AppMsg {
         env_name: String,
         line: Option<(String, bool)>,
     },
+    /// `:undo` capture — emitted from the option-settings update
+    /// spawn after a successful write, carrying the reverse-action
+    /// so `App.undo_history` can push it for later `:undo`.
+    UndoCaptured {
+        gen: u64,
+        entry: UndoEntry,
+    },
     /// `:rollback` — the env's recent events came back; the handler
     /// scans them for the previously-deployed version label and opens
     /// the deploy-confirm modal for it.
@@ -1777,6 +1821,7 @@ impl App {
             armed_watchdogs: std::collections::HashMap::new(),
             watching_deploys: std::collections::HashMap::new(),
             deploy_freeze: None,
+            undo_history: std::collections::VecDeque::new(),
             demo_mode: false,
             env_instance_counts: std::collections::HashMap::new(),
             cost_enabled: persisted.cost_enabled.unwrap_or(false),
@@ -2002,6 +2047,7 @@ impl App {
             armed_watchdogs: std::collections::HashMap::new(),
             watching_deploys: std::collections::HashMap::new(),
             deploy_freeze: None,
+            undo_history: std::collections::VecDeque::new(),
             demo_mode: false,
             env_instance_counts: std::collections::HashMap::new(),
             cost_enabled: false,
@@ -7548,7 +7594,38 @@ impl App {
         let account = self.context.account_id.clone();
         let profile = self.context.profile.clone();
         let region = self.context.region.clone();
+        // Undo capture — same shape as `spawn_option_settings_update`.
+        // The form path lost the env's application name when it
+        // stashed only `env_name`; recover it by looking up the
+        // env in the cached fleet. Race with context switch leaves
+        // `app_for_undo` as None and we silently skip capture.
+        let app_for_undo = self
+            .environments
+            .iter()
+            .find(|e| e.name == env_name)
+            .map(|e| e.application.clone());
+        let env_for_undo = env_name.clone();
+        let summary_for_undo = summary.clone();
+        let to_set_for_undo = to_set.clone();
+        let to_remove_for_undo = to_remove.clone();
         tokio::spawn(async move {
+            let undo_entry = if let Some(app_name) = app_for_undo {
+                match aws
+                    .fetch_env_option_settings(&app_name, &env_for_undo)
+                    .await
+                {
+                    Ok(opts) => Some(build_undo_entry(
+                        &env_for_undo,
+                        &summary_for_undo,
+                        &to_set_for_undo,
+                        &to_remove_for_undo,
+                        &opts,
+                    )),
+                    Err(_) => None,
+                }
+            } else {
+                None
+            };
             let result = aws
                 .update_env_option_settings(&env_for_msg, &to_set, &to_remove)
                 .await
@@ -7563,6 +7640,11 @@ impl App {
                 ),
             };
             write_audit_line(account.as_deref(), profile.as_deref(), &region, &outcome);
+            if result.is_ok() {
+                if let Some(entry) = undo_entry {
+                    let _ = tx.send(AppMsg::UndoCaptured { gen, entry });
+                }
+            }
             let _ = tx.send(AppMsg::OptionSettingsUpdate {
                 gen,
                 env_name: env_for_msg,
@@ -8690,7 +8772,7 @@ impl App {
     /// `:managed-window`); each pushes its own pending row + audit entry
     /// then funnels through here. `summary` is the human-readable label
     /// that ends up in the toast and the pending panel.
-    fn spawn_option_settings_update(
+    pub(crate) fn spawn_option_settings_update(
         &mut self,
         summary: String,
         to_set: Vec<(String, String, String)>,
@@ -8731,7 +8813,32 @@ impl App {
         let account = self.context.account_id.clone();
         let profile = self.context.profile.clone();
         let region = self.context.region.clone();
+        // Capture inputs for the optional :undo round-trip — the
+        // option-settings fetch happens BEFORE the write so we can
+        // record the prior state and offer a clean reverse-action.
+        let app_for_undo = env.application.clone();
+        let env_for_undo = env_name.clone();
+        let summary_for_undo = summary.clone();
+        let to_set_for_undo = to_set.clone();
+        let to_remove_for_undo = to_remove.clone();
         tokio::spawn(async move {
+            // Fetch current option-settings for the affected keys
+            // BEFORE the write so we can build the reverse-action.
+            // Read failure doesn't block the write — undo is a
+            // safety net, not a correctness invariant.
+            let undo_entry = match aws
+                .fetch_env_option_settings(&app_for_undo, &env_for_undo)
+                .await
+            {
+                Ok(opts) => Some(build_undo_entry(
+                    &env_for_undo,
+                    &summary_for_undo,
+                    &to_set_for_undo,
+                    &to_remove_for_undo,
+                    &opts,
+                )),
+                Err(_) => None,
+            };
             let result = aws
                 .update_env_option_settings(&env_for_msg, &to_set, &to_remove)
                 .await
@@ -8746,6 +8853,13 @@ impl App {
                 ),
             };
             write_audit_line(account.as_deref(), profile.as_deref(), &region, &outcome);
+            // Only record undo on a successful write — otherwise
+            // `:undo` would "revert" a write that never landed.
+            if result.is_ok() {
+                if let Some(entry) = undo_entry {
+                    let _ = tx.send(AppMsg::UndoCaptured { gen, entry });
+                }
+            }
             let _ = tx.send(AppMsg::OptionSettingsUpdate {
                 gen,
                 env_name: env_for_msg,
@@ -10647,6 +10761,7 @@ impl App {
             "abort-rollback" => self.cmd_abort_rollback(&rest),
             "freeze-deploys" => self.cmd_freeze_deploys(&rest),
             "thaw-deploys" => self.cmd_thaw_deploys(),
+            "undo" => self.cmd_undo(),
             "tag" => self.cmd_tag(&rest),
             "untag" => self.cmd_untag(&rest),
             "resources" | "res" => self.cmd_resources(),
@@ -11415,6 +11530,10 @@ impl App {
                 // context switch avoids :rollback in the new context
                 // picking up a label that doesn't exist there.
                 self.deploy_snapshots.clear();
+                // Undo entries reference env names from the previous
+                // context — meaningless after a switch. Drop them
+                // alongside the other env-keyed state.
+                self.undo_history.clear();
                 self.rebuild_view();
                 self.table_state.select(None);
                 self.status_message = Some(format!(
@@ -12507,6 +12626,64 @@ fn truncate_armed_cell(s: &str, n: usize) -> String {
     let mut out: String = s.chars().take(n.saturating_sub(1)).collect();
     out.push('…');
     out
+}
+
+/// Pure: build the reverse-action of an option-settings write by
+/// looking up the affected (namespace, name) pairs in the
+/// pre-write snapshot. Keys that previously had a value get
+/// reversed via `to_set` (restore old value); keys that were
+/// previously unset get reversed via `to_remove` (drop the key).
+///
+/// EB's option-settings API doesn't distinguish "unset" from
+/// "set to empty string" — we treat empty-string-prior as unset
+/// (the common case) so the reverse cleanly removes the key
+/// rather than leaving it as a literal empty string.
+pub(crate) fn build_undo_entry(
+    env_name: &str,
+    original_summary: &str,
+    to_set: &[(String, String, String)],
+    to_remove: &[(String, String)],
+    pre_write: &[(String, String, String)],
+) -> UndoEntry {
+    let lookup = |ns: &str, name: &str| -> Option<&String> {
+        pre_write
+            .iter()
+            .find(|(n, k, _)| n == ns && k == name)
+            .map(|(_, _, v)| v)
+    };
+    let mut reverse_set: Vec<(String, String, String)> = Vec::new();
+    let mut reverse_remove: Vec<(String, String)> = Vec::new();
+    // For each key the original write SET, the reverse is either
+    // (a) restore the prior value, or (b) remove the key if it
+    // was previously unset / empty.
+    for (ns, name, _) in to_set {
+        match lookup(ns, name) {
+            Some(prev) if !prev.is_empty() => {
+                reverse_set.push((ns.clone(), name.clone(), prev.clone()));
+            }
+            _ => {
+                reverse_remove.push((ns.clone(), name.clone()));
+            }
+        }
+    }
+    // For each key the original write REMOVED, the reverse is to
+    // restore the prior value — but only if there was one. If the
+    // key was already absent, the remove was a no-op and the
+    // reverse is nothing.
+    for (ns, name) in to_remove {
+        if let Some(prev) = lookup(ns, name) {
+            if !prev.is_empty() {
+                reverse_set.push((ns.clone(), name.clone(), prev.clone()));
+            }
+        }
+    }
+    UndoEntry {
+        env_name: env_name.to_string(),
+        to_set: reverse_set,
+        to_remove: reverse_remove,
+        original_summary: original_summary.to_string(),
+        captured_at: chrono::Utc::now(),
+    }
 }
 
 /// Pure: expand a typed command line through the operator's
@@ -18461,6 +18638,190 @@ mod tests {
             }
             _ => panic!("expected confirm modal"),
         }
+    }
+
+    #[test]
+    fn build_undo_entry_set_with_prior_value_reverses_to_set() {
+        // Original write: set EC2KeyName=foo. Prior value: bar.
+        // Reverse: set EC2KeyName=bar.
+        let pre = vec![(
+            "aws:autoscaling:launchconfiguration".into(),
+            "EC2KeyName".into(),
+            "bar".into(),
+        )];
+        let to_set = vec![(
+            "aws:autoscaling:launchconfiguration".into(),
+            "EC2KeyName".into(),
+            "foo".into(),
+        )];
+        let entry = super::build_undo_entry("prod", "keypair foo", &to_set, &[], &pre);
+        assert_eq!(entry.to_set.len(), 1);
+        assert_eq!(entry.to_set[0].2, "bar");
+        assert!(entry.to_remove.is_empty());
+        assert_eq!(entry.env_name, "prod");
+        assert_eq!(entry.original_summary, "keypair foo");
+    }
+
+    #[test]
+    fn build_undo_entry_set_with_no_prior_value_reverses_to_remove() {
+        // Original write: set a key that was previously unset.
+        // Reverse: remove the key (don't leave it as "" — that's a
+        // different EB state from "unset").
+        let pre: Vec<(String, String, String)> = vec![];
+        let to_set = vec![(
+            "aws:elasticbeanstalk:application".into(),
+            "Application Healthcheck URL".into(),
+            "/healthz".into(),
+        )];
+        let entry =
+            super::build_undo_entry("prod", "health-check-url /healthz", &to_set, &[], &pre);
+        assert!(entry.to_set.is_empty());
+        assert_eq!(entry.to_remove.len(), 1);
+        assert_eq!(entry.to_remove[0].1, "Application Healthcheck URL");
+    }
+
+    #[test]
+    fn build_undo_entry_empty_string_prior_treated_as_unset() {
+        // EB doesn't distinguish "unset" from "set-to-empty"; we
+        // treat empty-string-prior as unset and reverse via remove.
+        let pre = vec![(
+            "aws:autoscaling:launchconfiguration".into(),
+            "EC2KeyName".into(),
+            String::new(),
+        )];
+        let to_set = vec![(
+            "aws:autoscaling:launchconfiguration".into(),
+            "EC2KeyName".into(),
+            "foo".into(),
+        )];
+        let entry = super::build_undo_entry("prod", "keypair foo", &to_set, &[], &pre);
+        assert!(entry.to_set.is_empty());
+        assert_eq!(entry.to_remove.len(), 1);
+    }
+
+    #[test]
+    fn build_undo_entry_remove_with_prior_value_reverses_to_set() {
+        // Original write: remove a key that had a value. Reverse:
+        // restore the value via to_set.
+        let pre = vec![(
+            "aws:autoscaling:launchconfiguration".into(),
+            "EC2KeyName".into(),
+            "bar".into(),
+        )];
+        let to_remove = vec![(
+            "aws:autoscaling:launchconfiguration".into(),
+            "EC2KeyName".into(),
+        )];
+        let entry = super::build_undo_entry("prod", "clear keypair", &[], &to_remove, &pre);
+        assert_eq!(entry.to_set.len(), 1);
+        assert_eq!(entry.to_set[0].2, "bar");
+        assert!(entry.to_remove.is_empty());
+    }
+
+    #[test]
+    fn build_undo_entry_remove_with_no_prior_value_is_a_noop_reverse() {
+        // Original: remove a key that was already absent. Reverse:
+        // nothing (both sides empty).
+        let entry = super::build_undo_entry(
+            "prod",
+            "clear keypair",
+            &[],
+            &[(
+                "aws:autoscaling:launchconfiguration".into(),
+                "EC2KeyName".into(),
+            )],
+            &[],
+        );
+        assert!(entry.to_set.is_empty());
+        assert!(entry.to_remove.is_empty());
+    }
+
+    #[tokio::test]
+    async fn handle_undo_captured_pushes_into_history_with_cap() {
+        // Pushing UNDO_HISTORY_CAP + 2 entries leaves CAP-many in
+        // the deque, with the OLDEST entries evicted from the
+        // front. Confirms the ring-buffer eviction logic.
+        let mut app = test_app();
+        for i in 0..(super::UNDO_HISTORY_CAP + 2) {
+            let entry = super::UndoEntry {
+                env_name: "prod".into(),
+                to_set: vec![("ns".into(), format!("k{i}"), "v".into())],
+                to_remove: vec![],
+                original_summary: format!("write #{i}"),
+                captured_at: chrono::Utc::now(),
+            };
+            app.handle_msg(AppMsg::UndoCaptured {
+                gen: app.generation,
+                entry,
+            });
+        }
+        assert_eq!(app.undo_history.len(), super::UNDO_HISTORY_CAP);
+        // The two oldest (#0, #1) should have been evicted; #2
+        // becomes the front-most surviving entry.
+        assert_eq!(
+            app.undo_history.front().unwrap().original_summary,
+            "write #2"
+        );
+        // Back of the deque is the most-recent push.
+        assert_eq!(
+            app.undo_history.back().unwrap().original_summary,
+            format!("write #{}", super::UNDO_HISTORY_CAP + 1)
+        );
+    }
+
+    #[tokio::test]
+    async fn cmd_undo_with_empty_history_hints_at_the_buffer() {
+        let mut app = test_app();
+        app.execute_command("undo");
+        let status = app.status_message.as_deref().unwrap_or("");
+        assert!(
+            status.contains("no undo history"),
+            "expected empty-history hint, got: {status}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cmd_undo_with_no_op_reverse_surfaces_clearly() {
+        // Reverse-action with both sides empty (e.g. write matched
+        // prior state exactly) yields a friendly status rather than
+        // a silent dispatch of a no-op write.
+        let mut app = test_app();
+        app.environments = vec![mk_env("prod", "shop", "Web", "Green")];
+        app.rebuild_view();
+        app.undo_history.push_back(super::UndoEntry {
+            env_name: "prod".into(),
+            to_set: vec![],
+            to_remove: vec![],
+            original_summary: "keypair foo".into(),
+            captured_at: chrono::Utc::now(),
+        });
+        app.execute_command("undo");
+        let status = app.status_message.as_deref().unwrap_or("");
+        assert!(
+            status.contains("prior state was identical"),
+            "expected no-op hint, got: {status}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cmd_undo_refuses_when_target_env_no_longer_visible() {
+        // Captured entry references an env that's been filtered
+        // out or terminated. Refuse rather than dispatch against
+        // a missing env.
+        let mut app = test_app();
+        app.undo_history.push_back(super::UndoEntry {
+            env_name: "vanished".into(),
+            to_set: vec![("ns".into(), "k".into(), "v".into())],
+            to_remove: vec![],
+            original_summary: "keypair foo".into(),
+            captured_at: chrono::Utc::now(),
+        });
+        app.execute_command("undo");
+        let err = app.error_message.as_deref().unwrap_or("");
+        assert!(
+            err.contains("no longer in the current view"),
+            "expected missing-env refusal, got: {err}"
+        );
     }
 
     #[test]
