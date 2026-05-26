@@ -15,6 +15,48 @@ use super::{
     DetailTab, Overlay,
 };
 
+/// Pure: render the `:lint` overlay body. Empty issue list yields
+/// a "clean" stub so the operator gets explicit positive feedback
+/// rather than wondering whether the rules ran at all. Each issue
+/// renders as a four-line block: severity+id+title header,
+/// indented detail, optional suggestion, blank separator.
+pub(crate) fn render_lint_overlay(env_name: &str, issues: &[crate::lint::Issue]) -> String {
+    use crate::lint::Severity;
+    if issues.is_empty() {
+        return format!(
+            "lint — {env_name}\n\n\
+             ✓ No issues found against the v1 rule set.\n\n\
+             esc / q to close"
+        );
+    }
+    let mut out = format!("lint — {env_name}\n\n");
+    out.push_str(&format!(
+        "{} issue{} found (severity desc, rule_id asc):\n\n",
+        issues.len(),
+        if issues.len() == 1 { "" } else { "s" }
+    ));
+    for issue in issues {
+        let sev_glyph = match issue.severity {
+            Severity::Error => "✗",
+            Severity::Warn => "⚠",
+            Severity::Info => "·",
+        };
+        out.push_str(&format!(
+            "{sev_glyph} [{}] {}\n",
+            issue.rule_id, issue.title
+        ));
+        for line in issue.detail.lines() {
+            out.push_str(&format!("    {line}\n"));
+        }
+        if let Some(suggestion) = &issue.suggestion {
+            out.push_str(&format!("    → {suggestion}\n"));
+        }
+        out.push('\n');
+    }
+    out.push_str("esc / q to close");
+    out
+}
+
 impl App {
     pub(crate) fn cmd_custom_platforms(&mut self) {
         let aws = self.aws.clone();
@@ -314,6 +356,74 @@ impl App {
         self.table_state.select(Some(display_idx));
         self.spawn_option_settings_update(summary, entry.to_set, entry.to_remove);
         self.table_state.select(prior_selection);
+    }
+
+    /// `:lint [ENV]` — run the rule engine against the selected env
+    /// (or against `ENV` when one is named) and surface the issues
+    /// in a TextDump overlay. Same engine the `ebman lint` CLI uses,
+    /// same Issue shape — only the rendering differs.
+    ///
+    /// Async because the engine needs the env's option-settings,
+    /// which we fetch via `DescribeConfigurationSettings`. Result
+    /// lands as a TextOverlay message; cancellable via Esc on the
+    /// overlay (the spawned fetch carries on but its result is
+    /// dropped at the overlay layer).
+    pub(crate) fn cmd_lint(&mut self, rest: &[&str]) {
+        // Pick the target env: explicit arg first, else selected env.
+        let target_name = rest.first().copied().map(String::from);
+        let env = match target_name.as_ref() {
+            Some(name) => {
+                let Some(e) = self.environments.iter().find(|e| &e.name == name) else {
+                    self.error_message = Some(format!(
+                        "no env named '{name}' in the current view — try :envs"
+                    ));
+                    return;
+                };
+                e.clone()
+            }
+            None => {
+                let Some(e) = self.selected_env().cloned() else {
+                    self.error_message =
+                        Some("no env selected — pass an env name: `:lint <env-name>`".into());
+                    return;
+                };
+                e
+            }
+        };
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let env_name = env.name.clone();
+        let app_name = env.application.clone();
+        self.status_message = Some(format!("running lint on {env_name}…"));
+        tokio::spawn(async move {
+            let body = match aws.fetch_env_option_settings(&app_name, &env_name).await {
+                Ok(opts) => {
+                    let ctx = crate::lint::LintContext {
+                        env: &env,
+                        options: &opts,
+                        events: &[],
+                        cost_usd_per_month: None,
+                        latest_stack_version: None,
+                    };
+                    // No operator-tunable disables yet — wired in
+                    // the BONUS-tier follow-on. Default to all v1
+                    // rules.
+                    let rules = crate::lint::default_rules(&[]);
+                    let issues = crate::lint::run_rules(&rules, &ctx);
+                    render_lint_overlay(&env_name, &issues)
+                }
+                Err(e) => format!(
+                    "lint — failed to fetch option settings:\n  {}\n\nesc / q to close",
+                    flatten_err("fetch_env_option_settings", e)
+                ),
+            };
+            let _ = tx.send(AppMsg::TextOverlay {
+                gen,
+                title: format!("lint — {env_name}"),
+                body,
+            });
+        });
     }
 
     pub(crate) fn cmd_pending(&mut self) {
