@@ -271,9 +271,8 @@ impl App {
             ));
             return;
         }
-        // The captured env may no longer be in the current view
-        // (context switch, env terminated mid-undo). Refuse rather
-        // than dispatching against an env that isn't present.
+        // The captured env may no longer exist (context switch,
+        // terminated mid-undo). Refuse early with a clear message.
         if !self.environments.iter().any(|e| e.name == entry.env_name) {
             self.error_message = Some(format!(
                 "undo: env '{}' is no longer in the current view",
@@ -281,30 +280,38 @@ impl App {
             ));
             return;
         }
+        // Find the env's index in the *display rows* (filtered +
+        // grouped view), not in `self.environments` —
+        // `selected_env` reads from `display_rows()`, so setting
+        // `table_state` using the env-vec index would target the
+        // wrong row whenever a filter is active or grouping
+        // inserts separators. If the env exists but is filtered
+        // out, refuse with a hint and put the entry back on the
+        // deque so the operator can retry after clearing.
+        let display_idx = self.display_rows().iter().position(|row| match row {
+            super::DisplayRow::Env(i) => {
+                self.environments.get(*i).map(|e| e.name.as_str()) == Some(entry.env_name.as_str())
+            }
+            super::DisplayRow::Separator => false,
+        });
+        let Some(display_idx) = display_idx else {
+            self.error_message = Some(format!(
+                "undo: env '{}' is filtered out of the current view — clear the filter and retry",
+                entry.env_name
+            ));
+            self.undo_history.push_back(entry);
+            return;
+        };
         let age_secs = (chrono::Utc::now() - entry.captured_at)
             .num_seconds()
             .max(0) as u64;
         let age = humanize_short_age(std::time::Duration::from_secs(age_secs));
         let summary = format!("undo: {} (captured {age} ago)", entry.original_summary);
-        // Set the cursor on the captured env so
-        // `spawn_option_settings_update` (which reads
-        // `selected_env`) targets the right destination. Pop the
-        // current selection first so we can restore it if the
-        // undo fails the deny_write check.
+        // Set the cursor on the captured env via the display-row
+        // index so `spawn_option_settings_update`'s `selected_env`
+        // lookup hits the right destination, then restore.
         let prior_selection = self.table_state.selected();
-        if let Some(idx) = self
-            .environments
-            .iter()
-            .position(|e| e.name == entry.env_name)
-        {
-            // We need the *display row* index, not the
-            // environments-vec index — but the env list is what the
-            // display rows refer to. The display_rows() lookup is
-            // already used by selected_env(); finding the env via
-            // .position() against environments is enough for the
-            // common-case unfiltered table.
-            self.table_state.select(Some(idx));
-        }
+        self.table_state.select(Some(display_idx));
         self.spawn_option_settings_update(summary, entry.to_set, entry.to_remove);
         self.table_state.select(prior_selection);
     }
