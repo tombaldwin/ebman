@@ -10814,6 +10814,7 @@ impl App {
             "freeze-deploys" => self.cmd_freeze_deploys(&rest),
             "thaw-deploys" => self.cmd_thaw_deploys(),
             "undo" => self.cmd_undo(),
+            "lint" => self.cmd_lint(&rest),
             "tag" => self.cmd_tag(&rest),
             "untag" => self.cmd_untag(&rest),
             "resources" | "res" => self.cmd_resources(),
@@ -19600,6 +19601,51 @@ mod tests {
             }
             _ => panic!("expected confirm modal still open"),
         }
+    }
+
+    #[test]
+    fn render_lint_overlay_empty_shows_clean_stub() {
+        let body = crate::app::cmd_misc::render_lint_overlay("prod-api", &[]);
+        assert!(body.contains("prod-api"));
+        assert!(body.contains("✓ No issues found"));
+        assert!(body.contains("esc / q to close"));
+    }
+
+    #[test]
+    fn render_lint_overlay_with_issues_renders_per_severity_glyph() {
+        use crate::lint::{Issue, Severity};
+        use std::collections::BTreeMap;
+        let issues = vec![
+            Issue {
+                rule_id: "EBL001".into(),
+                severity: Severity::Warn,
+                env_name: Some("prod".into()),
+                title: "AllAtOnce on 4-instance env".into(),
+                detail: "Deployment policy AllAtOnce with MaxSize=4 means full unavailability."
+                    .into(),
+                suggestion: Some(":deployment-policy Rolling".into()),
+                fields: BTreeMap::new(),
+            },
+            Issue {
+                rule_id: "EBL005".into(),
+                severity: Severity::Info,
+                env_name: Some("prod".into()),
+                title: "Single-instance env".into(),
+                detail: "MinSize=MaxSize=1.".into(),
+                suggestion: None,
+                fields: BTreeMap::new(),
+            },
+        ];
+        let body = crate::app::cmd_misc::render_lint_overlay("prod-api", &issues);
+        // Warn gets ⚠, Info gets ·.
+        assert!(body.contains("⚠ [EBL001]"));
+        assert!(body.contains("· [EBL005]"));
+        // Suggestion lines prefixed with →.
+        assert!(body.contains("→ :deployment-policy Rolling"));
+        // Detail wrapped under each issue with indent.
+        assert!(body.contains("    Deployment policy AllAtOnce"));
+        // Plural / singular handling.
+        assert!(body.contains("2 issues found"));
     }
 
     #[test]

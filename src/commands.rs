@@ -397,6 +397,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         Category::EnvConfig,
         CommandKind::ZeroArg,
     ),
+    cmd(
+        "lint",
+        ":lint [ENV] — run the diagnostic rule engine against the selected env (or named env). Surfaces AllAtOnce-on-multi-instance, missing health-check URL, env Red >4h, batch-size > max-size, single-instance prod, low cooldown. Operator-tunable via lint.disable in config.toml.",
+        Category::Inspection,
+        CommandKind::Prefill("lint "),
+    ),
     // ── Lifecycle actions ────────────────────────────────────────────────
     cmd(
         "rebuild",
