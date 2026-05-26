@@ -189,6 +189,61 @@ impl App {
         });
     }
 
+    /// `:freeze-deploys [reason]` — set a session-scoped fleet-wide
+    /// write-lock. Any destructive action against any env refuses
+    /// while the lock is on, with the reason surfaced in the toast.
+    /// Cleared by `:thaw-deploys` or by exiting ebman.
+    ///
+    /// Re-issuing the command while frozen replaces the reason
+    /// (operators sometimes refine "rolling back" → "rolling back,
+    /// PROD only" mid-incident — letting them update the message
+    /// without thaw + refreeze is the obvious shape).
+    pub(crate) fn cmd_freeze_deploys(&mut self, rest: &[&str]) {
+        let reason = rest.join(" ");
+        let trimmed = reason.trim();
+        let reason_for_store = trimmed.to_string();
+        let was_frozen = self.deploy_freeze.is_some();
+        self.deploy_freeze = Some(crate::app::DeployFreeze {
+            reason: reason_for_store.clone(),
+            frozen_at: chrono::Utc::now(),
+        });
+        let audit_reason = if reason_for_store.is_empty() {
+            "no-reason".to_string()
+        } else {
+            reason_for_store.clone()
+        };
+        write_audit_line(
+            self.context.account_id.as_deref(),
+            self.context.profile.as_deref(),
+            &self.context.region,
+            &format!("stage=dispatched action=FreezeDeploys reason={audit_reason}"),
+        );
+        let verb = if was_frozen { "updated" } else { "set" };
+        self.pin_status(if reason_for_store.is_empty() {
+            format!("freeze {verb}: deploys + writes blocked until :thaw-deploys")
+        } else {
+            format!("freeze {verb}: deploys + writes blocked — reason: {reason_for_store}")
+        });
+    }
+
+    /// `:thaw-deploys` — clear the session-scoped freeze. No-op
+    /// (status toast) if no freeze was active. Audit-logged either
+    /// way so the audit stream captures the lifecycle.
+    pub(crate) fn cmd_thaw_deploys(&mut self) {
+        let was_frozen = self.deploy_freeze.take().is_some();
+        write_audit_line(
+            self.context.account_id.as_deref(),
+            self.context.profile.as_deref(),
+            &self.context.region,
+            &format!("stage=dispatched action=ThawDeploys was_frozen={was_frozen}"),
+        );
+        if was_frozen {
+            self.pin_status("freeze cleared — deploys + writes re-enabled");
+        } else {
+            self.pin_status("no freeze active — nothing to thaw");
+        }
+    }
+
     pub(crate) fn cmd_pending(&mut self) {
         if self.pending_actions.is_empty() {
             self.pin_status("no actions in flight or recently completed");
