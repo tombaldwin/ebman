@@ -266,6 +266,15 @@ pub struct ConfirmModal {
     pub health_check_probe: Option<Result<(), String>>,
     /// True while `spawn_health_check_probe` is in flight.
     pub loading_health_check: bool,
+    /// Pre-rendered "deploy plan: POLICY → max X/Y instances
+    /// unavailable" line, plus a caution flag for colouring (true
+    /// = render in yellow; false = green/muted — no capacity
+    /// impact). Populated by `spawn_unavailability_estimate` from
+    /// the env's deployment-policy + batch + ASG max-size option-
+    /// settings. None while loading or for non-Deploy actions.
+    pub unavailability_line: Option<(String, bool)>,
+    /// True while `spawn_unavailability_estimate` is in flight.
+    pub loading_unavailability: bool,
 }
 
 /// Helper carrying the optional parameters needed by the new parameterised

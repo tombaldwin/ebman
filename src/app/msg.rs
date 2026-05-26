@@ -45,6 +45,7 @@ impl AppMsg {
             | PreflightEvents { gen, .. }
             | VersionPreview { gen, .. }
             | HealthCheckProbe { gen, .. }
+            | UnavailabilityEstimate { gen, .. }
             | RollbackTarget { gen, .. }
             | DetailTags { gen, .. }
             | DeployFromLocal { gen, .. }
@@ -159,6 +160,9 @@ impl App {
             AppMsg::HealthCheckProbe {
                 env_name, result, ..
             } => self.handle_health_check_probe(env_name, result),
+            AppMsg::UnavailabilityEstimate { env_name, line, .. } => {
+                self.handle_unavailability_estimate(env_name, line)
+            }
             AppMsg::RollbackTarget {
                 env_name,
                 current_version,
@@ -733,6 +737,20 @@ impl App {
         }
         modal.loading_health_check = false;
         modal.health_check_probe = Some(result);
+    }
+
+    /// Stuff the pre-deploy unavailability estimate into the modal.
+    /// `None` (fetch failed) clears the loading flag and leaves the
+    /// line slot empty — UI silently omits the row.
+    fn handle_unavailability_estimate(&mut self, env_name: String, line: Option<(String, bool)>) {
+        let Some(ActionFlow::Confirm(modal)) = self.action_flow.as_mut() else {
+            return;
+        };
+        if modal.target_env != env_name {
+            return;
+        }
+        modal.loading_unavailability = false;
+        modal.unavailability_line = line;
     }
 
     fn handle_rollback_target(
