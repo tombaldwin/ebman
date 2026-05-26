@@ -610,6 +610,22 @@ pub(crate) struct WatchingDeploy {
     pub deadline_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Session-scoped temporary write-lock set by `:freeze-deploys`.
+/// Layered above the per-env / per-account safety pins in
+/// `is_read_only_for` so destructive ops refuse fleet-wide
+/// during triage. Cleared by `:thaw-deploys` or by exiting
+/// ebman — not persisted to state.toml (intentional: the freeze
+/// is an in-session safety gesture, not a durable policy).
+#[derive(Debug, Clone)]
+pub(crate) struct DeployFreeze {
+    /// Operator-supplied reason (e.g. "incident #1234"). Empty
+    /// string when no reason was given. Surfaced in the refusal
+    /// toast so the operator (or a teammate sharing the terminal)
+    /// knows why the lock is on.
+    pub reason: String,
+    pub frozen_at: chrono::DateTime<chrono::Utc>,
+}
+
 impl DeploySnapshot {
     /// On-disk shape — `"label|RFC3339-ts"`. Pipe separator keeps the
     /// existing line-oriented state.toml parser happy. The pipe is
@@ -901,6 +917,10 @@ pub struct App {
     /// `armed_watchdogs`. Both maps can be populated for the same env
     /// when the operator passes both flags.
     pub(crate) watching_deploys: std::collections::HashMap<String, WatchingDeploy>,
+    /// Session-scoped freeze set by `:freeze-deploys`. `None` is
+    /// the common case (no freeze active); `Some(...)` makes
+    /// every destructive op refuse with the freeze's reason.
+    pub(crate) deploy_freeze: Option<DeployFreeze>,
     /// `--demo` mode flag. Suppresses the periodic refresh (`spawn_refresh`
     /// becomes a no-op) and the update-check (`spawn_update_check` likewise)
     /// so hand-crafted fixture data from `demo_fixture::install` stays put.
@@ -1747,6 +1767,7 @@ impl App {
                 .collect(),
             armed_watchdogs: std::collections::HashMap::new(),
             watching_deploys: std::collections::HashMap::new(),
+            deploy_freeze: None,
             demo_mode: false,
             env_instance_counts: std::collections::HashMap::new(),
             cost_enabled: persisted.cost_enabled.unwrap_or(false),
@@ -1970,6 +1991,7 @@ impl App {
             deploy_snapshots: std::collections::HashMap::new(),
             armed_watchdogs: std::collections::HashMap::new(),
             watching_deploys: std::collections::HashMap::new(),
+            deploy_freeze: None,
             demo_mode: false,
             env_instance_counts: std::collections::HashMap::new(),
             cost_enabled: false,
@@ -7849,6 +7871,14 @@ impl App {
         if self.read_only {
             return true;
         }
+        // Session-scoped freeze (`:freeze-deploys`) is fleet-wide —
+        // doesn't care about env_name. Layered above the per-env /
+        // per-account pins because it's the most-recent operator
+        // gesture: if they froze deploys, they meant for nothing to
+        // dispatch regardless of what the persisted pins say.
+        if self.deploy_freeze.is_some() {
+            return true;
+        }
         if self.safety_envs.get(env_name).copied().unwrap_or(false) {
             return true;
         }
@@ -7891,6 +7921,18 @@ impl App {
     pub fn read_only_reason(&self, env_name: &str) -> Option<String> {
         if self.read_only {
             return Some("read-only mode (global toggle)".into());
+        }
+        if let Some(freeze) = self.deploy_freeze.as_ref() {
+            let age = (chrono::Utc::now() - freeze.frozen_at).num_seconds().max(0);
+            let age = crate::app::humanize_short_age(std::time::Duration::from_secs(age as u64));
+            return Some(if freeze.reason.is_empty() {
+                format!("deploys frozen ({age} ago) — :thaw-deploys to unfreeze")
+            } else {
+                format!(
+                    "deploys frozen ({age} ago): {} — :thaw-deploys to unfreeze",
+                    freeze.reason
+                )
+            });
         }
         if self.safety_envs.get(env_name).copied().unwrap_or(false) {
             return Some(format!(
@@ -10583,6 +10625,8 @@ impl App {
             "pending" | "in-flight" | "inflight" => self.cmd_pending(),
             "rollbacks-armed" | "rb-armed" => self.cmd_rollbacks_armed(),
             "abort-rollback" => self.cmd_abort_rollback(&rest),
+            "freeze-deploys" => self.cmd_freeze_deploys(&rest),
+            "thaw-deploys" => self.cmd_thaw_deploys(),
             "tag" => self.cmd_tag(&rest),
             "untag" => self.cmd_untag(&rest),
             "resources" | "res" => self.cmd_resources(),
@@ -18365,6 +18409,82 @@ mod tests {
             }
             _ => panic!("expected confirm modal"),
         }
+    }
+
+    #[tokio::test]
+    async fn freeze_deploys_blocks_writes_with_reason_surfaced() {
+        // Operator dispatches `:freeze-deploys incident #1234` →
+        // every destructive action refuses, with the reason
+        // surfaced in the toast. Same gate as the read-only pins
+        // but more visible (the reason is operator-supplied).
+        let mut app = test_app();
+        app.execute_command("freeze-deploys incident #1234");
+        assert!(app.deploy_freeze.is_some(), "freeze should be set");
+        assert!(
+            app.is_read_only_for("any-env"),
+            "freeze must block every env"
+        );
+        let reason = app.read_only_reason("any-env").unwrap_or_default();
+        assert!(
+            reason.contains("deploys frozen") && reason.contains("incident #1234"),
+            "expected reason to surface, got: {reason}"
+        );
+    }
+
+    #[tokio::test]
+    async fn freeze_deploys_with_no_reason_still_blocks() {
+        // Reason is optional — empty-reason freeze still blocks
+        // but the toast wording shifts.
+        let mut app = test_app();
+        app.execute_command("freeze-deploys");
+        assert!(app.deploy_freeze.is_some());
+        let reason = app.read_only_reason("env").unwrap_or_default();
+        assert!(
+            reason.contains("deploys frozen") && !reason.contains(": "),
+            "no-reason wording shouldn't include `: <reason>`, got: {reason}"
+        );
+    }
+
+    #[tokio::test]
+    async fn thaw_deploys_clears_the_freeze() {
+        let mut app = test_app();
+        app.execute_command("freeze-deploys testing");
+        assert!(app.deploy_freeze.is_some());
+        app.execute_command("thaw-deploys");
+        assert!(app.deploy_freeze.is_none(), "thaw should clear freeze");
+        assert!(
+            !app.is_read_only_for("env"),
+            "thaw must restore writes (no other locks set in this test)"
+        );
+    }
+
+    #[tokio::test]
+    async fn re_freezing_updates_the_reason_in_place() {
+        // Operator refines the reason mid-incident; replace not stack.
+        let mut app = test_app();
+        app.execute_command("freeze-deploys rolling back");
+        app.execute_command("freeze-deploys rolling back — PROD only");
+        let reason = app
+            .deploy_freeze
+            .as_ref()
+            .map(|f| f.reason.clone())
+            .unwrap();
+        assert_eq!(reason, "rolling back — PROD only");
+    }
+
+    #[tokio::test]
+    async fn freeze_overrides_per_env_pin_in_read_only_reason() {
+        // When BOTH a freeze AND a per-env safety pin are active,
+        // the freeze reason wins in the toast — it's the more-
+        // recent operator gesture and the more informative message.
+        let mut app = test_app();
+        app.safety_envs.insert("prod".into(), true);
+        app.execute_command("freeze-deploys incident");
+        let reason = app.read_only_reason("prod").unwrap_or_default();
+        assert!(
+            reason.contains("deploys frozen"),
+            "freeze reason must win over per-env pin, got: {reason}"
+        );
     }
 
     #[tokio::test]

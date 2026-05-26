@@ -379,6 +379,18 @@ pub const COMMANDS: &[CommandSpec] = &[
         Category::Lifecycle,
         CommandKind::Prefill("abort-rollback "),
     ),
+    cmd(
+        "freeze-deploys",
+        ":freeze-deploys [REASON…] — session-scoped fleet-wide write-lock; every destructive op refuses while frozen. Useful during incident triage to prevent accidental deploys. Cleared by :thaw-deploys or by exiting ebman. Re-issue to update the reason in place.",
+        Category::Lifecycle,
+        CommandKind::Prefill("freeze-deploys "),
+    ),
+    cmd(
+        "thaw-deploys",
+        ":thaw-deploys — clear the session-scoped freeze set by :freeze-deploys",
+        Category::Lifecycle,
+        CommandKind::ZeroArg,
+    ),
     // ── Lifecycle actions ────────────────────────────────────────────────
     cmd(
         "rebuild",
