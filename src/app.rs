@@ -1365,6 +1365,16 @@ enum AppMsg {
         env_name: String,
         result: Result<(), String>,
     },
+    /// Pre-deploy unavailability estimate. `line` is the rendered
+    /// modal text plus a caution flag for colouring. `None` if the
+    /// option-settings fetch failed — the modal stays silent rather
+    /// than rendering an error line (the impact is observability,
+    /// not safety).
+    UnavailabilityEstimate {
+        gen: u64,
+        env_name: String,
+        line: Option<(String, bool)>,
+    },
     /// `:rollback` — the env's recent events came back; the handler
     /// scans them for the previously-deployed version label and opens
     /// the deploy-confirm modal for it.
@@ -8056,6 +8066,8 @@ impl App {
                         loading_version_preview: false,
                         health_check_probe: None,
                         loading_health_check: false,
+                        unavailability_line: None,
+                        loading_unavailability: false,
                     }));
                 }
                 KeyCode::Char(c) if is_text_input(&key) => {
@@ -8168,6 +8180,8 @@ impl App {
                     loading_version_preview: false,
                     health_check_probe: None,
                     loading_health_check: false,
+                    unavailability_line: None,
+                    loading_unavailability: false,
                 }));
                 if wants_preflight {
                     self.spawn_dry_run(env.name.clone());
@@ -8242,6 +8256,8 @@ impl App {
                     loading_version_preview: false,
                     health_check_probe: None,
                     loading_health_check: false,
+                    unavailability_line: None,
+                    loading_unavailability: false,
                 }));
             }
             _ => {
@@ -8268,6 +8284,8 @@ impl App {
                     loading_version_preview: false,
                     health_check_probe: None,
                     loading_health_check: false,
+                    unavailability_line: None,
+                    loading_unavailability: false,
                 }));
             }
         }
@@ -9361,6 +9379,34 @@ impl App {
         });
     }
 
+    /// Spawn the pre-deploy unavailability estimator. Fetches the
+    /// env's option-settings, extracts deployment policy + batch +
+    /// ASG max, formats a one-line summary, and emits
+    /// `AppMsg::UnavailabilityEstimate`. Uses its own fetch rather
+    /// than piggy-backing on the health-check probe — two parallel
+    /// DescribeConfigurationSettings calls is fine for a one-shot
+    /// modal open, and keeps the two features isolated so failure
+    /// of one doesn't taint the other.
+    fn spawn_unavailability_estimate(&mut self, app_name: String, env_name: String) {
+        let env_for_msg = env_name.clone();
+        self.spawn_aws(
+            "unavailability_estimate",
+            move |aws| async move { aws.fetch_env_option_settings(&app_name, &env_name).await },
+            move |gen, result| {
+                let line = result.ok().map(|opts| {
+                    let (policy, batch, btype, asg_max) = extract_unavailability_inputs(&opts);
+                    let count = compute_unavailability_count(&policy, batch, &btype, asg_max);
+                    format_unavailability_line(&policy, count, asg_max)
+                });
+                AppMsg::UnavailabilityEstimate {
+                    gen,
+                    env_name: env_for_msg,
+                    line,
+                }
+            },
+        );
+    }
+
     /// Fire a single non-destructive action for batch mode. Unlike
     /// `spawn_action` this doesn't need a `ConfirmModal` — the user already
     /// opted in by typing `:batch-…`. Only Rebuild and RestartAppServer are
@@ -9766,8 +9812,13 @@ impl App {
             // synthetic CNAMEs would always fail DNS and pollute
             // screencasts with a fake-warning red herring.
             loading_health_check: wants_version_preview && !env.cname.is_empty() && !self.demo_mode,
+            unavailability_line: None,
+            // Same gate as the health-check probe — only useful for
+            // Deploy confirms; --demo mode skips the AWS call.
+            loading_unavailability: wants_version_preview && !self.demo_mode,
         };
         let needs_health_check_probe = modal.loading_health_check;
+        let needs_unavailability = modal.loading_unavailability;
         self.action_flow = Some(ActionFlow::Confirm(modal));
         self.mode = Mode::Action;
         if wants_preflight {
@@ -9790,6 +9841,9 @@ impl App {
                 env.name.clone(),
                 env.cname.clone(),
             );
+        }
+        if needs_unavailability {
+            self.spawn_unavailability_estimate(env.application.clone(), env.name.clone());
         }
     }
 
@@ -12389,6 +12443,109 @@ fn truncate_armed_cell(s: &str, n: usize) -> String {
     let mut out: String = s.chars().take(n.saturating_sub(1)).collect();
     out.push('…');
     out
+}
+
+/// Pure: how many instances will be simultaneously unavailable
+/// during a deploy with the given EB deployment policy + batch
+/// settings + ASG max-size. Returns the worst-case planning
+/// number — what the operator sees on the EB dashboard during
+/// the rollout. `asg_max` clamps at 1 to avoid divide-by-zero
+/// nonsense on misconfigured envs.
+///
+/// Numbers per policy (EB docs):
+/// - `AllAtOnce` — every instance restarts simultaneously
+/// - `Rolling` — one batch at a time, no extra capacity
+/// - `RollingWithAdditionalBatch` — extra batch launched first
+/// - `Immutable` — new instances alongside (no current-fleet impact)
+/// - `TrafficSplitting` — new ASG receives % traffic (no impact)
+pub fn compute_unavailability_count(
+    policy: &str,
+    batch_size: i32,
+    batch_size_type: &str,
+    asg_max: i32,
+) -> i32 {
+    let asg_max = asg_max.max(1);
+    match policy {
+        p if p.eq_ignore_ascii_case("AllAtOnce") => asg_max,
+        p if p.eq_ignore_ascii_case("Rolling") => {
+            compute_batch_count(batch_size, batch_size_type, asg_max)
+        }
+        // The "additional batch" launches before rotating, so no
+        // capacity dip from the perspective of in-service requests.
+        p if p.eq_ignore_ascii_case("RollingWithAdditionalBatch") => 0,
+        p if p.eq_ignore_ascii_case("Immutable") => 0,
+        p if p.eq_ignore_ascii_case("TrafficSplitting") => 0,
+        // Unknown policy — be honest about the lack of signal.
+        // Return the worst case rather than 0 so an operator with
+        // a custom policy isn't lulled by a false-zero.
+        _ => asg_max,
+    }
+}
+
+/// Pure helper: resolve `BatchSize` + `BatchSizeType` into a
+/// concrete instance count, clamped to [1, asg_max]. `Percentage`
+/// rounds UP (a 33% batch on a 4-instance ASG is 2 instances; EB
+/// rounds up internally too, per the docs).
+pub fn compute_batch_count(batch_size: i32, batch_size_type: &str, asg_max: i32) -> i32 {
+    if batch_size_type.eq_ignore_ascii_case("Percentage") {
+        let pct = batch_size.clamp(1, 100);
+        // Manual ceiling-divide: `i32::div_ceil` is still unstable
+        // on this MSRV (1.91). Both operands are positive after the
+        // clamps above, so `(a + b - 1) / b` is safe.
+        let count = (asg_max * pct + 99) / 100;
+        count.max(1).min(asg_max)
+    } else {
+        // Fixed — `BatchSizeType=Fixed` or any non-Percentage value.
+        batch_size.max(1).min(asg_max)
+    }
+}
+
+/// Pure: render the modal's unavailability line. Returns the
+/// human-readable text plus a severity flag for colouring (true
+/// = caution, false = green/no impact).
+pub fn format_unavailability_line(policy: &str, unavailable: i32, asg_max: i32) -> (String, bool) {
+    let asg_max = asg_max.max(1);
+    let caution = unavailable > 0;
+    let plural = if unavailable == 1 {
+        "instance"
+    } else {
+        "instances"
+    };
+    let body = if unavailable == 0 {
+        format!("deploy plan: {policy} → no in-service unavailability")
+    } else {
+        format!("deploy plan: {policy} → max {unavailable}/{asg_max} {plural} unavailable")
+    };
+    (body, caution)
+}
+
+/// Pure: extract the four option-settings the unavailability
+/// estimate needs from the flat `(namespace, name, value)` shape
+/// `fetch_env_option_settings` returns. Defaults match EB's own
+/// defaults so the math degrades gracefully on partial reads.
+pub fn extract_unavailability_inputs(
+    opts: &[(String, String, String)],
+) -> (String, i32, String, i32) {
+    let get = |ns: &str, name: &str| -> Option<&String> {
+        opts.iter()
+            .find(|(n, k, _)| n == ns && k == name)
+            .map(|(_, _, v)| v)
+    };
+    let policy = get("aws:elasticbeanstalk:command", "DeploymentPolicy")
+        .cloned()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "AllAtOnce".to_string());
+    let batch_size = get("aws:elasticbeanstalk:command", "BatchSize")
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(1);
+    let batch_size_type = get("aws:elasticbeanstalk:command", "BatchSizeType")
+        .cloned()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Fixed".to_string());
+    let asg_max = get("aws:autoscaling:asg", "MaxSize")
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(1);
+    (policy, batch_size, batch_size_type, asg_max)
 }
 
 /// Pure: compose a probe URL from a CNAME + a health-check path.
@@ -18075,6 +18232,164 @@ mod tests {
         assert!(err.contains("503"));
     }
 
+    #[test]
+    fn compute_unavailability_count_per_policy() {
+        // AllAtOnce — every instance flips at once.
+        assert_eq!(
+            super::compute_unavailability_count("AllAtOnce", 1, "Fixed", 4),
+            4
+        );
+        // Rolling, fixed batch of 1 on 4 instances → 1 unavailable.
+        assert_eq!(
+            super::compute_unavailability_count("Rolling", 1, "Fixed", 4),
+            1
+        );
+        // Rolling, fixed batch of 2 on 4 → 2.
+        assert_eq!(
+            super::compute_unavailability_count("Rolling", 2, "Fixed", 4),
+            2
+        );
+        // Rolling, 50% on 4 → 2.
+        assert_eq!(
+            super::compute_unavailability_count("Rolling", 50, "Percentage", 4),
+            2
+        );
+        // Rolling, 33% on 4 → ceil(1.32) = 2.
+        assert_eq!(
+            super::compute_unavailability_count("Rolling", 33, "Percentage", 4),
+            2
+        );
+        // RollingWithAdditionalBatch — extra batch first, zero impact.
+        assert_eq!(
+            super::compute_unavailability_count("RollingWithAdditionalBatch", 1, "Fixed", 4),
+            0
+        );
+        // Immutable + TrafficSplitting — new fleet, zero impact.
+        assert_eq!(
+            super::compute_unavailability_count("Immutable", 1, "Fixed", 4),
+            0
+        );
+        assert_eq!(
+            super::compute_unavailability_count("TrafficSplitting", 1, "Fixed", 4),
+            0
+        );
+        // Unknown policy → assume worst case rather than lulling
+        // the operator with a false zero.
+        assert_eq!(
+            super::compute_unavailability_count("WeirdCustomPolicy", 1, "Fixed", 4),
+            4
+        );
+        // Case-insensitive (EB API can return mixed casing).
+        assert_eq!(
+            super::compute_unavailability_count("allatonce", 1, "Fixed", 4),
+            4
+        );
+    }
+
+    #[test]
+    fn compute_batch_count_clamps_and_rounds_up() {
+        // Fixed clamps to [1, max].
+        assert_eq!(super::compute_batch_count(0, "Fixed", 4), 1);
+        assert_eq!(super::compute_batch_count(10, "Fixed", 4), 4);
+        assert_eq!(super::compute_batch_count(2, "Fixed", 4), 2);
+        // Percentage rounds up.
+        assert_eq!(super::compute_batch_count(33, "Percentage", 4), 2); // ceil(1.32)=2
+        assert_eq!(super::compute_batch_count(25, "Percentage", 4), 1);
+        assert_eq!(super::compute_batch_count(26, "Percentage", 4), 2); // ceil(1.04)=2
+        assert_eq!(super::compute_batch_count(100, "Percentage", 4), 4);
+        // Out-of-range percentage clamps.
+        assert_eq!(super::compute_batch_count(0, "Percentage", 4), 1);
+        assert_eq!(super::compute_batch_count(200, "Percentage", 4), 4);
+    }
+
+    #[test]
+    fn format_unavailability_line_distinguishes_zero_from_partial_from_full() {
+        let (text, caution) = super::format_unavailability_line("Immutable", 0, 4);
+        assert!(text.contains("no in-service unavailability"));
+        assert!(!caution);
+        let (text, caution) = super::format_unavailability_line("Rolling", 1, 4);
+        assert!(text.contains("max 1/4 instance unavailable"));
+        assert!(caution);
+        let (text, caution) = super::format_unavailability_line("AllAtOnce", 4, 4);
+        assert!(text.contains("max 4/4 instances unavailable"));
+        assert!(caution);
+    }
+
+    #[test]
+    fn extract_unavailability_inputs_uses_eb_defaults_on_missing_settings() {
+        // Empty option-settings — defaults match what EB itself
+        // uses when no explicit value is configured.
+        let (policy, batch, btype, asg) = super::extract_unavailability_inputs(&[]);
+        assert_eq!(policy, "AllAtOnce");
+        assert_eq!(batch, 1);
+        assert_eq!(btype, "Fixed");
+        assert_eq!(asg, 1);
+
+        // Partial — operator only set MaxSize.
+        let opts = vec![("aws:autoscaling:asg".into(), "MaxSize".into(), "6".into())];
+        let (_, _, _, asg) = super::extract_unavailability_inputs(&opts);
+        assert_eq!(asg, 6);
+
+        // Empty string values collapse to default rather than the
+        // empty string being mistaken for a policy.
+        let opts = vec![(
+            "aws:elasticbeanstalk:command".into(),
+            "DeploymentPolicy".into(),
+            String::new(),
+        )];
+        let (policy, _, _, _) = super::extract_unavailability_inputs(&opts);
+        assert_eq!(policy, "AllAtOnce");
+    }
+
+    #[tokio::test]
+    async fn handle_unavailability_estimate_stuffs_line_into_modal() {
+        let mut app = test_app();
+        app.environments = vec![mk_env("prod", "shop", "Web", "Green")];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        app.execute_command("deploy build-900");
+        app.handle_msg(AppMsg::UnavailabilityEstimate {
+            gen: app.generation,
+            env_name: "prod".into(),
+            line: Some((
+                "deploy plan: Rolling → max 1/4 instance unavailable".into(),
+                true,
+            )),
+        });
+        match &app.action_flow {
+            Some(ActionFlow::Confirm(modal)) => {
+                assert!(!modal.loading_unavailability);
+                let (text, caution) = modal.unavailability_line.as_ref().unwrap();
+                assert!(text.contains("max 1/4"));
+                assert!(*caution);
+            }
+            _ => panic!("expected confirm modal"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_unavailability_estimate_silent_on_fetch_failure() {
+        // Option-settings fetch failed → line stays None; UI
+        // silently omits the row rather than rendering an error.
+        let mut app = test_app();
+        app.environments = vec![mk_env("prod", "shop", "Web", "Green")];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        app.execute_command("deploy build-900");
+        app.handle_msg(AppMsg::UnavailabilityEstimate {
+            gen: app.generation,
+            env_name: "prod".into(),
+            line: None,
+        });
+        match &app.action_flow {
+            Some(ActionFlow::Confirm(modal)) => {
+                assert!(!modal.loading_unavailability);
+                assert!(modal.unavailability_line.is_none());
+            }
+            _ => panic!("expected confirm modal"),
+        }
+    }
+
     #[tokio::test]
     async fn handle_health_check_probe_renders_warning_on_failure() {
         // Probe failed → modal carries an `Err` so the UI renders
@@ -19694,6 +20009,8 @@ mod tests {
             loading_version_preview: false,
             health_check_probe: None,
             loading_health_check: false,
+            unavailability_line: None,
+            loading_unavailability: false,
         }
     }
 

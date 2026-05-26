@@ -4603,6 +4603,22 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                         .add_modifier(Modifier::BOLD),
                 )));
             }
+            // Deploy-plan unavailability — capacity-impact derived
+            // from deployment-policy + batch + ASG max. Yellow when
+            // any instance unavailability, green/muted when zero.
+            // Loading state stays silent rather than showing a
+            // placeholder — keeps the modal compact when the fetch
+            // hasn't landed yet.
+            if let Some((body, caution)) = &modal.unavailability_line {
+                let style = if *caution {
+                    Style::default()
+                        .fg(theme.health_yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.health_green)
+                };
+                lines.push(Line::from(Span::styled(format!("  {body}"), style)));
+            }
             // Pre-flight events: last 3 events on this env.
             if let Some(events) = &modal.recent_events {
                 if !events.is_empty() {
