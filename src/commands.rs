@@ -391,6 +391,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         Category::Lifecycle,
         CommandKind::ZeroArg,
     ),
+    cmd(
+        "undo",
+        ":undo — reverse the most-recent option-settings write (10-entry ring buffer; :undo of :undo redoes the original)",
+        Category::EnvConfig,
+        CommandKind::ZeroArg,
+    ),
     // ── Lifecycle actions ────────────────────────────────────────────────
     cmd(
         "rebuild",

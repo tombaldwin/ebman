@@ -244,6 +244,71 @@ impl App {
         }
     }
 
+    /// `:undo` — reverse the most-recent option-settings write
+    /// captured in `undo_history`. Pops the back of the deque and
+    /// re-dispatches via `spawn_option_settings_update`, which
+    /// captures ITS OWN undo entry — so `:undo` of an undo
+    /// effectively redoes the original (free redo without a
+    /// separate command).
+    ///
+    /// Empty history yields a status toast pointing at the
+    /// existing config-edit commands rather than a thin overlay.
+    pub(crate) fn cmd_undo(&mut self) {
+        let Some(entry) = self.undo_history.pop_back() else {
+            self.pin_status(
+                "no undo history — option-settings writes get captured into a 10-entry ring buffer",
+            );
+            return;
+        };
+        // The reverse-action could be empty if the original write
+        // matched the prior state exactly (e.g. `:keypair foo` when
+        // EC2KeyName was already foo). Surface that rather than
+        // silently no-op'ing.
+        if entry.to_set.is_empty() && entry.to_remove.is_empty() {
+            self.pin_status(format!(
+                "nothing to undo for '{}': prior state was identical",
+                entry.original_summary
+            ));
+            return;
+        }
+        // The captured env may no longer be in the current view
+        // (context switch, env terminated mid-undo). Refuse rather
+        // than dispatching against an env that isn't present.
+        if !self.environments.iter().any(|e| e.name == entry.env_name) {
+            self.error_message = Some(format!(
+                "undo: env '{}' is no longer in the current view",
+                entry.env_name
+            ));
+            return;
+        }
+        let age_secs = (chrono::Utc::now() - entry.captured_at)
+            .num_seconds()
+            .max(0) as u64;
+        let age = humanize_short_age(std::time::Duration::from_secs(age_secs));
+        let summary = format!("undo: {} (captured {age} ago)", entry.original_summary);
+        // Set the cursor on the captured env so
+        // `spawn_option_settings_update` (which reads
+        // `selected_env`) targets the right destination. Pop the
+        // current selection first so we can restore it if the
+        // undo fails the deny_write check.
+        let prior_selection = self.table_state.selected();
+        if let Some(idx) = self
+            .environments
+            .iter()
+            .position(|e| e.name == entry.env_name)
+        {
+            // We need the *display row* index, not the
+            // environments-vec index — but the env list is what the
+            // display rows refer to. The display_rows() lookup is
+            // already used by selected_env(); finding the env via
+            // .position() against environments is enough for the
+            // common-case unfiltered table.
+            self.table_state.select(Some(idx));
+        }
+        self.spawn_option_settings_update(summary, entry.to_set, entry.to_remove);
+        self.table_state.select(prior_selection);
+    }
+
     pub(crate) fn cmd_pending(&mut self) {
         if self.pending_actions.is_empty() {
             self.pin_status("no actions in flight or recently completed");

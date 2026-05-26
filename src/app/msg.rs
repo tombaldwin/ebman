@@ -46,6 +46,7 @@ impl AppMsg {
             | VersionPreview { gen, .. }
             | HealthCheckProbe { gen, .. }
             | UnavailabilityEstimate { gen, .. }
+            | UndoCaptured { gen, .. }
             | RollbackTarget { gen, .. }
             | DetailTags { gen, .. }
             | DeployFromLocal { gen, .. }
@@ -163,6 +164,7 @@ impl App {
             AppMsg::UnavailabilityEstimate { env_name, line, .. } => {
                 self.handle_unavailability_estimate(env_name, line)
             }
+            AppMsg::UndoCaptured { entry, .. } => self.handle_undo_captured(entry),
             AppMsg::RollbackTarget {
                 env_name,
                 current_version,
@@ -751,6 +753,17 @@ impl App {
         }
         modal.loading_unavailability = false;
         modal.unavailability_line = line;
+    }
+
+    /// Push a captured undo entry onto the history deque. Cap'd at
+    /// `UNDO_HISTORY_CAP` — older entries fall off the front when
+    /// the cap is hit. Generation guard upstream means a stale
+    /// capture from a previous context won't land here.
+    fn handle_undo_captured(&mut self, entry: crate::app::UndoEntry) {
+        self.undo_history.push_back(entry);
+        while self.undo_history.len() > crate::app::UNDO_HISTORY_CAP {
+            self.undo_history.pop_front();
+        }
     }
 
     fn handle_rollback_target(
