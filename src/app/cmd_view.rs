@@ -134,9 +134,15 @@ impl App {
         }
     }
 
-    /// `:filter NAME` / `:f NAME` — load a named filter. Empty arg
-    /// clears the current filter (operator escape hatch when stuck
-    /// behind a filter that hides everything).
+    /// `:filter NAME` / `:f NAME` — load a saved view by name.
+    /// Empty arg clears the current filter (operator escape hatch
+    /// when stuck behind a filter that hides everything). Reads
+    /// from the unified `saved_views` store — same source `]`/`[`
+    /// cycle through and `:view NAME` loads from. Loading via
+    /// `apply_view` so a full view (with sort + group + scope)
+    /// applies entirely, while a filter-only view only changes
+    /// the filter — same `apply_view` "missing fields untouched"
+    /// semantics.
     pub(crate) fn cmd_filter_load(&mut self, rest: &[&str]) {
         match rest.first() {
             None => {
@@ -144,25 +150,34 @@ impl App {
                 self.rebuild_view();
                 self.status_message = Some("filter cleared".into());
             }
-            Some(name) if self.named_filters.contains_key(*name) => {
-                self.filter = self.named_filters[*name].clone();
-                self.rebuild_view();
-                self.status_message = Some(format!("filter: {name} → \"{}\"", self.filter));
+            Some(name) if self.saved_views.contains_key(*name) => {
+                if let Some(snap) = self.saved_views.get(*name).cloned() {
+                    super::apply_view(self, &snap);
+                    self.status_message = Some(format!("filter: {name} → \"{}\"", self.filter));
+                }
             }
             Some(name) => {
-                self.error_message = Some(format!("no saved filter named '{name}' — try :filters"));
+                self.error_message = Some(format!(
+                    "no saved view named '{name}' — try :views (or :save <name>)"
+                ));
             }
         }
     }
 
+    /// `:save NAME` — snapshot only the current FILTER under
+    /// `NAME` in the unified saved-views store. For a full
+    /// filter+sort+group+scope snapshot, use `:save-view NAME`.
+    /// Both go to the same store; the difference is the encoded
+    /// payload — a filter-only view leaves the other surfaces
+    /// alone on load, a full view applies everything.
     pub(crate) fn cmd_save_filter(&mut self, rest: &[&str]) {
         match rest.first() {
             Some(name) => {
                 if self.filter.is_empty() {
                     self.error_message = Some("nothing to save — set a filter with / first".into());
                 } else {
-                    self.named_filters
-                        .insert((*name).to_string(), self.filter.clone());
+                    let encoded = super::encode_filter_only_view(&self.filter);
+                    self.saved_views.insert((*name).to_string(), encoded);
                     self.status_message =
                         Some(format!("saved filter '{name}' = \"{}\"", self.filter));
                     self.persist_state();
@@ -172,10 +187,14 @@ impl App {
         }
     }
 
+    /// `:drop NAME` — alias for `:view-drop NAME`. Same store, same
+    /// operation. Kept as a separate verb because operators
+    /// muscle-memory `:save` ↔ `:drop` and `:save-view` ↔
+    /// `:view-drop` independently.
     pub(crate) fn cmd_drop_filter(&mut self, rest: &[&str]) {
         match rest.first() {
             Some(name) => {
-                if self.named_filters.remove(*name).is_some() {
+                if self.saved_views.remove(*name).is_some() {
                     self.status_message = Some(format!("dropped saved filter '{name}'"));
                     self.persist_state();
                 } else {
@@ -186,14 +205,17 @@ impl App {
         }
     }
 
+    /// `:filters` — list saved views, showing the filter portion
+    /// for each (since this is the filter-flavored listing command).
+    /// `:views` is the same listing but without the filter detail.
     pub(crate) fn cmd_filters(&mut self) {
-        if self.named_filters.is_empty() {
+        if self.saved_views.is_empty() {
             self.status_message = Some("no saved filters — :save <name> to create one".into());
         } else {
             let listing: Vec<String> = self
-                .named_filters
+                .saved_views
                 .iter()
-                .map(|(k, v)| format!("{k}=\"{v}\""))
+                .map(|(k, encoded)| format!("{k}=\"{}\"", super::view_filter_value(encoded)))
                 .collect();
             self.status_message = Some(format!("filters: {}", listing.join("  ")));
         }

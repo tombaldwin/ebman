@@ -344,7 +344,7 @@ fn header_layout(app: &App, area_width: u16) -> (u16, bool) {
     let chain_w: usize = chain_spans.iter().map(|s| s.width()).sum();
     let info_w = estimated_info_row_width(app);
 
-    header_dimensions(info_w, chain_w, inner, !app.named_filters.is_empty())
+    header_dimensions(info_w, chain_w, inner, !app.saved_views.is_empty())
 }
 
 /// Drops trailing (low-priority) pills from `pills` until the rendered
@@ -2418,19 +2418,21 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: bool) {
     if let Some(pl) = pill_line {
         paragraph_lines.push(pl);
     }
-    if !app.named_filters.is_empty() {
-        let mut chips: Vec<Span> =
-            vec![Span::styled("Filters: ", Style::default().fg(theme.muted))];
+    if !app.saved_views.is_empty() {
+        let mut chips: Vec<Span> = vec![Span::styled("Views: ", Style::default().fg(theme.muted))];
+        // "Active" derived by comparing the current filter against
+        // each view's encoded `filter=` portion — matches the cycle
+        // keybind's `cycle_saved_view` active-check. Operators with
+        // legacy filter-only views (auto-migrated from 0.11
+        // `named_filters`) still see them as chips, since those are
+        // now stored as `view.NAME = "filter=..."`.
         if theme.icons == IconStyle::Powerline {
-            // Powerline mode: render the chip bar as a ribbon. Active chip
-            // uses title_alt as its bg (the same colour the alerts pill
-            // uses for "selected"); inactive chips use row_alt_bg so they
-            // read as a faint trough behind the active one.
             let pills: Vec<(String, Color, Color)> = app
-                .named_filters
+                .saved_views
                 .iter()
-                .map(|(name, value)| {
-                    let active = !app.filter.is_empty() && value == &app.filter;
+                .map(|(name, encoded)| {
+                    let active = !app.filter.is_empty()
+                        && crate::app::view_filter_value(encoded) == app.filter;
                     let (fg, bg) = if active {
                         (theme.contrast_text(theme.title_alt), theme.title_alt)
                     } else {
@@ -2441,8 +2443,9 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: bool) {
                 .collect();
             chips.extend(pill_chain(&pills, theme));
         } else {
-            for (name, value) in app.named_filters.iter() {
-                let active = !app.filter.is_empty() && value == &app.filter;
+            for (name, encoded) in app.saved_views.iter() {
+                let active =
+                    !app.filter.is_empty() && crate::app::view_filter_value(encoded) == app.filter;
                 chips.push(Span::styled(
                     format!(" {name} "),
                     if active {
