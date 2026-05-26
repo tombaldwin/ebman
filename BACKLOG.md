@@ -829,6 +829,77 @@ Theme: **workspace polish — saved views as real tabs + ergonomic gap closures*
 #### Skipped on purpose — held for 0.13
 - **Cross-region rollout (`:rollout LABEL --regions r1,r2,r3 [--auto-rollback Nm]`)** — Held (2026-05-26). Real value but needs careful design: same-name vs explicit-mapping env discovery across regions, sequential vs parallel dispatch, partial-failure handling (region 1 ok, region 2 listing failed), per-region AwsClient construction, audit-log shape. Multiple reasonable shapes; warrants a dedicated session rather than tail-end of an autonomous run.
 
+### 0.13 CLI charter (2026-05-26)
+
+Lock this before adding new subcommands. The shape is **flat verbs for reads + `action <verb>` for writes + `ctl` for control plane + `mcp` reserved for server-mode futures.** Symmetric in that all are top-level; the differentiation is intent.
+
+```
+ebman                                  → TUI
+ebman envs                             → read: list envs
+ebman lint                             → read: diagnostic
+ebman drift                            → read: terraform drift
+ebman explain ISSUE_ID                 → read: LLM-backed explainer (future)
+ebman versions                         → read: app versions (future)
+ebman events                           → read: recent events (future)
+ebman audit                            → read: audit log (future)
+ebman cost                             → read: cost report (future)
+ebman action <verb>                    → write: rebuild/restart/terminate/deploy/rollout
+ebman ctl <op>                         → control plane (drive a running ebman)
+ebman mcp serve                        → server mode (future: MCP for Claude Code)
+```
+
+**Locked conventions** (apply to every subcommand):
+
+| Flag | Purpose |
+|---|---|
+| `--env NAME` | scope to one env |
+| `--json` | structured machine-readable output |
+| `--quiet` | suppress text output (paired with --json, or for exit-code-only use) |
+| `--watch [--interval 60s]` | monitoring-tool loop |
+| `--regions r1,r2,r3` | scope to regions (rollout, drift) |
+| Duration grammar | `5m` / `30m` / `1h` / `2d` (same as TUI) |
+
+**Locked exit-code convention** (consistent across all subcommands; CI scripts branch on these):
+- `0` clean / success
+- `1` AWS-layer error
+- `2` usage error (missing flag, malformed duration, env not found)
+- `3` issues / drift found (lint warnings, drift detected)
+- `4` `--wait-for-green` timeout (deploy)
+- `5` `--auto-rollback` fired (deploy)
+
+**Non-zero on issues by default** — no `--exit-code` flag. CI gets natural `ebman lint && deploy` semantics; interactive users see `$? = 3` but can keep reading.
+
+**Reads don't get `--yes`; writes do.** `--yes` is the destructive-confirm gate, not a general convention.
+
+**Out of scope for CLI surface:**
+- Local-state mutations (saved views, pins, runbooks) — these are operator gestures bound to a TUI session; scripting them invites footguns. Keep them TUI-only.
+- Anything that requires a long-running TUI process — use `ctl` for that.
+
+**Future-proofing test passed:** LLM explainer (`ebman explain`), MCP server (`ebman mcp serve`), cron-driven monitoring (`ebman lint --watch`), git pre-commit hooks (`ebman drift`), GitHub Actions integration (`ebman action deploy`), audit-stream consumption (`ebman audit --tail --json | jq`) all fit without restructuring.
+
+### 0.13 candidates (2026-05-26)
+
+Theme: **smart features — rule-based diagnostics with both TUI + CLI surfaces.** Shared rule engine drives `:lint` (TUI), `ebman lint` (CLI for git hooks / CI / monitoring), and confirm-modal warning lines. Terraform integration detects drift between live EB state and the operator's tfstate. LLM-based explanation (Claude API) is designed-for but out of scope for 0.13.
+
+#### Smart diagnostic core — HEADLINE
+- [ ] **Rule engine + `:lint` TUI overlay + `ebman lint` CLI** — shared engine with 8-12 v1 rules (AllAtOnce-on-multi-instance, Web-tier without health-check-url, Env Red >4h, BatchSize > MaxSize, ELB without HTTPS, stale platform, service-role missing managed-update perms, DLQ growth without scale, deprecated namespaces, etc.). Each rule returns a structured `Issue` (rule_id, severity, title, detail, suggestion). Three surfaces use it: `:lint [ENV]` TUI overlay, `ebman lint [--env X] [--json] [--severity warn] [--rules ID1,ID2] [--watch [--interval 60s]]` CLI, and confirm-modal warning lines for any rule that applies at write time. Operator-tunable via `lint.disable = ["EBL011"]` in `config.toml` AND `.ebman/ebman.toml` (project-local). Non-zero exit on issues by default. Estimated ~6hrs.
+
+- [ ] **Terraform integration: `:drift` overlay + `ebman drift` CLI + tf-managed badge** — Discovery walks up from cwd for `terraform.tfstate` / `.terraform/terraform.tfstate` / `*.tf` files (mirrors `project.rs` + `eb_cli.rs` shape). Reads tfstate JSON directly — no `terraform` binary needed. Compares tf-declared option_settings + version_label + tags against live EB state; emits a per-env drift report. TUI: `ⓣ` badge on tf-managed envs, drift-warning line in confirm modals for destructive actions against tf-managed envs, `:drift` overlay with full report. CLI: `ebman drift [--env X] [--tfstate PATH] [--tfdir PATH] [--json]`. Refresh: lazy read on `:drift` open + manual `R` keybind + auto-reread on context switch (account / region change). Remote tfstate backends (S3, etc.) emit a clear "tfstate not local — fetch manually" message. Estimated ~4hrs.
+
+#### Smart diagnostic integration — SUPPORT
+- [ ] **Confirm-modal lint hooks at write time** — Run a subset of lint rules at every confirm-modal open. The health-check probe + unavailability pill from 0.10/0.11 are special-cases of this; generalize so any rule with `severity >= Warn` AND `applies` against the pre-write state surfaces as a modal warning line. Operator sees ALL relevant risks at one glance before confirming. Estimated ~2hrs.
+
+- [ ] **Cross-region rollout: `:rollout LABEL --regions r1,r2,r3` + `ebman action rollout`** — Picks up the held-from-0.12 work. Lint engine helps here: pre-rollout validation reuses the rule engine against each target region's env before dispatch. Sequential dispatch with per-region exit codes (`0` all green / `3` partial drift / etc.). Estimated ~3-4hrs.
+
+#### Smart diagnostic polish — BONUS
+- [ ] **Config: per-rule severity overrides + project-local rule disables** — `lint.disable = ["EBL011"]` and `lint.severity_override.EBL004 = "warn"` in both `config.toml` and `.ebman/ebman.toml`. Project-local overrides win on collision. Estimated ~1hr.
+
+#### Out of scope for 0.13 (track for later)
+- **LLM-backed explainer (`ebman explain ISSUE_ID`)** — Designed for: rule engine emits structured `Issue` with discrete `detail` + `suggestion` + `fields` that an LLM could ingest. Wire-up to Claude API (or local model) is 0.14+. Operator opt-in via config; no API calls without explicit consent.
+- **MCP server (`ebman mcp serve`)** — exposes ebman's read operations as MCP resources/tools so Claude Code can drive ebman programmatically. Speculative; only build if there's demand.
+- **Auto-remediation (`ebman lint --fix`)** — runs each rule's suggested fix. Powerful but dangerous; needs careful per-rule opt-in design.
+- **`ebman audit --tail`** — surfaces the audit log for scripting. Plausible follow-on once the rule-engine CLI shape is proven.
+
 ### Feature candidates — competitive scan (2026-05-24)
 
 Ten new ideas surfaced by a backlog/peer-TUI review after the 0.7.0 ship. Ordered roughly by operator-value-per-hour. None overlap with already-tracked items; the niche items already on the backlog (custom-platform create, topology graph, Route 53, etc.) stay where they are. Sized for a 0.9 batch — pick from the top.
