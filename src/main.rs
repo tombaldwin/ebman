@@ -26,6 +26,7 @@ async fn main() -> Result<()> {
             "action" => return run_action_cli(&args).await,
             "ctl" => return run_ctl_cli(&args).await,
             "lint" => return run_lint_cli(&args).await,
+            "drift" => return run_drift_cli(&args).await,
             _ => {}
         }
     }
@@ -196,6 +197,13 @@ SUBCOMMANDS:
                                                   Exit codes: 0 clean, 1 aws err, 2 usage, 3 issues.
                                                   Operator disables via `lint.disable` in
                                                   config.toml and project-local .ebman/ebman.toml.
+    drift [--env NAME] [--tfstate PATH] [--tfdir PATH] [--json] [--quiet]
+                                                  Terraform drift report. Discovers tfstate via
+                                                  walk-up from cwd (or --tfdir / --tfstate
+                                                  overrides). Compares tf-declared option settings
+                                                  + version_label against live EB state.
+                                                  Exit codes: 0 no drift, 1 aws err, 2 usage,
+                                                  3 drift detected. CI-friendly default exit code.
     action ACTION --env NAME [--yes]             Run an action (rebuild|restart|terminate|deploy) on an env.
                                                   Terminate requires --yes to confirm.
                                                   Deploy requires --version LABEL; supports
@@ -232,6 +240,175 @@ KEYS:
 /// for "I just want the exit code" use cases). `--json` emits a
 /// single `{"issues":[...]}` blob to stdout — same shape the
 /// engine's `render_issues_json` produces.
+/// `ebman drift [--env NAME] [--tfstate PATH] [--tfdir PATH] [--json] [--quiet]`
+/// — terraform drift report for CI gates / git hooks. Detects
+/// tfstate via the same walk-up logic the TUI uses, OR honors
+/// `--tfstate PATH` (explicit file) / `--tfdir PATH` (walk-up
+/// rooted at PATH instead of cwd). Compares tf-declared
+/// option_settings + version_label against live EB state and
+/// emits the per-env drift report.
+///
+/// Exit codes (per the 0.13 CLI charter):
+/// - 0 no drift (or no tf-managed envs in scope)
+/// - 1 AWS-layer error
+/// - 2 usage error (unknown flag, env not found, tfstate
+///   couldn't be parsed)
+/// - 3 drift detected — non-zero by default so CI scripts can
+///   gate `terraform plan` on a clean ebman state
+async fn run_drift_cli(args: &[String]) -> Result<()> {
+    let mut env_name: Option<String> = None;
+    let mut tfstate_path: Option<std::path::PathBuf> = None;
+    let mut tfdir: Option<std::path::PathBuf> = None;
+    let mut json = false;
+    let mut quiet = false;
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--env" => env_name = iter.next().cloned(),
+            "--tfstate" => tfstate_path = iter.next().map(std::path::PathBuf::from),
+            "--tfdir" => tfdir = iter.next().map(std::path::PathBuf::from),
+            "--json" => json = true,
+            "--quiet" => quiet = true,
+            other => {
+                eprintln!("ebman drift: unknown flag '{other}'");
+                std::process::exit(2);
+            }
+        }
+    }
+
+    // Locate tfstate. Priority: --tfstate explicit path > --tfdir
+    // walk-up > cwd walk-up.
+    let (tf_state, used_path) = if let Some(path) = tfstate_path.as_ref() {
+        let Some(state) = ebman::terraform::load_from_path(path) else {
+            eprintln!(
+                "ebman drift: could not read or parse tfstate at {}",
+                path.display()
+            );
+            std::process::exit(2);
+        };
+        (state, Some(path.clone()))
+    } else {
+        let start = tfdir
+            .as_deref()
+            .unwrap_or(std::path::Path::new("."))
+            .to_path_buf();
+        let abs = start.canonicalize().unwrap_or(start);
+        let Some(found) = ebman::terraform::find_tfstate(&abs) else {
+            if !quiet {
+                if json {
+                    println!("{{\"tfstate\":null,\"envs\":[]}}");
+                } else {
+                    eprintln!(
+                        "ebman drift: no terraform.tfstate found under {}",
+                        abs.display()
+                    );
+                }
+            }
+            // No tfstate isn't an error — exit 0 (clean). Same
+            // shape as `terraform plan` against a project with
+            // no resources.
+            return Ok(());
+        };
+        let Some(state) = ebman::terraform::load_from_path(&found) else {
+            eprintln!(
+                "ebman drift: could not parse tfstate at {}",
+                found.display()
+            );
+            std::process::exit(2);
+        };
+        (state, Some(found))
+    };
+
+    let aws = aws::AwsClient::with(None, None).await?;
+    let live_envs = aws
+        .list_environments()
+        .await
+        .map_err(|e| color_eyre::eyre::eyre!("list_environments: {e}"))?;
+
+    // Build the work list. With --env, scope to that env (and
+    // refuse if it's not tf-managed — operator typo'd a non-
+    // managed name); without, run against every tf-managed env
+    // in the live fleet.
+    let targets: Vec<&ebman::aws::Environment> = match env_name.as_deref() {
+        Some(name) => {
+            let Some(env) = live_envs.iter().find(|e| e.name == name) else {
+                eprintln!("ebman drift: env '{name}' not found in current context");
+                std::process::exit(2);
+            };
+            vec![env]
+        }
+        None => live_envs
+            .iter()
+            .filter(|e| tf_state.env_by_name(&e.name).is_some())
+            .collect(),
+    };
+
+    let mut reports: Vec<(String, bool, Vec<ebman::terraform::DriftField>)> = Vec::new();
+    let mut any_drift = false;
+    for env in targets {
+        let tf_env = tf_state.env_by_name(&env.name);
+        let tf_managed = tf_env.is_some();
+        let drift = if let Some(tf) = tf_env {
+            match aws
+                .fetch_env_option_settings(&env.application, &env.name)
+                .await
+            {
+                Ok(opts) => ebman::terraform::compute_drift(tf, env, &opts),
+                Err(e) => {
+                    if !quiet {
+                        eprintln!(
+                            "warning: skipping {} — fetch_env_option_settings: {e}",
+                            env.name
+                        );
+                    }
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+        if !drift.is_empty() {
+            any_drift = true;
+        }
+        reports.push((env.name.clone(), tf_managed, drift));
+    }
+
+    // Output.
+    if !quiet {
+        if json {
+            println!(
+                "{}",
+                ebman::terraform::render_drift_json(used_path.as_deref(), &reports)
+            );
+        } else {
+            for (env, managed, drift) in &reports {
+                if drift.is_empty() {
+                    if *managed {
+                        println!("{env}\t✓ no drift");
+                    }
+                    continue;
+                }
+                for d in drift {
+                    let target = match (d.namespace.as_deref(), d.name.as_deref()) {
+                        (Some(ns), Some(n)) => format!("{ns}/{n}"),
+                        (_, Some(n)) => n.to_string(),
+                        _ => d.kind.clone(),
+                    };
+                    println!(
+                        "{env}\t{}\t{target}\ttf={}\tlive={}",
+                        d.kind, d.tf_value, d.live_value
+                    );
+                }
+            }
+        }
+    }
+
+    if any_drift {
+        std::process::exit(3);
+    }
+    Ok(())
+}
+
 async fn run_lint_cli(args: &[String]) -> Result<()> {
     let mut env_name: Option<String> = None;
     let mut json = false;
