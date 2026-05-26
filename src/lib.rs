@@ -19,6 +19,7 @@ pub mod cost_cache;
 pub mod eb_cli;
 pub mod form;
 pub mod lint;
+pub mod terraform;
 
 // `font_probe` and `overlay` live in the shared `tui-common` crate so
 // the sibling pgman repo can depend on the same code. Re-exported here
