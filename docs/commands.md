@@ -55,9 +55,11 @@ Type `:` to open the command bar. Tab-completion is not implemented, but `Ctrl-K
 
 ## Diagnostics
 
-- `:lint [ENV]` — run the diagnostic rule engine against the selected env (or named env). Surfaces AllAtOnce-on-multi-instance, missing health-check URL, env Red >4h, batch-size > max-size, single-instance prod, low cooldown. Operator-tunable via `lint.disable` in `config.toml`. Also available as `ebman lint` for CI.
+- `:lint [ENV]` — run the diagnostic rule engine against the selected env (or named env). Surfaces AllAtOnce-on-multi-instance, missing health-check URL, env Red >4h, batch-size > max-size, single-instance prod, low cooldown. Operator-tunable via `lint.disable` in `config.toml`. Also available as `ebman lint` for CI; `ebman lint --fix --yes` auto-remediates EBL001 / EBL004 / EBL006 (the rules with an obvious correct answer); per-rule opt-out via `lint.fix_disable`.
 - `:drift [ENV|refresh]` — terraform drift report. No arg → selected env. `refresh` re-reads tfstate (run after `terraform apply` mid-session). Discovery walks up from cwd for `.terraform/terraform.tfstate` (preferred) or local `terraform.tfstate`. Also available as `ebman drift` for CI.
 - `:explain` / `:explain ARN ACTION` — diagnose the last IAM AccessDenied via `iam:SimulatePrincipalPolicy`. Explicit-pairs form evaluates a given principal/action.
+- `:explain EBL###` — LLM-backed explanation of a lint issue against the selected env (e.g. `:explain EBL001`). Routes to the configured Provider (Anthropic or Ollama). Opt-in via `[explain] enabled = true` in `config.toml` + provider API key. Responses cached at `~/.cache/ebman/explain/`. Also available as `ebman explain EBL### [--env NAME]` for CI.
+- `ebman audit [--tail] [--since DUR] [--env NAME] [--rule ID] [--action NAME] [--json]` — CLI-only; surface the local `~/.cache/ebman/audit.log` with structure + windows + filtering for Slack-bot routing / on-call dashboards.
 
 ## Write — env state
 

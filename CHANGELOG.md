@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-05-27 — From diagnostic to remediation: explain, lint --fix, audit CLI
+
+0.12 surfaced issues (`:lint` rule engine, `:drift`
+terraform drift detection). 0.13 made every read
+fleet-wide (`--regions r1,r2,r3` on every smart-feature
+subcommand + `:rollout` cross-region deploy). 0.14 makes
+the output **actionable** — LLM-backed explanations turn
+the structured `Issue` shape into operator-readable next
+steps for any rule that fires; opt-in auto-remediation
+dispatches the obvious-correct-answer fixes through the
+existing undo machinery; the audit log gets a first-class
+CLI for monitoring / Slack-bot integration so operators
+stop shell-parsing it themselves.
+
+### Added — explain
+
+- **`ebman explain EBL###` CLI + `:explain EBL###` TUI dispatch.** New `src/llm.rs` module ships a `Provider` trait with Anthropic and Ollama implementations. Anthropic uses `POST /v1/messages` (default model `claude-haiku-4-5` — ~$0.001 per explanation, <2s p50); Ollama uses `POST /api/generate` against the local server for operators on locked-down corporate networks. Both providers consume the same prompt template (`build_prompt`), so swapping providers doesn't materially change response quality. Backward-compat with the existing IAM AccessDenied `:explain` — dispatch arms on the `EBL\d+` prefix. CLI flags: `--env NAME` / `--json` / `--dry-run` / `--no-cache`. Responses cached by SHA256(rule_id || sorted fields) → 16-hex key at `~/.cache/ebman/explain/`; CI loops running `ebman lint --json | jq | xargs explain` don't burn API calls on identical issues. (`22904d9`)
+- **Explicit consent gate.** `[explain] enabled = true` required in `config.toml`. Off by default. Presence of `ANTHROPIC_API_KEY` is NOT implicit consent — security-conscious orgs that export API keys for other tools shouldn't have ebman silently start making outbound calls. The error message points the operator at the config edit + env var when invoked without consent. (`22904d9`)
+- **HTTP via `reqwest` with rustls-tls** — reuses the rustls aws-sdk already pulls in (no openssl dependency added). `json` feature deliberately off; request bodies are short + fixed, hand-rolled to match the project's existing JSON convention. Response parsing uses `serde_yml` (JSON is a YAML subset; already a dep). (`22904d9`)
+
+### Added — lint --fix
+
+- **Opt-in auto-remediation: `ebman lint --fix --yes` + `--dry-run`.** Each `Rule` grows an optional `fix(&LintContext) -> Option<FixAction>` method (default `None` preserves the report-only shape). v1 auto-fix set: EBL001 (DeploymentPolicy: AllAtOnce → Rolling), EBL004 (BatchSize → MaxSize), EBL006 (Cooldown → 360s). v1 Manual fixes: EBL002 (path is app-specific), EBL005 (capacity is workload-specific). EBL003 (env Red >4h) has no fix — it's a state, not a config issue. (`5cb2ab8`)
+- **Safety + audit + per-rule opt-out.** `--fix` requires explicit `--yes` (or `--dry-run` to preview); `--yes` + `--dry-run` mutex. Only rules whose issue passed the `--severity` / `--rules` filters are eligible for fix dispatch — `--rule EBL001 --fix` won't apply EBL004's fix even if both fire. Each dispatched fix writes an audit line tagged `stage=fix action=SetOption rule_id=ID` so `ebman audit --rule EBL001` returns clean per-rule history. Per-rule opt-out via `lint.fix_disable = "EBL004"` in `config.toml` (or `fix_disable = ["EBL004"]` in project-local `.ebman/ebman.toml`). Exit-code regime differs from `--no-fix`: `--fix` mode exits 0 on success / 1 on AWS dispatch failure, NOT 3 — operator's intent is "fix the issues", so a clean apply is exit 0. (`5cb2ab8`)
+
+### Added — audit CLI
+
+- **`ebman audit [--tail] [--since DUR] [--env NAME] [--rule ID] [--action NAME] [--json]`.** First-class scriptable surface for the existing `~/.cache/ebman/audit.log`. Default text mode renders pretty columns (TS / REGION / STAGE / ACTION / TARGET / OUTCOME); `--json` emits JSONL one entry per line. `--tail` polls the file at 1s intervals from EOF (Ctrl-C to exit); rotation detected by file shrink (resets offset). `--since 1h` filters to entries within the duration window. New `src/audit.rs` module with `AuditEntry` typed fields + `parse_audit_line` parser handling both the normal-action shape and the rollout-line shape uniformly via a `parse_kv_pairs` tokenizer (quoted values + naked spaces in unquoted values both supported). (`dda731d`)
+- **Audit-line format change: `outcome=ok` as explicit key=value pair** instead of bare trailing `ok`. Pre-0.14 entries stay parseable but lossy (target value extends to include the trailing token); pinned in `parse_audit_line_pre_0_14_bare_ok_lossy_but_parses` so the soft-regression is documented. (`dda731d`)
+
+### Internal
+
+- **`reqwest` + `sha2` added as direct deps.** reqwest with `default-features = false, features = ["rustls-tls"]` to reuse the rustls already in the tree; ~1MB binary growth. sha2 was already transitive via aws-sdk; promoted to a direct dep so `src/llm.rs` can use it for cache keys.
+- **Tests: 669 lib + 17 tui-common (up from 628 + 17 in 0.13).** +18 audit-parser tests, +8 lint fix() coverage tests, +13 llm prompt/cache/dispatch tests, +2 config round-trip tests for the new `[explain]` block, +1 project-local `lint.fix_disable` parse test, +2 `lint_fix_disable` round-trip tests. `cargo test` runtime unchanged (~3s on M1).
+
 ## [0.13.0] — 2026-05-27 — Multi-region everything: cross-region rollout + fleet-wide reads
 
 ebman now treats the fleet as a unit. A new sequential
@@ -715,7 +750,8 @@ Initial public release. Headline surface:
 - Published to crates.io as `ebman`.
 - Homebrew tap at `tombaldwin/homebrew-tap`.
 
-[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/tombaldwin/ebman/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/tombaldwin/ebman/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/tombaldwin/ebman/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/tombaldwin/ebman/compare/v0.10.0...v0.11.0
