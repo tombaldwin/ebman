@@ -1144,6 +1144,15 @@ pub struct App {
     /// rules still surface in reports but their auto-remediation is
     /// suppressed. Same project-extends-user merge as `lint_disable`.
     pub lint_fix_disable: Vec<String>,
+    /// `[explain]` block from `config.toml`. Round-tripped through
+    /// the App so `:settings` save doesn't clobber them; not yet
+    /// editable from the in-app settings form.
+    pub explain_enabled: bool,
+    pub explain_provider: String,
+    pub explain_model: String,
+    pub explain_api_key_env: String,
+    pub explain_ollama_url: String,
+    pub explain_max_tokens: u32,
     pub required_tags: Vec<String>,
     /// The raw `icons = …` string from `config.toml` (before resolution to
     /// [`crate::theme::IconStyle`]). Kept verbatim so `:settings` can round-trip
@@ -1935,6 +1944,12 @@ impl App {
             command_aliases: config.command_aliases.clone(),
             lint_disable: config.lint_disable.clone(),
             lint_fix_disable: config.lint_fix_disable.clone(),
+            explain_enabled: config.explain_enabled,
+            explain_provider: config.explain_provider.clone(),
+            explain_model: config.explain_model.clone(),
+            explain_api_key_env: config.explain_api_key_env.clone(),
+            explain_ollama_url: config.explain_ollama_url.clone(),
+            explain_max_tokens: config.explain_max_tokens,
             required_tags: config.required_tags,
             cfg_icons_raw: config.icons.clone(),
             profile_themes: config.profile_themes.clone(),
@@ -2171,6 +2186,12 @@ impl App {
             command_aliases: config.command_aliases.clone(),
             lint_disable: config.lint_disable.clone(),
             lint_fix_disable: config.lint_fix_disable.clone(),
+            explain_enabled: config.explain_enabled,
+            explain_provider: config.explain_provider.clone(),
+            explain_model: config.explain_model.clone(),
+            explain_api_key_env: config.explain_api_key_env.clone(),
+            explain_ollama_url: config.explain_ollama_url.clone(),
+            explain_max_tokens: config.explain_max_tokens,
             required_tags: config.required_tags.clone(),
             cfg_icons_raw: config.icons.clone(),
             profile_themes: config.profile_themes.clone(),
@@ -5010,6 +5031,16 @@ impl App {
     /// principal — common gap on assumed-role sessions. We surface
     /// that as a clear error rather than a silent no-op.
     pub(crate) fn cmd_explain(&mut self, rest: &[&str]) {
+        // New in 0.14: `:explain EBL###` routes to the LLM-backed
+        // explainer for lint issues. Backward-compatible with the
+        // existing IAM AccessDenied flow because rule IDs don't
+        // start with `arn:aws:` and don't take a second positional.
+        if let Some(first) = rest.first().copied() {
+            if first.starts_with("EBL") {
+                self.cmd_explain_issue(first);
+                return;
+            }
+        }
         let (principal, actions): (String, Vec<String>) = match rest.first().copied() {
             // Args form: ARN + 1..N action names.
             Some(arn) if arn.starts_with("arn:aws:") && rest.len() >= 2 => {
@@ -5018,7 +5049,7 @@ impl App {
             }
             Some(_) => {
                 self.error_message = Some(
-                    "usage: :explain (no args, walks last error) | :explain ARN ACTION [ACTION ...]"
+                    "usage: :explain (IAM AccessDenied) | :explain ARN ACTION [...] | :explain EBL###"
                         .into(),
                 );
                 return;
@@ -5074,6 +5105,118 @@ impl App {
             let _ = tx.send(AppMsg::TextOverlay {
                 gen,
                 title: format!("explain — {principal_for_title}"),
+                body,
+            });
+        });
+    }
+
+    /// `:explain EBL###` — LLM-backed explanation of a lint issue.
+    /// Runs the lint engine against the currently-selected env,
+    /// finds the matching issue, builds the standard explain prompt
+    /// via [`crate::llm::build_prompt`], and dispatches to the
+    /// configured Provider. Result lands in a TextOverlay (same
+    /// surface as the IAM AccessDenied explainer).
+    ///
+    /// Opt-in via `[explain] enabled = true` in `config.toml` plus
+    /// the env-var holding the provider API key. Without consent
+    /// the overlay just says so with a config-file pointer.
+    fn cmd_explain_issue(&mut self, issue_id: &str) {
+        let Some(env) = self.selected_env().cloned() else {
+            self.error_message = Some("no env selected".into());
+            return;
+        };
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let mut disabled = self.lint_disable.clone();
+        disabled.extend(crate::project::load_lint_disables_from_cwd());
+        let app_name = env.application.clone();
+        let env_name_for_fetch = env.name.clone();
+        // Resolve LLM settings directly from the App's mirrored
+        // explain_* fields (round-tripped through
+        // current_config_snapshot), without round-tripping through
+        // Config::default + field assignment.
+        let settings = crate::llm::Settings {
+            enabled: self.explain_enabled,
+            provider: if self.explain_provider.is_empty() {
+                "anthropic".into()
+            } else {
+                self.explain_provider.clone()
+            },
+            model: if self.explain_model.is_empty() {
+                "claude-haiku-4-5".into()
+            } else {
+                self.explain_model.clone()
+            },
+            api_key_env: if self.explain_api_key_env.is_empty() {
+                "ANTHROPIC_API_KEY".into()
+            } else {
+                self.explain_api_key_env.clone()
+            },
+            ollama_url: if self.explain_ollama_url.is_empty() {
+                "http://localhost:11434".into()
+            } else {
+                self.explain_ollama_url.clone()
+            },
+            max_tokens: if self.explain_max_tokens == 0 {
+                1024
+            } else {
+                self.explain_max_tokens
+            },
+        };
+        let issue_id_owned = issue_id.to_string();
+        let issue_id_title = issue_id.to_string();
+        self.status_message = Some(format!("explain: building prompt for {issue_id}…"));
+        tokio::spawn(async move {
+            let body = match aws
+                .fetch_env_option_settings(&app_name, &env_name_for_fetch)
+                .await
+            {
+                Ok(opts) => {
+                    let ctx = crate::lint::LintContext {
+                        env: &env,
+                        options: &opts,
+                        events: &[],
+                        cost_usd_per_month: None,
+                        latest_stack_version: None,
+                    };
+                    let rules = crate::lint::default_rules(&disabled);
+                    let issues = crate::lint::run_rules(&rules, &ctx);
+                    match issues.iter().find(|i| i.rule_id == issue_id_owned) {
+                        None => format!(
+                            "explain: rule {issue_id_owned} doesn't fire on env {} — nothing to explain.\n\
+                             Run :lint to see which issues do fire here.\n\nesc / q to close",
+                            env.name
+                        ),
+                        Some(issue) => {
+                            let prompt = crate::llm::build_prompt(issue);
+                            // Cache first — operators running the
+                            // same explain multiple times in a
+                            // session don't burn API calls.
+                            match crate::llm::read_cache(issue) {
+                                Some(cached) => cached,
+                                None => match crate::llm::dispatch(&settings, &prompt).await {
+                                    Ok(r) => {
+                                        crate::llm::write_cache(issue, &r);
+                                        r
+                                    }
+                                    Err(e) => format!(
+                                        "explain: {e}\n\n\
+                                         Configure [explain] in {} or run from CLI with `ebman explain {issue_id_owned} --env {}`.\n\n\
+                                         esc / q to close",
+                                        crate::util::config_file("config.toml").display(),
+                                        env.name,
+                                    ),
+                                },
+                            }
+                        }
+                    }
+                }
+                Err(e) => format!("explain: fetch_env_option_settings: {e}\n\nesc / q to close"),
+            };
+            let _ = tx.send(AppMsg::TextOverlay {
+                gen,
+                title: format!("explain — {issue_id_title}"),
                 body,
             });
         });
@@ -8028,6 +8171,12 @@ impl App {
             command_aliases: self.command_aliases.clone(),
             lint_disable: self.lint_disable.clone(),
             lint_fix_disable: self.lint_fix_disable.clone(),
+            explain_enabled: self.explain_enabled,
+            explain_provider: self.explain_provider.clone(),
+            explain_model: self.explain_model.clone(),
+            explain_api_key_env: self.explain_api_key_env.clone(),
+            explain_ollama_url: self.explain_ollama_url.clone(),
+            explain_max_tokens: self.explain_max_tokens,
         }
     }
 

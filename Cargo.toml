@@ -70,6 +70,15 @@ toml = "0.8"
 # maintained successor to the archived serde_yaml; pre-1.0 versioning
 # but the read-shape we depend on (OptionSettings nested map) is stable.
 serde_yml = "0.0"
+# Used by `ebman explain` to talk to the LLM provider (Anthropic API
+# or a local Ollama). `rustls-tls` reuses the rustls already pulled
+# in by aws-sdk; default-features = false skips the openssl path.
+# `json` feature deliberately OFF — request bodies are short and
+# fixed, and pulling in serde_json just for them would conflict with
+# the project's hand-rolled JSON output convention. We use serde_yml
+# for response parsing (JSON is a YAML subset).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+sha2 = "0.10"
 
 [dev-dependencies]
 # Mocked AWS clients for unit-testing aws.rs without a live AWS account.

@@ -61,6 +61,30 @@ accounts.prod.region = "eu-west-2"
 # switch; these add granular pins on top.
 safety.envs.uflexi-prod.read_only = true
 safety.accounts.prod.read_only = true
+
+# Lint engine disables — CSV form. Disabled rules are skipped at
+# registry-load time so they have zero per-env cost. Project-local
+# `.ebman/ebman.toml` can extend (never override) this list via
+# `[lint]\ndisable = ["EBL001"]`.
+# lint.disable = "EBL003,EBL006"
+
+# Per-rule opt-out for `ebman lint --fix`. Listed rules still
+# surface in reports but their auto-remediation is suppressed.
+# Useful when an operator has a deliberate non-standard value the
+# rule would otherwise overwrite. Project-local form:
+# `[lint]\nfix_disable = ["EBL004"]`.
+# lint.fix_disable = "EBL004"
+
+# `ebman explain ISSUE_ID` / `:explain EBL###` — LLM-backed
+# explainer for lint issues. OFF BY DEFAULT — operators must
+# explicitly opt in here AND export the provider API key.
+# Presence of ANTHROPIC_API_KEY alone is not implicit consent.
+# explain.enabled = true
+# explain.provider = "anthropic"           # or "ollama"
+# explain.model = "claude-haiku-4-5"       # cheap + fast; or Sonnet/Opus
+# explain.api_key_env = "ANTHROPIC_API_KEY"
+# explain.ollama_url = "http://localhost:11434"
+# explain.max_tokens = 1024
 ```
 
 ## `~/.config/ebman/commands.toml` (optional)

@@ -81,6 +81,23 @@ pub struct Config {
     /// (e.g. they have a non-standard BatchSize for a reason)
     /// list it here.
     pub lint_fix_disable: Vec<String>,
+    /// Master switch for the LLM-backed `ebman explain`
+    /// subcommand. Off by default — operators must explicitly
+    /// opt in via `explain.enabled = true`. Presence of an API
+    /// key in the env is not implicit consent.
+    pub explain_enabled: bool,
+    /// Provider key — `"anthropic"` (default) or `"ollama"`.
+    pub explain_provider: String,
+    /// Model identifier. Anthropic default: `claude-haiku-4-5`.
+    pub explain_model: String,
+    /// Env-var name to read the Anthropic API key from.
+    /// Default `ANTHROPIC_API_KEY`.
+    pub explain_api_key_env: String,
+    /// HTTP base URL for the Ollama provider. Default
+    /// `http://localhost:11434`.
+    pub explain_ollama_url: String,
+    /// Soft cap on response tokens. 0 = use default (1024).
+    pub explain_max_tokens: u32,
 }
 
 /// A named `sts:AssumeRole` target. The operator typically pins one of
@@ -117,6 +134,12 @@ impl Default for Config {
             command_aliases: std::collections::HashMap::new(),
             lint_disable: Vec::new(),
             lint_fix_disable: Vec::new(),
+            explain_enabled: false,
+            explain_provider: String::new(),
+            explain_model: String::new(),
+            explain_api_key_env: String::new(),
+            explain_ollama_url: String::new(),
+            explain_max_tokens: 0,
         }
     }
 }
@@ -192,6 +215,20 @@ pub fn parse(text: &str) -> Config {
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
                     .collect();
+            }
+            "explain.enabled" => {
+                if let Some(b) = parse_bool(&value) {
+                    cfg.explain_enabled = b;
+                }
+            }
+            "explain.provider" => cfg.explain_provider = value,
+            "explain.model" => cfg.explain_model = value,
+            "explain.api_key_env" => cfg.explain_api_key_env = value,
+            "explain.ollama_url" => cfg.explain_ollama_url = value,
+            "explain.max_tokens" => {
+                if let Ok(n) = value.parse::<u32>() {
+                    cfg.explain_max_tokens = n;
+                }
             }
             "notify_webhook" => {
                 // Empty string disables; treat the same as the key
@@ -334,6 +371,36 @@ pub fn serialize(cfg: &Config) -> String {
         out.push_str(&format!(
             "lint.fix_disable = \"{}\"\n",
             cfg.lint_fix_disable.join(",")
+        ));
+    }
+    if cfg.explain_enabled {
+        out.push_str("explain.enabled = true\n");
+    }
+    if !cfg.explain_provider.is_empty() {
+        out.push_str(&format!(
+            "explain.provider = \"{}\"\n",
+            cfg.explain_provider
+        ));
+    }
+    if !cfg.explain_model.is_empty() {
+        out.push_str(&format!("explain.model = \"{}\"\n", cfg.explain_model));
+    }
+    if !cfg.explain_api_key_env.is_empty() {
+        out.push_str(&format!(
+            "explain.api_key_env = \"{}\"\n",
+            cfg.explain_api_key_env
+        ));
+    }
+    if !cfg.explain_ollama_url.is_empty() {
+        out.push_str(&format!(
+            "explain.ollama_url = \"{}\"\n",
+            cfg.explain_ollama_url
+        ));
+    }
+    if cfg.explain_max_tokens != 0 {
+        out.push_str(&format!(
+            "explain.max_tokens = {}\n",
+            cfg.explain_max_tokens
         ));
     }
     if !cfg.command_aliases.is_empty() {
@@ -606,6 +673,12 @@ accounts.staging.external_id = "abc-xyz"
             },
             lint_disable: vec!["EBL003".into(), "EBL006".into()],
             lint_fix_disable: vec!["EBL004".into()],
+            explain_enabled: true,
+            explain_provider: "anthropic".into(),
+            explain_model: "claude-haiku-4-5".into(),
+            explain_api_key_env: "ANTHROPIC_API_KEY".into(),
+            explain_ollama_url: "http://localhost:11434".into(),
+            explain_max_tokens: 2048,
         };
 
         let body = serialize(&cfg);
@@ -623,6 +696,37 @@ accounts.staging.external_id = "abc-xyz"
         assert_eq!(reparsed.command_aliases, cfg.command_aliases);
         assert_eq!(reparsed.lint_disable, cfg.lint_disable);
         assert_eq!(reparsed.lint_fix_disable, cfg.lint_fix_disable);
+        assert_eq!(reparsed.explain_enabled, cfg.explain_enabled);
+        assert_eq!(reparsed.explain_provider, cfg.explain_provider);
+        assert_eq!(reparsed.explain_model, cfg.explain_model);
+        assert_eq!(reparsed.explain_api_key_env, cfg.explain_api_key_env);
+        assert_eq!(reparsed.explain_ollama_url, cfg.explain_ollama_url);
+        assert_eq!(reparsed.explain_max_tokens, cfg.explain_max_tokens);
+    }
+
+    #[test]
+    fn parse_explain_block_full_shape() {
+        let body = "\
+explain.enabled = true
+explain.provider = \"ollama\"
+explain.model = \"llama3.2\"
+explain.api_key_env = \"MY_KEY\"
+explain.ollama_url = \"http://10.0.0.5:11434\"
+explain.max_tokens = 512
+";
+        let cfg = parse(body);
+        assert!(cfg.explain_enabled);
+        assert_eq!(cfg.explain_provider, "ollama");
+        assert_eq!(cfg.explain_model, "llama3.2");
+        assert_eq!(cfg.explain_api_key_env, "MY_KEY");
+        assert_eq!(cfg.explain_ollama_url, "http://10.0.0.5:11434");
+        assert_eq!(cfg.explain_max_tokens, 512);
+    }
+
+    #[test]
+    fn parse_explain_disabled_by_default() {
+        let cfg = parse("");
+        assert!(!cfg.explain_enabled);
     }
 
     #[test]
