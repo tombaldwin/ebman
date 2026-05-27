@@ -28,6 +28,7 @@ async fn main() -> Result<()> {
             "lint" => return run_lint_cli(&args).await,
             "drift" => return run_drift_cli(&args).await,
             "audit" => return run_audit_cli(&args).await,
+            "explain" => return run_explain_cli(&args).await,
             _ => {}
         }
     }
@@ -241,6 +242,18 @@ SUBCOMMANDS:
                                                   polls 1s for new entries (until Ctrl-C). --since
                                                   filters to entries within a duration (5m/1h/2d).
                                                   Exit codes: 0 ok, 1 io err, 2 usage.
+    explain EBL### [--env NAME] [--json] [--dry-run] [--no-cache]
+                                                  LLM-backed explanation of a lint issue. Routes to
+                                                  the configured Provider (Anthropic API or local
+                                                  Ollama) and prints an operator-readable summary
+                                                  of why the issue matters and what to do next.
+                                                  Requires `[explain] enabled = true` in
+                                                  config.toml + an exported ANTHROPIC_API_KEY
+                                                  (Anthropic) or a running Ollama server. Responses
+                                                  cached to ~/.cache/ebman/explain/; --no-cache
+                                                  forces a fresh call. --dry-run prints the prompt
+                                                  without sending. Exit codes: 0 ok, 1 provider err,
+                                                  2 usage, 3 issue not found.
 
 CONFIG:
     ~/.config/ebman/config.toml   user configuration (see README)
@@ -1113,6 +1126,213 @@ async fn run_audit_cli(args: &[String]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// `ebman explain EBL### [--env NAME] [--json] [--dry-run] [--no-cache]`
+/// — LLM-backed explanation of a lint issue. Loads the configured
+/// Provider (Anthropic API or Ollama), assembles the prompt via
+/// [`ebman::llm::build_prompt`], dispatches, prints the response.
+///
+/// Requires explicit operator consent via `[explain] enabled = true`
+/// in `config.toml`. The presence of `ANTHROPIC_API_KEY` is not
+/// implicit consent — the surface refuses with a clear message
+/// pointing at the config edit needed.
+///
+/// Exit codes (per the 0.13 CLI charter, extended for 0.14):
+/// - 0 ok
+/// - 1 provider error (HTTP, parse, auth)
+/// - 2 usage error (missing flag, bad rule_id, env not found)
+/// - 3 issue not found (rule didn't fire on any env in scope)
+async fn run_explain_cli(args: &[String]) -> Result<()> {
+    let mut issue_id: Option<String> = None;
+    let mut env_name: Option<String> = None;
+    let mut json = false;
+    let mut dry_run = false;
+    let mut no_cache = false;
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--env" => env_name = iter.next().cloned(),
+            "--json" => json = true,
+            "--dry-run" => dry_run = true,
+            "--no-cache" => no_cache = true,
+            other if other.starts_with("--") => {
+                eprintln!("ebman explain: unknown flag '{other}'");
+                std::process::exit(2);
+            }
+            other => {
+                // Positional: the ISSUE_ID (e.g. `EBL001`). Accept
+                // multiple positionals by overwriting — the last
+                // wins, which is the operator's intent if they
+                // re-typed.
+                issue_id = Some(other.to_string());
+            }
+        }
+    }
+    let Some(issue_id) = issue_id else {
+        eprintln!("usage: ebman explain EBL### [--env NAME] [--json] [--dry-run] [--no-cache]");
+        std::process::exit(2);
+    };
+    if !issue_id.starts_with("EBL") {
+        eprintln!("ebman explain: ISSUE_ID must be an EBL### rule id (e.g. EBL001)");
+        std::process::exit(2);
+    }
+
+    let cfg = config::load();
+    let settings = ebman::llm::Settings::from_config(&cfg);
+
+    // Build the rule registry the SAME way `run_lint_cli` does so
+    // operator-disabled rules aren't suddenly re-enabled here.
+    let mut disabled: Vec<String> = config::load_lint_disables();
+    disabled.extend(ebman::project::load_lint_disables_from_cwd());
+    let rules = ebman::lint::default_rules(&disabled);
+
+    // Discover envs in the current context.
+    let aws_client = aws::AwsClient::with(None, None).await?;
+    let envs = aws_client
+        .list_environments()
+        .await
+        .map_err(|e| color_eyre::eyre::eyre!("list_environments: {e}"))?;
+    let targets: Vec<&ebman::aws::Environment> = match env_name.as_deref() {
+        Some(name) => match envs.iter().find(|e| e.name == name) {
+            Some(env) => vec![env],
+            None => {
+                eprintln!("ebman explain: env '{name}' not found in current context");
+                std::process::exit(2);
+            }
+        },
+        None => envs.iter().collect(),
+    };
+
+    // Collect matching issues across all in-scope envs.
+    let mut matched: Vec<ebman::lint::Issue> = Vec::new();
+    for env in targets {
+        let opts = match aws_client
+            .fetch_env_option_settings(&env.application, &env.name)
+            .await
+        {
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!(
+                    "warning: skipping {} — fetch_env_option_settings: {e}",
+                    env.name
+                );
+                continue;
+            }
+        };
+        let ctx = ebman::lint::LintContext {
+            env,
+            options: &opts,
+            events: &[],
+            cost_usd_per_month: None,
+            latest_stack_version: None,
+        };
+        let issues = ebman::lint::run_rules(&rules, &ctx);
+        for i in issues {
+            if i.rule_id == issue_id {
+                matched.push(i);
+            }
+        }
+    }
+
+    if matched.is_empty() {
+        eprintln!("ebman explain: no env in scope has issue '{issue_id}' — nothing to explain");
+        std::process::exit(3);
+    }
+
+    // For each matched issue, build prompt, look up cache, call
+    // provider on miss, print response. JSON wraps each per-env
+    // explanation into a single emitted object.
+    let mut json_blocks: Vec<String> = Vec::new();
+    for issue in &matched {
+        let prompt = ebman::llm::build_prompt(issue);
+        if dry_run {
+            // Skip provider call entirely; print prompt + exit.
+            if json {
+                json_blocks.push(format!(
+                    "{{\"rule_id\":{},\"env\":{},\"dry_run\":true,\"prompt\":{}}}",
+                    json_string(&issue.rule_id),
+                    json_string(issue.env_name.as_deref().unwrap_or("")),
+                    json_string(&prompt),
+                ));
+            } else {
+                println!(
+                    "── {} ({}) — DRY RUN ──",
+                    issue.rule_id,
+                    issue.env_name.as_deref().unwrap_or("-")
+                );
+                println!("{prompt}\n");
+            }
+            continue;
+        }
+
+        let cached = if no_cache {
+            None
+        } else {
+            ebman::llm::read_cache(issue)
+        };
+        let response = match cached {
+            Some(c) => c,
+            None => match ebman::llm::dispatch(&settings, &prompt).await {
+                Ok(r) => {
+                    if !no_cache {
+                        ebman::llm::write_cache(issue, &r);
+                    }
+                    r
+                }
+                Err(e) => {
+                    eprintln!("ebman explain: {e}");
+                    std::process::exit(1);
+                }
+            },
+        };
+
+        if json {
+            json_blocks.push(format!(
+                "{{\"rule_id\":{},\"env\":{},\"response\":{}}}",
+                json_string(&issue.rule_id),
+                json_string(issue.env_name.as_deref().unwrap_or("")),
+                json_string(&response),
+            ));
+        } else {
+            println!(
+                "── {} ({}) ──",
+                issue.rule_id,
+                issue.env_name.as_deref().unwrap_or("-")
+            );
+            println!("{}\n", response.trim());
+        }
+    }
+
+    if json {
+        if json_blocks.len() == 1 {
+            println!("{}", json_blocks[0]);
+        } else {
+            println!("[{}]", json_blocks.join(","));
+        }
+    }
+    Ok(())
+}
+
+/// Hand-rolled JSON string escape — reused by the explain CLI's
+/// JSON output. Same shape as the audit-log renderer's helper but
+/// scoped here to avoid a cross-module pub use.
+fn json_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 async fn run_envs_cli(args: &[String]) -> Result<()> {

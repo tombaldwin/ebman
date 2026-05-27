@@ -1,0 +1,499 @@
+//! LLM-backed explanations for lint issues.
+//!
+//! `ebman explain ISSUE_ID` and the TUI `:explain EBL001` dispatch
+//! turn a structured `lint::Issue` (rule_id + title + detail +
+//! suggestion + fields) into operator-readable next steps via a
+//! configured Provider. Two providers ship in v1:
+//!
+//! - **Anthropic** (Claude API) — `POST /v1/messages` with
+//!   `x-api-key` header. Default model `claude-haiku-4-5` —
+//!   cheap (~$0.001 per explanation), fast (<2s p50), and sized
+//!   right for the structured-Q&A shape we're feeding it.
+//! - **Ollama** (local) — `POST /api/generate` against the local
+//!   Ollama HTTP server. Operators on locked-down corp networks
+//!   that can't reach api.anthropic.com get a local-model path.
+//!
+//! Both providers consume the same prompt template ([`build_prompt`])
+//! so swapping providers doesn't change response quality
+//! materially — what changes is where the network call goes.
+//!
+//! ## Consent gate
+//!
+//! Opt-in via `[explain] enabled = true` in `config.toml`. Off by
+//! default. Presence of `ANTHROPIC_API_KEY` is *not* implicit
+//! consent — security-conscious orgs that export API keys for
+//! other tools shouldn't have ebman silently start making outbound
+//! calls. The error message points the operator at the config
+//! edit + env var when they invoke `ebman explain` without
+//! configuring it.
+//!
+//! ## Caching
+//!
+//! Responses are cached by `SHA256(rule_id || serialized_fields)`
+//! to `~/.cache/ebman/explain/{key}.txt`. CI loops running
+//! `ebman lint --json | jq -r ... | xargs -I {} ebman explain {}`
+//! won't burn API calls on identical issues. `--no-cache` skips
+//! the read (forces a fresh call) AND skips the write. There's no
+//! TTL — operators can `rm` the directory to force a global
+//! refresh.
+
+use color_eyre::eyre::{eyre, Result, WrapErr};
+use sha2::Digest;
+
+use crate::lint::Issue;
+
+/// Resolved settings for the explain feature. Built from
+/// [`crate::config::Config`] at CLI / TUI invocation time. None of
+/// the fields are `Option` — defaults are filled by [`Settings::from_config`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Settings {
+    /// Master switch. Operators must explicitly opt in via
+    /// `[explain] enabled = true` — presence of an API key in
+    /// the env var alone is not sufficient. Defaults to false.
+    pub enabled: bool,
+    /// Provider key — `"anthropic"` or `"ollama"`. Other values
+    /// produce a clear error rather than falling through to a
+    /// default; explicit-is-better-than-implicit for LLM calls.
+    pub provider: String,
+    /// Model identifier. For Anthropic: e.g. `claude-haiku-4-5`,
+    /// `claude-sonnet-4-6`, `claude-opus-4-7`. For Ollama: the
+    /// local model name (`llama3.2`, `mistral`, etc).
+    pub model: String,
+    /// Env-var name to read the API key from (Anthropic provider).
+    /// Defaults to `ANTHROPIC_API_KEY`. Operators with multiple
+    /// keys in different env-var names can point at a different
+    /// one without exporting again.
+    pub api_key_env: String,
+    /// HTTP base URL for the Ollama provider. Defaults to the
+    /// standard local address; remote Ollama setups can point at
+    /// a non-localhost host.
+    pub ollama_url: String,
+    /// Soft cap on output tokens. Generous default for the
+    /// explanation shape — typical responses are 200-400 tokens.
+    pub max_tokens: u32,
+}
+
+impl Settings {
+    /// Build resolved settings from a [`crate::config::Config`].
+    /// Defaults match the values documented above. The merge is
+    /// total — every field is filled — so callers don't need to
+    /// handle `Option`s downstream.
+    pub fn from_config(cfg: &crate::config::Config) -> Self {
+        Self {
+            enabled: cfg.explain_enabled,
+            provider: if cfg.explain_provider.is_empty() {
+                "anthropic".into()
+            } else {
+                cfg.explain_provider.clone()
+            },
+            model: if cfg.explain_model.is_empty() {
+                "claude-haiku-4-5".into()
+            } else {
+                cfg.explain_model.clone()
+            },
+            api_key_env: if cfg.explain_api_key_env.is_empty() {
+                "ANTHROPIC_API_KEY".into()
+            } else {
+                cfg.explain_api_key_env.clone()
+            },
+            ollama_url: if cfg.explain_ollama_url.is_empty() {
+                "http://localhost:11434".into()
+            } else {
+                cfg.explain_ollama_url.clone()
+            },
+            max_tokens: if cfg.explain_max_tokens == 0 {
+                1024
+            } else {
+                cfg.explain_max_tokens
+            },
+        }
+    }
+}
+
+/// Compose the user-facing prompt sent to the provider. The shape
+/// is deliberately structured (rule id + title + detail +
+/// suggestion + fields) — same shape the lint engine emits. Pure
+/// so we can unit-test the wording without an HTTP roundtrip.
+pub fn build_prompt(issue: &Issue) -> String {
+    let mut p = String::new();
+    p.push_str("You are helping an AWS Elastic Beanstalk operator understand and remediate a ");
+    p.push_str("diagnostic issue. Explain in 4-8 sentences what the issue means, why it matters ");
+    p.push_str("operationally, and what the operator should do next.\n\n");
+    p.push_str("Issue:\n");
+    p.push_str(&format!("  rule_id: {}\n", issue.rule_id));
+    p.push_str(&format!("  severity: {}\n", issue.severity.as_str()));
+    if let Some(env) = &issue.env_name {
+        p.push_str(&format!("  env: {env}\n"));
+    }
+    p.push_str(&format!("  title: {}\n", issue.title));
+    p.push_str(&format!("  detail: {}\n", issue.detail));
+    if let Some(s) = &issue.suggestion {
+        p.push_str(&format!("  suggestion: {s}\n"));
+    }
+    if !issue.fields.is_empty() {
+        p.push_str("  fields:\n");
+        for (k, v) in &issue.fields {
+            p.push_str(&format!("    {k}: {v}\n"));
+        }
+    }
+    p.push_str(
+        "\nGround your explanation in the specific values shown. Don't restate the rule_id; ",
+    );
+    p.push_str("don't apologise; don't add a markdown heading. Plain prose only.");
+    p
+}
+
+/// Cache key for an issue's response. Stable across runs as long
+/// as the rule_id and the structured `fields` map are the same.
+/// We don't include title/detail/suggestion since those can churn
+/// across releases without the underlying advice changing.
+pub fn cache_key(issue: &Issue) -> String {
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(issue.rule_id.as_bytes());
+    hasher.update(b"\0");
+    // Sort-stable iteration via BTreeMap (already used in lint.rs).
+    for (k, v) in &issue.fields {
+        hasher.update(k.as_bytes());
+        hasher.update(b"=");
+        hasher.update(v.as_bytes());
+        hasher.update(b"\0");
+    }
+    let digest = hasher.finalize();
+    // 16 hex chars (64 bits) is plenty for cache-key collision
+    // — operators won't hit a birthday-attack-grade scale.
+    let mut s = String::with_capacity(16);
+    for b in &digest[..8] {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
+/// Filesystem path the cache entry for `issue` lives at. Caller
+/// is responsible for `create_dir_all` of the parent.
+pub fn cache_path(issue: &Issue) -> std::path::PathBuf {
+    let mut p = crate::util::cache_dir();
+    p.push("explain");
+    p.push(format!("{}-{}.txt", issue.rule_id, cache_key(issue)));
+    p
+}
+
+/// Try to read a cached response for `issue`. Returns `None` if
+/// the file doesn't exist or can't be read; ignores I/O errors
+/// rather than failing the explain call (the cache is an
+/// optimisation, not a source of truth).
+pub fn read_cache(issue: &Issue) -> Option<String> {
+    std::fs::read_to_string(cache_path(issue)).ok()
+}
+
+/// Write a response to the cache. Errors are swallowed — a failed
+/// write shouldn't prevent the operator seeing their explanation.
+pub fn write_cache(issue: &Issue, body: &str) {
+    let path = cache_path(issue);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, body);
+}
+
+/// Dispatch an explain request to the configured provider.
+/// Returns the raw response text on success, an `eyre`-shaped
+/// error on transport / parse / consent failure.
+pub async fn dispatch(settings: &Settings, prompt: &str) -> Result<String> {
+    if !settings.enabled {
+        return Err(eyre!(
+            "ebman explain: feature is disabled. Set `[explain] enabled = true` in {} and \
+             ensure `{}` is exported. See docs/configuration.md.",
+            crate::util::config_file("config.toml").display(),
+            settings.api_key_env,
+        ));
+    }
+    match settings.provider.as_str() {
+        "anthropic" => call_anthropic(settings, prompt).await,
+        "ollama" => call_ollama(settings, prompt).await,
+        other => Err(eyre!(
+            "ebman explain: unknown provider '{other}' (supported: anthropic, ollama)"
+        )),
+    }
+}
+
+async fn call_anthropic(settings: &Settings, prompt: &str) -> Result<String> {
+    let api_key = std::env::var(&settings.api_key_env).map_err(|_| {
+        eyre!(
+            "ebman explain: env var `{}` is not set. Export the Anthropic API key first.",
+            settings.api_key_env
+        )
+    })?;
+    // Hand-rolled JSON body — short + fixed shape. No serde_json
+    // needed (project convention is hand-rolled for outbound).
+    let body = format!(
+        "{{\"model\":{},\"max_tokens\":{},\"system\":{},\"messages\":[{{\"role\":\"user\",\"content\":{}}}]}}",
+        json_str(&settings.model),
+        settings.max_tokens,
+        json_str(
+            "You are a senior AWS Elastic Beanstalk operator. Give concrete, actionable answers \
+             in 4-8 sentences. Plain prose, no markdown headings, no apologies."
+        ),
+        json_str(prompt),
+    );
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .wrap_err("explain: building reqwest client failed")?;
+    let resp = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .body(body)
+        .send()
+        .await
+        .wrap_err("explain: POST to api.anthropic.com failed")?;
+    let status = resp.status();
+    let text = resp
+        .text()
+        .await
+        .wrap_err("explain: reading response body failed")?;
+    if !status.is_success() {
+        return Err(eyre!(
+            "explain: Anthropic returned {} — body: {}",
+            status.as_u16(),
+            truncate_for_error(&text, 400)
+        ));
+    }
+    // Parse the response via serde_yml (JSON is a valid YAML
+    // subset, so this works without serde_json).
+    let parsed: serde_yml::Value =
+        serde_yml::from_str(&text).wrap_err("explain: response wasn't valid JSON")?;
+    let content = parsed
+        .get("content")
+        .and_then(|v| v.as_sequence())
+        .ok_or_else(|| eyre!("explain: response missing `content` array"))?;
+    let mut out = String::new();
+    for block in content {
+        if block.get("type").and_then(|v| v.as_str()) == Some("text") {
+            if let Some(t) = block.get("text").and_then(|v| v.as_str()) {
+                out.push_str(t);
+            }
+        }
+    }
+    if out.is_empty() {
+        return Err(eyre!(
+            "explain: Anthropic returned an empty response (no `text` blocks)"
+        ));
+    }
+    Ok(out)
+}
+
+async fn call_ollama(settings: &Settings, prompt: &str) -> Result<String> {
+    // Ollama is unauthenticated by default — no API key plumbing.
+    let url = format!("{}/api/generate", settings.ollama_url.trim_end_matches('/'));
+    let body = format!(
+        "{{\"model\":{},\"prompt\":{},\"stream\":false}}",
+        json_str(&settings.model),
+        json_str(prompt),
+    );
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .wrap_err("explain: building reqwest client failed")?;
+    let resp = client
+        .post(&url)
+        .header("content-type", "application/json")
+        .body(body)
+        .send()
+        .await
+        .wrap_err_with(|| format!("explain: POST to {url} failed (Ollama running locally?)"))?;
+    let status = resp.status();
+    let text = resp
+        .text()
+        .await
+        .wrap_err("explain: reading response body failed")?;
+    if !status.is_success() {
+        return Err(eyre!(
+            "explain: Ollama returned {} — body: {}",
+            status.as_u16(),
+            truncate_for_error(&text, 400)
+        ));
+    }
+    let parsed: serde_yml::Value =
+        serde_yml::from_str(&text).wrap_err("explain: Ollama response wasn't valid JSON")?;
+    let out = parsed
+        .get("response")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| eyre!("explain: Ollama response missing `response` field"))?;
+    Ok(out.to_string())
+}
+
+/// JSON-escape a string for embedding into a hand-rolled request
+/// body. Returns the value wrapped in quotes (so callers can drop
+/// it straight into `"key":{json_str(...)}`).
+fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn truncate_for_error(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max_chars).collect();
+    out.push_str("...");
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn sample_issue() -> Issue {
+        let mut fields = BTreeMap::new();
+        fields.insert("policy".into(), "AllAtOnce".into());
+        fields.insert("max_size".into(), "4".into());
+        Issue {
+            rule_id: "EBL001".into(),
+            severity: crate::lint::Severity::Warn,
+            env_name: Some("prod-api".into()),
+            title: "AllAtOnce on 4-instance env".into(),
+            detail: "100% capacity loss during deploys".into(),
+            suggestion: Some(":deployment-policy Rolling".into()),
+            fields,
+        }
+    }
+
+    #[test]
+    fn build_prompt_includes_rule_id_title_fields() {
+        let p = build_prompt(&sample_issue());
+        assert!(p.contains("EBL001"));
+        assert!(p.contains("AllAtOnce on 4-instance env"));
+        assert!(p.contains("max_size: 4"));
+        assert!(p.contains("policy: AllAtOnce"));
+        assert!(p.contains("severity: warn"));
+        assert!(p.contains("env: prod-api"));
+    }
+
+    #[test]
+    fn cache_key_is_stable_across_calls() {
+        let issue = sample_issue();
+        let a = cache_key(&issue);
+        let b = cache_key(&issue);
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 16);
+    }
+
+    #[test]
+    fn cache_key_differs_by_rule_id() {
+        let mut i1 = sample_issue();
+        let mut i2 = sample_issue();
+        i2.rule_id = "EBL004".into();
+        assert_ne!(cache_key(&i1), cache_key(&i2));
+        // Title change DOES NOT affect cache key (advice is keyed on rule_id+fields).
+        i1.title = "Different wording".into();
+        assert_eq!(cache_key(&i1), cache_key(&sample_issue()));
+    }
+
+    #[test]
+    fn cache_key_differs_by_field_values() {
+        let i1 = sample_issue();
+        let mut i2 = sample_issue();
+        i2.fields.insert("max_size".into(), "8".into());
+        assert_ne!(cache_key(&i1), cache_key(&i2));
+    }
+
+    #[test]
+    fn settings_from_default_config_is_disabled() {
+        let cfg = crate::config::Config::default();
+        let s = Settings::from_config(&cfg);
+        assert!(!s.enabled);
+        assert_eq!(s.provider, "anthropic");
+        assert_eq!(s.model, "claude-haiku-4-5");
+        assert_eq!(s.api_key_env, "ANTHROPIC_API_KEY");
+        assert_eq!(s.max_tokens, 1024);
+    }
+
+    #[test]
+    fn settings_from_config_honours_overrides() {
+        let cfg = crate::config::Config {
+            explain_enabled: true,
+            explain_provider: "ollama".into(),
+            explain_model: "llama3.2".into(),
+            explain_ollama_url: "http://192.0.2.1:11434".into(),
+            explain_max_tokens: 2048,
+            ..crate::config::Config::default()
+        };
+        let s = Settings::from_config(&cfg);
+        assert!(s.enabled);
+        assert_eq!(s.provider, "ollama");
+        assert_eq!(s.model, "llama3.2");
+        assert_eq!(s.ollama_url, "http://192.0.2.1:11434");
+        assert_eq!(s.max_tokens, 2048);
+    }
+
+    #[tokio::test]
+    async fn dispatch_refuses_when_disabled() {
+        let s = Settings {
+            enabled: false,
+            provider: "anthropic".into(),
+            model: "claude-haiku-4-5".into(),
+            api_key_env: "ANTHROPIC_API_KEY".into(),
+            ollama_url: "http://localhost:11434".into(),
+            max_tokens: 1024,
+        };
+        let result = dispatch(&s, "prompt").await;
+        let err = result.expect_err("dispatch should refuse when disabled");
+        assert!(err.to_string().contains("disabled"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_refuses_unknown_provider() {
+        let s = Settings {
+            enabled: true,
+            provider: "magic-llm-9000".into(),
+            model: "x".into(),
+            api_key_env: "ANTHROPIC_API_KEY".into(),
+            ollama_url: "http://localhost:11434".into(),
+            max_tokens: 1024,
+        };
+        let err = dispatch(&s, "prompt").await.expect_err("should refuse");
+        assert!(err.to_string().contains("unknown provider"));
+    }
+
+    #[test]
+    fn json_str_escapes_quotes_and_control_chars() {
+        assert_eq!(json_str("hello"), "\"hello\"");
+        assert_eq!(json_str("with \"quotes\""), "\"with \\\"quotes\\\"\"");
+        assert_eq!(json_str("a\nb"), "\"a\\nb\"");
+        assert_eq!(json_str("a\\b"), "\"a\\\\b\"");
+        // Round-trip via serde_yml since JSON is a YAML subset.
+        let s = "with \"quotes\" and \n newlines and \\ backslashes";
+        let escaped = json_str(s);
+        let parsed: String = serde_yml::from_str(&escaped).expect("round-trip");
+        assert_eq!(parsed, s);
+    }
+
+    #[test]
+    fn truncate_for_error_keeps_short_strings() {
+        assert_eq!(truncate_for_error("short", 10), "short");
+    }
+
+    #[test]
+    fn truncate_for_error_clips_long_strings() {
+        let long = "a".repeat(500);
+        let t = truncate_for_error(&long, 50);
+        assert_eq!(t.len(), 50 + 3); // 50 chars + "..."
+        assert!(t.ends_with("..."));
+    }
+}
