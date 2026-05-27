@@ -18,6 +18,7 @@ pub mod commands;
 pub mod config;
 pub mod control;
 pub mod cost_cache;
+pub mod deploy_poll;
 pub mod eb_cli;
 pub mod form;
 pub mod lint;
