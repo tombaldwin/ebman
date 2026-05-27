@@ -374,23 +374,9 @@ pub fn render_audit_entries_json(entries: &[AuditEntry]) -> String {
     out
 }
 
-fn json_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
+/// Audit JSONL output uses the canonical [`crate::util::json_string`]
+/// for value escaping.
+use crate::util::json_string;
 
 // ─── writers ─────────────────────────────────────────────────
 
@@ -743,27 +729,10 @@ fn rotate_if_oversize(path: &std::path::Path, max_bytes: u64) {
     let _ = std::fs::rename(path, backup);
 }
 
-/// JSON-escape for the webhook body. Matches the shape `app.rs` used
-/// before consolidation; kept private (callers don't need the helper
-/// directly — `build_webhook_body` is the public surface).
-fn json_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                use std::fmt::Write;
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
-    out
-}
+// Webhook body uses the canonical `crate::util::json_escape`; the
+// previously-local `json_escape` is routed through there via the
+// import at the top of the writers section.
+use crate::util::json_escape;
 
 #[cfg(test)]
 mod tests {

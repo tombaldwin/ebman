@@ -16025,21 +16025,9 @@ fn describe_env(e: &Environment) -> String {
     )
 }
 
-fn json_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out
-}
+// JSON-escape canonical helper lives in `crate::util`; brought into
+// scope locally for the `format!` sites in this module.
+use crate::util::json_escape;
 
 fn redact_block(value: &str) -> String {
     if value.is_empty() {
