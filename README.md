@@ -8,11 +8,43 @@
 
 **A k9s-style TUI for AWS Elastic Beanstalk.** Triage red envs, stream logs, edit option settings, deploy new versions — all from the keyboard. If you've used k9s with Kubernetes, the muscle memory carries: `:` for commands, `/` to filter, `Enter` to drill in, `?` for context-aware help.
 
-Built for operators who triage EB envs daily and don't want the AWS console round-trip — or the `eb deploy ; aws elasticbeanstalk describe-events --max-items 50 | jq ...` shell-pipeline every time something goes red.
+[Install](#install) · [Quickstart](#quickstart) · [Triage workflow](#triage-workflow) · [Highlights](#highlights) · [Why ebman?](#why-ebman) · [Docs](#documentation)
 
 ![ebman demo — filter → :why → drill into Detail/Instances → embedded SSM session](demo.gif)
 
 > Captured from `ebman --demo`, the synthetic-fleet mode that ships with the binary. Regenerate the gif with `vhs demo.tape` after a code change.
+
+## Install
+
+**Homebrew (macOS / Linux):**
+
+```bash
+brew install tombaldwin/tap/ebman
+```
+
+**Cargo:**
+
+```bash
+cargo install ebman
+```
+
+**Pre-built binary:** download the tarball for your platform from the [GitHub Releases page](https://github.com/tombaldwin/ebman/releases), verify the `*.sha256` next to it, extract, and put `ebman` on your `PATH`.
+
+Tested on Rust 1.91+. macOS (Apple Silicon + Intel) and Linux x86_64. AWS SDK uses the standard credentials chain (`AWS_PROFILE` / `AWS_REGION` env, `~/.aws/credentials`, instance role, etc.).
+
+For the prettier glyph set (Powerline pill chain, Nerd Font tab icons), see [docs/fonts.md](docs/fonts.md). The default `icons = "unicode"` works fine in any terminal.
+
+## Quickstart
+
+```bash
+ebman                                  # launch the TUI
+ebman --read-only                      # disable all write surfaces (audit-friendly)
+ebman --demo                           # synthetic fleet (no AWS calls) — for screenshots / VHS
+ebman --version
+ebman --help
+```
+
+Once running, press `?` for a per-context keymap (Detail, DLQ, Action menu, Saved-configs overlay all have scoped help).
 
 ## Triage workflow
 
@@ -26,6 +58,8 @@ Production env goes red at 3am. From your terminal:
 6. Action + outcome land in `~/.cache/ebman/audit.log`
 
 Five keystrokes to triage, one command to fix. The AWS-console alternative is a minimum of five page-loads, two tabs, and zero audit trail.
+
+Built for operators who triage EB envs daily and don't want the AWS console round-trip — or the `eb deploy ; aws elasticbeanstalk describe-events --max-items 50 | jq ...` shell-pipeline every time something goes red.
 
 ## Highlights
 
@@ -54,39 +88,6 @@ You probably already have one of these:
 | **k9s + EKS** | The pattern this tool is modelled on. | Doesn't exist for Elastic Beanstalk. |
 
 ebman is k9s-for-EB: keyboard-driven, drill-down-first, focused on operators who triage red envs daily and want one screen for "what's wrong" and "what changed". The nearest peer in the broader Rust-TUI / k9s-style space is [`e1s`](https://github.com/keidarcy/e1s) (k9s-for-ECS); ebman is broader on the write surface and adds multi-account fan-out, an audit log, per-env safety pins, and an embedded SSM-session pane.
-
-## Install
-
-**Homebrew (macOS / Linux):**
-
-```bash
-brew tap tombaldwin/tap
-brew install ebman
-```
-
-**Pre-built binary:** download the tarball for your platform from the [GitHub Releases page](https://github.com/tombaldwin/ebman/releases), verify the `*.sha256` next to it, extract, and put `ebman` on your `PATH`.
-
-**Cargo:**
-
-```bash
-cargo install ebman
-```
-
-Tested on Rust 1.91+. macOS (Apple Silicon + Intel) and Linux x86_64. AWS SDK uses the standard credentials chain (`AWS_PROFILE` / `AWS_REGION` env, `~/.aws/credentials`, instance role, etc.).
-
-For the prettier glyph set (Powerline pill chain, Nerd Font tab icons), see [docs/fonts.md](docs/fonts.md). The default `icons = "unicode"` works fine in any terminal.
-
-## Quickstart
-
-```bash
-ebman                                  # launch the TUI
-ebman --read-only                      # disable all write surfaces (audit-friendly)
-ebman --demo                           # synthetic fleet (no AWS calls) — for screenshots / VHS
-ebman --version
-ebman --help
-```
-
-Once running, press `?` for a per-context keymap (Detail, DLQ, Action menu, Saved-configs overlay all have scoped help).
 
 ## Documentation
 
