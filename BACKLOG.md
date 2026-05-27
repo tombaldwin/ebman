@@ -877,6 +877,34 @@ ebman mcp serve                        → server mode (future: MCP for Claude C
 
 **Future-proofing test passed:** LLM explainer (`ebman explain`), MCP server (`ebman mcp serve`), cron-driven monitoring (`ebman lint --watch`), git pre-commit hooks (`ebman drift`), GitHub Actions integration (`ebman action deploy`), audit-stream consumption (`ebman audit --tail --json | jq`) all fit without restructuring.
 
+### 0.16 candidates (2026-05-27)
+
+Theme: **continuation + smart-feature depth + rollout deepening.** 0.15 finished the major refactors but left tail work (incomplete audit consolidation, draw_splash in main.rs, duplicated JSON-escape helpers). 0.14 shipped lint/explain/audit; 0.16 adds the monitoring-loop flag (`--watch`) and more rules so the smart-features arc keeps gaining ground. 0.13 shipped sequential cross-region rollout; 0.16 adds the three operational shapes operators eventually want (parallel, continue-on-fail, staggered).
+
+#### Continuation cleanup — SUPPORT
+- [ ] **Audit migration: ~30 `append_raw` sites → typed `append_action_*`** — Architecture review's 0.15 Important finding. Migrate per-group (GetSecretValue, SsmRunCommand, UpdateTags, DeleteAppVersion, DeployFromLocal, UpdateOptionSettings, ConfigSave/Delete/Apply, batch-* helpers). Each site becomes a 2-line call instead of a hand-rolled detail string. Estimated ~2hrs.
+- [ ] **`draw_splash` + `hsl_to_rgb` move to tui-common splash** — ~150 lines of TUI composition lift from main.rs. Estimated ~30min.
+- [ ] **Unify 6 JSON-escape helpers** — audit.rs / cli/mod.rs / lint.rs / app.rs / llm.rs all have variants. Consolidate to `util::json_escape` + `util::json_string`. Estimated ~1hr.
+- [ ] **`decide_poll` shared between CLI + TUI** — TUI's `spawn_rollout_dispatch` re-implements the wait-for-green case inline. Promote to a sibling lib module. Estimated ~30min.
+
+#### Smart features — HEADLINE
+- [ ] **`ebman lint --watch [--interval 60s]`** — locked-charter feature from the 0.13 CLI shape. Poll lint at `--interval` (default 60s) until interrupted. Changes-only output by default; `--verbose` emits every cycle. Exit 0 when interrupted while clean, 3 when interrupted while issues found, 1 on AWS error. Composable: `ebman lint --watch --interval 5m --severity warn --json > alerts.jsonl` is the canonical monitoring shape. Estimated ~2hrs.
+- [ ] **New lint rules EBL007+ (4-6 rules)** — Candidates: EBL007 ELB without HTTPS listener (Warn; auto-fix possible if cert ARN configured), EBL008 stale platform version >180d (Warn; Manual — operator picks target), EBL009 ASG without health-check grace period (Info; SetOption fix=300), EBL010 service-role missing managed-update perms (Warn; Manual — IAM change), EBL011 deprecated namespace usage (Warn; Manual), EBL012 missing required tags from `required_tags` config (Info; Manual). Ship 4-6. Each is ~40 lines + tests. Estimated ~3-4hrs.
+
+#### Rollout deepening — HEADLINE
+- [ ] **`:rollout --parallel [--max-concurrency N]`** — concurrent fan-out vs sequential. `tokio::JoinSet` shape; default unlimited concurrency, `--max-concurrency N` caps. Same `rollout_id` correlation, audit lines interleaved. Halt-on-fail behaviour: in-flight regions finish (no server-side cancel), unstarted regions refuse. Estimated ~3hrs.
+- [ ] **`:rollout --continue-on-fail`** — don't halt on first region failure; attempt all. Per-region success/err in final report. Exit 0 all succeeded / 3 any failed (no different from halt-on-first shape; the change is in dispatch behaviour, not exit semantics). Composes with `--parallel`. Estimated ~1.5hrs.
+- [ ] **`:rollout --staggered Nm`** — region N starts only after region N-1 has been Green for N min (canary-style rollouts). Implies `--wait-for-green`. Stagger window between regions only; per-region wait-for-green unchanged. Estimated ~2hrs.
+
+#### Out of scope for 0.16 (track for later)
+- **`spawn_*` clusters → `src/app/spawn_*.rs` grouping** — BONUS deferred from 0.15. Big lift (~3hrs) and purely organisational; doesn't bleed. Hold for 0.17.
+- **MCP server (`ebman mcp serve`)** — still no operator demand signal.
+- **`:queue` action-queue inspector** — held; abort semantics still unsolved.
+- **`ebman explain --env NAME` cross-issue synthesis** — bigger prompt-engineering surface; per-issue explain still has road-time left.
+- **EBL002 auto-fix** — needs interactive prompt for the path; Manual stays correct.
+- **TOML parser migration (config.rs / state.rs)** — hand-rolled works; big lift.
+- **Saved views structured-schema migration** — string-encoded shape works.
+
 ### 0.15 candidates (2026-05-27)
 
 Theme: **foundation pass.** No new operator-facing features — pure structural cleanup driven by the 0.14.0 architecture review. `src/app.rs` is at 21,794 lines / 532 methods; `src/main.rs` is at 2,625 lines with seven inline `run_*_cli` async fns that have become a CLI grab-bag. The user codified the code-review-before-tagging step in 0.14.1 — this release acts on its findings before the cliff hits at ~0.18. Sets the table for 0.16+ feature work to land in cleaner modules.
