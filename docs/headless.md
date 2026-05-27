@@ -24,6 +24,9 @@ These don't need a running TUI — they connect to AWS, do their thing, and exit
 ebman envs --json                                                          # print env list as JSON
 ebman action rebuild --env myenv --yes                                     # dispatch a rebuild
 ebman action rollout --version LABEL --env NAME --regions r1,r2,r3 --yes   # sequential cross-region deploy
+ebman action rollout ... --parallel [--max-concurrency N]                  # fan-out variant; implies --continue-on-fail
+ebman action rollout ... --continue-on-fail                                # sequential but attempt every region
+ebman action rollout ... --staggered 5m --wait-for-green 10m               # canary: wait Nm between regions
 ebman lint   [--env NAME] [--regions r1,r2,r3] [--json]                    # rule-engine diagnostics; exit 3 on issues
 ebman lint   --fix (--yes | --dry-run) [--rules ID1,ID2] [--env NAME]      # opt-in auto-remediation (EBL001/004/006 ship with fixes)
 ebman lint   --watch [--interval 60s] [--json] [--severity warn]           # cron-friendly monitoring loop; Ctrl-C to exit

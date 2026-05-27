@@ -229,15 +229,111 @@ async fn run_deploy(
     }
 }
 
-/// `ebman action rollout --version LABEL --regions r1,r2,r3 --env NAME [--yes] [--json] [--quiet]`
-/// — cross-region sequential deploy with pre-flight + halt-on-fail
-/// + single `rollout_id` correlation across audit lines.
+/// Per-region dispatch helper shared by sequential + parallel paths.
+/// Calls `deploy_version`; optionally polls until Green (or the
+/// `--wait-for-green` deadline elapses). Emits the per-region
+/// `stage=dispatched` and `stage=completed` audit-log lines. Returns
+/// `Ok(())` on Green (or just dispatched if no wait); `Err(msg)`
+/// when dispatch fails or the deadline elapses without Green.
+async fn dispatch_one_region(
+    client: &aws::AwsClient,
+    env: &str,
+    version: &str,
+    wait_for_green_secs: Option<u64>,
+    rollout_id: &str,
+    region: &str,
+    quiet: bool,
+) -> Result<(), String> {
+    if !quiet {
+        eprintln!("rollout: dispatching to {region} (env={env}, version={version})");
+    }
+    audit::append_rollout(rollout_id, region, env, version, "dispatched", None);
+    let mut outcome: Result<(), String> = match client.deploy_version(env, version).await {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let msg = format!("deploy_version: {e}");
+            eprintln!("rollout[{region}]: {msg}");
+            Err(msg)
+        }
+    };
+    if outcome.is_ok() {
+        if let Some(secs) = wait_for_green_secs {
+            let start = tokio::time::Instant::now();
+            let wait_timeout_emitted = false;
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                let envs = match client.list_environments().await {
+                    Ok(envs) => envs,
+                    Err(e) => {
+                        eprintln!("rollout[{region}]: list_environments during poll: {e}");
+                        outcome = Err(format!("poll: {e}"));
+                        break;
+                    }
+                };
+                let (status, health) = envs
+                    .iter()
+                    .find(|e| e.name == env)
+                    .map(|e| (e.status.clone(), e.health.clone()))
+                    .unwrap_or_default();
+                let elapsed = start.elapsed().as_secs();
+                match decide_poll(
+                    &status,
+                    &health,
+                    elapsed,
+                    Some(secs),
+                    None,
+                    wait_timeout_emitted,
+                ) {
+                    PollDecision::KeepPolling => {
+                        if !quiet {
+                            eprintln!(
+                                "rollout[{region}]: t={elapsed}s status={status} health={health}"
+                            );
+                        }
+                    }
+                    PollDecision::Success => {
+                        if !quiet {
+                            eprintln!("rollout[{region}]: reached Green at t={elapsed}s");
+                        }
+                        break;
+                    }
+                    PollDecision::WaitForGreenTimeout => {
+                        let msg = format!(
+                            "did not reach Green within {secs}s (status={status}, health={health})"
+                        );
+                        eprintln!("rollout[{region}]: {msg}");
+                        outcome = Err(msg);
+                        break;
+                    }
+                    PollDecision::DispatchRollback => break,
+                }
+            }
+        }
+    }
+    audit::append_rollout(
+        rollout_id,
+        region,
+        env,
+        version,
+        "completed",
+        outcome.as_ref().err().map(String::as_str),
+    );
+    outcome
+}
+
+/// `ebman action rollout --version LABEL --regions r1,r2,r3 --env NAME --yes [...]`
+/// — cross-region deploy with pre-flight + per-region dispatch +
+/// audit-log correlation. Sequential by default (halt on first
+/// failure); `--parallel` fans out concurrently with optional
+/// `--max-concurrency N` cap; `--continue-on-fail` attempts every
+/// region in sequential mode; `--staggered Nm` waits N minutes
+/// between regions in sequential mode (canary-style rollouts).
 ///
 /// Exit codes:
 /// - 0 all regions dispatched successfully
 /// - 1 AWS-layer error before any region dispatched
-/// - 2 usage error
-/// - 3 one or more region dispatches failed (rollout halted)
+/// - 2 usage error (mutually-exclusive flags, missing required args)
+/// - 3 one or more region dispatches failed
 async fn run_rollout(args: &[String]) -> Result<()> {
     let mut env_name: Option<String> = None;
     let mut version: Option<String> = None;
@@ -247,6 +343,10 @@ async fn run_rollout(args: &[String]) -> Result<()> {
     let mut yes = false;
     let mut json = false;
     let mut quiet = false;
+    let mut parallel = false;
+    let mut max_concurrency: Option<usize> = None;
+    let mut continue_on_fail = false;
+    let mut staggered: Option<String> = None;
     let mut iter = args.iter().skip(2);
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -258,6 +358,26 @@ async fn run_rollout(args: &[String]) -> Result<()> {
             "--yes" => yes = true,
             "--json" => json = true,
             "--quiet" => quiet = true,
+            "--parallel" => parallel = true,
+            "--max-concurrency" => {
+                let Some(v) = iter.next() else {
+                    eprintln!("ebman action rollout: --max-concurrency expects an integer");
+                    std::process::exit(2);
+                };
+                let Ok(n) = v.parse::<usize>() else {
+                    eprintln!(
+                        "ebman action rollout: --max-concurrency expects an integer, got '{v}'"
+                    );
+                    std::process::exit(2);
+                };
+                if n == 0 {
+                    eprintln!("ebman action rollout: --max-concurrency must be > 0");
+                    std::process::exit(2);
+                }
+                max_concurrency = Some(n);
+            }
+            "--continue-on-fail" => continue_on_fail = true,
+            "--staggered" => staggered = iter.next().cloned(),
             other => {
                 eprintln!("ebman action rollout: unknown flag '{other}'");
                 std::process::exit(2);
@@ -299,6 +419,41 @@ async fn run_rollout(args: &[String]) -> Result<()> {
         },
         None => None,
     };
+    let staggered_secs = match staggered.as_deref() {
+        Some(s) => match aws::parse_window_ms(s) {
+            Some(ms) => Some((ms / 1000) as u64),
+            None => {
+                eprintln!(
+                    "ebman action rollout: --staggered expects a duration like `5m` / `30m` / `1h`"
+                );
+                std::process::exit(2);
+            }
+        },
+        None => None,
+    };
+
+    // Flag combination validation.
+    if parallel && staggered_secs.is_some() {
+        eprintln!(
+            "ebman action rollout: --parallel and --staggered are mutually exclusive (--staggered requires sequential ordering)"
+        );
+        std::process::exit(2);
+    }
+    if !parallel && max_concurrency.is_some() {
+        eprintln!("ebman action rollout: --max-concurrency only applies with --parallel");
+        std::process::exit(2);
+    }
+    if staggered_secs.is_some() && wait_for_green_secs.is_none() {
+        eprintln!(
+            "ebman action rollout: --staggered requires --wait-for-green (staggering is timed from each region's Green observation)"
+        );
+        std::process::exit(2);
+    }
+    // --parallel implies --continue-on-fail. In-flight regions can't
+    // be cancelled server-side, so "halt remaining" only makes sense
+    // for un-started waves under --max-concurrency. For v1
+    // simplicity, --parallel always attempts all regions.
+    let continue_on_fail = continue_on_fail || parallel;
 
     if !quiet {
         eprintln!(
@@ -342,86 +497,112 @@ async fn run_rollout(args: &[String]) -> Result<()> {
     }
 
     let rollout_id = format!("rollout-{}", chrono::Utc::now().format("%Y%m%dT%H%M%SZ"));
+    // Arc-wrap clients so both sequential and parallel paths can
+    // share them. Each AwsClient holds Arc'd SDK clients internally
+    // (cheap clone), but the outer struct isn't Clone — wrap once
+    // here so the parallel path's task closures get a moved Arc.
+    let per_region: Vec<(String, std::sync::Arc<aws::AwsClient>)> = per_region
+        .into_iter()
+        .map(|(r, c)| (r, std::sync::Arc::new(c)))
+        .collect();
 
     let mut outcomes: Vec<(String, Result<(), String>)> = Vec::new();
-    for (region, client) in &per_region {
+    if parallel {
+        // Parallel dispatch — one task per region, all started
+        // immediately (or capped at `max_concurrency` if set).
+        // tokio::JoinSet awaits completions in arbitrary order;
+        // outcomes therefore aren't sorted by region order — the
+        // output renderer sorts by the input `regions` order when
+        // emitting.
         if !quiet {
-            eprintln!("rollout: dispatching to {region} (env={env}, version={version})");
+            eprintln!(
+                "rollout: dispatching {} region(s) in parallel{}",
+                regions.len(),
+                max_concurrency
+                    .map(|n| format!(" (max-concurrency={n})"))
+                    .unwrap_or_default(),
+            );
         }
-        audit::append_rollout(&rollout_id, region, &env, &version, "dispatched", None);
-        match client.deploy_version(&env, &version).await {
-            Ok(()) => {
-                outcomes.push((region.clone(), Ok(())));
-                if let Some(secs) = wait_for_green_secs {
-                    let start = tokio::time::Instant::now();
-                    let wait_timeout_emitted = false;
-                    loop {
-                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                        let envs = match client.list_environments().await {
-                            Ok(envs) => envs,
-                            Err(e) => {
-                                eprintln!("rollout[{region}]: list_environments during poll: {e}");
-                                outcomes.last_mut().unwrap().1 = Err(format!("poll: {e}"));
-                                break;
-                            }
-                        };
-                        let (status, health) = envs
-                            .iter()
-                            .find(|e| e.name == env)
-                            .map(|e| (e.status.clone(), e.health.clone()))
-                            .unwrap_or_default();
-                        let elapsed = start.elapsed().as_secs();
-                        match decide_poll(
-                            &status,
-                            &health,
-                            elapsed,
-                            Some(secs),
-                            None,
-                            wait_timeout_emitted,
-                        ) {
-                            PollDecision::KeepPolling => {
-                                if !quiet {
-                                    eprintln!(
-                                        "rollout[{region}]: t={elapsed}s status={status} health={health}"
-                                    );
-                                }
-                            }
-                            PollDecision::Success => {
-                                if !quiet {
-                                    eprintln!("rollout[{region}]: reached Green at t={elapsed}s");
-                                }
-                                break;
-                            }
-                            PollDecision::WaitForGreenTimeout => {
-                                let msg = format!(
-                                    "did not reach Green within {secs}s (status={status}, health={health})"
-                                );
-                                eprintln!("rollout[{region}]: {msg}");
-                                outcomes.last_mut().unwrap().1 = Err(msg);
-                                break;
-                            }
-                            PollDecision::DispatchRollback => break,
-                        }
+        let mut joinset: tokio::task::JoinSet<(String, Result<(), String>)> =
+            tokio::task::JoinSet::new();
+        let cap = max_concurrency.unwrap_or(per_region.len()).max(1);
+        let mut queue: std::collections::VecDeque<(String, std::sync::Arc<aws::AwsClient>)> =
+            per_region.into_iter().collect();
+        // Seed initial batch.
+        for _ in 0..cap.min(queue.len()) {
+            let (region, client) = queue.pop_front().unwrap();
+            let env_for = env.clone();
+            let version_for = version.clone();
+            let rollout_id_for = rollout_id.clone();
+            let quiet_for = quiet;
+            joinset.spawn(async move {
+                let outcome = dispatch_one_region(
+                    &client,
+                    &env_for,
+                    &version_for,
+                    wait_for_green_secs,
+                    &rollout_id_for,
+                    &region,
+                    quiet_for,
+                )
+                .await;
+                (region, outcome)
+            });
+        }
+        // Drain + reseed as capacity frees up.
+        while let Some(joined) = joinset.join_next().await {
+            let (region, outcome) =
+                joined.unwrap_or_else(|e| (String::new(), Err(format!("join: {e}"))));
+            outcomes.push((region, outcome));
+            if let Some((next_region, next_client)) = queue.pop_front() {
+                let env_for = env.clone();
+                let version_for = version.clone();
+                let rollout_id_for = rollout_id.clone();
+                let quiet_for = quiet;
+                joinset.spawn(async move {
+                    let outcome = dispatch_one_region(
+                        &next_client,
+                        &env_for,
+                        &version_for,
+                        wait_for_green_secs,
+                        &rollout_id_for,
+                        &next_region,
+                        quiet_for,
+                    )
+                    .await;
+                    (next_region, outcome)
+                });
+            }
+        }
+    } else {
+        // Sequential dispatch — current shape, with --continue-on-fail
+        // controlling whether a failed region halts subsequent ones
+        // and --staggered controlling the inter-region delay.
+        let mut first_region = true;
+        for (region, client) in &per_region {
+            if !first_region {
+                if let Some(stagger) = staggered_secs {
+                    if !quiet {
+                        eprintln!("rollout: staggering {stagger}s before next region");
                     }
+                    tokio::time::sleep(std::time::Duration::from_secs(stagger)).await;
                 }
             }
-            Err(e) => {
-                let msg = format!("deploy_version: {e}");
-                outcomes.push((region.clone(), Err(msg.clone())));
-                eprintln!("rollout[{region}]: {msg}");
+            first_region = false;
+            let outcome = dispatch_one_region(
+                client,
+                &env,
+                &version,
+                wait_for_green_secs,
+                &rollout_id,
+                region,
+                quiet,
+            )
+            .await;
+            outcomes.push((region.clone(), outcome));
+            if !continue_on_fail && matches!(outcomes.last(), Some((_, Err(_)))) {
+                break;
             }
-        }
-        let last_err = outcomes.last().and_then(|(_, r)| r.as_ref().err()).cloned();
-        audit::append_rollout(
-            &rollout_id,
-            region,
-            &env,
-            &version,
-            "completed",
-            last_err.as_deref(),
-        );
-        if matches!(outcomes.last(), Some((_, Err(_)))) {
-            break;
         }
     }
 
