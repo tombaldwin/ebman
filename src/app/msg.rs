@@ -46,6 +46,7 @@ impl AppMsg {
             | VersionPreview { gen, .. }
             | HealthCheckProbe { gen, .. }
             | UnavailabilityEstimate { gen, .. }
+            | ConfirmModalLint { gen, .. }
             | UndoCaptured { gen, .. }
             | RollbackTarget { gen, .. }
             | DetailTags { gen, .. }
@@ -164,6 +165,9 @@ impl App {
             AppMsg::UnavailabilityEstimate { env_name, line, .. } => {
                 self.handle_unavailability_estimate(env_name, line)
             }
+            AppMsg::ConfirmModalLint {
+                env_name, issues, ..
+            } => self.handle_confirm_modal_lint(env_name, issues),
             AppMsg::UndoCaptured { entry, .. } => self.handle_undo_captured(entry),
             AppMsg::RollbackTarget {
                 env_name,
@@ -753,6 +757,22 @@ impl App {
         }
         modal.loading_unavailability = false;
         modal.unavailability_line = line;
+    }
+
+    /// Stuff confirm-modal lint findings into the modal. Empty
+    /// vec is fine — the UI renders nothing for that case
+    /// (operator sees positive feedback by absence). Generation
+    /// guard upstream means stale results from a previous
+    /// modal-open won't land here.
+    fn handle_confirm_modal_lint(&mut self, env_name: String, issues: Vec<crate::lint::Issue>) {
+        let Some(ActionFlow::Confirm(modal)) = self.action_flow.as_mut() else {
+            return;
+        };
+        if modal.target_env != env_name {
+            return;
+        }
+        modal.loading_lint = false;
+        modal.lint_issues = Some(issues);
     }
 
     /// Push a captured undo entry onto the history deque. Cap'd at

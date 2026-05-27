@@ -275,6 +275,17 @@ pub struct ConfirmModal {
     pub unavailability_line: Option<(String, bool)>,
     /// True while `spawn_unavailability_estimate` is in flight.
     pub loading_unavailability: bool,
+    /// Lint findings against the env's pre-write state, surfaced
+    /// inline in the modal as additional warning lines.
+    /// Generalises the health-check probe + unavailability pill
+    /// pattern — anything the lint engine flags at `>= Warn` is
+    /// rendered as a yellow caution line so the operator sees
+    /// risk before confirming, not after the deploy goes bad.
+    /// `None` while loading; populated by `spawn_confirm_lint` at
+    /// modal-open time.
+    pub lint_issues: Option<Vec<crate::lint::Issue>>,
+    /// True while `spawn_confirm_lint` is in flight.
+    pub loading_lint: bool,
 }
 
 /// Helper carrying the optional parameters needed by the new parameterised

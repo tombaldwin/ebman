@@ -1460,6 +1460,15 @@ enum AppMsg {
         env_name: String,
         line: Option<(String, bool)>,
     },
+    /// Lint findings against the confirm-modal's target env,
+    /// emitted by `spawn_confirm_lint`. Same `Issue` shape as
+    /// the `:lint` TUI overlay + `ebman lint` CLI — designed
+    /// for one engine, three surfaces.
+    ConfirmModalLint {
+        gen: u64,
+        env_name: String,
+        issues: Vec<crate::lint::Issue>,
+    },
     /// `:undo` capture — emitted from the option-settings update
     /// spawn after a successful write, carrying the reverse-action
     /// so `App.undo_history` can push it for later `:undo`.
@@ -8245,6 +8254,8 @@ impl App {
                         loading_health_check: false,
                         unavailability_line: None,
                         loading_unavailability: false,
+                        lint_issues: None,
+                        loading_lint: false,
                     }));
                 }
                 KeyCode::Char(c) if is_text_input(&key) => {
@@ -8359,6 +8370,8 @@ impl App {
                     loading_health_check: false,
                     unavailability_line: None,
                     loading_unavailability: false,
+                    lint_issues: None,
+                    loading_lint: false,
                 }));
                 if wants_preflight {
                     self.spawn_dry_run(env.name.clone());
@@ -8435,6 +8448,8 @@ impl App {
                     loading_health_check: false,
                     unavailability_line: None,
                     loading_unavailability: false,
+                    lint_issues: None,
+                    loading_lint: false,
                 }));
             }
             _ => {
@@ -8463,6 +8478,8 @@ impl App {
                     loading_health_check: false,
                     unavailability_line: None,
                     loading_unavailability: false,
+                    lint_issues: None,
+                    loading_lint: false,
                 }));
             }
         }
@@ -9616,6 +9633,53 @@ impl App {
         );
     }
 
+    /// Run the lint engine against the env at confirm-modal-open
+    /// time. Same rules `:lint` and `ebman lint` use; same
+    /// operator-tunable disables. Issues at `>= Warn` render as
+    /// modal warning lines so the operator sees rule-keyed risk
+    /// before authorising the action.
+    ///
+    /// Uses the same option-settings fetch path as the
+    /// unavailability estimate + health-check probe, but issues
+    /// its own DescribeConfigurationSettings call to keep the
+    /// three features isolated. Failure of the read is non-
+    /// blocking — modal renders without lint when the fetch
+    /// fails (the operator can still see the rule-output via
+    /// `:lint` once the modal closes).
+    fn spawn_confirm_lint(&mut self, env: crate::aws::Environment) {
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        // Snapshot operator-tunable disables — user-level (already
+        // mirrored on App) + project-local (read fresh from cwd).
+        let mut disabled = self.lint_disable.clone();
+        disabled.extend(crate::project::load_lint_disables_from_cwd());
+        let env_for_msg = env.name.clone();
+        let app_name = env.application.clone();
+        let env_name = env.name.clone();
+        tokio::spawn(async move {
+            let issues = match aws.fetch_env_option_settings(&app_name, &env_name).await {
+                Ok(opts) => {
+                    let ctx = crate::lint::LintContext {
+                        env: &env,
+                        options: &opts,
+                        events: &[],
+                        cost_usd_per_month: None,
+                        latest_stack_version: None,
+                    };
+                    let rules = crate::lint::default_rules(&disabled);
+                    crate::lint::run_rules(&rules, &ctx)
+                }
+                Err(_) => Vec::new(),
+            };
+            let _ = tx.send(AppMsg::ConfirmModalLint {
+                gen,
+                env_name: env_for_msg,
+                issues,
+            });
+        });
+    }
+
     /// Fire a single non-destructive action for batch mode. Unlike
     /// `spawn_action` this doesn't need a `ConfirmModal` — the user already
     /// opted in by typing `:batch-…`. Only Rebuild and RestartAppServer are
@@ -10077,9 +10141,19 @@ impl App {
             // Same gate as the health-check probe — only useful for
             // Deploy confirms; --demo mode skips the AWS call.
             loading_unavailability: wants_version_preview && !self.demo_mode,
+            lint_issues: None,
+            // Lint at confirm time runs against every confirm modal,
+            // not just Deploy. The health-check probe + unavailability
+            // pill specialise on deploys; lint is universal — operator
+            // sees AllAtOnce / health-check-empty / cooldown-low etc.
+            // before confirming any destructive action. Skipped in
+            // demo mode (same gate as the other probes — no AWS
+            // round-trip in demo).
+            loading_lint: !self.demo_mode,
         };
         let needs_health_check_probe = modal.loading_health_check;
         let needs_unavailability = modal.loading_unavailability;
+        let needs_lint = modal.loading_lint;
         self.action_flow = Some(ActionFlow::Confirm(modal));
         self.mode = Mode::Action;
         if wants_preflight {
@@ -10105,6 +10179,9 @@ impl App {
         }
         if needs_unavailability {
             self.spawn_unavailability_estimate(env.application.clone(), env.name.clone());
+        }
+        if needs_lint {
+            self.spawn_confirm_lint(env.clone());
         }
     }
 
@@ -19667,6 +19744,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_confirm_modal_lint_stuffs_issues_into_modal() {
+        // After spawn_confirm_lint emits its message, the handler
+        // clears the loading flag and stores the issues vec.
+        // Modal renders Warn+ as inline warnings on the next draw.
+        let mut app = test_app();
+        app.environments = vec![mk_env("prod", "shop", "Web", "Green")];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        app.execute_command("deploy build-900");
+        // Empty issues — handler still clears the loading flag.
+        app.handle_msg(AppMsg::ConfirmModalLint {
+            gen: app.generation,
+            env_name: "prod".into(),
+            issues: vec![],
+        });
+        match &app.action_flow {
+            Some(ActionFlow::Confirm(modal)) => {
+                assert!(!modal.loading_lint, "loading flag should clear");
+                assert_eq!(modal.lint_issues.as_ref().map(|v| v.len()), Some(0));
+            }
+            _ => panic!("expected confirm modal open"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_confirm_modal_lint_drops_stale_target_results() {
+        // If the operator opens a deploy on prod, closes it, then
+        // opens a deploy on staging, the in-flight prod lint result
+        // shouldn't land on the staging modal. Handler guards on
+        // `modal.target_env == env_name`.
+        let mut app = test_app();
+        app.environments = vec![
+            mk_env("prod", "shop", "Web", "Green"),
+            mk_env("staging", "shop", "Web", "Green"),
+        ];
+        app.rebuild_view();
+        // Open modal on staging.
+        app.table_state.select(Some(1));
+        app.execute_command("deploy build-900");
+        // Late-arriving lint result for prod — should be dropped.
+        app.handle_msg(AppMsg::ConfirmModalLint {
+            gen: app.generation,
+            env_name: "prod".into(),
+            issues: vec![crate::lint::Issue {
+                rule_id: "EBL001".into(),
+                severity: crate::lint::Severity::Warn,
+                env_name: Some("prod".into()),
+                title: "stale".into(),
+                detail: "stale".into(),
+                suggestion: None,
+                fields: Default::default(),
+            }],
+        });
+        match &app.action_flow {
+            Some(ActionFlow::Confirm(modal)) => {
+                // loading_lint should still be true (we never
+                // applied the stale result).
+                assert!(
+                    modal.loading_lint,
+                    "loading flag must stay true on stale result"
+                );
+                assert!(
+                    modal.lint_issues.is_none(),
+                    "stale result must not populate"
+                );
+            }
+            _ => panic!("expected confirm modal open"),
+        }
+    }
+
+    #[tokio::test]
     async fn refresh_tf_managed_envs_derives_set_from_tf_state() {
         // The HashSet caching the tf-managed names should match
         // `tf_state.managed_names()` after any mutation. Used by
@@ -21047,6 +21195,8 @@ mod tests {
             loading_health_check: false,
             unavailability_line: None,
             loading_unavailability: false,
+            lint_issues: None,
+            loading_lint: false,
         }
     }
 
