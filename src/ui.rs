@@ -4659,6 +4659,49 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                 };
                 lines.push(Line::from(Span::styled(format!("  {body}"), style)));
             }
+            // Lint warnings — rule-keyed risks against the env's
+            // pre-write state. Renders only Warn+ (Info issues
+            // are noise in a confirm modal; the operator can
+            // see them via `:lint` separately). Each issue gets
+            // a header line `⚠ [EBL001] <title>` plus an
+            // indented `→ <suggestion>` when one's available.
+            // Skips the loading state silently — modal stays
+            // compact while the spawn runs.
+            if let Some(issues) = &modal.lint_issues {
+                use crate::lint::Severity;
+                let to_show: Vec<&crate::lint::Issue> = issues
+                    .iter()
+                    .filter(|i| i.severity >= Severity::Warn)
+                    .collect();
+                if !to_show.is_empty() {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(Span::styled(
+                        "  lint warnings:",
+                        Style::default().fg(theme.muted),
+                    )));
+                    for issue in to_show {
+                        let glyph = match issue.severity {
+                            Severity::Error => "✗",
+                            Severity::Warn => "⚠",
+                            Severity::Info => "·",
+                        };
+                        let color = match issue.severity {
+                            Severity::Error => theme.health_red,
+                            _ => theme.health_yellow,
+                        };
+                        lines.push(Line::from(Span::styled(
+                            format!("    {glyph} [{}] {}", issue.rule_id, issue.title),
+                            Style::default().fg(color).add_modifier(Modifier::BOLD),
+                        )));
+                        if let Some(suggestion) = &issue.suggestion {
+                            lines.push(Line::from(Span::styled(
+                                format!("      → {suggestion}"),
+                                Style::default().fg(theme.muted),
+                            )));
+                        }
+                    }
+                }
+            }
             // Pre-flight events: last 3 events on this env.
             if let Some(events) = &modal.recent_events {
                 if !events.is_empty() {
