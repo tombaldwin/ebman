@@ -4849,6 +4849,159 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                 popup,
             );
         }
+        ActionFlow::Rollout(flow) => {
+            let popup = centered_overlay(OverlaySize::Wide, area);
+            f.render_widget(Clear, popup);
+            let title = format!(
+                " rollout {} — {} → {} ",
+                flow.rollout_id, flow.env_name, flow.version_label
+            );
+            let block = ratatui::widgets::Block::default()
+                .borders(ratatui::widgets::Borders::ALL)
+                .title(title)
+                .border_style(Style::default().fg(theme.title));
+            let mut lines: Vec<Line> = Vec::new();
+            // Header note keyed to current state.
+            let state_line = match &flow.state {
+                crate::mode_action::RolloutState::Planning => {
+                    "  pre-flighting regions…".to_string()
+                }
+                crate::mode_action::RolloutState::AwaitingConfirm => {
+                    let n_ok = flow
+                        .regions
+                        .iter()
+                        .filter(|r| r.env_found == Some(true))
+                        .count();
+                    let n_total = flow.regions.len();
+                    format!(
+                        "  pre-flight complete ({n_ok}/{n_total} ok) — press y to dispatch, n / esc to abort"
+                    )
+                }
+                crate::mode_action::RolloutState::Dispatching { next_index } => {
+                    format!(
+                        "  dispatching region {}/{}…",
+                        next_index + 1,
+                        flow.regions.len()
+                    )
+                }
+                crate::mode_action::RolloutState::Done => {
+                    let n_ok = flow
+                        .regions
+                        .iter()
+                        .filter(|r| matches!(r.outcome, Some(Ok(()))))
+                        .count();
+                    let n_err = flow
+                        .regions
+                        .iter()
+                        .filter(|r| matches!(r.outcome, Some(Err(_))))
+                        .count();
+                    let n_skipped = flow
+                        .regions
+                        .iter()
+                        .filter(|r| r.outcome.is_none() && r.env_found != Some(false))
+                        .count();
+                    format!(
+                        "  done — {n_ok} ok, {n_err} failed, {n_skipped} skipped (esc / q to close)"
+                    )
+                }
+            };
+            lines.push(Line::from(Span::styled(
+                state_line,
+                Style::default().fg(theme.muted),
+            )));
+            lines.push(Line::from(""));
+            // Column header.
+            lines.push(Line::from(Span::styled(
+                "  REGION                ENV               CURRENT           TARGET            STATUS",
+                Style::default().fg(theme.muted),
+            )));
+            for row in &flow.regions {
+                // status_text is borrowed `&str` for the static
+                // cases and `String` for the error case. To unify,
+                // build it as `String` always and slice as `&str`
+                // in the Span.
+                let (status_text, status_color): (String, _) =
+                    match (&row.outcome, row.env_found, &row.preflight_error) {
+                        (Some(Ok(())), _, _) => ("✓ deployed".to_string(), theme.health_green),
+                        (Some(Err(_)), _, _) => {
+                            // Short label only; the full error
+                            // surfaces as an indented "↳" line below
+                            // the row.
+                            ("✗ failed".to_string(), theme.health_red)
+                        }
+                        (None, Some(false), Some(_)) => {
+                            ("✗ pre-flight fail".to_string(), theme.health_red)
+                        }
+                        (None, Some(false), None) => {
+                            ("✗ env not found".to_string(), theme.health_red)
+                        }
+                        (None, Some(true), _) => {
+                            if matches!(
+                                flow.state,
+                                crate::mode_action::RolloutState::Dispatching { .. }
+                            ) {
+                                ("pending".to_string(), theme.muted)
+                            } else {
+                                ("✓ pre-flight ok".to_string(), theme.health_green)
+                            }
+                        }
+                        (None, None, _) => ("planning…".to_string(), theme.muted),
+                    };
+                let current = row.current_version.as_deref().unwrap_or("…");
+                let region_col = pad_right(&row.region, 22);
+                let env_col = pad_right(&flow.env_name, 18);
+                let current_col = pad_right(current, 18);
+                let target_col = pad_right(&flow.version_label, 18);
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::raw(region_col),
+                    Span::raw(env_col),
+                    Span::raw(current_col),
+                    Span::raw(target_col),
+                    Span::styled(
+                        status_text.to_string(),
+                        Style::default()
+                            .fg(status_color)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+                if let Some(err) = &row.preflight_error {
+                    lines.push(Line::from(Span::styled(
+                        format!("        ↳ {err}"),
+                        Style::default().fg(theme.muted),
+                    )));
+                }
+                if let Some(Err(e)) = &row.outcome {
+                    lines.push(Line::from(Span::styled(
+                        format!("        ↳ {e}"),
+                        Style::default().fg(theme.muted),
+                    )));
+                }
+            }
+            f.render_widget(
+                Paragraph::new(lines)
+                    .wrap(Wrap { trim: false })
+                    .block(block),
+                popup,
+            );
+        }
+    }
+}
+
+/// Pad a string to at least `width` chars with spaces. Uses
+/// char-count rather than byte-count because Region / env names
+/// can contain non-ASCII (rare but legal).
+fn pad_right(s: &str, width: usize) -> String {
+    let n = s.chars().count();
+    if n >= width {
+        s.to_string()
+    } else {
+        let mut out = String::with_capacity(width);
+        out.push_str(s);
+        for _ in 0..(width - n) {
+            out.push(' ');
+        }
+        out
     }
 }
 

@@ -441,6 +441,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         CommandKind::Prefill("promote-env "),
     ),
     cmd(
+        "rollout",
+        ":rollout LABEL --regions r1,r2,r3 [--env NAME] [--wait-for-green Nm] — sequential cross-region deploy. Pre-flights every region (env existence, current version), shows a plan overlay, dispatches on `y`. Stops on first failure. Single rollout_id correlation across audit lines. `ebman action rollout` is the scriptable equivalent.",
+        Category::Lifecycle,
+        CommandKind::Prefill("rollout "),
+    ),
+    cmd(
         "rollback",
         ":rollback [--to LABEL] [--auto-rollback Nm] — redeploy the previous version. No arg uses the captured pre-deploy snapshot (falls back to event-history scan). --to LABEL targets a specific version. --auto-rollback arms a roll-forward watchdog.",
         Category::Lifecycle,

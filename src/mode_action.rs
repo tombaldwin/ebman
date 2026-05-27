@@ -193,9 +193,91 @@ pub const ACTIONS: &[Action] = &[
 // than absorb the churn.
 #[allow(clippy::large_enum_variant)]
 pub enum ActionFlow {
-    Menu { list_state: ListState },
-    SwapTarget { source: String, picker: Picker },
+    Menu {
+        list_state: ListState,
+    },
+    SwapTarget {
+        source: String,
+        picker: Picker,
+    },
     Confirm(ConfirmModal),
+    /// `:rollout LABEL --regions r1,r2,r3` opens this flow. It's
+    /// a state-machine of its own (Planning → AwaitingConfirm →
+    /// Dispatching → Done) — different shape from the standard
+    /// per-env ConfirmModal because the rollout fans out across
+    /// regions, with one row per region in the overlay and per-
+    /// region async preflight + dispatch.
+    Rollout(RolloutFlow),
+}
+
+/// Cross-region rollout state machine for the TUI surface.
+/// Distinct from `RolloutFlow::AwaitingConfirm`'s
+/// `current_version` data — the modal renders a row per region
+/// throughout the lifecycle, just with different content per
+/// state. Each state transition is driven by an `AppMsg::Rollout*`
+/// variant.
+#[derive(Clone, Debug)]
+pub struct RolloutFlow {
+    /// Stable correlation id written into every per-region
+    /// audit-log line. Same shape `ebman action rollout` uses
+    /// (`rollout-YYYYMMDDTHHMMSSZ`) so audit-log grep finds
+    /// CLI + TUI rollouts identically.
+    pub rollout_id: String,
+    pub env_name: String,
+    pub version_label: String,
+    /// Per-region rows, in dispatch order (= the order the
+    /// operator supplied via `--regions`).
+    pub regions: Vec<RolloutRegion>,
+    pub state: RolloutState,
+    /// Operator-supplied flags carried through to the dispatch
+    /// phase. `wait_for_green_secs` is per-region; the inner
+    /// poll loop reuses `decide_poll` from main.rs's CLI path.
+    pub wait_for_green_secs: Option<u64>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RolloutRegion {
+    pub region: String,
+    /// `None` until pre-flight lands. `Some("")` means the env
+    /// was found but has no version deployed yet; `Some(label)`
+    /// means it's currently on that label.
+    pub current_version: Option<String>,
+    /// `None` while planning. `Some(true)` if the same-name env
+    /// was found in this region's fleet; `Some(false)` if not
+    /// (rollout halts before dispatching anywhere in that case
+    /// — pre-flight gate).
+    pub env_found: Option<bool>,
+    /// Pre-flight error message, when one occurred (STS / list
+    /// failed). Surfaces in the plan table so the operator can
+    /// see which region needs investigation.
+    pub preflight_error: Option<String>,
+    /// Dispatch outcome (populated in `Dispatching` state).
+    /// `None` until that region's turn; `Some(Ok(()))` on a
+    /// successful UpdateEnvironment + (if asked) Green; `Some(Err(...))`
+    /// on either dispatch failure or wait-for-green timeout.
+    pub outcome: Option<Result<(), String>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RolloutState {
+    /// Pre-flight fetches in flight. Plan rows render with
+    /// `…` placeholders. No keys do anything except `esc` /
+    /// `q` (cancel before any region is touched).
+    Planning,
+    /// All pre-flights landed. At least one region passed; the
+    /// operator can press `y` to dispatch. Failed pre-flights
+    /// render with their error; the operator can `esc` and
+    /// retry after fixing them.
+    AwaitingConfirm,
+    /// `y` was pressed; dispatching regions sequentially. The
+    /// `next_index` tracks which region the dispatch loop is on.
+    /// Regions before `next_index` have outcomes; regions at or
+    /// after are pending. Outer halt fires if a region's outcome
+    /// is `Err` (stop on first failure).
+    Dispatching { next_index: usize },
+    /// All regions either dispatched or skipped (post-halt). The
+    /// overlay shows the final report; `esc` / `q` closes.
+    Done,
 }
 
 #[derive(Clone)]

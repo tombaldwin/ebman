@@ -47,6 +47,8 @@ impl AppMsg {
             | HealthCheckProbe { gen, .. }
             | UnavailabilityEstimate { gen, .. }
             | ConfirmModalLint { gen, .. }
+            | RolloutPreflight { gen, .. }
+            | RolloutDispatched { gen, .. }
             | UndoCaptured { gen, .. }
             | RollbackTarget { gen, .. }
             | DetailTags { gen, .. }
@@ -168,6 +170,12 @@ impl App {
             AppMsg::ConfirmModalLint {
                 env_name, issues, ..
             } => self.handle_confirm_modal_lint(env_name, issues),
+            AppMsg::RolloutPreflight { region, result, .. } => {
+                self.handle_rollout_preflight(region, result)
+            }
+            AppMsg::RolloutDispatched { region, result, .. } => {
+                self.handle_rollout_dispatched(region, result)
+            }
             AppMsg::UndoCaptured { entry, .. } => self.handle_undo_captured(entry),
             AppMsg::RollbackTarget {
                 env_name,
@@ -773,6 +781,131 @@ impl App {
         }
         modal.loading_lint = false;
         modal.lint_issues = Some(issues);
+    }
+
+    /// Land one region's pre-flight result on the active
+    /// rollout flow. Updates the per-region row; if all rows
+    /// have landed, transitions the flow from Planning to
+    /// AwaitingConfirm so the operator can press `y` to
+    /// dispatch.
+    fn handle_rollout_preflight(&mut self, region: String, result: Result<String, String>) {
+        let Some(crate::mode_action::ActionFlow::Rollout(flow)) = self.action_flow.as_mut() else {
+            // Operator escaped the flow mid-preflight; drop the
+            // result. No need to surface — the pre-flight tokio
+            // task already completed.
+            return;
+        };
+        let Some(row) = flow.regions.iter_mut().find(|r| r.region == region) else {
+            return;
+        };
+        match result {
+            Ok(current) => {
+                row.env_found = Some(true);
+                row.current_version = Some(current);
+            }
+            Err(e) => {
+                row.env_found = Some(false);
+                row.preflight_error = Some(e);
+            }
+        }
+        // If every region has landed, advance state. Operators
+        // see the plan + can press y / n.
+        let all_in = flow.regions.iter().all(|r| r.env_found.is_some());
+        if all_in {
+            flow.state = crate::mode_action::RolloutState::AwaitingConfirm;
+            let n_ok = flow
+                .regions
+                .iter()
+                .filter(|r| r.env_found == Some(true))
+                .count();
+            let n_total = flow.regions.len();
+            self.status_message = Some(format!(
+                "rollout: pre-flight done ({n_ok}/{n_total} regions ok) — press y to dispatch, esc to abort"
+            ));
+        }
+    }
+
+    /// Land one region's dispatch outcome on the active rollout
+    /// flow. Advances `next_index`; if the outcome was Err,
+    /// halts the rollout. Otherwise fires the next region's
+    /// dispatch. Final outcome (success / partial-failure)
+    /// surfaces as a `Done` state with a status toast.
+    fn handle_rollout_dispatched(&mut self, region: String, result: Result<(), String>) {
+        // Pull the values we need before re-borrowing for the
+        // dispatch fire — borrow checker can't see we'd switch
+        // to a different field of the same enum variant.
+        let (should_continue, next_region, env_name, version_label, wait_for_green_secs) = {
+            let Some(crate::mode_action::ActionFlow::Rollout(flow)) = self.action_flow.as_mut()
+            else {
+                return;
+            };
+            let Some(row) = flow.regions.iter_mut().find(|r| r.region == region) else {
+                return;
+            };
+            row.outcome = Some(result.clone());
+            // Move the cursor. If `Err`, halt; otherwise next.
+            let next = match &flow.state {
+                crate::mode_action::RolloutState::Dispatching { next_index } => next_index + 1,
+                _ => return,
+            };
+            let halt = result.is_err();
+            let n = flow.regions.len();
+            let done = halt || next >= n;
+            if done {
+                flow.state = crate::mode_action::RolloutState::Done;
+                let n_ok = flow
+                    .regions
+                    .iter()
+                    .filter(|r| matches!(r.outcome, Some(Ok(()))))
+                    .count();
+                let n_err = flow
+                    .regions
+                    .iter()
+                    .filter(|r| matches!(r.outcome, Some(Err(_))))
+                    .count();
+                let n_skipped = flow.regions.iter().filter(|r| r.outcome.is_none()).count();
+                if halt {
+                    self.error_message = Some(format!(
+                        "rollout {}: halted ({n_ok} ok, {n_err} failed, {n_skipped} skipped)",
+                        flow.rollout_id
+                    ));
+                } else {
+                    self.status_message = Some(format!(
+                        "rollout {}: complete ({n_ok}/{n} regions ok)",
+                        flow.rollout_id
+                    ));
+                }
+                (false, None, String::new(), String::new(), None)
+            } else {
+                flow.state = crate::mode_action::RolloutState::Dispatching { next_index: next };
+                let next_region = flow.regions[next].region.clone();
+                (
+                    true,
+                    Some(next_region),
+                    flow.env_name.clone(),
+                    flow.version_label.clone(),
+                    flow.wait_for_green_secs,
+                )
+            }
+        };
+        if should_continue {
+            let profile = self.context.profile.clone();
+            if let Some(region) = next_region {
+                self.spawn_rollout_dispatch(
+                    profile,
+                    region,
+                    env_name,
+                    version_label,
+                    wait_for_green_secs,
+                );
+            }
+        }
+        // Audit-log entries are written by the spawn-side
+        // (RolloutDispatched arrival means the dispatch already
+        // landed in EB); a future enhancement could mirror the
+        // CLI's `write_rollout_audit_line` here for finer-grained
+        // history. Keeping it as a follow-up to stay focused on
+        // the TUI state-machine first.
     }
 
     /// Push a captured undo entry onto the history deque. Cap'd at

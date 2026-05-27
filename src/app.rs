@@ -1469,6 +1469,30 @@ enum AppMsg {
         env_name: String,
         issues: Vec<crate::lint::Issue>,
     },
+    /// Pre-flight result for one region of a `:rollout` flow.
+    /// Carries the region's current version_label on success
+    /// (so the plan overlay can show "currently build-820 →
+    /// target build-900") or an error string on failure (STS,
+    /// list_environments, or env-not-found). The handler
+    /// populates the matching `RolloutRegion` row + advances
+    /// the flow to AwaitingConfirm once all regions report.
+    RolloutPreflight {
+        gen: u64,
+        region: String,
+        result: Result<String, String>,
+    },
+    /// Dispatch outcome for one region of a `:rollout` flow.
+    /// `Ok(())` after a successful `deploy_version` (and Green
+    /// observation if --wait-for-green was set);
+    /// `Err(reason)` on dispatch failure or wait timeout. The
+    /// handler records the outcome, advances `next_index`, and
+    /// either dispatches the next region OR halts (on first
+    /// failure).
+    RolloutDispatched {
+        gen: u64,
+        region: String,
+        result: Result<(), String>,
+    },
     /// `:undo` capture — emitted from the option-settings update
     /// spawn after a successful write, carrying the reverse-action
     /// so `App.undo_history` can push it for later `:undo`.
@@ -8303,6 +8327,65 @@ impl App {
                 }
                 _ => {}
             },
+            ActionFlow::Rollout(flow) => match (key.code, &flow.state) {
+                // Esc / q close the rollout at any state — even
+                // during Dispatching the operator can abort
+                // further regions. The dispatched ones have
+                // already fired (each region's UpdateEnvironment
+                // is a non-reversible AWS write), but the loop
+                // halts so regions queued behind the current
+                // one don't fire.
+                (KeyCode::Esc, _) | (KeyCode::Char('q'), _) => self.close_action_flow(),
+                // `y` confirms a fully-pre-flighted plan. Only
+                // valid in AwaitingConfirm. Switches state to
+                // Dispatching and fires the first region.
+                (KeyCode::Char('y'), crate::mode_action::RolloutState::AwaitingConfirm)
+                | (KeyCode::Enter, crate::mode_action::RolloutState::AwaitingConfirm) => {
+                    // Refuse to dispatch if no regions passed
+                    // pre-flight — there's nothing safe to send.
+                    let any_ok = flow.regions.iter().any(|r| r.env_found == Some(true));
+                    if !any_ok {
+                        self.error_message = Some(
+                            "rollout: no regions passed pre-flight — fix or `esc` to abort".into(),
+                        );
+                        return;
+                    }
+                    // Find the first region that passed pre-
+                    // flight. Failed regions are skipped (their
+                    // outcome stays None — surfaced as
+                    // "skipped" in the final report).
+                    let Some((first_idx, _)) = flow
+                        .regions
+                        .iter()
+                        .enumerate()
+                        .find(|(_, r)| r.env_found == Some(true))
+                    else {
+                        return;
+                    };
+                    flow.state = crate::mode_action::RolloutState::Dispatching {
+                        next_index: first_idx,
+                    };
+                    let region = flow.regions[first_idx].region.clone();
+                    let env_name = flow.env_name.clone();
+                    let version_label = flow.version_label.clone();
+                    let wait_for_green_secs = flow.wait_for_green_secs;
+                    let profile = self.context.profile.clone();
+                    self.spawn_rollout_dispatch(
+                        profile,
+                        region,
+                        env_name,
+                        version_label,
+                        wait_for_green_secs,
+                    );
+                }
+                // `n` aborts before any dispatch fires. Same as
+                // esc but matches the y/n posture of the
+                // standard ConfirmModal.
+                (KeyCode::Char('n'), crate::mode_action::RolloutState::AwaitingConfirm) => {
+                    self.close_action_flow();
+                }
+                _ => {}
+            },
         }
     }
 
@@ -9572,6 +9655,124 @@ impl App {
     /// Shells out to `curl` for the same reason `fetch_url_text`
     /// and `fire_audit_webhook` do — keeps ebman HTTP-client-dep
     /// free. Output is parsed to an HTTP status code (or classified
+    /// Pre-flight one region of a rollout: construct an
+    /// AwsClient with the region override, list the region's
+    /// envs, check whether the target env exists, and emit
+    /// `AppMsg::RolloutPreflight`. Failure modes (STS error,
+    /// list_environments failure, env not found) all land as
+    /// per-region row state — the operator sees which regions
+    /// passed pre-flight and which need investigation before
+    /// pressing `y` to dispatch.
+    pub(crate) fn spawn_rollout_preflight(
+        &self,
+        profile: Option<String>,
+        region: String,
+        env_name: String,
+    ) {
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        tokio::spawn(async move {
+            let result = match crate::aws::AwsClient::with(profile, Some(region.clone())).await {
+                Ok(client) => match client.list_environments().await {
+                    Ok(envs) => match envs.iter().find(|e| e.name == env_name) {
+                        Some(e) => Ok(e.version_label.clone()),
+                        None => Err(format!("env '{env_name}' not found in region '{region}'")),
+                    },
+                    Err(e) => Err(format!("list_environments: {e}")),
+                },
+                Err(e) => Err(format!("AwsClient::with({region}): {e}")),
+            };
+            let _ = tx.send(AppMsg::RolloutPreflight {
+                gen,
+                region,
+                result,
+            });
+        });
+    }
+
+    /// Dispatch a single region of a rollout: construct an
+    /// AwsClient with that region's override, fire
+    /// `UpdateEnvironment(env, version_label)`, optionally poll
+    /// for Green if `wait_for_green_secs` is set. Emits
+    /// `AppMsg::RolloutDispatched` with the outcome. The handler
+    /// advances the state machine (next region, or halt on
+    /// failure).
+    ///
+    /// Reuses `deploy_settled_green` for the wait-for-green
+    /// predicate. Polling cadence 5s; deadline `wait_for_green_secs`
+    /// from the dispatch's start.
+    pub(crate) fn spawn_rollout_dispatch(
+        &self,
+        profile: Option<String>,
+        region: String,
+        env_name: String,
+        version_label: String,
+        wait_for_green_secs: Option<u64>,
+    ) {
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        tokio::spawn(async move {
+            let client = match crate::aws::AwsClient::with(profile, Some(region.clone())).await {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = tx.send(AppMsg::RolloutDispatched {
+                        gen,
+                        region,
+                        result: Err(format!("client: {e}")),
+                    });
+                    return;
+                }
+            };
+            if let Err(e) = client.deploy_version(&env_name, &version_label).await {
+                let _ = tx.send(AppMsg::RolloutDispatched {
+                    gen,
+                    region,
+                    result: Err(format!("deploy_version: {e}")),
+                });
+                return;
+            }
+            if let Some(secs) = wait_for_green_secs {
+                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(secs);
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    if tokio::time::Instant::now() >= deadline {
+                        let _ = tx.send(AppMsg::RolloutDispatched {
+                            gen,
+                            region,
+                            result: Err(format!("did not reach Green within {secs}s")),
+                        });
+                        return;
+                    }
+                    match client.list_environments().await {
+                        Ok(envs) => {
+                            let (status, health) = envs
+                                .iter()
+                                .find(|e| e.name == env_name)
+                                .map(|e| (e.status.clone(), e.health.clone()))
+                                .unwrap_or_default();
+                            if deploy_settled_green(&status, &health) {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx.send(AppMsg::RolloutDispatched {
+                                gen,
+                                region,
+                                result: Err(format!("poll list_environments: {e}")),
+                            });
+                            return;
+                        }
+                    }
+                }
+            }
+            let _ = tx.send(AppMsg::RolloutDispatched {
+                gen,
+                region,
+                result: Ok(()),
+            });
+        });
+    }
+
     /// as a transport error) so the warning text can surface what
     /// specifically failed.
     fn spawn_health_check_probe(&mut self, app_name: String, env_name: String, cname: String) {
@@ -10922,6 +11123,7 @@ impl App {
             "upgrade" => self.cmd_upgrade(&rest),
             "clone" => self.cmd_clone(&rest),
             "promote-env" => self.cmd_promote_env(&rest),
+            "rollout" => self.cmd_rollout(&rest),
             "scale" => self.cmd_scale(&rest),
             "stop" => self.cmd_stop(),
             "start" => self.cmd_start(),

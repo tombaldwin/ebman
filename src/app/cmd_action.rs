@@ -7,7 +7,7 @@
 //! Fifth slice of the `execute_command` split. Same parent-module
 //! visibility as the other `cmd_*` sub-modules.
 
-use super::{parse_named_arg, parse_s3_url, Action, App, ParameterisedAction};
+use super::{parse_named_arg, parse_s3_url, Action, App, Mode, ParameterisedAction};
 
 impl App {
     /// `:deploy LABEL [--preview]` ships an existing version, or
@@ -214,6 +214,114 @@ impl App {
         self.status_message = Some(format!(
             "promote: {label} from {source_name} → {target_name}"
         ));
+    }
+
+    /// `:rollout LABEL --regions r1,r2,r3 [--wait-for-green Nm]`
+    /// — cross-region sequential deploy. Same env-name across
+    /// regions (defaults to the selected env's name; an explicit
+    /// `--env NAME` overrides). Opens a Rollout flow overlay:
+    /// pre-flights all regions, then awaits `y` to dispatch.
+    ///
+    /// Sequential dispatch only — stops on first failure. Matches
+    /// the `ebman action rollout` CLI's semantics (single
+    /// `rollout_id` for audit correlation, pre-flight halt if any
+    /// region misses the env, etc.). The CLI is the more common
+    /// path for CI; this TUI surface is for interactive
+    /// "review-and-go" rollouts.
+    pub(crate) fn cmd_rollout(&mut self, rest: &[&str]) {
+        let usage = "usage: :rollout LABEL --regions r1,r2,r3 [--env NAME] [--wait-for-green Nm]";
+        let Some(label) = rest.first().copied() else {
+            self.error_message = Some(usage.into());
+            return;
+        };
+        let regions_csv = match parse_named_arg::<String>(rest, "--regions") {
+            Some(v) => v,
+            None => {
+                self.error_message = Some(
+                    "rollout: --regions r1,r2,r3 is required (comma-separated, no spaces)".into(),
+                );
+                return;
+            }
+        };
+        let regions: Vec<String> = regions_csv
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if regions.is_empty() {
+            self.error_message = Some("rollout: --regions list is empty".into());
+            return;
+        }
+        // Env: explicit --env NAME wins; else fall back to the
+        // selected env's name. The CLI requires --env explicitly;
+        // the TUI is more forgiving because the operator usually
+        // has the target env selected when they fire :rollout.
+        let env_name = match parse_named_arg::<String>(rest, "--env") {
+            Some(name) => name,
+            None => match self.selected_env() {
+                Some(env) => env.name.clone(),
+                None => {
+                    self.error_message = Some(
+                        "rollout: no env selected — pass --env NAME or select an env first".into(),
+                    );
+                    return;
+                }
+            },
+        };
+        let wait_for_green_secs =
+            parse_named_arg::<String>(rest, "--wait-for-green").and_then(|s| {
+                let ms = crate::aws::parse_window_ms(&s)?;
+                Some((ms / 1000) as u64)
+            });
+        if rest.contains(&"--wait-for-green") && wait_for_green_secs.is_none() {
+            self.error_message = Some(
+                "rollout: --wait-for-green expects a duration like `5m` / `30m` / `1h`".into(),
+            );
+            return;
+        }
+        if self.demo_mode {
+            // Demo synthetic fleet has fake CNAMEs that wouldn't
+            // resolve; the per-region AwsClient construction
+            // would actually try STS. Refuse with a clear hint.
+            self.error_message = Some("rollout: not available in --demo mode".into());
+            return;
+        }
+
+        // Build the initial RolloutFlow in Planning state with
+        // one row per region (all placeholders) so the overlay
+        // can render immediately. Pre-flight messages populate
+        // each row as they land.
+        let rollout_id = format!("rollout-{}", chrono::Utc::now().format("%Y%m%dT%H%M%SZ"));
+        let flow = crate::mode_action::RolloutFlow {
+            rollout_id: rollout_id.clone(),
+            env_name: env_name.clone(),
+            version_label: label.to_string(),
+            wait_for_green_secs,
+            regions: regions
+                .iter()
+                .map(|r| crate::mode_action::RolloutRegion {
+                    region: r.clone(),
+                    current_version: None,
+                    env_found: None,
+                    preflight_error: None,
+                    outcome: None,
+                })
+                .collect(),
+            state: crate::mode_action::RolloutState::Planning,
+        };
+        self.action_flow = Some(crate::mode_action::ActionFlow::Rollout(flow));
+        self.mode = Mode::Action;
+        self.status_message = Some(format!(
+            "rollout {rollout_id}: pre-flighting {} region(s)…",
+            regions.len()
+        ));
+        // Fan out the pre-flight: one spawn per region. Each
+        // hits STS (via AwsClient::with) then list_environments,
+        // emits AppMsg::RolloutPreflight back to App.
+        let profile = self.context.profile.clone();
+        for region in regions {
+            self.spawn_rollout_preflight(profile.clone(), region, env_name.clone());
+        }
     }
 
     pub(crate) fn cmd_clone(&mut self, rest: &[&str]) {
