@@ -189,7 +189,7 @@ FLAGS:
 
 SUBCOMMANDS:
     envs [--json]                                List environments in current profile / region.
-    lint [--env NAME] [--json] [--severity LVL] [--rules ID1,ID2] [--quiet]
+    lint [--env NAME] [--regions r1,r2,r3] [--json] [--severity LVL] [--rules ID1,ID2] [--quiet]
                                                   Run the diagnostic rule engine against one env
                                                   (or every env in the context) and emit findings
                                                   as text or JSON. Non-zero exit when issues found.
@@ -197,13 +197,17 @@ SUBCOMMANDS:
                                                   Exit codes: 0 clean, 1 aws err, 2 usage, 3 issues.
                                                   Operator disables via `lint.disable` in
                                                   config.toml and project-local .ebman/ebman.toml.
-    drift [--env NAME] [--tfstate PATH] [--tfdir PATH] [--json] [--quiet]
+                                                  --regions fans out across regions; rows are
+                                                  prefixed with the region.
+    drift [--env NAME] [--regions r1,r2,r3] [--tfstate PATH] [--tfdir PATH] [--json] [--quiet]
                                                   Terraform drift report. Discovers tfstate via
                                                   walk-up from cwd (or --tfdir / --tfstate
                                                   overrides). Compares tf-declared option settings
                                                   + version_label against live EB state.
                                                   Exit codes: 0 no drift, 1 aws err, 2 usage,
                                                   3 drift detected. CI-friendly default exit code.
+                                                  --regions fans out across regions against a
+                                                  single tfstate (multi-region tf projects).
     action ACTION --env NAME [--yes]             Run an action (rebuild|restart|terminate|deploy|rollout) on an env.
                                                   Terminate requires --yes to confirm.
                                                   Deploy requires --version LABEL; supports
@@ -263,6 +267,7 @@ KEYS:
 ///   gate `terraform plan` on a clean ebman state
 async fn run_drift_cli(args: &[String]) -> Result<()> {
     let mut env_name: Option<String> = None;
+    let mut regions_csv: Option<String> = None;
     let mut tfstate_path: Option<std::path::PathBuf> = None;
     let mut tfdir: Option<std::path::PathBuf> = None;
     let mut json = false;
@@ -271,6 +276,7 @@ async fn run_drift_cli(args: &[String]) -> Result<()> {
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--env" => env_name = iter.next().cloned(),
+            "--regions" => regions_csv = iter.next().cloned(),
             "--tfstate" => tfstate_path = iter.next().map(std::path::PathBuf::from),
             "--tfdir" => tfdir = iter.next().map(std::path::PathBuf::from),
             "--json" => json = true,
@@ -283,7 +289,11 @@ async fn run_drift_cli(args: &[String]) -> Result<()> {
     }
 
     // Locate tfstate. Priority: --tfstate explicit path > --tfdir
-    // walk-up > cwd walk-up.
+    // walk-up > cwd walk-up. ONE tfstate per invocation regardless
+    // of --regions — common practice is a single state spanning
+    // regions (terraform's `provider` blocks can target each
+    // region in the same project). Operators with per-region
+    // states run `ebman drift` separately per region.
     let (tf_state, used_path) = if let Some(path) = tfstate_path.as_ref() {
         let Some(state) = ebman::terraform::load_from_path(path) else {
             eprintln!(
@@ -325,72 +335,156 @@ async fn run_drift_cli(args: &[String]) -> Result<()> {
         (state, Some(found))
     };
 
-    let aws = aws::AwsClient::with(None, None).await?;
-    let live_envs = aws
-        .list_environments()
-        .await
-        .map_err(|e| color_eyre::eyre::eyre!("list_environments: {e}"))?;
-
-    // Build the work list. With --env, scope to that env (and
-    // refuse if it's not tf-managed — operator typo'd a non-
-    // managed name); without, run against every tf-managed env
-    // in the live fleet.
-    let targets: Vec<&ebman::aws::Environment> = match env_name.as_deref() {
-        Some(name) => {
-            let Some(env) = live_envs.iter().find(|e| e.name == name) else {
-                eprintln!("ebman drift: env '{name}' not found in current context");
+    // Region fan-out — same shape as `ebman lint --regions`.
+    // Without --regions, single iteration with the default
+    // region (None → operator's AWS_REGION / profile default).
+    let regions: Vec<Option<String>> = match regions_csv {
+        Some(csv) => {
+            let parsed: Vec<String> = csv
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if parsed.is_empty() {
+                eprintln!("ebman drift: --regions list is empty");
                 std::process::exit(2);
-            };
-            vec![env]
+            }
+            parsed.into_iter().map(Some).collect()
         }
-        None => live_envs
-            .iter()
-            .filter(|e| tf_state.env_by_name(&e.name).is_some())
-            .collect(),
+        None => vec![None],
     };
 
-    let mut reports: Vec<(String, bool, Vec<ebman::terraform::DriftField>)> = Vec::new();
+    let multi_region = regions.len() > 1;
+    // Reports are tuples of (region, env_name, tf_managed, drift)
+    // so the output can group + label per region in multi-region
+    // mode.
+    let mut reports: Vec<(
+        Option<String>,
+        String,
+        bool,
+        Vec<ebman::terraform::DriftField>,
+    )> = Vec::new();
     let mut any_drift = false;
-    for env in targets {
-        let tf_env = tf_state.env_by_name(&env.name);
-        let tf_managed = tf_env.is_some();
-        let drift = if let Some(tf) = tf_env {
-            match aws
-                .fetch_env_option_settings(&env.application, &env.name)
-                .await
-            {
-                Ok(opts) => ebman::terraform::compute_drift(tf, env, &opts),
-                Err(e) => {
-                    if !quiet {
-                        eprintln!(
-                            "warning: skipping {} — fetch_env_option_settings: {e}",
-                            env.name
-                        );
-                    }
-                    Vec::new()
+    for region_opt in &regions {
+        let aws = match aws::AwsClient::with(None, region_opt.clone()).await {
+            Ok(c) => c,
+            Err(e) => {
+                if !quiet {
+                    let region_label = region_opt.as_deref().unwrap_or("default");
+                    eprintln!("warning: skipping region '{region_label}' — AwsClient::with: {e}");
                 }
+                continue;
             }
-        } else {
-            Vec::new()
         };
-        if !drift.is_empty() {
-            any_drift = true;
+        let live_envs = match aws.list_environments().await {
+            Ok(envs) => envs,
+            Err(e) => {
+                if !quiet {
+                    let region_label = region_opt.as_deref().unwrap_or("default");
+                    eprintln!("warning: skipping region '{region_label}' — list_environments: {e}");
+                }
+                continue;
+            }
+        };
+
+        // Build the per-region work list. With --env, scope to
+        // that env in this region (skip with warning if not
+        // present here in multi-region mode; hard-exit in single-
+        // region mode). Without --env, run against every tf-
+        // managed env in this region.
+        let targets: Vec<&ebman::aws::Environment> = match env_name.as_deref() {
+            Some(name) => match live_envs.iter().find(|e| e.name == name) {
+                Some(env) => vec![env],
+                None => {
+                    if multi_region && !quiet {
+                        let region_label = region_opt.as_deref().unwrap_or("default");
+                        eprintln!(
+                            "warning: env '{name}' not in region '{region_label}' — skipping"
+                        );
+                    } else if !multi_region {
+                        eprintln!("ebman drift: env '{name}' not found in current context");
+                        std::process::exit(2);
+                    }
+                    continue;
+                }
+            },
+            None => live_envs
+                .iter()
+                .filter(|e| tf_state.env_by_name(&e.name).is_some())
+                .collect(),
+        };
+
+        for env in targets {
+            let tf_env = tf_state.env_by_name(&env.name);
+            let tf_managed = tf_env.is_some();
+            let drift = if let Some(tf) = tf_env {
+                match aws
+                    .fetch_env_option_settings(&env.application, &env.name)
+                    .await
+                {
+                    Ok(opts) => ebman::terraform::compute_drift(tf, env, &opts),
+                    Err(e) => {
+                        if !quiet {
+                            eprintln!(
+                                "warning: skipping {} — fetch_env_option_settings: {e}",
+                                env.name
+                            );
+                        }
+                        Vec::new()
+                    }
+                }
+            } else {
+                Vec::new()
+            };
+            if !drift.is_empty() {
+                any_drift = true;
+            }
+            reports.push((region_opt.clone(), env.name.clone(), tf_managed, drift));
         }
-        reports.push((env.name.clone(), tf_managed, drift));
     }
 
     // Output.
     if !quiet {
         if json {
+            // The JSON renderer takes a `&[(String, bool, Vec<DriftField>)]`
+            // shape (no region). For multi-region we tag each row
+            // by re-using the env_name with `region/` prefix so
+            // consumers can split on `/`. Single-region keeps
+            // the existing shape.
+            //
+            // Future enhancement: a richer `render_drift_json_with_region`
+            // that emits region as a structured field. Worth doing
+            // if multi-region drift sees real usage.
+            let shaped: Vec<(String, bool, Vec<ebman::terraform::DriftField>)> = reports
+                .iter()
+                .map(|(region, env, managed, drift)| {
+                    let name = if multi_region {
+                        if let Some(r) = region {
+                            format!("{r}/{env}")
+                        } else {
+                            env.clone()
+                        }
+                    } else {
+                        env.clone()
+                    };
+                    (name, *managed, drift.clone())
+                })
+                .collect();
             println!(
                 "{}",
-                ebman::terraform::render_drift_json(used_path.as_deref(), &reports)
+                ebman::terraform::render_drift_json(used_path.as_deref(), &shaped)
             );
         } else {
-            for (env, managed, drift) in &reports {
+            for (region, env, managed, drift) in &reports {
+                let prefix = if multi_region {
+                    let r = region.as_deref().unwrap_or("default");
+                    format!("{r}\t")
+                } else {
+                    String::new()
+                };
                 if drift.is_empty() {
                     if *managed {
-                        println!("{env}\t✓ no drift");
+                        println!("{prefix}{env}\t✓ no drift");
                     }
                     continue;
                 }
@@ -401,7 +495,7 @@ async fn run_drift_cli(args: &[String]) -> Result<()> {
                         _ => d.kind.clone(),
                     };
                     println!(
-                        "{env}\t{}\t{target}\ttf={}\tlive={}",
+                        "{prefix}{env}\t{}\t{target}\ttf={}\tlive={}",
                         d.kind, d.tf_value, d.live_value
                     );
                 }
@@ -417,6 +511,7 @@ async fn run_drift_cli(args: &[String]) -> Result<()> {
 
 async fn run_lint_cli(args: &[String]) -> Result<()> {
     let mut env_name: Option<String> = None;
+    let mut regions_csv: Option<String> = None;
     let mut json = false;
     let mut quiet = false;
     let mut severity_filter: Option<ebman::lint::Severity> = None;
@@ -425,6 +520,7 @@ async fn run_lint_cli(args: &[String]) -> Result<()> {
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--env" => env_name = iter.next().cloned(),
+            "--regions" => regions_csv = iter.next().cloned(),
             "--json" => json = true,
             "--quiet" => quiet = true,
             "--severity" => {
@@ -456,27 +552,6 @@ async fn run_lint_cli(args: &[String]) -> Result<()> {
         }
     }
 
-    let aws = aws::AwsClient::with(None, None).await?;
-    let envs = aws
-        .list_environments()
-        .await
-        .map_err(|e| color_eyre::eyre::eyre!("list_environments: {e}"))?;
-
-    // If --env is given, scope to that single env. Otherwise run
-    // against every env in the current context — operators using
-    // `ebman lint --json | jq` for fleet-wide CI gating get a
-    // single combined report.
-    let targets: Vec<&ebman::aws::Environment> = match env_name.as_deref() {
-        Some(name) => {
-            let Some(env) = envs.iter().find(|e| e.name == name) else {
-                eprintln!("ebman lint: env '{name}' not found in current context");
-                std::process::exit(2);
-            };
-            vec![env]
-        }
-        None => envs.iter().collect(),
-    };
-
     // Operator-tunable disables — compose user-level
     // `lint.disable = "..."` from config.toml with project-local
     // `[lint].disable = [...]` from .ebman/ebman.toml. Project
@@ -486,46 +561,123 @@ async fn run_lint_cli(args: &[String]) -> Result<()> {
     disabled.extend(ebman::project::load_lint_disables_from_cwd());
     let rules = ebman::lint::default_rules(&disabled);
 
+    // Region fan-out. With --regions, iterate over each named
+    // region (one AwsClient per). Without, single iteration with
+    // the default region (None → operator's AWS_REGION / profile
+    // default). Same per-region client pattern `ebman action
+    // rollout` uses.
+    let regions: Vec<Option<String>> = match regions_csv {
+        Some(csv) => {
+            let parsed: Vec<String> = csv
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if parsed.is_empty() {
+                eprintln!("ebman lint: --regions list is empty");
+                std::process::exit(2);
+            }
+            parsed.into_iter().map(Some).collect()
+        }
+        None => vec![None],
+    };
+
+    let multi_region = regions.len() > 1;
     let mut all_issues: Vec<ebman::lint::Issue> = Vec::new();
-    for env in targets {
-        // Per-env option-settings fetch. Errors on a single env
-        // get surfaced (eprintln to stderr) but don't abort the
-        // full run — partial reports are better than no report
-        // for CI use cases.
-        let opts = match aws
-            .fetch_env_option_settings(&env.application, &env.name)
-            .await
-        {
-            Ok(opts) => opts,
+    for region_opt in &regions {
+        let aws = match aws::AwsClient::with(None, region_opt.clone()).await {
+            Ok(c) => c,
             Err(e) => {
                 if !quiet {
-                    eprintln!(
-                        "warning: skipping {} — fetch_env_option_settings: {e}",
-                        env.name
-                    );
+                    let region_label = region_opt.as_deref().unwrap_or("default");
+                    eprintln!("warning: skipping region '{region_label}' — AwsClient::with: {e}");
                 }
                 continue;
             }
         };
-        let ctx = ebman::lint::LintContext {
-            env,
-            options: &opts,
-            events: &[],
-            cost_usd_per_month: None,
-            latest_stack_version: None,
+        let envs = match aws.list_environments().await {
+            Ok(envs) => envs,
+            Err(e) => {
+                if !quiet {
+                    let region_label = region_opt.as_deref().unwrap_or("default");
+                    eprintln!("warning: skipping region '{region_label}' — list_environments: {e}");
+                }
+                continue;
+            }
         };
-        let mut issues = ebman::lint::run_rules(&rules, &ctx);
-        // Apply --severity floor.
-        if let Some(min) = severity_filter {
-            issues.retain(|i| i.severity >= min);
+
+        // If --env is given, scope to that single env in this
+        // region. Skip (warning) if the env isn't present here —
+        // operators with a name not in every region get a
+        // partial report rather than a hard exit. Without --env,
+        // run against every env in the region.
+        let targets: Vec<&ebman::aws::Environment> = match env_name.as_deref() {
+            Some(name) => match envs.iter().find(|e| e.name == name) {
+                Some(env) => vec![env],
+                None => {
+                    if multi_region && !quiet {
+                        let region_label = region_opt.as_deref().unwrap_or("default");
+                        eprintln!(
+                            "warning: env '{name}' not in region '{region_label}' — skipping"
+                        );
+                    } else if !multi_region {
+                        eprintln!("ebman lint: env '{name}' not found in current context");
+                        std::process::exit(2);
+                    }
+                    continue;
+                }
+            },
+            None => envs.iter().collect(),
+        };
+
+        for env in targets {
+            // Per-env option-settings fetch. Errors on a single
+            // env get surfaced (stderr) but don't abort the run
+            // — partial reports are better than nothing for CI.
+            let opts = match aws
+                .fetch_env_option_settings(&env.application, &env.name)
+                .await
+            {
+                Ok(opts) => opts,
+                Err(e) => {
+                    if !quiet {
+                        eprintln!(
+                            "warning: skipping {} — fetch_env_option_settings: {e}",
+                            env.name
+                        );
+                    }
+                    continue;
+                }
+            };
+            let ctx = ebman::lint::LintContext {
+                env,
+                options: &opts,
+                events: &[],
+                cost_usd_per_month: None,
+                latest_stack_version: None,
+            };
+            let mut issues = ebman::lint::run_rules(&rules, &ctx);
+            // Apply --severity floor.
+            if let Some(min) = severity_filter {
+                issues.retain(|i| i.severity >= min);
+            }
+            // Apply --rules whitelist (after severity so the two
+            // flags compose: only these rules, only at this
+            // severity-or-higher).
+            if !rule_filter.is_empty() {
+                issues.retain(|i| rule_filter.contains(&i.rule_id));
+            }
+            // Tag region into each issue's structured fields
+            // when multi-region. JSON consumers see the region
+            // alongside rule_id / severity / env / etc.; text
+            // output uses the same field to prefix rows.
+            if let Some(region) = region_opt {
+                for issue in &mut issues {
+                    issue.fields.insert("region".into(), region.clone());
+                }
+            }
+            all_issues.extend(issues);
         }
-        // Apply --rules whitelist (after severity so the two flags
-        // compose as expected — show only these rules, and only at
-        // this severity-or-higher).
-        if !rule_filter.is_empty() {
-            issues.retain(|i| rule_filter.contains(&i.rule_id));
-        }
-        all_issues.extend(issues);
     }
 
     // Output.
@@ -538,7 +690,23 @@ async fn run_lint_cli(args: &[String]) -> Result<()> {
             for issue in &all_issues {
                 let sev = issue.severity.as_str();
                 let env_str = issue.env_name.as_deref().unwrap_or("-");
-                println!("{sev}\t{}\t{env_str}\t{}", issue.rule_id, issue.title);
+                // Multi-region runs prefix every row with the
+                // region so the operator can scan by source.
+                // Single-region runs keep the compact text shape
+                // they had before.
+                if multi_region {
+                    let region = issue
+                        .fields
+                        .get("region")
+                        .map(String::as_str)
+                        .unwrap_or("-");
+                    println!(
+                        "{region}\t{sev}\t{}\t{env_str}\t{}",
+                        issue.rule_id, issue.title
+                    );
+                } else {
+                    println!("{sev}\t{}\t{env_str}\t{}", issue.rule_id, issue.title);
+                }
                 if let Some(s) = &issue.suggestion {
                     println!("\t→ {s}");
                 }
