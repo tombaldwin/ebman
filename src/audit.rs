@@ -173,6 +173,27 @@ pub fn parse_kv_pairs(text: &str) -> Vec<(String, String)> {
     out
 }
 
+/// Sanitize a value-string for embedding in an audit-log line as the
+/// inner content of a quoted `key="..."` pair. Replaces:
+///
+/// - `"` → `'` so the closing quote is unambiguous;
+/// - `\n`, `\r`, `\t` → ` ` so a multi-line AWS error doesn't split
+///   one audit entry into two on disk (the parser reads line-by-line,
+///   so an embedded newline corrupts the next entry's RFC3339 prefix).
+///
+/// Used by every writer (`app::write_audit_outcome`,
+/// `main::write_rollout_audit_line`, `main::write_lint_fix_audit_line`)
+/// so the escape rules stay consistent across the three call sites.
+pub fn escape_value(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '"' => '\'',
+            '\n' | '\r' | '\t' => ' ',
+            c => c,
+        })
+        .collect()
+}
+
 /// Filter spec applied to a parsed audit log. Returned subset is sorted
 /// in the same order as the input.
 #[derive(Debug, Default, Clone)]
@@ -528,6 +549,19 @@ mod tests {
         let kept: Vec<_> = entries.iter().filter(|e| filter.matches(e)).collect();
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].rule_id.as_deref(), Some("EBL004"));
+    }
+
+    #[test]
+    fn escape_value_replaces_quotes_and_newlines() {
+        assert_eq!(escape_value("plain"), "plain");
+        assert_eq!(escape_value("with \"quotes\""), "with 'quotes'");
+        assert_eq!(escape_value("line1\nline2"), "line1 line2");
+        assert_eq!(escape_value("a\r\nb"), "a  b");
+        assert_eq!(escape_value("a\tb"), "a b");
+        assert_eq!(
+            escape_value("AccessDenied: \"role\" not allowed\n  caused by: foo"),
+            "AccessDenied: 'role' not allowed   caused by: foo"
+        );
     }
 
     #[test]

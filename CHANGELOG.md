@@ -6,6 +6,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.14.1] — 2026-05-27 — 0.14 code review: 2 Critical + 4 Important fixes
+
+Same-day patch for 0.14.0. A full code review of the
+shipped lineup surfaced two real bugs (a safety-pin
+bypass in `lint --fix` and silent failure-loss in the
+rollout audit) plus four important correctness fixes
+(LLM cache poisoning across envs, newline corruption
+in audit-log error strings, residual pre-0.14 bare-`ok`
+call sites that corrupt the `target` field, and the
+missing `stage=completed` line for rollouts). Bundled
+as one patch since they share the same workflow surface
+(audit-log integrity + `--fix` safety).
+
+### Fixed — Critical
+
+- **`ebman lint --fix` now honours `safety.envs.NAME.read_only` and `safety.accounts.NAME.read_only` pins.** The TUI's `App::deny_write` (`app.rs:8229`) gates every destructive action against these pins; the CLI was re-implementing the dispatch and skipping the check. An operator who pinned `safety.envs.prod.read_only = true` in `config.toml` (the standard way to lock production against destructive TUI actions) was still seeing writes when they ran `ebman lint --fix --yes`. New behaviour: per-env safety-pin check + per-account safety-pin check (using `AWS_PROFILE` env var, same source the SDK consults) before the `update_env_option_settings` dispatch; refusal goes to stderr with the pinning reason, and `FIX_DISPATCH_FAILED` is set so the CLI exits 1.
+- **`ebman action rollout` now emits audit entries for failed regions.** `write_rollout_audit_line` was only called on the success branch — failed regions left no trail in `~/.cache/ebman/audit.log`. Now: `stage=dispatched` is written up front (before the AWS call) so the trail exists even if dispatch itself fails, and `stage=completed action=Rollout target=ENV outcome=ok|err` is written at the end of every iteration. Operators doing post-mortem `grep rollout_id=` now find the full per-region timeline.
+
+### Fixed — Important
+
+- **`llm::cache_key` now includes `env_name`.** `build_prompt` embeds the env name in the LLM prompt (so the model may personalise its response — "for prod-api, set MinSize to 4 because…"). The cache key didn't include env_name, so two envs hitting the same rule with the same `fields` (e.g. EBL005 single-instance on `dev-a` AND `dev-b`) would share a cache entry; the first env's personalised advice leaked to the second. Fix: env_name is part of the SHA256 input.
+- **Audit-log writers now sanitize newlines + tabs in error strings.** Multi-line AWS errors (`InvalidRequest: …\n  caused by: …`) wrote a literal `\n` mid-line; the parser reads line-by-line, so the embedded newline corrupted the next entry. New centralised `audit::escape_value` helper (`"` → `'`, `\n`/`\r`/`\t` → ` `) used by every writer (`write_audit_outcome`, `write_rollout_audit_line`, `write_lint_fix_audit_line`).
+- **Residual pre-0.14 bare-trailing-`ok` call sites migrated to `outcome=ok`.** Seven sites in `app.rs` (GetSecretValue, SsmRunCommand, UpdateOptionSettings ×2, DeleteAppVersion, UpdateTags, DeployFromLocal) still emitted bare `ok` after the detail. That format made the parser extend the `target` value to include ` ok`, breaking `ebman audit --env NAME` against historical entries. All migrated to `outcome=ok` / `outcome=err err="..."` shape, matching 0.14's `write_audit_outcome` convention.
+- **`App.lint_fix_disable` dropped (was dead).** Never read in the TUI; `ebman lint --fix` reads via `config::load_lint_fix_disables()` directly. `App::current_config_snapshot` now re-reads from disk so `:settings save` preserves the existing `lint.fix_disable` line.
+
+### Fixed — Minor
+
+- **`ebman explain` consent-gate error wording is provider-aware** — points at API-key env var for Anthropic, points at Ollama URL for Ollama.
+- **`audit::escape_value` is char-based** to avoid clippy's `consecutive_str_replace_calls` warning + run in one pass.
+
+### Verified — pinned by experiment
+
+- **Cache key cross-env collision regression test** (`cache_key_differs_by_env_name`) — pins the new env_name behaviour so future cache-key changes that drop it will fail the test.
+- **`escape_value` round-trip test** — pins the newline / tab / quote sanitisation.
+
+### Internal
+
+- 672 lib + 17 tui-common + 14 main tests (up from 669 + 17 + 14 at 0.14.0).
+- Same fmt + clippy clean. No new deps.
+
 ## [0.14.0] — 2026-05-27 — From diagnostic to remediation: explain, lint --fix, audit CLI
 
 0.12 surfaced issues (`:lint` rule engine, `:drift`
@@ -750,7 +790,8 @@ Initial public release. Headline surface:
 - Published to crates.io as `ebman`.
 - Homebrew tap at `tombaldwin/homebrew-tap`.
 
-[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.14.1...HEAD
+[0.14.1]: https://github.com/tombaldwin/ebman/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/tombaldwin/ebman/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/tombaldwin/ebman/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/tombaldwin/ebman/compare/v0.11.0...v0.12.0
