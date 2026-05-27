@@ -6,6 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-05-27 — Multi-region everything: cross-region rollout + fleet-wide reads
+
+ebman now treats the fleet as a unit. A new sequential
+cross-region deploy primitive — `ebman action rollout` for
+CI and `:rollout` for the TUI — pre-flights every region
+(env existence, current version label) before dispatching,
+shows a plan, then drives each region through Updating →
+Ready+Green with a `decide_poll` state machine, halting on
+the first failure with a single `rollout_id` correlating
+every audit-log line. The smart-feature reads from 0.12
+(`lint`, `drift`) gain matching `--regions r1,r2,r3` flags
+for the same fan-out shape. Docs catch up with shipped
+code: README gets an inline TOC + Install above the fold,
+`docs/` gets an end-to-end review pass against the
+`commands.rs` registry, and CLAUDE.md locks in a docs
+audit as part of the release procedure so the drift
+doesn't reaccumulate.
+
+### Added — multi-region
+
+- **`ebman action rollout` CLI — sequential cross-region deploy.** New top-level subcommand follows the 0.12 CLI charter (`action <verb>` for writes; `--regions r1,r2,r3` fan-out; `--yes` required; structured exit codes). Pre-flight phase builds a per-region `AwsClient::with(profile, Some(region))`, fetches the target env, records its current version label, and refuses to dispatch if any region fails the pre-flight (env-not-found, AWS error, profile mismatch). Plan rendered to stdout as a table (REGION / ENV / CURRENT → TARGET / STATUS). Dispatch phase drives each region in order: `UpdateEnvironmentRequest{version_label}`, then `decide_poll(status, health, elapsed, wait_for_green_secs, auto_rollback_secs)` state machine waits for `status=Ready AND health=Green|Ok` (closes the brief Updating+Green transition window — see 0.12 audit). Halts on first failure. Audit lines all share a single `rollout_id = rollout-YYYYMMDDTHHMMSSZ`. Headless surface for git-tag-triggered deploy automation. (`ee789db`)
+- **`:rollout` TUI surface — plan overlay + state machine.** New `ActionFlow::Rollout(RolloutFlow)` variant in `mode_action.rs` drives the same engine from inside the TUI. `Planning` runs preflight in parallel across regions; `AwaitingConfirm` renders the plan table inline in the action modal (REGION / ENV / CURRENT / TARGET / STATUS columns via a `pad_right` helper, errors rendered on `↳` continuation lines so an early-return doesn't abandon later rows — bug caught in self-review of first cut); `Dispatching { next_index }` walks the regions sequentially with the same `decide_poll` state machine the CLI uses; `Done` shows the final outcomes. Operator can review the plan and `y` to dispatch, or `Esc` to bail before the first write. (`b9ad597`)
+- **`ebman lint --regions` + `ebman drift --regions` — fleet-wide reads.** Both subcommands gain a `--regions r1,r2,r3` flag with the same fan-out shape as `action rollout`: per-region `AwsClient::with(...)`, iterate, tag the originating region into each `Issue.fields` map for JSON consumers, prefix the region into the text-mode output. Drift mode pairs the multi-region live read against a single tfstate (cross-region terraform workspaces). Empty `--regions ""` refused with exit code 2. The same engine that drove the 0.12 TUI overlay + single-region CLI now drives fleet-wide reads — no parallel implementations. (`73861fe`)
+
+### Added — docs
+
+- **README inline TOC + Install above the fold.** Hero section trimmed to lift the Install block within ~50 lines of the top so new visitors land on `brew install` / `cargo install` before the feature tour. Inline TOC anchors the workflow + reference sections so the README stays a navigable single-page entry-point even at its current scope. (`c8d5e65`)
+- **`docs/` end-to-end review against shipped code.** Audit pass against the `src/commands.rs` registry caught: ~30 commands shipped without docs (mostly batch-* and config-*), a malformed `[lint]\ndisable = [...]` TOML example, a fabricated `ebman ctl reload` reference, stale wording from the 0.12 saved-views unification. All five `docs/*.md` reference pages updated to match shipped behaviour. (`3c652e2`)
+
+### Internal
+
+- **Release procedure: docs audit at tag time.** New CLAUDE.md section codifies the docs walk as a release-time check, enumerating which files to audit against which source (`commands.rs` ↔ `docs/commands.md`, every new `ebman <sub>` in `main.rs` against `docs/headless.md`, every new config key against `docs/configuration.md`, TOML examples must actually parse). Closes the only-caught-during-review-pass class of drift. The 0.13 audit found one `docs/headless.md` gap (`action rollout` + `--regions` not documented); fixed before tagging. (`0b627d0`)
+
 ## [0.12.0] — 2026-05-27 — Smart features: lint engine, terraform drift, workspace polish
 
 ebman now understands your fleet. A rule-based diagnostic
@@ -682,7 +715,8 @@ Initial public release. Headline surface:
 - Published to crates.io as `ebman`.
 - Homebrew tap at `tombaldwin/homebrew-tap`.
 
-[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/tombaldwin/ebman/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/tombaldwin/ebman/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/tombaldwin/ebman/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/tombaldwin/ebman/compare/v0.9.0...v0.10.0
