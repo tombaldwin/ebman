@@ -73,7 +73,56 @@ pub struct Settings {
     pub max_tokens: u32,
 }
 
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            provider: "anthropic".into(),
+            model: "claude-haiku-4-5".into(),
+            api_key_env: "ANTHROPIC_API_KEY".into(),
+            ollama_url: "http://localhost:11434".into(),
+            max_tokens: 1024,
+        }
+    }
+}
+
 impl Settings {
+    /// Write the settings back into a `Config` struct (the reverse
+    /// of [`Settings::from_config`]). Empty-string sentinels are used
+    /// for non-defaults so the existing serializer in
+    /// `config::serialize` (which skips empty strings + `enabled =
+    /// false` + `max_tokens = 0`) emits the config.toml lines only
+    /// when the operator has actually configured something.
+    pub fn write_to_config(&self, cfg: &mut crate::config::Config) {
+        let default = Self::default();
+        cfg.explain_enabled = self.enabled;
+        cfg.explain_provider = if self.provider == default.provider {
+            String::new()
+        } else {
+            self.provider.clone()
+        };
+        cfg.explain_model = if self.model == default.model {
+            String::new()
+        } else {
+            self.model.clone()
+        };
+        cfg.explain_api_key_env = if self.api_key_env == default.api_key_env {
+            String::new()
+        } else {
+            self.api_key_env.clone()
+        };
+        cfg.explain_ollama_url = if self.ollama_url == default.ollama_url {
+            String::new()
+        } else {
+            self.ollama_url.clone()
+        };
+        cfg.explain_max_tokens = if self.max_tokens == default.max_tokens {
+            0
+        } else {
+            self.max_tokens
+        };
+    }
+
     /// Build resolved settings from a [`crate::config::Config`].
     /// Defaults match the values documented above. The merge is
     /// total — every field is filled — so callers don't need to
@@ -452,6 +501,35 @@ mod tests {
         assert_eq!(k.len(), 16);
         // Still differs from the sample-with-env-name case.
         assert_ne!(cache_key(&i_none), cache_key(&sample_issue()));
+    }
+
+    #[test]
+    fn settings_round_trip_through_config() {
+        // App-side path: load Settings → write_to_config → Settings
+        // again must be identity. Default values intentionally
+        // collapse to empty-string sentinels in Config (so the
+        // serializer skips them), but Settings::from_config restores
+        // the defaults on the way back. Net round-trip is identity
+        // on a default Settings.
+        let s = Settings::default();
+        let mut cfg = crate::config::Config::default();
+        s.write_to_config(&mut cfg);
+        let restored = Settings::from_config(&cfg);
+        assert_eq!(restored, s);
+
+        // Non-default: round-trips losslessly.
+        let s2 = Settings {
+            enabled: true,
+            provider: "ollama".into(),
+            model: "llama3.2".into(),
+            api_key_env: "MY_KEY".into(),
+            ollama_url: "http://10.0.0.5:11434".into(),
+            max_tokens: 2048,
+        };
+        let mut cfg2 = crate::config::Config::default();
+        s2.write_to_config(&mut cfg2);
+        let restored2 = Settings::from_config(&cfg2);
+        assert_eq!(restored2, s2);
     }
 
     #[test]
