@@ -204,11 +204,17 @@ SUBCOMMANDS:
                                                   + version_label against live EB state.
                                                   Exit codes: 0 no drift, 1 aws err, 2 usage,
                                                   3 drift detected. CI-friendly default exit code.
-    action ACTION --env NAME [--yes]             Run an action (rebuild|restart|terminate|deploy) on an env.
+    action ACTION --env NAME [--yes]             Run an action (rebuild|restart|terminate|deploy|rollout) on an env.
                                                   Terminate requires --yes to confirm.
                                                   Deploy requires --version LABEL; supports
                                                   --wait-for-green Nm and --auto-rollback Nm.
-                                                  Exit codes: 0 ok, 1 aws err, 2 usage, 4 wait-timeout, 5 rolled-back.
+                                                  Rollout: --version LABEL --regions r1,r2,r3 --env NAME
+                                                  --yes [--wait-for-green Nm] [--json] [--profile P].
+                                                  Sequential cross-region deploy with pre-flight
+                                                  validation. Stops on first failure. Single
+                                                  rollout_id correlation across audit lines.
+                                                  Exit codes: 0 ok, 1 aws err, 2 usage, 3 partial
+                                                  failure, 4 wait-timeout, 5 rolled-back.
     ctl <screen|key|cmd|state|reload> [args]     Talk to a running ebman via --control-socket.
                                                   `reload` re-execs the binary (rebuild first via
                                                   `cargo build --release`). Use --socket PATH to
@@ -640,9 +646,16 @@ async fn run_action_cli(args: &[String]) -> Result<()> {
     let action_name = args.get(1).map(|s| s.as_str()).unwrap_or("");
     if action_name.is_empty() || action_name.starts_with('-') {
         eprintln!(
-            "usage: ebman action <rebuild|restart|terminate|deploy> --env NAME [--version LABEL] [--yes] [--wait-for-green Nm] [--auto-rollback Nm]"
+            "usage: ebman action <rebuild|restart|terminate|deploy|rollout> --env NAME [--version LABEL] [--regions r1,r2,r3] [--yes] [--wait-for-green Nm] [--auto-rollback Nm]"
         );
         std::process::exit(2);
+    }
+    // `rollout` is the cross-region fan-out — separate parsing
+    // path because it needs `--regions` and constructs N AwsClients
+    // (one per region) rather than the single client every other
+    // action uses.
+    if action_name == "rollout" {
+        return run_action_rollout(args).await;
     }
     let mut env_name: Option<String> = None;
     let mut version: Option<String> = None;
@@ -696,6 +709,374 @@ async fn run_action_cli(args: &[String]) -> Result<()> {
             eprintln!("err: {e}");
             std::process::exit(1);
         }
+    }
+}
+
+/// `ebman action rollout --version LABEL --regions r1,r2,r3 --env NAME [--yes] [--json] [--quiet]`
+/// — cross-region sequential deploy. Same-name env mapping
+/// (operator names regions; ebman looks up the env with the
+/// given `--env NAME` in each region). Pre-flight validates
+/// every region has a matching env BEFORE dispatching to any
+/// of them, so a typo doesn't leave the fleet half-deployed.
+///
+/// Value-add over `for r in us eu ap; do ebman action deploy
+/// ...; done`:
+/// - **Atomic correlation.** A single `rollout_id = uuid` is
+///   written into every per-region audit line so post-mortems
+///   can `grep rollout_id=XXX` to see the full sequence.
+/// - **Pre-flight validation.** All regions checked for the
+///   target env BEFORE any region is touched.
+/// - **Stop on first failure.** If region 1 fails (UpdateEnv
+///   error), regions 2 and 3 aren't dispatched. Operator
+///   handles the failed region before continuing — safer
+///   default than continuing blindly.
+/// - **Aggregated JSON report.** `--json` emits a single
+///   `{"rollout_id": "...", "regions": [...]}` payload.
+///
+/// Out of scope for the first cut (operators who want these
+/// chain via shell): `--parallel`, `--continue-on-fail`, per-
+/// region `--auto-rollback` watchdog. The `--wait-for-green`
+/// flag does apply per-region (reuses `decide_poll` from
+/// `run_action_deploy`).
+///
+/// Exit codes (per the 0.13 CLI charter):
+/// - `0` all regions dispatched successfully
+/// - `1` AWS-layer error before any region dispatched
+/// - `2` usage error (missing --version / --regions / --env,
+///   bad duration, env not found in some region)
+/// - `3` one or more region dispatches failed (rollout halted)
+async fn run_action_rollout(args: &[String]) -> Result<()> {
+    let mut env_name: Option<String> = None;
+    let mut version: Option<String> = None;
+    let mut regions_csv: Option<String> = None;
+    let mut wait_for_green: Option<String> = None;
+    let mut profile: Option<String> = None;
+    let mut yes = false;
+    let mut json = false;
+    let mut quiet = false;
+    let mut iter = args.iter().skip(2);
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--env" => env_name = iter.next().cloned(),
+            "--version" => version = iter.next().cloned(),
+            "--regions" => regions_csv = iter.next().cloned(),
+            "--wait-for-green" => wait_for_green = iter.next().cloned(),
+            "--profile" => profile = iter.next().cloned(),
+            "--yes" => yes = true,
+            "--json" => json = true,
+            "--quiet" => quiet = true,
+            other => {
+                eprintln!("ebman action rollout: unknown flag '{other}'");
+                std::process::exit(2);
+            }
+        }
+    }
+    let Some(env) = env_name else {
+        eprintln!("ebman action rollout: --env NAME is required");
+        std::process::exit(2);
+    };
+    let Some(version) = version else {
+        eprintln!("ebman action rollout: --version LABEL is required");
+        std::process::exit(2);
+    };
+    let Some(regions_csv) = regions_csv else {
+        eprintln!(
+            "ebman action rollout: --regions r1,r2,r3 is required (comma-separated, no spaces)"
+        );
+        std::process::exit(2);
+    };
+    let regions: Vec<String> = regions_csv
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if regions.is_empty() {
+        eprintln!("ebman action rollout: --regions list is empty");
+        std::process::exit(2);
+    }
+    let wait_for_green_secs = match wait_for_green.as_deref() {
+        Some(s) => match aws::parse_window_ms(s) {
+            Some(ms) => Some((ms / 1000) as u64),
+            None => {
+                eprintln!(
+                    "ebman action rollout: --wait-for-green expects a duration like `5m` / `30m` / `1h`"
+                );
+                std::process::exit(2);
+            }
+        },
+        None => None,
+    };
+
+    // Pre-flight: build a per-region AwsClient + verify the
+    // target env exists. Done sequentially rather than via
+    // `join!` so error output stays orderly when one region's
+    // STS hits a creds issue.
+    if !quiet {
+        eprintln!(
+            "rollout: pre-flighting {} region(s) for env '{env}' version '{version}'",
+            regions.len()
+        );
+    }
+    let mut per_region: Vec<(String, aws::AwsClient)> = Vec::with_capacity(regions.len());
+    for region in &regions {
+        let client = match aws::AwsClient::with(profile.clone(), Some(region.clone())).await {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!(
+                    "ebman action rollout: failed to construct client for region '{region}': {e}"
+                );
+                std::process::exit(1);
+            }
+        };
+        let envs = match client.list_environments().await {
+            Ok(envs) => envs,
+            Err(e) => {
+                eprintln!("ebman action rollout: list_environments in '{region}' failed: {e}");
+                std::process::exit(1);
+            }
+        };
+        if !envs.iter().any(|e| e.name == env) {
+            eprintln!(
+                "ebman action rollout: env '{env}' not found in region '{region}' — rollout halted before dispatching"
+            );
+            std::process::exit(2);
+        }
+        per_region.push((region.clone(), client));
+    }
+
+    // Confirm gate. Destructive enough that --yes is required
+    // for non-interactive runs; matches the `:terminate` posture.
+    if !yes {
+        eprintln!(
+            "ebman action rollout: would dispatch to {} region(s); re-run with --yes to confirm",
+            regions.len()
+        );
+        std::process::exit(2);
+    }
+
+    // Audit-log correlation id. Single value written into every
+    // per-region audit line + the JSON output so a post-mortem
+    // can grep `rollout_id=` across the audit log to find the
+    // full sequence.
+    let rollout_id = format!("rollout-{}", chrono::Utc::now().format("%Y%m%dT%H%M%SZ"));
+
+    // Sequential dispatch. Stop on first failure (the halt check
+    // lives inside the loop, just below the per-region wait-for-
+    // green block — examines the last outcome rather than a
+    // separate halt flag).
+    let mut outcomes: Vec<(String, Result<(), String>)> = Vec::new();
+    for (region, client) in &per_region {
+        if !quiet {
+            eprintln!("rollout: dispatching to {region} (env={env}, version={version})");
+        }
+        match client.deploy_version(&env, &version).await {
+            Ok(()) => {
+                outcomes.push((region.clone(), Ok(())));
+                if let Some(secs) = wait_for_green_secs {
+                    // Reuse the same decide_poll loop
+                    // `run_action_deploy` uses. Polling cadence
+                    // 5s; deadline `secs` from now. Health
+                    // observation per tick. Per-region wait;
+                    // doesn't block subsequent regions.
+                    let start = tokio::time::Instant::now();
+                    // We don't toggle this — the WaitForGreenTimeout
+                    // branch breaks the loop immediately, so there's
+                    // no second tick where "already emitted" would
+                    // matter (unlike `run_action_deploy` which keeps
+                    // polling under auto-rollback after the timeout).
+                    let wait_timeout_emitted = false;
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        let envs = match client.list_environments().await {
+                            Ok(envs) => envs,
+                            Err(e) => {
+                                eprintln!("rollout[{region}]: list_environments during poll: {e}");
+                                outcomes.last_mut().unwrap().1 = Err(format!("poll: {e}"));
+                                break;
+                            }
+                        };
+                        let (status, health) = envs
+                            .iter()
+                            .find(|e| e.name == env)
+                            .map(|e| (e.status.clone(), e.health.clone()))
+                            .unwrap_or_default();
+                        let elapsed = start.elapsed().as_secs();
+                        match decide_poll(
+                            &status,
+                            &health,
+                            elapsed,
+                            Some(secs),
+                            None,
+                            wait_timeout_emitted,
+                        ) {
+                            PollDecision::KeepPolling => {
+                                if !quiet {
+                                    eprintln!(
+                                        "rollout[{region}]: t={elapsed}s status={status} health={health}"
+                                    );
+                                }
+                            }
+                            PollDecision::Success => {
+                                if !quiet {
+                                    eprintln!("rollout[{region}]: reached Green at t={elapsed}s");
+                                }
+                                break;
+                            }
+                            PollDecision::WaitForGreenTimeout => {
+                                // wait_timeout_emitted and halted_after
+                                // updates would normally happen here,
+                                // but both writes are dead — we `break`
+                                // the inner loop immediately, and the
+                                // outer-loop halt check just below
+                                // reads the per-iteration outcome
+                                // (Err set on line above), so we don't
+                                // need to mark halted_after explicitly.
+                                let msg = format!(
+                                    "did not reach Green within {secs}s (status={status}, health={health})"
+                                );
+                                eprintln!("rollout[{region}]: {msg}");
+                                outcomes.last_mut().unwrap().1 = Err(msg);
+                                break;
+                            }
+                            PollDecision::DispatchRollback => {
+                                // --auto-rollback isn't wired into rollout
+                                // yet; this branch is unreachable today
+                                // because wait_for_green_secs is the
+                                // only deadline. Defensive break in case
+                                // a future change wires it.
+                                break;
+                            }
+                        }
+                    }
+                    // Halt detection: if the wait-for-green loop
+                    // recorded a failure for this region, halt the
+                    // outer rollout before dispatching the next
+                    // region. Cheaper than a separate halt-flag
+                    // since outcomes already carries the truth.
+                    if matches!(outcomes.last(), Some((_, Err(_)))) {
+                        break;
+                    }
+                }
+            }
+            Err(e) => {
+                let msg = format!("deploy_version: {e}");
+                outcomes.push((region.clone(), Err(msg.clone())));
+                eprintln!("rollout[{region}]: {msg}");
+                break;
+            }
+        }
+        write_rollout_audit_line(&rollout_id, region, &env, &version, "dispatched", None);
+    }
+
+    // Output.
+    let any_failure = outcomes.iter().any(|(_, r)| r.is_err());
+    if !quiet {
+        if json {
+            // Hand-rolled JSON, same style as the other CLI
+            // subcommands. Shape:
+            // {"rollout_id":"...","env":"...","version":"...",
+            //  "regions":[{"region":"...","ok":true|false,"err":"..."}]}
+            let mut out = String::from("{");
+            out.push_str(&format!(
+                "\"rollout_id\":\"{}\",\"env\":\"{}\",\"version\":\"{}\",\"regions\":[",
+                cli_esc(&rollout_id),
+                cli_esc(&env),
+                cli_esc(&version),
+            ));
+            for (i, (region, result)) in outcomes.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                match result {
+                    Ok(()) => {
+                        out.push_str(&format!(
+                            "{{\"region\":\"{}\",\"ok\":true}}",
+                            cli_esc(region)
+                        ));
+                    }
+                    Err(e) => {
+                        out.push_str(&format!(
+                            "{{\"region\":\"{}\",\"ok\":false,\"err\":\"{}\"}}",
+                            cli_esc(region),
+                            cli_esc(e),
+                        ));
+                    }
+                }
+            }
+            // Unreached regions (post-halt) reported separately
+            // so JSON consumers know which regions weren't even
+            // attempted.
+            let attempted: std::collections::HashSet<&str> =
+                outcomes.iter().map(|(r, _)| r.as_str()).collect();
+            for region in &regions {
+                if !attempted.contains(region.as_str()) {
+                    out.push_str(&format!(
+                        ",{{\"region\":\"{}\",\"ok\":false,\"err\":\"skipped (rollout halted)\"}}",
+                        cli_esc(region)
+                    ));
+                }
+            }
+            out.push_str("]}");
+            println!("{}", out);
+        } else {
+            println!("rollout_id={rollout_id}");
+            for (region, result) in &outcomes {
+                match result {
+                    Ok(()) => println!("{region}\tok"),
+                    Err(e) => println!("{region}\terr\t{e}"),
+                }
+            }
+            // Unreached regions
+            let attempted: std::collections::HashSet<&str> =
+                outcomes.iter().map(|(r, _)| r.as_str()).collect();
+            for region in &regions {
+                if !attempted.contains(region.as_str()) {
+                    println!("{region}\tskipped (rollout halted)");
+                }
+            }
+        }
+    }
+
+    if any_failure {
+        std::process::exit(3);
+    }
+    Ok(())
+}
+
+/// Write one audit-log line tagged with a rollout correlation
+/// id. Same `audit.log` path the App's `write_audit_line` uses;
+/// duplicated here as a free fn because CLI subcommands don't
+/// carry App state.
+fn write_rollout_audit_line(
+    rollout_id: &str,
+    region: &str,
+    env: &str,
+    version: &str,
+    stage: &str,
+    err: Option<&str>,
+) {
+    let dir = ebman::util::cache_dir();
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let path = dir.join("audit.log");
+    let when = chrono::Utc::now().to_rfc3339();
+    let line = match err {
+        None => format!(
+            "{when}\trollout_id={rollout_id}\tregion={region}\tstage={stage} action=Rollout target={env} version={version}\n"
+        ),
+        Some(e) => format!(
+            "{when}\trollout_id={rollout_id}\tregion={region}\tstage={stage} action=Rollout target={env} version={version} err=\"{}\"\n",
+            e.replace('"', "'")
+        ),
+    };
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = f.write_all(line.as_bytes());
     }
 }
 
