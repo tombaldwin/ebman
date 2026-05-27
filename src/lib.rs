@@ -11,6 +11,7 @@
 //! the internal types instead of re-implementing them.
 
 pub mod app;
+pub mod audit;
 pub mod aws;
 pub mod commands;
 pub mod config;

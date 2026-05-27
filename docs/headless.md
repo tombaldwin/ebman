@@ -26,6 +26,7 @@ ebman action rebuild --env myenv --yes                                     # dis
 ebman action rollout --version LABEL --env NAME --regions r1,r2,r3 --yes   # sequential cross-region deploy
 ebman lint   [--env NAME] [--regions r1,r2,r3] [--json]                    # rule-engine diagnostics; exit 3 on issues
 ebman drift  [--env NAME] [--regions r1,r2,r3] [--tfstate PATH] [--json]   # terraform drift report; exit 3 on drift
+ebman audit  [--tail] [--since DUR] [--env NAME] [--action NAME] [--json]  # surface ~/.cache/ebman/audit.log for scripts
 ```
 
 Exit-code convention (CI scripts can branch on these): `0` clean, `1` AWS-layer error, `2` usage error, `3` issues / drift found.

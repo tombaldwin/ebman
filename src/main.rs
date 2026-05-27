@@ -27,6 +27,7 @@ async fn main() -> Result<()> {
             "ctl" => return run_ctl_cli(&args).await,
             "lint" => return run_lint_cli(&args).await,
             "drift" => return run_drift_cli(&args).await,
+            "audit" => return run_audit_cli(&args).await,
             _ => {}
         }
     }
@@ -223,6 +224,15 @@ SUBCOMMANDS:
                                                   `reload` re-execs the binary (rebuild first via
                                                   `cargo build --release`). Use --socket PATH to
                                                   override the default location.
+    audit [--tail] [--since DUR] [--env NAME] [--rule ID] [--action NAME] [--json]
+                                                  Read ~/.cache/ebman/audit.log — surface the local
+                                                  audit trail for scripting / Slack-bot routing /
+                                                  CI gating. Default text mode renders columns
+                                                  (TS / REGION / STAGE / ACTION / TARGET / OUTCOME);
+                                                  --json emits JSONL one entry per line. --tail
+                                                  polls 1s for new entries (until Ctrl-C). --since
+                                                  filters to entries within a duration (5m/1h/2d).
+                                                  Exit codes: 0 ok, 1 io err, 2 usage.
 
 CONFIG:
     ~/.config/ebman/config.toml   user configuration (see README)
@@ -721,6 +731,167 @@ async fn run_lint_cli(args: &[String]) -> Result<()> {
     } else {
         std::process::exit(3);
     }
+}
+
+/// `ebman audit [--tail] [--since DUR] [--env NAME] [--rule ID]
+/// [--action NAME] [--json]` — operationalises the local audit log
+/// for scripting / Slack-bot routing / CI gating.
+///
+/// `--tail` polls the file every 1s and emits new lines as they
+/// arrive (Ctrl-C to exit). `--since DUR` accepts the same `5m / 1h
+/// / 2d` grammar as `--wait-for-green` etc. Filtering composes:
+/// `--since 1h --env prod-api --action Deploy` shows recent prod-api
+/// deploys.
+///
+/// Exit codes (per the 0.13 CLI charter):
+/// - 0 ok
+/// - 1 io error (audit log unreadable)
+/// - 2 usage error
+async fn run_audit_cli(args: &[String]) -> Result<()> {
+    let mut tail = false;
+    let mut since_str: Option<String> = None;
+    let mut env_filter: Option<String> = None;
+    let mut rule_filter: Option<String> = None;
+    let mut action_filter: Option<String> = None;
+    let mut json = false;
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--tail" => tail = true,
+            "--since" => since_str = iter.next().cloned(),
+            "--env" => env_filter = iter.next().cloned(),
+            "--rule" => rule_filter = iter.next().cloned(),
+            "--action" => action_filter = iter.next().cloned(),
+            "--json" => json = true,
+            other => {
+                eprintln!("ebman audit: unknown flag '{other}'");
+                std::process::exit(2);
+            }
+        }
+    }
+
+    let since_dt: Option<chrono::DateTime<chrono::Utc>> = match since_str.as_deref() {
+        None => None,
+        Some(s) => match aws::parse_window_ms(s) {
+            Some(ms) => Some(chrono::Utc::now() - chrono::Duration::milliseconds(ms)),
+            None => {
+                eprintln!(
+                    "ebman audit: --since expects a duration like `5m` / `30m` / `1h` / `2d`"
+                );
+                std::process::exit(2);
+            }
+        },
+    };
+
+    let filter = ebman::audit::AuditFilter {
+        since: since_dt,
+        env: env_filter.as_deref(),
+        rule: rule_filter.as_deref(),
+        action: action_filter.as_deref(),
+    };
+
+    let path = ebman::util::cache_dir().join("audit.log");
+    if !path.exists() {
+        // Not an error — the audit log only exists once something
+        // has been written. Empty result for `ebman audit` is fine.
+        if !json {
+            println!("(no audit entries — log not yet created)");
+        }
+        return Ok(());
+    }
+
+    // Phase 1: read the existing file end-to-end, parse + filter +
+    // render. Track the read offset so --tail can resume from EOF.
+    let bytes = std::fs::read(&path)
+        .map_err(|e| color_eyre::eyre::eyre!("read {}: {e}", path.display()))?;
+    let initial_offset = bytes.len() as u64;
+    let text = String::from_utf8_lossy(&bytes);
+    let entries: Vec<ebman::audit::AuditEntry> = text
+        .lines()
+        .filter_map(ebman::audit::parse_audit_line)
+        .filter(|e| filter.matches(e))
+        .collect();
+    if json {
+        print!("{}", ebman::audit::render_audit_entries_json(&entries));
+    } else {
+        print!("{}", ebman::audit::render_audit_entries_text(&entries));
+    }
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+
+    // Phase 2: --tail. Poll for new bytes every second. We use a
+    // simple offset-based read rather than inotify / FSEvents — keeps
+    // the surface small and works the same on macOS/Linux. Rotation
+    // (write_audit_line caps the file at 1 MiB and moves it to
+    // audit.log.1) is detected by the file shrinking; we reset to 0
+    // when that happens so the new rotated file's entries are
+    // streamed.
+    if tail {
+        let mut offset = initial_offset;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            let meta = match std::fs::metadata(&path) {
+                Ok(m) => m,
+                Err(_) => continue, // file vanished mid-rotate; try again
+            };
+            let len = meta.len();
+            if len < offset {
+                // Rotated. Re-read from the start.
+                offset = 0;
+            }
+            if len == offset {
+                continue;
+            }
+            // Read just the new bytes.
+            use std::io::{Read, Seek, SeekFrom};
+            let mut f = match std::fs::File::open(&path) {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+            if f.seek(SeekFrom::Start(offset)).is_err() {
+                continue;
+            }
+            let mut buf = Vec::with_capacity((len - offset) as usize);
+            if f.read_to_end(&mut buf).is_err() {
+                continue;
+            }
+            offset = len;
+            let chunk = String::from_utf8_lossy(&buf);
+            let new_entries: Vec<ebman::audit::AuditEntry> = chunk
+                .lines()
+                .filter_map(ebman::audit::parse_audit_line)
+                .filter(|e| filter.matches(e))
+                .collect();
+            if new_entries.is_empty() {
+                continue;
+            }
+            if json {
+                print!("{}", ebman::audit::render_audit_entries_json(&new_entries));
+            } else {
+                // In tail mode we don't repeat the column header for
+                // each new batch; render the data rows only.
+                for e in &new_entries {
+                    let outcome = match (e.outcome.as_deref(), e.err.as_deref()) {
+                        (_, Some(err)) => format!("err=\"{err}\""),
+                        (Some("ok"), _) => "ok".into(),
+                        (Some(s), _) => s.into(),
+                        _ => "-".into(),
+                    };
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}\t{}",
+                        e.when,
+                        e.region.as_deref().unwrap_or("-"),
+                        e.stage.as_deref().unwrap_or("-"),
+                        e.action.as_deref().unwrap_or("-"),
+                        e.target.as_deref().unwrap_or("-"),
+                        outcome,
+                    );
+                }
+            }
+            let _ = std::io::stdout().flush();
+        }
+    }
+    Ok(())
 }
 
 async fn run_envs_cli(args: &[String]) -> Result<()> {
