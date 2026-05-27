@@ -21,10 +21,11 @@ Useful for integration tests, screenshot capture, scripted workflows.
 These don't need a running TUI — they connect to AWS, do their thing, and exit. CI-friendly.
 
 ```bash
-ebman envs --json                       # print env list as JSON
-ebman action rebuild --env myenv --yes  # dispatch a rebuild
-ebman lint [--env NAME] [--json]        # rule-engine diagnostics; exit 3 on issues
-ebman drift [--env NAME] [--json]       # terraform drift report; exit 3 on drift
+ebman envs --json                                                          # print env list as JSON
+ebman action rebuild --env myenv --yes                                     # dispatch a rebuild
+ebman action rollout --version LABEL --env NAME --regions r1,r2,r3 --yes   # sequential cross-region deploy
+ebman lint   [--env NAME] [--regions r1,r2,r3] [--json]                    # rule-engine diagnostics; exit 3 on issues
+ebman drift  [--env NAME] [--regions r1,r2,r3] [--tfstate PATH] [--json]   # terraform drift report; exit 3 on drift
 ```
 
 Exit-code convention (CI scripts can branch on these): `0` clean, `1` AWS-layer error, `2` usage error, `3` issues / drift found.
