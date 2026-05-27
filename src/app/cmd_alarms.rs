@@ -10,7 +10,7 @@
 //! and uses the same `cw` client, so co-locating the dispatch beats a
 //! third file.
 
-use super::{alarm_kind_to_metric, flatten_err, write_audit_line, App, AppMsg};
+use super::{alarm_kind_to_metric, flatten_err, App, AppMsg};
 
 impl App {
     /// `:alarm-create NAME KIND THRESHOLD [op]` — KIND maps to one
@@ -57,7 +57,7 @@ impl App {
         let op_str = op.to_string();
         let stat_str = stat.to_string();
         let target = format!("{env_name}/{alarm_name}");
-        write_audit_line(
+        crate::audit::append_raw(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
@@ -98,7 +98,7 @@ impl App {
                     e.replace('"', "'")
                 ),
             };
-            write_audit_line(account.as_deref(), profile.as_deref(), &region, &outcome);
+            crate::audit::append_raw(account.as_deref(), profile.as_deref(), &region, &outcome);
             let _ = tx.send(AppMsg::AlarmOp {
                 gen,
                 verb: "create",
@@ -124,7 +124,7 @@ impl App {
                     return;
                 }
                 let target = format!("{env_name}/{alarm_name}");
-                write_audit_line(
+                crate::audit::append_raw(
                     self.context.account_id.as_deref(),
                     self.context.profile.as_deref(),
                     &self.context.region,
@@ -154,7 +154,12 @@ impl App {
                             e.replace('"', "'")
                         ),
                     };
-                    write_audit_line(account.as_deref(), profile.as_deref(), &region, &outcome);
+                    crate::audit::append_raw(
+                        account.as_deref(),
+                        profile.as_deref(),
+                        &region,
+                        &outcome,
+                    );
                     let _ = tx.send(AppMsg::AlarmOp {
                         gen,
                         verb: "delete",
