@@ -6,6 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-05-27 — Smart features: lint engine, terraform drift, workspace polish
+
+ebman now understands your fleet. A rule-based diagnostic
+engine surfaces operator-actionable issues (`:lint` TUI
+overlay + `ebman lint` CLI for git hooks / CI / monitoring);
+terraform integration detects drift between tfstate and live
+EB state (`:drift` overlay + `ebman drift` CLI + `ⓣ` badge
+in the env-name column + confirm-modal warning on writes
+against tf-managed envs); confirm modals run all of the
+above at write time so the operator sees rule-keyed risk
+before authorising. Workspace polish: saved views unified
+into a single store (`]`/`[` cycles full filter+sort+group
+snapshots, not just filter strings); `:batch-set-option`
+captures undo entries (closes a multi-env safety gap from
+0.11); README split into hero + `docs/` so new visitors hit
+"Install" inside ~100 lines instead of past ~350.
+
+### Added — smart features
+
+- **Rule-based diagnostic engine + `:lint` TUI + `ebman lint` CLI.** New `src/lint.rs` module with a `Rule` trait, structured `Issue` output (rule_id / severity / title / detail / suggestion / fields map), and 6 v1 rules: `EBL001` AllAtOnce on multi-instance env (downtime risk); `EBL002` Web tier with empty `/` health-check URL; `EBL003` env Red >4h (operational hygiene); `EBL004` Fixed `BatchSize > MaxSize` (deploy math broken); `EBL005` `MinSize=MaxSize=1` (no redundancy, Info); `EBL006` ASG `Cooldown < 60s` (thrashing, Info). Three surfaces share the engine: `:lint [ENV]` TUI overlay; `ebman lint [--env --json --severity --rules --quiet]` CLI with exit codes 0/1/2/3 (non-zero on issues for CI gating); confirm-modal warning lines at write time. Operator-tunable disables in both `~/.config/ebman/config.toml` (`lint.disable = "EBL001"`) and project-local `.ebman/ebman.toml` (`[lint]\ndisable = [...]`) — project disables extend the global set. Issue shape designed for an eventual `ebman explain ISSUE_ID` LLM call (out of 0.12 scope). (`6a96bb6` + `33ad2ee` + `f415526`)
+- **Terraform integration: `:drift` TUI + `ebman drift` CLI + `ⓣ` badge.** New `src/terraform.rs` reads `terraform.tfstate` JSON directly (no shell-out to the `terraform` binary needed). Walks up from cwd for `.terraform/terraform.tfstate` (preferred — post-init location for S3 / Terraform Cloud backends) or a local `terraform.tfstate` (same discovery shape as `.ebman/` and `.elasticbeanstalk/`). Pure `compute_drift` compares tf-declared option_settings + version_label against live EB state, returns a structured `Vec<DriftField>` sorted deterministically (version_label first, then option_settings by ns+name). Direction-aware semantics: pairs PRESENT IN TF are compared; live-only settings aren't drift (could be EB defaults or operator-set additions); empty tf version_label skips the version drift check (operators using a deploy pipeline don't want drift alerts every deploy). Three surfaces: `:drift [ENV|refresh]` TUI overlay; `ebman drift [--env --tfstate --tfdir --json --quiet]` CLI; `ⓣ` (U+24E3) badge in the env-name column for tf-managed envs (O(1) `HashSet` lookup per row, refreshed on context switch + manual `:drift refresh`); confirm-modal yellow warning line on destructive actions against tf-managed envs (`⚠ env is terraform-managed — changes will drift on next plan/apply`). (`ba02e75` + `7bd6415` + `c7b4ff8`)
+- **Confirm-modal lint hooks at write time.** Every confirm modal now runs the lint engine against the env's pre-write state and renders Warn+ issues as inline yellow warning lines. Generalises the health-check probe + unavailability pill pattern — same modal shows ALL relevant risks before the operator confirms, not just the two specialised ones. Same Issue shape `:lint` and `ebman lint` already render. Operator-tunable disables apply here too. (`6607ba8`)
+
+### Added — workspace polish
+
+- **Saved views unified.** Closed a long-deferred BACKLOG item: `App.named_filters` (filter-only) and `App.saved_views` (full filter+sort+group+scope) collapsed into a single store. `]` / `[` now cycles FULL views — sort + group apply alongside filter, the gh-dash-style "tabs" the BACKLOG had been promising since 2026-05-24. Chip bar reads from `saved_views`. `:filter NAME` / `:save NAME` / `:drop NAME` / `:filters` and `:save-view NAME` / `:view NAME` / `:view-drop NAME` / `:views` all operate on the unified store with different encodings (filter-only vs full snapshot). Legacy `filter.NAME = "..."` lines in `state.toml` auto-promote into `saved_views` on first load using the filter-only encoding; explicit `view.NAME` wins on collision. First save after upgrade drops the legacy output. (`bb7547b`)
+- **`:batch-set-option` captures undo entries.** Closed the multi-env undo gap from 0.11 — `spawn_batch_set_option` now does the same pre-write `DescribeConfigurationSettings` read + `build_undo_entry` + `AppMsg::UndoCaptured` dispatch as its single-env sibling, so each env in a batch contributes its own undo entry. Repeated `:undo` walks the batch backwards. Self-review caught a context-switch race (env terminated mid-batch); guarded with an upfront fleet-presence check + audit-logged skip. (`76e54b6`)
+- **README + `docs/` split.** 448-line README trimmed to ~103: hero + triage workflow + key highlights + install + quickstart + documentation index. Reference moved to topic-grouped files under `docs/` (keys / commands / configuration / fonts / headless / safety+privacy / development). New visitors hit "Install" inside ~100 lines instead of past ~350 of reference tables. (`166f42b`)
+
+### Verified — pinned by experiment
+
+- **OSC 8 terminal hyperlinks not viable in ratatui 0.29.** Re-attempted (vs the 0.11 assumption-based skip) with a real experiment in `ui::tests::osc8_in_span_is_split_into_per_byte_cells_ratatui_0_29_limitation`. Confirmed: each byte of an OSC 8 escape sequence gets its own 1-cell-wide printing cell — a 24-byte opener consumes 24 cells of layout space, pushing the visible text past the buffer width. The regression test pins the broken behavior so a future ratatui upgrade that adds zero-width control handling will fail it and prompt us to revisit. (`4c717ad`)
+
+### Internal
+
+- **CLI charter doc in BACKLOG.** Locked conventions for top-level CLI shape (flat verbs for reads, `action <verb>` for writes, `ctl` control plane, `mcp serve` reserved for server-mode futures), per-command flags (`--env`, `--json`, `--quiet`, `--watch`, `--regions`, duration grammar), exit-code matrix (0/1/2/3/4/5). New `ebman lint` and `ebman drift` subcommands follow it; future commands stay symmetric. (`3bd681d`)
+
 ## [0.11.0] — 2026-05-26 — Triage ergonomics: freeze, undo, aliases, capacity preview
 
 Small but focused minor — picks up where 0.10 left off and
@@ -645,7 +682,8 @@ Initial public release. Headline surface:
 - Published to crates.io as `ebman`.
 - Homebrew tap at `tombaldwin/homebrew-tap`.
 
-[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/tombaldwin/ebman/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/tombaldwin/ebman/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/tombaldwin/ebman/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/tombaldwin/ebman/compare/v0.8.1...v0.9.0
