@@ -18,6 +18,7 @@ Press `?` in-app for a per-context keymap — Detail, DLQ, Action menu, and the 
 | `space` | Multi-select |
 | `*` | Pin / unpin |
 | `!` | `:why` overlay (Red-env diagnostic) |
+| `]` / `[` | Cycle saved views (filter + sort + grouping + scope) |
 | `/` | Filter |
 | `:` | Command bar |
 | `^K` | Command palette |
@@ -27,6 +28,7 @@ Press `?` in-app for a per-context keymap — Detail, DLQ, Action menu, and the 
 | `^]` | Cycle focus (table ↔ events panel) |
 | `^D` | Cycle view mode (default / compact / spacious) |
 | `^X` | Toggle redact mode |
+| `T` | Cycle event timestamp format (UTC / local / age) |
 | `^Y` | Yank filtered table as TSV |
 | `^W` | Yank equivalent `aws elasticbeanstalk describe-environments` |
 | `y` / `Y` | Yank CNAME / name |

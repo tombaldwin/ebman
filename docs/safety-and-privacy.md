@@ -13,7 +13,7 @@
 - `~/.config/ebman/config.toml` — user configuration (see [configuration](configuration.md)).
 - `~/.config/ebman/commands.toml` — optional plugin commands.
 - `<repo>/.ebman/ebman.toml` — optional project-local pinning (profile / region / filter / runbooks). Walked up from cwd.
-- `~/.config/ebman/state.toml` — persisted UI state: profile, region, filter, sort, grouping, redact, selected env, named filters, saved views, pinned envs, aliases, hidden columns, custom metrics. No credentials.
+- `~/.config/ebman/state.toml` — persisted UI state: profile, region, filter, sort, grouping, redact, selected env, saved views, pinned envs, aliases, hidden columns, custom metrics. No credentials.
 - `~/.cache/ebman/ebman.log` — application log; rotates as needed. Set `RUST_LOG=debug` for verbose output.
 - `~/.cache/ebman/audit.log` — every dispatched action and outcome (account, profile, region, action, target). Rotates at 1 MiB to `audit.log.1`.
 - `~/.cache/ebman/crash-*.log` — panic backtraces (10 most recent kept; 30-day TTL).

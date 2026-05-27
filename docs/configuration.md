@@ -90,5 +90,5 @@ application = "uflexi"    # filter envs to this app on launch
 filter  = "prod-"         # pre-fill the search filter
 
 [runbooks]
-runbooks.uflexi-prod = "https://wiki/runbooks/uflexi-prod"
+"uflexi-prod" = "https://wiki/runbooks/uflexi-prod"
 ```

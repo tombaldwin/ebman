@@ -26,6 +26,6 @@ Either run `:settings` in ebman and pick `auto` (or `powerline`) from the Icons 
 icons = "auto"   # probes the terminal at startup; falls back to "unicode"
 ```
 
-Restart ebman (or use `ebman ctl reload` if you're driving via the control socket) so the startup probe runs against your new font. `icons = "powerline"` skips the probe and forces the Nerd glyph set unconditionally.
+Restart ebman so the startup probe runs against your new font. `icons = "powerline"` skips the probe and forces the Nerd glyph set unconditionally.
 
 Without a Nerd Font, stick to `icons = "unicode"` (the default) — everything still works, you just don't get the per-tab MDI icons.
