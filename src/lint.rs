@@ -132,6 +132,40 @@ pub trait Rule: Send + Sync {
     fn id(&self) -> &'static str;
     fn severity(&self) -> Severity;
     fn applies(&self, ctx: &LintContext) -> Option<Issue>;
+    /// Optional auto-fix. Rules that have an obvious correct
+    /// answer return `SetOption`; rules whose right fix depends
+    /// on operator context (e.g. "what's your health-check
+    /// path?") return `Manual` so the CLI can print instructions
+    /// rather than guess wrong. Default `None` means "no fix
+    /// available, even manual" — a rule for which the operator
+    /// must reason about the architecture (e.g. EBL003 "env Red
+    /// >4h" — that's a state, not a config issue).
+    fn fix(&self, _ctx: &LintContext) -> Option<FixAction> {
+        None
+    }
+}
+
+/// What `ebman lint --fix` will do for an issue. The `description`
+/// is operator-facing — printed in the `--dry-run` plan and used
+/// as the audit-log narrative. Audit entries carry `rule_id` so
+/// the operator can correlate `ebman audit --rule EBL001` to the
+/// fix dispatches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FixAction {
+    /// Set one option-setting. The 0.14 v1 shape; ~80% of
+    /// auto-fixable rules collapse to this.
+    SetOption {
+        namespace: String,
+        name: String,
+        value: String,
+        description: String,
+    },
+    /// The rule knows there's an issue and what to do about it,
+    /// but the right value depends on operator context (e.g.
+    /// EBL002 "set a health-check URL" — we don't know which
+    /// path your app exposes). The `instructions` field is what
+    /// the operator should do; `--fix` prints them and moves on.
+    Manual { instructions: String },
 }
 
 /// Run every rule in `rules` against `ctx`; collect non-`None`
@@ -254,6 +288,18 @@ impl Rule for AllAtOnceMultiInstance {
     fn severity(&self) -> Severity {
         Severity::Warn
     }
+    fn fix(&self, ctx: &LintContext) -> Option<FixAction> {
+        // Only emit a fix when the rule actually applies — calling
+        // `applies` is the cheapest correct way to check.
+        self.applies(ctx)?;
+        Some(FixAction::SetOption {
+            namespace: "aws:elasticbeanstalk:command".into(),
+            name: "DeploymentPolicy".into(),
+            value: "Rolling".into(),
+            description:
+                "DeploymentPolicy: AllAtOnce → Rolling (preserves capacity during deploys)".into(),
+        })
+    }
     fn applies(&self, ctx: &LintContext) -> Option<Issue> {
         let policy = option_value(
             ctx.options,
@@ -301,6 +347,18 @@ impl Rule for WebTierNoHealthCheckUrl {
     }
     fn severity(&self) -> Severity {
         Severity::Warn
+    }
+    fn fix(&self, ctx: &LintContext) -> Option<FixAction> {
+        self.applies(ctx)?;
+        // We know there's no health-check URL but not what path
+        // the app exposes. Operator-context required.
+        Some(FixAction::Manual {
+            instructions:
+                "Set the env's Application Healthcheck URL to a path that exercises real dependencies \
+                 (typically `/health` or `/healthz`). In ebman: `:health-check-url /health`. \
+                 The right path is app-specific — `--fix` won't guess."
+                    .into(),
+        })
     }
     fn applies(&self, ctx: &LintContext) -> Option<Issue> {
         if !ctx.env.tier.eq_ignore_ascii_case("Web") {
@@ -396,6 +454,20 @@ impl Rule for BatchSizeExceedsMaxSize {
     fn severity(&self) -> Severity {
         Severity::Warn
     }
+    fn fix(&self, ctx: &LintContext) -> Option<FixAction> {
+        // Recompute MaxSize so the fix value reflects the live
+        // state, not a snapshot at rule construction. Calling
+        // `applies` first ensures we don't dispatch when the
+        // condition is already clean.
+        self.applies(ctx)?;
+        let max_size = parse_i32(option_value(ctx.options, "aws:autoscaling:asg", "MaxSize"))?;
+        Some(FixAction::SetOption {
+            namespace: "aws:elasticbeanstalk:command".into(),
+            name: "BatchSize".into(),
+            value: max_size.to_string(),
+            description: format!("BatchSize → MaxSize ({max_size}): clamp to scaling cap"),
+        })
+    }
     fn applies(&self, ctx: &LintContext) -> Option<Issue> {
         let batch_size = parse_i32(option_value(
             ctx.options,
@@ -449,6 +521,19 @@ impl Rule for SingleInstanceEnv {
     fn severity(&self) -> Severity {
         Severity::Info
     }
+    fn fix(&self, ctx: &LintContext) -> Option<FixAction> {
+        self.applies(ctx)?;
+        // Scaling decisions are architectural (cost vs redundancy
+        // trade-off; some envs genuinely want single-instance).
+        // `--fix` shouldn't make that call.
+        Some(FixAction::Manual {
+            instructions:
+                "Single-instance is acceptable for dev/staging but risky for production. If this is \
+                 a prod workload, scale to ≥ 2 via `:capacity` (set MinSize + MaxSize ≥ 2). \
+                 The right capacity is workload-dependent — `--fix` won't decide for you."
+                    .into(),
+        })
+    }
     fn applies(&self, ctx: &LintContext) -> Option<Issue> {
         let min_size = parse_i32(option_value(ctx.options, "aws:autoscaling:asg", "MinSize"))?;
         let max_size = parse_i32(option_value(ctx.options, "aws:autoscaling:asg", "MaxSize"))?;
@@ -486,6 +571,18 @@ impl Rule for CooldownBelowRecommended {
     }
     fn severity(&self) -> Severity {
         Severity::Info
+    }
+    fn fix(&self, ctx: &LintContext) -> Option<FixAction> {
+        self.applies(ctx)?;
+        // EB's documented default is 360s; the safe floor is 60s.
+        // Going straight to 360 matches EB's own recommendation
+        // and avoids tuning that the operator hasn't asked for.
+        Some(FixAction::SetOption {
+            namespace: "aws:autoscaling:asg".into(),
+            name: "Cooldown".into(),
+            value: "360".into(),
+            description: "ASG Cooldown → 360s (EB documented default)".into(),
+        })
     }
     fn applies(&self, ctx: &LintContext) -> Option<Issue> {
         let cooldown = parse_i32(option_value(ctx.options, "aws:autoscaling:asg", "Cooldown"))?;
@@ -842,5 +939,130 @@ mod tests {
         let empty = render_issues_json(&[]);
         let _: serde_yml::Value = serde_yml::from_str(&empty).unwrap();
         assert_eq!(empty, "{\"issues\":[]}");
+    }
+
+    // ─── fix() coverage ──────────────────────────────────────
+
+    #[test]
+    fn ebl001_fix_sets_rolling_when_rule_fires() {
+        let env = mk_env("prod", "Web", "Green");
+        let opts = vec![
+            mk_opt(
+                "aws:elasticbeanstalk:command",
+                "DeploymentPolicy",
+                "AllAtOnce",
+            ),
+            mk_opt("aws:autoscaling:asg", "MaxSize", "4"),
+        ];
+        let fix = AllAtOnceMultiInstance.fix(&ctx(&env, &opts)).expect("fix");
+        match fix {
+            FixAction::SetOption {
+                namespace,
+                name,
+                value,
+                ..
+            } => {
+                assert_eq!(namespace, "aws:elasticbeanstalk:command");
+                assert_eq!(name, "DeploymentPolicy");
+                assert_eq!(value, "Rolling");
+            }
+            FixAction::Manual { .. } => panic!("EBL001 should auto-fix, not Manual"),
+        }
+    }
+
+    #[test]
+    fn ebl001_fix_none_when_rule_does_not_fire() {
+        // Single-instance env — applies() returns None, so fix()
+        // shouldn't dispatch a write the rule doesn't motivate.
+        let env = mk_env("dev", "Web", "Green");
+        let opts = vec![
+            mk_opt(
+                "aws:elasticbeanstalk:command",
+                "DeploymentPolicy",
+                "AllAtOnce",
+            ),
+            mk_opt("aws:autoscaling:asg", "MaxSize", "1"),
+        ];
+        assert!(AllAtOnceMultiInstance.fix(&ctx(&env, &opts)).is_none());
+    }
+
+    #[test]
+    fn ebl002_fix_is_manual_because_path_is_app_specific() {
+        let env = mk_env("prod", "Web", "Green");
+        let opts = vec![mk_opt(
+            "aws:elasticbeanstalk:application",
+            "Application Healthcheck URL",
+            "",
+        )];
+        let fix = WebTierNoHealthCheckUrl.fix(&ctx(&env, &opts)).expect("fix");
+        assert!(matches!(fix, FixAction::Manual { .. }));
+    }
+
+    #[test]
+    fn ebl003_has_no_fix_state_not_config() {
+        // EBL003 (env Red >4h) is a state condition — no config
+        // change auto-resolves it. Default `None` from the trait
+        // is correct.
+        let env = mk_env("prod", "Web", "Red");
+        let opts: Vec<(String, String, String)> = vec![];
+        assert!(EnvRedForExtendedPeriod.fix(&ctx(&env, &opts)).is_none());
+    }
+
+    #[test]
+    fn ebl004_fix_clamps_batch_size_to_max_size() {
+        let env = mk_env("prod", "Web", "Green");
+        let opts = vec![
+            mk_opt("aws:elasticbeanstalk:command", "BatchSize", "10"),
+            mk_opt("aws:elasticbeanstalk:command", "BatchSizeType", "Fixed"),
+            mk_opt("aws:autoscaling:asg", "MaxSize", "4"),
+        ];
+        let fix = BatchSizeExceedsMaxSize.fix(&ctx(&env, &opts)).expect("fix");
+        match fix {
+            FixAction::SetOption { name, value, .. } => {
+                assert_eq!(name, "BatchSize");
+                assert_eq!(value, "4");
+            }
+            FixAction::Manual { .. } => panic!("EBL004 should auto-fix, not Manual"),
+        }
+    }
+
+    #[test]
+    fn ebl005_fix_is_manual_because_capacity_is_workload_dependent() {
+        let env = mk_env("prod", "Web", "Green");
+        let opts = vec![
+            mk_opt("aws:autoscaling:asg", "MinSize", "1"),
+            mk_opt("aws:autoscaling:asg", "MaxSize", "1"),
+        ];
+        let fix = SingleInstanceEnv.fix(&ctx(&env, &opts)).expect("fix");
+        assert!(matches!(fix, FixAction::Manual { .. }));
+    }
+
+    #[test]
+    fn ebl006_fix_sets_cooldown_to_360() {
+        let env = mk_env("prod", "Web", "Green");
+        let opts = vec![mk_opt("aws:autoscaling:asg", "Cooldown", "30")];
+        let fix = CooldownBelowRecommended
+            .fix(&ctx(&env, &opts))
+            .expect("fix");
+        match fix {
+            FixAction::SetOption {
+                namespace,
+                name,
+                value,
+                ..
+            } => {
+                assert_eq!(namespace, "aws:autoscaling:asg");
+                assert_eq!(name, "Cooldown");
+                assert_eq!(value, "360");
+            }
+            FixAction::Manual { .. } => panic!("EBL006 should auto-fix, not Manual"),
+        }
+    }
+
+    #[test]
+    fn ebl006_fix_none_when_cooldown_already_compliant() {
+        let env = mk_env("prod", "Web", "Green");
+        let opts = vec![mk_opt("aws:autoscaling:asg", "Cooldown", "360")];
+        assert!(CooldownBelowRecommended.fix(&ctx(&env, &opts)).is_none());
     }
 }

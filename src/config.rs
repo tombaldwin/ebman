@@ -74,6 +74,13 @@ pub struct Config {
     /// Project-local `.ebman/ebman.toml` can extend (never
     /// override) this set via `[lint]\ndisable = ["EBL001"]`.
     pub lint_disable: Vec<String>,
+    /// Lint rule IDs whose auto-fix is suppressed even when
+    /// `--fix` is passed. Same CSV-in-string form:
+    /// `lint.fix_disable = "EBL004"`. Operators who want lint
+    /// reports but don't want a specific rule's fix dispatched
+    /// (e.g. they have a non-standard BatchSize for a reason)
+    /// list it here.
+    pub lint_fix_disable: Vec<String>,
 }
 
 /// A named `sts:AssumeRole` target. The operator typically pins one of
@@ -109,6 +116,7 @@ impl Default for Config {
             notify_webhook: None,
             command_aliases: std::collections::HashMap::new(),
             lint_disable: Vec::new(),
+            lint_fix_disable: Vec::new(),
         }
     }
 }
@@ -126,6 +134,13 @@ pub fn load() -> Config {
 /// project-level disables in `project::load_lint_disables_from_cwd`.
 pub fn load_lint_disables() -> Vec<String> {
     load().lint_disable
+}
+
+/// Same as [`load_lint_disables`] but for the auto-fix opt-out list.
+/// Rules in this list won't have their `fix()` dispatched by `ebman
+/// lint --fix` even when they're enabled for reporting.
+pub fn load_lint_fix_disables() -> Vec<String> {
+    load().lint_fix_disable
 }
 
 pub fn parse(text: &str) -> Config {
@@ -166,6 +181,13 @@ pub fn parse(text: &str) -> Config {
             }
             "lint.disable" => {
                 cfg.lint_disable = value
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+            }
+            "lint.fix_disable" => {
+                cfg.lint_fix_disable = value
                     .split(',')
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
@@ -306,6 +328,12 @@ pub fn serialize(cfg: &Config) -> String {
         out.push_str(&format!(
             "lint.disable = \"{}\"\n",
             cfg.lint_disable.join(",")
+        ));
+    }
+    if !cfg.lint_fix_disable.is_empty() {
+        out.push_str(&format!(
+            "lint.fix_disable = \"{}\"\n",
+            cfg.lint_fix_disable.join(",")
         ));
     }
     if !cfg.command_aliases.is_empty() {
@@ -577,6 +605,7 @@ accounts.staging.external_id = "abc-xyz"
                 m
             },
             lint_disable: vec!["EBL003".into(), "EBL006".into()],
+            lint_fix_disable: vec!["EBL004".into()],
         };
 
         let body = serialize(&cfg);
@@ -593,6 +622,14 @@ accounts.staging.external_id = "abc-xyz"
         assert_eq!(reparsed.notify_webhook, cfg.notify_webhook);
         assert_eq!(reparsed.command_aliases, cfg.command_aliases);
         assert_eq!(reparsed.lint_disable, cfg.lint_disable);
+        assert_eq!(reparsed.lint_fix_disable, cfg.lint_fix_disable);
+    }
+
+    #[test]
+    fn parse_lint_fix_disable_csv_collects_into_vec() {
+        let body = "lint.fix_disable = \"EBL004, EBL001\"\n";
+        let cfg = parse(body);
+        assert_eq!(cfg.lint_fix_disable, vec!["EBL004", "EBL001"]);
     }
 
     #[test]

@@ -1140,6 +1140,10 @@ pub struct App {
     /// save. The `ebman lint` CLI uses its own `config::load_lint_disables`
     /// loader so the disables apply to both surfaces.
     pub lint_disable: Vec<String>,
+    /// Per-rule opt-out for `:lint --fix` / `ebman lint --fix`. Disabled
+    /// rules still surface in reports but their auto-remediation is
+    /// suppressed. Same project-extends-user merge as `lint_disable`.
+    pub lint_fix_disable: Vec<String>,
     pub required_tags: Vec<String>,
     /// The raw `icons = …` string from `config.toml` (before resolution to
     /// [`crate::theme::IconStyle`]). Kept verbatim so `:settings` can round-trip
@@ -1930,6 +1934,7 @@ impl App {
             notify_webhook: config.notify_webhook.clone(),
             command_aliases: config.command_aliases.clone(),
             lint_disable: config.lint_disable.clone(),
+            lint_fix_disable: config.lint_fix_disable.clone(),
             required_tags: config.required_tags,
             cfg_icons_raw: config.icons.clone(),
             profile_themes: config.profile_themes.clone(),
@@ -2165,6 +2170,7 @@ impl App {
             notify_webhook: config.notify_webhook.clone(),
             command_aliases: config.command_aliases.clone(),
             lint_disable: config.lint_disable.clone(),
+            lint_fix_disable: config.lint_fix_disable.clone(),
             required_tags: config.required_tags.clone(),
             cfg_icons_raw: config.icons.clone(),
             profile_themes: config.profile_themes.clone(),
@@ -8021,6 +8027,7 @@ impl App {
             notify_webhook: self.notify_webhook.clone(),
             command_aliases: self.command_aliases.clone(),
             lint_disable: self.lint_disable.clone(),
+            lint_fix_disable: self.lint_fix_disable.clone(),
         }
     }
 
