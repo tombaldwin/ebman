@@ -14794,9 +14794,15 @@ fn write_audit_outcome(
     env: &str,
     result: Result<(), &str>,
 ) {
+    // Outcome is always emitted as a `key=value` pair so the parser
+    // in `src/audit.rs` can promote it into the typed `outcome` /
+    // `err` field. Pre-0.14 entries used a bare `ok` trailing the
+    // detail string; the parser tolerates those as outcome=None but
+    // can't surface the success state cleanly. New writes use the
+    // explicit shape.
     let outcome = match result {
-        Ok(()) => "ok".to_string(),
-        Err(e) => format!("err=\"{}\"", e.replace('"', "'")),
+        Ok(()) => "outcome=ok".to_string(),
+        Err(e) => format!("outcome=err err=\"{}\"", e.replace('"', "'")),
     };
     let detail = format!("stage=completed action={action:?} target={env} {outcome}");
     write_audit_line(account, profile, region, &detail);
