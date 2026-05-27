@@ -390,26 +390,10 @@ async fn call_ollama(settings: &Settings, prompt: &str) -> Result<String> {
     Ok(out.to_string())
 }
 
-/// JSON-escape a string for embedding into a hand-rolled request
-/// body. Returns the value wrapped in quotes (so callers can drop
-/// it straight into `"key":{json_str(...)}`).
-fn json_str(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
+// Hand-rolled JSON request body for the LLM provider. Local alias
+// for `crate::util::json_string` so call-site rewrites are
+// unnecessary; semantics identical.
+use crate::util::json_string as json_str;
 
 fn truncate_for_error(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {

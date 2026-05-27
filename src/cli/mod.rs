@@ -78,38 +78,12 @@ pub(crate) fn decide_poll(
     PollDecision::KeepPolling
 }
 
-/// JSON-escape a string and wrap it in quotes. Used by every
-/// subcommand's `--json` path to hand-roll a body without pulling
-/// in serde_json (the project convention is hand-rolled JSON for
-/// outbound; YAML-superset parse on inbound).
-pub(crate) fn json_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
-/// Escape a string for use as a JSON-VALUE inside a hand-rolled
-/// object body. Same semantics as [`json_string`] but without the
-/// surrounding quotes — callers that want to embed the result
-/// inside a larger formatted string.
-pub(crate) fn cli_esc(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\t', "\\t")
-}
+/// Re-exports of the canonical JSON helpers from `crate::util`. CLI
+/// subcommand modules import these via `crate::cli::{json_string,
+/// cli_esc}` so call-site rewrites are unnecessary; the actual
+/// implementations live in `util.rs` and are shared across the
+/// crate (lib + bin).
+pub(crate) use crate::util::{json_escape as cli_esc, json_string};
 
 #[cfg(test)]
 mod tests {
