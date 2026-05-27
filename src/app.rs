@@ -1140,15 +1140,14 @@ pub struct App {
     /// save. The `ebman lint` CLI uses its own `config::load_lint_disables`
     /// loader so the disables apply to both surfaces.
     pub lint_disable: Vec<String>,
-    /// `[explain]` block from `config.toml`. Round-tripped through
-    /// the App so `:settings` save doesn't clobber them; not yet
-    /// editable from the in-app settings form.
-    pub explain_enabled: bool,
-    pub explain_provider: String,
-    pub explain_model: String,
-    pub explain_api_key_env: String,
-    pub explain_ollama_url: String,
-    pub explain_max_tokens: u32,
+    /// Resolved `[explain]` settings (LLM provider + model + auth)
+    /// loaded from `config.toml`. Read by `cmd_explain_issue` to
+    /// dispatch the `:explain EBL###` overlay; round-tripped
+    /// through `current_config_snapshot` so `:settings save`
+    /// doesn't drop the lines. Single field instead of six discrete
+    /// `explain_*` mirrors — sets the template for the next
+    /// `[section]` block in config.toml.
+    pub explain_settings: crate::llm::Settings,
     pub required_tags: Vec<String>,
     /// The raw `icons = …` string from `config.toml` (before resolution to
     /// [`crate::theme::IconStyle`]). Kept verbatim so `:settings` can round-trip
@@ -1709,6 +1708,11 @@ impl App {
         // App's webhook wins — fine for production where there's
         // only ever one App.
         crate::audit::set_notify_webhook(config.notify_webhook.clone());
+        // Resolve LLM settings here so the struct literal below can
+        // own `config.extra_regions` without a partial-move conflict
+        // — `Settings::from_config` borrows; the field assignment
+        // moves out of the same struct.
+        let explain_settings = crate::llm::Settings::from_config(&config);
         let persisted = state::load();
         // Project config: optional `.ebman/ebman.toml` walked up from
         // cwd. Profile / region from the project win over persisted
@@ -1939,12 +1943,7 @@ impl App {
             notify_webhook: config.notify_webhook.clone(),
             command_aliases: config.command_aliases.clone(),
             lint_disable: config.lint_disable.clone(),
-            explain_enabled: config.explain_enabled,
-            explain_provider: config.explain_provider.clone(),
-            explain_model: config.explain_model.clone(),
-            explain_api_key_env: config.explain_api_key_env.clone(),
-            explain_ollama_url: config.explain_ollama_url.clone(),
-            explain_max_tokens: config.explain_max_tokens,
+            explain_settings,
             required_tags: config.required_tags,
             cfg_icons_raw: config.icons.clone(),
             profile_themes: config.profile_themes.clone(),
@@ -2049,6 +2048,7 @@ impl App {
         let aws = Arc::new(aws);
         let context = aws.context.clone();
         let (msg_tx, msg_rx) = mpsc::unbounded_channel();
+        let explain_settings = crate::llm::Settings::from_config(&config);
         let mut table_state = TableState::default();
         table_state.select(Some(0));
         let mut app_table_state = TableState::default();
@@ -2180,12 +2180,7 @@ impl App {
             notify_webhook: config.notify_webhook.clone(),
             command_aliases: config.command_aliases.clone(),
             lint_disable: config.lint_disable.clone(),
-            explain_enabled: config.explain_enabled,
-            explain_provider: config.explain_provider.clone(),
-            explain_model: config.explain_model.clone(),
-            explain_api_key_env: config.explain_api_key_env.clone(),
-            explain_ollama_url: config.explain_ollama_url.clone(),
-            explain_max_tokens: config.explain_max_tokens,
+            explain_settings,
             required_tags: config.required_tags.clone(),
             cfg_icons_raw: config.icons.clone(),
             profile_themes: config.profile_themes.clone(),
@@ -5128,38 +5123,7 @@ impl App {
         disabled.extend(crate::project::load_lint_disables_from_cwd());
         let app_name = env.application.clone();
         let env_name_for_fetch = env.name.clone();
-        // Resolve LLM settings directly from the App's mirrored
-        // explain_* fields (round-tripped through
-        // current_config_snapshot), without round-tripping through
-        // Config::default + field assignment.
-        let settings = crate::llm::Settings {
-            enabled: self.explain_enabled,
-            provider: if self.explain_provider.is_empty() {
-                "anthropic".into()
-            } else {
-                self.explain_provider.clone()
-            },
-            model: if self.explain_model.is_empty() {
-                "claude-haiku-4-5".into()
-            } else {
-                self.explain_model.clone()
-            },
-            api_key_env: if self.explain_api_key_env.is_empty() {
-                "ANTHROPIC_API_KEY".into()
-            } else {
-                self.explain_api_key_env.clone()
-            },
-            ollama_url: if self.explain_ollama_url.is_empty() {
-                "http://localhost:11434".into()
-            } else {
-                self.explain_ollama_url.clone()
-            },
-            max_tokens: if self.explain_max_tokens == 0 {
-                1024
-            } else {
-                self.explain_max_tokens
-            },
-        };
+        let settings = self.explain_settings.clone();
         let issue_id_owned = issue_id.to_string();
         let issue_id_title = issue_id.to_string();
         self.status_message = Some(format!("explain: building prompt for {issue_id}…"));
@@ -8142,7 +8106,7 @@ impl App {
     /// `:settings` form for pre-fill and as the base the form's edited
     /// fields are merged onto before writing back to disk.
     fn current_config_snapshot(&self) -> Config {
-        Config {
+        let mut snapshot = Config {
             refresh_interval: self.refresh_interval,
             extra_regions: self.extra_regions.clone(),
             redact_default: Some(self.redact),
@@ -8172,13 +8136,20 @@ impl App {
             // from disk on snapshot so `:settings save` doesn't
             // silently drop the existing line.
             lint_fix_disable: crate::config::load_lint_fix_disables(),
-            explain_enabled: self.explain_enabled,
-            explain_provider: self.explain_provider.clone(),
-            explain_model: self.explain_model.clone(),
-            explain_api_key_env: self.explain_api_key_env.clone(),
-            explain_ollama_url: self.explain_ollama_url.clone(),
-            explain_max_tokens: self.explain_max_tokens,
-        }
+            explain_enabled: false,
+            explain_provider: String::new(),
+            explain_model: String::new(),
+            explain_api_key_env: String::new(),
+            explain_ollama_url: String::new(),
+            explain_max_tokens: 0,
+        };
+        // Single source of truth for the `[explain]` block: the
+        // resolved `Settings` on App. `write_to_config` fills the
+        // Config struct's discrete fields and uses empty-string
+        // sentinels for defaults so the serialiser only emits the
+        // lines the operator has actually configured.
+        self.explain_settings.write_to_config(&mut snapshot);
+        snapshot
     }
 
     /// Resolve the effective read-only lock for a destructive action
