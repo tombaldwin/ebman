@@ -54,3 +54,18 @@ The final message must explicitly list **skipped items** alongside what shipped,
 ## When not in autonomous mode
 
 When the user is driving step-by-step (asks "what do you think?", "next?", per-item approvals), prefer brief recommendations over large changes. Don't trigger the full mandatory loop above; instead, propose and await direction. Still keep `cargo build` and `cargo test` green at every commit point.
+
+## Release procedure
+
+When the user asks to cut a release (e.g. "tag 0.X", "ship the release", "prepare 0.X for release"), in addition to the version-bump / `CHANGELOG.md` / `Formula/ebman.rb` SHA-update mechanics:
+
+1. **Audit `docs/` against the shipped code before tagging.** The `src/commands.rs` registry is the source of truth for command help — CI pins it to the dispatch arms, but it does *not* pin it to `docs/commands.md`. Diff the registry's command names against `docs/commands.md` and add any that shipped this cycle. Then walk:
+   - `docs/keys.md` — every new keybinding added in the lineup is in the table (normal mode / Detail / DLQ section, whichever applies).
+   - `docs/configuration.md` — every new `config.toml` / `.ebman/ebman.toml` key in the lineup is documented; TOML examples actually parse.
+   - `docs/headless.md` — every new top-level `ebman <subcommand>` (from `src/main.rs`'s dispatch) is mentioned.
+   - `docs/fonts.md` / `docs/safety-and-privacy.md` / `docs/development.md` — spot-check for stale references to commands, files, or behaviours that changed this cycle.
+   - `README.md` — any feature it specifically calls out (e.g. the Triage workflow's `:rollback`) still works as described.
+
+2. **Surface findings in the release message.** What the docs audit fixed lands in the release notes / final summary alongside what shipped, so the audit isn't invisible work.
+
+3. **No silent edits — flag intentional gaps.** If a command shipped behind a feature flag or as a soft preview, say so in the audit summary rather than just documenting it as if it were generally available.
