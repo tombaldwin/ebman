@@ -25,6 +25,7 @@ ebman envs --json                                                          # pri
 ebman action rebuild --env myenv --yes                                     # dispatch a rebuild
 ebman action rollout --version LABEL --env NAME --regions r1,r2,r3 --yes   # sequential cross-region deploy
 ebman lint   [--env NAME] [--regions r1,r2,r3] [--json]                    # rule-engine diagnostics; exit 3 on issues
+ebman lint   --fix (--yes | --dry-run) [--rules ID1,ID2] [--env NAME]      # opt-in auto-remediation (EBL001/004/006 ship with fixes)
 ebman drift  [--env NAME] [--regions r1,r2,r3] [--tfstate PATH] [--json]   # terraform drift report; exit 3 on drift
 ebman audit  [--tail] [--since DUR] [--env NAME] [--action NAME] [--json]  # surface ~/.cache/ebman/audit.log for scripts
 ```

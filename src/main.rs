@@ -191,6 +191,7 @@ FLAGS:
 SUBCOMMANDS:
     envs [--json]                                List environments in current profile / region.
     lint [--env NAME] [--regions r1,r2,r3] [--json] [--severity LVL] [--rules ID1,ID2] [--quiet]
+         [--fix (--yes | --dry-run)]
                                                   Run the diagnostic rule engine against one env
                                                   (or every env in the context) and emit findings
                                                   as text or JSON. Non-zero exit when issues found.
@@ -200,6 +201,13 @@ SUBCOMMANDS:
                                                   config.toml and project-local .ebman/ebman.toml.
                                                   --regions fans out across regions; rows are
                                                   prefixed with the region.
+                                                  --fix dispatches each rule's auto-remediation
+                                                  (DeploymentPolicy → Rolling for EBL001, etc.).
+                                                  Requires --yes to write; --dry-run prints the
+                                                  plan without dispatching. Per-rule opt-out via
+                                                  `lint.fix_disable`. Manual fixes printed as
+                                                  instructions when the right answer is operator-
+                                                  context-dependent.
     drift [--env NAME] [--regions r1,r2,r3] [--tfstate PATH] [--tfdir PATH] [--json] [--quiet]
                                                   Terraform drift report. Discovers tfstate via
                                                   walk-up from cwd (or --tfdir / --tfstate
@@ -526,6 +534,9 @@ async fn run_lint_cli(args: &[String]) -> Result<()> {
     let mut quiet = false;
     let mut severity_filter: Option<ebman::lint::Severity> = None;
     let mut rule_filter: Vec<String> = Vec::new();
+    let mut fix = false;
+    let mut dry_run = false;
+    let mut yes = false;
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -533,6 +544,9 @@ async fn run_lint_cli(args: &[String]) -> Result<()> {
             "--regions" => regions_csv = iter.next().cloned(),
             "--json" => json = true,
             "--quiet" => quiet = true,
+            "--fix" => fix = true,
+            "--dry-run" => dry_run = true,
+            "--yes" => yes = true,
             "--severity" => {
                 let Some(v) = iter.next() else {
                     eprintln!("ebman lint: --severity expects a value (info / warn / error)");
@@ -570,6 +584,27 @@ async fn run_lint_cli(args: &[String]) -> Result<()> {
     let mut disabled: Vec<String> = config::load_lint_disables();
     disabled.extend(ebman::project::load_lint_disables_from_cwd());
     let rules = ebman::lint::default_rules(&disabled);
+
+    // Separate opt-out list for auto-fix dispatch. A rule can be
+    // ENABLED for reporting (operator wants to know about
+    // BatchSize > MaxSize) but DISABLED for fix (operator has a
+    // deliberate non-standard BatchSize and doesn't want --fix
+    // overwriting it). Same merge pattern as `lint.disable`.
+    let mut fix_disabled: Vec<String> = config::load_lint_fix_disables();
+    fix_disabled.extend(ebman::project::load_lint_fix_disables_from_cwd());
+
+    // Safety guard: --fix without --yes (and without --dry-run)
+    // refuses to dispatch. Operators in interactive sessions get
+    // a plan + a clear "add --yes to apply" hint; CI scripts must
+    // explicitly opt in.
+    if fix && !yes && !dry_run {
+        eprintln!("ebman lint --fix: requires --yes to dispatch writes (or --dry-run to preview)");
+        std::process::exit(2);
+    }
+    if fix && yes && dry_run {
+        eprintln!("ebman lint --fix: --yes and --dry-run are mutually exclusive");
+        std::process::exit(2);
+    }
 
     // Region fan-out. With --regions, iterate over each named
     // region (one AwsClient per). Without, single iteration with
@@ -686,6 +721,131 @@ async fn run_lint_cli(args: &[String]) -> Result<()> {
                     issue.fields.insert("region".into(), region.clone());
                 }
             }
+
+            // --fix dispatch happens per-env, inline, so the
+            // AwsClient borrow lifecycle stays simple. We only
+            // call `fix()` on rules whose issue passed the
+            // --severity / --rules filters — otherwise a `--rule
+            // EBL001 --fix` invocation would still apply EBL004's
+            // fix when both fire.
+            if fix && !issues.is_empty() {
+                let region_label = region_opt.as_deref().unwrap_or("default").to_string();
+                let mut to_set: Vec<(String, String, String)> = Vec::new();
+                let mut planned: Vec<(String, ebman::lint::FixAction)> = Vec::new();
+                let mut planned_set_indices: Vec<usize> = Vec::new();
+                for issue in &issues {
+                    if fix_disabled.contains(&issue.rule_id) {
+                        if !quiet {
+                            println!("skip {} ({}): in lint.fix_disable", issue.rule_id, env.name);
+                        }
+                        continue;
+                    }
+                    let Some(rule) = rules.iter().find(|r| r.id() == issue.rule_id) else {
+                        continue;
+                    };
+                    let Some(action) = rule.fix(&ctx) else {
+                        if !quiet {
+                            println!(
+                                "no-fix {} ({}): rule has no auto-remediation",
+                                issue.rule_id, env.name
+                            );
+                        }
+                        continue;
+                    };
+                    if let ebman::lint::FixAction::SetOption {
+                        namespace,
+                        name,
+                        value,
+                        ..
+                    } = &action
+                    {
+                        planned_set_indices.push(planned.len());
+                        to_set.push((namespace.clone(), name.clone(), value.clone()));
+                    }
+                    planned.push((issue.rule_id.clone(), action));
+                }
+                for (rule_id, action) in &planned {
+                    match action {
+                        ebman::lint::FixAction::SetOption { description, .. } => {
+                            println!("fix {rule_id} ({}): {description}", env.name);
+                        }
+                        ebman::lint::FixAction::Manual { instructions } => {
+                            println!(
+                                "fix {rule_id} ({}) MANUAL — operator action required:\n  {instructions}",
+                                env.name
+                            );
+                        }
+                    }
+                }
+                if !to_set.is_empty() && yes {
+                    match aws
+                        .update_env_option_settings(&env.name, &to_set, &[])
+                        .await
+                    {
+                        Ok(()) => {
+                            for &idx in &planned_set_indices {
+                                let (rule_id, action) = &planned[idx];
+                                if let ebman::lint::FixAction::SetOption {
+                                    namespace,
+                                    name,
+                                    value,
+                                    ..
+                                } = action
+                                {
+                                    write_lint_fix_audit_line(
+                                        &region_label,
+                                        &env.name,
+                                        rule_id,
+                                        namespace,
+                                        name,
+                                        value,
+                                        None,
+                                    );
+                                }
+                            }
+                            if !quiet {
+                                println!(
+                                    "ok ({}): applied {} fix(es)",
+                                    env.name,
+                                    planned_set_indices.len()
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "ebman lint --fix: dispatch failed for {} in {region_label}: {e}",
+                                env.name
+                            );
+                            let err_str = e.to_string();
+                            for &idx in &planned_set_indices {
+                                let (rule_id, action) = &planned[idx];
+                                if let ebman::lint::FixAction::SetOption {
+                                    namespace,
+                                    name,
+                                    value,
+                                    ..
+                                } = action
+                                {
+                                    write_lint_fix_audit_line(
+                                        &region_label,
+                                        &env.name,
+                                        rule_id,
+                                        namespace,
+                                        name,
+                                        value,
+                                        Some(&err_str),
+                                    );
+                                }
+                            }
+                            // Track so we exit 1 at the end of the
+                            // run; don't abort here — other envs
+                            // should still see their fixes applied.
+                            FIX_DISPATCH_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                }
+            }
+
             all_issues.extend(issues);
         }
     }
@@ -724,12 +884,73 @@ async fn run_lint_cli(args: &[String]) -> Result<()> {
         }
     }
 
-    // Non-zero exit if any issues survived the filters. CI scripts
-    // get the natural `ebman lint && deploy` semantic.
-    if all_issues.is_empty() {
+    // Exit-code regime depends on whether --fix was requested.
+    // - Without --fix: issues found → 3 (CI gate semantic).
+    // - With --fix:    fixes applied → 0; AWS dispatch failure → 1.
+    //   We deliberately do NOT exit 3 in --fix mode; the operator's
+    //   intent is "see issues then fix them", so a CI loop
+    //   `ebman lint --fix --yes` should keep exit 0 after a clean
+    //   apply, not flag itself failed because the lint surfaced
+    //   something it then fixed.
+    if fix {
+        if FIX_DISPATCH_FAILED.load(std::sync::atomic::Ordering::Relaxed) {
+            std::process::exit(1);
+        }
+        Ok(())
+    } else if all_issues.is_empty() {
         Ok(())
     } else {
         std::process::exit(3);
+    }
+}
+
+/// Tracks whether any `--fix` dispatch failed during the run. Single
+/// run-wide flag is fine here because the CLI process exits after
+/// `run_lint_cli` returns — no cross-process state. Used instead of
+/// threading the boolean through every loop iteration's borrow
+/// lifetime.
+static FIX_DISPATCH_FAILED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Write one audit-log line tagged with the `stage=fix` shape +
+/// `rule_id` correlation. Same `audit.log` path the App's
+/// `write_audit_line` uses; duplicated here as a free fn because CLI
+/// subcommands don't carry App state. Operators consuming the audit
+/// log via `ebman audit --rule EBL001` get clean per-rule history.
+fn write_lint_fix_audit_line(
+    region: &str,
+    env: &str,
+    rule_id: &str,
+    namespace: &str,
+    name: &str,
+    value: &str,
+    err: Option<&str>,
+) {
+    let dir = ebman::util::cache_dir();
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let path = dir.join("audit.log");
+    let when = chrono::Utc::now().to_rfc3339();
+    // Quote the value to keep the parser happy if it contains
+    // whitespace (rare for option-settings, but cheap insurance).
+    let q_value = value.replace('"', "'");
+    let line = match err {
+        None => format!(
+            "{when}\tregion={region}\tstage=fix action=SetOption target={env} rule_id={rule_id} namespace={namespace} name={name} value=\"{q_value}\" outcome=ok\n"
+        ),
+        Some(e) => format!(
+            "{when}\tregion={region}\tstage=fix action=SetOption target={env} rule_id={rule_id} namespace={namespace} name={name} value=\"{q_value}\" outcome=err err=\"{}\"\n",
+            e.replace('"', "'")
+        ),
+    };
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = f.write_all(line.as_bytes());
     }
 }
 

@@ -74,6 +74,10 @@ pub struct ProjectConfig {
 #[serde(default)]
 pub struct LintProjectConfig {
     pub disable: Vec<String>,
+    /// Rules whose auto-fix is suppressed by `ebman lint --fix`,
+    /// even when the rule itself is enabled for reporting.
+    /// `[lint]\nfix_disable = ["EBL004"]` in `.ebman/ebman.toml`.
+    pub fix_disable: Vec<String>,
 }
 
 /// `serde` adapter that collapses empty-string values to `None`. The
@@ -132,6 +136,15 @@ pub fn load_from_cwd() -> Option<ProjectConfig> {
 /// the user-level disables.
 pub fn load_lint_disables_from_cwd() -> Vec<String> {
     load_from_cwd().map(|c| c.lint.disable).unwrap_or_default()
+}
+
+/// Same as [`load_lint_disables_from_cwd`] but for the auto-fix
+/// opt-out list. Composed by `ebman lint --fix` with the user-level
+/// `lint.fix_disable`.
+pub fn load_lint_fix_disables_from_cwd() -> Vec<String> {
+    load_from_cwd()
+        .map(|c| c.lint.fix_disable)
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -213,6 +226,17 @@ profile = "prod"
         let cfg = parse("profile = \"\"\nregion = \"\"\n").expect("ok");
         assert_eq!(cfg.profile, None);
         assert_eq!(cfg.region, None);
+    }
+
+    #[test]
+    fn parse_lint_fix_disable_table_collects_into_vec() {
+        let text = r#"
+[lint]
+fix_disable = ["EBL004"]
+"#;
+        let cfg = parse(text).expect("parse ok");
+        assert_eq!(cfg.lint.fix_disable, vec!["EBL004"]);
+        assert!(cfg.lint.disable.is_empty());
     }
 
     #[test]
