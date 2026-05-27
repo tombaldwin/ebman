@@ -6,6 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-05-27 — Foundation pass: audit consolidation, App.explain_settings, CLI split
+
+Pure structural cleanup driven by the 0.14.0 architecture
+review. No new operator-facing features — the surface is
+byte-identical. `src/app.rs` is at ~22k lines and
+`src/main.rs` was 2,600+; both have been cooking since
+0.10. This release pays down the debt before 0.16 ships
+new feature work on top of cleaner foundations.
+
+The user codified the code-review-before-tagging step in
+0.14.1; this release's review (two parallel agents,
+architecture + correctness) caught a stale docstring,
+some pub-visibility nits, an unused-disk-read on
+flag-only launches, and one config-round-trip wart — all
+acted on in `4d5d70f` before the tag. No bugs.
+
+### Internal — refactors
+
+- **Audit-line writers consolidated into `src/audit.rs`.** Three pre-0.15 writer entry points (`write_audit_outcome` in app.rs, `write_rollout_audit_line` + `write_lint_fix_audit_line` in main.rs) collapsed into four typed public APIs (`audit::append_action_dispatched` / `append_action_completed` / `append_rollout` / `append_lint_fix`) plus `audit::append_raw` for ad-hoc sites. Writers + parser now co-located closes the format-drift risk that the 0.14.1 patch surfaced. Plus `audit::init_from_config_disk()` called from CLI dispatch (action + lint subcommands only) so audit lines emitted by `ebman lint --fix` / `ebman action rollout` reach the configured `notify_webhook` — pre-0.15 CLI audit lines never fanned out. (`260ec41`)
+- **`App.explain_settings: llm::Settings` replaces six discrete fields.** `App.explain_enabled` / `explain_provider` / `explain_model` / `explain_api_key_env` / `explain_ollama_url` / `explain_max_tokens` (added in 0.14, all three-site-mirror copies) collapse into one. New `Settings::write_to_config` is the reverse of `from_config` — used by `current_config_snapshot` to write the resolved settings back. Sets the template for the next `[section]` block. (`545e935`)
+- **`src/main.rs` 2,609 → 698 lines (-73%).** Seven inline `run_*_cli` async functions split into `src/cli/{action,audit,ctl,drift,envs,explain,lint}.rs`, each exposing `pub async fn run(args: &[String]) -> Result<()>`. Shared CLI helpers (`PollDecision`, `decide_poll`, `json_string`, `cli_esc`) live in `src/cli/mod.rs`. main.rs is now argv parse + dispatch + TUI lifecycle + crash report + logging init. (`b290e03`)
+
+### Internal — review fixes (`4d5d70f`)
+
+- Stale docstrings in `audit.rs` updated (referenced functions that moved during consolidation).
+- `init_from_config_disk()` moved INSIDE the cli-dispatch match arms so flag-only launches (`--read-only`, `--demo`, `--version`, `--help`) don't read config.toml.
+- `FIX_DISPATCH_FAILED` static moved from `cli/mod.rs` into `cli/lint.rs` (its sole reader/writer).
+- `decide_poll` / `PollDecision` / `json_string` / `cli_esc` tightened from `pub` to `pub(crate)`.
+- New test `config_with_explicit_defaults_collapses_on_round_trip` pins the operator-UX wart that an explicit `explain.provider = "anthropic"` (the default value) gets collapsed on `:settings save`. Behaviour preserved; flagged for revisit if operators complain.
+
+### Deferred to 0.16
+
+- Migrate ~30 hand-rolled `stage=dispatched action=X target=Y` call sites from `audit::append_raw` to the typed `audit::append_action_*` APIs (continues the consolidation that 0.15 started).
+- `draw_splash` + `hsl_to_rgb` move from `main.rs` to `splash.rs`.
+- `decide_poll` TUI sharing (currently re-implemented in `spawn_rollout_dispatch`).
+- Unify the 6 JSON-escape helper variants across modules.
+- `spawn_*` clusters → `src/app/spawn_*.rs` grouping (BONUS deferred from 0.15 scope).
+
+### Verified — pinned by experiment
+
+- **Audit-line wire-format equivalence** — all three new `append_*` paths produce byte-identical lines to the pre-0.15 writers. Verified by the correctness review.
+- **CLI audit lines now reach `notify_webhook`** — `init_from_config_disk` registers the URL before any `audit::append_*` fires under action/lint subcommands. OnceLock first-wins shape means App's later `set_notify_webhook` is a harmless no-op when both fire (impossible in practice; CLI dispatch returns before App::new).
+
+### Internal — testing
+
+- 683 lib + 6 bin + 17 tui-common tests green (up from 672 + 14 + 17 in 0.14.1; the gain is migration tests for the new APIs).
+- fmt + clippy clean. No new deps; no behavioural change to the operator surface.
+
 ## [0.14.1] — 2026-05-27 — 0.14 code review: 2 Critical + 4 Important fixes
 
 Same-day patch for 0.14.0. A full code review of the
@@ -790,7 +838,8 @@ Initial public release. Headline surface:
 - Published to crates.io as `ebman`.
 - Homebrew tap at `tombaldwin/homebrew-tap`.
 
-[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.14.1...HEAD
+[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/tombaldwin/ebman/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/tombaldwin/ebman/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/tombaldwin/ebman/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/tombaldwin/ebman/compare/v0.12.0...v0.13.0
