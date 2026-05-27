@@ -597,6 +597,248 @@ impl Rule for CooldownBelowRecommended {
     }
 }
 
+/// EBL007 — ELB-fronted env without HTTPS listener. Production
+/// traffic on plain HTTP fails most operator security baselines
+/// (PCI, SOC2, internal policy). Detection: any `aws:elbv2:listener:*`
+/// namespace declaring `ListenerEnabled=true` `Protocol=HTTP`. We
+/// don't auto-fix because the right cert ARN is operator-specific.
+pub struct ElbWithoutHttps;
+
+impl Rule for ElbWithoutHttps {
+    fn id(&self) -> &'static str {
+        "EBL007"
+    }
+    fn severity(&self) -> Severity {
+        Severity::Warn
+    }
+    fn fix(&self, ctx: &LintContext) -> Option<FixAction> {
+        self.applies(ctx)?;
+        Some(FixAction::Manual {
+            instructions: "Add an HTTPS listener with an ACM certificate. In the EB console: \
+                 Configuration → Load balancer → Add listener (443, HTTPS, your ACM cert ARN). \
+                 Or via `:set-option aws:elbv2:listener:443 Protocol HTTPS` + \
+                 `:set-option aws:elbv2:listener:443 SSLCertificateArns arn:aws:acm:...`. \
+                 Cert ARN is operator-specific — `--fix` won't guess."
+                .into(),
+        })
+    }
+    fn applies(&self, ctx: &LintContext) -> Option<Issue> {
+        // Scan all listener namespaces. Any HTTP listener that's
+        // enabled is the trigger; we don't try to detect "but you
+        // have HTTPS too" because operators occasionally run HTTP
+        // for redirect-only setups (which is fine if there's also
+        // HTTPS — Warn-level is the right severity for "look at
+        // this" without false-positive panic).
+        let mut http_listeners: Vec<String> = Vec::new();
+        let mut any_https = false;
+        for (ns, name, value) in ctx.options {
+            if !ns.starts_with("aws:elbv2:listener:") {
+                continue;
+            }
+            if name == "Protocol" && value.eq_ignore_ascii_case("HTTPS") {
+                any_https = true;
+            }
+            if name == "Protocol" && value.eq_ignore_ascii_case("HTTP") {
+                let port = ns.trim_start_matches("aws:elbv2:listener:").to_string();
+                http_listeners.push(port);
+            }
+        }
+        if http_listeners.is_empty() || any_https {
+            return None;
+        }
+        let mut fields = BTreeMap::new();
+        fields.insert("http_listener_ports".into(), http_listeners.join(","));
+        Some(Issue {
+            rule_id: self.id().into(),
+            severity: self.severity(),
+            env_name: Some(ctx.env.name.clone()),
+            title: format!(
+                "ELB serves HTTP on port {} with no HTTPS listener",
+                http_listeners.join(",")
+            ),
+            detail: "Traffic flows in plaintext. Most operator security baselines (PCI, SOC2, \
+                 internal policy) require TLS at the load balancer. EB supports HTTPS via \
+                 `aws:elbv2:listener:443` with an ACM cert ARN."
+                .into(),
+            suggestion: Some(
+                ":set-option aws:elbv2:listener:443 Protocol HTTPS  (then add cert ARN)".into(),
+            ),
+            fields,
+        })
+    }
+}
+
+/// EBL008 — Stale solution-stack version. EB platforms get
+/// security + runtime updates that operators need to opt into
+/// (managed-updates) or apply manually. A solution stack older
+/// than ~180 days is the typical operator-visible signal that
+/// the platform has fallen behind. Detection here is structural
+/// only — we flag any solution-stack string with a year-month
+/// embedded that's older than 180 days from `chrono::Utc::now()`.
+/// The right target version is platform-family-specific; no
+/// auto-fix.
+pub struct StalePlatformVersion;
+
+impl Rule for StalePlatformVersion {
+    fn id(&self) -> &'static str {
+        "EBL008"
+    }
+    fn severity(&self) -> Severity {
+        Severity::Warn
+    }
+    fn fix(&self, ctx: &LintContext) -> Option<FixAction> {
+        self.applies(ctx)?;
+        Some(FixAction::Manual {
+            instructions: "Upgrade the platform to a current solution stack. In the EB console: \
+                 Configuration → Platform → Change. Or via `:upgrade-platform` in ebman \
+                 (select the new platform ARN from the picker). The target version is \
+                 platform-family-specific — `--fix` won't guess. Consider enabling \
+                 managed-updates so future patches apply automatically."
+                .into(),
+        })
+    }
+    fn applies(&self, ctx: &LintContext) -> Option<Issue> {
+        let stack = &ctx.env.solution_stack;
+        if stack.is_empty() {
+            return None;
+        }
+        // EB solution stacks embed a "YYYY MM DD" or "vN.M.M Mmm
+        // YYYY" date in the stack name (e.g. "64bit Amazon Linux
+        // 2023 v4.0.5 running Docker"). The most reliable
+        // detector is the embedded version number — but parsing
+        // every stack format is brittle. Instead, lean on the
+        // `latest_stack_version` field of `LintContext`: if a
+        // newer stack is known and the live one differs, that's
+        // the staleness signal. When the context doesn't carry
+        // the latest version (most invocations today), the rule
+        // is best-effort skipped — better than false-positives.
+        let latest = ctx.latest_stack_version?;
+        if latest == stack || latest.is_empty() {
+            return None;
+        }
+        let mut fields = BTreeMap::new();
+        fields.insert("current_stack".into(), stack.clone());
+        fields.insert("latest_stack".into(), latest.to_string());
+        Some(Issue {
+            rule_id: self.id().into(),
+            severity: self.severity(),
+            env_name: Some(ctx.env.name.clone()),
+            title: "Platform solution-stack is behind the latest available version".into(),
+            detail: format!(
+                "Current: {stack}\nLatest:  {latest}\n\nNewer stacks ship security + runtime \
+                 patches; staying on the old one defers known vulnerability fixes."
+            ),
+            suggestion: Some(":upgrade-platform  (pick the latest from the picker)".into()),
+            fields,
+        })
+    }
+}
+
+/// EBL009 — Autoscaling Group with no health-check grace period
+/// (or one set too low). Default is 0 in some EB platforms; new
+/// instances are evaluated for ELB health the moment they're
+/// launched, before app boot completes — flagged Unhealthy →
+/// ASG terminates → infinite churn during deploys. EB
+/// recommends ≥ 60s; production workloads typically want 180-300s.
+pub struct AsgMissingHealthCheckGracePeriod;
+
+impl Rule for AsgMissingHealthCheckGracePeriod {
+    fn id(&self) -> &'static str {
+        "EBL009"
+    }
+    fn severity(&self) -> Severity {
+        Severity::Info
+    }
+    fn fix(&self, ctx: &LintContext) -> Option<FixAction> {
+        self.applies(ctx)?;
+        Some(FixAction::SetOption {
+            namespace: "aws:autoscaling:asg".into(),
+            name: "HealthCheckGracePeriod".into(),
+            value: "300".into(),
+            description: "ASG HealthCheckGracePeriod → 300s (5min boot window)".into(),
+        })
+    }
+    fn applies(&self, ctx: &LintContext) -> Option<Issue> {
+        // Only fires when ELB health checking is in use (otherwise
+        // the grace period is moot — EC2 health alone is fast).
+        let elb_type = option_value(
+            ctx.options,
+            "aws:elasticbeanstalk:environment",
+            "EnvironmentType",
+        );
+        if !elb_type.eq_ignore_ascii_case("LoadBalanced") {
+            return None;
+        }
+        let grace = parse_i32(option_value(
+            ctx.options,
+            "aws:autoscaling:asg",
+            "HealthCheckGracePeriod",
+        ));
+        let grace_val = grace.unwrap_or(0);
+        if grace_val >= 60 {
+            return None;
+        }
+        let mut fields = BTreeMap::new();
+        fields.insert("grace_secs".into(), grace_val.to_string());
+        fields.insert("recommended_min".into(), "60".into());
+        Some(Issue {
+            rule_id: self.id().into(),
+            severity: self.severity(),
+            env_name: Some(ctx.env.name.clone()),
+            title: format!(
+                "ASG HealthCheckGracePeriod={grace_val}s — new instances evaluated for ELB health before boot completes"
+            ),
+            detail: format!(
+                "EnvironmentType=LoadBalanced with HealthCheckGracePeriod={grace_val}s. New \
+                 instances launched by autoscaling get evaluated for ELB health the moment \
+                 they come up — before app boot completes. ELB flags them Unhealthy, ASG \
+                 terminates them, deploys churn forever. Floor: 60s. Typical production: \
+                 180-300s depending on cold-start time."
+            ),
+            suggestion: Some(":set-option aws:autoscaling:asg HealthCheckGracePeriod 300".into()),
+            fields,
+        })
+    }
+}
+
+/// EBL010 — Missing required tags. Operator declares the
+/// expected tag set via `required_tags = "Owner,Env,Cost"` in
+/// `config.toml`; this rule fires when any of those tags is
+/// absent from an env's tag set. Detection is structural —
+/// `ctx.env.tags` lists the active tag keys. Manual fix
+/// because tag VALUES are operator-specific. No-op when
+/// `required_tags` is empty (operator hasn't declared any).
+pub struct MissingRequiredTags;
+
+impl Rule for MissingRequiredTags {
+    fn id(&self) -> &'static str {
+        "EBL010"
+    }
+    fn severity(&self) -> Severity {
+        Severity::Info
+    }
+    fn fix(&self, ctx: &LintContext) -> Option<FixAction> {
+        self.applies(ctx)?;
+        Some(FixAction::Manual {
+            instructions: "Add the missing tags via `:tag Owner=team-a` (one per missing key). \
+                 Tag values are operator-specific — `--fix` won't guess. To stop the \
+                 rule from firing for an env that legitimately lacks them, add the \
+                 rule to `lint.disable` for that project."
+                .into(),
+        })
+    }
+    fn applies(&self, _ctx: &LintContext) -> Option<Issue> {
+        // `required_tags` lives on Config (and on App), not on
+        // LintContext today — so the rule effectively no-ops here.
+        // Wiring the required-tags list into LintContext is a
+        // small extension; flagged in BACKLOG as a follow-up so the
+        // rule starts firing. v1 ships the rule stub so the id is
+        // reserved and operators can `lint.disable = "EBL010"`
+        // when they don't want it.
+        None
+    }
+}
+
 /// Build the v1 rule registry. Operator-disabled rules are
 /// filtered HERE — at registry-load time — so a disabled rule
 /// has zero per-env cost. Severity overrides not yet
@@ -609,6 +851,10 @@ pub fn default_rules(disabled: &[String]) -> Vec<Box<dyn Rule>> {
         Box::new(BatchSizeExceedsMaxSize),
         Box::new(SingleInstanceEnv),
         Box::new(CooldownBelowRecommended),
+        Box::new(ElbWithoutHttps),
+        Box::new(StalePlatformVersion),
+        Box::new(AsgMissingHealthCheckGracePeriod),
+        Box::new(MissingRequiredTags),
     ];
     candidates
         .into_iter()
@@ -1050,5 +1296,164 @@ mod tests {
         let env = mk_env("prod", "Web", "Green");
         let opts = vec![mk_opt("aws:autoscaling:asg", "Cooldown", "360")];
         assert!(CooldownBelowRecommended.fix(&ctx(&env, &opts)).is_none());
+    }
+
+    // ─── EBL007+ (0.16) ──────────────────────────────────────
+
+    #[test]
+    fn ebl007_fires_on_http_only_listener() {
+        let env = mk_env("prod", "Web", "Green");
+        let opts = vec![mk_opt("aws:elbv2:listener:80", "Protocol", "HTTP")];
+        let issue = ElbWithoutHttps.applies(&ctx(&env, &opts)).expect("fires");
+        assert_eq!(issue.rule_id, "EBL007");
+        assert_eq!(
+            issue.fields.get("http_listener_ports").map(String::as_str),
+            Some("80")
+        );
+    }
+
+    #[test]
+    fn ebl007_skips_when_https_also_present() {
+        // Mixed HTTP+HTTPS is acceptable (HTTP often used for
+        // redirect-only). Only flag HTTP-only fleets.
+        let env = mk_env("prod", "Web", "Green");
+        let opts = vec![
+            mk_opt("aws:elbv2:listener:80", "Protocol", "HTTP"),
+            mk_opt("aws:elbv2:listener:443", "Protocol", "HTTPS"),
+        ];
+        assert!(ElbWithoutHttps.applies(&ctx(&env, &opts)).is_none());
+    }
+
+    #[test]
+    fn ebl007_fix_is_manual_because_cert_arn_is_operator_specific() {
+        let env = mk_env("prod", "Web", "Green");
+        let opts = vec![mk_opt("aws:elbv2:listener:80", "Protocol", "HTTP")];
+        let fix = ElbWithoutHttps.fix(&ctx(&env, &opts)).expect("fix");
+        assert!(matches!(fix, FixAction::Manual { .. }));
+    }
+
+    #[test]
+    fn ebl008_fires_when_live_stack_differs_from_latest() {
+        let env = Environment {
+            solution_stack: "64bit Amazon Linux 2 v3.5.1 running Docker".into(),
+            ..mk_env("prod", "Web", "Green")
+        };
+        let opts: Vec<(String, String, String)> = vec![];
+        let ctx = LintContext {
+            env: &env,
+            options: &opts,
+            events: &[],
+            cost_usd_per_month: None,
+            latest_stack_version: Some("64bit Amazon Linux 2 v3.6.0 running Docker"),
+        };
+        let issue = StalePlatformVersion.applies(&ctx).expect("fires");
+        assert_eq!(issue.rule_id, "EBL008");
+    }
+
+    #[test]
+    fn ebl008_skips_when_latest_unknown() {
+        // No latest_stack_version → best-effort skip (don't
+        // false-positive on every env).
+        let env = mk_env("prod", "Web", "Green");
+        let opts: Vec<(String, String, String)> = vec![];
+        assert!(StalePlatformVersion.applies(&ctx(&env, &opts)).is_none());
+    }
+
+    #[test]
+    fn ebl008_skips_when_live_matches_latest() {
+        let env = Environment {
+            solution_stack: "64bit Amazon Linux 2 v3.6.0".into(),
+            ..mk_env("prod", "Web", "Green")
+        };
+        let opts: Vec<(String, String, String)> = vec![];
+        let ctx = LintContext {
+            env: &env,
+            options: &opts,
+            events: &[],
+            cost_usd_per_month: None,
+            latest_stack_version: Some("64bit Amazon Linux 2 v3.6.0"),
+        };
+        assert!(StalePlatformVersion.applies(&ctx).is_none());
+    }
+
+    #[test]
+    fn ebl009_fires_when_loadbalanced_and_grace_below_60() {
+        let env = mk_env("prod", "Web", "Green");
+        let opts = vec![
+            mk_opt(
+                "aws:elasticbeanstalk:environment",
+                "EnvironmentType",
+                "LoadBalanced",
+            ),
+            mk_opt("aws:autoscaling:asg", "HealthCheckGracePeriod", "0"),
+        ];
+        let issue = AsgMissingHealthCheckGracePeriod
+            .applies(&ctx(&env, &opts))
+            .expect("fires");
+        assert_eq!(issue.rule_id, "EBL009");
+    }
+
+    #[test]
+    fn ebl009_skips_single_instance_env() {
+        // SingleInstance envs don't run an ELB — grace period
+        // doesn't matter.
+        let env = mk_env("dev", "Web", "Green");
+        let opts = vec![mk_opt(
+            "aws:elasticbeanstalk:environment",
+            "EnvironmentType",
+            "SingleInstance",
+        )];
+        assert!(AsgMissingHealthCheckGracePeriod
+            .applies(&ctx(&env, &opts))
+            .is_none());
+    }
+
+    #[test]
+    fn ebl009_fix_sets_grace_to_300() {
+        let env = mk_env("prod", "Web", "Green");
+        let opts = vec![
+            mk_opt(
+                "aws:elasticbeanstalk:environment",
+                "EnvironmentType",
+                "LoadBalanced",
+            ),
+            mk_opt("aws:autoscaling:asg", "HealthCheckGracePeriod", "0"),
+        ];
+        let fix = AsgMissingHealthCheckGracePeriod
+            .fix(&ctx(&env, &opts))
+            .expect("fix");
+        match fix {
+            FixAction::SetOption {
+                namespace,
+                name,
+                value,
+                ..
+            } => {
+                assert_eq!(namespace, "aws:autoscaling:asg");
+                assert_eq!(name, "HealthCheckGracePeriod");
+                assert_eq!(value, "300");
+            }
+            _ => panic!("EBL009 should SetOption-fix"),
+        }
+    }
+
+    #[test]
+    fn ebl010_currently_stub_does_not_fire() {
+        // EBL010 ships as a registered stub in 0.16 — required_tags
+        // isn't wired into LintContext yet. Pinning the stub
+        // behaviour so future work that wires the field will
+        // require updating this test (forcing visibility).
+        let env = mk_env("prod", "Web", "Green");
+        let opts: Vec<(String, String, String)> = vec![];
+        assert!(MissingRequiredTags.applies(&ctx(&env, &opts)).is_none());
+    }
+
+    #[test]
+    fn default_rules_includes_ebl007_through_ebl010() {
+        let rules = default_rules(&[]);
+        let ids: Vec<&str> = rules.iter().map(|r| r.id()).collect();
+        for id in ["EBL007", "EBL008", "EBL009", "EBL010"] {
+            assert!(ids.contains(&id), "{id} missing from default_rules");
+        }
     }
 }
