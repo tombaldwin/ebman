@@ -240,10 +240,16 @@ SUBCOMMANDS:
                                                   Deploy requires --version LABEL; supports
                                                   --wait-for-green Nm and --auto-rollback Nm.
                                                   Rollout: --version LABEL --regions r1,r2,r3 --env NAME
-                                                  --yes [--wait-for-green Nm] [--json] [--profile P].
-                                                  Sequential cross-region deploy with pre-flight
-                                                  validation. Stops on first failure. Single
-                                                  rollout_id correlation across audit lines.
+                                                  --yes [--wait-for-green Nm] [--json] [--profile P]
+                                                  [--parallel [--max-concurrency N]]
+                                                  [--continue-on-fail] [--staggered Nm].
+                                                  Default: sequential, halt on first failure.
+                                                  --parallel fans out concurrently (implies
+                                                  --continue-on-fail since in-flight regions
+                                                  can't be cancelled). --staggered delays
+                                                  between regions in sequential mode (requires
+                                                  --wait-for-green). Single rollout_id
+                                                  correlation across audit lines.
                                                   Exit codes: 0 ok, 1 aws err, 2 usage, 3 partial
                                                   failure, 4 wait-timeout, 5 rolled-back.
     ctl <screen|key|cmd|state|reload> [args]     Talk to a running ebman via --control-socket.
