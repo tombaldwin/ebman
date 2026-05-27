@@ -504,6 +504,43 @@ mod tests {
     }
 
     #[test]
+    fn config_with_explicit_defaults_collapses_on_round_trip() {
+        // Documented operator-UX wart in 0.15: if the operator
+        // wrote `explain.provider = "anthropic"` (matching the
+        // default) into config.toml, `Settings::from_config` resolves
+        // it to "anthropic", then `write_to_config` collapses it
+        // back to "" (empty-string sentinel for default), and the
+        // serializer skips the line. Net effect: `:settings save`
+        // removes the explicit-but-default line from disk. Semantics
+        // are preserved (next load re-applies the default), but the
+        // file churns. Pinning the behaviour here so future tweaks
+        // notice; revisit if operators complain about the disappearing
+        // lines (0.16+).
+        let cfg_with_explicit = crate::config::Config {
+            explain_provider: "anthropic".into(),
+            explain_max_tokens: 1024,
+            ..crate::config::Config::default()
+        };
+        let s = Settings::from_config(&cfg_with_explicit);
+        let mut cfg_after = crate::config::Config::default();
+        s.write_to_config(&mut cfg_after);
+        // Both fields explicitly equal-default → collapsed to sentinel.
+        assert_eq!(cfg_after.explain_provider, "");
+        assert_eq!(cfg_after.explain_max_tokens, 0);
+        // Non-default values still round-trip cleanly.
+        let cfg_with_override = crate::config::Config {
+            explain_provider: "ollama".into(),
+            explain_max_tokens: 2048,
+            ..crate::config::Config::default()
+        };
+        let s2 = Settings::from_config(&cfg_with_override);
+        let mut cfg_after2 = crate::config::Config::default();
+        s2.write_to_config(&mut cfg_after2);
+        assert_eq!(cfg_after2.explain_provider, "ollama");
+        assert_eq!(cfg_after2.explain_max_tokens, 2048);
+    }
+
+    #[test]
     fn settings_round_trip_through_config() {
         // App-side path: load Settings → write_to_config → Settings
         // again must be identity. Default values intentionally

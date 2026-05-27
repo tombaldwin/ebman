@@ -21,18 +21,23 @@ async fn main() -> Result<()> {
     // Subcommand support: `ebman envs [--json]`, `ebman action ACTION --env NAME --yes`,
     // `ebman ctl <op> …`. Falls through to the TUI when no subcommand is present.
     if let Some(first) = args.first() {
-        // Initialise the audit-line webhook fan-out before any
-        // subcommand writes an audit line. CLI subcommands don't
-        // construct an `App`, so `App::new`'s `set_notify_webhook`
-        // call never runs — without this, `ebman lint --fix` /
-        // `ebman action rollout` audit lines wouldn't reach a
-        // configured Slack/PagerDuty webhook the way TUI lines do.
-        ebman::audit::init_from_config_disk();
+        // Each match arm calls `audit::init_from_config_disk()`
+        // itself (rather than once before the match) so flag-only
+        // invocations (`--read-only`, `--demo`, `--version`,
+        // `--help`, `--control-socket`) don't pay the
+        // `config::load` disk read. The two read-only subcommands
+        // (envs, ctl) skip it too — they emit no audit lines.
         match first.as_str() {
             "envs" => return ebman::cli::envs::run(&args).await,
-            "action" => return ebman::cli::action::run(&args).await,
+            "action" => {
+                ebman::audit::init_from_config_disk();
+                return ebman::cli::action::run(&args).await;
+            }
             "ctl" => return ebman::cli::ctl::run(&args).await,
-            "lint" => return ebman::cli::lint::run(&args).await,
+            "lint" => {
+                ebman::audit::init_from_config_disk();
+                return ebman::cli::lint::run(&args).await;
+            }
             "drift" => return ebman::cli::drift::run(&args).await,
             "audit" => return ebman::cli::audit::run(&args).await,
             "explain" => return ebman::cli::explain::run(&args).await,

@@ -39,7 +39,7 @@ pub mod lint;
 /// `ebman action deploy` path) and the cross-region rollout loop in
 /// [`action::run_rollout`].
 #[derive(Debug, PartialEq, Eq)]
-pub enum PollDecision {
+pub(crate) enum PollDecision {
     KeepPolling,
     Success,
     /// `--wait-for-green` deadline elapsed but rollback hasn't
@@ -49,7 +49,7 @@ pub enum PollDecision {
     DispatchRollback,
 }
 
-pub fn decide_poll(
+pub(crate) fn decide_poll(
     status: &str,
     health: &str,
     elapsed_secs: u64,
@@ -78,18 +78,11 @@ pub fn decide_poll(
     PollDecision::KeepPolling
 }
 
-/// Tracks whether any `lint --fix` dispatch failed during the run.
-/// Single process-wide flag is fine — CLI exits after `run` returns.
-/// Lives here (not in `lint`) so the `run_lint` body can stay free
-/// of `pub`-visibility shenanigans for a one-off boolean.
-pub(crate) static FIX_DISPATCH_FAILED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
 /// JSON-escape a string and wrap it in quotes. Used by every
 /// subcommand's `--json` path to hand-roll a body without pulling
 /// in serde_json (the project convention is hand-rolled JSON for
 /// outbound; YAML-superset parse on inbound).
-pub fn json_string(s: &str) -> String {
+pub(crate) fn json_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {
@@ -111,7 +104,7 @@ pub fn json_string(s: &str) -> String {
 /// object body. Same semantics as [`json_string`] but without the
 /// surrounding quotes — callers that want to embed the result
 /// inside a larger formatted string.
-pub fn cli_esc(s: &str) -> String {
+pub(crate) fn cli_esc(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('"', "\\\"")
         .replace('\n', "\\n")

@@ -1,8 +1,7 @@
 //! Audit log: writers, parser, renderer, filter.
 //!
 //! Writers and parser are co-located so the line format has a single
-//! source of truth. Three public writer APIs cover every place ebman
-//! emits an audit line:
+//! source of truth. Four public writer APIs cover the typed shapes:
 //!
 //! - [`append_action_dispatched`] / [`append_action_completed`] —
 //!   normal TUI action lines (rebuild / restart / deploy / etc.).
@@ -11,10 +10,17 @@
 //! - [`append_lint_fix`] — `ebman lint --fix` dispatches, tagged
 //!   with the originating `rule_id`.
 //!
-//! All three call into the same private [`write_audit_line`] helper
-//! that handles file rotation + webhook fan-out, so configuration
-//! changes (e.g. `notify_webhook = "https://..."`) automatically
-//! apply to every line type.
+//! Plus [`append_raw`] — the lower-level "I already have a detail
+//! string" entry point used by ad-hoc audit sites (notification
+//! events, batch-action helpers, etc.) where the typed APIs above
+//! don't fit. 0.15 left ~30 hand-rolled `stage=dispatched action=X
+//! target=Y` strings calling `append_raw` instead of the typed
+//! `append_action_*` siblings; migrating them is tracked as a 0.16
+//! follow-up.
+//!
+//! All paths funnel into the same private [`write_audit_line`]
+//! helper (or its `_raw` sibling) so file rotation + webhook
+//! fan-out apply uniformly to every line type.
 //!
 //! Line shapes:
 //!
@@ -201,9 +207,10 @@ pub fn parse_kv_pairs(text: &str) -> Vec<(String, String)> {
 ///   one audit entry into two on disk (the parser reads line-by-line,
 ///   so an embedded newline corrupts the next entry's RFC3339 prefix).
 ///
-/// Used by every writer (`app::write_audit_outcome`,
-/// `main::write_rollout_audit_line`, `main::write_lint_fix_audit_line`)
-/// so the escape rules stay consistent across the three call sites.
+/// Used by [`append_action_completed`], [`append_rollout`], and
+/// [`append_lint_fix`] (and the typed wrappers in `app.rs` that
+/// route to them) so the escape rules stay consistent across every
+/// writer.
 pub fn escape_value(s: &str) -> String {
     s.chars()
         .map(|c| match c {

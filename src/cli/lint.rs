@@ -18,8 +18,14 @@
 
 use color_eyre::eyre::Result;
 
-use crate::cli::FIX_DISPATCH_FAILED;
 use crate::{audit, aws, config, lint, project};
+
+/// Tracks whether any `--fix` dispatch failed during the run. Single
+/// process-wide flag — CLI exits after `run` returns, so cross-run
+/// state isn't a concern. Lives next to its sole reader/writer
+/// (`run`).
+static FIX_DISPATCH_FAILED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 pub async fn run(args: &[String]) -> Result<()> {
     let mut env_name: Option<String> = None;
