@@ -439,14 +439,221 @@ pub fn splash_shows_scene(w: u16, h: u16) -> bool {
     w >= 48 && h >= 30
 }
 
+/// Spinner animation frames used by the boot-time splash. Each frame
+/// advances every ~3 frames in [`draw_splash`].
+const SPLASH_SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// Draw one splash frame to the terminal. Composes the
+/// [`splash_scene_lines`] beanstalk-growth scene (when the terminal
+/// has room) with the tagline + byline + connecting-to-AWS spinner.
+/// In Powerline mode (resolved by `font_probe` before this runs)
+/// pills the tagline + byline + a `v{VERSION}` tab on the top
+/// border; falls back to plain text otherwise.
+///
+/// Frame counter drives both the spinner cycle and the one-shot
+/// border-glow easing (cyan → magenta → cyan over ~1s). Called from
+/// `main()`'s splash loop until the initial AWS context lands.
+pub fn draw_splash(
+    terminal: &mut crate::Tui,
+    frame: u64,
+    icons: &str,
+) -> color_eyre::eyre::Result<()> {
+    use ratatui::layout::{Alignment, Constraint, Direction, Layout};
+    use ratatui::style::{Color, Modifier, Style};
+    use ratatui::text::{Line, Span};
+    use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+
+    terminal.draw(|f| {
+        let area = f.area();
+        let powerline = icons == "powerline";
+        let show_scene = splash_shows_scene(area.width, area.height);
+        let (card_w, card_h): (u16, u16) = if show_scene { (46, 30) } else { (52, 9) };
+        let v = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(0),
+                Constraint::Length(card_h),
+                Constraint::Min(0),
+            ])
+            .split(area);
+        let h = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Min(0),
+                Constraint::Length(card_w),
+                Constraint::Min(0),
+            ])
+            .split(v[1]);
+
+        let mut lines: Vec<Line> = Vec::new();
+        lines.push(Line::from(""));
+        if show_scene {
+            lines.extend(splash_scene_lines(frame));
+            lines.push(Line::from(""));
+        }
+        if powerline {
+            let tag_bg = Color::Rgb(35, 45, 60);
+            let tag_fg = Color::Rgb(170, 180, 200);
+            let cloud = "\u{f0c2}"; // fa-cloud, stable across Nerd Font releases
+            lines.push(
+                Line::from(vec![
+                    Span::styled("\u{e0b6}", Style::default().fg(tag_bg)),
+                    Span::styled(
+                        format!(" {cloud}  k9s-style TUI for AWS Elastic Beanstalk "),
+                        Style::default().fg(tag_fg).bg(tag_bg),
+                    ),
+                    Span::styled("\u{e0b4}", Style::default().fg(tag_bg)),
+                ])
+                .alignment(Alignment::Center),
+            );
+            let by_bg = Color::Rgb(50, 40, 75);
+            let by_fg = Color::Rgb(220, 195, 245);
+            lines.push(
+                Line::from(vec![
+                    Span::styled("\u{e0b6}", Style::default().fg(by_bg)),
+                    Span::styled(
+                        " by Tom Baldwin · Polymorphism Ltd ",
+                        Style::default().fg(by_fg).bg(by_bg),
+                    ),
+                    Span::styled("\u{e0b4}", Style::default().fg(by_bg)),
+                ])
+                .alignment(Alignment::Center),
+            );
+        } else {
+            lines.push(
+                Line::from(Span::styled(
+                    "k9s-style TUI for AWS Elastic Beanstalk",
+                    Style::default().fg(Color::Rgb(150, 155, 170)),
+                ))
+                .alignment(Alignment::Center),
+            );
+            lines.push(
+                Line::from(Span::styled(
+                    "by Tom Baldwin · Polymorphism Ltd",
+                    Style::default().fg(Color::Rgb(180, 140, 230)),
+                ))
+                .alignment(Alignment::Center),
+            );
+        }
+        lines.push(Line::from(""));
+        // Spinner: advance every 3 frames → ~10 fps spin at 30 ms ticks.
+        // Dots: advance every 8 frames → ~240 ms per dot.
+        let spinner = SPLASH_SPINNER[(frame as usize / 3) % SPLASH_SPINNER.len()];
+        let dots = ".".repeat((frame as usize / 8) % 4);
+        lines.push(
+            Line::from(Span::styled(
+                format!("{spinner} connecting to AWS{dots}"),
+                Style::default()
+                    .fg(Color::Rgb(255, 200, 120))
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .alignment(Alignment::Center),
+        );
+
+        // One-shot border glow: cyan → magenta → cyan over the first
+        // ~1 s of splash time, then settles to cyan.
+        const BORDER_SPOTLIGHT_FRAMES: f64 = 33.0;
+        let border_phase = (frame as f64 / BORDER_SPOTLIGHT_FRAMES).clamp(0.0, 1.0);
+        let border_glow = if border_phase < 0.5 {
+            border_phase * 2.0
+        } else {
+            (1.0 - border_phase) * 2.0
+        };
+        let border_hue = 180.0 + border_glow * 120.0;
+        let (br, bg, bb) = hsl_to_rgb(border_hue, 0.60, 0.65);
+        let mut block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::Rgb(br, bg, bb)));
+        if powerline {
+            let tab_bg = Color::Rgb(60, 50, 80);
+            let tab_fg = Color::Rgb(220, 200, 250);
+            let version = format!(" v{} ", env!("CARGO_PKG_VERSION"));
+            let title = Line::from(vec![
+                Span::styled("\u{e0b6}", Style::default().fg(tab_bg)),
+                Span::styled(
+                    version,
+                    Style::default()
+                        .fg(tab_fg)
+                        .bg(tab_bg)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("\u{e0b4}", Style::default().fg(tab_bg)),
+            ]);
+            block = block.title(title).title_alignment(Alignment::Center);
+        }
+        f.render_widget(Paragraph::new(lines).block(block), h[1]);
+    })?;
+    Ok(())
+}
+
+/// Standard HSL → RGB. `h` in degrees 0-360, `s` and `l` in 0.0-1.0.
+/// Used by [`draw_splash`] for the boot border-glow easing.
+pub fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
+    let h = h.rem_euclid(360.0);
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let h_prime = h / 60.0;
+    let x = c * (1.0 - (h_prime.rem_euclid(2.0) - 1.0).abs());
+    let (r1, g1, b1) = if h_prime < 1.0 {
+        (c, x, 0.0)
+    } else if h_prime < 2.0 {
+        (x, c, 0.0)
+    } else if h_prime < 3.0 {
+        (0.0, c, x)
+    } else if h_prime < 4.0 {
+        (0.0, x, c)
+    } else if h_prime < 5.0 {
+        (x, 0.0, c)
+    } else {
+        (c, 0.0, x)
+    };
+    let m = l - c / 2.0;
+    let to_u8 = |v: f64| ((v + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+    (to_u8(r1), to_u8(g1), to_u8(b1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        splash_pixel, splash_scene_lines, splash_shows_scene, SPLASH_FRAME_0, SPLASH_FRAME_1,
-        SPLASH_FRAME_10, SPLASH_FRAME_11, SPLASH_FRAME_12, SPLASH_FRAME_13, SPLASH_FRAME_2,
-        SPLASH_FRAME_3, SPLASH_FRAME_4, SPLASH_FRAME_5, SPLASH_FRAME_6, SPLASH_FRAME_7,
-        SPLASH_FRAME_8, SPLASH_FRAME_9,
+        hsl_to_rgb, splash_pixel, splash_scene_lines, splash_shows_scene, SPLASH_FRAME_0,
+        SPLASH_FRAME_1, SPLASH_FRAME_10, SPLASH_FRAME_11, SPLASH_FRAME_12, SPLASH_FRAME_13,
+        SPLASH_FRAME_2, SPLASH_FRAME_3, SPLASH_FRAME_4, SPLASH_FRAME_5, SPLASH_FRAME_6,
+        SPLASH_FRAME_7, SPLASH_FRAME_8, SPLASH_FRAME_9,
     };
+
+    #[test]
+    fn hsl_to_rgb_red() {
+        let (r, g, b) = hsl_to_rgb(0.0, 1.0, 0.5);
+        assert_eq!((r, g, b), (255, 0, 0));
+    }
+
+    #[test]
+    fn hsl_to_rgb_cyan_and_magenta() {
+        let (r, g, b) = hsl_to_rgb(180.0, 1.0, 0.5);
+        assert_eq!((r, g, b), (0, 255, 255));
+        let (r, g, b) = hsl_to_rgb(300.0, 1.0, 0.5);
+        assert_eq!((r, g, b), (255, 0, 255));
+    }
+
+    #[test]
+    fn hsl_to_rgb_clamps_to_valid_range() {
+        // u8 enforces 0..=255 by type, so additionally assert that
+        // moderate-saturation mid-lightness inputs produce visible
+        // (non-collapsed) outputs across the wheel, and that hue is
+        // wrapped modulo 360 (h=-30 should equal h=330).
+        for h in [-30.0, 0.0, 90.0, 180.0, 270.0, 360.0, 720.0] {
+            let (r, g, b) = hsl_to_rgb(h, 0.7, 0.65);
+            let max = r.max(g).max(b);
+            let min = r.min(g).min(b);
+            assert!(max > min, "hue {h} collapsed to greyscale");
+        }
+        assert_eq!(hsl_to_rgb(-30.0, 0.7, 0.65), hsl_to_rgb(330.0, 0.7, 0.65));
+        assert_eq!(hsl_to_rgb(0.0, 0.7, 0.65), hsl_to_rgb(360.0, 0.7, 0.65));
+        // Zero saturation collapses to greyscale at lightness * 255.
+        let (r, g, b) = hsl_to_rgb(123.0, 0.0, 0.5);
+        assert_eq!(r, g);
+        assert_eq!(g, b);
+    }
 
     const ALL_SPLASH_FRAMES: [&[&str]; 14] = [
         SPLASH_FRAME_0,
