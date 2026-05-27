@@ -606,6 +606,16 @@ async fn run_lint_cli(args: &[String]) -> Result<()> {
     let mut fix_disabled: Vec<String> = config::load_lint_fix_disables();
     fix_disabled.extend(ebman::project::load_lint_fix_disables_from_cwd());
 
+    // Load the same safety pins the TUI's `deny_write` honours
+    // (`safety.envs.NAME.read_only` + `safety.accounts.NAME.read_only`)
+    // so `--fix` can't bypass an operator's read-only pin. The
+    // active profile is what the AWS SDK picked up — read from
+    // AWS_PROFILE (the same env var the SDK consults) so the
+    // matching here mirrors what the TUI would do under that
+    // profile.
+    let safety_cfg = config::load();
+    let active_profile_for_safety = std::env::var("AWS_PROFILE").ok();
+
     // Safety guard: --fix without --yes (and without --dry-run)
     // refuses to dispatch. Operators in interactive sessions get
     // a plan + a clear "add --yes to apply" hint; CI scripts must
@@ -742,6 +752,41 @@ async fn run_lint_cli(args: &[String]) -> Result<()> {
             // EBL001 --fix` invocation would still apply EBL004's
             // fix when both fire.
             if fix && !issues.is_empty() {
+                // Safety-pin gate. Mirrors the TUI's `deny_write`
+                // (`app.rs:8229`) — the CLI must respect the same
+                // `safety.envs.NAME.read_only` + `safety.accounts.NAME.read_only`
+                // pins, otherwise an operator who locked prod
+                // against destructive TUI actions still gets writes
+                // via `ebman lint --fix --yes`. Per-env check first
+                // (the more-specific source), then per-account.
+                let env_pinned = safety_cfg
+                    .safety_envs
+                    .get(&env.name)
+                    .copied()
+                    .unwrap_or(false);
+                let account_pinned = active_profile_for_safety
+                    .as_deref()
+                    .and_then(|p| safety_cfg.safety_accounts.get(p).copied())
+                    .unwrap_or(false);
+                if env_pinned || account_pinned {
+                    let reason = if env_pinned {
+                        format!("safety.envs.{}.read_only", env.name)
+                    } else {
+                        format!(
+                            "safety.accounts.{}.read_only",
+                            active_profile_for_safety.as_deref().unwrap_or("?")
+                        )
+                    };
+                    if !quiet {
+                        eprintln!(
+                            "ebman lint --fix: refusing {} — pinned by {reason}",
+                            env.name
+                        );
+                    }
+                    FIX_DISPATCH_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
+                    all_issues.extend(issues);
+                    continue;
+                }
                 let region_label = region_opt.as_deref().unwrap_or("default").to_string();
                 let mut to_set: Vec<(String, String, String)> = Vec::new();
                 let mut planned: Vec<(String, ebman::lint::FixAction)> = Vec::new();
@@ -945,16 +990,18 @@ fn write_lint_fix_audit_line(
     }
     let path = dir.join("audit.log");
     let when = chrono::Utc::now().to_rfc3339();
-    // Quote the value to keep the parser happy if it contains
-    // whitespace (rare for option-settings, but cheap insurance).
-    let q_value = value.replace('"', "'");
+    // `escape_value` handles `"` → `'` plus `\n`/`\r`/`\t` → ` ` so
+    // a multi-line AWS error doesn't split one audit entry across
+    // two lines on disk (the parser reads line-by-line; an embedded
+    // newline would corrupt the next entry's RFC3339 prefix).
+    let q_value = ebman::audit::escape_value(value);
     let line = match err {
         None => format!(
             "{when}\tregion={region}\tstage=fix action=SetOption target={env} rule_id={rule_id} namespace={namespace} name={name} value=\"{q_value}\" outcome=ok\n"
         ),
         Some(e) => format!(
             "{when}\tregion={region}\tstage=fix action=SetOption target={env} rule_id={rule_id} namespace={namespace} name={name} value=\"{q_value}\" outcome=err err=\"{}\"\n",
-            e.replace('"', "'")
+            ebman::audit::escape_value(e)
         ),
     };
     use std::io::Write;
@@ -1644,11 +1691,19 @@ async fn run_action_rollout(args: &[String]) -> Result<()> {
     // lives inside the loop, just below the per-region wait-for-
     // green block — examines the last outcome rather than a
     // separate halt flag).
+    //
+    // Audit-log shape: every region gets a `stage=dispatched`
+    // line up front (so the trail exists even if the dispatch
+    // call itself fails), and a `stage=completed` line at the
+    // end of the iteration carrying `outcome=ok|err`. Pre-0.14.1
+    // this branch only wrote `dispatched` on the success path,
+    // so failed rollouts left no audit trail at all.
     let mut outcomes: Vec<(String, Result<(), String>)> = Vec::new();
     for (region, client) in &per_region {
         if !quiet {
             eprintln!("rollout: dispatching to {region} (env={env}, version={version})");
         }
+        write_rollout_audit_line(&rollout_id, region, &env, &version, "dispatched", None);
         match client.deploy_version(&env, &version).await {
             Ok(()) => {
                 outcomes.push((region.clone(), Ok(())));
@@ -1659,11 +1714,14 @@ async fn run_action_rollout(args: &[String]) -> Result<()> {
                     // observation per tick. Per-region wait;
                     // doesn't block subsequent regions.
                     let start = tokio::time::Instant::now();
-                    // We don't toggle this — the WaitForGreenTimeout
-                    // branch breaks the loop immediately, so there's
-                    // no second tick where "already emitted" would
-                    // matter (unlike `run_action_deploy` which keeps
-                    // polling under auto-rollback after the timeout).
+                    // Always false in this loop: WaitForGreenTimeout
+                    // breaks immediately, so the per-tick "already
+                    // emitted" suppression in `decide_poll` never
+                    // fires. A future change that wires
+                    // `--auto-rollback` per region will need to
+                    // promote this to `let mut` and set `= true`
+                    // alongside the break so subsequent ticks
+                    // suppress the duplicate timeout log.
                     let wait_timeout_emitted = false;
                     loop {
                         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
@@ -1703,14 +1761,6 @@ async fn run_action_rollout(args: &[String]) -> Result<()> {
                                 break;
                             }
                             PollDecision::WaitForGreenTimeout => {
-                                // wait_timeout_emitted and halted_after
-                                // updates would normally happen here,
-                                // but both writes are dead — we `break`
-                                // the inner loop immediately, and the
-                                // outer-loop halt check just below
-                                // reads the per-iteration outcome
-                                // (Err set on line above), so we don't
-                                // need to mark halted_after explicitly.
                                 let msg = format!(
                                     "did not reach Green within {secs}s (status={status}, health={health})"
                                 );
@@ -1728,24 +1778,32 @@ async fn run_action_rollout(args: &[String]) -> Result<()> {
                             }
                         }
                     }
-                    // Halt detection: if the wait-for-green loop
-                    // recorded a failure for this region, halt the
-                    // outer rollout before dispatching the next
-                    // region. Cheaper than a separate halt-flag
-                    // since outcomes already carries the truth.
-                    if matches!(outcomes.last(), Some((_, Err(_)))) {
-                        break;
-                    }
                 }
             }
             Err(e) => {
                 let msg = format!("deploy_version: {e}");
                 outcomes.push((region.clone(), Err(msg.clone())));
                 eprintln!("rollout[{region}]: {msg}");
-                break;
             }
         }
-        write_rollout_audit_line(&rollout_id, region, &env, &version, "dispatched", None);
+        // Emit the per-region completion line regardless of
+        // success/failure — failed regions need an audit
+        // entry too. Failures carry `outcome=err err="msg"`.
+        let last_err = outcomes.last().and_then(|(_, r)| r.as_ref().err()).cloned();
+        write_rollout_audit_line(
+            &rollout_id,
+            region,
+            &env,
+            &version,
+            "completed",
+            last_err.as_deref(),
+        );
+        // Halt detection: if the most-recent region failed,
+        // halt the outer rollout before dispatching the next
+        // region.
+        if matches!(outcomes.last(), Some((_, Err(_)))) {
+            break;
+        }
     }
 
     // Output.
@@ -1841,15 +1899,21 @@ fn write_rollout_audit_line(
     }
     let path = dir.join("audit.log");
     let when = chrono::Utc::now().to_rfc3339();
-    let line = match err {
-        None => format!(
-            "{when}\trollout_id={rollout_id}\tregion={region}\tstage={stage} action=Rollout target={env} version={version}\n"
-        ),
-        Some(e) => format!(
-            "{when}\trollout_id={rollout_id}\tregion={region}\tstage={stage} action=Rollout target={env} version={version} err=\"{}\"\n",
-            e.replace('"', "'")
-        ),
+    // `stage=completed` lines always carry `outcome=ok|err` (matches
+    // the convention `write_audit_outcome` introduced in 0.14). 0.14
+    // shipped this writer with the `outcome=` field omitted, so
+    // `ebman audit --action Rollout` showed only dispatches.
+    // Failure paths also go through `audit::escape_value` so a
+    // multi-line AWS error doesn't corrupt the next log entry.
+    let outcome_suffix = match (stage, err) {
+        ("completed", None) => " outcome=ok".to_string(),
+        ("completed", Some(e)) => format!(" outcome=err err=\"{}\"", ebman::audit::escape_value(e)),
+        (_, Some(e)) => format!(" err=\"{}\"", ebman::audit::escape_value(e)),
+        (_, None) => String::new(),
     };
+    let line = format!(
+        "{when}\trollout_id={rollout_id}\tregion={region}\tstage={stage} action=Rollout target={env} version={version}{outcome_suffix}\n"
+    );
     use std::io::Write;
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)

@@ -1140,10 +1140,6 @@ pub struct App {
     /// save. The `ebman lint` CLI uses its own `config::load_lint_disables`
     /// loader so the disables apply to both surfaces.
     pub lint_disable: Vec<String>,
-    /// Per-rule opt-out for `:lint --fix` / `ebman lint --fix`. Disabled
-    /// rules still surface in reports but their auto-remediation is
-    /// suppressed. Same project-extends-user merge as `lint_disable`.
-    pub lint_fix_disable: Vec<String>,
     /// `[explain]` block from `config.toml`. Round-tripped through
     /// the App so `:settings` save doesn't clobber them; not yet
     /// editable from the in-app settings form.
@@ -1943,7 +1939,6 @@ impl App {
             notify_webhook: config.notify_webhook.clone(),
             command_aliases: config.command_aliases.clone(),
             lint_disable: config.lint_disable.clone(),
-            lint_fix_disable: config.lint_fix_disable.clone(),
             explain_enabled: config.explain_enabled,
             explain_provider: config.explain_provider.clone(),
             explain_model: config.explain_model.clone(),
@@ -2185,7 +2180,6 @@ impl App {
             notify_webhook: config.notify_webhook.clone(),
             command_aliases: config.command_aliases.clone(),
             lint_disable: config.lint_disable.clone(),
-            lint_fix_disable: config.lint_fix_disable.clone(),
             explain_enabled: config.explain_enabled,
             explain_provider: config.explain_provider.clone(),
             explain_model: config.explain_model.clone(),
@@ -4562,10 +4556,12 @@ impl App {
             // AWS-side CloudTrail event is the canonical record; this
             // is ebman's own breadcrumb.)
             let outcome = match &result {
-                Ok(_) => format!("stage=completed action=GetSecretValue target={name} ok"),
+                Ok(_) => {
+                    format!("stage=completed action=GetSecretValue target={name} outcome=ok")
+                }
                 Err(e) => format!(
-                    "stage=completed action=GetSecretValue target={name} err=\"{}\"",
-                    e.replace('"', "'")
+                    "stage=completed action=GetSecretValue target={name} outcome=err err=\"{}\"",
+                    crate::audit::escape_value(e)
                 ),
             };
             write_audit_line(account.as_deref(), profile.as_deref(), &region, &outcome);
@@ -4788,12 +4784,12 @@ impl App {
                 Ok(rows) => {
                     let oks = rows.iter().filter(|r| r.status == "Success").count();
                     format!(
-                        "stage=completed action=SsmRunCommand target={audit_env} ok={oks}/{n} cmd=\"{audit_cmd_for_outcome}\""
+                        "stage=completed action=SsmRunCommand target={audit_env} outcome=ok ok_count={oks}/{n} cmd=\"{audit_cmd_for_outcome}\""
                     )
                 }
                 Err(e) => format!(
-                    "stage=completed action=SsmRunCommand target={audit_env} err=\"{}\" cmd=\"{audit_cmd_for_outcome}\"",
-                    e.replace('"', "'")
+                    "stage=completed action=SsmRunCommand target={audit_env} outcome=err err=\"{}\" cmd=\"{audit_cmd_for_outcome}\"",
+                    crate::audit::escape_value(e)
                 ),
             };
             write_audit_line(
@@ -7854,11 +7850,11 @@ impl App {
                 .map_err(|e| flatten_err("update_env_option_settings", e));
             let outcome = match &result {
                 Ok(()) => format!(
-                    "stage=completed action=UpdateOptionSettings target={env_for_msg} summary=\"{summary_for_msg}\" ok"
+                    "stage=completed action=UpdateOptionSettings target={env_for_msg} summary=\"{summary_for_msg}\" outcome=ok"
                 ),
                 Err(e) => format!(
-                    "stage=completed action=UpdateOptionSettings target={env_for_msg} summary=\"{summary_for_msg}\" err=\"{}\"",
-                    e.replace('"', "'")
+                    "stage=completed action=UpdateOptionSettings target={env_for_msg} summary=\"{summary_for_msg}\" outcome=err err=\"{}\"",
+                    crate::audit::escape_value(e)
                 ),
             };
             write_audit_line(account.as_deref(), profile.as_deref(), &region, &outcome);
@@ -8170,7 +8166,12 @@ impl App {
             notify_webhook: self.notify_webhook.clone(),
             command_aliases: self.command_aliases.clone(),
             lint_disable: self.lint_disable.clone(),
-            lint_fix_disable: self.lint_fix_disable.clone(),
+            // `lint.fix_disable` is a CLI-only knob (no TUI surface
+            // consumes it; `ebman lint --fix` reads via
+            // `config::load_lint_fix_disables` directly). We re-read
+            // from disk on snapshot so `:settings save` doesn't
+            // silently drop the existing line.
+            lint_fix_disable: crate::config::load_lint_fix_disables(),
             explain_enabled: self.explain_enabled,
             explain_provider: self.explain_provider.clone(),
             explain_model: self.explain_model.clone(),
@@ -9142,11 +9143,11 @@ impl App {
                 .map_err(|e| flatten_err("update_env_option_settings", e));
             let outcome = match &result {
                 Ok(()) => format!(
-                    "stage=completed action=UpdateOptionSettings target={env_for_msg} summary=\"{summary_for_msg}\" ok"
+                    "stage=completed action=UpdateOptionSettings target={env_for_msg} summary=\"{summary_for_msg}\" outcome=ok"
                 ),
                 Err(e) => format!(
-                    "stage=completed action=UpdateOptionSettings target={env_for_msg} summary=\"{summary_for_msg}\" err=\"{}\"",
-                    e.replace('"', "'")
+                    "stage=completed action=UpdateOptionSettings target={env_for_msg} summary=\"{summary_for_msg}\" outcome=err err=\"{}\"",
+                    crate::audit::escape_value(e)
                 ),
             };
             write_audit_line(account.as_deref(), profile.as_deref(), &region, &outcome);
@@ -9517,11 +9518,11 @@ impl App {
                 .map_err(|e| flatten_err("delete_application_version", e));
             let outcome = match &result {
                 Ok(()) => format!(
-                    "stage=completed action=DeleteAppVersion target={application}/{label}{force_str} ok"
+                    "stage=completed action=DeleteAppVersion target={application}/{label}{force_str} outcome=ok"
                 ),
                 Err(e) => format!(
-                    "stage=completed action=DeleteAppVersion target={application}/{label}{force_str} err=\"{}\"",
-                    e.replace('"', "'")
+                    "stage=completed action=DeleteAppVersion target={application}/{label}{force_str} outcome=err err=\"{}\"",
+                    crate::audit::escape_value(e)
                 ),
             };
             write_audit_line(account.as_deref(), profile.as_deref(), &region, &outcome);
@@ -9714,12 +9715,12 @@ impl App {
                 .await
                 .map_err(|e| flatten_err("update_tags", e));
             let outcome_detail = match &result {
-                Ok(()) => {
-                    format!("stage=completed action=UpdateTags target={env_name} {summary} ok")
-                }
+                Ok(()) => format!(
+                    "stage=completed action=UpdateTags target={env_name} {summary} outcome=ok"
+                ),
                 Err(e) => format!(
-                    "stage=completed action=UpdateTags target={env_name} {summary} err=\"{}\"",
-                    e.replace('"', "'"),
+                    "stage=completed action=UpdateTags target={env_name} {summary} outcome=err err=\"{}\"",
+                    crate::audit::escape_value(e),
                 ),
             };
             write_audit_line(
@@ -14147,12 +14148,12 @@ fn finish_deploy_from_local(
     result: Result<(), String>,
 ) {
     let outcome = match &result {
-        Ok(()) => {
-            format!("stage=completed action=DeployFromLocal target={env_name} label={label} ok")
-        }
+        Ok(()) => format!(
+            "stage=completed action=DeployFromLocal target={env_name} label={label} outcome=ok"
+        ),
         Err(e) => format!(
-            "stage=completed action=DeployFromLocal target={env_name} label={label} err=\"{}\"",
-            e.replace('"', "'")
+            "stage=completed action=DeployFromLocal target={env_name} label={label} outcome=err err=\"{}\"",
+            crate::audit::escape_value(e)
         ),
     };
     write_audit_line(account, profile, region, &outcome);
@@ -14955,10 +14956,12 @@ fn write_audit_outcome(
     // `err` field. Pre-0.14 entries used a bare `ok` trailing the
     // detail string; the parser tolerates those as outcome=None but
     // can't surface the success state cleanly. New writes use the
-    // explicit shape.
+    // explicit shape. Error strings go through `audit::escape_value`
+    // so a multi-line AWS error doesn't corrupt the next entry's
+    // line (parser reads line-by-line).
     let outcome = match result {
         Ok(()) => "outcome=ok".to_string(),
-        Err(e) => format!("outcome=err err=\"{}\"", e.replace('"', "'")),
+        Err(e) => format!("outcome=err err=\"{}\"", crate::audit::escape_value(e)),
     };
     let detail = format!("stage=completed action={action:?} target={env} {outcome}");
     write_audit_line(account, profile, region, &detail);

@@ -144,12 +144,24 @@ pub fn build_prompt(issue: &Issue) -> String {
 }
 
 /// Cache key for an issue's response. Stable across runs as long
-/// as the rule_id and the structured `fields` map are the same.
-/// We don't include title/detail/suggestion since those can churn
-/// across releases without the underlying advice changing.
+/// as the rule_id, `env_name`, and the structured `fields` map are
+/// the same. We don't include title/detail/suggestion since those
+/// can churn across releases without the underlying advice
+/// changing.
+///
+/// `env_name` is part of the key because [`build_prompt`] embeds it
+/// in the prompt — Anthropic may personalise the response ("for
+/// prod-api, set MinSize to 4 because…"). Two envs hitting the
+/// same rule with the same `fields` (e.g. EBL005 single-instance on
+/// `dev-a` and `dev-b`) would otherwise share a cache entry and
+/// the first env's personalised advice would leak to the second.
 pub fn cache_key(issue: &Issue) -> String {
     let mut hasher = sha2::Sha256::new();
     hasher.update(issue.rule_id.as_bytes());
+    hasher.update(b"\0");
+    if let Some(env) = &issue.env_name {
+        hasher.update(env.as_bytes());
+    }
     hasher.update(b"\0");
     // Sort-stable iteration via BTreeMap (already used in lint.rs).
     for (k, v) in &issue.fields {
@@ -200,11 +212,16 @@ pub fn write_cache(issue: &Issue, body: &str) {
 /// error on transport / parse / consent failure.
 pub async fn dispatch(settings: &Settings, prompt: &str) -> Result<String> {
     if !settings.enabled {
+        // Surface the right next-step depending on provider. For
+        // Anthropic the API-key env var matters; for Ollama there's
+        // no key and the operator needs a running local server.
+        let next_step = match settings.provider.as_str() {
+            "ollama" => format!("ensure Ollama is running at `{}`", settings.ollama_url),
+            _ => format!("ensure `{}` is exported", settings.api_key_env),
+        };
         return Err(eyre!(
-            "ebman explain: feature is disabled. Set `[explain] enabled = true` in {} and \
-             ensure `{}` is exported. See docs/configuration.md.",
+            "ebman explain: feature is disabled. Set `[explain] enabled = true` in {} and {next_step}. See docs/configuration.md.",
             crate::util::config_file("config.toml").display(),
-            settings.api_key_env,
         ));
     }
     match settings.provider.as_str() {
@@ -411,6 +428,30 @@ mod tests {
         let mut i2 = sample_issue();
         i2.fields.insert("max_size".into(), "8".into());
         assert_ne!(cache_key(&i1), cache_key(&i2));
+    }
+
+    #[test]
+    fn cache_key_differs_by_env_name() {
+        // Same rule, same fields, two envs — the env_name appears
+        // in the prompt (`build_prompt` line that emits `env: ...`),
+        // so the LLM may personalise the response. The cache key
+        // MUST distinguish so env-a's response doesn't leak to env-b.
+        let mut i_a = sample_issue();
+        i_a.env_name = Some("prod-a".into());
+        let mut i_b = sample_issue();
+        i_b.env_name = Some("prod-b".into());
+        assert_ne!(cache_key(&i_a), cache_key(&i_b));
+    }
+
+    #[test]
+    fn cache_key_handles_missing_env_name() {
+        let mut i_none = sample_issue();
+        i_none.env_name = None;
+        // Doesn't panic; produces a stable 16-hex key.
+        let k = cache_key(&i_none);
+        assert_eq!(k.len(), 16);
+        // Still differs from the sample-with-env-name case.
+        assert_ne!(cache_key(&i_none), cache_key(&sample_issue()));
     }
 
     #[test]
