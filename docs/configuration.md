@@ -90,5 +90,5 @@ application = "poly"    # filter envs to this app on launch
 filter  = "prod-"         # pre-fill the search filter
 
 [runbooks]
-runbooks.poly-prod = "https://wiki/runbooks/poly-prod"
+"poly-prod" = "https://wiki/runbooks/poly-prod"
 ```

@@ -1,110 +1,167 @@
 # Command reference
 
-Type `:` to open the command bar. Tab-completion is not implemented, but `Ctrl-K` fuzzy-searches every command + env + view + plugin.
+Type `:` to open the command bar. Tab-completion is not implemented, but `Ctrl-K` fuzzy-searches every command + env + view + plugin. Press `?` in-app for a context-aware help screen built from the same registry.
 
-## Navigation / inspection
+## View / filter / sort
 
-- `:region NAME` / `:region all` — switch region, or fan out across every configured region.
-- `:profile NAME` — switch AWS profile.
-- `:account NAME` — switch to a configured AssumeRole account (`accounts.NAME` in `config.toml`). Falls back to `:profile NAME` aliasing when no `accounts.` entry exists.
-- `:accounts` — list child accounts in the active AWS organization; rows matching a configured `accounts.NAME` get a `:account NAME` switch hint.
-- `:sort KEY [desc]` — set sort (name/app/status/health/version/age).
+- `:sort KEY [desc]` — set sort (name / app / status / health / version / age).
 - `:group on|off` — toggle group-by-application.
-- `:redact on|off` — toggle redact mode.
-- `:events on|off` — toggle events panel.
-- `:filter NAME` / `:f NAME` — load a saved filter.
-- `:save NAME` / `:drop NAME` / `:filters` — manage named filters.
-- `:save-view NAME` / `:view NAME` / `:views` / `:view-drop NAME` — saved views (filter + sort + grouping + scope).
-- `:cols list|hide NAME|show NAME|reset` — manage columns.
-- `:pin` — pin / unpin selected env.
-- `:alias NAME LABEL` / `:alias-drop NAME` — local env aliases.
-- `:loglevel LEVEL` — live-reload the tracing filter.
+- `:redact on|off` — toggle redact mode (account id, ARN, CNAMEs).
+- `:events on|off` — toggle the events panel.
+- `:event-time [utc|local|age]` — event timestamp display; no arg cycles (default UTC). Also bound to `T`.
+- `:cost on | off | status` — toggle the COST column ($/month per env via Cost Explorer; 24h cache).
+- `:cols list | hide NAME | show NAME | reset` — column management.
+- `:filter NAME` / `:f NAME` — recall a saved filter.
+- `:save NAME` — save the current filter as `NAME`.
+- `:drop NAME` — remove a saved filter.
+- `:filters` — list saved filters.
+- `:save-view NAME` — snapshot filter + sort + grouping + scope under `NAME`.
+- `:view NAME` — load a previously saved view.
+- `:views` — list saved views.
+- `:view-drop NAME` — remove a saved view.
+- `:pin` — pin / unpin selected env (also `*`).
+- `:alias NAME LABEL` — set or update a local env alias.
+- `:alias-drop NAME` / `:alias-rm NAME` — remove an alias.
+- `:refresh` — re-fetch the table immediately.
+
+> Saved filters and saved views share one store; `:filter`/`:save`/`:drop`/`:filters` operate on the filter-only encoded form, `:save-view`/`:view`/`:views`/`:view-drop` on the full encoded form (filter + sort + grouping + scope). `]` / `[` cycle through them on the env table.
 
 ## Per-env inspection
 
-- `:why` — Red-env diagnostic overlay (recent events / alarms / instance health / recent deploys; main + DLQ peek for Worker envs). Bound to `!` on the env table.
-- `:diff NAME` — side-by-side env comparison against the selected env. `:diff ENV-A ENV-B` names both explicitly (post-0.8) so no selected-env fallback is needed.
-- `:config-diff ENV` — option-setting deltas between the selected env and `ENV`. `:config-diff-local [NAME]` diffs against a local EB CLI saved config under `.elasticbeanstalk/saved_configs/`.
-- `:lineage` — deploy-only timeline for the selected env (one row per version label, newest first, with Δ between deploys and `took` span).
-- `:alarm-history NAME` — recent CloudWatch alarm transitions (StateUpdate / ConfigurationUpdate / Action entries, newest first).
-- `:ssh [i-abc]` — open an embedded SSM Session Manager session into an env instance. No arg opens a picker over cached Detail/Instances.
-- `:ssm-run "<cmd>"` — fan a shell command across the env's instances via SSM Run Command; per-instance status / exit / stdout / stderr in one overlay.
+- `:why` / `:diagnose` — diagnostic overlay (events + alarms + instances + recent deploys; DLQ peek for Worker envs). Bound to `!`.
+- `:diff NAME` — side-by-side env comparison vs selected env. `:diff ENV-A ENV-B` names both explicitly.
+- `:config-diff ENV` — option-setting deltas between the selected env and `ENV`.
+- `:config-diff-local [NAME]` — diff the deployed env against a local EB CLI saved config under `.elasticbeanstalk/saved_configs/`. No arg auto-picks the lone file.
+- `:lineage` — deploy-only timeline (one row per version label, newest first, with Δ between deploys).
+- `:changes` — deploy + config-change timeline from the env's event history.
+- `:alarm-history NAME` — recent CloudWatch alarm transitions (StateUpdate / ConfigurationUpdate / Action, newest first).
+- `:ssh [i-abc]` — open an embedded SSM session into an env instance. No arg opens a picker over cached Detail/Instances. Needs `aws` CLI + session-manager-plugin on `PATH`.
+- `:ssm-run "<cmd>"` — fan a shell command across the env's instances via SSM Run Command (AWS-RunShellScript). 60s wall-clock cap. Gated by read-only / per-env safety pin.
 - `:resources` / `:res` — `DescribeEnvironmentResources` dump.
-- `:alarms` — CloudWatch alarms referencing the env.
-- `:versions` — application versions (deployed marker, total count, deploy hint).
-- `:saved-configs` / `:configs` — saved configuration templates (interactive: `a` apply, `i` inspect, `x` delete, `c` create).
+- `:alarms` — CloudWatch alarms attached to the env.
+- `:versions` — application versions (deployed marker, deploy hint).
+- `:options [NAMESPACE]` — full settable-option vocabulary for the env's platform (current value + default + type + constraints). Slow.
+- `:saved-configs` / `:configs` — saved configuration templates per application (interactive: `a` apply, `i` inspect, `x` delete, `c` create).
 - `:custom-platforms` / `:platforms` — custom EB platforms.
-- `:plugins` — list user plugin commands.
-- `:history` — recent status / error log.
-- `:pending` / `:in-flight` — overlay of dispatched actions + outcomes.
-- `:whatsnew` — embedded changelog.
-- `:about` / `:credits` — version, license, attributions.
-- `:update` — show (and yank to clipboard) the upgrade command for whichever install channel (Homebrew / cargo-bin / tarball) ebman was installed from.
-- `:settings` — interactive form to edit `~/.config/ebman/config.toml`; writes back on submit and live-applies theme / icons / refresh interval.
+- `:listeners` — ALB listener config (per-port proto / cert / SSL policy / default rule). Web-tier only.
+- `:rds` — RDS instance config attached to the env (engine / class / credentials; password redacted).
+- `:secrets [FILTER]` — browse Secrets Manager (region-scoped). Metadata only.
+- `:secret NAME` — fetch one secret's value (CloudTrail-audited). Respects `:redact`.
+- `:apps-info` — application metadata overlay (description / dates / templates / envs).
+- `:logs-insights [--window 30m|1h|6h|24h|7d] QUERY` — run a CW Logs Insights query against the env's log groups.
+- `:history` — recent info / error messages.
+- `:pending` / `:in-flight` — in-flight + recently-completed actions across all envs.
+- `:rollbacks-armed` / `:rb-armed` — currently-armed `--auto-rollback` watchdogs (env, rollback target, time-to-deadline).
+
+## Diagnostics
+
+- `:lint [ENV]` — run the diagnostic rule engine against the selected env (or named env). Surfaces AllAtOnce-on-multi-instance, missing health-check URL, env Red >4h, batch-size > max-size, single-instance prod, low cooldown. Operator-tunable via `lint.disable` in `config.toml`. Also available as `ebman lint` for CI.
+- `:drift [ENV|refresh]` — terraform drift report. No arg → selected env. `refresh` re-reads tfstate (run after `terraform apply` mid-session). Discovery walks up from cwd for `.terraform/terraform.tfstate` (preferred) or local `terraform.tfstate`. Also available as `ebman drift` for CI.
+- `:explain` / `:explain ARN ACTION` — diagnose the last IAM AccessDenied via `iam:SimulatePrincipalPolicy`. Explicit-pairs form evaluates a given principal/action.
 
 ## Write — env state
 
-- `:rebuild` / `:restart` / `:terminate` — action menu shortcuts (Terminate requires typed-name confirm).
-- `:deploy LABEL` — ship an existing application version to the selected env. Every dispatch captures a pre-deploy snapshot (version label + timestamp) into `state.toml` so `:rollback` has a reliable target.
-- `:deploy LABEL --preview` — open a side-by-side overlay of the currently-deployed version vs the candidate (label, description, S3 source, timestamp + rollback / traffic warnings) without dispatching.
-- `:deploy LABEL --auto-rollback Nm` — arms a watchdog after dispatch. If the env reaches Green before the deadline (`5m` / `30m` / `1h` grammar), the watchdog disarms with a status toast. If not, ebman automatically redeploys the captured snapshot's previous version, with an audit-log entry. Respects per-env / per-account read-only safety pins.
+- `:rebuild` — terminate + recreate every instance (Y/N confirm).
+- `:restart` — restart the app server on every instance (Y/N confirm).
+- `:terminate` — TERMINATE env. Typed-name confirm; irreversible.
+- `:deploy LABEL [--preview] [--auto-rollback Nm] [--wait-for-green Nm]` — ship an existing application version. Each dispatch captures a pre-deploy snapshot in `state.toml` for `:rollback`. `--preview` opens a side-by-side overlay without dispatching. `--auto-rollback Nm` arms a watchdog that redeploys the snapshot if the env doesn't reach Green in N minutes. `--wait-for-green` pins a success/timeout status when the deploy resolves.
 - `:deploy --from PATH [--label L] [--describe D] [--no-deploy]` — upload a local `.zip` (or `--from s3://bucket/key`), register a new version, optionally deploy.
+- `:rollback [--to LABEL] [--auto-rollback Nm]` — redeploy the previous version. No arg uses the captured pre-deploy snapshot (falls back to event-history scan). `--to LABEL` targets a specific version. `--auto-rollback` arms a roll-forward watchdog.
+- `:undo` — reverse the most-recent option-settings write. 10-entry ring buffer; `:undo` of `:undo` redoes the original.
+- `:promote-env SOURCE TARGET [--auto-rollback Nm] [--wait-for-green Nm]` — ship `SOURCE`'s currently-deployed version label to `TARGET` in one dispatch. Refuses if `SOURCE` has no version, or if `SOURCE`'s version is already on `TARGET`.
+- `:rollout LABEL --regions r1,r2,r3 [--env NAME] [--wait-for-green Nm]` — sequential cross-region deploy. Pre-flights every region (env existence, current version), shows a plan overlay, dispatches on `y`. Stops on first failure. Single `rollout_id` correlation across audit lines. Also available as `ebman action rollout`.
+- `:abort-rollback [ENV]` — disarm an armed `--auto-rollback` watchdog. No arg drains all in the current context.
+- `:freeze-deploys [REASON…]` — session-scoped fleet-wide write-lock. Every destructive op refuses while frozen. Useful during incident triage. Re-issue to update the reason in place.
+- `:thaw-deploys` — clear the session-scoped freeze.
 - `:upgrade [ARN]` — list compatible platforms; with ARN, dispatch the migration.
-- `:clone NEWNAME` — clone the selected env.
-- `:scale N` / `:stop` / `:start` — set ASG min=max=N / 0 / 1.
+- `:clone NEW-NAME` — clone selected env.
+- `:scale N` — set ASG min=max=N. Use `:stop` for 0, `:start` for 1.
+- `:stop` — ASG min=max=0 (Y/N confirm).
+- `:start` — ASG min=max=1 (Y/N confirm).
 - `:capacity` — modal form to edit Min / Max / Instance type / Cooldown in one shot (pre-filled from `DescribeConfigurationSettings`).
-- `:swap TARGET` — swap CNAMEs (Y/N confirm).
-- `:abort` — abort an in-flight env update.
+- `:scaling-triggers` — modal form for the metric-based autoscaling trigger (metric / statistic / period / breach duration / thresholds / scale increments).
+- `:swap TARGET` — swap CNAMEs (Y/N confirm; same pre-flight as `a` → Swap).
+- `:abort` — cancel an in-flight env update.
+- `:listener-edit PORT` — modal cert picker for an ALB listener: pick from the region's ACM certificates (loaded live). PORT = `443` / numeric / `default`.
+- `:rds-attach` — modal form to couple an RDS instance to the env (engine / class / storage / credentials / deletion policy / Multi-AZ). Pre-fills if one is already attached.
+- `:rds-detach ENV` — safe-ify the coupled RDS: sets `DBDeletionPolicy=Snapshot` so the DB survives env termination. Repeat the env name to confirm. Does not decouple (EB has no detach op).
 
 ## Write — env config
 
-- `:env list | set KEY VAL | unset KEY` — application env-var editor.
-- `:tag KEY VALUE` / `:untag KEY` — env tag editor.
-- `:set-option NAMESPACE OPTION VALUE` / `:unset-option NAMESPACE OPTION` — generic option-settings escape hatch.
-- `:instance-type TYPE` — EC2 instance type (e.g. `t3.medium`).
-- `:keypair NAME` / `:service-role ARN` / `:instance-profile NAME` — security tab.
-- `:public-ip on|off` / `:elb-scheme public|internal` — network tab.
-- `:subnets` / `:elb-subnets` / `:security-groups` — MultiSelect picker forms pre-filled with the env's current selection (lists available subnets / SGs from the VPC).
+- `:env list | set KEY VAL | unset KEY` — application env-var editor (triggers app-server restart).
+- `:env-edit` — bulk env-var editor: opens current env vars in `$EDITOR` (KEY=VALUE), diffs + dispatches on save.
+- `:tag KEY VALUE` — env tag editor.
+- `:untag KEY` — remove env tag.
+- `:set-option NS OPT VALUE` — generic option-settings escape hatch.
+- `:unset-option NS OPT` — clear an option setting.
+- `:instance-type TYPE` — EC2 instance type (e.g. `t3.medium`; rolling launch-config replacement).
+- `:keypair NAME` — set EC2 key pair on the env's ASG.
+- `:service-role ARN` — set EB service role ARN/name.
+- `:instance-profile NAME` — set EC2 instance-profile on the env's ASG.
+- `:public-ip on|off` — toggle EC2 public IP association.
+- `:elb-scheme public|internal` — set ELB scheme (rolling).
+- `:subnets` — modal MultiSelect picker for `aws:ec2:vpc.Subnets`.
+- `:elb-subnets` — modal MultiSelect picker for `aws:ec2:vpc.ELBSubnets` (web-tier).
+- `:security-groups` — modal MultiSelect picker for instance SGs (launch-config).
 - `:deployment-policy AllAtOnce|Rolling|RollingWithAdditionalBatch|Immutable|TrafficSplitting` — deploy policy.
 - `:rolling-update on|off` — ASG rolling-update policy.
 - `:health-check-url /path` — HTTP health-check path.
-- `:logs-stream on|off [--retention DAYS]` — toggle CW Logs streaming.
-- `:logs-tail [LOG_GROUP]` — open a live streaming overlay for a CW Logs group (auto-picks `web.stdout.log`).
-- `:notify EMAIL_OR_SNS_ARN | off` — notification endpoint.
-- `:managed-window DAY HOUR | off` — managed-platform-updates window.
+- `:logs-stream on|off [--retention DAYS]` — toggle CW Logs streaming (default 7d).
+- `:logs-tail [LOG_GROUP]` — open a live streaming overlay for a CW Logs group (picker if multiple groups; auto-picks `web.stdout.log`).
+- `:notify EMAIL_OR_SNS_ARN | off` — set notification endpoint.
+- `:managed-window DAY HOUR | off` — managed-platform-updates window (Mon..Sun, 0..23).
 
 ## Write — application versions / configs / alarms / platforms
 
-- `:delete-version LABEL [--force]` — delete an application version (with optional source-bundle removal).
-- `:config-save NAME` / `:config-apply NAME` / `:config-delete APP NAME` / `:config-inspect NAME` — saved-configuration templates.
-- `:alarm-create NAME KIND THRESHOLD [OP]` — CloudWatch alarm (KIND: `health`, `4xx`, `5xx`, `latency`).
+- `:delete-version LABEL [--force]` — delete an application version (`--force` also nukes the S3 bundle).
+- `:config-save NAME` — save current env as a config template.
+- `:config-apply NAME` — apply a saved template to selected env (Y/N confirm).
+- `:config-delete APP NAME` — delete a saved config template.
+- `:config-inspect TEMPLATE` — inspect a saved config template.
+- `:alarm-create NAME KIND THRESHOLD [OP]` — CloudWatch alarm (KIND: `health` / `4xx` / `5xx` / `latency`).
 - `:alarm-delete NAME` — remove a CW alarm.
-- `:custom-platform-delete ARN` — delete a custom EB platform.
-- `:metric add LABEL NAMESPACE NAME [STAT] [DIM=VAL,...]` / `:metric remove LABEL` / `:metric list` — custom Metrics-tab charts.
+- `:custom-platform-delete ARN` — delete a custom EB platform (fails if any env uses it).
+- `:metric add LABEL NS NAME [STAT]` / `:metric remove LABEL` / `:metric list` — custom Metrics-tab charts.
 
 ## Multi-account / multi-region
 
-- `:region all` — fan across `extra_regions` + current.
-- `:account NAME` — switch to a configured AssumeRole account (see [configuration](configuration.md)).
-- `:accounts` — list AWS-Organizations child accounts; switch hints rendered for those with a configured `accounts.NAME`.
+- `:region NAME` / `:region all` / `:r NAME` — switch region, or fan out across configured regions.
+- `:profile NAME` / `:p NAME` — switch AWS profile.
+- `:account NAME` — switch to an AssumeRole account (`accounts.NAME` in `config.toml`). Falls back to `:profile` aliasing when no `accounts.` entry exists.
+- `:accounts` — list AWS-Organizations child accounts; rows matching a configured `accounts.NAME` get a `:account NAME` switch hint.
 - `:find-env SUBSTRING` — scan every profile in `~/.aws/{config,credentials}` **and** every configured AssumeRole account in REGION.
+- `:envs-by-version LABEL` — fleet-wide blast-radius for a bad build (which envs are running `LABEL`).
 - `:org-health` — aggregate env / red counts per profile + per configured AssumeRole account.
 
-## Multi-env
+## Multi-env (bulk ops)
 
 - `space` — toggle multi-select.
-- `:batch-rebuild` / `:batch-restart` — dispatch a non-destructive action across the selection.
+- `:batch-rebuild` — fan rebuild across selection.
+- `:batch-restart` — fan restart across selection.
 - `:batch-deploy LABEL` — deploy the same version to every selected env in parallel.
-- `:batch-tag KEY VALUE` / `:batch-untag KEY` — fan a tag write across the selection.
-- `:batch-set-option NAMESPACE OPTION VALUE` — fan an option-settings write across the selection.
-- `:deselect` / `:select-clear` — clear selection.
+- `:batch-tag KEY VALUE` — fan a tag write across the selection.
+- `:batch-untag KEY` — fan a tag remove across the selection.
+- `:batch-set-option NS OPT VALUE` — fan an option-settings write across the selection.
+- `:deselect` / `:select-clear` — clear selection (Esc also works in Normal mode).
 
 ## Output / yank
 
 - `:export` — yank filtered view as TSV.
-- `:json` — yank filtered view as JSON array.
+- `:json` — yank filtered view as JSON.
 - `:report` / `:markdown` — yank filtered view as a Markdown table.
 
 ## Read-only mode
 
-- `:readonly on|off` — toggle. `--read-only` on the CLI also locks every write surface.
+- `:readonly on|off` — toggle destructive-action lockout. `--read-only` on the CLI does the same at startup. Per-env / per-account safety pins in `config.toml` add granular locks on top.
+
+## Setup / discovery
+
+- `:settings` — interactive form to edit `~/.config/ebman/config.toml`. Writes back on submit and live-applies theme / icons / refresh interval.
+- `:update` — show (and yank to clipboard) the upgrade command for the detected install channel (Homebrew / cargo-bin / tarball).
+- `:whatsnew` — embedded changelog.
+- `:about` / `:credits` — version, license, attributions.
+- `:report-bug` — scrubbed bug-report overlay. `y` copies the payload, `b` opens a GitHub issue with the body pre-filled. No outbound HTTP from ebman. See [safety-and-privacy](safety-and-privacy.md) for the redactor scope.
+- `:plugins` — list user plugin commands defined in `commands.toml`.
+- `:loglevel LEVEL` — live-reload the tracing filter (trace / debug / info / warn / error).
+- `:help` / `:?` — toggle the global help screen (also `?`).
+- `:quit` / `:q` — exit ebman (also `q`, `Ctrl-C`).
