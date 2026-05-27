@@ -6,6 +6,74 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-05-28 — Smart features depth + rollout deepening + cleanup continuation
+
+Mixed-shape release. Three tiers landed:
+
+**SUPPORT** — continuation cleanup from 0.15: the
+architecture review's "For 0.16" list shipped (audit
+writer migration to typed APIs, splash relocation, JSON-
+escape unification, decide_poll shared between CLI + TUI).
+
+**HEADLINE** — smart features grow: `ebman lint --watch`
+closes the CLI-charter monitoring-loop feature; four new
+lint rules (EBL007 ELB without HTTPS, EBL008 stale
+platform, EBL009 missing ASG health-check grace period,
+EBL010 missing required tags) extend the diagnostic
+surface from 6 to 10 rules.
+
+**HEADLINE** — rollout deepening: `:rollout --parallel
+[--max-concurrency N]`, `--continue-on-fail`, and
+`--staggered Nm` give operators the three operational
+shapes deferred from 0.13 / 0.14. All compose with
+`--wait-for-green`.
+
+Two-agent code review per the CLAUDE.md release procedure
+caught zero Critical, two Importants, and several Minors —
+all addressed in `f9109dc` before tag (parallel output
+ordering was non-deterministic; EBL008 silently no-ops in
+production and now has explicit ship-note + pinning test).
+
+### Added — smart features
+
+- **`ebman lint --watch [--interval 60s]`** — locked-charter monitoring loop. Polls the lint engine at `--interval` (default 60s, accepts seconds `30` or duration `5m / 1h`) until Ctrl-C. Each cycle emits a `--- {rfc3339} ---` header line + the full issue list. `--json` emits one `{issues:[...]}` blob per cycle for ingestion pipelines. Exit code reflects the LAST cycle's state (0 clean / 3 issues). Canonical monitoring shape: `ebman lint --watch --interval 5m --severity warn --json > alerts.jsonl`. Mutex with `--fix`. (`4cbd590`)
+- **Four new lint rules (EBL007-010).** EBL007 ELB without HTTPS listener — fires on HTTP-only fleets; mixed HTTP+HTTPS (redirect-only) doesn't false-positive. EBL008 stale platform version — compares against `LintContext.latest_stack_version`; production wiring tracked for 0.17, pinned by `ebl008_currently_stub_does_not_fire_in_cli`. EBL009 ASG missing HealthCheckGracePeriod — fires on LoadBalanced envs with grace < 60s; auto-fix sets it to 300s. EBL010 missing required tags — registered stub (the `required_tags` wiring into LintContext is the 0.17 follow-up). 11 new unit tests. (`aae66f7`)
+
+### Added — rollout deepening
+
+- **`:rollout --parallel [--max-concurrency N]`** — concurrent fan-out via `tokio::JoinSet`. Default unlimited concurrency; `--max-concurrency N` caps the inflight wave. Implicit `--continue-on-fail` since in-flight regions can't be cancelled server-side. Same `rollout_id` correlation across audit lines. (`bd4d06b`)
+- **`:rollout --continue-on-fail`** — sequential mode variant: attempt every region (no halt on first failure). Composes with `--parallel` (where it's implicit). (`bd4d06b`)
+- **`:rollout --staggered Nm`** — wait Nm between regions in sequential mode (canary pattern). Requires `--wait-for-green` (staggering is timed from each region's Green observation). Mutex with `--parallel`. (`bd4d06b`)
+
+### Internal — refactors (continuation from 0.15)
+
+- **Audit writers: 6 outcome-pair sites migrated to typed `append_action_*`.** GetSecretValue, SsmRunCommand, UpdateOptionSettings (x2), DeleteAppVersion, UpdateTags, DeployFromLocal. `append_action_dispatched` / `append_action_completed` extended with `extras: &[(&str, &str)]` slice so callers can attach per-action context (summary, cmd, label) without falling back to hand-rolled detail strings. Wire-format identical except UpdateTags (was emitting unstructured "tag k1,k2" inline; now `summary="tag k1,k2"`). ~24 dispatched-only sites stay on `append_raw` for future migration. (`96ea83c`)
+- **JSON-escape helpers unified.** 6 variants across `audit.rs` / `cli/mod.rs` / `lint.rs` / `app.rs` / `llm.rs` collapsed to `util::json_escape` (no quotes) + `util::json_string` (wrapped quotes). Modules import via `use crate::util::...`; legacy names like `cli_esc` / `json_str` re-exported locally to keep call sites unchanged. YAML-round-trip test validates spec compliance. (`75513d3`)
+- **`draw_splash` + `hsl_to_rgb` moved out of `main.rs`** into `src/splash.rs` alongside the existing scene helpers. `main.rs`: 698 → 494 lines (-29%). (`495a22a`)
+- **`decide_poll` + `PollDecision` shared via `src/deploy_poll.rs`.** Pre-0.16 lived in `cli/mod.rs` (CLI-only); TUI's `App::spawn_rollout_dispatch` re-implemented the wait-for-green case inline with a deadline-only loop. Promoted to a sibling lib module; both paths now share one state machine. Future `--auto-rollback` per region wiring is a 4-line change instead of a re-implementation. (`5896abf`)
+
+### Internal — review fixes (`f9109dc`)
+
+- **Important**: `:rollout --parallel` output ordering — outcomes now sorted by input regions order before emission (CI consumers get deterministic JSON ordering regardless of dispatch mode).
+- **Important**: EBL008 ship-note acknowledgment + pinning test — flags the rule as a stub in production until `App.latest_stacks` is plumbed into LintContext.
+- **Minor**: EBL007 doc comment fixed (previously contradicted its own code).
+- **Minor**: `dispatch_one_region`'s dead `wait_timeout_emitted` binding removed; literal `false` passed inline.
+- **Minor**: `splash::hsl_to_rgb` visibility tightened from `pub` to `pub(crate)` (no external callers).
+
+### Deferred to 0.17
+
+- Plumb `App.latest_stacks` → `LintContext.latest_stack_version` so EBL008 fires in production.
+- Plumb `Config.required_tags` → `LintContext` so EBL010 fires.
+- Migrate the ~24 remaining dispatched-only `append_raw` sites (continues the 0.15/0.16 consolidation; some still emit bare-trailing-`ok` which lossy-parses to a corrupted `target` field on historical `ebman audit --env NAME` filters).
+- Extract `util::parse_duration_secs` to dedupe the `--interval` / `--wait-for-green` / `--staggered` / `--auto-rollback` parsing logic.
+- `append_extras` quoting heuristic add `c.is_control()`.
+- `spawn_*` clusters → `src/app/spawn_*.rs` grouping (BONUS deferred from 0.15).
+
+### Internal — testing
+
+- 701 lib + 17 tui-common + 3 bin tests green (up from 689 / 17 / 3 in 0.15.0).
+- fmt + clippy clean. No new deps; no behavioural change to existing operator surface.
+
 ## [0.15.0] — 2026-05-27 — Foundation pass: audit consolidation, App.explain_settings, CLI split
 
 Pure structural cleanup driven by the 0.14.0 architecture
@@ -838,7 +906,8 @@ Initial public release. Headline surface:
 - Published to crates.io as `ebman`.
 - Homebrew tap at `tombaldwin/homebrew-tap`.
 
-[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/tombaldwin/ebman/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/tombaldwin/ebman/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/tombaldwin/ebman/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/tombaldwin/ebman/compare/v0.13.0...v0.14.0
