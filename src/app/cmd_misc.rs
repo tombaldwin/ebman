@@ -11,8 +11,7 @@
 use std::time::Instant;
 
 use super::{
-    flatten_err, humanize_short_age, parse_metric_extra_args, write_audit_line, App, AppMsg,
-    DetailTab, Overlay,
+    flatten_err, humanize_short_age, parse_metric_extra_args, App, AppMsg, DetailTab, Overlay,
 };
 
 /// Pure: render the `:lint` overlay body. Empty issue list yields
@@ -171,7 +170,7 @@ impl App {
         match rest.first().copied() {
             Some(env_name) => {
                 if self.armed_watchdogs.remove(env_name).is_some() {
-                    write_audit_line(
+                    crate::audit::append_raw(
                         self.context.account_id.as_deref(),
                         self.context.profile.as_deref(),
                         &self.context.region,
@@ -192,7 +191,7 @@ impl App {
                 let names: Vec<String> = self.armed_watchdogs.keys().cloned().collect();
                 let n = names.len();
                 for env_name in &names {
-                    write_audit_line(
+                    crate::audit::append_raw(
                         self.context.account_id.as_deref(),
                         self.context.profile.as_deref(),
                         &self.context.region,
@@ -254,7 +253,7 @@ impl App {
         } else {
             reason_for_store.clone()
         };
-        write_audit_line(
+        crate::audit::append_raw(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
@@ -273,7 +272,7 @@ impl App {
     /// way so the audit stream captures the lifecycle.
     pub(crate) fn cmd_thaw_deploys(&mut self) {
         let was_frozen = self.deploy_freeze.take().is_some();
-        write_audit_line(
+        crate::audit::append_raw(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
@@ -595,7 +594,7 @@ impl App {
                     return;
                 }
                 let arn = arn.to_string();
-                write_audit_line(
+                crate::audit::append_raw(
                     self.context.account_id.as_deref(),
                     self.context.profile.as_deref(),
                     &self.context.region,
@@ -624,7 +623,12 @@ impl App {
                             e.replace('"', "'")
                         ),
                     };
-                    write_audit_line(account.as_deref(), profile.as_deref(), &region, &outcome);
+                    crate::audit::append_raw(
+                        account.as_deref(),
+                        profile.as_deref(),
+                        &region,
+                        &outcome,
+                    );
                     // Reuse OptionSettingsUpdate's plumbing so the pending
                     // row is closed and a toast fires — the variant's
                     // shape (env_name + summary) maps cleanly to

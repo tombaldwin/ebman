@@ -21,6 +21,13 @@ async fn main() -> Result<()> {
     // Subcommand support: `ebman envs [--json]`, `ebman action ACTION --env NAME --yes`,
     // `ebman ctl <op> …`. Falls through to the TUI when no subcommand is present.
     if let Some(first) = args.first() {
+        // Initialise the audit-line webhook fan-out before any
+        // subcommand writes an audit line. CLI subcommands don't
+        // construct an `App`, so `App::new`'s `set_notify_webhook`
+        // call never runs — without this, `ebman lint --fix` /
+        // `ebman action rollout` audit lines wouldn't reach a
+        // configured Slack/PagerDuty webhook the way TUI lines do.
+        ebman::audit::init_from_config_disk();
         match first.as_str() {
             "envs" => return run_envs_cli(&args).await,
             "action" => return run_action_cli(&args).await,
@@ -850,7 +857,7 @@ async fn run_lint_cli(args: &[String]) -> Result<()> {
                                     ..
                                 } = action
                                 {
-                                    write_lint_fix_audit_line(
+                                    ebman::audit::append_lint_fix(
                                         &region_label,
                                         &env.name,
                                         rule_id,
@@ -884,7 +891,7 @@ async fn run_lint_cli(args: &[String]) -> Result<()> {
                                     ..
                                 } = action
                                 {
-                                    write_lint_fix_audit_line(
+                                    ebman::audit::append_lint_fix(
                                         &region_label,
                                         &env.name,
                                         rule_id,
@@ -969,50 +976,6 @@ async fn run_lint_cli(args: &[String]) -> Result<()> {
 /// lifetime.
 static FIX_DISPATCH_FAILED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
-
-/// Write one audit-log line tagged with the `stage=fix` shape +
-/// `rule_id` correlation. Same `audit.log` path the App's
-/// `write_audit_line` uses; duplicated here as a free fn because CLI
-/// subcommands don't carry App state. Operators consuming the audit
-/// log via `ebman audit --rule EBL001` get clean per-rule history.
-fn write_lint_fix_audit_line(
-    region: &str,
-    env: &str,
-    rule_id: &str,
-    namespace: &str,
-    name: &str,
-    value: &str,
-    err: Option<&str>,
-) {
-    let dir = ebman::util::cache_dir();
-    if std::fs::create_dir_all(&dir).is_err() {
-        return;
-    }
-    let path = dir.join("audit.log");
-    let when = chrono::Utc::now().to_rfc3339();
-    // `escape_value` handles `"` → `'` plus `\n`/`\r`/`\t` → ` ` so
-    // a multi-line AWS error doesn't split one audit entry across
-    // two lines on disk (the parser reads line-by-line; an embedded
-    // newline would corrupt the next entry's RFC3339 prefix).
-    let q_value = ebman::audit::escape_value(value);
-    let line = match err {
-        None => format!(
-            "{when}\tregion={region}\tstage=fix action=SetOption target={env} rule_id={rule_id} namespace={namespace} name={name} value=\"{q_value}\" outcome=ok\n"
-        ),
-        Some(e) => format!(
-            "{when}\tregion={region}\tstage=fix action=SetOption target={env} rule_id={rule_id} namespace={namespace} name={name} value=\"{q_value}\" outcome=err err=\"{}\"\n",
-            ebman::audit::escape_value(e)
-        ),
-    };
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
-        let _ = f.write_all(line.as_bytes());
-    }
-}
 
 /// `ebman audit [--tail] [--since DUR] [--env NAME] [--rule ID]
 /// [--action NAME] [--json]` — operationalises the local audit log
@@ -1103,7 +1066,7 @@ async fn run_audit_cli(args: &[String]) -> Result<()> {
     // Phase 2: --tail. Poll for new bytes every second. We use a
     // simple offset-based read rather than inotify / FSEvents — keeps
     // the surface small and works the same on macOS/Linux. Rotation
-    // (write_audit_line caps the file at 1 MiB and moves it to
+    // (audit::append_* caps the file at 1 MiB and moves it to
     // audit.log.1) is detected by the file shrinking; we reset to 0
     // when that happens so the new rotated file's entries are
     // streamed.
@@ -1703,7 +1666,7 @@ async fn run_action_rollout(args: &[String]) -> Result<()> {
         if !quiet {
             eprintln!("rollout: dispatching to {region} (env={env}, version={version})");
         }
-        write_rollout_audit_line(&rollout_id, region, &env, &version, "dispatched", None);
+        ebman::audit::append_rollout(&rollout_id, region, &env, &version, "dispatched", None);
         match client.deploy_version(&env, &version).await {
             Ok(()) => {
                 outcomes.push((region.clone(), Ok(())));
@@ -1790,7 +1753,7 @@ async fn run_action_rollout(args: &[String]) -> Result<()> {
         // success/failure — failed regions need an audit
         // entry too. Failures carry `outcome=err err="msg"`.
         let last_err = outcomes.last().and_then(|(_, r)| r.as_ref().err()).cloned();
-        write_rollout_audit_line(
+        ebman::audit::append_rollout(
             &rollout_id,
             region,
             &env,
@@ -1879,49 +1842,6 @@ async fn run_action_rollout(args: &[String]) -> Result<()> {
         std::process::exit(3);
     }
     Ok(())
-}
-
-/// Write one audit-log line tagged with a rollout correlation
-/// id. Same `audit.log` path the App's `write_audit_line` uses;
-/// duplicated here as a free fn because CLI subcommands don't
-/// carry App state.
-fn write_rollout_audit_line(
-    rollout_id: &str,
-    region: &str,
-    env: &str,
-    version: &str,
-    stage: &str,
-    err: Option<&str>,
-) {
-    let dir = ebman::util::cache_dir();
-    if std::fs::create_dir_all(&dir).is_err() {
-        return;
-    }
-    let path = dir.join("audit.log");
-    let when = chrono::Utc::now().to_rfc3339();
-    // `stage=completed` lines always carry `outcome=ok|err` (matches
-    // the convention `write_audit_outcome` introduced in 0.14). 0.14
-    // shipped this writer with the `outcome=` field omitted, so
-    // `ebman audit --action Rollout` showed only dispatches.
-    // Failure paths also go through `audit::escape_value` so a
-    // multi-line AWS error doesn't corrupt the next log entry.
-    let outcome_suffix = match (stage, err) {
-        ("completed", None) => " outcome=ok".to_string(),
-        ("completed", Some(e)) => format!(" outcome=err err=\"{}\"", ebman::audit::escape_value(e)),
-        (_, Some(e)) => format!(" err=\"{}\"", ebman::audit::escape_value(e)),
-        (_, None) => String::new(),
-    };
-    let line = format!(
-        "{when}\trollout_id={rollout_id}\tregion={region}\tstage={stage} action=Rollout target={env} version={version}{outcome_suffix}\n"
-    );
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
-        let _ = f.write_all(line.as_bytes());
-    }
 }
 
 /// `ebman action deploy --env X --version Y [--wait-for-green Nm]

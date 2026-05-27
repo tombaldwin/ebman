@@ -1,20 +1,40 @@
-//! Audit log parser + renderer + filter helpers.
+//! Audit log: writers, parser, renderer, filter.
 //!
-//! Two writers produce lines in `~/.cache/ebman/audit.log`:
+//! Writers and parser are co-located so the line format has a single
+//! source of truth. Three public writer APIs cover every place ebman
+//! emits an audit line:
 //!
-//! - `app::write_audit_line` — normal action lines:
+//! - [`append_action_dispatched`] / [`append_action_completed`] —
+//!   normal TUI action lines (rebuild / restart / deploy / etc.).
+//! - [`append_rollout`] — cross-region rollout lines tagged with a
+//!   per-run `rollout_id` for post-mortem correlation.
+//! - [`append_lint_fix`] — `ebman lint --fix` dispatches, tagged
+//!   with the originating `rule_id`.
+//!
+//! All three call into the same private [`write_audit_line`] helper
+//! that handles file rotation + webhook fan-out, so configuration
+//! changes (e.g. `notify_webhook = "https://..."`) automatically
+//! apply to every line type.
+//!
+//! Line shapes:
+//!
+//! - Normal action:
 //!   `{rfc3339}\taccount=A\tprofile=P\tregion=R\tstage=S action=Act target=Env [outcome=ok|err="..."]`
-//! - `main::write_rollout_audit_line` — cross-region rollout lines:
-//!   `{rfc3339}\trollout_id=ID\tregion=R\tstage=S action=Rollout target=Env version=V [err="..."]`
+//! - Rollout:
+//!   `{rfc3339}\trollout_id=ID\tregion=R\tstage=S action=Rollout target=Env version=V [outcome=ok|err="..."]`
+//! - Lint fix:
+//!   `{rfc3339}\tregion=R\tstage=fix action=SetOption target=Env rule_id=ID namespace=NS name=N value="V" outcome=ok|err="..."`
 //!
-//! The parser handles both shapes uniformly: split on tab, then tokenize
-//! every chunk as `key=value` pairs (with quoted-value support). Known
-//! keys get promoted into typed fields on [`AuditEntry`]; unknown keys
-//! land in `extras` so we don't drop information.
+//! The parser handles all three shapes uniformly: split on tab, then
+//! tokenize every chunk as `key=value` pairs (with quoted-value
+//! support). Known keys get promoted into typed fields on
+//! [`AuditEntry`]; unknown keys land in `extras` so we don't drop
+//! information.
 //!
-//! Used by `ebman audit` (CLI) — operators consuming the audit log for
-//! Slack-bot routing, on-call dashboards, or CI gating want structure +
-//! windows + filtering, not a raw `tail -f | grep` over a TSV.
+//! [`ebman audit`](../bin/ebman/cli/audit/index.html) — the CLI — uses
+//! [`parse_audit_line`] + [`AuditFilter`] + the render helpers below
+//! to surface entries for scripting / Slack-bot routing / on-call
+//! dashboards / CI gating.
 
 use std::collections::BTreeMap;
 
@@ -365,6 +385,346 @@ fn json_string(s: &str) -> String {
     out
 }
 
+// ─── writers ─────────────────────────────────────────────────
+
+/// Soft cap on `audit.log` size before we rotate to `audit.log.1`
+/// (single historical backup, older history is discarded). 1 MiB ≈
+/// ~5k action entries, plenty for an interactive operator tool.
+const AUDIT_LOG_MAX_BYTES: u64 = 1 << 20;
+
+/// Process-wide webhook URL for audit-line fan-out. Set once at App
+/// or CLI startup from the resolved Config. `None` (or absent) means
+/// no fan-out; the local audit file is always the source of truth.
+static NOTIFY_WEBHOOK_URL: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+/// Configure the outbound webhook URL exactly once per process. Idempotent:
+/// subsequent calls are no-ops (the first call wins, matching the previous
+/// behaviour when this was an `OnceLock::set` site in `App::new`).
+pub fn set_notify_webhook(url: Option<String>) {
+    let _ = NOTIFY_WEBHOOK_URL.set(url);
+}
+
+/// Load `notify_webhook` from `~/.config/ebman/config.toml` and register
+/// it for fan-out. Called once at CLI startup so audit lines emitted
+/// by `ebman lint --fix`, `ebman action rollout`, etc. fan out to the
+/// same webhook the TUI uses. Idempotent (the OnceLock guards repeat
+/// calls). No-op when config can't be read; webhook is optional.
+pub fn init_from_config_disk() {
+    let cfg = crate::config::load();
+    set_notify_webhook(cfg.notify_webhook);
+}
+
+/// Append a `stage=dispatched` line for a TUI-driven action. `target`
+/// is pre-formatted by the caller so swap (`env-a ↔ env-b`) and
+/// single-env (`env-a`) shapes are the caller's choice. `action_label`
+/// goes into the `action=` field verbatim — typically the Debug-derived
+/// variant name of [`crate::mode_action::Action`].
+pub fn append_action_dispatched(
+    account: Option<&str>,
+    profile: Option<&str>,
+    region: &str,
+    action_label: &str,
+    target: &str,
+) {
+    let detail = format!("stage=dispatched action={action_label} target={target}");
+    write_audit_line(account, profile, region, &detail);
+}
+
+/// Append a `stage=completed` line for a TUI-driven action. `result`
+/// is mapped to `outcome=ok` (Ok) or `outcome=err err="…"` (Err); the
+/// error string goes through [`escape_value`] so a multi-line AWS
+/// error doesn't split the entry across two log lines.
+pub fn append_action_completed(
+    account: Option<&str>,
+    profile: Option<&str>,
+    region: &str,
+    action_label: &str,
+    env: &str,
+    result: Result<(), &str>,
+) {
+    let outcome = match result {
+        Ok(()) => "outcome=ok".to_string(),
+        Err(e) => format!("outcome=err err=\"{}\"", escape_value(e)),
+    };
+    let detail = format!("stage=completed action={action_label} target={env} {outcome}");
+    write_audit_line(account, profile, region, &detail);
+}
+
+/// Append a rollout-shaped line. `stage` is `"dispatched"` or
+/// `"completed"`; pass `err = Some(...)` to attach an error message
+/// (and emit `outcome=err` on completion). `rollout_id` correlates
+/// every per-region line within a single `ebman action rollout`
+/// invocation.
+pub fn append_rollout(
+    rollout_id: &str,
+    region: &str,
+    env: &str,
+    version: &str,
+    stage: &str,
+    err: Option<&str>,
+) {
+    let outcome_suffix = match (stage, err) {
+        ("completed", None) => " outcome=ok".to_string(),
+        ("completed", Some(e)) => format!(" outcome=err err=\"{}\"", escape_value(e)),
+        (_, Some(e)) => format!(" err=\"{}\"", escape_value(e)),
+        (_, None) => String::new(),
+    };
+    let line = format!(
+        "\trollout_id={rollout_id}\tregion={region}\tstage={stage} action=Rollout target={env} version={version}{outcome_suffix}"
+    );
+    write_audit_line_raw(&line);
+}
+
+/// Append a `stage=fix action=SetOption` line for an `ebman lint
+/// --fix` dispatch. `rule_id` correlates back to which lint rule
+/// triggered the change so `ebman audit --rule EBL001` shows per-
+/// rule history.
+pub fn append_lint_fix(
+    region: &str,
+    env: &str,
+    rule_id: &str,
+    namespace: &str,
+    name: &str,
+    value: &str,
+    err: Option<&str>,
+) {
+    let q_value = escape_value(value);
+    let suffix = match err {
+        None => " outcome=ok".to_string(),
+        Some(e) => format!(" outcome=err err=\"{}\"", escape_value(e)),
+    };
+    let line = format!(
+        "\tregion={region}\tstage=fix action=SetOption target={env} rule_id={rule_id} namespace={namespace} name={name} value=\"{q_value}\"{suffix}"
+    );
+    write_audit_line_raw(&line);
+}
+
+/// Build the JSON body that goes to `notify_webhook`. Pure +
+/// deterministic so the shape is unit-testable. Top-level `text`
+/// gets the rendered audit line so the body is
+/// Slack-incoming-webhook-compatible out of the box; the other
+/// keys give consumers structured fields for routing / filtering.
+pub fn build_webhook_body(
+    account: Option<&str>,
+    profile: Option<&str>,
+    region: &str,
+    detail: &str,
+    when: &str,
+) -> String {
+    let text = format!(
+        "[ebman] {} account={} profile={} region={} {}",
+        when,
+        account.unwrap_or("-"),
+        profile.unwrap_or("-"),
+        region,
+        detail,
+    );
+    format!(
+        "{{\"text\":\"{}\",\"at\":\"{}\",\"account\":\"{}\",\"profile\":\"{}\",\"region\":\"{}\",\"detail\":\"{}\"}}",
+        json_escape(&text),
+        json_escape(when),
+        json_escape(account.unwrap_or("")),
+        json_escape(profile.unwrap_or("")),
+        json_escape(region),
+        json_escape(detail),
+    )
+}
+
+/// Append a raw audit-log line with a caller-built `detail` string.
+/// Used by sites that emit non-action lines (red-transition events,
+/// notifications, etc.) where the typed `append_action_*` APIs
+/// don't fit. The `detail` string is appended verbatim after the
+/// `account/profile/region` opener — caller is responsible for the
+/// `key=value` shape + escaping.
+pub fn append_raw(account: Option<&str>, profile: Option<&str>, region: &str, detail: &str) {
+    write_audit_line(account, profile, region, detail);
+}
+
+fn write_audit_line(account: Option<&str>, profile: Option<&str>, region: &str, detail: &str) {
+    let dir = crate::util::cache_dir();
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let path = dir.join("audit.log");
+    rotate_if_oversize(&path, AUDIT_LOG_MAX_BYTES);
+    let when = chrono::Utc::now().to_rfc3339();
+    let line = format!(
+        "{when}\taccount={}\tprofile={}\tregion={}\t{detail}\n",
+        account.unwrap_or("-"),
+        profile.unwrap_or("-"),
+        region,
+    );
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = f.write_all(line.as_bytes());
+    }
+    // Webhook fan-out — same convention as before consolidation.
+    if let Some(url) = NOTIFY_WEBHOOK_URL.get().and_then(|o| o.as_deref()) {
+        fire_webhook(url, account, profile, region, detail, &when);
+    }
+}
+
+/// Lower-level append: caller has already constructed the tab-prefixed
+/// `\tkey=value\t...\tstage=... ...` tail (no leading timestamp). Used
+/// by line shapes that don't follow the standard
+/// `account=A\tprofile=P\tregion=R` opener (rollout uses
+/// `rollout_id=...\tregion=...`; lint-fix uses just `region=...`).
+fn write_audit_line_raw(tail: &str) {
+    let dir = crate::util::cache_dir();
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let path = dir.join("audit.log");
+    rotate_if_oversize(&path, AUDIT_LOG_MAX_BYTES);
+    let when = chrono::Utc::now().to_rfc3339();
+    let line = format!("{when}{tail}\n");
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = f.write_all(line.as_bytes());
+    }
+    // Same webhook fan-out as `write_audit_line`. The body uses
+    // `account=-, profile=-` because this shape doesn't carry them;
+    // consumers route on `detail` / `region` instead.
+    if let Some(url) = NOTIFY_WEBHOOK_URL.get().and_then(|o| o.as_deref()) {
+        // Strip the leading tab so the detail string is the same
+        // shape webhook consumers expect (key=value space-separated).
+        let detail = tail.trim_start_matches('\t').replace('\t', " ");
+        let region = detail
+            .split(' ')
+            .find_map(|tok| tok.strip_prefix("region="))
+            .unwrap_or("-");
+        fire_webhook(url, None, None, region, &detail, &when);
+    }
+}
+
+/// Fire-and-forget webhook POST. Shells out to curl so we don't pull
+/// in an HTTP-client dep for the audit-fan-out (separate from
+/// `llm.rs`'s reqwest — `llm.rs` needs HTTPS + JSON parsing, this
+/// just needs a POST with a body). 10s cap so a slow webhook can't
+/// accumulate hung curls. The caller must be inside a tokio runtime;
+/// every audit-line site in ebman is, so this is fine in practice.
+fn fire_webhook(
+    url: &str,
+    account: Option<&str>,
+    profile: Option<&str>,
+    region: &str,
+    detail: &str,
+    when: &str,
+) {
+    let body = build_webhook_body(account, profile, region, detail, when);
+    let url = url.to_string();
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    tokio::spawn(async move {
+        use tokio::process::Command;
+        let result = Command::new("curl")
+            .args([
+                "-s",
+                "-S",
+                "-X",
+                "POST",
+                "-H",
+                "Content-Type: application/json",
+                "--max-time",
+                "10",
+                "--data-binary",
+                "@-",
+            ])
+            .arg(&url)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn();
+        let Ok(mut child) = result else {
+            tracing::warn!(
+                target: "ebman::notify",
+                url = %url,
+                "audit webhook: could not spawn curl"
+            );
+            return;
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            let _ = stdin.write_all(body.as_bytes()).await;
+            let _ = stdin.shutdown().await;
+        }
+        match child.wait_with_output().await {
+            Ok(out) if out.status.success() => {}
+            Ok(out) => {
+                tracing::warn!(
+                    target: "ebman::notify",
+                    url = %url,
+                    status = ?out.status.code(),
+                    stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+                    "audit webhook returned non-zero"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "ebman::notify",
+                    url = %url,
+                    error = %e,
+                    "audit webhook curl exited with error"
+                );
+            }
+        }
+    });
+}
+
+/// If `path` exists and is larger than `max_bytes`, move it to
+/// `path.1` (overwriting any previous backup) so the next write
+/// starts a fresh file. Best-effort: any I/O error is swallowed —
+/// we don't want to lose the audit entry just because rotation
+/// failed.
+fn rotate_if_oversize(path: &std::path::Path, max_bytes: u64) {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
+    if meta.len() <= max_bytes {
+        return;
+    }
+    let backup = {
+        let mut name = path
+            .file_name()
+            .map(|s| s.to_os_string())
+            .unwrap_or_default();
+        name.push(".1");
+        path.with_file_name(name)
+    };
+    let _ = std::fs::rename(path, backup);
+}
+
+/// JSON-escape for the webhook body. Matches the shape `app.rs` used
+/// before consolidation; kept private (callers don't need the helper
+/// directly — `build_webhook_body` is the public surface).
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                use std::fmt::Write;
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -549,6 +909,95 @@ mod tests {
         let kept: Vec<_> = entries.iter().filter(|e| filter.matches(e)).collect();
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].rule_id.as_deref(), Some("EBL004"));
+    }
+
+    #[test]
+    fn rotate_if_oversize_renames_when_too_big() {
+        let dir = std::env::temp_dir().join(format!("ebman-rotate-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("audit.log");
+        let backup = dir.join("audit.log.1");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&backup);
+        std::fs::write(&path, vec![b'x'; 100]).unwrap();
+        rotate_if_oversize(&path, 50);
+        assert!(!path.exists(), "current file should have been renamed");
+        assert!(backup.exists(), "rotated backup should now exist");
+        let _ = std::fs::remove_file(&backup);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn rotate_if_oversize_leaves_small_files_alone() {
+        let dir = std::env::temp_dir().join(format!("ebman-rotate-small-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("audit.log");
+        let _ = std::fs::remove_file(&path);
+        std::fs::write(&path, b"tiny").unwrap();
+        rotate_if_oversize(&path, 1_000);
+        assert!(path.exists());
+        assert!(!dir.join("audit.log.1").exists());
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn build_webhook_body_has_slack_compatible_text_plus_structured_fields() {
+        // Slack incoming webhooks consume a top-level `text` field;
+        // anything else is metadata for other consumers. Both must
+        // be present so one endpoint can serve both.
+        let body = build_webhook_body(
+            Some("123456789012"),
+            Some("prod"),
+            "us-east-1",
+            "stage=request action=Deploy target=prod-api",
+            "2026-05-25T12:00:00Z",
+        );
+        assert!(body.starts_with('{') && body.ends_with('}'));
+        assert!(
+            body.contains("\"text\":\"[ebman]"),
+            "missing slack-shaped text field"
+        );
+        assert!(body.contains("\"at\":\"2026-05-25T12:00:00Z\""));
+        assert!(body.contains("\"account\":\"123456789012\""));
+        assert!(body.contains("\"profile\":\"prod\""));
+        assert!(body.contains("\"region\":\"us-east-1\""));
+        assert!(body.contains("\"detail\":\"stage=request action=Deploy target=prod-api\""));
+    }
+
+    #[test]
+    fn build_webhook_body_dashes_missing_account_and_profile_in_text() {
+        let body = build_webhook_body(
+            None,
+            None,
+            "eu-west-1",
+            "stage=event kind=red_transition env=prod-api",
+            "2026-05-25T12:00:00Z",
+        );
+        assert!(
+            body.contains("account=- profile=- region=eu-west-1"),
+            "missing dash placeholders in text, got: {body}"
+        );
+        // Structured fields use empty strings, not "-", so consumers
+        // can distinguish "unknown" from "literal dash".
+        assert!(body.contains("\"account\":\"\""));
+        assert!(body.contains("\"profile\":\"\""));
+    }
+
+    #[test]
+    fn build_webhook_body_escapes_quotes_in_detail() {
+        let body = build_webhook_body(
+            None,
+            None,
+            "us-east-1",
+            "stage=event message=\"deploy started\"",
+            "2026-05-25T12:00:00Z",
+        );
+        // Escaped string appears in both `text` and `detail`.
+        assert!(body.contains("\\\"deploy started\\\""));
+        // Round-trip via serde_yml's JSON-tolerant path: must parse.
+        let _: serde_yml::Value = serde_yml::from_str(&body)
+            .expect("webhook body must be parseable JSON / YAML-superset");
     }
 
     #[test]
