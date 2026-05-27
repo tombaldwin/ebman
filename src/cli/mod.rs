@@ -33,50 +33,11 @@ pub mod envs;
 pub mod explain;
 pub mod lint;
 
-/// One tick's worth of decision for the `action deploy` polling
-/// loop. Pure — no AWS, no clock, no I/O — so the exit-code matrix
-/// is unit-testable. Shared between [`action::run_deploy`] (the
-/// `ebman action deploy` path) and the cross-region rollout loop in
-/// [`action::run_rollout`].
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum PollDecision {
-    KeepPolling,
-    Success,
-    /// `--wait-for-green` deadline elapsed but rollback hasn't
-    /// fired (either no rollback flag, or its deadline is later).
-    WaitForGreenTimeout,
-    /// `--auto-rollback` deadline elapsed and env still non-Green.
-    DispatchRollback,
-}
-
-pub(crate) fn decide_poll(
-    status: &str,
-    health: &str,
-    elapsed_secs: u64,
-    wait_for_green_secs: Option<u64>,
-    auto_rollback_secs: Option<u64>,
-    wait_for_green_timeout_emitted: bool,
-) -> PollDecision {
-    // Both status=Ready AND health=Green/Ok required — EB briefly
-    // leaves health Green while status flips to Updating right
-    // after UpdateEnvironment, so a check on health alone
-    // false-positives during the transition. See
-    // `crate::app::deploy_settled_green`.
-    if crate::app::deploy_settled_green(status, health) {
-        return PollDecision::Success;
-    }
-    if let Some(d) = auto_rollback_secs {
-        if elapsed_secs >= d {
-            return PollDecision::DispatchRollback;
-        }
-    }
-    if let Some(d) = wait_for_green_secs {
-        if elapsed_secs >= d && !wait_for_green_timeout_emitted {
-            return PollDecision::WaitForGreenTimeout;
-        }
-    }
-    PollDecision::KeepPolling
-}
+/// Re-exports from the shared deploy-poll module. CLI subcommand
+/// modules import via `crate::cli::{decide_poll, PollDecision}`;
+/// the actual implementations live in `src/deploy_poll.rs` and are
+/// shared with the TUI's `spawn_rollout_dispatch`.
+pub(crate) use crate::deploy_poll::{decide_poll, PollDecision};
 
 /// Re-exports of the canonical JSON helpers from `crate::util`. CLI
 /// subcommand modules import these via `crate::cli::{json_string,
@@ -89,86 +50,8 @@ pub(crate) use crate::util::{json_escape as cli_esc, json_string};
 mod tests {
     use super::*;
 
-    #[test]
-    fn decide_poll_green_plus_ready_returns_success_regardless_of_deadlines() {
-        assert_eq!(
-            decide_poll("Ready", "Green", 600, Some(300), Some(600), false),
-            PollDecision::Success
-        );
-        assert_eq!(
-            decide_poll("Ready", "Ok", 600, Some(300), Some(600), false),
-            PollDecision::Success
-        );
-    }
-
-    #[test]
-    fn decide_poll_green_during_updating_is_not_success() {
-        // The transition window: status=Updating + health=Green
-        // happens briefly after UpdateEnvironment. Must NOT
-        // false-positive Success.
-        assert_eq!(
-            decide_poll("Updating", "Green", 5, Some(300), Some(600), false),
-            PollDecision::KeepPolling
-        );
-    }
-
-    #[test]
-    fn decide_poll_keep_polling_before_any_deadline() {
-        assert_eq!(
-            decide_poll("Updating", "Red", 60, Some(300), Some(600), false),
-            PollDecision::KeepPolling
-        );
-    }
-
-    #[test]
-    fn decide_poll_wait_for_green_only_emits_timeout_once() {
-        assert_eq!(
-            decide_poll("Updating", "Red", 301, Some(300), None, false),
-            PollDecision::WaitForGreenTimeout
-        );
-        // Second tick after the timeout was already emitted —
-        // suppress so the caller doesn't double-log.
-        assert_eq!(
-            decide_poll("Updating", "Red", 302, Some(300), None, true),
-            PollDecision::KeepPolling
-        );
-    }
-
-    #[test]
-    fn decide_poll_rollback_wins_when_both_deadlines_passed() {
-        // When both `--wait-for-green` and `--auto-rollback`
-        // deadlines have elapsed, the rollback dispatch wins
-        // (it's the more-aggressive action).
-        assert_eq!(
-            decide_poll("Updating", "Red", 600, Some(300), Some(600), true),
-            PollDecision::DispatchRollback
-        );
-    }
-
-    #[test]
-    fn decide_poll_wait_then_rollback_sequence() {
-        // Typical sequence: tick at 301 emits the timeout, tick
-        // at 600 dispatches the rollback.
-        assert_eq!(
-            decide_poll("Updating", "Red", 301, Some(300), Some(600), false),
-            PollDecision::WaitForGreenTimeout
-        );
-        assert_eq!(
-            decide_poll("Updating", "Red", 600, Some(300), Some(600), true),
-            PollDecision::DispatchRollback
-        );
-    }
-
-    #[test]
-    fn decide_poll_rollback_only_no_intermediate_emission() {
-        // No `--wait-for-green`, only `--auto-rollback`. Should
-        // emit DispatchRollback at the deadline with no
-        // intermediate WaitForGreenTimeout.
-        assert_eq!(
-            decide_poll("Updating", "Red", 300, None, Some(300), false),
-            PollDecision::DispatchRollback
-        );
-    }
+    // decide_poll matrix tests live in `src/deploy_poll.rs`
+    // alongside the function itself (0.16 move).
 
     #[test]
     fn cli_esc_escapes_quotes_and_backslashes() {

@@ -9858,28 +9858,23 @@ impl App {
                 return;
             }
             if let Some(secs) = wait_for_green_secs {
-                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(secs);
+                let start = tokio::time::Instant::now();
+                // Always false in this path — the WaitForGreenTimeout
+                // arm sends RolloutDispatched and returns
+                // immediately, so the per-tick suppression never
+                // fires. A future change wiring --auto-rollback for
+                // TUI rollouts will need to promote this to `let mut`
+                // so subsequent ticks suppress duplicate timeout
+                // milestones.
+                let wait_timeout_emitted = false;
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    if tokio::time::Instant::now() >= deadline {
-                        let _ = tx.send(AppMsg::RolloutDispatched {
-                            gen,
-                            region,
-                            result: Err(format!("did not reach Green within {secs}s")),
-                        });
-                        return;
-                    }
-                    match client.list_environments().await {
-                        Ok(envs) => {
-                            let (status, health) = envs
-                                .iter()
-                                .find(|e| e.name == env_name)
-                                .map(|e| (e.status.clone(), e.health.clone()))
-                                .unwrap_or_default();
-                            if deploy_settled_green(&status, &health) {
-                                break;
-                            }
-                        }
+                    let (status, health) = match client.list_environments().await {
+                        Ok(envs) => envs
+                            .iter()
+                            .find(|e| e.name == env_name)
+                            .map(|e| (e.status.clone(), e.health.clone()))
+                            .unwrap_or_default(),
                         Err(e) => {
                             let _ = tx.send(AppMsg::RolloutDispatched {
                                 gen,
@@ -9887,6 +9882,34 @@ impl App {
                                 result: Err(format!("poll list_environments: {e}")),
                             });
                             return;
+                        }
+                    };
+                    let elapsed = start.elapsed().as_secs();
+                    match crate::deploy_poll::decide_poll(
+                        &status,
+                        &health,
+                        elapsed,
+                        Some(secs),
+                        None,
+                        wait_timeout_emitted,
+                    ) {
+                        crate::deploy_poll::PollDecision::KeepPolling => {}
+                        crate::deploy_poll::PollDecision::Success => break,
+                        crate::deploy_poll::PollDecision::WaitForGreenTimeout => {
+                            let _ = tx.send(AppMsg::RolloutDispatched {
+                                gen,
+                                region,
+                                result: Err(format!(
+                                    "did not reach Green within {secs}s (status={status}, health={health})"
+                                )),
+                            });
+                            return;
+                        }
+                        crate::deploy_poll::PollDecision::DispatchRollback => {
+                            // --auto-rollback isn't wired into the
+                            // TUI rollout path yet; defensive break
+                            // in case a future change wires it.
+                            break;
                         }
                     }
                 }
