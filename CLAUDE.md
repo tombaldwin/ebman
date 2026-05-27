@@ -66,6 +66,12 @@ When the user asks to cut a release (e.g. "tag 0.X", "ship the release", "prepar
    - `docs/fonts.md` / `docs/safety-and-privacy.md` / `docs/development.md` — spot-check for stale references to commands, files, or behaviours that changed this cycle.
    - `README.md` — any feature it specifically calls out (e.g. the Triage workflow's `:rollback`) still works as described.
 
-2. **Surface findings in the release message.** What the docs audit fixed lands in the release notes / final summary alongside what shipped, so the audit isn't invisible work.
+2. **Code-review the lineup against the previous tag before tagging.** Two parallel agents, sharp briefs, different focuses so the work doesn't overlap:
+   - **Architecture + refactor agent.** Read the changed modules; assess whether `src/app.rs` / `src/main.rs` growth or new module placement is sustainable; identify refactor candidates with file:line refs + effort estimates. Don't propose new features.
+   - **Bugs + correctness agent.** Read the actual files (don't infer from naming); scan new/changed code for race conditions (generation guards on every spawned `AppMsg`), broken invariants (`rebuild_view` after view-state mutation; match-arm order for guarded Ctrl chords), missed safety paths (`deny_write` / `safety_envs` / `safety_accounts` honoured by every dispatch site, CLI included), dead code, security issues, CLI exit-code matrix vs docs, HTTP error paths in `llm.rs`, audit-log writer/parser consistency. Report Critical / Important / Minor with file:line refs + suggested fixes.
+   - **Act on findings — don't just list them.** Same rule as the autonomous-mode loop: Critical and Important findings get fixed *before* tagging unless the user has explicitly deferred. Bundle the fixes into the release commit (or a same-day patch tag like `0.X.1` if the release already shipped). Architecture refactors usually defer to the next release with the user's go-ahead.
+   - **0.14.0 caught two real bugs this way** — `lint --fix` bypassing `safety.envs.*.read_only` and rollouts losing failed-region audit lines. Both went out same-day as 0.14.1. Worth the 5 minutes every cycle.
 
-3. **No silent edits — flag intentional gaps.** If a command shipped behind a feature flag or as a soft preview, say so in the audit summary rather than just documenting it as if it were generally available.
+3. **Surface findings in the release message.** What the docs audit + code review fixed lands in the release notes / final summary alongside what shipped, so the audit and review aren't invisible work.
+
+4. **No silent edits — flag intentional gaps.** If a command shipped behind a feature flag or as a soft preview, say so in the audit summary rather than just documenting it as if it were generally available. If a code-review finding was deferred (not fixed in the release commit), say WHY and what version it's tracked against.
