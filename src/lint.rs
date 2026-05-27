@@ -623,12 +623,10 @@ impl Rule for ElbWithoutHttps {
         })
     }
     fn applies(&self, ctx: &LintContext) -> Option<Issue> {
-        // Scan all listener namespaces. Any HTTP listener that's
-        // enabled is the trigger; we don't try to detect "but you
-        // have HTTPS too" because operators occasionally run HTTP
-        // for redirect-only setups (which is fine if there's also
-        // HTTPS — Warn-level is the right severity for "look at
-        // this" without false-positive panic).
+        // Scan all listener namespaces. We short-circuit when any
+        // HTTPS listener exists, so mixed redirect-only HTTP+HTTPS
+        // configs (HTTP listener forwarding to HTTPS for redirect)
+        // don't false-positive. Only flag fleets that are HTTP-only.
         let mut http_listeners: Vec<String> = Vec::new();
         let mut any_https = false;
         for (ns, name, value) in ctx.options {
@@ -709,9 +707,18 @@ impl Rule for StalePlatformVersion {
         // every stack format is brittle. Instead, lean on the
         // `latest_stack_version` field of `LintContext`: if a
         // newer stack is known and the live one differs, that's
-        // the staleness signal. When the context doesn't carry
-        // the latest version (most invocations today), the rule
-        // is best-effort skipped — better than false-positives.
+        // the staleness signal.
+        //
+        // 0.16 SHIP NOTE: every production `LintContext`
+        // constructor (CLI lint / explain, TUI cmd_misc, TUI
+        // confirm-modal) currently passes
+        // `latest_stack_version: None` — so this rule no-ops in
+        // production. `App.latest_stacks` is fetched but not
+        // plumbed through. Wiring the lookup is tracked for
+        // 0.17. Until then, the rule fires only in unit tests
+        // (pinned by `ebl008_currently_stub_does_not_fire_in_cli`
+        // below); operators don't see false-positives but also
+        // don't get the diagnostic.
         let latest = ctx.latest_stack_version?;
         if latest == stack || latest.is_empty() {
             return None;
@@ -1356,6 +1363,23 @@ mod tests {
         // false-positive on every env).
         let env = mk_env("prod", "Web", "Green");
         let opts: Vec<(String, String, String)> = vec![];
+        assert!(StalePlatformVersion.applies(&ctx(&env, &opts)).is_none());
+    }
+
+    #[test]
+    fn ebl008_currently_stub_does_not_fire_in_cli() {
+        // 0.16 SHIP NOTE pin: every production LintContext
+        // constructor (CLI lint / explain, TUI cmd_misc / confirm-
+        // modal) currently passes `latest_stack_version: None`.
+        // `App.latest_stacks` is fetched but not plumbed into the
+        // ctx builders. Wiring is tracked for 0.17. This test
+        // documents the gap so a future change that starts firing
+        // the rule without the wiring will fail it (forcing the
+        // implementer to thread the value through).
+        let env = mk_env("prod", "Web", "Green");
+        let opts: Vec<(String, String, String)> = vec![];
+        // `ctx()` helper mirrors the production-side constructors
+        // and uses `latest_stack_version: None`.
         assert!(StalePlatformVersion.applies(&ctx(&env, &opts)).is_none());
     }
 
