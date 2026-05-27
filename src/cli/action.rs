@@ -259,7 +259,6 @@ async fn dispatch_one_region(
     if outcome.is_ok() {
         if let Some(secs) = wait_for_green_secs {
             let start = tokio::time::Instant::now();
-            let wait_timeout_emitted = false;
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 let envs = match client.list_environments().await {
@@ -276,14 +275,12 @@ async fn dispatch_one_region(
                     .map(|e| (e.status.clone(), e.health.clone()))
                     .unwrap_or_default();
                 let elapsed = start.elapsed().as_secs();
-                match decide_poll(
-                    &status,
-                    &health,
-                    elapsed,
-                    Some(secs),
-                    None,
-                    wait_timeout_emitted,
-                ) {
+                // `wait_for_green_timeout_emitted = false` is hard-
+                // coded: rollout's WaitForGreenTimeout arm breaks
+                // immediately (no per-tick suppression needed). A
+                // future change wiring `--auto-rollback` per region
+                // will need to thread the flag back in.
+                match decide_poll(&status, &health, elapsed, Some(secs), None, false) {
                     PollDecision::KeepPolling => {
                         if !quiet {
                             eprintln!(
@@ -604,6 +601,22 @@ async fn run_rollout(args: &[String]) -> Result<()> {
                 break;
             }
         }
+    }
+
+    // Re-sort outcomes by the input `regions` order so output is
+    // deterministic regardless of dispatch mode. Sequential mode
+    // already preserves order; --parallel populates outcomes via
+    // JoinSet::join_next which yields in completion order. CI
+    // consumers parsing the JSON output benefit from the ordering
+    // contract.
+    {
+        let region_order: std::collections::HashMap<&str, usize> = regions
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (r.as_str(), i))
+            .collect();
+        outcomes
+            .sort_by_key(|(region, _)| *region_order.get(region.as_str()).unwrap_or(&usize::MAX));
     }
 
     let any_failure = outcomes.iter().any(|(_, r)| r.is_err());

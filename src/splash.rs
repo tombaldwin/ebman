@@ -588,8 +588,9 @@ pub fn draw_splash(
 }
 
 /// Standard HSL → RGB. `h` in degrees 0-360, `s` and `l` in 0.0-1.0.
-/// Used by [`draw_splash`] for the boot border-glow easing.
-pub fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
+/// Used by [`draw_splash`] for the boot border-glow easing. Crate-
+/// internal — no external callers.
+pub(crate) fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
     let h = h.rem_euclid(360.0);
     let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
     let h_prime = h / 60.0;
