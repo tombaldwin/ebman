@@ -37,6 +37,8 @@ pub async fn run(args: &[String]) -> Result<()> {
     let mut fix = false;
     let mut dry_run = false;
     let mut yes = false;
+    let mut watch = false;
+    let mut interval_str: Option<String> = None;
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -47,6 +49,8 @@ pub async fn run(args: &[String]) -> Result<()> {
             "--fix" => fix = true,
             "--dry-run" => dry_run = true,
             "--yes" => yes = true,
+            "--watch" => watch = true,
+            "--interval" => interval_str = iter.next().cloned(),
             "--severity" => {
                 let Some(v) = iter.next() else {
                     eprintln!("ebman lint: --severity expects a value (info / warn / error)");
@@ -86,6 +90,10 @@ pub async fn run(args: &[String]) -> Result<()> {
     let safety_cfg = config::load();
     let active_profile_for_safety = std::env::var("AWS_PROFILE").ok();
 
+    if watch && fix {
+        eprintln!("ebman lint: --watch and --fix are mutually exclusive (use one)");
+        std::process::exit(2);
+    }
     if fix && !yes && !dry_run {
         eprintln!("ebman lint --fix: requires --yes to dispatch writes (or --dry-run to preview)");
         std::process::exit(2);
@@ -94,6 +102,28 @@ pub async fn run(args: &[String]) -> Result<()> {
         eprintln!("ebman lint --fix: --yes and --dry-run are mutually exclusive");
         std::process::exit(2);
     }
+    // Default interval = 60s. Parse the same way other deadlines
+    // are parsed (`5m / 30m / 1h`); accept a bare integer as
+    // seconds for monitoring-friendly shapes like `--interval 30`.
+    let interval_secs: u64 = match interval_str.as_deref() {
+        None => 60,
+        Some(s) => {
+            if let Ok(n) = s.parse::<u64>() {
+                if n == 0 {
+                    eprintln!("ebman lint: --interval must be > 0");
+                    std::process::exit(2);
+                }
+                n
+            } else if let Some(ms) = aws::parse_window_ms(s) {
+                ((ms / 1000) as u64).max(1)
+            } else {
+                eprintln!(
+                    "ebman lint: --interval expects seconds (`30`) or a duration (`5m`/`1h`)"
+                );
+                std::process::exit(2);
+            }
+        }
+    };
 
     let regions: Vec<Option<String>> = match regions_csv {
         Some(csv) => {
@@ -112,257 +142,304 @@ pub async fn run(args: &[String]) -> Result<()> {
     };
 
     let multi_region = regions.len() > 1;
-    let mut all_issues: Vec<lint::Issue> = Vec::new();
-    for region_opt in &regions {
-        let aws = match aws::AwsClient::with(None, region_opt.clone()).await {
-            Ok(c) => c,
-            Err(e) => {
-                if !quiet {
-                    let region_label = region_opt.as_deref().unwrap_or("default");
-                    eprintln!("warning: skipping region '{region_label}' — AwsClient::with: {e}");
-                }
-                continue;
-            }
-        };
-        let envs = match aws.list_environments().await {
-            Ok(envs) => envs,
-            Err(e) => {
-                if !quiet {
-                    let region_label = region_opt.as_deref().unwrap_or("default");
-                    eprintln!("warning: skipping region '{region_label}' — list_environments: {e}");
-                }
-                continue;
-            }
-        };
-
-        let targets: Vec<&aws::Environment> = match env_name.as_deref() {
-            Some(name) => match envs.iter().find(|e| e.name == name) {
-                Some(env) => vec![env],
-                None => {
-                    if multi_region && !quiet {
-                        let region_label = region_opt.as_deref().unwrap_or("default");
-                        eprintln!(
-                            "warning: env '{name}' not in region '{region_label}' — skipping"
-                        );
-                    } else if !multi_region {
-                        eprintln!("ebman lint: env '{name}' not found in current context");
-                        std::process::exit(2);
-                    }
-                    continue;
-                }
-            },
-            None => envs.iter().collect(),
-        };
-
-        for env in targets {
-            let opts = match aws
-                .fetch_env_option_settings(&env.application, &env.name)
-                .await
-            {
-                Ok(opts) => opts,
+    // `--watch` wraps the existing one-shot body in a polling loop
+    // that emits each cycle's issues and sleeps `interval_secs`.
+    // Ctrl-C breaks; the exit code reflects the LAST cycle's state
+    // so a clean shutdown after a clean cycle exits 0, after a
+    // dirty cycle exits 3.
+    // Tracks the most-recent cycle's "no issues found" state.
+    // Initialised here so the post-loop exit-code branch can read
+    // it even if the loop somehow exits without running a full
+    // cycle (currently impossible — the unconditional first
+    // iteration always sets it — but the initial value keeps the
+    // borrow checker honest and documents the invariant).
+    let mut last_cycle_clean;
+    loop {
+        let cycle_started = chrono::Utc::now();
+        if watch && !quiet && !json {
+            println!("--- {} ---", cycle_started.to_rfc3339());
+        }
+        let mut all_issues: Vec<lint::Issue> = Vec::new();
+        for region_opt in &regions {
+            let aws = match aws::AwsClient::with(None, region_opt.clone()).await {
+                Ok(c) => c,
                 Err(e) => {
                     if !quiet {
+                        let region_label = region_opt.as_deref().unwrap_or("default");
                         eprintln!(
-                            "warning: skipping {} — fetch_env_option_settings: {e}",
-                            env.name
+                            "warning: skipping region '{region_label}' — AwsClient::with: {e}"
                         );
                     }
                     continue;
                 }
             };
-            let ctx = lint::LintContext {
-                env,
-                options: &opts,
-                events: &[],
-                cost_usd_per_month: None,
-                latest_stack_version: None,
-            };
-            let mut issues = lint::run_rules(&rules, &ctx);
-            if let Some(min) = severity_filter {
-                issues.retain(|i| i.severity >= min);
-            }
-            if !rule_filter.is_empty() {
-                issues.retain(|i| rule_filter.contains(&i.rule_id));
-            }
-            if let Some(region) = region_opt {
-                for issue in &mut issues {
-                    issue.fields.insert("region".into(), region.clone());
-                }
-            }
-
-            if fix && !issues.is_empty() {
-                let env_pinned = safety_cfg
-                    .safety_envs
-                    .get(&env.name)
-                    .copied()
-                    .unwrap_or(false);
-                let account_pinned = active_profile_for_safety
-                    .as_deref()
-                    .and_then(|p| safety_cfg.safety_accounts.get(p).copied())
-                    .unwrap_or(false);
-                if env_pinned || account_pinned {
-                    let reason = if env_pinned {
-                        format!("safety.envs.{}.read_only", env.name)
-                    } else {
-                        format!(
-                            "safety.accounts.{}.read_only",
-                            active_profile_for_safety.as_deref().unwrap_or("?")
-                        )
-                    };
+            let envs = match aws.list_environments().await {
+                Ok(envs) => envs,
+                Err(e) => {
                     if !quiet {
+                        let region_label = region_opt.as_deref().unwrap_or("default");
                         eprintln!(
-                            "ebman lint --fix: refusing {} — pinned by {reason}",
-                            env.name
+                            "warning: skipping region '{region_label}' — list_environments: {e}"
                         );
                     }
-                    FIX_DISPATCH_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
-                    all_issues.extend(issues);
                     continue;
                 }
-                let region_label = region_opt.as_deref().unwrap_or("default").to_string();
-                let mut to_set: Vec<(String, String, String)> = Vec::new();
-                let mut planned: Vec<(String, lint::FixAction)> = Vec::new();
-                let mut planned_set_indices: Vec<usize> = Vec::new();
-                for issue in &issues {
-                    if fix_disabled.contains(&issue.rule_id) {
-                        if !quiet {
-                            println!("skip {} ({}): in lint.fix_disable", issue.rule_id, env.name);
+            };
+
+            let targets: Vec<&aws::Environment> = match env_name.as_deref() {
+                Some(name) => match envs.iter().find(|e| e.name == name) {
+                    Some(env) => vec![env],
+                    None => {
+                        if multi_region && !quiet {
+                            let region_label = region_opt.as_deref().unwrap_or("default");
+                            eprintln!(
+                                "warning: env '{name}' not in region '{region_label}' — skipping"
+                            );
+                        } else if !multi_region {
+                            eprintln!("ebman lint: env '{name}' not found in current context");
+                            std::process::exit(2);
                         }
                         continue;
                     }
-                    let Some(rule) = rules.iter().find(|r| r.id() == issue.rule_id) else {
-                        continue;
-                    };
-                    let Some(action) = rule.fix(&ctx) else {
+                },
+                None => envs.iter().collect(),
+            };
+
+            for env in targets {
+                let opts = match aws
+                    .fetch_env_option_settings(&env.application, &env.name)
+                    .await
+                {
+                    Ok(opts) => opts,
+                    Err(e) => {
                         if !quiet {
-                            println!(
-                                "no-fix {} ({}): rule has no auto-remediation",
-                                issue.rule_id, env.name
+                            eprintln!(
+                                "warning: skipping {} — fetch_env_option_settings: {e}",
+                                env.name
                             );
                         }
                         continue;
-                    };
-                    if let lint::FixAction::SetOption {
-                        namespace,
-                        name,
-                        value,
-                        ..
-                    } = &action
-                    {
-                        planned_set_indices.push(planned.len());
-                        to_set.push((namespace.clone(), name.clone(), value.clone()));
                     }
-                    planned.push((issue.rule_id.clone(), action));
+                };
+                let ctx = lint::LintContext {
+                    env,
+                    options: &opts,
+                    events: &[],
+                    cost_usd_per_month: None,
+                    latest_stack_version: None,
+                };
+                let mut issues = lint::run_rules(&rules, &ctx);
+                if let Some(min) = severity_filter {
+                    issues.retain(|i| i.severity >= min);
                 }
-                for (rule_id, action) in &planned {
-                    match action {
-                        lint::FixAction::SetOption { description, .. } => {
-                            println!("fix {rule_id} ({}): {description}", env.name);
+                if !rule_filter.is_empty() {
+                    issues.retain(|i| rule_filter.contains(&i.rule_id));
+                }
+                if let Some(region) = region_opt {
+                    for issue in &mut issues {
+                        issue.fields.insert("region".into(), region.clone());
+                    }
+                }
+
+                if fix && !issues.is_empty() {
+                    let env_pinned = safety_cfg
+                        .safety_envs
+                        .get(&env.name)
+                        .copied()
+                        .unwrap_or(false);
+                    let account_pinned = active_profile_for_safety
+                        .as_deref()
+                        .and_then(|p| safety_cfg.safety_accounts.get(p).copied())
+                        .unwrap_or(false);
+                    if env_pinned || account_pinned {
+                        let reason = if env_pinned {
+                            format!("safety.envs.{}.read_only", env.name)
+                        } else {
+                            format!(
+                                "safety.accounts.{}.read_only",
+                                active_profile_for_safety.as_deref().unwrap_or("?")
+                            )
+                        };
+                        if !quiet {
+                            eprintln!(
+                                "ebman lint --fix: refusing {} — pinned by {reason}",
+                                env.name
+                            );
                         }
-                        lint::FixAction::Manual { instructions } => {
-                            println!(
+                        FIX_DISPATCH_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
+                        all_issues.extend(issues);
+                        continue;
+                    }
+                    let region_label = region_opt.as_deref().unwrap_or("default").to_string();
+                    let mut to_set: Vec<(String, String, String)> = Vec::new();
+                    let mut planned: Vec<(String, lint::FixAction)> = Vec::new();
+                    let mut planned_set_indices: Vec<usize> = Vec::new();
+                    for issue in &issues {
+                        if fix_disabled.contains(&issue.rule_id) {
+                            if !quiet {
+                                println!(
+                                    "skip {} ({}): in lint.fix_disable",
+                                    issue.rule_id, env.name
+                                );
+                            }
+                            continue;
+                        }
+                        let Some(rule) = rules.iter().find(|r| r.id() == issue.rule_id) else {
+                            continue;
+                        };
+                        let Some(action) = rule.fix(&ctx) else {
+                            if !quiet {
+                                println!(
+                                    "no-fix {} ({}): rule has no auto-remediation",
+                                    issue.rule_id, env.name
+                                );
+                            }
+                            continue;
+                        };
+                        if let lint::FixAction::SetOption {
+                            namespace,
+                            name,
+                            value,
+                            ..
+                        } = &action
+                        {
+                            planned_set_indices.push(planned.len());
+                            to_set.push((namespace.clone(), name.clone(), value.clone()));
+                        }
+                        planned.push((issue.rule_id.clone(), action));
+                    }
+                    for (rule_id, action) in &planned {
+                        match action {
+                            lint::FixAction::SetOption { description, .. } => {
+                                println!("fix {rule_id} ({}): {description}", env.name);
+                            }
+                            lint::FixAction::Manual { instructions } => {
+                                println!(
                                 "fix {rule_id} ({}) MANUAL — operator action required:\n  {instructions}",
                                 env.name
                             );
+                            }
                         }
                     }
-                }
-                if !to_set.is_empty() && yes {
-                    match aws
-                        .update_env_option_settings(&env.name, &to_set, &[])
-                        .await
-                    {
-                        Ok(()) => {
-                            for &idx in &planned_set_indices {
-                                let (rule_id, action) = &planned[idx];
-                                if let lint::FixAction::SetOption {
-                                    namespace,
-                                    name,
-                                    value,
-                                    ..
-                                } = action
-                                {
-                                    audit::append_lint_fix(
-                                        &region_label,
-                                        &env.name,
-                                        rule_id,
+                    if !to_set.is_empty() && yes {
+                        match aws
+                            .update_env_option_settings(&env.name, &to_set, &[])
+                            .await
+                        {
+                            Ok(()) => {
+                                for &idx in &planned_set_indices {
+                                    let (rule_id, action) = &planned[idx];
+                                    if let lint::FixAction::SetOption {
                                         namespace,
                                         name,
                                         value,
-                                        None,
+                                        ..
+                                    } = action
+                                    {
+                                        audit::append_lint_fix(
+                                            &region_label,
+                                            &env.name,
+                                            rule_id,
+                                            namespace,
+                                            name,
+                                            value,
+                                            None,
+                                        );
+                                    }
+                                }
+                                if !quiet {
+                                    println!(
+                                        "ok ({}): applied {} fix(es)",
+                                        env.name,
+                                        planned_set_indices.len()
                                     );
                                 }
                             }
-                            if !quiet {
-                                println!(
-                                    "ok ({}): applied {} fix(es)",
-                                    env.name,
-                                    planned_set_indices.len()
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!(
+                            Err(e) => {
+                                eprintln!(
                                 "ebman lint --fix: dispatch failed for {} in {region_label}: {e}",
                                 env.name
                             );
-                            let err_str = e.to_string();
-                            for &idx in &planned_set_indices {
-                                let (rule_id, action) = &planned[idx];
-                                if let lint::FixAction::SetOption {
-                                    namespace,
-                                    name,
-                                    value,
-                                    ..
-                                } = action
-                                {
-                                    audit::append_lint_fix(
-                                        &region_label,
-                                        &env.name,
-                                        rule_id,
+                                let err_str = e.to_string();
+                                for &idx in &planned_set_indices {
+                                    let (rule_id, action) = &planned[idx];
+                                    if let lint::FixAction::SetOption {
                                         namespace,
                                         name,
                                         value,
-                                        Some(&err_str),
-                                    );
+                                        ..
+                                    } = action
+                                    {
+                                        audit::append_lint_fix(
+                                            &region_label,
+                                            &env.name,
+                                            rule_id,
+                                            namespace,
+                                            name,
+                                            value,
+                                            Some(&err_str),
+                                        );
+                                    }
                                 }
+                                FIX_DISPATCH_FAILED
+                                    .store(true, std::sync::atomic::Ordering::Relaxed);
                             }
-                            FIX_DISPATCH_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
                         }
                     }
                 }
-            }
 
-            all_issues.extend(issues);
+                all_issues.extend(issues);
+            }
         }
-    }
 
-    if !quiet {
-        if json {
-            println!("{}", lint::render_issues_json(&all_issues));
-        } else if all_issues.is_empty() {
-            println!("✓ No issues found");
-        } else {
-            for issue in &all_issues {
-                let sev = issue.severity.as_str();
-                let env_str = issue.env_name.as_deref().unwrap_or("-");
-                if multi_region {
-                    let region = issue
-                        .fields
-                        .get("region")
-                        .map(String::as_str)
-                        .unwrap_or("-");
-                    println!(
-                        "{region}\t{sev}\t{}\t{env_str}\t{}",
-                        issue.rule_id, issue.title
-                    );
-                } else {
-                    println!("{sev}\t{}\t{env_str}\t{}", issue.rule_id, issue.title);
-                }
-                if let Some(s) = &issue.suggestion {
-                    println!("\t→ {s}");
+        if !quiet {
+            if json {
+                println!("{}", lint::render_issues_json(&all_issues));
+            } else if all_issues.is_empty() {
+                println!("✓ No issues found");
+            } else {
+                for issue in &all_issues {
+                    let sev = issue.severity.as_str();
+                    let env_str = issue.env_name.as_deref().unwrap_or("-");
+                    if multi_region {
+                        let region = issue
+                            .fields
+                            .get("region")
+                            .map(String::as_str)
+                            .unwrap_or("-");
+                        println!(
+                            "{region}\t{sev}\t{}\t{env_str}\t{}",
+                            issue.rule_id, issue.title
+                        );
+                    } else {
+                        println!("{sev}\t{}\t{env_str}\t{}", issue.rule_id, issue.title);
+                    }
+                    if let Some(s) = &issue.suggestion {
+                        println!("\t→ {s}");
+                    }
                 }
             }
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+        }
+
+        last_cycle_clean = all_issues.is_empty();
+
+        if !watch {
+            break;
+        }
+        // Sleep `interval_secs` or break on Ctrl-C — whichever
+        // fires first. `tokio::signal::ctrl_c` panics if called
+        // outside a Tokio runtime, but `run` is `#[tokio::main]`-
+        // driven so we're always inside one here.
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                if !quiet && !json {
+                    eprintln!("(watch interrupted)");
+                }
+                break;
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_secs(interval_secs)) => {}
         }
     }
 
@@ -371,7 +448,7 @@ pub async fn run(args: &[String]) -> Result<()> {
             std::process::exit(1);
         }
         Ok(())
-    } else if all_issues.is_empty() {
+    } else if last_cycle_clean {
         Ok(())
     } else {
         std::process::exit(3);

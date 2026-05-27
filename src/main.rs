@@ -204,7 +204,7 @@ FLAGS:
 SUBCOMMANDS:
     envs [--json]                                List environments in current profile / region.
     lint [--env NAME] [--regions r1,r2,r3] [--json] [--severity LVL] [--rules ID1,ID2] [--quiet]
-         [--fix (--yes | --dry-run)]
+         [--fix (--yes | --dry-run)] [--watch [--interval 60s]]
                                                   Run the diagnostic rule engine against one env
                                                   (or every env in the context) and emit findings
                                                   as text or JSON. Non-zero exit when issues found.
@@ -221,6 +221,11 @@ SUBCOMMANDS:
                                                   `lint.fix_disable`. Manual fixes printed as
                                                   instructions when the right answer is operator-
                                                   context-dependent.
+                                                  --watch loops at --interval (default 60s) until
+                                                  Ctrl-C; exit code reflects the LAST cycle.
+                                                  Canonical monitoring shape:
+                                                  `ebman lint --watch --interval 5m --json > alerts.jsonl`.
+                                                  --watch and --fix are mutually exclusive.
     drift [--env NAME] [--regions r1,r2,r3] [--tfstate PATH] [--tfdir PATH] [--json] [--quiet]
                                                   Terraform drift report. Discovers tfstate via
                                                   walk-up from cwd (or --tfdir / --tfstate
