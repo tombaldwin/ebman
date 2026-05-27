@@ -877,6 +877,27 @@ ebman mcp serve                        → server mode (future: MCP for Claude C
 
 **Future-proofing test passed:** LLM explainer (`ebman explain`), MCP server (`ebman mcp serve`), cron-driven monitoring (`ebman lint --watch`), git pre-commit hooks (`ebman drift`), GitHub Actions integration (`ebman action deploy`), audit-stream consumption (`ebman audit --tail --json | jq`) all fit without restructuring.
 
+### 0.15 candidates (2026-05-27)
+
+Theme: **foundation pass.** No new operator-facing features — pure structural cleanup driven by the 0.14.0 architecture review. `src/app.rs` is at 21,794 lines / 532 methods; `src/main.rs` is at 2,625 lines with seven inline `run_*_cli` async fns that have become a CLI grab-bag. The user codified the code-review-before-tagging step in 0.14.1 — this release acts on its findings before the cliff hits at ~0.18. Sets the table for 0.16+ feature work to land in cleaner modules.
+
+#### CLI split — HEADLINE
+- [ ] **CLI subcommands → `src/cli/{audit,explain,lint,drift,envs,action,ctl}.rs`** — `main.rs` becomes ~400 lines of argv parse + dispatch + TUI lifecycle. Each `ebman <verb>` gets a one-file home exposing `pub async fn run(args: &[String]) -> Result<()>`. Shared helpers (`decide_poll`, `json_string`, `cli_esc`) move to `src/cli/mod.rs`. `run_action_deploy` + `run_action_rollout` live under `cli/action.rs`. Architecture review's #1 finding (`main.rs` size + grab-bag organisation). Estimated ~4hrs.
+
+#### Audit + explain — SUPPORT
+- [ ] **Audit writers → `src/audit.rs`** — Move `write_audit_outcome` (app.rs:14948), `write_rollout_audit_line` (main.rs:1884), `write_lint_fix_audit_line` (main.rs:978) into `audit.rs` as `audit::append_action(...)` / `append_rollout(...)` / `append_lint_fix(...)`. Writers + parser co-located closes the format-drift risk the 0.14.1 patch surfaced. Also: webhook fan-out currently only triggers from `write_audit_line` — move that into `audit.rs` so all three line types get fanned out automatically. Estimated ~2hrs.
+
+- [ ] **`App.explain_*` → `App.explain_settings: llm::Settings`** — Six fields on App (`app.rs:1146-1152`), three sites (`App::new`, `App::new_demo`, `current_config_snapshot`) that must stay in sync. `cmd_explain_issue` (`app.rs:5139-5166`) already duplicates `Settings::from_config` logic. Collapse to one field; add a `Settings::write_to_config(&self, cfg: &mut Config)` helper for the snapshot path. Template for the next `[section]` block in config.toml. Estimated ~1hr.
+
+#### spawn_* grouping — BONUS
+- [ ] **`spawn_*` clusters → `src/app/spawn_*.rs`** — 60 spawn methods interleaved across 8k lines of app.rs. 34 have topical prefixes (spawn_detail_* 11, spawn_why_red_* 6, spawn_dlq_* 4, spawn_batch_* 4, spawn_rollout_* 2, etc.). Group each cluster into `src/app/spawn_*.rs` as `impl App` blocks. Cuts app.rs by 4-5k lines; purely organisational. **Only attempt if time permits** after CLI split + audit consolidation + explain collapse; otherwise defer to 0.16. Estimated ~3hrs.
+
+#### Out of scope for 0.15 (track for later)
+- **MCP server (`ebman mcp serve`)** — speculative; no operator demand yet. Re-evaluate post-0.15 once foundation work has shipped.
+- **`:rollout --parallel` / `--continue-on-fail` / `--staggered Nm`** — deepens 0.13 rollout; held pending operator feedback on what the real failure-handling patterns are.
+- **`ebman explain --env NAME` cross-issue synthesis** — bigger prompt engineering surface. Held until per-issue explain has road-time.
+- **EBL002 auto-fix (health-check URL)** — needs interactive prompt for the path; Manual fix stays in 0.14 shape.
+
 ### 0.14 candidates (2026-05-27)
 
 Theme: **from diagnostic to remediation.** 0.12 surfaced issues (`:lint`, `:drift`). 0.13 made them fleet-wide (`--regions` everywhere). 0.14 makes them actionable — LLM-backed explanations turn structured `Issue` output into operator-readable next steps, opt-in auto-fix dispatches the obvious-correct-answer ones through the existing undo machinery, and the audit log gets a first-class CLI for monitoring / Slack-bot integration. The user's earlier directive: "claude code/api integration would be nice, but not this version [0.13]" — meaning the time is now. Plus: "smart features must be available as standalone arguments so they can be run as git hooks, CI, monitoring tools" — same constraint applies to every item below.
