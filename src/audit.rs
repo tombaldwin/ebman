@@ -426,14 +426,23 @@ pub fn init_from_config_disk() {
 /// single-env (`env-a`) shapes are the caller's choice. `action_label`
 /// goes into the `action=` field verbatim — typically the Debug-derived
 /// variant name of [`crate::mode_action::Action`].
+///
+/// `extras` is an optional slice of `(key, value)` pairs emitted
+/// after `target=`. Values are auto-quoted with `"..."` when they
+/// contain whitespace; [`escape_value`] sanitises them so a stray
+/// newline can't split the line on disk. Use this for additional
+/// context the simple `action/target` shape doesn't carry (e.g.
+/// `version=build-900`, `summary="MinSize=2 MaxSize=4"`).
 pub fn append_action_dispatched(
     account: Option<&str>,
     profile: Option<&str>,
     region: &str,
     action_label: &str,
     target: &str,
+    extras: &[(&str, &str)],
 ) {
-    let detail = format!("stage=dispatched action={action_label} target={target}");
+    let mut detail = format!("stage=dispatched action={action_label} target={target}");
+    append_extras(&mut detail, extras);
     write_audit_line(account, profile, region, &detail);
 }
 
@@ -441,20 +450,44 @@ pub fn append_action_dispatched(
 /// is mapped to `outcome=ok` (Ok) or `outcome=err err="…"` (Err); the
 /// error string goes through [`escape_value`] so a multi-line AWS
 /// error doesn't split the entry across two log lines.
+///
+/// `extras` (same shape as in [`append_action_dispatched`]) lets
+/// callers attach per-action context — e.g. `summary="..."` for an
+/// option-settings update, `label=...` for a deploy, `cmd="..."`
+/// for an SSM RunCommand. Emitted between `target=` and `outcome=`
+/// so the wire shape stays stable.
 pub fn append_action_completed(
     account: Option<&str>,
     profile: Option<&str>,
     region: &str,
     action_label: &str,
-    env: &str,
+    target: &str,
     result: Result<(), &str>,
+    extras: &[(&str, &str)],
 ) {
-    let outcome = match result {
-        Ok(()) => "outcome=ok".to_string(),
-        Err(e) => format!("outcome=err err=\"{}\"", escape_value(e)),
-    };
-    let detail = format!("stage=completed action={action_label} target={env} {outcome}");
+    let mut detail = format!("stage=completed action={action_label} target={target}");
+    append_extras(&mut detail, extras);
+    match result {
+        Ok(()) => detail.push_str(" outcome=ok"),
+        Err(e) => detail.push_str(&format!(" outcome=err err=\"{}\"", escape_value(e))),
+    }
     write_audit_line(account, profile, region, &detail);
+}
+
+/// Append `extras` to a detail string. Pure helper so the
+/// dispatched + completed paths share the encoding (and so the
+/// tests cover it once). Auto-quotes values that contain
+/// whitespace, `=`, or `"`; leaves simple values unquoted to match
+/// the existing hand-rolled audit-line shape
+/// (`namespace=ns name=opt value="..."`).
+fn append_extras(detail: &mut String, extras: &[(&str, &str)]) {
+    for (k, v) in extras {
+        if v.is_empty() || v.contains(|c: char| c.is_whitespace() || c == '"' || c == '=') {
+            detail.push_str(&format!(" {k}=\"{}\"", escape_value(v)));
+        } else {
+            detail.push_str(&format!(" {k}={v}"));
+        }
+    }
 }
 
 /// Append a rollout-shaped line. `stage` is `"dispatched"` or

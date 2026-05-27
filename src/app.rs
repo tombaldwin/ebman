@@ -4530,11 +4530,13 @@ impl App {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let redact = self.redact;
-        crate::audit::append_raw(
+        crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
-            &format!("stage=dispatched action=GetSecretValue target={name}"),
+            "GetSecretValue",
+            &name,
+            &[],
         );
         // Captured for the completion audit line written from the task.
         let account = self.context.account_id.clone();
@@ -4550,16 +4552,15 @@ impl App {
             // dispatched/completed pairing of the write paths. (The
             // AWS-side CloudTrail event is the canonical record; this
             // is ebman's own breadcrumb.)
-            let outcome = match &result {
-                Ok(_) => {
-                    format!("stage=completed action=GetSecretValue target={name} outcome=ok")
-                }
-                Err(e) => format!(
-                    "stage=completed action=GetSecretValue target={name} outcome=err err=\"{}\"",
-                    crate::audit::escape_value(e)
-                ),
-            };
-            crate::audit::append_raw(account.as_deref(), profile.as_deref(), &region, &outcome);
+            crate::audit::append_action_completed(
+                account.as_deref(),
+                profile.as_deref(),
+                &region,
+                "GetSecretValue",
+                &name,
+                result.as_ref().map(|_| ()).map_err(|e| e.as_str()),
+                &[],
+            );
             let body = match result {
                 Ok(value) => render_secret_value_overlay(&name, &value, redact),
                 Err(e) => format!("secret: {e}\n\nesc / q to close"),
@@ -4747,23 +4748,21 @@ impl App {
         // ~/.cache/ebman/audit.log. The command string is escaped so
         // quotes don't break the line shape.
         let audit_cmd = trimmed.replace('"', "'");
-        crate::audit::append_raw(
+        let instances_str = instances.len().to_string();
+        crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
-            &format!(
-                "stage=dispatched action=SsmRunCommand target={env_name} instances={n} cmd=\"{cmd}\"",
-                n = instances.len(),
-                cmd = audit_cmd,
-            ),
+            "SsmRunCommand",
+            env_name.as_str(),
+            &[("instances", &instances_str), ("cmd", &audit_cmd)],
         );
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let command_for_render = trimmed.clone();
         let n = instances.len();
-        // Snapshot context for the completion-stage audit line. The
-        // tokio task outlives `self`'s borrow.
+        // Snapshot context for the completion-stage audit line.
         let audit_account = self.context.account_id.clone();
         let audit_profile = self.context.profile.clone();
         let audit_region = self.context.region.clone();
@@ -4775,23 +4774,21 @@ impl App {
                 .run_shell_command(&instances, &trimmed, 60)
                 .await
                 .map_err(|e| flatten_err("run_shell_command", e));
-            let outcome = match &result {
+            let ok_count_str = match &result {
                 Ok(rows) => {
                     let oks = rows.iter().filter(|r| r.status == "Success").count();
-                    format!(
-                        "stage=completed action=SsmRunCommand target={audit_env} outcome=ok ok_count={oks}/{n} cmd=\"{audit_cmd_for_outcome}\""
-                    )
+                    format!("{oks}/{n}")
                 }
-                Err(e) => format!(
-                    "stage=completed action=SsmRunCommand target={audit_env} outcome=err err=\"{}\" cmd=\"{audit_cmd_for_outcome}\"",
-                    crate::audit::escape_value(e)
-                ),
+                Err(_) => format!("0/{n}"),
             };
-            crate::audit::append_raw(
+            crate::audit::append_action_completed(
                 audit_account.as_deref(),
                 audit_profile.as_deref(),
                 &audit_region,
-                &outcome,
+                "SsmRunCommand",
+                &audit_env,
+                result.as_ref().map(|_| ()).map_err(|e| e.as_str()),
+                &[("ok_count", &ok_count_str), ("cmd", &audit_cmd_for_outcome)],
             );
             let body = match result {
                 Ok(rows) => format_ssm_results(&command_for_render, &rows),
@@ -7812,16 +7809,15 @@ impl App {
                 .update_env_option_settings(&env_for_msg, &to_set, &to_remove)
                 .await
                 .map_err(|e| flatten_err("update_env_option_settings", e));
-            let outcome = match &result {
-                Ok(()) => format!(
-                    "stage=completed action=UpdateOptionSettings target={env_for_msg} summary=\"{summary_for_msg}\" outcome=ok"
-                ),
-                Err(e) => format!(
-                    "stage=completed action=UpdateOptionSettings target={env_for_msg} summary=\"{summary_for_msg}\" outcome=err err=\"{}\"",
-                    crate::audit::escape_value(e)
-                ),
-            };
-            crate::audit::append_raw(account.as_deref(), profile.as_deref(), &region, &outcome);
+            crate::audit::append_action_completed(
+                account.as_deref(),
+                profile.as_deref(),
+                &region,
+                "UpdateOptionSettings",
+                &env_for_msg,
+                result.as_ref().map(|_| ()).map_err(|e| e.as_str()),
+                &[("summary", &summary_for_msg)],
+            );
             if result.is_ok() {
                 if let Some(entry) = undo_entry {
                     let _ = tx.send(AppMsg::UndoCaptured { gen, entry });
@@ -9112,16 +9108,15 @@ impl App {
                 .update_env_option_settings(&env_for_msg, &to_set, &to_remove)
                 .await
                 .map_err(|e| flatten_err("update_env_option_settings", e));
-            let outcome = match &result {
-                Ok(()) => format!(
-                    "stage=completed action=UpdateOptionSettings target={env_for_msg} summary=\"{summary_for_msg}\" outcome=ok"
-                ),
-                Err(e) => format!(
-                    "stage=completed action=UpdateOptionSettings target={env_for_msg} summary=\"{summary_for_msg}\" outcome=err err=\"{}\"",
-                    crate::audit::escape_value(e)
-                ),
-            };
-            crate::audit::append_raw(account.as_deref(), profile.as_deref(), &region, &outcome);
+            crate::audit::append_action_completed(
+                account.as_deref(),
+                profile.as_deref(),
+                &region,
+                "UpdateOptionSettings",
+                &env_for_msg,
+                result.as_ref().map(|_| ()).map_err(|e| e.as_str()),
+                &[("summary", &summary_for_msg)],
+            );
             // Only record undo on a successful write — otherwise
             // `:undo` would "revert" a write that never landed.
             if result.is_ok() {
@@ -9327,13 +9322,19 @@ impl App {
         } else {
             format!("upload-version {label}")
         };
-        crate::audit::append_raw(
+        let size_str = size.to_string();
+        let and_deploy_str = and_deploy.to_string();
+        crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
-            &format!(
-                "stage=dispatched action=DeployFromLocal target={env_name} label={label} bytes={size} and_deploy={and_deploy}"
-            ),
+            "DeployFromLocal",
+            env_name.as_str(),
+            &[
+                ("label", &label),
+                ("bytes", &size_str),
+                ("and_deploy", &and_deploy_str),
+            ],
         );
         self.push_pending(summary.clone(), env_name.clone());
         let aws = self.aws.clone();
@@ -9455,18 +9456,23 @@ impl App {
             return;
         }
         let application = env.application.clone();
-        let force_str = if force { " (+source bundle)" } else { "" };
-        let detail = format!(
-            "stage=dispatched action=DeleteAppVersion target={application}/{label}{force_str}"
-        );
-        crate::audit::append_raw(
+        // Target carries the optional "(+source bundle)" suffix so a
+        // tail of the audit log makes the force flag visible without
+        // a separate extras field.
+        let target_label = if force {
+            format!("{application}/{label} (+source bundle)")
+        } else {
+            format!("{application}/{label}")
+        };
+        crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
-            &detail,
+            "DeleteAppVersion",
+            &target_label,
+            &[],
         );
         // In-flight ack lives on the pending pill; completion toasts.
-        let _ = force_str;
         let pending_label = if force {
             "Delete app version (+source)"
         } else {
@@ -9482,21 +9488,21 @@ impl App {
         let region = self.context.region.clone();
         let app_for_msg = application.clone();
         let label_for_msg = label.clone();
+        let target_label_for_outcome = target_label.clone();
         tokio::spawn(async move {
             let result = aws
                 .delete_application_version(&application, &label, force)
                 .await
                 .map_err(|e| flatten_err("delete_application_version", e));
-            let outcome = match &result {
-                Ok(()) => format!(
-                    "stage=completed action=DeleteAppVersion target={application}/{label}{force_str} outcome=ok"
-                ),
-                Err(e) => format!(
-                    "stage=completed action=DeleteAppVersion target={application}/{label}{force_str} outcome=err err=\"{}\"",
-                    crate::audit::escape_value(e)
-                ),
-            };
-            crate::audit::append_raw(account.as_deref(), profile.as_deref(), &region, &outcome);
+            crate::audit::append_action_completed(
+                account.as_deref(),
+                profile.as_deref(),
+                &region,
+                "DeleteAppVersion",
+                &target_label_for_outcome,
+                result.as_ref().map(|_| ()).map_err(|e| e.as_str()),
+                &[],
+            );
             let _ = tx.send(AppMsg::DeleteAppVersion {
                 gen,
                 application: app_for_msg,
@@ -9657,15 +9663,13 @@ impl App {
         } else {
             format!("untag {}", to_remove.join(","))
         };
-        let detail = format!(
-            "stage=dispatched action=UpdateTags target={} {}",
-            env.name, summary
-        );
-        crate::audit::append_raw(
+        crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
-            &detail,
+            "UpdateTags",
+            &env.name,
+            &[("summary", &summary)],
         );
         // Label intentionally carries the operation (`tag …` / `untag …`) so
         // the pending panel distinguishes simultaneous edits. The pending
@@ -9685,20 +9689,14 @@ impl App {
                 .update_tags(&arn, &to_add, &to_remove)
                 .await
                 .map_err(|e| flatten_err("update_tags", e));
-            let outcome_detail = match &result {
-                Ok(()) => format!(
-                    "stage=completed action=UpdateTags target={env_name} {summary} outcome=ok"
-                ),
-                Err(e) => format!(
-                    "stage=completed action=UpdateTags target={env_name} {summary} outcome=err err=\"{}\"",
-                    crate::audit::escape_value(e),
-                ),
-            };
-            crate::audit::append_raw(
+            crate::audit::append_action_completed(
                 account.as_deref(),
                 profile.as_deref(),
                 &region,
-                &outcome_detail,
+                "UpdateTags",
+                &env_name,
+                result.as_ref().map(|_| ()).map_err(|e| e.as_str()),
+                &[("summary", &summary)],
             );
             let _ = tx.send(AppMsg::TagUpdate {
                 gen,
@@ -14118,16 +14116,15 @@ fn finish_deploy_from_local(
     region: &str,
     result: Result<(), String>,
 ) {
-    let outcome = match &result {
-        Ok(()) => format!(
-            "stage=completed action=DeployFromLocal target={env_name} label={label} outcome=ok"
-        ),
-        Err(e) => format!(
-            "stage=completed action=DeployFromLocal target={env_name} label={label} outcome=err err=\"{}\"",
-            crate::audit::escape_value(e)
-        ),
-    };
-    crate::audit::append_raw(account, profile, region, &outcome);
+    crate::audit::append_action_completed(
+        account,
+        profile,
+        region,
+        "DeployFromLocal",
+        &env_name,
+        result.as_ref().map(|_| ()).map_err(|e| e.as_str()),
+        &[("label", &label)],
+    );
     let _ = tx.send(AppMsg::DeployFromLocal {
         gen,
         env_name,
@@ -14918,6 +14915,7 @@ fn write_audit_entry(
         region,
         &format!("{action:?}"),
         &target,
+        &[],
     );
 }
 
@@ -14938,6 +14936,7 @@ fn write_audit_outcome(
         &format!("{action:?}"),
         env,
         result,
+        &[],
     );
 }
 
