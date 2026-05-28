@@ -5029,6 +5029,12 @@ impl App {
         let app_name = env.application.clone();
         let env_name_for_fetch = env.name.clone();
         let settings = self.explain_settings.clone();
+        // Snapshot the lint-context inputs that aren't already
+        // implied by `&env` + `&opts`. `App.latest_stacks` enables
+        // EBL008; `App.required_tags` enables EBL010.
+        let latest_stack_owned = crate::aws::stack_family_version(&env.solution_stack)
+            .and_then(|(family, _)| self.latest_stacks.get(&family).cloned());
+        let required_tags_owned = self.required_tags.clone();
         let issue_id_owned = issue_id.to_string();
         let issue_id_title = issue_id.to_string();
         self.status_message = Some(format!("explain: building prompt for {issue_id}…"));
@@ -5038,7 +5044,11 @@ impl App {
                 .await
             {
                 Ok(opts) => {
-                    let ctx = crate::lint::LintContext::for_env(&env, &opts);
+                    let mut ctx = crate::lint::LintContext::for_env(&env, &opts)
+                        .with_required_tags(&required_tags_owned);
+                    if let Some(latest) = latest_stack_owned.as_deref() {
+                        ctx = ctx.with_latest_stack(latest);
+                    }
                     let rules = crate::lint::default_rules(&disabled);
                     let issues = crate::lint::run_rules(&rules, &ctx);
                     match issues.iter().find(|i| i.rule_id == issue_id_owned) {
@@ -9909,10 +9919,19 @@ impl App {
         let env_for_msg = env.name.clone();
         let app_name = env.application.clone();
         let env_name = env.name.clone();
+        // Plumb the live lint-context inputs so EBL008 (latest
+        // stack) + EBL010 (required tags) fire in confirm modals.
+        let latest_stack_owned = crate::aws::stack_family_version(&env.solution_stack)
+            .and_then(|(family, _)| self.latest_stacks.get(&family).cloned());
+        let required_tags_owned = self.required_tags.clone();
         tokio::spawn(async move {
             let issues = match aws.fetch_env_option_settings(&app_name, &env_name).await {
                 Ok(opts) => {
-                    let ctx = crate::lint::LintContext::for_env(&env, &opts);
+                    let mut ctx = crate::lint::LintContext::for_env(&env, &opts)
+                        .with_required_tags(&required_tags_owned);
+                    if let Some(latest) = latest_stack_owned.as_deref() {
+                        ctx = ctx.with_latest_stack(latest);
+                    }
                     let rules = crate::lint::default_rules(&disabled);
                     crate::lint::run_rules(&rules, &ctx)
                 }

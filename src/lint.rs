@@ -135,6 +135,12 @@ pub struct LintContext<'a> {
     /// against this. Empty slice means "no requirement declared"
     /// — the rule skips rather than firing on every env.
     pub required_tags: &'a [String],
+    /// Env's actual tag keys (just the keys, not values), as
+    /// fetched from EB's `ListTagsForResource`. Empty slice means
+    /// "tags not loaded" — the rule skips rather than firing.
+    /// Populated by callers that have already fetched tag data
+    /// (the Detail/Tags tab does, but `:lint` doesn't yet).
+    pub env_tag_keys: &'a [String],
     /// SQS dead-letter-queue depth for worker envs, when
     /// `:workers on` (or equivalent) has populated it. `None`
     /// means worker-tab data isn't loaded — the corresponding
@@ -163,6 +169,7 @@ impl<'a> LintContext<'a> {
             cost_usd_per_month: None,
             latest_stack_version: None,
             required_tags: &[],
+            env_tag_keys: &[],
             dlq_depth: None,
             healthy_instance_count: None,
         }
@@ -188,9 +195,17 @@ impl<'a> LintContext<'a> {
     }
 
     /// Attach the operator's `required_tags` declaration. Enables
-    /// EBL010 (missing required tags).
+    /// EBL010 (missing required tags) when paired with
+    /// [`Self::with_env_tag_keys`].
     pub fn with_required_tags(mut self, required_tags: &'a [String]) -> Self {
         self.required_tags = required_tags;
+        self
+    }
+
+    /// Attach the env's actual tag keys (just keys, not values).
+    /// Paired with [`Self::with_required_tags`] to fire EBL010.
+    pub fn with_env_tag_keys(mut self, env_tag_keys: &'a [String]) -> Self {
+        self.env_tag_keys = env_tag_keys;
         self
     }
 
@@ -798,16 +813,14 @@ impl Rule for StalePlatformVersion {
         // newer stack is known and the live one differs, that's
         // the staleness signal.
         //
-        // 0.16 SHIP NOTE: every production `LintContext`
-        // constructor (CLI lint / explain, TUI cmd_misc, TUI
-        // confirm-modal) currently passes
-        // `latest_stack_version: None` — so this rule no-ops in
-        // production. `App.latest_stacks` is fetched but not
-        // plumbed through. Wiring the lookup is tracked for
-        // 0.17. Until then, the rule fires only in unit tests
-        // (pinned by `ebl008_currently_stub_does_not_fire_in_cli`
-        // below); operators don't see false-positives but also
-        // don't get the diagnostic.
+        // 0.17 STATE: live in the TUI (`:lint`, `:explain`,
+        // confirm-modal) — those paths plumb `App.latest_stacks`
+        // via `aws::stack_family_version(env.solution_stack)`.
+        // CLI (`ebman lint`, `ebman explain`) still no-ops — the
+        // CLI doesn't have an App, so it'd need its own
+        // `ListAvailableSolutionStacks` fetch. Tracked for 0.18.
+        // The CLI no-op is pinned by
+        // `ebl008_currently_stub_does_not_fire_in_cli` below.
         let latest = ctx.latest_stack_version?;
         if latest == stack || latest.is_empty() {
             return None;
@@ -923,15 +936,50 @@ impl Rule for MissingRequiredTags {
                 .into(),
         })
     }
-    fn applies(&self, _ctx: &LintContext) -> Option<Issue> {
-        // `required_tags` lives on Config (and on App), not on
-        // LintContext today — so the rule effectively no-ops here.
-        // Wiring the required-tags list into LintContext is a
-        // small extension; flagged in BACKLOG as a follow-up so the
-        // rule starts firing. v1 ships the rule stub so the id is
-        // reserved and operators can `lint.disable = "EBL010"`
-        // when they don't want it.
-        None
+    fn applies(&self, ctx: &LintContext) -> Option<Issue> {
+        // Three guards before firing:
+        //  1. Operator declared required_tags (else nothing to check)
+        //  2. Caller populated env_tag_keys (else we can't compare —
+        //     `:lint` doesn't fetch tags yet; the Detail/Tags tab
+        //     does, but that data isn't on App today)
+        //  3. At least one required key is missing from the env
+        // Wiring env_tag_keys at every call site is a 0.18 follow-
+        // up; until then, this rule fires only when callers
+        // explicitly pass tag keys (e.g. confirm-modal in the
+        // future).
+        if ctx.required_tags.is_empty() || ctx.env_tag_keys.is_empty() {
+            return None;
+        }
+        let missing: Vec<&str> = ctx
+            .required_tags
+            .iter()
+            .filter(|req| !ctx.env_tag_keys.iter().any(|k| k.eq_ignore_ascii_case(req)))
+            .map(String::as_str)
+            .collect();
+        if missing.is_empty() {
+            return None;
+        }
+        let mut fields = BTreeMap::new();
+        fields.insert("missing_tag_keys".into(), missing.join(","));
+        Some(Issue {
+            rule_id: self.id().into(),
+            severity: self.severity(),
+            env_name: Some(ctx.env.name.clone()),
+            title: format!("Env is missing required tag(s): {}", missing.join(", ")),
+            detail: format!(
+                "config.toml declares required_tags = [{}]. The env is missing: {}. \
+                 Add the tags via `:tag KEY=VALUE` (one per missing key). Tag values \
+                 are operator-specific; the rule only checks key presence.",
+                ctx.required_tags
+                    .iter()
+                    .map(|s| format!("\"{s}\""))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                missing.join(", ")
+            ),
+            suggestion: Some(format!(":tag {}=<value>", missing[0])),
+            fields,
+        })
     }
 }
 
@@ -1535,14 +1583,67 @@ mod tests {
     }
 
     #[test]
-    fn ebl010_currently_stub_does_not_fire() {
-        // EBL010 ships as a registered stub in 0.16 — required_tags
-        // isn't wired into LintContext yet. Pinning the stub
-        // behaviour so future work that wires the field will
-        // require updating this test (forcing visibility).
+    fn ebl010_skips_when_no_required_tags() {
+        // Operator hasn't declared required_tags → nothing to
+        // check, no false positive.
         let env = mk_env("prod", "Web", "Green");
         let opts: Vec<(String, String, String)> = vec![];
-        assert!(MissingRequiredTags.applies(&ctx(&env, &opts)).is_none());
+        let env_tags = vec!["Owner".to_string(), "Env".to_string()];
+        let ctx = LintContext::for_env(&env, &opts).with_env_tag_keys(&env_tags);
+        assert!(MissingRequiredTags.applies(&ctx).is_none());
+    }
+
+    #[test]
+    fn ebl010_skips_when_env_tags_not_loaded() {
+        // operator declared required_tags but caller didn't
+        // populate env_tag_keys → can't compare; skip rather than
+        // false-positive on every env.
+        let env = mk_env("prod", "Web", "Green");
+        let opts: Vec<(String, String, String)> = vec![];
+        let required = vec!["Owner".to_string()];
+        let ctx = LintContext::for_env(&env, &opts).with_required_tags(&required);
+        assert!(MissingRequiredTags.applies(&ctx).is_none());
+    }
+
+    #[test]
+    fn ebl010_fires_on_missing_required_tag() {
+        let env = mk_env("prod", "Web", "Green");
+        let opts: Vec<(String, String, String)> = vec![];
+        let required = vec!["Owner".to_string(), "CostCentre".to_string()];
+        let env_tags = vec!["Owner".to_string(), "Env".to_string()];
+        let ctx = LintContext::for_env(&env, &opts)
+            .with_required_tags(&required)
+            .with_env_tag_keys(&env_tags);
+        let issue = MissingRequiredTags.applies(&ctx).expect("fires");
+        assert_eq!(issue.rule_id, "EBL010");
+        assert_eq!(
+            issue.fields.get("missing_tag_keys").map(String::as_str),
+            Some("CostCentre")
+        );
+    }
+
+    #[test]
+    fn ebl010_check_is_case_insensitive() {
+        let env = mk_env("prod", "Web", "Green");
+        let opts: Vec<(String, String, String)> = vec![];
+        let required = vec!["owner".to_string()];
+        let env_tags = vec!["Owner".to_string()];
+        let ctx = LintContext::for_env(&env, &opts)
+            .with_required_tags(&required)
+            .with_env_tag_keys(&env_tags);
+        assert!(MissingRequiredTags.applies(&ctx).is_none());
+    }
+
+    #[test]
+    fn ebl010_skips_when_all_required_present() {
+        let env = mk_env("prod", "Web", "Green");
+        let opts: Vec<(String, String, String)> = vec![];
+        let required = vec!["Owner".to_string(), "Env".to_string()];
+        let env_tags = vec!["Owner".to_string(), "Env".to_string(), "Extra".to_string()];
+        let ctx = LintContext::for_env(&env, &opts)
+            .with_required_tags(&required)
+            .with_env_tag_keys(&env_tags);
+        assert!(MissingRequiredTags.applies(&ctx).is_none());
     }
 
     #[test]
