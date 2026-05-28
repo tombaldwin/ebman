@@ -62,6 +62,15 @@ accounts.prod.region = "eu-west-2"
 safety.envs.uflexi-prod.read_only = true
 safety.accounts.prod.read_only = true
 
+# Custom command aliases. `alias.NAME = "expansion"` lines map a
+# typed `:NAME` to a full command line. Args typed after the alias
+# name are appended to the expansion, so `alias.dp = "deploy
+# --auto-rollback 5m"` plus `:dp build-900` becomes
+# `:deploy --auto-rollback 5m build-900`. Single-level expansion
+# (no transitive chaining → no cycle-detection complexity).
+# alias.dp = "deploy --auto-rollback 5m"
+# alias.shipit = "promote-env staging prod --wait-for-green 5m"
+
 # Lint engine disables — CSV form. Disabled rules are skipped at
 # registry-load time so they have zero per-env cost. Project-local
 # `.ebman/ebman.toml` can extend (never override) this list via
