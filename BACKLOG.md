@@ -877,6 +877,38 @@ ebman mcp serve                        → server mode (future: MCP for Claude C
 
 **Future-proofing test passed:** LLM explainer (`ebman explain`), MCP server (`ebman mcp serve`), cron-driven monitoring (`ebman lint --watch`), git pre-commit hooks (`ebman drift`), GitHub Actions integration (`ebman action deploy`), audit-stream consumption (`ebman audit --tail --json | jq`) all fit without restructuring.
 
+### 0.17 candidates (2026-05-28)
+
+Theme: **make the stubs live + lint adoption ergonomics.** 0.16 shipped EBL007-010 but EBL008 (stale platform) and EBL010 (required tags) silently no-op in production because their context fields (`latest_stack_version`, `required_tags`) aren't plumbed through. 0.17 plumbs them — and lands two more high-signal rules built on the same plumbing (EBL011 DLQ depth, EBL012 instance-count divergence). Plus `lint --baseline` so teams onboarding lint on a noisy fleet can grandfather existing issues without declaring bankruptcy. Plus tail cleanup (LintContext builder pattern, run_inline_ssm removal, two quick UX wins).
+
+#### Smart features — HEADLINE
+- [ ] **LintContext builder + plumb `latest_stacks` + `required_tags`** — `LintContext::for_env(env, opts)` plus `.with_latest_stack(s)` / `.with_required_tags(t)` / `.with_dlq_depth(d)` / `.with_healthy_count(n)`. Shrinks each of the 6 LintContext constructor sites to one line. App.latest_stacks → live EBL008; Config.required_tags → live EBL010. Remove the `ebl008_currently_stub_does_not_fire_in_cli` and `ebl010_currently_stub_does_not_fire` pinning tests (they're no longer stubs). Estimated ~2hrs.
+
+- [ ] **EBL011: worker env with DLQ depth > N for > M minutes (Warn)** — Catches stuck SQS consumers. App.worker_dlq_depths already populated by the workers tab. New `LintContext.dlq_depth: Option<i64>` field. Threshold via config (default: > 100 sustained). Auto-fix=Manual (scale workers / restart / drain — operator decides). ~50 lines + tests.
+
+- [ ] **EBL012: env reports 0 healthy instances but status=Green (Warn)** — Detects ELB-vs-EB health-check divergence. App.env_instance_counts ditto. New `LintContext.healthy_instance_count: Option<i64>` field. Fires when status=Ready + healthy_count=0. Auto-fix=Manual. ~50 lines + tests.
+
+- [ ] **`ebman lint --baseline FILE` / `--against-baseline FILE`** — CI adoption pattern. `--baseline` writes current `{"issues":[...]}` to a JSON file. `--against-baseline FILE` runs lint and shows only NEW issues vs the baseline (diff by `(rule_id, env_name, fields_hash)`). Exit 3 only on NEW issues; cleared issues are informational. Lets a team adopt `ebman lint` in CI on a fleet with existing warnings without immediate `--severity error` gating. Pure CLI; builds on `render_issues_json` + a reverse-parser. Estimated ~2hrs.
+
+#### Cleanup — SUPPORT
+- [ ] **Remove `run_inline_ssm` dead code** — app.rs:2683-2763, ~80 lines `#[allow(dead_code)]` reference impl with three `println!` calls (violates the no-stdout-in-TUI convention). Kept as a reference; reference can live in git history. Also removes one of the few remaining `audit::append_raw` SsmSession sites. ~5min.
+
+- [ ] **`:undo` discoverability toast** — After every successful option-settings write, append " · press U to undo" to the post-success status_message. 5-line edit to the OptionSettingsUpdate apply path. Closes the "undo exists but operators don't know" gap.
+
+- [ ] **First-run identity_warning routing** — `app.rs:1978` puts the identity_warning into `error_message` (red banner). For fresh-creds users (no SSO login, expired creds) that's the EXPECTED state, not an error. Route to `status_message` (yellow) with `aws sso login` / `:profile NAME` hints. ~10-line edit.
+
+- [ ] **docs/configuration.md backfill** — `command_aliases` shipped in 0.11 but isn't documented. `[explain]` block shipped in 0.14 but only in an inline TOML comment of the example. Add proper sections.
+
+#### Out of scope for 0.17 (track for later)
+- **`App.cfg_resolved: ResolvedConfig` sub-struct** — Biggest cut to App's 12 mirror fields. Architecture-review item; ~3hrs lift; not bleeding. Hold for 0.18.
+- **`spawn_*` clusters → `src/app/spawn_*.rs` grouping** — Deferred from 0.15 + 0.16. Counted at 60+ methods in 0.15, still 60+ in 0.16 (didn't compound, didn't shrink). Hold for 0.18 until it actually compounds or someone hits the pain.
+- **24 remaining dispatched-only `append_raw` sites** — Migrate to `audit::append_action_dispatched`. Gets webhook fan-out for every destructive dispatch. Mechanical; ~2hrs. Hold for 0.18.
+- **CLI subcommand unit tests** — 0 tests across `src/cli/*.rs`. Real coverage gap. Hold for 0.18 as a dedicated test-coverage release.
+- **`:explain` IAM split** — `:why iam` / `:why role` for IAM AccessDenied path, leaving `:explain` for lint. UX win but disambiguation needs operator input. Hold pending feedback.
+- **MCP server (`ebman mcp serve`)** — Now deferred 5×. Stop tracking unless external demand surfaces.
+- **`:queue` action-queue inspector** — Held; abort semantics still unsolved.
+- **`ebman explain --env NAME` cross-issue synthesis** — Useful but bigger prompt-engineering surface. Re-evaluate post-0.17 once new rules land.
+
 ### 0.16 candidates (2026-05-27)
 
 Theme: **continuation + smart-feature depth + rollout deepening.** 0.15 finished the major refactors but left tail work (incomplete audit consolidation, draw_splash in main.rs, duplicated JSON-escape helpers). 0.14 shipped lint/explain/audit; 0.16 adds the monitoring-loop flag (`--watch`) and more rules so the smart-features arc keeps gaining ground. 0.13 shipped sequential cross-region rollout; 0.16 adds the three operational shapes operators eventually want (parallel, continue-on-fail, staggered).
