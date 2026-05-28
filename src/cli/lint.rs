@@ -27,6 +27,45 @@ use crate::{audit, aws, config, lint, project};
 static FIX_DISPATCH_FAILED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// Print `--against-baseline --json` diff body. Hand-rolled to
+/// avoid pulling serde_json; uses `crate::util::json_string` for
+/// the value escapes. Shape:
+///
+/// ```json
+/// {
+///   "new": [{ "rule_id": "...", "env": "...", "title": "..." }, ...],
+///   "cleared": [{ "rule_id": "...", "env": "...", "title": "..." }, ...]
+/// }
+/// ```
+fn print_baseline_diff_json(new: &[&lint::Issue], cleared: &[&lint::BaselineIssue]) {
+    let mut out = String::from("{\"new\":[");
+    for (i, issue) in new.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            "{{\"rule_id\":{},\"env\":{},\"title\":{}}}",
+            crate::util::json_string(&issue.rule_id),
+            crate::util::json_string(issue.env_name.as_deref().unwrap_or("")),
+            crate::util::json_string(&issue.title),
+        ));
+    }
+    out.push_str("],\"cleared\":[");
+    for (i, b) in cleared.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            "{{\"rule_id\":{},\"env\":{},\"title\":{}}}",
+            crate::util::json_string(&b.rule_id),
+            crate::util::json_string(b.env_name.as_deref().unwrap_or("")),
+            crate::util::json_string(&b.title),
+        ));
+    }
+    out.push_str("]}");
+    println!("{out}");
+}
+
 pub async fn run(args: &[String]) -> Result<()> {
     let mut env_name: Option<String> = None;
     let mut regions_csv: Option<String> = None;
@@ -39,6 +78,8 @@ pub async fn run(args: &[String]) -> Result<()> {
     let mut yes = false;
     let mut watch = false;
     let mut interval_str: Option<String> = None;
+    let mut baseline_write: Option<String> = None;
+    let mut baseline_against: Option<String> = None;
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -51,6 +92,8 @@ pub async fn run(args: &[String]) -> Result<()> {
             "--yes" => yes = true,
             "--watch" => watch = true,
             "--interval" => interval_str = iter.next().cloned(),
+            "--baseline" => baseline_write = iter.next().cloned(),
+            "--against-baseline" => baseline_against = iter.next().cloned(),
             "--severity" => {
                 let Some(v) = iter.next() else {
                     eprintln!("ebman lint: --severity expects a value (info / warn / error)");
@@ -92,6 +135,18 @@ pub async fn run(args: &[String]) -> Result<()> {
 
     if watch && fix {
         eprintln!("ebman lint: --watch and --fix are mutually exclusive (use one)");
+        std::process::exit(2);
+    }
+    if baseline_write.is_some() && baseline_against.is_some() {
+        eprintln!(
+            "ebman lint: --baseline (write) and --against-baseline (compare) are mutually exclusive"
+        );
+        std::process::exit(2);
+    }
+    if (baseline_write.is_some() || baseline_against.is_some()) && (fix || watch) {
+        eprintln!(
+            "ebman lint: --baseline / --against-baseline are incompatible with --fix / --watch"
+        );
         std::process::exit(2);
     }
     if fix && !yes && !dry_run {
@@ -386,7 +441,10 @@ pub async fn run(args: &[String]) -> Result<()> {
             }
         }
 
-        if !quiet {
+        // Baseline modes (write / diff) handle their own output
+        // shape; skip the standard text/json render in those paths.
+        let baseline_mode = baseline_write.is_some() || baseline_against.is_some();
+        if !quiet && !baseline_mode {
             if json {
                 println!("{}", lint::render_issues_json(&all_issues));
             } else if all_issues.is_empty() {
@@ -417,7 +475,93 @@ pub async fn run(args: &[String]) -> Result<()> {
             let _ = std::io::stdout().flush();
         }
 
-        last_cycle_clean = all_issues.is_empty();
+        // --baseline FILE: snapshot current issues to disk, exit 0.
+        // Operators use this once when adopting `ebman lint` on a
+        // fleet with existing warnings — grandfathers them so
+        // subsequent runs only flag NEW issues.
+        if let Some(path) = baseline_write.as_deref() {
+            let body = lint::render_issues_json(&all_issues);
+            if let Err(e) = std::fs::write(path, &body) {
+                eprintln!("ebman lint --baseline: write {path}: {e}");
+                std::process::exit(1);
+            }
+            if !quiet {
+                eprintln!(
+                    "ebman lint --baseline: wrote {} issue(s) to {path}",
+                    all_issues.len()
+                );
+            }
+            last_cycle_clean = true; // snapshot ALWAYS exits 0
+        } else if let Some(path) = baseline_against.as_deref() {
+            // --against-baseline FILE: diff current issues against
+            // the snapshot. NEW issues exit 3; CLEARED issues are
+            // informational. Composes with --json (emits a single
+            // {new:[...],cleared:[...]} blob).
+            let baseline_text = match std::fs::read_to_string(path) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("ebman lint --against-baseline: read {path}: {e}");
+                    std::process::exit(1);
+                }
+            };
+            let baseline_issues = match lint::parse_baseline(&baseline_text) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("ebman lint --against-baseline: {e}");
+                    std::process::exit(1);
+                }
+            };
+            let baseline_set: std::collections::HashSet<&str> = baseline_issues
+                .iter()
+                .map(|b| b.identity.as_str())
+                .collect();
+            let current_identities: Vec<String> =
+                all_issues.iter().map(lint::issue_identity).collect();
+            let current_set: std::collections::HashSet<&str> =
+                current_identities.iter().map(String::as_str).collect();
+
+            let new_issues: Vec<&lint::Issue> = all_issues
+                .iter()
+                .zip(current_identities.iter())
+                .filter(|(_, id)| !baseline_set.contains(id.as_str()))
+                .map(|(i, _)| i)
+                .collect();
+            let cleared: Vec<&lint::BaselineIssue> = baseline_issues
+                .iter()
+                .filter(|b| !current_set.contains(b.identity.as_str()))
+                .collect();
+
+            if !quiet {
+                if json {
+                    print_baseline_diff_json(&new_issues, &cleared);
+                } else {
+                    if new_issues.is_empty() && cleared.is_empty() {
+                        println!(
+                            "✓ No drift vs baseline ({} issues stable)",
+                            baseline_set.len()
+                        );
+                    }
+                    for issue in &new_issues {
+                        let sev = issue.severity.as_str();
+                        let env_str = issue.env_name.as_deref().unwrap_or("-");
+                        println!(
+                            "+ NEW\t{sev}\t{}\t{env_str}\t{}",
+                            issue.rule_id, issue.title
+                        );
+                    }
+                    for b in &cleared {
+                        let env_str = b.env_name.as_deref().unwrap_or("-");
+                        println!("✓ CLEARED\t{}\t{env_str}\t{}", b.rule_id, b.title);
+                    }
+                }
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+            }
+
+            last_cycle_clean = new_issues.is_empty();
+        } else {
+            last_cycle_clean = all_issues.is_empty();
+        }
 
         if !watch {
             break;

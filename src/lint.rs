@@ -330,6 +330,107 @@ pub fn render_issues_json(issues: &[Issue]) -> String {
     out
 }
 
+/// Stable identity hash for an issue across runs. The identity is
+/// `(rule_id, env_name, sorted_fields)` — title / detail / suggestion
+/// can drift across releases without changing the underlying issue.
+/// Used by `ebman lint --against-baseline` to diff today's issues
+/// against a saved snapshot.
+///
+/// 16 hex chars (64 bits) is plenty for baseline-collision use —
+/// operators won't hit birthday-attack-grade scales.
+pub fn issue_identity_hash(
+    rule_id: &str,
+    env_name: Option<&str>,
+    fields: &BTreeMap<String, String>,
+) -> String {
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(rule_id.as_bytes());
+    hasher.update(b"\0");
+    if let Some(env) = env_name {
+        hasher.update(env.as_bytes());
+    }
+    hasher.update(b"\0");
+    for (k, v) in fields {
+        hasher.update(k.as_bytes());
+        hasher.update(b"=");
+        hasher.update(v.as_bytes());
+        hasher.update(b"\0");
+    }
+    let digest = hasher.finalize();
+    digest[..8].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Convenience: `issue_identity_hash` against an `Issue` reference.
+pub fn issue_identity(issue: &Issue) -> String {
+    issue_identity_hash(&issue.rule_id, issue.env_name.as_deref(), &issue.fields)
+}
+
+/// Lightweight view of a baseline issue, parsed from
+/// `render_issues_json` output. Carries just enough to identify the
+/// issue and label "cleared" rows; full Issue reconstruction isn't
+/// needed for the diff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BaselineIssue {
+    pub identity: String,
+    pub rule_id: String,
+    pub env_name: Option<String>,
+    pub title: String,
+}
+
+/// Parse a baseline JSON file (the output of `ebman lint --baseline FILE`
+/// or `ebman lint --json > FILE`). Returns the list of baseline
+/// issues so callers can compute set differences against the current
+/// run. JSON parsed via serde_yml (JSON is a YAML subset; avoids a
+/// serde_json dep).
+pub fn parse_baseline(text: &str) -> Result<Vec<BaselineIssue>, String> {
+    let value: serde_yml::Value =
+        serde_yml::from_str(text).map_err(|e| format!("baseline JSON parse failed: {e}"))?;
+    let issues = value
+        .get("issues")
+        .and_then(|v| v.as_sequence())
+        .ok_or_else(|| "baseline JSON missing `issues` array".to_string())?;
+    let mut out = Vec::with_capacity(issues.len());
+    for item in issues {
+        let Some(obj) = item.as_mapping() else {
+            continue;
+        };
+        let rule_id = obj
+            .get(serde_yml::Value::from("rule_id"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "baseline issue missing rule_id".to_string())?
+            .to_string();
+        let env_name = obj
+            .get(serde_yml::Value::from("env"))
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let title = obj
+            .get(serde_yml::Value::from("title"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let mut fields: BTreeMap<String, String> = BTreeMap::new();
+        if let Some(f) = obj
+            .get(serde_yml::Value::from("fields"))
+            .and_then(|v| v.as_mapping())
+        {
+            for (k, v) in f {
+                if let (Some(k_str), Some(v_str)) = (k.as_str(), v.as_str()) {
+                    fields.insert(k_str.to_string(), v_str.to_string());
+                }
+            }
+        }
+        let identity = issue_identity_hash(&rule_id, env_name.as_deref(), &fields);
+        out.push(BaselineIssue {
+            identity,
+            rule_id,
+            env_name,
+            title,
+        });
+    }
+    Ok(out)
+}
+
 fn push_kv(out: &mut String, k: &str, v: &str) {
     out.push('"');
     out.push_str(&json_escape(k));
@@ -1900,6 +2001,89 @@ mod tests {
         };
         let opts: Vec<(String, String, String)> = vec![];
         assert!(GreenButZeroInstances.applies(&ctx(&env, &opts)).is_none());
+    }
+
+    // ─── baseline parse + identity hash ─────────────────────
+
+    #[test]
+    fn issue_identity_hash_is_stable_across_calls() {
+        let mut fields = BTreeMap::new();
+        fields.insert("policy".into(), "AllAtOnce".into());
+        fields.insert("max_size".into(), "4".into());
+        let a = issue_identity_hash("EBL001", Some("prod"), &fields);
+        let b = issue_identity_hash("EBL001", Some("prod"), &fields);
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 16);
+    }
+
+    #[test]
+    fn issue_identity_hash_differs_by_env_name() {
+        let fields = BTreeMap::new();
+        let a = issue_identity_hash("EBL001", Some("env-a"), &fields);
+        let b = issue_identity_hash("EBL001", Some("env-b"), &fields);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn issue_identity_hash_differs_by_field_values() {
+        let mut fields_a = BTreeMap::new();
+        fields_a.insert("max_size".into(), "4".into());
+        let mut fields_b = BTreeMap::new();
+        fields_b.insert("max_size".into(), "8".into());
+        let a = issue_identity_hash("EBL001", Some("prod"), &fields_a);
+        let b = issue_identity_hash("EBL001", Some("prod"), &fields_b);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn parse_baseline_extracts_issues() {
+        let text = r#"{"issues":[
+            {"rule_id":"EBL001","severity":"warn","env":"prod","title":"AllAtOnce on 4-instance env","detail":"...","fields":{"policy":"AllAtOnce","max_size":"4"}},
+            {"rule_id":"EBL005","severity":"info","env":"dev","title":"Single-instance env","detail":"...","fields":{"min_size":"1","max_size":"1"}}
+        ]}"#;
+        let parsed = parse_baseline(text).expect("ok");
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].rule_id, "EBL001");
+        assert_eq!(parsed[0].env_name.as_deref(), Some("prod"));
+        assert_eq!(parsed[0].title, "AllAtOnce on 4-instance env");
+        assert_eq!(parsed[0].identity.len(), 16);
+        assert_eq!(parsed[1].rule_id, "EBL005");
+    }
+
+    #[test]
+    fn parse_baseline_handles_empty_issues() {
+        let text = r#"{"issues":[]}"#;
+        let parsed = parse_baseline(text).expect("ok");
+        assert!(parsed.is_empty());
+    }
+
+    #[test]
+    fn parse_baseline_rejects_missing_issues_array() {
+        let text = r#"{"other_field":"foo"}"#;
+        assert!(parse_baseline(text).is_err());
+    }
+
+    #[test]
+    fn parse_baseline_identity_matches_issue_identity() {
+        // The round-trip property: an issue we emit + parse back
+        // produces the same identity hash. CI consumers depend on
+        // this for diff correctness.
+        let mut fields = BTreeMap::new();
+        fields.insert("policy".into(), "AllAtOnce".into());
+        fields.insert("max_size".into(), "4".into());
+        let issue = Issue {
+            rule_id: "EBL001".into(),
+            severity: Severity::Warn,
+            env_name: Some("prod".into()),
+            title: "AllAtOnce".into(),
+            detail: "...".into(),
+            suggestion: None,
+            fields: fields.clone(),
+        };
+        let json = render_issues_json(std::slice::from_ref(&issue));
+        let parsed = parse_baseline(&json).expect("ok");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].identity, issue_identity(&issue));
     }
 
     #[test]
