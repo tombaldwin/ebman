@@ -296,7 +296,21 @@ pub async fn run(args: &[String]) -> Result<()> {
                         continue;
                     }
                 };
-                let ctx = lint::LintContext::for_env(env, &opts);
+                // Plumb `required_tags` from config so `LintContext` is
+                // built the same way the TUI's `:lint` overlay builds it
+                // (`spawn_confirm_lint` / `cmd_explain_issue` both pass
+                // `App.required_tags`). This is the precondition for
+                // EBL010 (missing required tags) firing from CLI. The
+                // other precondition — `env_tag_keys`, from a
+                // `DescribeTags` fetch — is deferred to 0.18 alongside
+                // the TUI-side wiring.
+                //
+                // `latest_stacks` (for EBL008 newer-stack detection)
+                // also stays deferred to 0.18 — it would require a
+                // one-shot `ListAvailableSolutionStacks` fetch per
+                // region. The gap is noted in the 0.17 CHANGELOG.
+                let ctx = lint::LintContext::for_env(env, &opts)
+                    .with_required_tags(&safety_cfg.required_tags);
                 let mut issues = lint::run_rules(&rules, &ctx);
                 if let Some(min) = severity_filter {
                     issues.retain(|i| i.severity >= min);

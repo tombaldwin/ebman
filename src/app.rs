@@ -11995,6 +11995,17 @@ impl App {
                 // context — meaningless after a switch. Drop them
                 // alongside the other env-keyed state.
                 self.undo_history.clear();
+                // Pending actions reference env names from the
+                // previous context. Their spawned tasks (if any) are
+                // dropped at the generation guard in msg.rs, so the
+                // matching `complete_pending` never runs and the
+                // header `⏳ N` chip / `:pending` overlay would show
+                // the previous-context op forever.
+                self.pending_actions.clear();
+                // Any pending arm-then-dispatch (`:rebuild` modal etc.)
+                // is also context-scoped — drop it so a stray Enter
+                // doesn't fire against the new context.
+                self.pending_dispatch = None;
                 // Re-read tfstate from cwd. The new context might
                 // be a different repo (operator cd'd between
                 // sessions of `ebman` left running, or switched
