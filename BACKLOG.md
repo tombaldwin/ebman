@@ -877,6 +877,40 @@ ebman mcp serve                        → server mode (future: MCP for Claude C
 
 **Future-proofing test passed:** LLM explainer (`ebman explain`), MCP server (`ebman mcp serve`), cron-driven monitoring (`ebman lint --watch`), git pre-commit hooks (`ebman drift`), GitHub Actions integration (`ebman action deploy`), audit-stream consumption (`ebman audit --tail --json | jq`) all fit without restructuring.
 
+### 0.19 candidates (2026-05-29)
+
+Theme: **foundation pass + small operator wins.** Three big refactors have been deferred 3-4× now (ResolvedConfig, spawn_* clusters, app.rs audit migration) — the codebase is structurally taut and these don't bleed but the next non-mechanical change in any of those areas is friction. 0.19 is the cycle to land them. Add 1-2 operator features as a counter-balance so the release doesn't read as pure plumbing.
+
+Pick 4-6 of the items below; the rest can shape 0.20.
+
+#### Foundation pass — HEADLINE (the deferred refactors)
+- [ ] **`App.cfg_resolved: ResolvedConfig` sub-struct** — Collapses ~12 mirror fields off `App` (required_tags, profile_themes, accounts, runbooks, safety_envs, safety_accounts, command_aliases, lint_disable, lint_fix_disable, deploy_freeze, notify_webhook, etc.) into one nested struct. Touches every read site of the migrated fields (~30+). 0.16 review item, deferred 3×. ~3 hrs.
+- [ ] **`spawn_*` clusters → `src/app/spawn_*.rs`** — 61+ spawn methods in app.rs at ~24k lines. Groups: `spawn_detail_*` (11), `spawn_why_red_*` (6), `spawn_dlq_*` (4), `spawn_batch_*` (4), `spawn_rollout_*` (2), plus the new `spawn_confirm_lint` / `spawn_ssm_run_impl` / `spawn_explain_*`. Purely organisational; app.rs −4-5k lines. Deferred from 0.15/0.16/0.17/0.18. ~3 hrs.
+- [ ] **Remaining ~20 `append_raw` sites in `src/app.rs` → typed `append_action_*`** — Most are SSM / DLQ / CW Logs operations without a natural "completed" stage. Needs new typed helpers (`audit::append_dlq_op` / `append_ssm_session` / `append_log_action`?) so the migration shape matches the existing dispatched+completed convention. Closes the audit-shape drift the 0.14.1 / 0.18 reviews flagged. ~2 hrs.
+
+#### Test coverage — SUPPORT
+- [ ] **CLI subcommand unit tests** — 0 tests across `src/cli/*.rs`. Real coverage gap. Needs `aws-smithy-mocks` integration setup that's slightly bigger than a casual addition; focus on `cli/lint.rs` first (most complex, most operator-facing). Target: 1 happy-path test per CLI subcommand minimum (`lint`, `action`, `audit`, `drift`, `envs`, `explain`, `ctl`). ~3 hrs.
+- [ ] **Exhaustiveness test for `Action::label()` distinctness** — Parallels the 0.17.4 `destructive()` and 0.18 `wants_preflight()` extensions. Currently `action_labels_are_distinct_and_non_empty` was extended to include SsmRun in 0.17.3 but still omits `Action::Capacity` (per the 0.17.4 review note). Fix + extend. ~20 min.
+- [ ] **`audit::append_extras` wire-format pinning** — Golden-pinned test for the `key=value` / `key="..."` encoding so a future quoting-policy change doesn't silently invalidate downstream audit consumers. Same pattern as the 0.18 `issue_identity_hash` golden. ~30 min.
+
+#### New lint rules — SUPPORT
+Cheap to add (each ~50 lines + tests, all use the existing `LintContext` builder pattern). Pick 2-3.
+- [ ] **EBL013 — launch configuration ASG** (Warn). AWS is sunsetting launch configurations; envs on them get migration friction down the line. Detection: `aws:autoscaling:asg` namespace plus the absence of a LaunchTemplate ref. Fix=Manual (operator needs to plan the migration).
+- [ ] **EBL014 — deprecated CW namespace in `:scaling-triggers`** (Warn). `AWS/EC2 → MetricCollection_5Minutes` is a legacy mapping; newer envs should use `aws/applicationelb` or env-health metrics. Fix=Manual.
+- [ ] **EBL015 — custom platform with no published versions in 180+ days** (Info). Builds on the existing custom-platforms fetch. Operator probably forgot the platform exists. Fix=Manual.
+- [ ] **EBL016 — live health-check probe non-2xx** (Warn). Reuses the `spawn_health_check_probe` + `classify_health_check_status` code already shipped for confirm modals. Fires the probe at lint time, not just at deploy. Latency cost is real (one HTTP roundtrip per env at lint time); gate behind `--probe-live` flag in CLI to keep default lint fast.
+
+#### Operator features — BONUS (pick 0-2)
+- [ ] **`ebman lint --explain ISSUE_ID`** — CLI-shipped equivalent of TUI `:explain`. Reuses the `llm` module + `build_prompt` + cache. Operators integrating in CI want the same explainer they get interactively. ~1.5 hrs.
+- [ ] **`ebman audit replay <line-id>`** — Given an audit-log line (or a timestamp-keyed ID), re-run the same command. Wire-format-aware now that 0.18 consolidated audit shapes. Refuses for ambiguous lines (multiple matches) and for destructive actions without `--yes`. Useful for incident review: "what would happen if I ran this again?". ~2 hrs.
+- [ ] **`:fleet-cost`** — Sum across all envs' Cost Explorer monthly spend, broken down by application / tier / health. Builds on the existing cost cache (`~/.cache/ebman/cost-{account}-{region}.toml`). One screen, one number per category. ~1.5 hrs.
+
+#### Out of scope for 0.19 (track in Feature candidates below)
+- `:event-tail` cross-fleet event tail — own design surface (fan-out coordination, output rate-limiting)
+- `:incident START/END` — composite of freeze + banner + audit subsection; design call on what's in the auto-runbook
+- Promotion lineage tracking — needs new persistence + a `:promotions` overlay
+- EBL013-016 follow-ups (E.g. EBL017+ deprecated-managed-update behaviour, EBL018 ASG without instance-refresh enabled) — track as the rule engine matures
+
 ### 0.18.0 release (2026-05-28)
 
 Theme: **live the stubs.** EBL008/010/011/012 shipped in 0.17 as code but several couldn't fire because their inputs weren't plumbed. 0.18 closes the gap — all four rules now fire in TUI and (mostly) CLI.
@@ -944,22 +978,16 @@ Smaller polish items (Minors + UX) tracked for 0.17.2.
 Theme: **make the stubs live + lint adoption ergonomics.** 0.16 shipped EBL007-010 but EBL008 (stale platform) and EBL010 (required tags) silently no-op in production because their context fields (`latest_stack_version`, `required_tags`) aren't plumbed through. 0.17 plumbs them — and lands two more high-signal rules built on the same plumbing (EBL011 DLQ depth, EBL012 instance-count divergence). Plus `lint --baseline` so teams onboarding lint on a noisy fleet can grandfather existing issues without declaring bankruptcy. Plus tail cleanup (LintContext builder pattern, run_inline_ssm removal, two quick UX wins).
 
 #### Smart features — HEADLINE
-- [ ] **LintContext builder + plumb `latest_stacks` + `required_tags`** — `LintContext::for_env(env, opts)` plus `.with_latest_stack(s)` / `.with_required_tags(t)` / `.with_dlq_depth(d)` / `.with_healthy_count(n)`. Shrinks each of the 6 LintContext constructor sites to one line. App.latest_stacks → live EBL008; Config.required_tags → live EBL010. Remove the `ebl008_currently_stub_does_not_fire_in_cli` and `ebl010_currently_stub_does_not_fire` pinning tests (they're no longer stubs). Estimated ~2hrs.
-
-- [ ] **EBL011: worker env with DLQ depth > N for > M minutes (Warn)** — Catches stuck SQS consumers. App.worker_dlq_depths already populated by the workers tab. New `LintContext.dlq_depth: Option<i64>` field. Threshold via config (default: > 100 sustained). Auto-fix=Manual (scale workers / restart / drain — operator decides). ~50 lines + tests.
-
-- [ ] **EBL012: env reports 0 healthy instances but status=Green (Warn)** — Detects ELB-vs-EB health-check divergence. App.env_instance_counts ditto. New `LintContext.healthy_instance_count: Option<i64>` field. Fires when status=Ready + healthy_count=0. Auto-fix=Manual. ~50 lines + tests.
-
-- [ ] **`ebman lint --baseline FILE` / `--against-baseline FILE`** — CI adoption pattern. `--baseline` writes current `{"issues":[...]}` to a JSON file. `--against-baseline FILE` runs lint and shows only NEW issues vs the baseline (diff by `(rule_id, env_name, fields_hash)`). Exit 3 only on NEW issues; cleared issues are informational. Lets a team adopt `ebman lint` in CI on a fleet with existing warnings without immediate `--severity error` gating. Pure CLI; builds on `render_issues_json` + a reverse-parser. Estimated ~2hrs.
+- [x] **LintContext builder + plumb `latest_stacks` + `required_tags`** — Shipped 0.17.0 (builder pattern + EBL008 wiring) → 0.18.0 (EBL010 required_tags + env_tag_keys plumbing finished at all 4 sites).
+- [x] **EBL011: worker env with DLQ depth > N (Warn)** — Shipped 0.17.0 (rule landed) → 0.18.0 (plumbing via App.worker_dlq_depths at 3 TUI sites). CLI side intentionally unwired.
+- [x] **EBL012: env reports 0 healthy instances but status=Green (Warn)** — Shipped 0.17.0 (rule landed) → 0.18.0 (plumbing via `fetch_env_instance_counts` parallel fetch).
+- [x] **`ebman lint --baseline FILE` / `--against-baseline FILE`** — Shipped 0.17.0.
 
 #### Cleanup — SUPPORT
-- [ ] **Remove `run_inline_ssm` dead code** — app.rs:2683-2763, ~80 lines `#[allow(dead_code)]` reference impl with three `println!` calls (violates the no-stdout-in-TUI convention). Kept as a reference; reference can live in git history. Also removes one of the few remaining `audit::append_raw` SsmSession sites. ~5min.
-
-- [ ] **`:undo` discoverability toast** — After every successful option-settings write, append " · press U to undo" to the post-success status_message. 5-line edit to the OptionSettingsUpdate apply path. Closes the "undo exists but operators don't know" gap.
-
-- [ ] **First-run identity_warning routing** — `app.rs:1978` puts the identity_warning into `error_message` (red banner). For fresh-creds users (no SSO login, expired creds) that's the EXPECTED state, not an error. Route to `status_message` (yellow) with `aws sso login` / `:profile NAME` hints. ~10-line edit.
-
-- [ ] **docs/configuration.md backfill** — `command_aliases` shipped in 0.11 but isn't documented. `[explain]` block shipped in 0.14 but only in an inline TOML comment of the example. Add proper sections.
+- [x] **Remove `run_inline_ssm` dead code** — Shipped 0.17.0 (commit `2029d9e`).
+- [x] **`:undo` discoverability toast** — Shipped 0.17.0 (commit `a400f4b`).
+- [x] **First-run identity_warning routing** — Shipped 0.17.0 (commit `a400f4b`).
+- [x] **docs/configuration.md backfill** — Shipped 0.17.0 (commit `105c49c`).
 
 #### Out of scope for 0.17 (track for later)
 - **`App.cfg_resolved: ResolvedConfig` sub-struct** — Biggest cut to App's 12 mirror fields. Architecture-review item; ~3hrs lift; not bleeding. Hold for 0.18.
@@ -976,19 +1004,19 @@ Theme: **make the stubs live + lint adoption ergonomics.** 0.16 shipped EBL007-0
 Theme: **continuation + smart-feature depth + rollout deepening.** 0.15 finished the major refactors but left tail work (incomplete audit consolidation, draw_splash in main.rs, duplicated JSON-escape helpers). 0.14 shipped lint/explain/audit; 0.16 adds the monitoring-loop flag (`--watch`) and more rules so the smart-features arc keeps gaining ground. 0.13 shipped sequential cross-region rollout; 0.16 adds the three operational shapes operators eventually want (parallel, continue-on-fail, staggered).
 
 #### Continuation cleanup — SUPPORT
-- [ ] **Audit migration: ~30 `append_raw` sites → typed `append_action_*`** — Architecture review's 0.15 Important finding. Migrate per-group (GetSecretValue, SsmRunCommand, UpdateTags, DeleteAppVersion, DeployFromLocal, UpdateOptionSettings, ConfigSave/Delete/Apply, batch-* helpers). Each site becomes a 2-line call instead of a hand-rolled detail string. Estimated ~2hrs.
-- [ ] **`draw_splash` + `hsl_to_rgb` move to tui-common splash** — ~150 lines of TUI composition lift from main.rs. Estimated ~30min.
-- [ ] **Unify 6 JSON-escape helpers** — audit.rs / cli/mod.rs / lint.rs / app.rs / llm.rs all have variants. Consolidate to `util::json_escape` + `util::json_string`. Estimated ~1hr.
-- [ ] **`decide_poll` shared between CLI + TUI** — TUI's `spawn_rollout_dispatch` re-implements the wait-for-green case inline. Promote to a sibling lib module. Estimated ~30min.
+- [~] **Audit migration: ~30 `append_raw` sites → typed `append_action_*`** — Partial: 11 `cmd_*.rs` sites migrated in 0.18.0 (wire-breaking — completed lines now `outcome=ok` / `outcome=err err="..."`). ~20 remaining sites in `src/app.rs` are SSM / DLQ / CW Logs operations without a natural completed stage — tracked in 0.19 candidates with a "needs new typed helpers" note.
+- [x] **`draw_splash` + `hsl_to_rgb` move to tui-common splash** — Shipped 0.16.x.
+- [x] **Unify JSON-escape helpers** — Shipped: consolidated to `util::json_escape` / `util::json_string`.
+- [x] **`decide_poll` shared between CLI + TUI** — Shipped 0.16.0 (`5896afbc`).
 
 #### Smart features — HEADLINE
-- [ ] **`ebman lint --watch [--interval 60s]`** — locked-charter feature from the 0.13 CLI shape. Poll lint at `--interval` (default 60s) until interrupted. Changes-only output by default; `--verbose` emits every cycle. Exit 0 when interrupted while clean, 3 when interrupted while issues found, 1 on AWS error. Composable: `ebman lint --watch --interval 5m --severity warn --json > alerts.jsonl` is the canonical monitoring shape. Estimated ~2hrs.
-- [ ] **New lint rules EBL007+ (4-6 rules)** — Candidates: EBL007 ELB without HTTPS listener (Warn; auto-fix possible if cert ARN configured), EBL008 stale platform version >180d (Warn; Manual — operator picks target), EBL009 ASG without health-check grace period (Info; SetOption fix=300), EBL010 service-role missing managed-update perms (Warn; Manual — IAM change), EBL011 deprecated namespace usage (Warn; Manual), EBL012 missing required tags from `required_tags` config (Info; Manual). Ship 4-6. Each is ~40 lines + tests. Estimated ~3-4hrs.
+- [x] **`ebman lint --watch [--interval 60s]`** — Shipped 0.16.0.
+- [x] **New lint rules EBL007+** — Shipped: EBL007-009 in 0.16.0, EBL010-012 in 0.17.0, all four now actually firing as of 0.18.0.
 
 #### Rollout deepening — HEADLINE
-- [ ] **`:rollout --parallel [--max-concurrency N]`** — concurrent fan-out vs sequential. `tokio::JoinSet` shape; default unlimited concurrency, `--max-concurrency N` caps. Same `rollout_id` correlation, audit lines interleaved. Halt-on-fail behaviour: in-flight regions finish (no server-side cancel), unstarted regions refuse. Estimated ~3hrs.
-- [ ] **`:rollout --continue-on-fail`** — don't halt on first region failure; attempt all. Per-region success/err in final report. Exit 0 all succeeded / 3 any failed (no different from halt-on-first shape; the change is in dispatch behaviour, not exit semantics). Composes with `--parallel`. Estimated ~1.5hrs.
-- [ ] **`:rollout --staggered Nm`** — region N starts only after region N-1 has been Green for N min (canary-style rollouts). Implies `--wait-for-green`. Stagger window between regions only; per-region wait-for-green unchanged. Estimated ~2hrs.
+- [x] **`:rollout --parallel [--max-concurrency N]`** — Shipped 0.16.0.
+- [x] **`:rollout --continue-on-fail`** — Shipped 0.16.0.
+- [x] **`:rollout --staggered Nm`** — Shipped 0.16.0.
 
 #### Out of scope for 0.16 (track for later)
 - **`spawn_*` clusters → `src/app/spawn_*.rs` grouping** — BONUS deferred from 0.15. Big lift (~3hrs) and purely organisational; doesn't bleed. Hold for 0.17.
@@ -1004,15 +1032,14 @@ Theme: **continuation + smart-feature depth + rollout deepening.** 0.15 finished
 Theme: **foundation pass.** No new operator-facing features — pure structural cleanup driven by the 0.14.0 architecture review. `src/app.rs` is at 21,794 lines / 532 methods; `src/main.rs` is at 2,625 lines with seven inline `run_*_cli` async fns that have become a CLI grab-bag. The user codified the code-review-before-tagging step in 0.14.1 — this release acts on its findings before the cliff hits at ~0.18. Sets the table for 0.16+ feature work to land in cleaner modules.
 
 #### CLI split — HEADLINE
-- [ ] **CLI subcommands → `src/cli/{audit,explain,lint,drift,envs,action,ctl}.rs`** — `main.rs` becomes ~400 lines of argv parse + dispatch + TUI lifecycle. Each `ebman <verb>` gets a one-file home exposing `pub async fn run(args: &[String]) -> Result<()>`. Shared helpers (`decide_poll`, `json_string`, `cli_esc`) move to `src/cli/mod.rs`. `run_action_deploy` + `run_action_rollout` live under `cli/action.rs`. Architecture review's #1 finding (`main.rs` size + grab-bag organisation). Estimated ~4hrs.
+- [x] **CLI subcommands → `src/cli/{audit,explain,lint,drift,envs,action,ctl}.rs`** — Shipped 0.15.0.
 
 #### Audit + explain — SUPPORT
-- [ ] **Audit writers → `src/audit.rs`** — Move `write_audit_outcome` (app.rs:14948), `write_rollout_audit_line` (main.rs:1884), `write_lint_fix_audit_line` (main.rs:978) into `audit.rs` as `audit::append_action(...)` / `append_rollout(...)` / `append_lint_fix(...)`. Writers + parser co-located closes the format-drift risk the 0.14.1 patch surfaced. Also: webhook fan-out currently only triggers from `write_audit_line` — move that into `audit.rs` so all three line types get fanned out automatically. Estimated ~2hrs.
-
-- [ ] **`App.explain_*` → `App.explain_settings: llm::Settings`** — Six fields on App (`app.rs:1146-1152`), three sites (`App::new`, `App::new_demo`, `current_config_snapshot`) that must stay in sync. `cmd_explain_issue` (`app.rs:5139-5166`) already duplicates `Settings::from_config` logic. Collapse to one field; add a `Settings::write_to_config(&self, cfg: &mut Config)` helper for the snapshot path. Template for the next `[section]` block in config.toml. Estimated ~1hr.
+- [x] **Audit writers → `src/audit.rs`** — Shipped 0.15.0 (commit `260ec41`).
+- [x] **`App.explain_*` → `App.explain_settings: llm::Settings`** — Shipped 0.15.0.
 
 #### spawn_* grouping — BONUS
-- [ ] **`spawn_*` clusters → `src/app/spawn_*.rs`** — 60 spawn methods interleaved across 8k lines of app.rs. 34 have topical prefixes (spawn_detail_* 11, spawn_why_red_* 6, spawn_dlq_* 4, spawn_batch_* 4, spawn_rollout_* 2, etc.). Group each cluster into `src/app/spawn_*.rs` as `impl App` blocks. Cuts app.rs by 4-5k lines; purely organisational. **Only attempt if time permits** after CLI split + audit consolidation + explain collapse; otherwise defer to 0.16. Estimated ~3hrs.
+- [ ] **`spawn_*` clusters → `src/app/spawn_*.rs`** — Deferred from 0.15 / 0.16 / 0.17 / 0.18. Now 61+ methods (was 60+ across deferrals). Tracked in the **0.19 candidates** section above as a HEADLINE item.
 
 #### Out of scope for 0.15 (track for later)
 - **MCP server (`ebman mcp serve`)** — speculative; no operator demand yet. Re-evaluate post-0.15 once foundation work has shipped.
@@ -1025,12 +1052,11 @@ Theme: **foundation pass.** No new operator-facing features — pure structural 
 Theme: **from diagnostic to remediation.** 0.12 surfaced issues (`:lint`, `:drift`). 0.13 made them fleet-wide (`--regions` everywhere). 0.14 makes them actionable — LLM-backed explanations turn structured `Issue` output into operator-readable next steps, opt-in auto-fix dispatches the obvious-correct-answer ones through the existing undo machinery, and the audit log gets a first-class CLI for monitoring / Slack-bot integration. The user's earlier directive: "claude code/api integration would be nice, but not this version [0.13]" — meaning the time is now. Plus: "smart features must be available as standalone arguments so they can be run as git hooks, CI, monitoring tools" — same constraint applies to every item below.
 
 #### Actionability core — HEADLINE
-- [ ] **LLM-backed explainer: `ebman explain ISSUE_ID` + `:explain ISSUE_ID` TUI dispatch** — New `src/llm.rs` with a `Provider` trait (Anthropic-only for v1, designed for OpenAI / Ollama swap-in). HTTP via shell-out to curl, consistent with 0.10's `notify_webhook` pattern (no new deps; curl is everywhere we run). Auth via env var (`ANTHROPIC_API_KEY` by default; `[explain] api_key_env = "..."` to point at a different name). Opt-in via `[explain] enabled = true` — off by default; clear error message when called without consent. CLI: `ebman explain ISSUE_ID [--env NAME] [--rule EBL001] [--json] [--dry-run] [--no-cache]`. TUI: existing `:explain` gains a new dispatch arm when the first arg matches `EBL\d+` (current ARN-based IAM AccessDenied explainer untouched — backward-compatible). Cache responses by `(rule_id, fields_hash)` to `~/.cache/ebman/explain/` so CI loops don't burn API calls. `--dry-run` prints the prompt without sending. Operators on locked-down networks see "API call refused" via `[explain] enabled = false` (or just don't configure). Estimated ~6hrs.
-
-- [ ] **`ebman lint --fix` + `:lint --fix`: opt-in auto-remediation** — Each `Rule` gains an optional `fix(&LintContext) -> Option<FixAction>` method. `FixAction { description, dispatch: FixDispatch }` where `FixDispatch` is one of `SetOption { ns, name, value }`, `Multiple { actions }`, or `Manual { instructions }` (rule knows the issue but the right answer is operator-context-dependent — e.g. EBL002 "set a health-check URL" doesn't know your app's healthcheck path). v1 rules with auto-fixes: EBL001 (`DeploymentPolicy = Rolling` when on AllAtOnce + multi-instance), EBL004 (`BatchSize = MaxSize` when BatchSize > MaxSize), EBL006 (`Cooldown = 60` when < 60). v1 Manual: EBL002, EBL003, EBL005. Every dispatched fix goes through the existing `spawn_option_settings_update` so undo capture is automatic — operator can `:undo` any fix. `--yes` required on the CLI (no surprise writes). `--dry-run` prints the planned writes. Per-rule opt-out via `[lint] fix_disable = ["EBL004"]` for the operator who wants `:lint` reports but not auto-fixes from a specific rule. Estimated ~4hrs.
+- [x] **LLM-backed explainer: `ebman explain ISSUE_ID` + `:explain ISSUE_ID`** — Shipped 0.14.0.
+- [x] **`ebman lint --fix` + `:lint --fix` auto-remediation** — Shipped 0.14.0. Auto-fix on EBL001/004/006/009.
 
 #### Operationalisation — SUPPORT
-- [ ] **`ebman audit` CLI: `--tail` / `--since` / `--json` / `--env` / `--rule`** — New top-level subcommand reads `~/.cache/ebman/audit.log` (the TSV-shaped log `write_audit_line` already writes). Default text mode renders pretty columns (TS / ENV / ACCOUNT / REGION / STAGE / ACTION / OUTCOME). `--tail` polls the file every 1s and emits new lines (same shape as `tail -f`). `--since 1h` filters to entries within the window. `--json` emits the audit log as JSONL for `jq` consumers. `--env NAME` / `--rule EBL001` filter on the existing TSV fields. Closes a long-standing scripting gap: today operators have to `tail -f ~/.cache/ebman/audit.log | grep` directly; the CLI gives them structure + windows + filtering. Pure parser (`parse_audit_line(text) -> Option<AuditEntry>`) for unit-testability. Estimated ~2hrs.
+- [x] **`ebman audit` CLI** — Shipped 0.14.0.
 
 #### Out of scope for 0.14 (track for later)
 - **MCP server (`ebman mcp serve`)** — exposes ebman's read ops as MCP tools so Claude Code can drive ebman. Speculative; only build if there's demand or if the LLM explainer surfaces a "this would be useful for Claude Code too" signal during 0.14 build.
@@ -1047,23 +1073,35 @@ Theme: **smart features — rule-based diagnostics with both TUI + CLI surfaces.
 - [x] **End-to-end docs review against shipped code** — Audited every file under `docs/` against the actual implementation: fixed `ebman ctl reload` reference (no such op), repaired malformed `[runbooks]` TOML example, added `]`/`[` (cycle saved views) and `T` (cycle event-time format) to `docs/keys.md`, backfilled ~30 missing commands in `docs/commands.md` (most notable: `:rollback`, which the README's triage workflow points at), added a Diagnostics section covering `:lint` / `:drift` / `:explain`, fixed stale "named filters + saved views" wording to match the 0.12 unified store, corrected `ebman ctl` "second binary" → subcommand framing, and added `ebman lint` / `ebman drift` + exit-code convention to `docs/headless.md`. Source-of-truth for command descriptions is `src/commands.rs` registry (CI-checked against dispatch arms).
 
 #### Smart diagnostic core — HEADLINE
-- [ ] **Rule engine + `:lint` TUI overlay + `ebman lint` CLI** — shared engine with 8-12 v1 rules (AllAtOnce-on-multi-instance, Web-tier without health-check-url, Env Red >4h, BatchSize > MaxSize, ELB without HTTPS, stale platform, service-role missing managed-update perms, DLQ growth without scale, deprecated namespaces, etc.). Each rule returns a structured `Issue` (rule_id, severity, title, detail, suggestion). Three surfaces use it: `:lint [ENV]` TUI overlay, `ebman lint [--env X] [--json] [--severity warn] [--rules ID1,ID2] [--watch [--interval 60s]]` CLI, and confirm-modal warning lines for any rule that applies at write time. Operator-tunable via `lint.disable = ["EBL011"]` in `config.toml` AND `.ebman/ebman.toml` (project-local). Non-zero exit on issues by default. Estimated ~6hrs.
-
-- [ ] **Terraform integration: `:drift` overlay + `ebman drift` CLI + tf-managed badge** — Discovery walks up from cwd for `terraform.tfstate` / `.terraform/terraform.tfstate` / `*.tf` files (mirrors `project.rs` + `eb_cli.rs` shape). Reads tfstate JSON directly — no `terraform` binary needed. Compares tf-declared option_settings + version_label + tags against live EB state; emits a per-env drift report. TUI: `ⓣ` badge on tf-managed envs, drift-warning line in confirm modals for destructive actions against tf-managed envs, `:drift` overlay with full report. CLI: `ebman drift [--env X] [--tfstate PATH] [--tfdir PATH] [--json]`. Refresh: lazy read on `:drift` open + manual `R` keybind + auto-reread on context switch (account / region change). Remote tfstate backends (S3, etc.) emit a clear "tfstate not local — fetch manually" message. Estimated ~4hrs.
+- [x] **Rule engine + `:lint` TUI overlay + `ebman lint` CLI** — Shipped 0.13.0.
+- [x] **Terraform integration: `:drift` overlay + `ebman drift` CLI + tf-managed badge** — Shipped 0.13.0.
 
 #### Smart diagnostic integration — SUPPORT
-- [ ] **Confirm-modal lint hooks at write time** — Run a subset of lint rules at every confirm-modal open. The health-check probe + unavailability pill from 0.10/0.11 are special-cases of this; generalize so any rule with `severity >= Warn` AND `applies` against the pre-write state surfaces as a modal warning line. Operator sees ALL relevant risks at one glance before confirming. Estimated ~2hrs.
-
-- [ ] **Cross-region rollout: `:rollout LABEL --regions r1,r2,r3` + `ebman action rollout`** — Picks up the held-from-0.12 work. Lint engine helps here: pre-rollout validation reuses the rule engine against each target region's env before dispatch. Sequential dispatch with per-region exit codes (`0` all green / `3` partial drift / etc.). Estimated ~3-4hrs.
+- [x] **Confirm-modal lint hooks at write time** — Shipped 0.13.0 (generalised via `spawn_confirm_lint`).
+- [x] **Cross-region rollout: `:rollout LABEL --regions r1,r2,r3` + `ebman action rollout`** — Shipped 0.13.0.
 
 #### Smart diagnostic polish — BONUS
-- [ ] **Config: per-rule severity overrides + project-local rule disables** — `lint.disable = ["EBL011"]` and `lint.severity_override.EBL004 = "warn"` in both `config.toml` and `.ebman/ebman.toml`. Project-local overrides win on collision. Estimated ~1hr.
+- [x] **Config: per-rule severity overrides + project-local rule disables** — Shipped 0.13.0.
 
 #### Out of scope for 0.13 (track for later)
 - **LLM-backed explainer (`ebman explain ISSUE_ID`)** — Designed for: rule engine emits structured `Issue` with discrete `detail` + `suggestion` + `fields` that an LLM could ingest. Wire-up to Claude API (or local model) is 0.14+. Operator opt-in via config; no API calls without explicit consent.
 - **MCP server (`ebman mcp serve`)** — exposes ebman's read operations as MCP resources/tools so Claude Code can drive ebman programmatically. Speculative; only build if there's demand.
 - **Auto-remediation (`ebman lint --fix`)** — runs each rule's suggested fix. Powerful but dangerous; needs careful per-rule opt-in design.
 - **`ebman audit --tail`** — surfaces the audit log for scripting. Plausible follow-on once the rule-engine CLI shape is proven.
+
+### Feature candidates — post-0.18 (2026-05-29)
+
+Nine ideas surfaced by a backlog review after the 0.17.x + 0.18 ship-sequence. Ranked by **operator-value-per-hour**. The 0.19 candidates list above already pulls the top three (lint-explain CLI / audit replay / fleet-cost); these are the medium-term shelf.
+
+- [ ] **`ebman lint --explain ISSUE_ID`** — CLI-shipped equivalent of TUI `:explain`. Reuses `llm` module. ~1.5 hrs. (Promoted to 0.19 candidates.)
+- [ ] **`ebman audit replay <line-id>`** — Re-dispatch an audit-log entry. Wire-aware after 0.18. ~2 hrs. (Promoted to 0.19 candidates.)
+- [ ] **`:fleet-cost`** — Sum across-envs Cost Explorer spend by app/tier/health. Builds on cost cache. ~1.5 hrs. (Promoted to 0.19 candidates.)
+- [ ] **`:event-tail`** — like `:logs-tail` but for EB events across every env in parallel. "What's happening across prod right now" surface. Closes the gap between Detail/Events (one env) and the console's flat event firehose. Needs a fan-out coordinator + output rate-limiter so a noisy fleet doesn't blow out the overlay. ~4 hrs.
+- [ ] **`:incident START "headline" / END`** — single command sets up incident mode: freezes deploys, pins a banner, opens runbook overlay, starts an audit subsection. `:incident END` clears + writes a summary line. Builds on existing freeze + runbook + audit machinery. Design call on auto-runbook scope (just freeze + banner? or also: open `:why` on every Red env, start CW Logs tail on the noisiest one, dump current alarms-firing list to the audit?). ~3 hrs.
+- [ ] **Promotion lineage tracking** — when `:promote-env SOURCE TARGET` runs, record the chain. New `:promotions` overlay shows "v1.4.2: staging → uat (2026-05-20) → prod (2026-05-22)". Operators currently piece this together from `:lineage` per env. Needs new state in `state.toml` (env name → promoted-from). ~2 hrs.
+- [ ] **`:diff A B --ignore-keys "..."`** — suppresses noise in config-diff. Currently every config-diff shows `version_label` differences which are usually not the point. Builds on the existing diff renderer. ~30 min.
+- [ ] **`ebman lint --watch --webhook URL`** — for ops teams that don't want a tail process but do want periodic alerts. Hooks into the existing `notify_webhook` plumbing. Composes with the existing `--watch --interval` shape. ~1 hr.
+- [ ] **`ebman lint --baseline-regenerate`** — operators with stale baselines (post-0.18 when EBL010/011/012 started firing) can rebuild a baseline that captures the new firing pattern without having to delete + redo. Bonus subcommand on the existing baseline interface. ~30 min.
 
 ### Feature candidates — competitive scan (2026-05-24)
 
