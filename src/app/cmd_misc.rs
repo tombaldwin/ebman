@@ -171,11 +171,13 @@ impl App {
         match rest.first().copied() {
             Some(env_name) => {
                 if self.armed_watchdogs.remove(env_name).is_some() {
-                    crate::audit::append_raw(
+                    crate::audit::append_action_dispatched(
                         self.context.account_id.as_deref(),
                         self.context.profile.as_deref(),
                         &self.context.region,
-                        &format!("stage=dispatched action=AbortRollback target={env_name}"),
+                        "AbortRollback",
+                        env_name,
+                        &[],
                     );
                     self.pin_status(format!("aborted auto-rollback for {env_name}"));
                 } else {
@@ -192,13 +194,13 @@ impl App {
                 let names: Vec<String> = self.armed_watchdogs.keys().cloned().collect();
                 let n = names.len();
                 for env_name in &names {
-                    crate::audit::append_raw(
+                    crate::audit::append_action_dispatched(
                         self.context.account_id.as_deref(),
                         self.context.profile.as_deref(),
                         &self.context.region,
-                        &format!(
-                            "stage=dispatched action=AbortRollback target={env_name} reason=batch"
-                        ),
+                        "AbortRollback",
+                        env_name,
+                        &[("reason", "batch")],
                     );
                 }
                 self.armed_watchdogs.clear();
@@ -254,11 +256,13 @@ impl App {
         } else {
             reason_for_store.clone()
         };
-        crate::audit::append_raw(
+        crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
-            &format!("stage=dispatched action=FreezeDeploys reason={audit_reason}"),
+            "FreezeDeploys",
+            "",
+            &[("reason", audit_reason.as_str())],
         );
         let verb = if was_frozen { "updated" } else { "set" };
         self.pin_status(if reason_for_store.is_empty() {
@@ -273,11 +277,14 @@ impl App {
     /// way so the audit stream captures the lifecycle.
     pub(crate) fn cmd_thaw_deploys(&mut self) {
         let was_frozen = self.deploy_freeze.take().is_some();
-        crate::audit::append_raw(
+        let was_frozen_str = was_frozen.to_string();
+        crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
-            &format!("stage=dispatched action=ThawDeploys was_frozen={was_frozen}"),
+            "ThawDeploys",
+            "",
+            &[("was_frozen", was_frozen_str.as_str())],
         );
         if was_frozen {
             self.pin_status("freeze cleared — deploys + writes re-enabled");
@@ -484,21 +491,50 @@ impl App {
         // edit to `.ebman/ebman.toml` takes effect without
         // restarting ebman.
         let user_disables = self.lint_disable.clone();
-        // Plumb live lint-context inputs. latest_stack enables
-        // EBL008 in this call site. EBL010 (required-tag check) needs
-        // env_tag_keys too — not plumbed yet because `:lint` doesn't
-        // fetch tags; tracked for 0.18.
+        // Plumb live lint-context inputs. All four 0.18 wire-ups land
+        // here (EBL008 newer-stack, EBL010 required-tags + env-tags,
+        // EBL011 worker DLQ, EBL012 healthy-count). The tags + health
+        // fetches run in parallel with option-settings (see
+        // spawn_confirm_lint for the latency rationale).
         let newer_stack_owned =
             crate::aws::newer_stack_version(&env.solution_stack, &self.latest_stacks);
         let required_tags_owned = self.required_tags.clone();
+        let dlq_depth_owned = if env.tier.eq_ignore_ascii_case("Worker") {
+            self.worker_dlq_depths.get(&env.name).copied()
+        } else {
+            None
+        };
+        let env_arn_owned = env.arn.clone();
         self.status_message = Some(format!("running lint on {env_name}…"));
         tokio::spawn(async move {
-            let body = match aws.fetch_env_option_settings(&app_name, &env_name).await {
+            let opts_fut = aws.fetch_env_option_settings(&app_name, &env_name);
+            let tags_fut = async {
+                match env_arn_owned.as_deref() {
+                    Some(arn) => aws.list_tags(arn).await.ok(),
+                    None => None,
+                }
+            };
+            let health_fut = aws.fetch_env_instance_counts(&env_name);
+            let (opts_res, tags_opt, health_res) = tokio::join!(opts_fut, tags_fut, health_fut);
+            let env_tag_keys_owned: Vec<String> = tags_opt
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect();
+            let healthy_count_owned = health_res.ok().map(|c| c.healthy as i64);
+            let body = match opts_res {
                 Ok(opts) => {
                     let mut ctx = crate::lint::LintContext::for_env(&env, &opts)
-                        .with_required_tags(&required_tags_owned);
+                        .with_required_tags(&required_tags_owned)
+                        .with_env_tag_keys(&env_tag_keys_owned);
                     if let Some(newer) = newer_stack_owned.as_deref() {
                         ctx = ctx.with_newer_stack_available(newer);
+                    }
+                    if let Some(depth) = dlq_depth_owned {
+                        ctx = ctx.with_dlq_depth(depth);
+                    }
+                    if let Some(count) = healthy_count_owned {
+                        ctx = ctx.with_healthy_count(count);
                     }
                     // Compose operator disables: user-level (from
                     // App, mirrored from config.toml at startup) +
@@ -601,11 +637,13 @@ impl App {
                     return;
                 }
                 let arn = arn.to_string();
-                crate::audit::append_raw(
+                crate::audit::append_action_dispatched(
                     self.context.account_id.as_deref(),
                     self.context.profile.as_deref(),
                     &self.context.region,
-                    &format!("stage=dispatched action=DeleteCustomPlatform target={arn}"),
+                    "DeleteCustomPlatform",
+                    &arn,
+                    &[],
                 );
                 self.push_pending("Delete custom platform", arn.clone());
                 // In-flight ack lives on the pending pill.
@@ -621,20 +659,14 @@ impl App {
                         .delete_custom_platform(&arn_for_msg)
                         .await
                         .map_err(|e| flatten_err("delete_custom_platform", e));
-                    let outcome = match &result {
-                        Ok(()) => format!(
-                            "stage=completed action=DeleteCustomPlatform target={arn_for_msg} ok"
-                        ),
-                        Err(e) => format!(
-                            "stage=completed action=DeleteCustomPlatform target={arn_for_msg} err=\"{}\"",
-                            e.replace('"', "'")
-                        ),
-                    };
-                    crate::audit::append_raw(
+                    crate::audit::append_action_completed(
                         account.as_deref(),
                         profile.as_deref(),
                         &region,
-                        &outcome,
+                        "DeleteCustomPlatform",
+                        &arn_for_msg,
+                        result.as_ref().map(|_| ()).map_err(String::as_str),
+                        &[],
                     );
                     // Reuse OptionSettingsUpdate's plumbing so the pending
                     // row is closed and a toast fires — the variant's

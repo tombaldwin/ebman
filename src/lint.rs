@@ -2047,6 +2047,47 @@ mod tests {
         assert_ne!(a, b);
     }
 
+    /// **Golden test** for `issue_identity_hash`. Pins the exact hash
+    /// for a known input so that any future change to the hash
+    /// construction (field-key spelling, ordering, separator bytes,
+    /// truncation length, hash function) becomes a deliberate decision
+    /// rather than silent breakage. Operators' CI `--baseline` files
+    /// store these hashes; changing them invalidates every baseline
+    /// in the wild.
+    ///
+    /// If this test fails: the change to `issue_identity_hash` is a
+    /// breaking change for `--baseline` consumers. Document the new
+    /// hash, bump the audit-shape version in the CHANGELOG, and
+    /// update this golden — or revert the change.
+    #[test]
+    fn issue_identity_hash_golden_pin() {
+        let mut fields = BTreeMap::new();
+        fields.insert("policy".into(), "AllAtOnce".into());
+        fields.insert("max_size".into(), "4".into());
+        let hash = issue_identity_hash("EBL001", Some("prod-eu-1"), &fields);
+        // Pin: rule_id="EBL001", env="prod-eu-1", fields sorted by key
+        // (BTreeMap iteration), separator=NUL, sha256, truncate to 8
+        // bytes, hex-encode. Computed deterministically — do not edit
+        // this constant without coordinating with --baseline consumers.
+        assert_eq!(
+            hash, "d7bd17690e12847e",
+            "issue_identity_hash shape changed — see test docstring before updating this constant"
+        );
+    }
+
+    /// Same shape but with `env_name = None` — pins the behaviour
+    /// for un-anchored issues (e.g. multi-region lint findings that
+    /// don't bind to a single env).
+    #[test]
+    fn issue_identity_hash_golden_pin_no_env() {
+        let fields = BTreeMap::new();
+        let hash = issue_identity_hash("EBL003", None, &fields);
+        assert_eq!(
+            hash, "ba1758f2587dbbe5",
+            "issue_identity_hash (no env) shape changed — see test docstring"
+        );
+    }
+
     #[test]
     fn parse_baseline_extracts_issues() {
         let text = r#"{"issues":[

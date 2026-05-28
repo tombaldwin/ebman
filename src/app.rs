@@ -5015,26 +5015,52 @@ impl App {
         let env_name_for_fetch = env.name.clone();
         let settings = self.explain_settings.clone();
         // Snapshot the lint-context inputs that aren't already
-        // implied by `&env` + `&opts`. `App.latest_stacks` enables
-        // EBL008. `required_tags` is plumbed too, but EBL010 needs
-        // env_tag_keys (DescribeTags) which isn't wired at this
-        // site yet — tracked for 0.18.
+        // implied by `&env` + `&opts`. All four 0.18 wire-ups land
+        // here too so `:explain` sees the same rule firing pattern
+        // as `:lint` (EBL008 newer-stack, EBL010 required-tags,
+        // EBL011 worker DLQ, EBL012 healthy-count).
         let newer_stack_owned =
             crate::aws::newer_stack_version(&env.solution_stack, &self.latest_stacks);
         let required_tags_owned = self.required_tags.clone();
+        let dlq_depth_owned = if env.tier.eq_ignore_ascii_case("Worker") {
+            self.worker_dlq_depths.get(&env.name).copied()
+        } else {
+            None
+        };
+        let env_arn_owned = env.arn.clone();
         let issue_id_owned = issue_id.to_string();
         let issue_id_title = issue_id.to_string();
         self.status_message = Some(format!("explain: building prompt for {issue_id}…"));
         tokio::spawn(async move {
-            let body = match aws
-                .fetch_env_option_settings(&app_name, &env_name_for_fetch)
-                .await
-            {
+            // Parallel fetch — see spawn_confirm_lint for the rationale.
+            let opts_fut = aws.fetch_env_option_settings(&app_name, &env_name_for_fetch);
+            let tags_fut = async {
+                match env_arn_owned.as_deref() {
+                    Some(arn) => aws.list_tags(arn).await.ok(),
+                    None => None,
+                }
+            };
+            let health_fut = aws.fetch_env_instance_counts(&env_name_for_fetch);
+            let (opts_res, tags_opt, health_res) = tokio::join!(opts_fut, tags_fut, health_fut);
+            let env_tag_keys_owned: Vec<String> = tags_opt
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect();
+            let healthy_count_owned = health_res.ok().map(|c| c.healthy as i64);
+            let body = match opts_res {
                 Ok(opts) => {
                     let mut ctx = crate::lint::LintContext::for_env(&env, &opts)
-                        .with_required_tags(&required_tags_owned);
+                        .with_required_tags(&required_tags_owned)
+                        .with_env_tag_keys(&env_tag_keys_owned);
                     if let Some(newer) = newer_stack_owned.as_deref() {
                         ctx = ctx.with_newer_stack_available(newer);
+                    }
+                    if let Some(depth) = dlq_depth_owned {
+                        ctx = ctx.with_dlq_depth(depth);
+                    }
+                    if let Some(count) = healthy_count_owned {
+                        ctx = ctx.with_healthy_count(count);
                     }
                     let rules = crate::lint::default_rules(&disabled);
                     let issues = crate::lint::run_rules(&rules, &ctx);
@@ -9955,19 +9981,57 @@ impl App {
         let app_name = env.application.clone();
         let env_name = env.name.clone();
         // Plumb the live lint-context inputs. latest_stack enables
-        // EBL008 in confirm modals. EBL010 needs env_tag_keys too
-        // (not plumbed yet — DescribeTags fetch per confirm modal
-        // is per-modal latency; tracked for 0.18).
+        // EBL008; required_tags + env_tag_keys (fetched parallel below)
+        // enable EBL010; dlq_depth enables EBL011; healthy instance
+        // count enables EBL012. All four wire-up tracks landed in 0.18.
         let newer_stack_owned =
             crate::aws::newer_stack_version(&env.solution_stack, &self.latest_stacks);
         let required_tags_owned = self.required_tags.clone();
+        // EBL011 only fires for Worker envs and only when we have a
+        // cached DLQ depth (populated by the Queue tab / worker poll).
+        let dlq_depth_owned = if env.tier.eq_ignore_ascii_case("Worker") {
+            self.worker_dlq_depths.get(&env.name).copied()
+        } else {
+            None
+        };
+        let env_arn_owned = env.arn.clone();
         tokio::spawn(async move {
-            let issues = match aws.fetch_env_option_settings(&app_name, &env_name).await {
+            // Parallel fetch: option settings (existing), tags (new —
+            // EBL010), instance health summary (new — EBL012). The
+            // tags + health calls don't have to land — EBL010/012 just
+            // won't fire if their inputs are absent. Adding them here
+            // costs one extra round-trip-worth of latency at modal
+            // open per missing input; running in parallel via
+            // tokio::join! keeps the wall-clock at max(t_opts,
+            // t_tags, t_health) rather than the sum.
+            let opts_fut = aws.fetch_env_option_settings(&app_name, &env_name);
+            let tags_fut = async {
+                match env_arn_owned.as_deref() {
+                    Some(arn) => aws.list_tags(arn).await.ok(),
+                    None => None,
+                }
+            };
+            let health_fut = aws.fetch_env_instance_counts(&env_name);
+            let (opts_res, tags_opt, health_res) = tokio::join!(opts_fut, tags_fut, health_fut);
+            let env_tag_keys_owned: Vec<String> = tags_opt
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect();
+            let healthy_count_owned = health_res.ok().map(|c| c.healthy as i64);
+            let issues = match opts_res {
                 Ok(opts) => {
                     let mut ctx = crate::lint::LintContext::for_env(&env, &opts)
-                        .with_required_tags(&required_tags_owned);
+                        .with_required_tags(&required_tags_owned)
+                        .with_env_tag_keys(&env_tag_keys_owned);
                     if let Some(newer) = newer_stack_owned.as_deref() {
                         ctx = ctx.with_newer_stack_available(newer);
+                    }
+                    if let Some(depth) = dlq_depth_owned {
+                        ctx = ctx.with_dlq_depth(depth);
+                    }
+                    if let Some(count) = healthy_count_owned {
+                        ctx = ctx.with_healthy_count(count);
                     }
                     let rules = crate::lint::default_rules(&disabled);
                     crate::lint::run_rules(&rules, &ctx)
@@ -16440,6 +16504,38 @@ mod tests {
         assert!(!Action::ConfigDelete.destructive());
         assert!(!Action::ConfigApply.destructive());
         assert!(!Action::TerminateInstance.destructive());
+    }
+
+    /// Exhaustiveness test for `Action::wants_preflight()`. Parallels
+    /// the 0.17.4 `action_destructive_covers_*` extension — every
+    /// variant gets an explicit assertion so a future flip is caught.
+    /// 0.18 review item.
+    #[test]
+    fn action_wants_preflight_covers_all_variants() {
+        // Preflight: instance count + last-3 events fetch. Opt-in for
+        // actions that touch instances or shift LB traffic.
+        assert!(Action::Deploy.wants_preflight());
+        assert!(Action::UpgradePlatform.wants_preflight());
+        assert!(Action::Scale.wants_preflight());
+        assert!(Action::Clone.wants_preflight());
+        assert!(Action::Rebuild.wants_preflight());
+        assert!(Action::RestartAppServer.wants_preflight());
+        assert!(Action::SwapCnames.wants_preflight());
+        assert!(Action::Terminate.wants_preflight());
+        assert!(Action::ConfigApply.wants_preflight());
+        // Opt-out: actions that don't touch instances or where the
+        // preflight is meaningless. Capacity opens its own form
+        // modal; ConfigSave/Delete operate on template definitions
+        // (no env-side preflight); TerminateInstance is per-
+        // instance (no env-wide preflight); SsmRun's instance set
+        // is operator-chosen via Detail/Instances; AbortUpdate
+        // doesn't touch capacity or LB.
+        assert!(!Action::Capacity.wants_preflight());
+        assert!(!Action::ConfigSave.wants_preflight());
+        assert!(!Action::ConfigDelete.wants_preflight());
+        assert!(!Action::TerminateInstance.wants_preflight());
+        assert!(!Action::SsmRun.wants_preflight());
+        assert!(!Action::AbortUpdate.wants_preflight());
     }
 
     #[test]

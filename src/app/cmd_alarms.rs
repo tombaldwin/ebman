@@ -58,13 +58,18 @@ impl App {
         let op_str = op.to_string();
         let stat_str = stat.to_string();
         let target = format!("{env_name}/{alarm_name}");
-        crate::audit::append_raw(
+        let threshold_str = threshold.to_string();
+        crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
-            &format!(
-                "stage=dispatched action=AlarmCreate target={target} metric={metric_name} threshold={threshold} op={op_str}"
-            ),
+            "AlarmCreate",
+            &target,
+            &[
+                ("metric", metric_name.as_str()),
+                ("threshold", threshold_str.as_str()),
+                ("op", op_str.as_str()),
+            ],
         );
         self.push_pending("Create alarm", target.clone());
         self.status_message = Some(format!(
@@ -92,14 +97,15 @@ impl App {
                 )
                 .await
                 .map_err(|e| flatten_err("put_metric_alarm", e));
-            let outcome = match &result {
-                Ok(()) => format!("stage=completed action=AlarmCreate target={target} ok"),
-                Err(e) => format!(
-                    "stage=completed action=AlarmCreate target={target} err=\"{}\"",
-                    e.replace('"', "'")
-                ),
-            };
-            crate::audit::append_raw(account.as_deref(), profile.as_deref(), &region, &outcome);
+            crate::audit::append_action_completed(
+                account.as_deref(),
+                profile.as_deref(),
+                &region,
+                "AlarmCreate",
+                &target,
+                result.as_ref().map(|_| ()).map_err(String::as_str),
+                &[],
+            );
             let _ = tx.send(AppMsg::AlarmOp {
                 gen,
                 verb: "create",
@@ -125,11 +131,13 @@ impl App {
                     return;
                 }
                 let target = format!("{env_name}/{alarm_name}");
-                crate::audit::append_raw(
+                crate::audit::append_action_dispatched(
                     self.context.account_id.as_deref(),
                     self.context.profile.as_deref(),
                     &self.context.region,
-                    &format!("stage=dispatched action=AlarmDelete target={target}"),
+                    "AlarmDelete",
+                    &target,
+                    &[],
                 );
                 self.push_pending("Delete alarm", target.clone());
                 self.status_message = Some(format!("deleting alarm '{alarm_name}'…"));
@@ -146,20 +154,14 @@ impl App {
                         .delete_alarms(std::slice::from_ref(&alarm_for_msg))
                         .await
                         .map_err(|e| flatten_err("delete_alarms", e));
-                    let outcome = match &result {
-                        Ok(()) => {
-                            format!("stage=completed action=AlarmDelete target={target} ok")
-                        }
-                        Err(e) => format!(
-                            "stage=completed action=AlarmDelete target={target} err=\"{}\"",
-                            e.replace('"', "'")
-                        ),
-                    };
-                    crate::audit::append_raw(
+                    crate::audit::append_action_completed(
                         account.as_deref(),
                         profile.as_deref(),
                         &region,
-                        &outcome,
+                        "AlarmDelete",
+                        &target,
+                        result.as_ref().map(|_| ()).map_err(String::as_str),
+                        &[],
                     );
                     let _ = tx.send(AppMsg::AlarmOp {
                         gen,
