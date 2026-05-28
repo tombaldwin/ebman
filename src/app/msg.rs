@@ -1301,7 +1301,18 @@ impl App {
         );
         match result {
             Ok(()) => {
-                self.push_toast(ToastKind::Success, format!("{summary} → {env_name}"));
+                // Append " · press U to undo" so operators discover
+                // the undo ring. Every option-settings spawn captures
+                // an UndoEntry before the write, so U is reliably
+                // wired here. (Skipped silently if there's no undo
+                // history yet — e.g. immediately after a context
+                // switch when apply_rebuild clears the ring.)
+                let toast = if self.undo_history.is_empty() {
+                    format!("{summary} → {env_name}")
+                } else {
+                    format!("{summary} → {env_name} · press U to undo")
+                };
+                self.push_toast(ToastKind::Success, toast);
                 // If it was an env-var set/unset/rename and the Detail view
                 // is open on the same env, refresh the Config tab's env
                 // vars so the change reflects without waiting for the next

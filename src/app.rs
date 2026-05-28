@@ -1972,11 +1972,18 @@ impl App {
         };
         app.rebuild_view();
         // Plugin warnings take priority over identity warnings — they're a user
-        // misconfiguration the user can act on now; identity_warning is informational.
+        // misconfiguration the user can act on now (red error banner).
+        // identity_warning is informational (yellow status line) — for
+        // fresh-creds users (no SSO login, expired creds), the warning is
+        // the EXPECTED state, not an error. Route to status_message with
+        // the actionable hints so first-run UX isn't an alarm.
         if let Some(w) = plugin_startup_warning {
             app.error_message = Some(w);
         } else if let Some(w) = identity_warning {
-            app.error_message = Some(w);
+            app.status_message = Some(format!(
+                "{w} — try `aws sso login` or `:profile NAME` to switch creds"
+            ));
+            app.status_message_pinned = true;
         }
         if is_first_run() {
             app.current_overlay = Some(Overlay::Whatsnew(WELCOME_OVERLAY.into()));
