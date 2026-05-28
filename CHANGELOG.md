@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.17.2] — 2026-05-28 — Patch: bug-hunt polish (Minors + UX)
+
+Continuation of the 0.17 bug-hunt — Minors and UX items the 0.17.1
+patch left for follow-up.
+
+### Fixed
+
+- **`compute_traffic_warning` / `Action::Scale` confirm modal didn't flag scale-to-zero.** `:scale 0` and `:stop` both open the standard confirm modal but the modal copy didn't surface "this drops all instances". Now: scale-to-zero gets explicit all-caps "SCALE TO ZERO" copy with the `:start` recovery hint. (`src/ui.rs`)
+- **`:profile NAME` typos surfaced as deep SDK errors.** Previously `:profile prod-readonl` (missing y) kicked a rebuild that failed somewhere in the SDK; now `cmd_profile` pre-checks against the parsed profile list and surfaces a concrete "profile 'X' not in ~/.aws/{config,credentials}" with remediation (`p` to pick, or `aws configure --profile X`). (`src/app/cmd_nav.rs`)
+- **`--demo` mode no longer dispatches destructive writes.** Pre-fix, a fat-fingered `:rebuild` / `:deploy` / `:terminate` during a demo / screencast would hit the synthetic AwsClient (silently fail at SDK layer) AND still write `stage=dispatched` lines to the real audit log. Now gated at three sites: `spawn_action` (modal path), `deny_write` (the central guard covering option-settings / SSM / tag writes), and `tick_pending_dispatch` (batch path bypasses spawn_action). Operator sees a yellow toast: "demo mode — writes are inert; press q to exit". (`src/app.rs`)
+- **`format_aws_error` now routes `InvalidClientTokenId` / `SignatureDoesNotMatch` to a concrete remediation.** Pre-fix these flattened to "context switch failed: \<long CRT message\>" with no hint at what to do. Now: "credentials invalid for profile 'X' — run: aws configure --profile X (or press `p` to pick a different profile)". Distinct from the existing expired-token arm (which still routes to `aws sso login`). (`src/app.rs`)
+
+### Internal — polish
+
+- **"no env selected" toast now includes a hint** at 45 call sites: "press 1-9, click a row, or type \`'\` to jump by name". Operators discoverability win — the picker keys aren't obvious from the bare error. (`src/app.rs`, `src/app/cmd_*.rs`)
+- **`apply_view` / `encode_filter_only_view` doc accuracy.** The previous comment claimed `apply_view` "ignores missing fields" but `app.filter` was always set (snapshot semantics — defaults to empty when `filter=` is absent). Docstrings now match the actual contract: sort/grouped/scope no-op when absent, filter restores (including to empty). (`src/app.rs`)
+- **`docs/keys.md`** now has the `U` row (cancel pending dispatch / deploy countdown). Shipped in the help overlay since 0.11 but missing from the docs page. (`docs/keys.md`)
+
+### Deferred (skip-and-continue per the autonomous-mode rules)
+
+- **`:ssm-run` Y/N pre-confirm.** Adding a typed `Action::SsmRun(String)` variant + modal flow touches `Action` / `open_parameterised_action` / `spawn_action` — outside the patch scope. `deny_write` already gates it under read-only locks and the demo guard; the missing UX is the per-command confirm. Tracked for 0.18.
+
+### Tests
+
+5 new pure-logic tests covering `format_aws_error` (InvalidClientTokenId arm, SignatureDoesNotMatch arm, ExpiredToken regression) and `deny_write` (demo-mode gate, allow-path). Suite at 748 tests, all green.
+
 ## [0.17.1] — 2026-05-28 — Patch: bug-hunt review fixes (3 Important)
 
 Post-0.17 bug + UX hunt surfaced three operator-visible Important

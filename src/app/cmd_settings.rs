@@ -41,7 +41,10 @@ impl App {
         match rest.first().copied() {
             Some("list") | Some("ls") | None => {
                 let Some(env) = self.selected_env().cloned() else {
-                    self.error_message = Some("no env selected".into());
+                    self.error_message = Some(
+                        "no env selected — press 1-9, click a row, or type ' to jump by name"
+                            .into(),
+                    );
                     return;
                 };
                 let app_name = env.application.clone();
@@ -100,7 +103,8 @@ impl App {
     /// path; submit routes through `OptionSettings` mappings.
     pub(crate) fn cmd_capacity(&mut self) {
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no env selected".into());
+            self.error_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         let fields = vec![
@@ -168,7 +172,8 @@ impl App {
     /// `Form::to_option_settings`).
     pub(crate) fn cmd_scaling_triggers(&mut self) {
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no env selected".into());
+            self.error_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         let ns = "aws:autoscaling:trigger";
@@ -301,7 +306,8 @@ impl App {
     /// covers the long tail.
     pub(crate) fn cmd_rds_attach(&mut self) {
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no env selected".into());
+            self.error_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         let ns = "aws:rds:dbinstance";
@@ -374,7 +380,8 @@ impl App {
     /// rebuild. The command makes the data safe to keep; it doesn't move it.
     pub(crate) fn cmd_rds_detach(&mut self, rest: &[&str]) {
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no env selected".into());
+            self.error_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         if rest.first().copied() != Some(env.name.as_str()) {

@@ -73,7 +73,22 @@ impl App {
 
     pub(crate) fn cmd_profile(&mut self, rest: &[&str]) {
         match rest.first() {
-            Some(p) => self.apply_picker_choice(PickerKind::Profile, (*p).to_string()),
+            Some(p) => {
+                // Validate against the parsed profile list before kicking
+                // a rebuild. A typo like `:profile prod-readonl` (missing
+                // y) would otherwise reach the SDK and surface as a
+                // flattened error from somewhere deep — far less
+                // actionable than naming the profile that doesn't exist
+                // and pointing at the picker.
+                let known = crate::profiles::load_profiles();
+                if !known.iter().any(|known| known == *p) {
+                    self.error_message = Some(format!(
+                        "profile '{p}' not in ~/.aws/{{config,credentials}} — press `p` to pick from the list, or add it with `aws configure --profile {p}`"
+                    ));
+                    return;
+                }
+                self.apply_picker_choice(PickerKind::Profile, (*p).to_string());
+            }
             None => self.error_message = Some("usage: :profile <name>".into()),
         }
     }

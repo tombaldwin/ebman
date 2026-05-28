@@ -205,7 +205,8 @@ impl App {
             return;
         }
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no env selected".into());
+            self.error_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         let env_name = env.name.clone();

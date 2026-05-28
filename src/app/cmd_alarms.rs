@@ -45,7 +45,8 @@ impl App {
         };
         let op = op_override.unwrap_or(default_op);
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no env selected".into());
+            self.error_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         if self.deny_write(&env.name, "alarm-create") {

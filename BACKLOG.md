@@ -886,15 +886,15 @@ Smaller polish items (Minors + UX) tracked for 0.17.2.
 - [x] `ebman lint` CLI plumbs `required_tags` (EBL010 precondition; env_tag_keys deferred to 0.18). Brings CLI-side LintContext construction to TUI parity.
 - [x] `:rollout --parallel` JoinHandle failure attribution — `join_next_with_id()` + id→region map so panic/cancel still maps to its launched region.
 
-#### 0.17.2 candidates (Minor + UX from the hunt)
-- [ ] `apply_view` clears `app.filter` even when snapshot has no `filter=` part
-- [ ] `compute_traffic_warning` doesn't flag scale-to-zero (`:scale 0 0` / `:stop` warning copy)
-- [ ] `:ssm-run` Y/N confirm before executing
-- [ ] `"no env selected"` hint expansion (47 sites)
-- [ ] `U` (cancel pending dispatch) row missing from `docs/keys.md`
-- [ ] `:profile NAME` pre-check against parsed profile list (typo path)
-- [ ] `--demo` should refuse destructive dispatch up-front
-- [ ] `format_aws_error` arm for `InvalidClientTokenId` / `SignatureDoesNotMatch`
+#### 0.17.2 patch (Minor + UX from the hunt) — shipped 2026-05-28
+- [x] `apply_view` filter-clear contract documented (snapshot semantics — filter always restores, sort/grouped/scope no-op when absent)
+- [x] `Action::Scale` modal copy: scale-to-zero gets explicit SCALE-TO-ZERO warning + `:start` recovery hint
+- [x] `"no env selected"` hint expansion — 45 sites updated with "press 1-9, click a row, or type ' to jump by name"
+- [x] `U` row in `docs/keys.md` for cancel-pending-dispatch
+- [x] `:profile NAME` pre-checks against parsed profile list before kicking rebuild
+- [x] `--demo` refuses destructive dispatch at `spawn_action` + `deny_write` + `tick_pending_dispatch` (covers Single + Batch paths)
+- [x] `format_aws_error` adds `InvalidClientTokenId` / `SignatureDoesNotMatch` arm with `aws configure --profile X` hint
+- [ ] `:ssm-run` Y/N confirm — deferred to 0.18 (needs new `Action::SsmRun` variant + modal-flow plumbing, outside patch scope)
 
 ### 0.17 candidates (2026-05-28)
 
