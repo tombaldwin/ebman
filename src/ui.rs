@@ -4537,12 +4537,21 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                     modal.target_env,
                     modal.clone_target.as_deref().unwrap_or("?")
                 ),
-                Action::Scale => format!(
-                    "Scale '{}' to min={} / max={}? (rolling)",
-                    modal.target_env,
-                    modal.scale_min.unwrap_or(0),
-                    modal.scale_max.unwrap_or(0)
-                ),
+                Action::Scale => {
+                    let min = modal.scale_min.unwrap_or(0);
+                    let max = modal.scale_max.unwrap_or(0);
+                    if min == 0 && max == 0 {
+                        format!(
+                            "SCALE TO ZERO: '{}' will serve 0 requests (`:start` to resume)",
+                            modal.target_env
+                        )
+                    } else {
+                        format!(
+                            "Scale '{}' to min={min} / max={max}? (rolling)",
+                            modal.target_env
+                        )
+                    }
+                }
                 Action::AbortUpdate => format!("Abort current update on '{}'?", modal.target_env),
                 // These variants never reach the ConfirmModal — they're
                 // dispatched directly from command paths (Capacity opens a

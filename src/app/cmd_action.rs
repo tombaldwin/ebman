@@ -46,7 +46,10 @@ impl App {
                 let preview = rest.contains(&"--preview");
                 if preview {
                     let Some(env) = self.selected_env().cloned() else {
-                        self.error_message = Some("no env selected".into());
+                        self.error_message = Some(
+                            "no env selected — press 1-9, click a row, or type ' to jump by name"
+                                .into(),
+                        );
                         return;
                     };
                     self.spawn_deploy_preview(env, version.to_string());
@@ -102,7 +105,10 @@ impl App {
         match rest.first().copied() {
             None => {
                 let Some(env) = self.selected_env().cloned() else {
-                    self.error_message = Some("no env selected".into());
+                    self.error_message = Some(
+                        "no env selected — press 1-9, click a row, or type ' to jump by name"
+                            .into(),
+                    );
                     return;
                 };
                 self.spawn_list_compatible_platforms(env.name);
@@ -413,7 +419,8 @@ impl App {
             return;
         };
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no env selected".into());
+            self.error_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         let target = target.to_string();

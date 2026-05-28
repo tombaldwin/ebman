@@ -18,7 +18,10 @@ impl App {
             }
             Some(template) => {
                 let Some(env) = self.selected_env().cloned() else {
-                    self.error_message = Some("no env selected".into());
+                    self.error_message = Some(
+                        "no env selected — press 1-9, click a row, or type ' to jump by name"
+                            .into(),
+                    );
                     return;
                 };
                 if self.deny_write(&env.name, "config-save") {
@@ -97,7 +100,10 @@ impl App {
                 // parser and call spawn_config_apply_template directly.
                 let template = rest.join(" ");
                 let Some(env) = self.selected_env().cloned() else {
-                    self.error_message = Some("no env selected".into());
+                    self.error_message = Some(
+                        "no env selected — press 1-9, click a row, or type ' to jump by name"
+                            .into(),
+                    );
                     return;
                 };
                 self.spawn_config_apply_template(env.name.clone(), template);
@@ -119,7 +125,8 @@ impl App {
         }
         let template = rest.join(" ");
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no env selected".into());
+            self.error_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         self.spawn_config_inspect_template(env.application, template);

@@ -33,6 +33,7 @@ Press `?` in-app for a per-context keymap — Detail, DLQ, Action menu, and the 
 | `^W` | Yank equivalent `aws elasticbeanstalk describe-environments` |
 | `y` / `Y` | Yank CNAME / name |
 | `f` | Freeze / unfreeze auto-refresh |
+| `U` | Cancel pending dispatch (deploy countdown / pre-arm) |
 | `r` / `p` | Switch region / profile |
 | `^R` / `F5` | Force refresh |
 | `?` | Help |

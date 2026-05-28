@@ -3680,7 +3680,7 @@ impl App {
                             let app_name = env.application.clone();
                             self.open_why_red(env_name, app_name);
                         } else {
-                            self.error_message = Some("no env selected".into());
+                            self.error_message = Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
                         }
                     }
                     KeyCode::Char('f') if self.scope == Scope::Envs => {
@@ -4497,7 +4497,8 @@ impl App {
     /// target, and the 5s undo window still applies.
     pub(crate) fn cmd_rollback(&mut self, rest: &[&str]) {
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no env selected".into());
+            self.error_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         if self.deny_write(&env.name, "rollback") {
@@ -4788,7 +4789,8 @@ impl App {
             self.selected_env().map(|e| e.name.clone())
         };
         let Some(env_name) = env_opt else {
-            self.error_message = Some("no env selected".into());
+            self.error_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         let aws = self.aws.clone();
@@ -4819,7 +4821,8 @@ impl App {
             self.selected_env().map(|e| e.name.clone())
         };
         let Some(env_name) = env_opt else {
-            self.error_message = Some("no env selected".into());
+            self.error_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         let aws = self.aws.clone();
@@ -4884,7 +4887,8 @@ impl App {
     /// file is a clean no-op.
     pub(crate) fn cmd_env_edit(&mut self) {
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no env selected".into());
+            self.error_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         if self.deny_write(&env.name, ":env-edit") {
@@ -5025,7 +5029,8 @@ impl App {
     /// the overlay just says so with a config-file pointer.
     fn cmd_explain_issue(&mut self, issue_id: &str) {
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no env selected".into());
+            self.error_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         let aws = self.aws.clone();
@@ -5112,7 +5117,8 @@ impl App {
     /// `:options aws:autoscaling:asg`).
     pub(crate) fn cmd_options(&mut self, rest: &[&str]) {
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no env selected".into());
+            self.error_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         let filter_ns = rest.first().map(|s| s.to_string());
@@ -5151,7 +5157,8 @@ impl App {
     /// `eb config get` and eyeballing the diff.
     pub(crate) fn cmd_config_diff_local(&mut self, rest: &[&str]) {
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no env selected".into());
+            self.error_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         let cwd = match std::env::current_dir() {
@@ -5263,7 +5270,8 @@ impl App {
             self.selected_env().cloned()
         };
         let Some(left) = left else {
-            self.error_message = Some("no env selected".into());
+            self.error_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         let Some(right) = self.environments.iter().find(|e| e.name == target).cloned() else {
@@ -5314,7 +5322,8 @@ impl App {
     /// isn't left wondering whether the fetch failed silently.
     pub(crate) fn cmd_rds(&mut self) {
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no env selected".into());
+            self.error_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         let aws = self.aws.clone();
@@ -5379,7 +5388,8 @@ impl App {
     /// works for one-off updates.
     pub(crate) fn cmd_listeners(&mut self) {
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no env selected".into());
+            self.error_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         if env.tier.eq_ignore_ascii_case("Worker") {
@@ -5446,7 +5456,8 @@ impl App {
     pub(crate) fn cmd_listener_edit(&mut self, rest: &[&str]) {
         use crate::form::{Form, FormField, FormSubmit};
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no env selected".into());
+            self.error_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         if env.tier.eq_ignore_ascii_case("Worker") {
@@ -5606,7 +5617,8 @@ impl App {
             self.selected_env().map(|e| e.name.clone())
         };
         let Some(name) = name_opt else {
-            self.status_message = Some("no env selected".into());
+            self.status_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         if self.pinned.remove(&name) {
@@ -5668,7 +5680,8 @@ impl App {
             self.selected_env().cloned()
         };
         let Some(env) = env_opt else {
-            self.status_message = Some("no env selected".into());
+            self.status_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         let cmd = build_describe_cli(
@@ -5768,7 +5781,8 @@ impl App {
             self.selected_env().cloned()
         };
         let Some(env) = env else {
-            self.status_message = Some("no env selected".into());
+            self.status_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         self.current_overlay = Some(Overlay::Describe(describe_env(&env)));
@@ -5781,7 +5795,8 @@ impl App {
             self.selected_env().cloned()
         };
         let Some(env) = env_opt else {
-            self.status_message = Some("no env selected".into());
+            self.status_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         let url = console_url(&self.context.region, &env.application, &env.name);
@@ -5909,7 +5924,8 @@ impl App {
 
     fn open_detail(&mut self) {
         let Some(env) = self.selected_env().cloned() else {
-            self.status_message = Some("no env selected".into());
+            self.status_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         let mut tabs = vec![
@@ -7426,7 +7442,8 @@ impl App {
 
     fn open_action_menu(&mut self) {
         let Some(target) = self.target_env_for_action() else {
-            self.status_message = Some("no env selected".into());
+            self.status_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         if self.deny_write(&target.name, "action menu") {
@@ -7819,7 +7836,8 @@ impl App {
     fn open_multi_select_form(&mut self, flavour: MultiSelectFlavour) {
         use crate::form::{Form, FormField, FormSubmit};
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no env selected".into());
+            self.error_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         let (title_prefix, summary, field_key, label, ns, opt_name) = match flavour {
@@ -8116,6 +8134,15 @@ impl App {
     /// Saves duplicating the `is_read_only_for` + `read_only_reason`
     /// + `error_message` triplet at every call site (~25 of them).
     pub fn deny_write(&mut self, env_name: &str, verb: &str) -> bool {
+        // `--demo` mode refuses writes outright (see spawn_action's
+        // matching guard for the rationale — synthetic fleet, fake
+        // AwsClient, real audit log).
+        if self.demo_mode {
+            self.error_message = Some(format!(
+                "demo mode — {verb} not dispatched (writes are inert; press q to exit)"
+            ));
+            return true;
+        }
         if !self.is_read_only_for(env_name) {
             return false;
         }
@@ -8965,7 +8992,8 @@ impl App {
         to_remove: Vec<(String, String)>,
     ) {
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no env selected".into());
+            self.error_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         if self.deny_write(&env.name, &summary) {
@@ -9068,7 +9096,8 @@ impl App {
         and_deploy: bool,
     ) {
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no env selected".into());
+            self.error_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         if self.deny_write(&env.name, "deploy-from-s3") {
@@ -9205,7 +9234,8 @@ impl App {
         and_deploy: bool,
     ) {
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no env selected".into());
+            self.error_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         if self.is_read_only_for(&env.name) {
@@ -9370,7 +9400,8 @@ impl App {
     /// `.zip` is removed from the env's storage bucket.
     fn spawn_delete_app_version(&mut self, label: String, force: bool) {
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no env selected".into());
+            self.error_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         if self.deny_write(&env.name, "delete-version") {
@@ -9518,7 +9549,10 @@ impl App {
                 if let Some((_app, template)) = selected {
                     self.current_overlay = None;
                     let Some(env) = self.selected_env().cloned() else {
-                        self.error_message = Some("no env selected".into());
+                        self.error_message = Some(
+                            "no env selected — press 1-9, click a row, or type ' to jump by name"
+                                .into(),
+                        );
                         return;
                     };
                     // Direct call bypasses execute_command's whitespace
@@ -9563,7 +9597,8 @@ impl App {
     /// call; we surface a summary toast either way.
     fn spawn_tag_update(&mut self, to_add: Vec<(String, String)>, to_remove: Vec<String>) {
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no env selected".into());
+            self.error_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         if self.deny_write(&env.name, "tag edits") {
@@ -10351,7 +10386,8 @@ impl App {
 
     fn open_parameterised_action(&mut self, action: Action, params: ParameterisedAction) {
         let Some(env) = self.selected_env().cloned() else {
-            self.error_message = Some("no env selected".into());
+            self.error_message =
+                Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
         self.open_parameterised_action_on(env, action, params);
@@ -10582,6 +10618,15 @@ impl App {
         }
         let kind = pd.kind.clone();
         self.pending_dispatch = None;
+        // `--demo` mode refuses ANY dispatch from the pending queue —
+        // covers the batch variants that bypass `spawn_action`'s own
+        // demo gate (Single dispatches still hit that guard too, so
+        // both paths land on the same refusal toast). See spawn_action
+        // for the rationale.
+        if self.demo_mode {
+            self.error_message = Some("demo mode — writes are inert; press q to exit".into());
+            return;
+        }
         match kind {
             PendingDispatchKind::Single { modal } => self.spawn_action(modal),
             PendingDispatchKind::BatchAction { action, env_names } => {
@@ -10658,6 +10703,19 @@ impl App {
     }
 
     fn spawn_action(&mut self, modal: ConfirmModal) {
+        // `--demo` mode runs against a synthetic fleet on a fake
+        // AwsClient. Destructive dispatch against that client would
+        // fail at the SDK layer but still write `stage=dispatched`
+        // audit lines to the real audit log. Refuse outright so a
+        // fat-fingered keypress during a demo / screencast doesn't
+        // touch operator state.
+        if self.demo_mode {
+            self.error_message = Some(format!(
+                "demo mode — {} not dispatched (writes are inert; press q to exit)",
+                modal.action.label()
+            ));
+            return;
+        }
         // Per-env / per-account read-only locks short-circuit the
         // dispatch before any AWS call. `read_only_reason` returns
         // the specific cause (global toggle vs. config-pinned env vs.
@@ -11116,7 +11174,10 @@ impl App {
                         self.selected_env().cloned()
                     };
                     let Some(left) = left_opt else {
-                        self.error_message = Some("no env selected".into());
+                        self.error_message = Some(
+                            "no env selected — press 1-9, click a row, or type ' to jump by name"
+                                .into(),
+                        );
                         return;
                     };
                     if left.name == **target {
@@ -11148,7 +11209,12 @@ impl App {
                 };
                 match env_opt {
                     Some(env_name) => self.spawn_alarms_fetch(env_name),
-                    None => self.error_message = Some("no env selected".into()),
+                    None => {
+                        self.error_message = Some(
+                            "no env selected — press 1-9, click a row, or type ' to jump by name"
+                                .into(),
+                        )
+                    }
                 }
             }
             "why" | "diagnose" => {
@@ -11160,7 +11226,12 @@ impl App {
                 };
                 match env_opt {
                     Some((env_name, app_name)) => self.open_why_red(env_name, app_name),
-                    None => self.error_message = Some("no env selected".into()),
+                    None => {
+                        self.error_message = Some(
+                            "no env selected — press 1-9, click a row, or type ' to jump by name"
+                                .into(),
+                        )
+                    }
                 }
             }
             "loglevel" => match rest.first() {
@@ -11243,7 +11314,10 @@ impl App {
                 // tracked on App.log_tail_task so subsequent calls / close
                 // can abort cleanly.
                 let Some(env) = self.selected_env().cloned() else {
-                    self.error_message = Some("no env selected".into());
+                    self.error_message = Some(
+                        "no env selected — press 1-9, click a row, or type ' to jump by name"
+                            .into(),
+                    );
                     return;
                 };
                 let explicit_group = rest.first().map(|s| s.to_string());
@@ -12626,6 +12700,29 @@ impl App {
                 .unwrap_or_else(|| "default".into());
             return format!(
                 "credentials expired — run: aws sso login --profile {profile}  (or refresh your creds, then press Ctrl-R)"
+            );
+        }
+        // Invalid / mismatched credentials (distinct from expired): the
+        // profile resolved but its access key is bogus or doesn't match
+        // its secret. Common on fresh-account misconfig and on stale
+        // long-lived keys that have been rotated out. Point at the
+        // remediation operators actually need (configure or pick a
+        // different profile) instead of leaking the SDK's flattened
+        // CRT message.
+        let invalid_creds_signals = [
+            "invalidclienttokenid",
+            "the security token included in the request is invalid",
+            "signaturedoesnotmatch",
+            "the request signature we calculated does not match",
+        ];
+        if invalid_creds_signals.iter().any(|s| lower.contains(s)) {
+            let profile = self
+                .override_profile
+                .clone()
+                .or_else(|| self.context.profile.clone())
+                .unwrap_or_else(|| "default".into());
+            return format!(
+                "credentials invalid for profile '{profile}' — run: aws configure --profile {profile}  (or press `p` to pick a different profile)"
             );
         }
         format!("{op} failed: {msg}")
@@ -14703,9 +14800,15 @@ fn encode_view(app: &App) -> String {
 
 /// Encode a filter-only saved view — the value `:save NAME` writes
 /// to `saved_views`. Omits `sort=`, `grouped=`, `scope=` so loading
-/// the view doesn't perturb the operator's current sort / group /
-/// scope state. `apply_view` ignores missing fields, so a
-/// filter-only view is a safe no-touch-other-state operation.
+/// the view doesn't perturb those — `apply_view` only touches a
+/// field when its `KEY=` part is present in the snapshot (sort /
+/// grouped / scope are no-op when absent). `filter=` is the
+/// exception: `apply_view` always sets `app.filter` (snapshot
+/// semantics — restore the filter that was active at save time,
+/// including empty). A filter-only view from this encoder always
+/// has `filter=` present, so the asymmetry doesn't bite here; the
+/// case it matters is loading a full snapshot taken when the
+/// filter was empty (which clears the current filter on purpose).
 ///
 /// Used by the legacy `:save` command (filter-only save) and by
 /// the state.toml backward-compat path that promotes old
@@ -14728,6 +14831,12 @@ pub fn view_filter_value(encoded: &str) -> &str {
     ""
 }
 
+/// Snapshot semantics: `filter` always restores (defaults to empty
+/// when `filter=` is absent — the save-time state was "no filter"),
+/// while `sort` / `grouped` / `scope` only restore when explicitly
+/// present (so a filter-only view from `encode_filter_only_view`
+/// doesn't perturb them). See `encode_filter_only_view`'s docstring
+/// for the operator-visible consequence.
 fn apply_view(app: &mut App, snap: &str) {
     let mut new_filter = String::new();
     for part in snap.split(';') {
@@ -17072,6 +17181,88 @@ mod tests {
         assert!(
             !out.contains(":"),
             "expected no classification prefix; got: {out}"
+        );
+    }
+
+    #[test]
+    fn format_aws_error_routes_invalid_client_token_to_configure_hint() {
+        let app = test_app();
+        let out = app.format_aws_error(
+            "refresh",
+            "InvalidClientTokenId: The security token included in the request is invalid",
+        );
+        assert!(
+            out.contains("credentials invalid"),
+            "expected credentials-invalid hint, got: {out}"
+        );
+        assert!(
+            out.contains("aws configure --profile"),
+            "expected `aws configure` remediation, got: {out}"
+        );
+    }
+
+    #[test]
+    fn format_aws_error_routes_signature_mismatch_to_configure_hint() {
+        let app = test_app();
+        let out = app.format_aws_error(
+            "list_environments",
+            "SignatureDoesNotMatch: The request signature we calculated does not match the signature you provided",
+        );
+        assert!(
+            out.contains("credentials invalid"),
+            "expected credentials-invalid hint, got: {out}"
+        );
+    }
+
+    #[test]
+    fn format_aws_error_keeps_existing_expired_token_routing() {
+        // The new invalid-creds arm must not steal traffic that the
+        // existing ExpiredToken arm should keep handling. Belt-and-
+        // braces test so a future re-ordering doesn't silently
+        // regress the SSO refresh hint.
+        let app = test_app();
+        let out = app.format_aws_error(
+            "refresh",
+            "ExpiredToken: The security token included in the request is expired",
+        );
+        assert!(
+            out.contains("credentials expired"),
+            "expected expired-creds hint, got: {out}"
+        );
+        assert!(
+            out.contains("aws sso login"),
+            "expected `aws sso login` remediation, got: {out}"
+        );
+    }
+
+    #[test]
+    fn deny_write_refuses_in_demo_mode_even_when_not_read_only() {
+        let mut app = test_app();
+        app.demo_mode = true;
+        // Sanity: not in read-only mode otherwise.
+        assert!(!app.read_only);
+        let denied = app.deny_write("any-env", "rebuild");
+        assert!(denied, "demo mode must deny writes");
+        let err = app
+            .error_message
+            .as_deref()
+            .expect("demo-mode deny_write should set error_message");
+        assert!(
+            err.contains("demo mode"),
+            "expected demo-mode reason in toast, got: {err}"
+        );
+    }
+
+    #[test]
+    fn deny_write_allows_writes_when_not_demo_and_not_read_only() {
+        let mut app = test_app();
+        // demo_mode is false by default in test_app.
+        let denied = app.deny_write("any-env", "rebuild");
+        assert!(!denied, "non-demo non-readonly path must allow writes");
+        assert!(
+            app.error_message.is_none(),
+            "no error toast on allowed write, got: {:?}",
+            app.error_message
         );
     }
 
