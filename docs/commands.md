@@ -36,7 +36,7 @@ Type `:` to open the command bar. Tab-completion is not implemented, but `Ctrl-K
 - `:changes` — deploy + config-change timeline from the env's event history.
 - `:alarm-history NAME` — recent CloudWatch alarm transitions (StateUpdate / ConfigurationUpdate / Action, newest first).
 - `:ssh [i-abc]` — open an embedded SSM session into an env instance. No arg opens a picker over cached Detail/Instances. Needs `aws` CLI + session-manager-plugin on `PATH`.
-- `:ssm-run "<cmd>"` — fan a shell command across the env's instances via SSM Run Command (AWS-RunShellScript). 60s wall-clock cap. Gated by read-only / per-env safety pin.
+- `:ssm-run "<cmd>"` — fan a shell command across the env's instances via SSM Run Command (AWS-RunShellScript). 60s wall-clock cap. Opens a Y/N confirm modal (0.17.3+) showing the command + fan-out count + env before dispatch. Treat-as-write so the read-only / per-env safety pin / `--demo` mode all gate it.
 - `:resources` / `:res` — `DescribeEnvironmentResources` dump.
 - `:alarms` — CloudWatch alarms attached to the env.
 - `:versions` — application versions (deployed marker, deploy hint).
