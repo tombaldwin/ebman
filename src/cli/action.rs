@@ -522,6 +522,15 @@ async fn run_rollout(args: &[String]) -> Result<()> {
         }
         let mut joinset: tokio::task::JoinSet<(String, Result<(), String>)> =
             tokio::task::JoinSet::new();
+        // Tracks the region each spawned task was launched against, keyed
+        // by JoinSet task id. When a JoinHandle fails (panic / cancellation)
+        // we no longer get the region from inside the closure, so we look
+        // it up here. Without this, `outcomes.push((String::new(), Err))`
+        // would write an empty region key, which then matches no entry in
+        // the `regions` HashSet at the bottom of this fn — so the real
+        // region would be misreported as "skipped (rollout halted)".
+        let mut id_to_region: std::collections::HashMap<tokio::task::Id, String> =
+            std::collections::HashMap::new();
         let cap = max_concurrency.unwrap_or(per_region.len()).max(1);
         let mut queue: std::collections::VecDeque<(String, std::sync::Arc<aws::AwsClient>)> =
             per_region.into_iter().collect();
@@ -532,43 +541,57 @@ async fn run_rollout(args: &[String]) -> Result<()> {
             let version_for = version.clone();
             let rollout_id_for = rollout_id.clone();
             let quiet_for = quiet;
-            joinset.spawn(async move {
+            let region_for_inner = region.clone();
+            let handle = joinset.spawn(async move {
                 let outcome = dispatch_one_region(
                     &client,
                     &env_for,
                     &version_for,
                     wait_for_green_secs,
                     &rollout_id_for,
-                    &region,
+                    &region_for_inner,
                     quiet_for,
                 )
                 .await;
-                (region, outcome)
+                (region_for_inner, outcome)
             });
+            id_to_region.insert(handle.id(), region);
         }
-        // Drain + reseed as capacity frees up.
-        while let Some(joined) = joinset.join_next().await {
-            let (region, outcome) =
-                joined.unwrap_or_else(|e| (String::new(), Err(format!("join: {e}"))));
+        // Drain + reseed as capacity frees up. `join_next_with_id` lets us
+        // attribute join failures (panic/cancel) back to a region.
+        while let Some(joined) = joinset.join_next_with_id().await {
+            let (region, outcome) = match joined {
+                Ok((id, (r, outcome))) => {
+                    id_to_region.remove(&id);
+                    (r, outcome)
+                }
+                Err(e) => {
+                    let id = e.id();
+                    let region = id_to_region.remove(&id).unwrap_or_default();
+                    (region, Err(format!("join: {e}")))
+                }
+            };
             outcomes.push((region, outcome));
             if let Some((next_region, next_client)) = queue.pop_front() {
                 let env_for = env.clone();
                 let version_for = version.clone();
                 let rollout_id_for = rollout_id.clone();
                 let quiet_for = quiet;
-                joinset.spawn(async move {
+                let region_for_inner = next_region.clone();
+                let handle = joinset.spawn(async move {
                     let outcome = dispatch_one_region(
                         &next_client,
                         &env_for,
                         &version_for,
                         wait_for_green_secs,
                         &rollout_id_for,
-                        &next_region,
+                        &region_for_inner,
                         quiet_for,
                     )
                     .await;
-                    (next_region, outcome)
+                    (region_for_inner, outcome)
                 });
+                id_to_region.insert(handle.id(), next_region);
             }
         }
     } else {

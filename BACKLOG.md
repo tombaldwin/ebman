@@ -877,6 +877,25 @@ ebman mcp serve                        → server mode (future: MCP for Claude C
 
 **Future-proofing test passed:** LLM explainer (`ebman explain`), MCP server (`ebman mcp serve`), cron-driven monitoring (`ebman lint --watch`), git pre-commit hooks (`ebman drift`), GitHub Actions integration (`ebman action deploy`), audit-stream consumption (`ebman audit --tail --json | jq`) all fit without restructuring.
 
+### 0.17.1 patch (2026-05-28)
+
+Post-0.17 bug + UX hunt fixed three operator-visible Importants.
+Smaller polish items (Minors + UX) tracked for 0.17.2.
+
+- [x] `pending_actions` not cleared on context switch — apply_rebuild now clears both `pending_actions` and `pending_dispatch` alongside the other env-keyed state.
+- [x] `ebman lint` CLI plumbs `required_tags` (EBL010 precondition; env_tag_keys deferred to 0.18). Brings CLI-side LintContext construction to TUI parity.
+- [x] `:rollout --parallel` JoinHandle failure attribution — `join_next_with_id()` + id→region map so panic/cancel still maps to its launched region.
+
+#### 0.17.2 candidates (Minor + UX from the hunt)
+- [ ] `apply_view` clears `app.filter` even when snapshot has no `filter=` part
+- [ ] `compute_traffic_warning` doesn't flag scale-to-zero (`:scale 0 0` / `:stop` warning copy)
+- [ ] `:ssm-run` Y/N confirm before executing
+- [ ] `"no env selected"` hint expansion (47 sites)
+- [ ] `U` (cancel pending dispatch) row missing from `docs/keys.md`
+- [ ] `:profile NAME` pre-check against parsed profile list (typo path)
+- [ ] `--demo` should refuse destructive dispatch up-front
+- [ ] `format_aws_error` arm for `InvalidClientTokenId` / `SignatureDoesNotMatch`
+
 ### 0.17 candidates (2026-05-28)
 
 Theme: **make the stubs live + lint adoption ergonomics.** 0.16 shipped EBL007-010 but EBL008 (stale platform) and EBL010 (required tags) silently no-op in production because their context fields (`latest_stack_version`, `required_tags`) aren't plumbed through. 0.17 plumbs them — and lands two more high-signal rules built on the same plumbing (EBL011 DLQ depth, EBL012 instance-count divergence). Plus `lint --baseline` so teams onboarding lint on a noisy fleet can grandfather existing issues without declaring bankruptcy. Plus tail cleanup (LintContext builder pattern, run_inline_ssm removal, two quick UX wins).

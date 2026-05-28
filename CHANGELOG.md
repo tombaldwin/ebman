@@ -6,7 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-## [0.17.0] — 2026-05-28 — Make the stubs live + lint adoption ergonomics
+## [0.17.1] — 2026-05-28 — Patch: bug-hunt review fixes (3 Important)
+
+Post-0.17 bug + UX hunt surfaced three operator-visible Important
+bugs. This patch fixes them; the smaller polish items from the
+same review land in 0.17.2.
+
+### Fixed
+
+- **`pending_actions` queue not cleared on context switch.** `apply_rebuild` cleared `armed_watchdogs`, `watching_deploys`, `deploy_snapshots`, `undo_history`, and the other env-keyed state — but missed `pending_actions` and `pending_dispatch`. Spawned tasks from the previous profile/region get dropped at the generation guard in `msg.rs`, so their `complete_pending` never ran. Symptom: dispatch any write (`:rebuild`, `:deploy`, `:tag`) then run `:profile X` before completion → header `⏳ N` chip and `:pending` overlay show the previous-context op forever. Fix: clear both fields alongside the other env-keyed state.
+- **`ebman lint` CLI didn't plumb `required_tags` (EBL010 precondition).** TUI's `:lint` overlay chained `.with_required_tags(...)` on the `LintContext`; the CLI built the context raw. Operator-visible CLI/TUI behaviour drift on `LintContext` construction. Fix: plumb `config::load().required_tags` through `LintContext::for_env(...).with_required_tags(...)` in the CLI. Note: EBL010 still won't fire from CLI in 0.17.1 because `env_tag_keys` plumbing is the other half of the precondition — that's deferred to 0.18 (same `DescribeTags` fetch that gates EBL010 from the TUI's lint command). This patch closes the CLI-side half so 0.18 only needs to wire the env-tags fetch. (`latest_stacks` plumbing — for EBL008 newer-stack — likewise needs a `ListAvailableSolutionStacks` fetch and stays deferred to 0.18.)
+- **`ebman action rollout --parallel` misattributed join failures.** Loop used `joinset.join_next()`; when a `JoinHandle` failed (panic / cancel) the closure couldn't return its region, so the outcome was keyed by `""`. The "skipped (rollout halted)" calc at the bottom of `run_rollout` then matched the empty key against no input region — the *actual* affected region was then re-printed as "skipped (rollout halted)". Operators in the parallel path got a misleading failure report. Fix: switch to `join_next_with_id()` + a `HashMap<task::Id, String>` tracker, so a failed join still attributes back to its launched region.
+
+
 
 0.16 shipped EBL007-010 but EBL008 (stale platform) and
 EBL010 (required tags) silently no-op'd in production —
