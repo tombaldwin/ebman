@@ -90,13 +90,7 @@ pub async fn run(args: &[String]) -> Result<()> {
                 continue;
             }
         };
-        let ctx = lint::LintContext {
-            env,
-            options: &opts,
-            events: &[],
-            cost_usd_per_month: None,
-            latest_stack_version: None,
-        };
+        let ctx = lint::LintContext::for_env(env, &opts);
         let issues = lint::run_rules(&rules, &ctx);
         for i in issues {
             if i.rule_id == issue_id {
