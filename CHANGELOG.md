@@ -6,6 +6,69 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-05-28 — Make the stubs live + lint adoption ergonomics
+
+0.16 shipped EBL007-010 but EBL008 (stale platform) and
+EBL010 (required tags) silently no-op'd in production —
+their context fields weren't plumbed from `App`. 0.17
+plumbs them (EBL008 fully TUI-live, EBL010 implementation
+landed pending env-tag-keys wiring), adds two more high-
+signal rules built on the same context shape (EBL011 worker
+DLQ stuck, EBL012 Green-but-0-instances divergence), and
+ships `ebman lint --baseline` / `--against-baseline` so
+teams adopting lint on a noisy fleet can grandfather
+existing issues without declaring bankruptcy.
+
+Theme: "Make the stubs live + lint adoption ergonomics."
+
+Two-agent code review caught one Critical (EBL008 plumbing
+sent the wrong shape — version token vs full stack name —
+making the rule false-positive on every env) plus several
+Minors. Critical + selected Minors fixed in `7b8d4ac`
+before tag.
+
+### Added — smart features
+
+- **`ebman lint --baseline FILE` + `--against-baseline FILE`.** CI adoption pattern. `--baseline` snapshots today's issues to JSON (exit 0 regardless). `--against-baseline` diffs against the snapshot — exit 3 only on NEW issues; CLEARED issues are informational. Identity is `(rule_id, env_name, sorted_fields)` — title / detail / suggestion can drift across releases without churning the diff. Hand-rolled JSON output (consistent with the project's "no serde_json" convention). New `lint::issue_identity_hash` / `lint::issue_identity` / `lint::parse_baseline` / `lint::BaselineIssue` helpers; round-trip pinned by `parse_baseline_identity_matches_issue_identity`. (`b6fdf4b` + `7b8d4ac` arg-parse fix)
+- **EBL011 — Worker env with DLQ depth > 100 (Warn).** Catches stuck SQS consumers — the headline failure mode for worker envs. Scoped to `ctx.env.tier == "Worker"`. Threshold hard-coded (`EBL011_DLQ_THRESHOLD = 100`) for v1; future config-tunable if operators ask. Fix=Manual (operator triages via DLQ sampling + worker logs before redrive/purge/scale). (`e5d8e24`)
+- **EBL012 — `status=Ready + health=Green/Ok` with 0 healthy instances (Error).** Classic ELB-vs-EB health-check divergence: EB reports Green but ALB target-group reports no healthy targets → traffic failing silently. Skips during Updating (deploy-in-flight is not the divergence pattern) and when health is non-Green (EBL003 handles long-Red). Fix=Manual (operator drills into Detail/Health). (`e5d8e24`)
+- **EBL008 now fires in the TUI.** Plumbed via `aws::newer_stack_version(&env.solution_stack, &app.latest_stacks)` at three call sites (`:lint`, `:explain`, confirm-modal). The Critical bug caught in review was here: pre-fix, the plumbing passed a version token while the rule compared against a full stack name → unconditional false-positive. Fix routes through the existing version-tuple helper. CLI `ebman lint` + `ebman explain` still no-op for EBL008 (no `App`); tracked for 0.18. (`dbb1d80` + `7b8d4ac` fix)
+- **EBL010 implementation landed.** Rule now fires when `required_tags` is populated AND `env_tag_keys` is populated AND any required key is missing (case-insensitive). The `env_tag_keys` wiring is the 0.18 follow-up — needs a `DescribeTags` fetch per call site. (`dbb1d80`)
+
+### Internal — refactors
+
+- **`LintContext::for_env(env, opts)` + `.with_*()` builder pattern.** Pre-fix, the context was built in 6 places with identical skeleton — adding a new field meant editing all six. Now: `for_env` is the minimal constructor; `.with_events()`, `.with_cost()`, `.with_newer_stack_available()`, `.with_required_tags()`, `.with_env_tag_keys()`, `.with_dlq_depth()`, `.with_healthy_count()` populate optional fields. Six call sites collapsed to one-liners. Three new fields (`required_tags`, `env_tag_keys`, `dlq_depth`, `healthy_instance_count`) added without editing every site. (`1e6558e`)
+
+### Internal — polish
+
+- **`:undo` discoverability toast.** Successful option-settings writes now append `· press U to undo` to the toast — operators discover the session-scoped undo ring without reading help. Suppressed when `undo_history` is empty (e.g. immediately after a context switch). (`a400f4b`)
+- **First-run identity_warning routing.** Pre-fix, a fresh-creds user (no SSO login, expired creds) hit a RED error banner — that's the EXPECTED state, not an error. Post-fix routes to `status_message` (yellow informational) + pinned + adds `aws sso login` / `:profile NAME` hints. Plugin-startup warnings still land in `error_message` (those ARE user misconfigurations). (`a400f4b`)
+- **`run_inline_ssm` dead code removed.** ~90 lines of `#[allow(dead_code)]` reference impl at app.rs:2683-2763 with three `println!` calls that violated the no-stdout-in-TUI convention. Kept "as a reference" since 0.7 but never re-enabled — `open_embedded_shell` has served every SSM session since. Reference recoverable from git history if needed. (`2029d9e`)
+- **docs/configuration.md: `command_aliases` section backfilled.** Shipped in 0.11 but only had an inline source comment. (`105c49c`)
+- **docs/commands.md: `:lint` entry updated with EBL011/012 + --baseline/--against-baseline.** (`1902523`)
+
+### Internal — review fixes (`7b8d4ac`)
+
+- **Critical**: EBL008 false-positive on every env with a known family. Plumbing was passing version token to a field the rule compared against full stack name. Routed through `aws::newer_stack_version` + renamed `LintContext.latest_stack_version` → `newer_stack_available` to make the Some/None semantic explicit ("Some means fire").
+- **Important**: `--baseline` and `--against-baseline` silently consumed the next arg without an error guard. Added the null-check + flag-prefix-check pattern.
+- **Minor**: three "EBL010 fires" comments rewritten to reflect that `env_tag_keys` is unwired (0.18 follow-up).
+
+### Deferred to 0.18
+
+- Plumb `App.worker_dlq_depths` → `LintContext.dlq_depth` (makes EBL011 fire in production).
+- Plumb env-tags fetch → `LintContext.env_tag_keys` (makes EBL010 fire). Needs a `DescribeTags` fetch per call site or a cached `App.env_tags`.
+- Plumb instance-count → `LintContext.healthy_instance_count` (makes EBL012 fire).
+- CLI EBL008 wiring (needs its own `ListAvailableSolutionStacks` fetch).
+- Hash-value pinning test for `issue_identity_hash` (golden test to catch future `fields` shape changes that would silently invalidate operators' baselines).
+- Migrate the ~22 remaining dispatched-only `append_raw` sites.
+- `spawn_*` clusters → `src/app/spawn_*.rs` grouping (deferred since 0.15 — third time).
+- `ResolvedConfig` sub-struct (deferred from 0.16's review).
+
+### Internal — testing
+
+- 723 lib + 17 tui-common + 3 bin tests green (up from 700 / 17 / 3 in 0.16.0).
+- fmt + clippy clean. No new deps; no behavioural change to existing operator surface beyond the bug fix (which changed a noisy false-positive into the intended diagnostic).
+
 ## [0.16.0] — 2026-05-28 — Smart features depth + rollout deepening + cleanup continuation
 
 Mixed-shape release. Three tiers landed:
@@ -906,7 +969,8 @@ Initial public release. Headline surface:
 - Published to crates.io as `ebman`.
 - Homebrew tap at `tombaldwin/homebrew-tap`.
 
-[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/tombaldwin/ebman/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/tombaldwin/ebman/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/tombaldwin/ebman/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/tombaldwin/ebman/compare/v0.14.0...v0.14.1
