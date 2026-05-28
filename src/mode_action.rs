@@ -24,7 +24,15 @@ use crate::aws::Event as EbEvent;
 /// The flat action list the menu shows when the operator presses `a`.
 /// Ordered by daily-operator frequency: rebuild / restart land at the
 /// top, terminate at the bottom so it can't be invoked by accident.
+///
+/// `#[non_exhaustive]` (added in 0.17.4 after the bug-hunt review
+/// flagged the 0.17.3 `Action::SsmRun` addition as a SemVer-major
+/// break): downstream crates matching on `Action` MUST include
+/// `_ =>` so future variant additions in a patch release are
+/// non-breaking. Internal match sites in this crate stay exhaustive
+/// because they share the same crate and the compiler enforces it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Action {
     Rebuild,
     RestartAppServer,

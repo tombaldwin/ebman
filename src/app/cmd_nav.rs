@@ -59,6 +59,20 @@ impl App {
                 if self.accounts.contains_key(&name) {
                     self.spawn_assume_role_switch(name);
                 } else {
+                    // Fallback to :profile path — validate against the
+                    // parsed profile list just like `cmd_profile` does
+                    // (0.17.4). Pre-fix this would have surfaced
+                    // typos as deep SDK errors a second later.
+                    let known = crate::profiles::load_profiles();
+                    if !known.iter().any(|p| p == &name) {
+                        let config_path = crate::profiles::config_file_path()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| "<no HOME / AWS_CONFIG_FILE>".into());
+                        self.error_message = Some(format!(
+                            "account/profile '{name}' not in {config_path} or accounts.* — press `p` to pick from the list"
+                        ));
+                        return;
+                    }
                     self.apply_picker_choice(PickerKind::Profile, name);
                 }
             }
@@ -80,10 +94,19 @@ impl App {
                 // flattened error from somewhere deep — far less
                 // actionable than naming the profile that doesn't exist
                 // and pointing at the picker.
+                //
+                // `profiles::load_profiles()` honours `AWS_CONFIG_FILE`
+                // and `AWS_SHARED_CREDENTIALS_FILE` (added in 0.17.4) so
+                // aws-vault / corp-env / work-vs-personal-split users
+                // with custom config paths see their profiles in the
+                // picker AND get past this validation.
                 let known = crate::profiles::load_profiles();
                 if !known.iter().any(|known| known == *p) {
+                    let config_path = crate::profiles::config_file_path()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "<no HOME / AWS_CONFIG_FILE>".into());
                     self.error_message = Some(format!(
-                        "profile '{p}' not in ~/.aws/{{config,credentials}} — press `p` to pick from the list, or add it with `aws configure --profile {p}`"
+                        "profile '{p}' not in {config_path} — press `p` to pick from the list, or add it with `aws configure --profile {p}`"
                     ));
                     return;
                 }

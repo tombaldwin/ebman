@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.17.4] — 2026-05-28 — Patch: max-effort code review findings (15 fixes)
+
+`/code-review max everything` against the 0.17.x patch series surfaced 15 findings — 5 Important + 10 Minor. User asked to bundle all into one patch.
+
+### Fixed — Important
+
+- **`spawn_deploy_from_local` + `spawn_terminate_instance` bypassed the `--demo` gate** (src/app.rs:9222, 10287). Both called `is_read_only_for` directly instead of `deny_write`, so `--demo` mode could still write `stage=dispatched action=DeployFromLocal` / `action=TerminateInstance` audit lines to the real audit log. Switched to `deny_write` — picks up the demo gate alongside read-only / safety pins.
+- **`profiles::load_profiles()` ignored `AWS_CONFIG_FILE` / `AWS_SHARED_CREDENTIALS_FILE`**. 0.17.2's new `:profile NAME` pre-check (and the `p` picker) refused legitimate profiles defined in custom config paths — broke aws-vault / corp-env / work-vs-personal-split users. Added `config_file_path()` + `credentials_file_path()` helpers that mirror the AWS SDK provider chain. `cmd_profile` / `cmd_account` error messages now surface the actual path being checked.
+- **`Action::SsmRun` audit-log identifier drift** (3 different names across stages). Dispatched / completed lines in `spawn_ssm_run_impl` used literal `"SsmRunCommand"`; cancelled lines from `cancel_pending_dispatch` used `format!("{action:?}")` = `"SsmRun"`. Broke `grep action=` correlation across audit-log stages. Canonicalized on `"SsmRun"` (Debug format) to match every other Action variant's convention. **Audit-log consumers that grepped for `"SsmRunCommand"` need to switch to `"SsmRun"`.**
+- **`apply_rebuild` leaked stale `self.detail` + `pending_shell_target` + `action_flow` + `picker` across context switch.** Most severe: `cmd_ssm_run` resolved env name + instance IDs from `self.detail`, so after `:profile X` switched the AwsClient, a `:ssm-run "cmd"` against a same-named env in the new context would dispatch against OLD instance IDs (from the previous account) using the NEW AwsClient. Cross-context silent dispatch. Now: detail / pending shell target / open modals / open pickers all cleared on rebuild, and the mode resets from Detail / Dlq / Action / Picker → Normal so the UI doesn't render stale overlays.
+- **`apply_rebuild` nulled `pending_dispatch` but left stale `"X dispatches in 5s — press U to undo"` `status_message`.** Now: status_message is cleared alongside pending_dispatch so the bar stops lying about a queued state we just cancelled.
+
+### Fixed — Minor
+
+- **`cmd_account` fallback path bypassed `cmd_profile`'s new validation** (src/app/cmd_nav.rs:62). Now validates against `load_profiles()` and surfaces a concrete "account/profile 'X' not in {config_path} or accounts.*" toast on typos.
+- **`Action` enum was a SemVer-major break in 0.17.3 (added `SsmRun` variant)**. Added `#[non_exhaustive]` so future variant additions are non-breaking for downstream consumers.
+- **Scale-to-zero modal rendered red body text on non-red modal accent** (visual hierarchy lied). Now: `Action::Scale` with `min == 0 && max == 0` renders the full destructive styling (red border, red env-name highlight) — matches the SCALE-TO-ZERO body copy. `Action::Scale.destructive()` stays false at the type level so routine scales don't get the alarming accent.
+- **`:ssm-run` 5s undo-window delay on fast probes.** 0.17.3 routed SsmRun through `queue_action_dispatch` which arms a 5s pending_dispatch cancel-window. Fast probes like `:ssm-run "uptime"` waited 5s before reaching the SDK. Now: `queue_action_dispatch` short-circuits to `spawn_action` for SsmRun — immediate dispatch after Y. Other destructive actions keep the cancel window for the "I just pressed Y, oh no" rescue path.
+- **`format_aws_error`: pinned arm ordering inline** so future cleanups don't reorder the SSO arm AFTER the InvalidClientTokenId arm (the SSO arm's generic "unable to load credentials" tokens can mask real SSO-expired errors that ALSO carry InvalidClientTokenId).
+- **SsmRun's modal fired `compute_traffic_warning`** even though operators frequently run diagnostic shells ON Red envs (it's how they diagnose Red). Now: SsmRun skips the warning so the modal doesn't suggest "env is Red, don't dispatch" against the very command being used to investigate.
+- **`deny_write` demo-mode toast masked safety-pin diagnostics.** Operators iterating on `safety.envs.*` config in `--demo` couldn't tell whether their pin was wired correctly — every refusal said "demo mode". Now: when both demo_mode AND a safety pin apply, the toast appends `— would also refuse: safety.envs.X.read_only`.
+- **`action_destructive_*` test omitted Capacity + 7 other variants.** Extended to all 15 Action variants so a future accidental `destructive()` flip is caught.
+
+### Deliberate non-fix
+
+- **SsmRun bypasses `push_pending` (header `⏳` chip)** — by design. The 60s wall-clock cap + full-screen TextOverlay landing is the operator's completion signal; the pending pill exists for "what writes are in-flight against the EB fleet" and SsmRun doesn't touch EB state. Strengthened the rationale comment in `spawn_ssm_run_impl`'s docstring so future reviewers don't re-find this.
+
+### Tests
+
+5 new pure-logic tests:
+- `profiles::config_file_path` / `credentials_file_path` honor + HOME fallback (3 tests, env-var-touching mutex-serialized)
+- `deny_write_demo_mode_composes_pin_reason_in_toast` (1)
+- `action_destructive_covers_terminate_and_ssm_run` extended to all 15 variants (1 — same test, more coverage)
+
+Suite at 754 tests, all green.
+
 ## [0.17.3] — 2026-05-28 — Patch: `:ssm-run` Y/N confirm
 
 The remaining item from the 0.17 bug-hunt — `:ssm-run` Y/N confirm —

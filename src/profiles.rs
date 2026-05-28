@@ -1,11 +1,35 @@
 use std::{collections::BTreeSet, path::PathBuf};
 
+/// Resolve the path to `~/.aws/config` (or whatever `AWS_CONFIG_FILE`
+/// points at). Mirrors the AWS SDK provider chain so the `p` picker
+/// and `:profile NAME` pre-check see the same files the SDK would
+/// resolve against. Without this, operators using `aws-vault`, corp
+/// env wrappers, or work-vs-personal splits via `AWS_CONFIG_FILE`
+/// had their valid profiles refused by the 0.17.2 pre-check.
+pub fn config_file_path() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("AWS_CONFIG_FILE") {
+        return Some(PathBuf::from(p));
+    }
+    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".aws/config"))
+}
+
+/// Same shape as [`config_file_path`] but for the credentials file —
+/// honours `AWS_SHARED_CREDENTIALS_FILE` with the standard
+/// `~/.aws/credentials` fallback.
+pub fn credentials_file_path() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("AWS_SHARED_CREDENTIALS_FILE") {
+        return Some(PathBuf::from(p));
+    }
+    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".aws/credentials"))
+}
+
 pub fn load_profiles() -> Vec<String> {
     let mut names: BTreeSet<String> = BTreeSet::new();
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
-        read_profiles(&home.join(".aws/config"), true, &mut names);
-        read_profiles(&home.join(".aws/credentials"), false, &mut names);
+    if let Some(p) = config_file_path() {
+        read_profiles(&p, true, &mut names);
+    }
+    if let Some(p) = credentials_file_path() {
+        read_profiles(&p, false, &mut names);
     }
     if names.is_empty() {
         names.insert("default".into());
@@ -74,3 +98,56 @@ pub const REGIONS: &[&str] = &[
     "me-south-1",
     "sa-east-1",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Serialize tests that mutate process-wide env vars. `cargo test`
+    /// runs tests in parallel by default and `set_var` / `remove_var`
+    /// are not thread-safe; the mutex keeps the env-var-touching tests
+    /// from racing each other.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn config_file_path_honours_aws_config_file_override() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let prev = std::env::var_os("AWS_CONFIG_FILE");
+        std::env::set_var("AWS_CONFIG_FILE", "/tmp/custom-aws-config");
+        let p = config_file_path().expect("AWS_CONFIG_FILE set should yield Some path");
+        assert_eq!(p, PathBuf::from("/tmp/custom-aws-config"));
+        if let Some(v) = prev {
+            std::env::set_var("AWS_CONFIG_FILE", v);
+        } else {
+            std::env::remove_var("AWS_CONFIG_FILE");
+        }
+    }
+
+    #[test]
+    fn credentials_file_path_honours_aws_shared_credentials_file_override() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let prev = std::env::var_os("AWS_SHARED_CREDENTIALS_FILE");
+        std::env::set_var("AWS_SHARED_CREDENTIALS_FILE", "/tmp/custom-aws-creds");
+        let p = credentials_file_path()
+            .expect("AWS_SHARED_CREDENTIALS_FILE set should yield Some path");
+        assert_eq!(p, PathBuf::from("/tmp/custom-aws-creds"));
+        if let Some(v) = prev {
+            std::env::set_var("AWS_SHARED_CREDENTIALS_FILE", v);
+        } else {
+            std::env::remove_var("AWS_SHARED_CREDENTIALS_FILE");
+        }
+    }
+
+    #[test]
+    fn config_file_path_falls_back_to_home_when_no_override() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let prev = std::env::var_os("AWS_CONFIG_FILE");
+        std::env::remove_var("AWS_CONFIG_FILE");
+        std::env::set_var("HOME", "/tmp/fake-home");
+        let p = config_file_path().expect("HOME set should yield Some path");
+        assert_eq!(p, PathBuf::from("/tmp/fake-home/.aws/config"));
+        if let Some(v) = prev {
+            std::env::set_var("AWS_CONFIG_FILE", v);
+        }
+    }
+}

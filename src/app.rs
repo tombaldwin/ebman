@@ -8110,9 +8110,20 @@ impl App {
         // `--demo` mode refuses writes outright (see spawn_action's
         // matching guard for the rationale — synthetic fleet, fake
         // AwsClient, real audit log).
+        //
+        // When BOTH demo_mode and a safety-pin / read-only lock apply,
+        // mention both in the toast — operators using `--demo` to
+        // validate their `safety.envs.*` / `safety.accounts.*` config
+        // before going live shouldn't have to exit demo to confirm
+        // the pin is wired correctly. (0.17.4 review)
         if self.demo_mode {
+            let pin_reason = self.read_only_reason(env_name);
+            let suffix = match pin_reason {
+                Some(reason) => format!(" — would also refuse: {reason}"),
+                None => String::new(),
+            };
             self.error_message = Some(format!(
-                "demo mode — {verb} not dispatched (writes are inert; press q to exit)"
+                "demo mode — {verb} not dispatched (writes are inert; press q to exit){suffix}"
             ));
             return true;
         }
@@ -9219,11 +9230,10 @@ impl App {
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
-        if self.is_read_only_for(&env.name) {
-            let reason = self
-                .read_only_reason(&env.name)
-                .unwrap_or_else(|| "read-only mode".into());
-            self.error_message = Some(format!("{reason} — deploy-from-local disabled"));
+        // Route through `deny_write` (not bare `is_read_only_for`) so the
+        // gate picks up the `--demo` refusal alongside read-only / safety
+        // pins. Pre-0.17.4 this dispatched real audit lines in --demo.
+        if self.deny_write(&env.name, "deploy-from-local") {
             return;
         }
         // Path resolution: ~ expansion + check file exists + size.
@@ -10284,11 +10294,10 @@ impl App {
             return;
         };
         let env_name = d.env_name.clone();
-        if self.is_read_only_for(&env_name) {
-            let reason = self
-                .read_only_reason(&env_name)
-                .unwrap_or_else(|| "read-only mode".into());
-            self.error_message = Some(format!("{reason} — terminate-instance disabled"));
+        // Route through `deny_write` (not bare `is_read_only_for`) so the
+        // gate picks up `--demo` mode alongside read-only / safety pins.
+        // Pre-0.17.4 this dispatched real audit lines in --demo.
+        if self.deny_write(&env_name, "terminate-instance") {
             return;
         }
         let id = inst.id.clone();
@@ -10410,7 +10419,18 @@ impl App {
             loading_dryrun: wants_preflight,
             recent_events: None,
             loading_events: wants_preflight,
-            traffic_warning: compute_traffic_warning(&env),
+            // Skip traffic_warning for SsmRun — operators frequently
+            // run diagnostic shells on Red envs (it's how they diagnose
+            // Red), so showing "env is currently Red" in the modal
+            // would suggest they shouldn't dispatch the very command
+            // they're using to investigate. Other write actions get
+            // the warning because Red+write is genuinely risky.
+            // (0.17.4 review)
+            traffic_warning: if action == Action::SsmRun {
+                None
+            } else {
+                compute_traffic_warning(&env)
+            },
             deploy_version: params.deploy_version.clone(),
             upgrade_platform_arn: params.upgrade_platform_arn,
             upgrade_platform_label: params.upgrade_platform_label,
@@ -10535,6 +10555,17 @@ impl App {
     /// Queue a single-env action with the cancel window. Called from
     /// the Y / TypeName-confirm paths in `handle_action_key`.
     fn queue_action_dispatch(&mut self, modal: ConfirmModal) {
+        // SsmRun bypasses the 5s cancel-window — operators using it for
+        // diagnostic probes (`:ssm-run "uptime"`) expect immediate
+        // dispatch; the 5s wait for the undo window was a 0.17.3
+        // regression. The Y press itself is the gate; the modal already
+        // surfaces command + fan-out count + env before dispatch.
+        // Other destructive actions keep the cancel window for the
+        // explicit "I just pressed Y, oh no" rescue path.
+        if modal.action == Action::SsmRun {
+            self.spawn_action(modal);
+            return;
+        }
         if self.pending_dispatch.is_some() {
             self.error_message = Some(
                 "another action is mid-dispatch — wait for it to land or press U to undo".into(),
@@ -10899,9 +10930,19 @@ impl App {
     /// `TextOverlay`, not the `Result<(), String>` shape every other
     /// action variant uses. Carries the audit "dispatched" line + a
     /// status toast + the spawn + the audit "completed" line on
-    /// arrival. No `pending_actions` entry — the run takes <=60s and
-    /// the overlay landing is the operator's signal, the header pill
-    /// would just clutter the bar.
+    /// arrival.
+    ///
+    /// **Deliberately bypasses `push_pending`** (the header `⏳ N` chip
+    /// and `:pending` overlay). The 0.17.4 code-review flagged this as
+    /// an invariant break — every other write-class dispatch shows in
+    /// pending. SsmRun is the exception: it's a one-shot diagnostic
+    /// probe with a 60s hard cap, the result lands in a TextOverlay
+    /// (full-screen — operator can't miss it), and pending entries
+    /// would mostly survive the SSM run as `…dispatching` because the
+    /// overlay lands before the operator looks back at the bar.
+    /// `:ssm-run` doesn't touch EB state so it doesn't need to
+    /// participate in the "what writes are in-flight against the
+    /// fleet" surface the pending pill exists to provide.
     fn spawn_ssm_run_impl(&mut self, env_name: String, command: String, instances: Vec<String>) {
         if command.is_empty() || instances.is_empty() {
             // Defensive — `cmd_ssm_run` should have refused before
@@ -10923,7 +10964,14 @@ impl App {
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
-            "SsmRunCommand",
+            // Use the Debug-format name (`SsmRun`) for audit consistency
+            // with cancel_pending_dispatch's UNDONE line and with every
+            // other Action variant (`Rebuild`, `Terminate`, …). Pre-
+            // 0.17.4 this was the literal "SsmRunCommand" which broke
+            // grep-by-action correlation across dispatched/cancelled
+            // stages. 0.17.3 audit consumers that grepped for
+            // "SsmRunCommand" need to switch to "SsmRun".
+            "SsmRun",
             env_name.as_str(),
             &[("instances", &instances_str), ("cmd", &audit_cmd)],
         );
@@ -10955,7 +11003,7 @@ impl App {
                 audit_account.as_deref(),
                 audit_profile.as_deref(),
                 &audit_region,
-                "SsmRunCommand",
+                "SsmRun", // canonical name — see dispatched-stage comment above
                 &audit_env,
                 result.as_ref().map(|_| ()).map_err(|e| e.as_str()),
                 &[("ok_count", &ok_count_str), ("cmd", &audit_cmd_for_outcome)],
@@ -12162,8 +12210,40 @@ impl App {
                 self.pending_actions.clear();
                 // Any pending arm-then-dispatch (`:rebuild` modal etc.)
                 // is also context-scoped — drop it so a stray Enter
-                // doesn't fire against the new context.
+                // doesn't fire against the new context. Also clear the
+                // associated status_message — `queue_action_dispatch`
+                // set "X dispatches in 5s — press U to undo", and
+                // without this the bar would lie about a dispatch that
+                // we just cancelled.
                 self.pending_dispatch = None;
+                self.status_message = None;
+                // Detail tab snapshot (env name + instances + tab
+                // state) is context-scoped: instance IDs are EC2-IDs
+                // in the OLD account. Without this, `:ssm-run` would
+                // resolve env+instances from the stale snapshot and
+                // dispatch against the NEW AwsClient — cross-account
+                // silent dispatch if the new account has a same-named
+                // env. Same reasoning for the cached log-tail and
+                // pending shell target. Drop the mode back to Normal
+                // so the UI doesn't render a Detail view with no
+                // data underneath it.
+                self.detail = None;
+                self.pending_shell_target = None;
+                // An open `:a` action modal / confirm modal references
+                // an env name from the previous context. Drop it
+                // alongside detail so the operator doesn't confirm
+                // against stale data after a context switch.
+                self.action_flow = None;
+                // Picker overlays (profile / region / log-group / ssh
+                // instance) all carry context-scoped state too.
+                self.picker = None;
+                if self.mode == Mode::Detail
+                    || self.mode == Mode::Dlq
+                    || self.mode == Mode::Action
+                    || self.mode == Mode::Picker
+                {
+                    self.mode = Mode::Normal;
+                }
                 // Re-read tfstate from cwd. The new context might
                 // be a different repo (operator cd'd between
                 // sessions of `ebman` left running, or switched
@@ -12793,6 +12873,16 @@ impl App {
         // remediation operators actually need (configure or pick a
         // different profile) instead of leaking the SDK's flattened
         // CRT message.
+        //
+        // **ORDER MATTERS**: this arm MUST run AFTER the SSO arm above.
+        // The SSO arm's signal list includes generic "unable to load
+        // credentials" / "no credentials in the property bag" tokens
+        // that AWS sometimes emits ALONGSIDE InvalidClientTokenId
+        // (e.g. SSO refresh failure with a stale token in the chain).
+        // Routing those to `aws configure --profile X` would mis-
+        // direct the operator — the SSO arm's `aws sso login` is the
+        // correct first remediation. Do NOT reorder for "alphabetical
+        // tidiness". 0.17.4 review caught this as a latent risk.
         let invalid_creds_signals = [
             "invalidclienttokenid",
             "the security token included in the request is invalid",
@@ -16333,13 +16423,23 @@ mod tests {
         // matches the intent.
         assert!(Action::Terminate.destructive());
         assert!(Action::SsmRun.destructive());
-        // Non-destructive actions stay non-destructive — guard
-        // against accidental upgrades.
+        // Every other variant stays non-destructive. Exhaustive list
+        // (0.17.4 — code-review flagged the previous Capacity/Clone/
+        // Upgrade/Abort/Config*/TerminateInstance gap) so a future
+        // accidental destructive() flip is caught here.
         assert!(!Action::Rebuild.destructive());
         assert!(!Action::RestartAppServer.destructive());
         assert!(!Action::SwapCnames.destructive());
         assert!(!Action::Deploy.destructive());
+        assert!(!Action::UpgradePlatform.destructive());
+        assert!(!Action::Clone.destructive());
         assert!(!Action::Scale.destructive());
+        assert!(!Action::Capacity.destructive());
+        assert!(!Action::AbortUpdate.destructive());
+        assert!(!Action::ConfigSave.destructive());
+        assert!(!Action::ConfigDelete.destructive());
+        assert!(!Action::ConfigApply.destructive());
+        assert!(!Action::TerminateInstance.destructive());
     }
 
     #[test]
@@ -17365,6 +17465,34 @@ mod tests {
         assert!(
             err.contains("demo mode"),
             "expected demo-mode reason in toast, got: {err}"
+        );
+        // No safety pin → no "would also refuse" suffix.
+        assert!(
+            !err.contains("would also refuse"),
+            "no pin configured → no compose suffix, got: {err}"
+        );
+    }
+
+    #[test]
+    fn deny_write_demo_mode_composes_pin_reason_in_toast() {
+        // Operators iterating on `safety_envs` in `--demo` to validate
+        // their config wording should see BOTH the demo refusal AND
+        // the pin reason — without this they'd have to exit demo to
+        // confirm the pin is wired (0.17.4 review finding).
+        let mut app = test_app();
+        app.demo_mode = true;
+        app.safety_envs.insert("prod-eu-1".into(), true);
+        let denied = app.deny_write("prod-eu-1", "rebuild");
+        assert!(denied);
+        let err = app.error_message.as_deref().unwrap();
+        assert!(err.contains("demo mode"), "got: {err}");
+        assert!(
+            err.contains("would also refuse"),
+            "expected pin compose suffix, got: {err}"
+        );
+        assert!(
+            err.contains("safety.envs.prod-eu-1"),
+            "expected pin source in suffix, got: {err}"
         );
     }
 

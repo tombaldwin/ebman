@@ -4493,7 +4493,19 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
         ActionFlow::Confirm(modal) => {
             let popup = centered_overlay(OverlaySize::Small, area);
             f.render_widget(Clear, popup);
-            let accent = if modal.action.destructive() {
+            // Treat scale-to-zero as destructive at the modal level even
+            // though `Action::Scale.destructive() == false` — dropping
+            // an env to 0 instances serves zero requests, which is
+            // operator-visible as severe as Terminate. `Action::Scale`
+            // stays non-destructive in the type system so non-zero
+            // scales (which are routine) don't get the alarming red
+            // accent. (0.17.4 fix; the 0.17.2 patch added the SCALE-TO-
+            // ZERO body copy without the matching modal styling.)
+            let scale_to_zero = modal.action == Action::Scale
+                && modal.scale_min == Some(0)
+                && modal.scale_max == Some(0);
+            let render_destructive = modal.action.destructive() || scale_to_zero;
+            let accent = if render_destructive {
                 theme.health_red
             } else {
                 theme.title_alt
@@ -4584,13 +4596,13 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
             // the operator can't miss what's about to be nuked even if
             // they scan the modal too fast to read the full sentence.
             let body_style = Style::default()
-                .fg(if modal.action.destructive() {
+                .fg(if render_destructive {
                     theme.health_red
                 } else {
                     theme.text
                 })
                 .add_modifier(Modifier::BOLD);
-            let name_style = if modal.action.destructive() {
+            let name_style = if render_destructive {
                 Style::default()
                     .fg(theme.health_red)
                     .bg(theme.row_red_bg)
