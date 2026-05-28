@@ -983,6 +983,136 @@ impl Rule for MissingRequiredTags {
     }
 }
 
+/// EBL011 — Worker env with a stuck DLQ. Headline failure mode
+/// for SQS-driven workers: consumer crashes or hangs, messages
+/// land in the dead-letter queue, queue depth climbs until
+/// operator notices. The rule fires when `dlq_depth > threshold`
+/// (default 100; configurable via the caller). Auto-fix=Manual:
+/// scale workers / restart / drain — operator-context-dependent.
+pub struct WorkerDlqStuck;
+
+/// Threshold for EBL011. Hard-coded for v1; future config-tunable
+/// via `lint.ebl011.threshold` if operators ask.
+const EBL011_DLQ_THRESHOLD: i64 = 100;
+
+impl Rule for WorkerDlqStuck {
+    fn id(&self) -> &'static str {
+        "EBL011"
+    }
+    fn severity(&self) -> Severity {
+        Severity::Warn
+    }
+    fn fix(&self, ctx: &LintContext) -> Option<FixAction> {
+        self.applies(ctx)?;
+        Some(FixAction::Manual {
+            instructions:
+                "DLQ depth above threshold. Triage steps: (1) Sample a few DLQ messages via \
+                 `aws sqs receive-message --queue-url <dlq>` to identify the failure shape; \
+                 (2) check worker logs in Detail/Logs for the corresponding exception; \
+                 (3) once root cause is known, decide whether to scale workers, restart \
+                 the env, redrive messages from the DLQ back to the source queue, or \
+                 purge the DLQ entirely. `--fix` can't decide; this is operator-judgment."
+                    .into(),
+        })
+    }
+    fn applies(&self, ctx: &LintContext) -> Option<Issue> {
+        // Only fires on Worker-tier envs; web-tier envs don't have
+        // a DLQ in the EB-managed sense.
+        if !ctx.env.tier.eq_ignore_ascii_case("Worker") {
+            return None;
+        }
+        let depth = ctx.dlq_depth?;
+        if depth <= EBL011_DLQ_THRESHOLD {
+            return None;
+        }
+        let mut fields = BTreeMap::new();
+        fields.insert("dlq_depth".into(), depth.to_string());
+        fields.insert("threshold".into(), EBL011_DLQ_THRESHOLD.to_string());
+        Some(Issue {
+            rule_id: self.id().into(),
+            severity: self.severity(),
+            env_name: Some(ctx.env.name.clone()),
+            title: format!("Worker DLQ depth {depth} above threshold ({EBL011_DLQ_THRESHOLD})"),
+            detail: format!(
+                "Dead-letter queue holds {depth} messages. Worker env consumers have failed \
+                 to process them. Sustained DLQ growth typically signals a poison-message \
+                 issue (parsing exception, downstream API down, OOM) or a consumer-side \
+                 logic bug. Operator should triage via `aws sqs receive-message` + worker \
+                 logs before redriving or purging."
+            ),
+            suggestion: Some(":logs-tail  (and check the worker exception)".into()),
+            fields,
+        })
+    }
+}
+
+/// EBL012 — Env reports `status=Ready health=Green` but the
+/// healthy instance count is 0. Classic ELB-vs-EB health-check
+/// divergence: EB's internal health monitor still believes the
+/// env is fine (perhaps because the platform health agent hasn't
+/// observed otherwise yet), but the ALB target group reports no
+/// healthy targets — so traffic is silently failing while the
+/// dashboard says Green. High-signal alert.
+pub struct GreenButZeroInstances;
+
+impl Rule for GreenButZeroInstances {
+    fn id(&self) -> &'static str {
+        "EBL012"
+    }
+    fn severity(&self) -> Severity {
+        Severity::Error
+    }
+    fn fix(&self, ctx: &LintContext) -> Option<FixAction> {
+        self.applies(ctx)?;
+        Some(FixAction::Manual {
+            instructions:
+                "EB reports Green but no instances are healthy. Investigate the divergence: \
+                 (1) Detail/Health to see what EB's health monitor sees; (2) Detail/Instances \
+                 to check whether instances exist at all; (3) ALB target-group health checks \
+                 directly via `aws elbv2 describe-target-health`. Common causes: stuck \
+                 deploy mid-instance-rotation, ALB health check URL wrong / app endpoint \
+                 changed, OOMKilled workers, security-group misconfig. Auto-fix can't help; \
+                 operator must diagnose."
+                    .into(),
+        })
+    }
+    fn applies(&self, ctx: &LintContext) -> Option<Issue> {
+        // Both Ready status AND Green health are required — we
+        // don't want to fire on transient Updating + 0 instances
+        // (that's the deploy-in-flight case, not a divergence).
+        if !ctx.env.status.eq_ignore_ascii_case("Ready") {
+            return None;
+        }
+        if !ctx.env.health.eq_ignore_ascii_case("Green")
+            && !ctx.env.health.eq_ignore_ascii_case("Ok")
+        {
+            return None;
+        }
+        let count = ctx.healthy_instance_count?;
+        if count > 0 {
+            return None;
+        }
+        let mut fields = BTreeMap::new();
+        fields.insert("healthy_count".into(), count.to_string());
+        fields.insert("status".into(), ctx.env.status.clone());
+        fields.insert("health".into(), ctx.env.health.clone());
+        Some(Issue {
+            rule_id: self.id().into(),
+            severity: self.severity(),
+            env_name: Some(ctx.env.name.clone()),
+            title: "Env shows Green but reports 0 healthy instances".into(),
+            detail: "EB's status+health say the env is fine, but the ALB target group / EC2 \
+                 reports no healthy targets. Traffic is failing silently while the dashboard \
+                 looks clean. Common causes: stuck deploy mid-rotation, ALB health-check URL \
+                 misconfig, OOMKilled instances pre-launch, security-group blocks. Drill \
+                 into Detail/Health + Detail/Instances to triage."
+                .into(),
+            suggestion: Some(":health  (drill into EB's health detail)".into()),
+            fields,
+        })
+    }
+}
+
 /// Build the v1 rule registry. Operator-disabled rules are
 /// filtered HERE — at registry-load time — so a disabled rule
 /// has zero per-env cost. Severity overrides not yet
@@ -999,6 +1129,8 @@ pub fn default_rules(disabled: &[String]) -> Vec<Box<dyn Rule>> {
         Box::new(StalePlatformVersion),
         Box::new(AsgMissingHealthCheckGracePeriod),
         Box::new(MissingRequiredTags),
+        Box::new(WorkerDlqStuck),
+        Box::new(GreenButZeroInstances),
     ];
     candidates
         .into_iter()
@@ -1647,11 +1779,140 @@ mod tests {
     }
 
     #[test]
-    fn default_rules_includes_ebl007_through_ebl010() {
+    fn default_rules_includes_ebl007_through_ebl012() {
         let rules = default_rules(&[]);
         let ids: Vec<&str> = rules.iter().map(|r| r.id()).collect();
-        for id in ["EBL007", "EBL008", "EBL009", "EBL010"] {
+        for id in ["EBL007", "EBL008", "EBL009", "EBL010", "EBL011", "EBL012"] {
             assert!(ids.contains(&id), "{id} missing from default_rules");
         }
+    }
+
+    // ─── EBL011 (worker DLQ stuck) ───────────────────────────
+
+    #[test]
+    fn ebl011_fires_when_worker_dlq_above_threshold() {
+        let env = mk_env("worker", "Worker", "Green");
+        let opts: Vec<(String, String, String)> = vec![];
+        let ctx = LintContext::for_env(&env, &opts).with_dlq_depth(200);
+        let issue = WorkerDlqStuck.applies(&ctx).expect("fires");
+        assert_eq!(issue.rule_id, "EBL011");
+        assert_eq!(
+            issue.fields.get("dlq_depth").map(String::as_str),
+            Some("200")
+        );
+    }
+
+    #[test]
+    fn ebl011_skips_web_tier() {
+        let env = mk_env("web", "Web", "Green");
+        let opts: Vec<(String, String, String)> = vec![];
+        let ctx = LintContext::for_env(&env, &opts).with_dlq_depth(500);
+        assert!(WorkerDlqStuck.applies(&ctx).is_none());
+    }
+
+    #[test]
+    fn ebl011_skips_when_below_threshold() {
+        let env = mk_env("worker", "Worker", "Green");
+        let opts: Vec<(String, String, String)> = vec![];
+        let ctx = LintContext::for_env(&env, &opts).with_dlq_depth(EBL011_DLQ_THRESHOLD);
+        assert!(WorkerDlqStuck.applies(&ctx).is_none());
+    }
+
+    #[test]
+    fn ebl011_skips_when_dlq_depth_unknown() {
+        let env = mk_env("worker", "Worker", "Green");
+        let opts: Vec<(String, String, String)> = vec![];
+        // No .with_dlq_depth() → no data → skip
+        assert!(WorkerDlqStuck.applies(&ctx(&env, &opts)).is_none());
+    }
+
+    #[test]
+    fn ebl011_fix_is_manual() {
+        let env = mk_env("worker", "Worker", "Green");
+        let opts: Vec<(String, String, String)> = vec![];
+        let ctx = LintContext::for_env(&env, &opts).with_dlq_depth(500);
+        let fix = WorkerDlqStuck.fix(&ctx).expect("fix");
+        assert!(matches!(fix, FixAction::Manual { .. }));
+    }
+
+    // ─── EBL012 (Green but 0 instances) ──────────────────────
+
+    #[test]
+    fn ebl012_fires_when_green_and_zero_instances() {
+        let env = Environment {
+            status: "Ready".into(),
+            health: "Green".into(),
+            ..mk_env("prod", "Web", "Green")
+        };
+        let opts: Vec<(String, String, String)> = vec![];
+        let ctx = LintContext::for_env(&env, &opts).with_healthy_count(0);
+        let issue = GreenButZeroInstances.applies(&ctx).expect("fires");
+        assert_eq!(issue.rule_id, "EBL012");
+        assert_eq!(issue.severity, Severity::Error);
+    }
+
+    #[test]
+    fn ebl012_skips_when_instances_present() {
+        let env = Environment {
+            status: "Ready".into(),
+            health: "Green".into(),
+            ..mk_env("prod", "Web", "Green")
+        };
+        let opts: Vec<(String, String, String)> = vec![];
+        let ctx = LintContext::for_env(&env, &opts).with_healthy_count(3);
+        assert!(GreenButZeroInstances.applies(&ctx).is_none());
+    }
+
+    #[test]
+    fn ebl012_skips_when_status_not_ready() {
+        // Updating + Green is the deploy-in-flight case, not a
+        // divergence. Don't fire mid-deploy.
+        let env = Environment {
+            status: "Updating".into(),
+            health: "Green".into(),
+            ..mk_env("prod", "Web", "Green")
+        };
+        let opts: Vec<(String, String, String)> = vec![];
+        let ctx = LintContext::for_env(&env, &opts).with_healthy_count(0);
+        assert!(GreenButZeroInstances.applies(&ctx).is_none());
+    }
+
+    #[test]
+    fn ebl012_skips_when_health_not_green() {
+        let env = Environment {
+            status: "Ready".into(),
+            health: "Red".into(),
+            ..mk_env("prod", "Web", "Red")
+        };
+        let opts: Vec<(String, String, String)> = vec![];
+        let ctx = LintContext::for_env(&env, &opts).with_healthy_count(0);
+        // EBL003 handles long-Red; don't double-fire here.
+        assert!(GreenButZeroInstances.applies(&ctx).is_none());
+    }
+
+    #[test]
+    fn ebl012_skips_when_healthy_count_unknown() {
+        // No .with_healthy_count() → no data → skip
+        let env = Environment {
+            status: "Ready".into(),
+            health: "Green".into(),
+            ..mk_env("prod", "Web", "Green")
+        };
+        let opts: Vec<(String, String, String)> = vec![];
+        assert!(GreenButZeroInstances.applies(&ctx(&env, &opts)).is_none());
+    }
+
+    #[test]
+    fn ebl012_treats_health_ok_as_green() {
+        // EB sometimes reports health=Ok instead of Green for
+        // worker envs. Same firing condition.
+        let env = Environment {
+            status: "Ready".into(),
+            health: "Ok".into(),
+            ..mk_env("worker", "Worker", "Ok")
+        };
+        let opts: Vec<(String, String, String)> = vec![];
+        let ctx = LintContext::for_env(&env, &opts).with_healthy_count(0);
+        assert!(GreenButZeroInstances.applies(&ctx).is_some());
     }
 }
