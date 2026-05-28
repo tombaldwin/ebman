@@ -221,13 +221,7 @@ pub async fn run(args: &[String]) -> Result<()> {
                         continue;
                     }
                 };
-                let ctx = lint::LintContext {
-                    env,
-                    options: &opts,
-                    events: &[],
-                    cost_usd_per_month: None,
-                    latest_stack_version: None,
-                };
+                let ctx = lint::LintContext::for_env(env, &opts);
                 let mut issues = lint::run_rules(&rules, &ctx);
                 if let Some(min) = severity_filter {
                     issues.retain(|i| i.severity >= min);

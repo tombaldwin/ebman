@@ -98,6 +98,18 @@ pub struct Issue {
 /// (TUI / CLI / confirm modal) assembles this from already-
 /// fetched data; rules don't issue AWS calls themselves. Keeps
 /// the engine deterministic + cheap to run many rules at once.
+///
+/// Use the [`LintContext::for_env`] constructor + the `.with_*`
+/// builder methods so adding a new field doesn't require editing
+/// every call site:
+///
+/// ```ignore
+/// let ctx = LintContext::for_env(&env, &options)
+///     .with_latest_stack(latest_stack)
+///     .with_required_tags(&required_tags)
+///     .with_dlq_depth(depth);
+/// let issues = run_rules(&rules, &ctx);
+/// ```
 #[derive(Debug, Clone)]
 pub struct LintContext<'a> {
     pub env: &'a crate::aws::Environment,
@@ -118,6 +130,83 @@ pub struct LintContext<'a> {
     /// the stale-platform check has populated it. `None` means
     /// the data isn't loaded — the corresponding rule skips.
     pub latest_stack_version: Option<&'a str>,
+    /// Required tag keys the operator declared in `config.toml`'s
+    /// `required_tags` list. EBL010 checks the env's tag set
+    /// against this. Empty slice means "no requirement declared"
+    /// — the rule skips rather than firing on every env.
+    pub required_tags: &'a [String],
+    /// SQS dead-letter-queue depth for worker envs, when
+    /// `:workers on` (or equivalent) has populated it. `None`
+    /// means worker-tab data isn't loaded — the corresponding
+    /// rule skips.
+    pub dlq_depth: Option<i64>,
+    /// Healthy instance count reported by EB's environment-health
+    /// endpoint, when the workers/health tab has populated it.
+    /// `None` means the data isn't loaded — the corresponding
+    /// rule skips. `Some(0)` is the firing signal for EBL012.
+    pub healthy_instance_count: Option<i64>,
+}
+
+impl<'a> LintContext<'a> {
+    /// Minimal constructor: an env + its option-settings. Other
+    /// fields default to "not loaded" — rules that need them
+    /// skip rather than false-positive. Use the `.with_*` chain
+    /// to populate as data becomes available.
+    pub fn for_env(
+        env: &'a crate::aws::Environment,
+        options: &'a [(String, String, String)],
+    ) -> Self {
+        Self {
+            env,
+            options,
+            events: &[],
+            cost_usd_per_month: None,
+            latest_stack_version: None,
+            required_tags: &[],
+            dlq_depth: None,
+            healthy_instance_count: None,
+        }
+    }
+
+    /// Attach recent EB events (newest-first).
+    pub fn with_events(mut self, events: &'a [crate::aws::Event]) -> Self {
+        self.events = events;
+        self
+    }
+
+    /// Attach the env's monthly cost in USD (from `:cost on`).
+    pub fn with_cost(mut self, cost_usd_per_month: f64) -> Self {
+        self.cost_usd_per_month = Some(cost_usd_per_month);
+        self
+    }
+
+    /// Attach the latest known platform stack name for the env's
+    /// family. Enables EBL008 (stale platform).
+    pub fn with_latest_stack(mut self, latest_stack_version: &'a str) -> Self {
+        self.latest_stack_version = Some(latest_stack_version);
+        self
+    }
+
+    /// Attach the operator's `required_tags` declaration. Enables
+    /// EBL010 (missing required tags).
+    pub fn with_required_tags(mut self, required_tags: &'a [String]) -> Self {
+        self.required_tags = required_tags;
+        self
+    }
+
+    /// Attach SQS dead-letter-queue depth for worker envs. Enables
+    /// EBL011 (worker DLQ stuck consumer).
+    pub fn with_dlq_depth(mut self, dlq_depth: i64) -> Self {
+        self.dlq_depth = Some(dlq_depth);
+        self
+    }
+
+    /// Attach the healthy instance count from EB env health.
+    /// Enables EBL012 (Green-but-0-instances divergence).
+    pub fn with_healthy_count(mut self, healthy_instance_count: i64) -> Self {
+        self.healthy_instance_count = Some(healthy_instance_count);
+        self
+    }
 }
 
 /// A single diagnostic rule. Implementors are pure functions
@@ -897,13 +986,7 @@ mod tests {
     }
 
     fn ctx<'a>(env: &'a Environment, options: &'a [(String, String, String)]) -> LintContext<'a> {
-        LintContext {
-            env,
-            options,
-            events: &[],
-            cost_usd_per_month: None,
-            latest_stack_version: None,
-        }
+        LintContext::for_env(env, options)
     }
 
     #[test]
@@ -1346,13 +1429,8 @@ mod tests {
             ..mk_env("prod", "Web", "Green")
         };
         let opts: Vec<(String, String, String)> = vec![];
-        let ctx = LintContext {
-            env: &env,
-            options: &opts,
-            events: &[],
-            cost_usd_per_month: None,
-            latest_stack_version: Some("64bit Amazon Linux 2 v3.6.0 running Docker"),
-        };
+        let ctx = LintContext::for_env(&env, &opts)
+            .with_latest_stack("64bit Amazon Linux 2 v3.6.0 running Docker");
         let issue = StalePlatformVersion.applies(&ctx).expect("fires");
         assert_eq!(issue.rule_id, "EBL008");
     }
@@ -1390,13 +1468,8 @@ mod tests {
             ..mk_env("prod", "Web", "Green")
         };
         let opts: Vec<(String, String, String)> = vec![];
-        let ctx = LintContext {
-            env: &env,
-            options: &opts,
-            events: &[],
-            cost_usd_per_month: None,
-            latest_stack_version: Some("64bit Amazon Linux 2 v3.6.0"),
-        };
+        let ctx =
+            LintContext::for_env(&env, &opts).with_latest_stack("64bit Amazon Linux 2 v3.6.0");
         assert!(StalePlatformVersion.applies(&ctx).is_none());
     }
 

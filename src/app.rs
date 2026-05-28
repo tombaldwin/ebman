@@ -5038,13 +5038,7 @@ impl App {
                 .await
             {
                 Ok(opts) => {
-                    let ctx = crate::lint::LintContext {
-                        env: &env,
-                        options: &opts,
-                        events: &[],
-                        cost_usd_per_month: None,
-                        latest_stack_version: None,
-                    };
+                    let ctx = crate::lint::LintContext::for_env(&env, &opts);
                     let rules = crate::lint::default_rules(&disabled);
                     let issues = crate::lint::run_rules(&rules, &ctx);
                     match issues.iter().find(|i| i.rule_id == issue_id_owned) {
@@ -9918,13 +9912,7 @@ impl App {
         tokio::spawn(async move {
             let issues = match aws.fetch_env_option_settings(&app_name, &env_name).await {
                 Ok(opts) => {
-                    let ctx = crate::lint::LintContext {
-                        env: &env,
-                        options: &opts,
-                        events: &[],
-                        cost_usd_per_month: None,
-                        latest_stack_version: None,
-                    };
+                    let ctx = crate::lint::LintContext::for_env(&env, &opts);
                     let rules = crate::lint::default_rules(&disabled);
                     crate::lint::run_rules(&rules, &ctx)
                 }

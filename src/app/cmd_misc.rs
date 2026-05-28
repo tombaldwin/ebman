@@ -487,13 +487,7 @@ impl App {
         tokio::spawn(async move {
             let body = match aws.fetch_env_option_settings(&app_name, &env_name).await {
                 Ok(opts) => {
-                    let ctx = crate::lint::LintContext {
-                        env: &env,
-                        options: &opts,
-                        events: &[],
-                        cost_usd_per_month: None,
-                        latest_stack_version: None,
-                    };
+                    let ctx = crate::lint::LintContext::for_env(&env, &opts);
                     // Compose operator disables: user-level (from
                     // App, mirrored from config.toml at startup) +
                     // project-local (read fresh from cwd so a
