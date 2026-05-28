@@ -896,6 +896,31 @@ Smaller polish items (Minors + UX) tracked for 0.17.2.
 - [x] `format_aws_error` adds `InvalidClientTokenId` / `SignatureDoesNotMatch` arm with `aws configure --profile X` hint
 - [x] `:ssm-run` Y/N confirm — landed in 0.17.3. `Action::SsmRun` variant + `ssm_run_command`/`ssm_run_instances` on ConfirmModal + ParameterisedAction. spawn_action short-circuits to spawn_ssm_run_impl (TextOverlay shape vs standard ActionResult). cmd_ssm_run rewritten as parse + resolve + open_parameterised_action.
 
+### 0.17.4 patch (2026-05-28)
+
+`/code-review max everything` surfaced 15 findings — 5 Important + 10 Minor. All 15 fixed in 0.17.4 (one as a documented design choice rather than code change).
+
+**Important (5):**
+- [x] `spawn_deploy_from_local` + `spawn_terminate_instance` route through `deny_write` (was: bare `is_read_only_for` → phantom audit lines in `--demo`)
+- [x] `profiles::load_profiles()` + helpers honor `AWS_CONFIG_FILE` / `AWS_SHARED_CREDENTIALS_FILE`
+- [x] `Action::SsmRun` audit-log canonical name `"SsmRun"` (was: 3 different identifiers across dispatched/completed/cancelled stages)
+- [x] `apply_rebuild` clears `self.detail` + `pending_shell_target` + `action_flow` + `picker` + resets mode → no more cross-context dispatch via stale Detail snapshot
+- [x] `apply_rebuild` clears `status_message` → no more lying "X dispatches in 5s" bar after context switch
+
+**Minor (10):**
+- [x] `cmd_account` fallback validates against profile list
+- [x] `Action` enum is `#[non_exhaustive]` (closes the 0.17.3 SemVer-major)
+- [x] Scale-to-zero modal renders full destructive styling (was: red body + non-red accent asymmetry)
+- [x] SsmRun bypasses 5s cancel-window (was: fast probes paid 5s tax)
+- [x] SsmRun bypasses `push_pending` — deliberate design choice with strengthened comment (won't-fix)
+- [x] `format_aws_error` arm-ordering pinned by inline comment
+- [x] SsmRun modal skips `traffic_warning` (was: noise on diagnostic shells against Red envs)
+- [x] (covered by apply_rebuild status_message clear)
+- [x] `deny_write` demo toast composes safety-pin reason when applicable
+- [x] `action_destructive_covers_*` test exhaustive on all 15 Action variants
+
+4 new tests (3 profile-path env-var, 1 deny_write compose). Suite at 754.
+
 ### 0.17 candidates (2026-05-28)
 
 Theme: **make the stubs live + lint adoption ergonomics.** 0.16 shipped EBL007-010 but EBL008 (stale platform) and EBL010 (required tags) silently no-op in production because their context fields (`latest_stack_version`, `required_tags`) aren't plumbed through. 0.17 plumbs them — and lands two more high-signal rules built on the same plumbing (EBL011 DLQ depth, EBL012 instance-count divergence). Plus `lint --baseline` so teams onboarding lint on a noisy fleet can grandfather existing issues without declaring bankruptcy. Plus tail cleanup (LintContext builder pattern, run_inline_ssm removal, two quick UX wins).
