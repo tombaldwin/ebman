@@ -2552,8 +2552,7 @@ impl App {
     ///
     /// Drops out of the alt-screen for the editor (vim / nano /
     /// VS Code's `code --wait` etc. all need the terminal directly)
-    /// and re-enters when the editor exits — same pattern as
-    /// `run_inline_ssm`.
+    /// and re-enters when the editor exits.
     fn run_env_editor(
         &mut self,
         terminal: &mut Tui,
@@ -2669,96 +2668,6 @@ impl App {
             to_remove.len()
         );
         self.spawn_option_settings_update(label, to_set, to_remove);
-        Ok(())
-    }
-
-    /// Legacy inline-subprocess path: drops out of the TUI, runs
-    /// `aws ssm start-session` against the terminal directly, and
-    /// returns when the subprocess exits. **Not the active code path** —
-    /// `open_embedded_shell` is the live SSM entry point and embeds the
-    /// session inside a Mode::Shell pane (preserving the table behind
-    /// it). Kept as a reference for any future "drop out fully" toggle;
-    /// do not call from new code without confirming the embedded path
-    /// genuinely can't serve the operator's use case.
-    #[allow(dead_code)]
-    fn run_inline_ssm(&mut self, terminal: &mut Tui, instance_id: &str) -> Result<()> {
-        use crossterm::{
-            event::{DisableMouseCapture, EnableMouseCapture},
-            execute,
-            terminal::{
-                disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-            },
-        };
-        // 1. Leave the TUI cleanly.
-        disable_raw_mode()?;
-        execute!(
-            terminal.backend_mut(),
-            LeaveAlternateScreen,
-            DisableMouseCapture
-        )?;
-        terminal.show_cursor()?;
-
-        let region = self.context.region.clone();
-        let profile = self
-            .override_profile
-            .clone()
-            .or_else(|| self.context.profile.clone());
-        crate::audit::append_raw(
-            self.context.account_id.as_deref(),
-            profile.as_deref(),
-            &region,
-            &format!("stage=dispatched action=SsmSession target={instance_id}"),
-        );
-
-        println!("→ aws ssm start-session --target {instance_id}");
-        println!(
-            "  region={region}{}",
-            match &profile {
-                Some(p) => format!("  profile={p}"),
-                None => String::new(),
-            }
-        );
-        println!("  ^D or `exit` to return to ebman");
-        println!();
-
-        let mut cmd = std::process::Command::new("aws");
-        cmd.arg("ssm")
-            .arg("start-session")
-            .arg("--target")
-            .arg(instance_id)
-            .arg("--region")
-            .arg(&region);
-        if let Some(p) = &profile {
-            cmd.arg("--profile").arg(p);
-        }
-        let status = cmd.status();
-
-        // 3. Re-enter the TUI regardless of the subprocess outcome.
-        enable_raw_mode()?;
-        execute!(
-            terminal.backend_mut(),
-            EnterAlternateScreen,
-            EnableMouseCapture
-        )?;
-        terminal.hide_cursor()?;
-        terminal.clear()?;
-
-        match status {
-            Ok(s) if s.success() => {
-                self.status_message = Some(format!("ssm session to {instance_id} ended"));
-            }
-            Ok(s) => {
-                self.error_message = Some(format!(
-                    "aws ssm start-session exited {} — check that the AWS CLI + session-manager-plugin are installed and you have ssm:StartSession",
-                    s.code().unwrap_or(-1)
-                ));
-            }
-            Err(e) => {
-                self.error_message = Some(format!(
-                    "could not invoke `aws`: {e} — install the AWS CLI + session-manager-plugin"
-                ));
-            }
-        }
         Ok(())
     }
 
@@ -4821,11 +4730,10 @@ impl App {
                         Some(format!("expected an EC2 instance ID (`i-…`), got '{id}'"));
                     return;
                 }
-                // Log the dispatch alongside the existing
-                // `run_inline_ssm` audit entry — both end up in the
-                // same `ssm:start-session` shell-out, just driven from
-                // different paths (typed command vs Detail/Instances
-                // `s` keybind).
+                // Log the dispatch. Both this (typed-command) path
+                // and the Detail/Instances `s` keybind end up
+                // shell-ing out to `aws ssm start-session`; the audit
+                // line is the operator-facing breadcrumb.
                 crate::audit::append_raw(
                     self.context.account_id.as_deref(),
                     self.context.profile.as_deref(),
