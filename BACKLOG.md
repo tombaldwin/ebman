@@ -877,6 +877,24 @@ ebman mcp serve                        → server mode (future: MCP for Claude C
 
 **Future-proofing test passed:** LLM explainer (`ebman explain`), MCP server (`ebman mcp serve`), cron-driven monitoring (`ebman lint --watch`), git pre-commit hooks (`ebman drift`), GitHub Actions integration (`ebman action deploy`), audit-stream consumption (`ebman audit --tail --json | jq`) all fit without restructuring.
 
+### 0.18.0 release (2026-05-28)
+
+Theme: **live the stubs.** EBL008/010/011/012 shipped in 0.17 as code but several couldn't fire because their inputs weren't plumbed. 0.18 closes the gap — all four rules now fire in TUI and (mostly) CLI.
+
+- [x] EBL011 worker DLQ depth — plumbed via `App.worker_dlq_depths` at 3 TUI sites (`spawn_confirm_lint` / `cmd_explain_issue` / `:lint`)
+- [x] EBL010 env tag keys — inline `list_tags(env.arn)` fetch at 4 sites, parallel with options/health via `tokio::join!`
+- [x] EBL012 healthy instance count — inline `fetch_env_instance_counts` parallel with EBL010 fetch
+- [x] CLI EBL008 wiring — per-region `list_solution_stacks` + `aws::latest_stack_versions(&s)`
+- [x] Audit-shape migration: 11 `cmd_*.rs` sites → typed `append_action_*` (wire-breaking: completed lines now use `outcome=ok` / `outcome=err err="..."`)
+- [x] Hash-value pinning test for `issue_identity_hash` (2 golden tests — with-env and no-env)
+- [x] `Action::wants_preflight()` exhaustiveness test (15 variants)
+
+Deferred to 0.19:
+- `App.cfg_resolved: ResolvedConfig` sub-struct (touches 30+ read sites)
+- `spawn_*` clusters → `src/app/spawn_*.rs` grouping (61+ methods)
+- Remaining ~20 `append_raw` sites in `src/app.rs` (SSM/DLQ/CW Logs — need new typed helpers)
+- CLI subcommand unit tests (needs `aws-smithy-mocks` integration setup)
+
 ### 0.17.1 patch (2026-05-28)
 
 Post-0.17 bug + UX hunt fixed three operator-visible Importants.

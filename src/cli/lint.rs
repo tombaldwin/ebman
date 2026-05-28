@@ -260,6 +260,25 @@ pub async fn run(args: &[String]) -> Result<()> {
                     continue;
                 }
             };
+            // Per-region one-shot fetch for EBL008 (stale platform):
+            // `ListAvailableSolutionStacks` is region-scoped + cheap
+            // (single call, no pagination). On failure we just skip
+            // EBL008 for the region rather than aborting lint — same
+            // tolerance pattern the per-env opts/tags/health fetches
+            // use below. Added in 0.18 to close the TUI/CLI parity
+            // gap noted in the 0.17.1 CHANGELOG.
+            let latest_stacks = match aws.list_solution_stacks().await {
+                Ok(s) => aws::latest_stack_versions(&s),
+                Err(e) => {
+                    if !quiet {
+                        let region_label = region_opt.as_deref().unwrap_or("default");
+                        eprintln!(
+                            "warning: region '{region_label}' — list_solution_stacks failed: {e} (EBL008 skipped)"
+                        );
+                    }
+                    std::collections::HashMap::new()
+                }
+            };
 
             let targets: Vec<&aws::Environment> = match env_name.as_deref() {
                 Some(name) => match envs.iter().find(|e| e.name == name) {
@@ -281,10 +300,21 @@ pub async fn run(args: &[String]) -> Result<()> {
             };
 
             for env in targets {
-                let opts = match aws
-                    .fetch_env_option_settings(&env.application, &env.name)
-                    .await
-                {
+                // Parallel per-env fetch: option settings (existing) +
+                // tags (EBL010) + instance counts (EBL012). Matches the
+                // TUI plumbing in `spawn_confirm_lint`. Tags + health
+                // tolerated independently — missing input means the
+                // corresponding rule just doesn't fire for that env.
+                let opts_fut = aws.fetch_env_option_settings(&env.application, &env.name);
+                let tags_fut = async {
+                    match env.arn.as_deref() {
+                        Some(arn) => aws.list_tags(arn).await.ok(),
+                        None => None,
+                    }
+                };
+                let health_fut = aws.fetch_env_instance_counts(&env.name);
+                let (opts_res, tags_opt, health_res) = tokio::join!(opts_fut, tags_fut, health_fut);
+                let opts = match opts_res {
                     Ok(opts) => opts,
                     Err(e) => {
                         if !quiet {
@@ -296,21 +326,28 @@ pub async fn run(args: &[String]) -> Result<()> {
                         continue;
                     }
                 };
-                // Plumb `required_tags` from config so `LintContext` is
-                // built the same way the TUI's `:lint` overlay builds it
-                // (`spawn_confirm_lint` / `cmd_explain_issue` both pass
-                // `App.required_tags`). This is the precondition for
-                // EBL010 (missing required tags) firing from CLI. The
-                // other precondition — `env_tag_keys`, from a
-                // `DescribeTags` fetch — is deferred to 0.18 alongside
-                // the TUI-side wiring.
-                //
-                // `latest_stacks` (for EBL008 newer-stack detection)
-                // also stays deferred to 0.18 — it would require a
-                // one-shot `ListAvailableSolutionStacks` fetch per
-                // region. The gap is noted in the 0.17 CHANGELOG.
-                let ctx = lint::LintContext::for_env(env, &opts)
-                    .with_required_tags(&safety_cfg.required_tags);
+                let env_tag_keys: Vec<String> = tags_opt
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(k, _)| k)
+                    .collect();
+                let healthy_count = health_res.ok().map(|c| c.healthy as i64);
+                let dlq_depth = None::<i64>; // CLI doesn't poll worker
+                                             // queues; leave EBL011 unwired
+                                             // for now (TUI-only signal).
+                let newer_stack = aws::newer_stack_version(&env.solution_stack, &latest_stacks);
+                let mut ctx = lint::LintContext::for_env(env, &opts)
+                    .with_required_tags(&safety_cfg.required_tags)
+                    .with_env_tag_keys(&env_tag_keys);
+                if let Some(newer) = newer_stack.as_deref() {
+                    ctx = ctx.with_newer_stack_available(newer);
+                }
+                if let Some(depth) = dlq_depth {
+                    ctx = ctx.with_dlq_depth(depth);
+                }
+                if let Some(count) = healthy_count {
+                    ctx = ctx.with_healthy_count(count);
+                }
                 let mut issues = lint::run_rules(&rules, &ctx);
                 if let Some(min) = severity_filter {
                     issues.retain(|i| i.severity >= min);

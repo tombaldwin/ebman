@@ -43,13 +43,14 @@ impl App {
                 let action = Action::ConfigSave;
                 let display_env = env.name.clone();
                 let template_for_msg = template.clone();
-                crate::audit::append_raw(
+                let action_label = format!("{action:?}");
+                crate::audit::append_action_dispatched(
                     self.context.account_id.as_deref(),
                     self.context.profile.as_deref(),
                     &self.context.region,
-                    &format!(
-                        "stage=dispatched action={action:?} target={display_env} template={template}"
-                    ),
+                    &action_label,
+                    &display_env,
+                    &[("template", template.as_str())],
                 );
                 self.push_pending(action.label(), display_env.clone());
                 tokio::spawn(async move {

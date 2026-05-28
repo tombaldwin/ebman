@@ -6,6 +6,90 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-05-28 — Live the stubs + audit migration + test pinning
+
+The 0.17 series shipped EBL008/010/011/012 as code but several rules
+couldn't fire because their inputs weren't plumbed from `App`. 0.18
+closes that gap — all four rules now fire in both the TUI and the
+CLI (modulo a small CLI-side gap on EBL011 where the worker DLQ
+isn't polled). Plus an audit-shape consistency pass on the cmd_*
+files, and golden-pinned identity-hash tests so operators'
+`--baseline` files don't silently break.
+
+Theme: **"live the stubs."** No new operator-facing surface — the
+rules + plumbing + tests that were sitting in code as "would fire
+if wired" are now actually firing in production.
+
+### Added — lint plumbing (the stubs now fire)
+
+- **EBL011 (worker DLQ depth > 100) fires in production.** TUI sites
+  (`spawn_confirm_lint`, `cmd_explain_issue`, `:lint`) plumb
+  `App.worker_dlq_depths` through `LintContext::with_dlq_depth(...)`.
+  CLI side intentionally left unwired (worker-queue polling isn't a
+  CLI flow); the TUI is where operators see DLQ-stuck envs.
+- **EBL010 (missing required tags) fires in production.** The
+  `env_tag_keys` precondition is now fetched inline via
+  `list_tags(env.arn)` at all four lint sites (3 TUI + 1 CLI),
+  running in parallel with the existing option-settings fetch via
+  `tokio::join!` so the modal-open latency stays at
+  `max(t_opts, t_tags, t_health)` rather than the sum.
+- **EBL012 (Green-but-0-instances divergence) fires in production.**
+  `fetch_env_instance_counts` runs in parallel with the tags fetch
+  above; `healthy` is plumbed through `LintContext::with_healthy_count`.
+- **CLI EBL008 (newer-stack) wiring landed.** Per-region `list_solution_stacks`
+  fetch + `aws::latest_stack_versions(&s)` builds the family map; the
+  `:lint` overlay was already wired in 0.17.3 — `ebman lint` now
+  matches.
+
+### Changed — audit-shape consistency
+
+- **`cmd_*.rs` files migrated from `append_raw` → typed
+  `append_action_dispatched` / `append_action_completed`.** 11 sites
+  across `cmd_alarms`, `cmd_misc`, `cmd_config_template`. **Wire
+  format change**: completed-stage lines for `AlarmCreate`,
+  `AlarmDelete`, `DeleteCustomPlatform`, `ConfigSave`/`Delete`/`Apply`
+  now write `outcome=ok` / `outcome=err err="..."` (matching every
+  other typed-action site) instead of the previous trailing `ok` /
+  `err="..."` shape. Audit consumers grepping for that specific suffix
+  need to update.
+- ~20 remaining `append_raw` sites in `src/app.rs` stay un-migrated for
+  now — most are SSM / DLQ / CW Logs operations that don't have a
+  natural "completed" stage and the migration would force a synthetic
+  one. Tracked for 0.19.
+
+### Added — test pinning
+
+- **Golden-pinned `issue_identity_hash`** with two pin points (one
+  with env, one without). Catches future field-shape / separator /
+  truncation changes that would silently invalidate every operator's
+  `--baseline` file. Failing the golden requires a deliberate decision
+  about whether the breaking change is worth shipping.
+- **`Action::wants_preflight()` exhaustiveness test** parallels the
+  0.17.4 `Action::destructive()` extension — every variant gets an
+  explicit assertion so future accidental flips are caught.
+
+### Internal — testing
+
+757 tests green (up from 754 in 0.17.4). 3 new tests:
+`action_wants_preflight_covers_all_variants`,
+`issue_identity_hash_golden_pin`,
+`issue_identity_hash_golden_pin_no_env`. The migrated audit sites
+all compile against the typed `append_action_*` shape — no new
+test for the wire format itself, since `audit.rs`'s existing tests
+already cover `append_extras` encoding.
+
+### Deferred to 0.19
+
+- `App.cfg_resolved: ResolvedConfig` sub-struct — touches every read
+  site of 12 migrated fields, deserves a dedicated cleanup release.
+- `spawn_*` clusters → `src/app/spawn_*.rs` grouping — deferred from
+  0.15/0.16/0.17/0.18. 61+ methods now; doing this without a focused
+  release was the right call but it should land in 0.19.
+- Remaining ~20 `append_raw` sites in `src/app.rs`. SSM / DLQ / CW
+  Logs paths need new typed audit helpers for their non-action shapes.
+- CLI subcommand unit tests — needs `aws-smithy-mocks` integration
+  setup that's bigger than a 0.18 feature.
+
 ## [0.17.4] — 2026-05-28 — Patch: max-effort code review findings (15 fixes)
 
 `/code-review max everything` against the 0.17.x patch series surfaced 15 findings — 5 Important + 10 Minor. User asked to bundle all into one patch.
