@@ -4623,6 +4623,13 @@ impl App {
         // tokens with single spaces — the operator can quote-wrap to
         // preserve internal whitespace if needed. EB CLI's
         // `eb ssh -c '...'` uses the same shape.
+        //
+        // Dispatch flow: parse + resolve target instances + read-only
+        // gate fire fast (before the modal opens), then route through
+        // `open_parameterised_action` so the operator gets the
+        // standard Y/N confirm with the command + fan-out count
+        // before anything reaches the SDK. spawn_action short-
+        // circuits to `spawn_ssm_run_impl` for the dispatch tail.
         if rest.is_empty() {
             self.error_message = Some(
                 "usage: :ssm-run \"<shell-command>\"  (fans the command out across the env's instances; quotes preserve whitespace)".into(),
@@ -4648,75 +4655,41 @@ impl App {
             );
             return;
         }
-        // Treat as a write so the global read-only / per-env safety
-        // pin gates it. The selected env name is the natural owner.
+        // The env name comes from the Detail tab (which is what
+        // sourced the instance list). Falling back to selected_env()
+        // would mismatch if the operator changed selection between
+        // opening Detail and running :ssm-run.
         let env_name = self
             .detail
             .as_ref()
             .map(|d| d.env_name.clone())
             .unwrap_or_default();
-        if self.deny_write(&env_name, "ssm-run") {
+        // Resolve the env from the cached fleet so
+        // `open_parameterised_action_on` has an `Environment` to work
+        // with. `selected_env()` could be the wrong env if the cursor
+        // moved after Detail was opened, so look up by name.
+        let Some(env) = self
+            .environments
+            .iter()
+            .find(|e| e.name == env_name)
+            .cloned()
+        else {
+            self.error_message = Some(format!(
+                "ssm-run: env '{env_name}' not in cached fleet — refresh (Ctrl-R) and retry"
+            ));
             return;
-        }
-        // Audit-log the dispatch + the completion outcome. SSM
-        // commands can mutate state; treating them as write-class
-        // operations means an after-the-fact incident review can pin
-        // down "who ran what, when, on which env" by tailing
-        // ~/.cache/ebman/audit.log. The command string is escaped so
-        // quotes don't break the line shape.
-        let audit_cmd = trimmed.replace('"', "'");
-        let instances_str = instances.len().to_string();
-        crate::audit::append_action_dispatched(
-            self.context.account_id.as_deref(),
-            self.context.profile.as_deref(),
-            &self.context.region,
-            "SsmRunCommand",
-            env_name.as_str(),
-            &[("instances", &instances_str), ("cmd", &audit_cmd)],
+        };
+        // `open_parameterised_action_on` calls `deny_write` for us —
+        // it gates the read-only / safety-pin / demo-mode locks.
+        self.open_parameterised_action_on(
+            env,
+            Action::SsmRun,
+            ParameterisedAction {
+                ssm_run_command: Some(trimmed),
+                ssm_run_instances: Some(instances),
+                ..Default::default()
+            },
         );
-        let aws = self.aws.clone();
-        let tx = self.msg_tx.clone();
-        let gen = self.generation;
-        let command_for_render = trimmed.clone();
-        let n = instances.len();
-        // Snapshot context for the completion-stage audit line.
-        let audit_account = self.context.account_id.clone();
-        let audit_profile = self.context.profile.clone();
-        let audit_region = self.context.region.clone();
-        let audit_env = env_name.clone();
-        let audit_cmd_for_outcome = audit_cmd.clone();
-        self.status_message = Some(format!("running `{trimmed}` on {n} instance(s)…"));
-        tokio::spawn(async move {
-            let result = aws
-                .run_shell_command(&instances, &trimmed, 60)
-                .await
-                .map_err(|e| flatten_err("run_shell_command", e));
-            let ok_count_str = match &result {
-                Ok(rows) => {
-                    let oks = rows.iter().filter(|r| r.status == "Success").count();
-                    format!("{oks}/{n}")
-                }
-                Err(_) => format!("0/{n}"),
-            };
-            crate::audit::append_action_completed(
-                audit_account.as_deref(),
-                audit_profile.as_deref(),
-                &audit_region,
-                "SsmRunCommand",
-                &audit_env,
-                result.as_ref().map(|_| ()).map_err(|e| e.as_str()),
-                &[("ok_count", &ok_count_str), ("cmd", &audit_cmd_for_outcome)],
-            );
-            let body = match result {
-                Ok(rows) => format_ssm_results(&command_for_render, &rows),
-                Err(e) => format!("ssm-run: {e}\n\nesc / q to close"),
-            };
-            let _ = tx.send(AppMsg::TextOverlay {
-                gen,
-                title: "ssm-run".into(),
-                body,
-            });
-        });
     }
 
     /// `:ssh [INSTANCE-ID]` — open an SSM Session Manager session into
@@ -8352,6 +8325,8 @@ impl App {
                         loading_unavailability: false,
                         lint_issues: None,
                         loading_lint: false,
+                        ssm_run_command: None,
+                        ssm_run_instances: None,
                     }));
                 }
                 KeyCode::Char(c) if is_text_input(&key) => {
@@ -8527,6 +8502,8 @@ impl App {
                     loading_unavailability: false,
                     lint_issues: None,
                     loading_lint: false,
+                    ssm_run_command: None,
+                    ssm_run_instances: None,
                 }));
                 if wants_preflight {
                     self.spawn_dry_run(env.name.clone());
@@ -8605,6 +8582,8 @@ impl App {
                     loading_unavailability: false,
                     lint_issues: None,
                     loading_lint: false,
+                    ssm_run_command: None,
+                    ssm_run_instances: None,
                 }));
             }
             _ => {
@@ -8635,6 +8614,8 @@ impl App {
                     loading_unavailability: false,
                     lint_issues: None,
                     loading_lint: false,
+                    ssm_run_command: None,
+                    ssm_run_instances: None,
                 }));
             }
         }
@@ -10461,7 +10442,13 @@ impl App {
             // before confirming any destructive action. Skipped in
             // demo mode (same gate as the other probes — no AWS
             // round-trip in demo).
-            loading_lint: !self.demo_mode,
+            //
+            // SsmRun also skips lint — running an ad-hoc shell command
+            // isn't gated by EB-config-health rules; firing them here
+            // would be noise.
+            loading_lint: !self.demo_mode && action != Action::SsmRun,
+            ssm_run_command: params.ssm_run_command,
+            ssm_run_instances: params.ssm_run_instances,
         };
         let needs_health_check_probe = modal.loading_health_check;
         let needs_unavailability = modal.loading_unavailability;
@@ -10819,6 +10806,20 @@ impl App {
                 }
             }
         }
+        // SsmRun's dispatch shape doesn't fit the standard
+        // `Result<(), _>` + `ActionResult` pipeline below — the SDK
+        // call returns per-instance rows that surface in a
+        // TextOverlay. Short-circuit to a dedicated helper that
+        // carries the audit / pending / spawn dance with the right
+        // payload. Everything ABOVE this point (read-only check, demo
+        // guard, deploy-only auto-rollback / wait-for-green arming —
+        // none of which fires for SsmRun) still runs uniformly.
+        if modal.action == Action::SsmRun {
+            let command = modal.ssm_run_command.clone().unwrap_or_default();
+            let instances = modal.ssm_run_instances.clone().unwrap_or_default();
+            self.spawn_ssm_run_impl(modal.target_env.clone(), command, instances);
+            return;
+        }
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
@@ -10869,11 +10870,16 @@ impl App {
                 // via spawn_option_settings_update — it never reaches
                 // spawn_action's ConfirmModal path. Same for Config* and
                 // TerminateInstance which have dedicated spawn paths.
+                // SsmRun is short-circuited above via spawn_ssm_run_impl
+                // and never reaches this match — included here for
+                // exhaustiveness with a defensive error in case the
+                // short-circuit is ever removed.
                 Action::Capacity
                 | Action::ConfigSave
                 | Action::ConfigDelete
                 | Action::ConfigApply
-                | Action::TerminateInstance => Err(color_eyre::eyre::eyre!(
+                | Action::TerminateInstance
+                | Action::SsmRun => Err(color_eyre::eyre::eyre!(
                     "internal: {} dispatched through spawn_action path",
                     action.label()
                 )),
@@ -10884,6 +10890,84 @@ impl App {
                 action,
                 env_name: env,
                 result,
+            });
+        });
+    }
+
+    /// Dispatch helper for `Action::SsmRun` — split from `spawn_action`
+    /// because the SDK call returns per-instance rows that surface in a
+    /// `TextOverlay`, not the `Result<(), String>` shape every other
+    /// action variant uses. Carries the audit "dispatched" line + a
+    /// status toast + the spawn + the audit "completed" line on
+    /// arrival. No `pending_actions` entry — the run takes <=60s and
+    /// the overlay landing is the operator's signal, the header pill
+    /// would just clutter the bar.
+    fn spawn_ssm_run_impl(&mut self, env_name: String, command: String, instances: Vec<String>) {
+        if command.is_empty() || instances.is_empty() {
+            // Defensive — `cmd_ssm_run` should have refused before
+            // opening the modal. If we ever land here with empty
+            // payload, abort cleanly rather than dispatching a
+            // pointless command.
+            self.error_message = Some("ssm-run: empty command or no resolved instances".into());
+            return;
+        }
+        // Audit-log the dispatch + the completion outcome. SSM
+        // commands can mutate state; treating them as write-class
+        // operations means an after-the-fact incident review can pin
+        // down "who ran what, when, on which env" by tailing
+        // ~/.cache/ebman/audit.log. The command string is escaped so
+        // quotes don't break the line shape.
+        let audit_cmd = command.replace('"', "'");
+        let instances_str = instances.len().to_string();
+        crate::audit::append_action_dispatched(
+            self.context.account_id.as_deref(),
+            self.context.profile.as_deref(),
+            &self.context.region,
+            "SsmRunCommand",
+            env_name.as_str(),
+            &[("instances", &instances_str), ("cmd", &audit_cmd)],
+        );
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let command_for_render = command.clone();
+        let n = instances.len();
+        // Snapshot context for the completion-stage audit line.
+        let audit_account = self.context.account_id.clone();
+        let audit_profile = self.context.profile.clone();
+        let audit_region = self.context.region.clone();
+        let audit_env = env_name.clone();
+        let audit_cmd_for_outcome = audit_cmd.clone();
+        self.status_message = Some(format!("running `{command}` on {n} instance(s)…"));
+        tokio::spawn(async move {
+            let result = aws
+                .run_shell_command(&instances, &command, 60)
+                .await
+                .map_err(|e| flatten_err("run_shell_command", e));
+            let ok_count_str = match &result {
+                Ok(rows) => {
+                    let oks = rows.iter().filter(|r| r.status == "Success").count();
+                    format!("{oks}/{n}")
+                }
+                Err(_) => format!("0/{n}"),
+            };
+            crate::audit::append_action_completed(
+                audit_account.as_deref(),
+                audit_profile.as_deref(),
+                &audit_region,
+                "SsmRunCommand",
+                &audit_env,
+                result.as_ref().map(|_| ()).map_err(|e| e.as_str()),
+                &[("ok_count", &ok_count_str), ("cmd", &audit_cmd_for_outcome)],
+            );
+            let body = match result {
+                Ok(rows) => format_ssm_results(&command_for_render, &rows),
+                Err(e) => format!("ssm-run: {e}\n\nesc / q to close"),
+            };
+            let _ = tx.send(AppMsg::TextOverlay {
+                gen,
+                title: "ssm-run".into(),
+                body,
             });
         });
     }
@@ -16242,11 +16326,42 @@ mod tests {
     }
 
     #[test]
-    fn action_destructive_only_for_terminate() {
+    fn action_destructive_covers_terminate_and_ssm_run() {
+        // Terminate has been destructive since 0.6; SsmRun added in
+        // 0.17.3 — operator-explicit shell exec across instances is
+        // treat-as-write and the modal renders red so the visual cue
+        // matches the intent.
         assert!(Action::Terminate.destructive());
+        assert!(Action::SsmRun.destructive());
+        // Non-destructive actions stay non-destructive — guard
+        // against accidental upgrades.
         assert!(!Action::Rebuild.destructive());
         assert!(!Action::RestartAppServer.destructive());
         assert!(!Action::SwapCnames.destructive());
+        assert!(!Action::Deploy.destructive());
+        assert!(!Action::Scale.destructive());
+    }
+
+    #[test]
+    fn action_ssm_run_opts_out_of_preflight() {
+        // No instance count / event preview needed — the operator
+        // already chose the instance set by opening Detail/Instances.
+        // The modal renders without dryrun / events loading spinners.
+        assert!(!Action::SsmRun.wants_preflight());
+        // Sanity: preflight-wanting actions still want it.
+        assert!(Action::Deploy.wants_preflight());
+        assert!(Action::Terminate.wants_preflight());
+    }
+
+    #[test]
+    fn action_ssm_run_label_and_glyph() {
+        use crate::theme::IconStyle;
+        assert_eq!(Action::SsmRun.label(), "Run SSM shell command");
+        // Glyph entry exists for all three icon styles (no `_` fall-
+        // through panic from the per-icon match).
+        assert!(!Action::SsmRun.glyph(IconStyle::Powerline).is_empty());
+        assert!(!Action::SsmRun.glyph(IconStyle::Unicode).is_empty());
+        assert!(!Action::SsmRun.glyph(IconStyle::Ascii).is_empty());
     }
 
     #[test]
@@ -17671,6 +17786,7 @@ mod tests {
             Action::ConfigDelete,
             Action::ConfigApply,
             Action::TerminateInstance,
+            Action::SsmRun,
         ];
         let mut labels = HashSet::new();
         for a in all {
@@ -21402,6 +21518,8 @@ mod tests {
             loading_unavailability: false,
             lint_issues: None,
             loading_lint: false,
+            ssm_run_command: None,
+            ssm_run_instances: None,
         }
     }
 

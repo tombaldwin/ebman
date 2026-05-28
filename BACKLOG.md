@@ -894,7 +894,7 @@ Smaller polish items (Minors + UX) tracked for 0.17.2.
 - [x] `:profile NAME` pre-checks against parsed profile list before kicking rebuild
 - [x] `--demo` refuses destructive dispatch at `spawn_action` + `deny_write` + `tick_pending_dispatch` (covers Single + Batch paths)
 - [x] `format_aws_error` adds `InvalidClientTokenId` / `SignatureDoesNotMatch` arm with `aws configure --profile X` hint
-- [ ] `:ssm-run` Y/N confirm — deferred to 0.18 (needs new `Action::SsmRun` variant + modal-flow plumbing, outside patch scope)
+- [x] `:ssm-run` Y/N confirm — landed in 0.17.3. `Action::SsmRun` variant + `ssm_run_command`/`ssm_run_instances` on ConfirmModal + ParameterisedAction. spawn_action short-circuits to spawn_ssm_run_impl (TextOverlay shape vs standard ActionResult). cmd_ssm_run rewritten as parse + resolve + open_parameterised_action.
 
 ### 0.17 candidates (2026-05-28)
 

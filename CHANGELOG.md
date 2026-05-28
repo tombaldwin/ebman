@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.17.3] — 2026-05-28 — Patch: `:ssm-run` Y/N confirm
+
+The remaining item from the 0.17 bug-hunt — `:ssm-run` Y/N confirm —
+deferred from 0.17.2 with the reason "needs new `Action::SsmRun`
+variant + modal-flow plumbing, outside patch scope". User asked
+to do the refactor anyway. Touches 4 modules (`mode_action.rs`,
+`app.rs`, `ui.rs`, `docs/commands.md`); contained because the new
+variant flows through every existing `ConfirmModal` site naturally.
+
+### Added
+
+- **`Action::SsmRun` variant + Y/N pre-confirm for `:ssm-run`.** Pre-fix, `:ssm-run "<cmd>"` dispatched immediately — operators had no Y/N gate on a command that fans shell exec across N instances. Now it routes through the standard `open_parameterised_action` confirm flow with a modal showing the command, fan-out count, and env: `SSM-RUN: \`<cmd>\` on N instance(s) of '<env>' (treat as write)`. Same Y/N + cancel-window UX the rest of the destructive actions use. Operator can `U` to cancel within the deadline.
+- `Action::SsmRun` is **destructive** (modal renders in red — operator-explicit shell exec is treat-as-write even when the command is a read-only probe like `uptime`, because the visual prominence beats the false-positive risk).
+- `Action::SsmRun` **opts out of preflight** (no instance-count / events fetch — the operator already chose the instance set by opening Detail/Instances).
+- Not added to the `:a` actions menu (`ACTIONS` const) — `:ssm-run` is command-only; no menu entry surfaces it.
+
+### Internal — refactor
+
+- **`ConfirmModal` + `ParameterisedAction` gained `ssm_run_command: Option<String>` + `ssm_run_instances: Option<Vec<String>>`.** Five existing `ConfirmModal {...}` construction sites updated with `None` defaults — same shape the previous `swap_with` / `deploy_version` etc. fields use.
+- **`spawn_action` short-circuits to `spawn_ssm_run_impl`** before its standard `tokio::spawn` body. SsmRun's SDK call returns per-instance rows that surface in a `TextOverlay`, not the `Result<(), String>` shape every other action uses; the short-circuit keeps the standard pipeline clean.
+- `spawn_ssm_run_impl` carries the SsmRunCommand audit "dispatched" + "completed" lines (same `("instances", N)` + `("cmd", trimmed)` extras the previous `cmd_ssm_run` body emitted, so audit-log consumers see the same shape).
+- `cmd_ssm_run` rewritten as a parse + resolve + `open_parameterised_action_on(env, Action::SsmRun, ParameterisedAction { ssm_run_command, ssm_run_instances, .. })` shape. ~90 lines → ~35.
+
+### Tests
+
+3 new tests for `Action::SsmRun` (`destructive() == true` regression suite, `wants_preflight() == false`, label + glyph completeness across the three icon styles). `action_labels_are_distinct_and_non_empty` extended to include the new variant. Suite at 750 tests, all green.
+
+### Docs
+
+- `docs/commands.md` `:ssm-run` entry updated with the 0.17.3 Y/N modal note and the "treat-as-write" gating reference.
+
 ## [0.17.2] — 2026-05-28 — Patch: bug-hunt polish (Minors + UX)
 
 Continuation of the 0.17 bug-hunt — Minors and UX items the 0.17.1

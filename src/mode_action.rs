@@ -53,6 +53,17 @@ pub enum Action {
     /// `ec2:TerminateInstances` against a single instance picked from the
     /// Instances tab. ASG replaces it; not env-level.
     TerminateInstance,
+    /// `:ssm-run "<shell-command>"` — fans a command across the env's
+    /// instances via SSM Run Command. Routed through the standard
+    /// confirm-modal flow (the command + resolved instance list ride
+    /// on `ConfirmModal.ssm_run_*` / `ParameterisedAction.ssm_run_*`)
+    /// so the operator gets a Y/N pre-confirm with the command and
+    /// instance count before dispatch. NOT in `ACTIONS` — command-
+    /// only, no menu entry. `spawn_action` short-circuits before its
+    /// standard tokio::spawn body and calls `spawn_ssm_run_impl`,
+    /// which surfaces results in a TextOverlay rather than the
+    /// `ActionResult` toast every other variant funnels through.
+    SsmRun,
 }
 
 impl Action {
@@ -72,10 +83,16 @@ impl Action {
             Self::ConfigDelete => "Delete configuration template",
             Self::ConfigApply => "Apply configuration template",
             Self::TerminateInstance => "Terminate instance",
+            Self::SsmRun => "Run SSM shell command",
         }
     }
     pub fn destructive(self) -> bool {
-        matches!(self, Self::Terminate)
+        // SsmRun is flagged destructive so the confirm modal renders
+        // in red — operator-explicit shell exec across instances is
+        // treat-as-write. Operators using it for read-only probes
+        // (`uptime`, `ls`) still see red; the visual prominence is
+        // worth more than the false-positive on a probe.
+        matches!(self, Self::Terminate | Self::SsmRun)
     }
 
     /// Whether the confirm modal should fetch `DescribeInstancesHealth`
@@ -100,6 +117,10 @@ impl Action {
                 | Self::Terminate
                 | Self::ConfigApply
         )
+        // SsmRun deliberately opts out — no instance count / event
+        // preview needed; the operator already chose the instance set
+        // by opening Detail/Instances. Modal renders without dryrun /
+        // events loading spinners.
     }
 
     /// Per-icon-style glyph for the action menu. Powerline mode draws
@@ -124,6 +145,7 @@ impl Action {
             (IconStyle::Powerline, Self::ConfigDelete) => "\u{f01b4}", // delete
             (IconStyle::Powerline, Self::ConfigApply) => "\u{f00e2}", // check
             (IconStyle::Powerline, Self::TerminateInstance) => "\u{f01b4}", // delete
+            (IconStyle::Powerline, Self::SsmRun) => "\u{f018d}",  // console / terminal
             // Unicode fallbacks — common monospaced glyphs that render in
             // most modern terminals without a patched font.
             (IconStyle::Unicode, Self::Rebuild) => "↻",
@@ -140,6 +162,7 @@ impl Action {
             (IconStyle::Unicode, Self::ConfigDelete) => "✗",
             (IconStyle::Unicode, Self::ConfigApply) => "✓",
             (IconStyle::Unicode, Self::TerminateInstance) => "✗",
+            (IconStyle::Unicode, Self::SsmRun) => "▶",
             // ASCII: single-letter tags so the menu column stays fixed-width.
             (IconStyle::Ascii, Self::Rebuild) => "R",
             (IconStyle::Ascii, Self::RestartAppServer) => "r",
@@ -155,6 +178,7 @@ impl Action {
             (IconStyle::Ascii, Self::ConfigDelete) => "d",
             (IconStyle::Ascii, Self::ConfigApply) => "a",
             (IconStyle::Ascii, Self::TerminateInstance) => "x",
+            (IconStyle::Ascii, Self::SsmRun) => "$",
         }
     }
 }
@@ -368,6 +392,15 @@ pub struct ConfirmModal {
     pub lint_issues: Option<Vec<crate::lint::Issue>>,
     /// True while `spawn_confirm_lint` is in flight.
     pub loading_lint: bool,
+    /// Shell command to run when `action == SsmRun`. The trimmed
+    /// form (no surrounding quotes) — the original quote-handling
+    /// happens in `cmd_ssm_run` before the modal opens.
+    pub ssm_run_command: Option<String>,
+    /// Resolved target instance IDs when `action == SsmRun`. Pre-
+    /// resolved at modal-open time from `Detail.instances`; this
+    /// way the operator sees the fan-out count in the confirm copy
+    /// and the dispatch path is straight-forward.
+    pub ssm_run_instances: Option<Vec<String>>,
 }
 
 /// Helper carrying the optional parameters needed by the new parameterised
@@ -388,6 +421,15 @@ pub struct ParameterisedAction {
     /// Deploy-only wait-for-green deadline in seconds. See
     /// `ConfirmModal::wait_for_green_secs` for the contract.
     pub wait_for_green_secs: Option<u64>,
+    /// SSM-only: shell command (trimmed of surrounding quotes).
+    /// Set by `cmd_ssm_run` before routing through
+    /// `open_parameterised_action`. None for every other action.
+    pub ssm_run_command: Option<String>,
+    /// SSM-only: pre-resolved target instance IDs (from cached
+    /// `Detail.instances`). Lets the confirm modal render the
+    /// fan-out count without re-fetching. None for every other
+    /// action.
+    pub ssm_run_instances: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug)]

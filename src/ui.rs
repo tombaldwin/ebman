@@ -4553,6 +4553,19 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                     }
                 }
                 Action::AbortUpdate => format!("Abort current update on '{}'?", modal.target_env),
+                Action::SsmRun => {
+                    let cmd = modal.ssm_run_command.as_deref().unwrap_or("?");
+                    let n = modal
+                        .ssm_run_instances
+                        .as_ref()
+                        .map(|v| v.len())
+                        .unwrap_or(0);
+                    format!(
+                        "SSM-RUN: `{cmd}` on {n} instance{} of '{}' (treat as write)",
+                        if n == 1 { "" } else { "s" },
+                        modal.target_env
+                    )
+                }
                 // These variants never reach the ConfirmModal — they're
                 // dispatched directly from command paths (Capacity opens a
                 // modal form; Config* and TerminateInstance have their own
