@@ -92,8 +92,28 @@ pub async fn run(args: &[String]) -> Result<()> {
             "--yes" => yes = true,
             "--watch" => watch = true,
             "--interval" => interval_str = iter.next().cloned(),
-            "--baseline" => baseline_write = iter.next().cloned(),
-            "--against-baseline" => baseline_against = iter.next().cloned(),
+            "--baseline" => {
+                let Some(p) = iter.next() else {
+                    eprintln!("ebman lint: --baseline expects a file path");
+                    std::process::exit(2);
+                };
+                if p.starts_with("--") {
+                    eprintln!("ebman lint: --baseline expects a file path, got flag '{p}'");
+                    std::process::exit(2);
+                }
+                baseline_write = Some(p.clone());
+            }
+            "--against-baseline" => {
+                let Some(p) = iter.next() else {
+                    eprintln!("ebman lint: --against-baseline expects a file path");
+                    std::process::exit(2);
+                };
+                if p.starts_with("--") {
+                    eprintln!("ebman lint: --against-baseline expects a file path, got flag '{p}'");
+                    std::process::exit(2);
+                }
+                baseline_against = Some(p.clone());
+            }
             "--severity" => {
                 let Some(v) = iter.next() else {
                     eprintln!("ebman lint: --severity expects a value (info / warn / error)");

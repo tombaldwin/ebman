@@ -105,7 +105,7 @@ pub struct Issue {
 ///
 /// ```ignore
 /// let ctx = LintContext::for_env(&env, &options)
-///     .with_latest_stack(latest_stack)
+///     .with_newer_stack_available(newer_version)
 ///     .with_required_tags(&required_tags)
 ///     .with_dlq_depth(depth);
 /// let issues = run_rules(&rules, &ctx);
@@ -126,10 +126,21 @@ pub struct LintContext<'a> {
     /// `None` means cost data isn't available — cost-shape rules
     /// skip rather than flag.
     pub cost_usd_per_month: Option<f64>,
-    /// Newest stack version for the env's platform family, when
-    /// the stale-platform check has populated it. `None` means
-    /// the data isn't loaded — the corresponding rule skips.
-    pub latest_stack_version: Option<&'a str>,
+    /// Newer-platform-version available signal. `Some(version)` =
+    /// the caller has checked `App.latest_stacks` and confirmed
+    /// the env's family has a strictly-newer version (the value).
+    /// `None` = either the data isn't loaded, the family is
+    /// unknown, or the env is already current. EBL008 fires
+    /// straight off the `Some` — no comparison in the rule
+    /// (`aws::newer_stack_version` does the version-tuple math).
+    ///
+    /// Pre-0.17 this was named `latest_stack_version` and held
+    /// "the latest version token" — but the rule then compared
+    /// version token vs full stack name, false-positiving on
+    /// every env. The 0.17 patch renamed the field + moved the
+    /// comparison to the populated-by-caller `newer_stack_version`
+    /// helper.
+    pub newer_stack_available: Option<&'a str>,
     /// Required tag keys the operator declared in `config.toml`'s
     /// `required_tags` list. EBL010 checks the env's tag set
     /// against this. Empty slice means "no requirement declared"
@@ -167,7 +178,7 @@ impl<'a> LintContext<'a> {
             options,
             events: &[],
             cost_usd_per_month: None,
-            latest_stack_version: None,
+            newer_stack_available: None,
             required_tags: &[],
             env_tag_keys: &[],
             dlq_depth: None,
@@ -187,10 +198,13 @@ impl<'a> LintContext<'a> {
         self
     }
 
-    /// Attach the latest known platform stack name for the env's
-    /// family. Enables EBL008 (stale platform).
-    pub fn with_latest_stack(mut self, latest_stack_version: &'a str) -> Self {
-        self.latest_stack_version = Some(latest_stack_version);
+    /// Attach the "newer platform version available" signal —
+    /// caller has already checked `App.latest_stacks` and
+    /// determined a newer version exists. Enables EBL008 (stale
+    /// platform). The string is the newer version token (e.g.
+    /// "6.2.0") used in the issue body.
+    pub fn with_newer_stack_available(mut self, newer_stack: &'a str) -> Self {
+        self.newer_stack_available = Some(newer_stack);
         self
     }
 
@@ -905,38 +919,32 @@ impl Rule for StalePlatformVersion {
         if stack.is_empty() {
             return None;
         }
-        // EB solution stacks embed a "YYYY MM DD" or "vN.M.M Mmm
-        // YYYY" date in the stack name (e.g. "64bit Amazon Linux
-        // 2023 v4.0.5 running Docker"). The most reliable
-        // detector is the embedded version number — but parsing
-        // every stack format is brittle. Instead, lean on the
-        // `latest_stack_version` field of `LintContext`: if a
-        // newer stack is known and the live one differs, that's
-        // the staleness signal.
+        // The version-tuple comparison lives in `aws::newer_stack_version`
+        // (already unit-tested); callers populate `ctx.newer_stack_available`
+        // with the result. If `Some(version)`, the env is stale and
+        // we fire. If `None`, the env is current OR the latest-stacks
+        // data isn't loaded.
         //
         // 0.17 STATE: live in the TUI (`:lint`, `:explain`,
         // confirm-modal) — those paths plumb `App.latest_stacks`
-        // via `aws::stack_family_version(env.solution_stack)`.
-        // CLI (`ebman lint`, `ebman explain`) still no-ops — the
-        // CLI doesn't have an App, so it'd need its own
-        // `ListAvailableSolutionStacks` fetch. Tracked for 0.18.
-        // The CLI no-op is pinned by
+        // via `aws::newer_stack_version()`. CLI (`ebman lint`,
+        // `ebman explain`) still no-ops — the CLI doesn't have an
+        // App, so it'd need its own `ListAvailableSolutionStacks`
+        // fetch. Tracked for 0.18. CLI no-op pinned by
         // `ebl008_currently_stub_does_not_fire_in_cli` below.
-        let latest = ctx.latest_stack_version?;
-        if latest == stack || latest.is_empty() {
-            return None;
-        }
+        let newer = ctx.newer_stack_available?;
         let mut fields = BTreeMap::new();
         fields.insert("current_stack".into(), stack.clone());
-        fields.insert("latest_stack".into(), latest.to_string());
+        fields.insert("newer_version".into(), newer.to_string());
         Some(Issue {
             rule_id: self.id().into(),
             severity: self.severity(),
             env_name: Some(ctx.env.name.clone()),
-            title: "Platform solution-stack is behind the latest available version".into(),
+            title: format!("Platform solution-stack is behind: newer version {newer} available"),
             detail: format!(
-                "Current: {stack}\nLatest:  {latest}\n\nNewer stacks ship security + runtime \
-                 patches; staying on the old one defers known vulnerability fixes."
+                "Current stack: {stack}\nNewer version available: {newer}\n\nNewer stacks \
+                 ship security + runtime patches; staying on the old one defers known \
+                 vulnerability fixes."
             ),
             suggestion: Some(":upgrade-platform  (pick the latest from the picker)".into()),
             fields,
@@ -1710,15 +1718,20 @@ mod tests {
             ..mk_env("prod", "Web", "Green")
         };
         let opts: Vec<(String, String, String)> = vec![];
-        let ctx = LintContext::for_env(&env, &opts)
-            .with_latest_stack("64bit Amazon Linux 2 v3.6.0 running Docker");
+        // Caller has already determined a newer version exists
+        // (via aws::newer_stack_version); we just pass the result.
+        let ctx = LintContext::for_env(&env, &opts).with_newer_stack_available("3.6.0");
         let issue = StalePlatformVersion.applies(&ctx).expect("fires");
         assert_eq!(issue.rule_id, "EBL008");
+        assert_eq!(
+            issue.fields.get("newer_version").map(String::as_str),
+            Some("3.6.0")
+        );
     }
 
     #[test]
-    fn ebl008_skips_when_latest_unknown() {
-        // No latest_stack_version → best-effort skip (don't
+    fn ebl008_skips_when_newer_unknown() {
+        // No newer_stack_available → best-effort skip (don't
         // false-positive on every env).
         let env = mk_env("prod", "Web", "Green");
         let opts: Vec<(String, String, String)> = vec![];
@@ -1727,30 +1740,29 @@ mod tests {
 
     #[test]
     fn ebl008_currently_stub_does_not_fire_in_cli() {
-        // 0.16 SHIP NOTE pin: every production LintContext
-        // constructor (CLI lint / explain, TUI cmd_misc / confirm-
-        // modal) currently passes `latest_stack_version: None`.
-        // `App.latest_stacks` is fetched but not plumbed into the
-        // ctx builders. Wiring is tracked for 0.17. This test
-        // documents the gap so a future change that starts firing
-        // the rule without the wiring will fail it (forcing the
-        // implementer to thread the value through).
+        // SHIP NOTE pin: CLI lint / explain don't have an App,
+        // so they can't compute newer_stack_available. The rule
+        // no-ops there until the CLI grows its own
+        // ListAvailableSolutionStacks fetch (tracked for 0.18).
+        // This test documents the gap.
         let env = mk_env("prod", "Web", "Green");
         let opts: Vec<(String, String, String)> = vec![];
-        // `ctx()` helper mirrors the production-side constructors
-        // and uses `latest_stack_version: None`.
+        // `ctx()` helper mirrors the CLI-side path which doesn't
+        // populate newer_stack_available.
         assert!(StalePlatformVersion.applies(&ctx(&env, &opts)).is_none());
     }
 
     #[test]
-    fn ebl008_skips_when_live_matches_latest() {
+    fn ebl008_skips_when_caller_says_no_newer() {
+        // Caller checked App.latest_stacks and determined no
+        // newer version exists → passes None → rule no-ops.
         let env = Environment {
             solution_stack: "64bit Amazon Linux 2 v3.6.0".into(),
             ..mk_env("prod", "Web", "Green")
         };
         let opts: Vec<(String, String, String)> = vec![];
-        let ctx =
-            LintContext::for_env(&env, &opts).with_latest_stack("64bit Amazon Linux 2 v3.6.0");
+        // No .with_newer_stack_available() → field stays None.
+        let ctx = LintContext::for_env(&env, &opts);
         assert!(StalePlatformVersion.applies(&ctx).is_none());
     }
 

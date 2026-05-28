@@ -483,9 +483,12 @@ impl App {
         // edit to `.ebman/ebman.toml` takes effect without
         // restarting ebman.
         let user_disables = self.lint_disable.clone();
-        // Plumb live lint-context inputs so EBL008 + EBL010 fire.
-        let latest_stack_owned = crate::aws::stack_family_version(&env.solution_stack)
-            .and_then(|(family, _)| self.latest_stacks.get(&family).cloned());
+        // Plumb live lint-context inputs. latest_stack enables
+        // EBL008 in this call site. EBL010 (required-tag check) needs
+        // env_tag_keys too — not plumbed yet because `:lint` doesn't
+        // fetch tags; tracked for 0.18.
+        let newer_stack_owned =
+            crate::aws::newer_stack_version(&env.solution_stack, &self.latest_stacks);
         let required_tags_owned = self.required_tags.clone();
         self.status_message = Some(format!("running lint on {env_name}…"));
         tokio::spawn(async move {
@@ -493,8 +496,8 @@ impl App {
                 Ok(opts) => {
                     let mut ctx = crate::lint::LintContext::for_env(&env, &opts)
                         .with_required_tags(&required_tags_owned);
-                    if let Some(latest) = latest_stack_owned.as_deref() {
-                        ctx = ctx.with_latest_stack(latest);
+                    if let Some(newer) = newer_stack_owned.as_deref() {
+                        ctx = ctx.with_newer_stack_available(newer);
                     }
                     // Compose operator disables: user-level (from
                     // App, mirrored from config.toml at startup) +
