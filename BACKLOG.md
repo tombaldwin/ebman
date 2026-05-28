@@ -879,37 +879,58 @@ ebman mcp serve                        → server mode (future: MCP for Claude C
 
 ### 0.19 candidates (2026-05-29)
 
-Theme: **foundation pass + small operator wins.** Three big refactors have been deferred 3-4× now (ResolvedConfig, spawn_* clusters, app.rs audit migration) — the codebase is structurally taut and these don't bleed but the next non-mechanical change in any of those areas is friction. 0.19 is the cycle to land them. Add 1-2 operator features as a counter-balance so the release doesn't read as pure plumbing.
+Theme: **foundation pass + close the lint loop + small operator wins.** Three big refactors have been deferred 3-4× now (ResolvedConfig, spawn_* clusters, app.rs audit migration) — the codebase is structurally taut and these don't bleed but the next non-mechanical change in any of those areas is friction. 0.19 is the cycle to land them. The lint engine matured fast in 0.13-0.18 (12 rules live, baseline support, auto-fix); 0.19 closes the adoption loop with docs, more rules, and CI-shaped polish. Plus 4-5 operator features as the counter-balance so the release doesn't read as pure plumbing.
 
-Pick 4-6 of the items below; the rest can shape 0.20.
+Aim for 8-12 of the items below; the rest can shape 0.20.
 
 #### Foundation pass — HEADLINE (the deferred refactors)
 - [ ] **`App.cfg_resolved: ResolvedConfig` sub-struct** — Collapses ~12 mirror fields off `App` (required_tags, profile_themes, accounts, runbooks, safety_envs, safety_accounts, command_aliases, lint_disable, lint_fix_disable, deploy_freeze, notify_webhook, etc.) into one nested struct. Touches every read site of the migrated fields (~30+). 0.16 review item, deferred 3×. ~3 hrs.
 - [ ] **`spawn_*` clusters → `src/app/spawn_*.rs`** — 61+ spawn methods in app.rs at ~24k lines. Groups: `spawn_detail_*` (11), `spawn_why_red_*` (6), `spawn_dlq_*` (4), `spawn_batch_*` (4), `spawn_rollout_*` (2), plus the new `spawn_confirm_lint` / `spawn_ssm_run_impl` / `spawn_explain_*`. Purely organisational; app.rs −4-5k lines. Deferred from 0.15/0.16/0.17/0.18. ~3 hrs.
 - [ ] **Remaining ~20 `append_raw` sites in `src/app.rs` → typed `append_action_*`** — Most are SSM / DLQ / CW Logs operations without a natural "completed" stage. Needs new typed helpers (`audit::append_dlq_op` / `append_ssm_session` / `append_log_action`?) so the migration shape matches the existing dispatched+completed convention. Closes the audit-shape drift the 0.14.1 / 0.18 reviews flagged. ~2 hrs.
+- [ ] **Lint input caching on App** — 0.18's parallel `list_tags` + `fetch_env_instance_counts` fetches add ~one round-trip's worth of latency to every confirm-modal lint. Cache the results on `App.env_tag_cache: HashMap<String, Vec<String>>` + `App.env_health_cache: HashMap<String, EnvInstanceCounts>`, populated lazily by the periodic refresh tick. `spawn_confirm_lint` reads from cache when fresh (< 60s old), falls back to live fetch when stale or missing. Modal-open latency drops from `max(t_opts, t_tags, t_health)` to just `t_opts`. Cleared on context switch alongside the other env-keyed state. ~2 hrs.
 
 #### Test coverage — SUPPORT
 - [ ] **CLI subcommand unit tests** — 0 tests across `src/cli/*.rs`. Real coverage gap. Needs `aws-smithy-mocks` integration setup that's slightly bigger than a casual addition; focus on `cli/lint.rs` first (most complex, most operator-facing). Target: 1 happy-path test per CLI subcommand minimum (`lint`, `action`, `audit`, `drift`, `envs`, `explain`, `ctl`). ~3 hrs.
 - [ ] **Exhaustiveness test for `Action::label()` distinctness** — Parallels the 0.17.4 `destructive()` and 0.18 `wants_preflight()` extensions. Currently `action_labels_are_distinct_and_non_empty` was extended to include SsmRun in 0.17.3 but still omits `Action::Capacity` (per the 0.17.4 review note). Fix + extend. ~20 min.
 - [ ] **`audit::append_extras` wire-format pinning** — Golden-pinned test for the `key=value` / `key="..."` encoding so a future quoting-policy change doesn't silently invalidate downstream audit consumers. Same pattern as the 0.18 `issue_identity_hash` golden. ~30 min.
+- [ ] **Rule `fix()` shape exhaustiveness** — For each `Rule`, assert that `fix()` returns one of the documented `FixAction` variants (SetOption / Multiple / Manual). Catches a future rule that returns `None` from `fix()` when `applies()` returned `Some` — currently a runtime panic in `cmd_lint_fix`. Pure logic, ~40 min.
 
 #### New lint rules — SUPPORT
-Cheap to add (each ~50 lines + tests, all use the existing `LintContext` builder pattern). Pick 2-3.
+Cheap to add (each ~50 lines + tests, all use the existing `LintContext` builder pattern). Pick 4-5 to lock the rule-engine maturity story.
 - [ ] **EBL013 — launch configuration ASG** (Warn). AWS is sunsetting launch configurations; envs on them get migration friction down the line. Detection: `aws:autoscaling:asg` namespace plus the absence of a LaunchTemplate ref. Fix=Manual (operator needs to plan the migration).
 - [ ] **EBL014 — deprecated CW namespace in `:scaling-triggers`** (Warn). `AWS/EC2 → MetricCollection_5Minutes` is a legacy mapping; newer envs should use `aws/applicationelb` or env-health metrics. Fix=Manual.
 - [ ] **EBL015 — custom platform with no published versions in 180+ days** (Info). Builds on the existing custom-platforms fetch. Operator probably forgot the platform exists. Fix=Manual.
 - [ ] **EBL016 — live health-check probe non-2xx** (Warn). Reuses the `spawn_health_check_probe` + `classify_health_check_status` code already shipped for confirm modals. Fires the probe at lint time, not just at deploy. Latency cost is real (one HTTP roundtrip per env at lint time); gate behind `--probe-live` flag in CLI to keep default lint fast.
+- [ ] **EBL017 — managed actions disabled** (Info). Detection: `aws:elasticbeanstalk:managedactions.ManagedActionsEnabled = "false"`. Op-sec gap: env doesn't get the platform's automatic security patches. Fix=Manual (operator may have a deliberate reason).
+- [ ] **EBL018 — env without WAF + on prod tier** (Warn). Detection: env's ALB has no `webacl_arn` listener association AND env name matches `prod` / `production` / `prd` (case-insensitive). Soft prod-detection — operators can disable per env via `lint.disable`. Fix=Manual (WAF setup is its own flow).
+- [ ] **EBL019 — `ConfigDeploymentPolicy=AllAtOnce` on multi-instance + multi-AZ env** (Warn). Stronger version of EBL001: catches the very-real "rolling deploy on a 2-AZ env taking the wrong instance offline first" footgun. Detection: EBL001's condition + `aws:autoscaling:asg.Availability Zones > 1`. Auto-fix=SetOption (same as EBL001).
+- [ ] **EBL020 — env with X-Ray enabled but instance profile has no `xray:PutTraceSegments`** (Warn). Detection: `aws:elasticbeanstalk:xray.XRayEnabled = "true"` plus IAM probe (uses the existing `iam:SimulatePrincipalPolicy` from `:explain` IAM path). Silent gap — operators see "X-Ray on" in config but no traces appear. Fix=Manual.
 
-#### Operator features — BONUS (pick 0-2)
+#### Lint adoption polish — SUPPORT
+Close the loop on the lint engine maturing. Now that 12+ rules fire reliably, operators need adoption ergonomics.
+- [ ] **`docs/lint-rules.md`** — Single-page reference doc with every rule (id / severity / detection logic / fix shape / example issue). Mirrors the clippy lint docs structure. Source-of-truth for ops teams writing their `lint.disable` config. ~1.5 hrs.
+- [ ] **`docs/rule-development.md`** — How to add a new lint rule: the `Rule` trait, `LintContext` builder fields, `FixAction` variants, test conventions. Closes the loop on the rule engine being an extensible surface (operators with private rules can ship them in forks). ~1 hr.
+- [ ] **`ebman lint --watch --webhook URL`** — For ops teams that don't want a tail process but do want periodic alerts. Hooks into the existing `notify_webhook` plumbing. Composes with `--watch --interval`. ~1 hr.
+- [ ] **`ebman lint --baseline-regenerate`** — Operators with stale baselines (post-0.18 when EBL010/011/012 started firing) can rebuild a baseline that captures the new firing pattern without delete + redo. Bonus subcommand on the existing baseline interface. ~30 min.
+- [ ] **Confirm-modal lint sorted by severity** — Currently the lint pill in the confirm modal lists issues in rule_id order (EBL001 < EBL002 …). Sort by severity DESC then rule_id ASC so the operator sees `Error` issues first. Pure render change. ~20 min.
+
+#### Operator features — BONUS (pick 2-3)
 - [ ] **`ebman lint --explain ISSUE_ID`** — CLI-shipped equivalent of TUI `:explain`. Reuses the `llm` module + `build_prompt` + cache. Operators integrating in CI want the same explainer they get interactively. ~1.5 hrs.
 - [ ] **`ebman audit replay <line-id>`** — Given an audit-log line (or a timestamp-keyed ID), re-run the same command. Wire-format-aware now that 0.18 consolidated audit shapes. Refuses for ambiguous lines (multiple matches) and for destructive actions without `--yes`. Useful for incident review: "what would happen if I ran this again?". ~2 hrs.
 - [ ] **`:fleet-cost`** — Sum across all envs' Cost Explorer monthly spend, broken down by application / tier / health. Builds on the existing cost cache (`~/.cache/ebman/cost-{account}-{region}.toml`). One screen, one number per category. ~1.5 hrs.
+- [ ] **`:diff A B --ignore-keys "..."`** — Suppresses noise in config-diff. Currently every config-diff shows `version_label` differences which are usually not the point. Operators can configure a default set via `[diff] ignore_keys = ["version_label", "..."]` in `config.toml`. ~30 min.
+- [ ] **Promotion lineage tracking** — When `:promote-env SOURCE TARGET` runs, record the chain. New `:promotions` overlay shows "v1.4.2: staging → uat (2026-05-20) → prod (2026-05-22)". Operators currently piece this together from `:lineage` per env. Needs new state in `state.toml` (env name → promoted-from). ~2 hrs.
+- [ ] **`ebman versions --env NAME [--json]`** — CLI-shipped equivalent of TUI `:versions`. Useful for "what versions are deployed in this app right now" CI scripts. Closes a long-standing CLI gap. ~1 hr.
+
+#### Distribution + perf — SUPPORT
+Smaller wins that don't fit the other buckets.
+- [ ] **ARM64 Linux tarball in release matrix** — Operators on ARM-based CI (AWS Graviton, Apple Silicon Linux VMs) currently `cargo install` from source because there's no prebuilt `aarch64-unknown-linux-gnu` tarball. Add to `.github/workflows/release.yml` + bump Homebrew formula's Linux branch to pick the right tarball per `Hardware::CPU.intel?`. ~30 min (mostly CI yak-shaving).
+- [ ] **Migrate `notify_webhook` from curl shell-out to `reqwest`** — `reqwest` is already a dep (added for LLM in 0.14). Curl shell-out has been the right call for portability but with `reqwest` always present, the shell-out is now the inconsistent path. Move to `reqwest::Client` (`rustls` backend already wired). Closes one of the three remaining curl call sites. ~1 hr.
 
 #### Out of scope for 0.19 (track in Feature candidates below)
 - `:event-tail` cross-fleet event tail — own design surface (fan-out coordination, output rate-limiting)
 - `:incident START/END` — composite of freeze + banner + audit subsection; design call on what's in the auto-runbook
-- Promotion lineage tracking — needs new persistence + a `:promotions` overlay
-- EBL013-016 follow-ups (E.g. EBL017+ deprecated-managed-update behaviour, EBL018 ASG without instance-refresh enabled) — track as the rule engine matures
+- EBL021+ rules — track as the rule engine matures and operators ask
 
 ### 0.18.0 release (2026-05-28)
 
