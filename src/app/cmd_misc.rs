@@ -483,11 +483,19 @@ impl App {
         // edit to `.ebman/ebman.toml` takes effect without
         // restarting ebman.
         let user_disables = self.lint_disable.clone();
+        // Plumb live lint-context inputs so EBL008 + EBL010 fire.
+        let latest_stack_owned = crate::aws::stack_family_version(&env.solution_stack)
+            .and_then(|(family, _)| self.latest_stacks.get(&family).cloned());
+        let required_tags_owned = self.required_tags.clone();
         self.status_message = Some(format!("running lint on {env_name}…"));
         tokio::spawn(async move {
             let body = match aws.fetch_env_option_settings(&app_name, &env_name).await {
                 Ok(opts) => {
-                    let ctx = crate::lint::LintContext::for_env(&env, &opts);
+                    let mut ctx = crate::lint::LintContext::for_env(&env, &opts)
+                        .with_required_tags(&required_tags_owned);
+                    if let Some(latest) = latest_stack_owned.as_deref() {
+                        ctx = ctx.with_latest_stack(latest);
+                    }
                     // Compose operator disables: user-level (from
                     // App, mirrored from config.toml at startup) +
                     // project-local (read fresh from cwd so a
