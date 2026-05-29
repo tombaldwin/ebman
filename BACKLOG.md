@@ -877,6 +877,31 @@ ebman mcp serve                        → server mode (future: MCP for Claude C
 
 **Future-proofing test passed:** LLM explainer (`ebman explain`), MCP server (`ebman mcp serve`), cron-driven monitoring (`ebman lint --watch`), git pre-commit hooks (`ebman drift`), GitHub Actions integration (`ebman action deploy`), audit-stream consumption (`ebman audit --tail --json | jq`) all fit without restructuring.
 
+### 0.19.0 release (2026-05-29)
+
+Autonomous slice through the 0.19 candidates list. The big foundation refactors (ResolvedConfig, spawn_* clusters, finish app.rs audit migration) deserve focused human review and stay deferred to 0.19.1/0.20. This release is the polish-and-ship slice.
+
+- [x] EBL017 — Managed Platform Updates disabled (Info, Manual fix) + 4 tests
+- [x] `:config-diff --ignore-keys "k1,k2"` flag with case-insensitive name + namespace-qualified match + 4 tests
+- [x] `ebman versions --env NAME [--json]` CLI subcommand (mirrors TUI `:versions`)
+- [x] Confirm-modal lint sorted by severity DESC then rule_id ASC
+- [x] `Action::label()` exhaustiveness extended to include Capacity + 15-variant count assertion
+- [x] `audit::append_extras` wire-format golden pin
+- [x] `Rule` trait invariants on the entire registry (registry-size check + consistency)
+- [~] `ebman lint --baseline-regenerate` — **redundant**, existing `--baseline PATH` already overwrites unconditionally
+- [~] `ebman lint --explain` — **redundant**, the existing `ebman explain ISSUE_ID` already does this (since 0.14)
+
+Deferred to 0.19.1 / 0.20 (each warrants focused review beyond autonomous mode):
+- ResolvedConfig sub-struct
+- spawn_* clusters → src/app/spawn_*.rs
+- Remaining ~20 app.rs append_raw sites
+- Lint input caching on App
+- :fleet-cost, ebman audit replay, Promotion lineage tracking
+- EBL013-016, EBL018-020 (each needs live-EB verification)
+- docs/lint-rules.md, docs/rule-development.md (focused docs cycle)
+
+757 → 767 tests (+10).
+
 ### 0.19 candidates (2026-05-29)
 
 Theme: **foundation pass + close the lint loop + small operator wins.** Three big refactors have been deferred 3-4× now (ResolvedConfig, spawn_* clusters, app.rs audit migration) — the codebase is structurally taut and these don't bleed but the next non-mechanical change in any of those areas is friction. 0.19 is the cycle to land them. The lint engine matured fast in 0.13-0.18 (12 rules live, baseline support, auto-fix); 0.19 closes the adoption loop with docs, more rules, and CI-shaped polish. Plus 4-5 operator features as the counter-balance so the release doesn't read as pure plumbing.

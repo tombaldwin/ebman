@@ -1079,4 +1079,36 @@ mod tests {
         // (Round-trip semantics not in scope for v1; raw is the
         // source-of-truth log.)
     }
+
+    /// **Golden pin** for `append_extras` — pins the exact wire shape
+    /// of the `key=value` / `key="..."` encoding so a future quoting-
+    /// policy change becomes a deliberate decision. Audit-log
+    /// consumers (incident reviewers running `awk '$5 == "stage=…"'`)
+    /// depend on this shape; silent changes invalidate their tooling.
+    ///
+    /// If this test fails: the change to `append_extras` is a wire-
+    /// breaking change. Document the new format in the CHANGELOG,
+    /// bump audit-shape version notes, and update this golden — or
+    /// revert the change.
+    ///
+    /// Pinned in 0.19 (was a 0.18 review item).
+    #[test]
+    fn append_extras_golden_wire_shape() {
+        let mut detail = String::from("stage=dispatched action=Demo target=env-1");
+        append_extras(
+            &mut detail,
+            &[
+                ("simple", "abc"),      // unquoted: no whitespace / quote / equals
+                ("with_space", "a b"),  // quoted: contains whitespace
+                ("with_quote", "a\"b"), // quoted + escaped
+                ("with_equals", "a=b"), // quoted: contains '='
+                ("empty", ""),          // quoted: empty value (distinguishable from omitted)
+            ],
+        );
+        assert_eq!(
+            detail,
+            r#"stage=dispatched action=Demo target=env-1 simple=abc with_space="a b" with_quote="a'b" with_equals="a=b" empty="""#,
+            "append_extras wire format changed — see test docstring before updating this constant"
+        );
+    }
 }

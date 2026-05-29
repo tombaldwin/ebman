@@ -5256,13 +5256,52 @@ impl App {
     /// "why does staging differ from prod?". Fetches both envs'
     /// configuration options in parallel and renders the diff.
     pub(crate) fn cmd_config_diff(&mut self, rest: &[&str]) {
-        let Some(target) = rest.first().map(|s| s.to_string()) else {
+        // Parse `:config-diff ENV [--ignore-keys "k1,k2,..."]`. Ignore-
+        // keys is case-insensitive and matches the option `name` field
+        // (e.g. "version_label", "EC2KeyName"). Operators can also use
+        // `namespace:name` form for precise matches against a specific
+        // namespace (e.g. "aws:autoscaling:asg:MinSize"). 0.19 addition.
+        let mut env_name: Option<String> = None;
+        let mut ignore_csv: Option<String> = None;
+        let mut iter = rest.iter().copied();
+        while let Some(arg) = iter.next() {
+            match arg {
+                "--ignore-keys" => {
+                    let Some(value) = iter.next() else {
+                        self.error_message = Some(
+                            "--ignore-keys expects a comma-separated list (e.g. \"version_label,EC2KeyName\")"
+                                .into(),
+                        );
+                        return;
+                    };
+                    // Guard against `:config-diff PROD --ignore-keys --json`
+                    // consuming the next flag as the value (same pattern
+                    // 0.17.0's --baseline parsing uses).
+                    if value.starts_with("--") {
+                        self.error_message = Some(format!(
+                            "--ignore-keys expects a comma-separated list, got flag '{value}'"
+                        ));
+                        return;
+                    }
+                    ignore_csv = Some(value.to_string());
+                }
+                other if !other.starts_with("--") && env_name.is_none() => {
+                    env_name = Some(other.to_string());
+                }
+                other => {
+                    self.error_message = Some(format!("unknown arg '{other}'"));
+                    return;
+                }
+            }
+        }
+        let Some(target) = env_name else {
             self.error_message = Some(
-                "usage: :config-diff ENV  (compare the selected env's option-settings against ENV)"
+                "usage: :config-diff ENV [--ignore-keys \"k1,k2\"]  (compare the selected env's option-settings against ENV)"
                     .into(),
             );
             return;
         };
+        let ignore_keys: Vec<String> = parse_ignore_keys(ignore_csv.as_deref());
         let left = if let Some(d) = self.detail.as_ref() {
             Some(d.env_snapshot.clone())
         } else {
@@ -5294,7 +5333,8 @@ impl App {
             ) {
                 Ok((lopts, ropts)) => {
                     let diffs = diff_config_options(&lopts, &ropts);
-                    render_config_diff_overlay(&ln, &rn, &diffs)
+                    let filtered = filter_config_diffs(diffs, &ignore_keys);
+                    render_config_diff_overlay(&ln, &rn, &filtered)
                 }
                 Err(e) => format!(
                     "config-diff: {}\n\nesc / q to close",
@@ -15858,6 +15898,41 @@ pub struct ConfigDiff {
 /// `Some("")` and `None` both mean "unset", so they're normalised
 /// to equal. Result is sorted `(namespace, name)` for a stable
 /// overlay.
+/// Pure: parse the `--ignore-keys "k1,k2"` argument. Splits on
+/// commas, trims whitespace, drops empty entries, normalises to
+/// lowercase so the filter is case-insensitive. Operators can also
+/// use `namespace:name` form for precise matches against a specific
+/// namespace; the filter compares both forms below.
+pub fn parse_ignore_keys(csv: Option<&str>) -> Vec<String> {
+    let Some(csv) = csv else {
+        return Vec::new();
+    };
+    csv.split(',')
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Pure: filter `diffs` to drop entries whose option name (or the
+/// full `namespace:name` form) matches any entry in `ignore_keys`.
+/// Match is case-insensitive (`ignore_keys` is pre-normalised).
+/// Empty `ignore_keys` is a no-op (pass through).
+pub fn filter_config_diffs(diffs: Vec<ConfigDiff>, ignore_keys: &[String]) -> Vec<ConfigDiff> {
+    if ignore_keys.is_empty() {
+        return diffs;
+    }
+    diffs
+        .into_iter()
+        .filter(|d| {
+            let name_lower = d.name.to_lowercase();
+            let qualified_lower = format!("{}:{}", d.namespace.to_lowercase(), name_lower);
+            !ignore_keys
+                .iter()
+                .any(|k| k == &name_lower || k == &qualified_lower)
+        })
+        .collect()
+}
+
 pub fn diff_config_options(
     left: &[crate::aws::ConfigOption],
     right: &[crate::aws::ConfigOption],
@@ -16809,6 +16884,75 @@ mod tests {
         let left = vec![opt("aws:foo", "Bar", Some(""), None)];
         let right = vec![opt("aws:foo", "Bar", None, None)];
         assert!(super::diff_config_options(&left, &right).is_empty());
+    }
+
+    #[test]
+    fn parse_ignore_keys_splits_and_lowercases() {
+        assert_eq!(super::parse_ignore_keys(None), Vec::<String>::new());
+        assert_eq!(super::parse_ignore_keys(Some("")), Vec::<String>::new());
+        assert_eq!(
+            super::parse_ignore_keys(Some(" Version_Label , MinSize ,")),
+            vec!["version_label".to_string(), "minsize".to_string()]
+        );
+    }
+
+    #[test]
+    fn filter_config_diffs_drops_matching_names() {
+        let diffs = vec![
+            super::ConfigDiff {
+                namespace: "ns".into(),
+                name: "MinSize".into(),
+                left: Some("2".into()),
+                right: Some("3".into()),
+            },
+            super::ConfigDiff {
+                namespace: "ns".into(),
+                name: "version_label".into(),
+                left: Some("v1".into()),
+                right: Some("v2".into()),
+            },
+        ];
+        let keys = super::parse_ignore_keys(Some("version_label"));
+        let filtered = super::filter_config_diffs(diffs, &keys);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "MinSize");
+    }
+
+    #[test]
+    fn filter_config_diffs_supports_namespace_qualified_match() {
+        // Operators can use `namespace:name` form to scope an ignore-
+        // key to a specific namespace (so a generic "MinSize" ignore
+        // doesn't drop both the ASG and the LB MinSize).
+        let diffs = vec![
+            super::ConfigDiff {
+                namespace: "aws:autoscaling:asg".into(),
+                name: "MinSize".into(),
+                left: Some("2".into()),
+                right: Some("3".into()),
+            },
+            super::ConfigDiff {
+                namespace: "aws:elasticbeanstalk:command".into(),
+                name: "MinSize".into(),
+                left: Some("4".into()),
+                right: Some("5".into()),
+            },
+        ];
+        let keys = super::parse_ignore_keys(Some("aws:autoscaling:asg:MinSize"));
+        let filtered = super::filter_config_diffs(diffs, &keys);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].namespace, "aws:elasticbeanstalk:command");
+    }
+
+    #[test]
+    fn filter_config_diffs_empty_ignore_keys_is_passthrough() {
+        let diffs = vec![super::ConfigDiff {
+            namespace: "ns".into(),
+            name: "MinSize".into(),
+            left: Some("2".into()),
+            right: Some("3".into()),
+        }];
+        let original_len = diffs.len();
+        assert_eq!(super::filter_config_diffs(diffs, &[]).len(), original_len);
     }
 
     #[test]
@@ -17994,6 +18138,12 @@ mod tests {
         // Catches accidental "placeholder Action::Rebuild" reuses — every
         // variant must carry its own label so audit logs + toasts reflect
         // what was actually dispatched.
+        //
+        // 0.19: extended to include `Action::Capacity` which had been
+        // missing since 0.6 (caught by the 0.17.4 review pass). Now
+        // exhaustive across all 15 variants — every variant gets an
+        // explicit assertion so future additions can't skip the
+        // distinctness check.
         use crate::app::Action;
         use std::collections::HashSet;
         let all = [
@@ -18005,6 +18155,7 @@ mod tests {
             Action::UpgradePlatform,
             Action::Clone,
             Action::Scale,
+            Action::Capacity,
             Action::AbortUpdate,
             Action::ConfigSave,
             Action::ConfigDelete,
@@ -18018,6 +18169,9 @@ mod tests {
             assert!(!l.is_empty(), "{a:?} has empty label");
             assert!(labels.insert(l), "{a:?} reuses label {l:?}");
         }
+        // 15 = the full Action enum size. Update both the array
+        // above and this guard if a new variant is added.
+        assert_eq!(all.len(), 15);
     }
 
     #[test]

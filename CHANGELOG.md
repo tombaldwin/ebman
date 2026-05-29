@@ -6,6 +6,64 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-05-29 — Test pinning + new lint rule + small operator wins
+
+Autonomous slice through the 0.19 candidates list. The big foundation
+refactors (ResolvedConfig sub-struct, spawn_* clusters, finish app.rs
+audit migration) deserve focused human review and stay deferred to
+0.19.1/0.20. This release is the polish-and-ship slice: 4 new tests
+that pin invariants the codebase had been relying on by convention,
+1 new lint rule, 3 operator features.
+
+Theme: **polish the rule engine + close two CLI parity gaps.**
+
+### Added — operator features
+
+- **`ebman versions --env NAME [--json]`** — CLI mirror of the TUI `:versions` overlay. Useful for CI scripts validating a candidate label exists before `ebman action deploy`, or surfacing the candidate's description / age in a Slack notify. Default text mode marks the currently-deployed label with `*`; `--json` emits one object per version with `{label, deployed, created (RFC3339), description}`.
+- **`:config-diff ENV --ignore-keys "k1,k2"`** — Suppresses noise in config-diffs. Operators routinely want to exclude `version_label` / `EC2KeyName` / etc. from the diff output. Match is case-insensitive; both bare names (`MinSize`) and namespace-qualified forms (`aws:autoscaling:asg:MinSize`) are supported. Pure helpers `parse_ignore_keys` + `filter_config_diffs` with 4 tests.
+
+### Added — lint engine
+
+- **EBL017 — Managed Platform Updates disabled** (Info). Detection: `aws:elasticbeanstalk:managedactions.ManagedActionsEnabled` is not `"true"` (or the setting is absent — EB defaults to disabled on most modern platforms). Op-sec gap: env doesn't receive automatic security patches during the configured maintenance window. Fix=Manual (operator may have a deliberate reason to disable). +4 tests covering the firing matrix (explicit-false / absent / explicit-true / mixed case).
+
+### Changed — confirm-modal lint render
+
+- **Lint issues now sort by severity DESC then rule_id ASC.** When 3+ warnings fire in a confirm modal, the `Error` ones land at the top so operators see them first. Was a 0.18 review item.
+
+### Added — test pinning
+
+- **`audit::append_extras` wire-format golden** — Pins the exact `key=value` / `key="..."` encoding so a future quoting-policy change becomes a deliberate decision rather than silent breakage for downstream audit consumers. Same pattern as the 0.18 `issue_identity_hash` golden.
+- **`Action::label()` exhaustiveness extended** — Now includes `Action::Capacity` (missing since 0.6, caught by the 0.17.4 review). Exhaustive on all 15 variants with an explicit count assertion so future additions can't skip the distinctness check.
+- **`Rule` trait invariants on the entire registry** — For every rule in `default_rules`: `id()` non-empty, `severity()` doesn't panic, and **consistency**: if `applies(ctx) == None`, then `fix(ctx) == None` (the inverse — `applies=Some, fix=None` — is allowed for non-auto-fixable rules). Catches the failure mode where `cmd_lint_fix` would propose a fix for an issue that doesn't exist. Pins the registry size at 13 rules.
+
+### Deferred to 0.19.1 / 0.20
+
+The 0.19 candidates list had 29 items; this release ships the polish + small-feature slice. The bigger items each warrant focused review beyond autonomous mode:
+
+- `App.cfg_resolved: ResolvedConfig` sub-struct — touches 30+ read sites, deserves a dedicated cleanup commit
+- `spawn_*` clusters → `src/app/spawn_*.rs` grouping — 61+ methods, mechanical but invasive
+- Remaining ~20 `append_raw` sites in `src/app.rs` → typed helpers — needs new typed helpers for SSM / DLQ / CW Logs shapes
+- Lint input caching on `App` (env_tag_cache + env_health_cache) — touches refresh tick + multiple lint sites
+- `:fleet-cost`, `ebman audit replay`, Promotion lineage tracking — each ~2 hr operator features
+- `ebman lint --baseline-regenerate` — **redundant** (existing `--baseline PATH` already overwrites unconditionally)
+- `ebman lint --explain` — **redundant** (the existing `ebman explain ISSUE_ID` already does this since 0.14)
+- EBL013-016, EBL018-020 — each needs live-EB verification of the exact detection shape
+- `docs/lint-rules.md` / `docs/rule-development.md` — better as a focused docs cycle
+
+### Tests
+
+767 tests green (up from 757 in 0.18.0). 10 new tests:
+- `action_labels_are_distinct_and_non_empty` extended (+1 variant + count assertion)
+- `append_extras_golden_wire_shape` (golden pin)
+- `rules_satisfy_trait_invariants` (registry-wide consistency)
+- `parse_ignore_keys_splits_and_lowercases` + `filter_config_diffs_*` (4 tests for the new pure helpers)
+- `ebl017_*` (4 tests for the new rule)
+
+### Docs
+
+- `docs/headless.md` — `ebman versions --env NAME` entry
+- `print_help()` — `versions` subcommand entry
+
 ## [0.18.0] — 2026-05-28 — Live the stubs + audit migration + test pinning
 
 The 0.17 series shipped EBL008/010/011/012 as code but several rules

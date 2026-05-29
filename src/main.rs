@@ -41,6 +41,7 @@ async fn main() -> Result<()> {
             "drift" => return ebman::cli::drift::run(&args).await,
             "audit" => return ebman::cli::audit::run(&args).await,
             "explain" => return ebman::cli::explain::run(&args).await,
+            "versions" => return ebman::cli::versions::run(&args).await,
             _ => {}
         }
     }
@@ -284,6 +285,17 @@ SUBCOMMANDS:
                                                   forces a fresh call. --dry-run prints the prompt
                                                   without sending. Exit codes: 0 ok, 1 provider err,
                                                   2 usage, 3 issue not found.
+    versions --env NAME [--json]                 List application versions for the env's app,
+                                                  newest-first. CLI mirror of the TUI `:versions`
+                                                  overlay. Useful for CI scripts that want to
+                                                  validate a candidate label exists before
+                                                  `ebman action deploy`, or to surface the
+                                                  candidate's description / age in a Slack notify.
+                                                  --json emits one object per version with
+                                                  {{label, deployed (bool), created (RFC3339),
+                                                  description}}. Default text mode marks the
+                                                  currently-deployed label with `*`. Exit codes:
+                                                  0 ok, 1 aws err, 2 usage.
 
 CONFIG:
     ~/.config/ebman/config.toml   user configuration (see README)

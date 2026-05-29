@@ -1226,6 +1226,75 @@ impl Rule for GreenButZeroInstances {
 /// filtered HERE — at registry-load time — so a disabled rule
 /// has zero per-env cost. Severity overrides not yet
 /// implemented (BONUS-tier 0.13 item).
+/// EBL017 — Managed Platform Updates disabled. Detection: the env's
+/// `aws:elasticbeanstalk:managedactions.ManagedActionsEnabled`
+/// option-setting is `"false"` (or any non-`"true"` value — EB
+/// defaults to disabled when the setting is missing). Op-sec gap:
+/// env doesn't receive the platform's automatic security patches
+/// during the configured maintenance window. Fix=Manual (operator
+/// may have a deliberate reason to disable — e.g. a frozen
+/// production env mid-incident — so `--fix` doesn't flip it).
+pub struct ManagedActionsDisabled;
+
+impl Rule for ManagedActionsDisabled {
+    fn id(&self) -> &'static str {
+        "EBL017"
+    }
+    fn severity(&self) -> Severity {
+        Severity::Info
+    }
+    fn fix(&self, ctx: &LintContext) -> Option<FixAction> {
+        self.applies(ctx)?;
+        Some(FixAction::Manual {
+            instructions: "Managed Platform Updates are disabled. Enable via `:set-option \
+                 aws:elasticbeanstalk:managedactions:ManagedActionsEnabled true` and \
+                 configure the maintenance window (`PreferredStartTime`) before re-enabling \
+                 if your platform family supports it. Some operators disable this \
+                 deliberately (frozen prod env mid-incident; controlled patching via CI) — \
+                 if that's you, add EBL017 to `lint.disable` in `config.toml`."
+                .into(),
+        })
+    }
+    fn applies(&self, ctx: &LintContext) -> Option<Issue> {
+        // The option lives in this namespace. EB returns it as a
+        // string, not a bool. Default value when unset depends on the
+        // env's platform family (most modern platforms default to
+        // disabled). We treat absent + any value other than literal
+        // "true" (case-insensitive) as "disabled" so we catch every
+        // shape of "not on".
+        let value = ctx
+            .options
+            .iter()
+            .find(|(ns, name, _)| {
+                ns == "aws:elasticbeanstalk:managedactions" && name == "ManagedActionsEnabled"
+            })
+            .map(|(_, _, v)| v.as_str())
+            .unwrap_or("");
+        if value.eq_ignore_ascii_case("true") {
+            return None;
+        }
+        let mut fields = BTreeMap::new();
+        fields.insert("managed_actions_enabled".into(), value.to_string());
+        Some(Issue {
+            rule_id: self.id().into(),
+            severity: self.severity(),
+            env_name: Some(ctx.env.name.clone()),
+            title: "Managed Platform Updates disabled".into(),
+            detail: "Managed Platform Updates handle the platform's automatic security patches \
+                 during the configured maintenance window. With this disabled, the env \
+                 doesn't receive minor-version patches automatically — operators must \
+                 dispatch `:upgrade` manually when AWS publishes a new platform version. \
+                 For long-lived envs, this is a real op-sec gap; for short-lived staging / \
+                 ephemeral envs it's usually fine to leave off."
+                .into(),
+            suggestion: Some(
+                ":set-option aws:elasticbeanstalk:managedactions:ManagedActionsEnabled true".into(),
+            ),
+            fields,
+        })
+    }
+}
+
 pub fn default_rules(disabled: &[String]) -> Vec<Box<dyn Rule>> {
     let candidates: Vec<Box<dyn Rule>> = vec![
         Box::new(AllAtOnceMultiInstance),
@@ -1240,6 +1309,7 @@ pub fn default_rules(disabled: &[String]) -> Vec<Box<dyn Rule>> {
         Box::new(MissingRequiredTags),
         Box::new(WorkerDlqStuck),
         Box::new(GreenButZeroInstances),
+        Box::new(ManagedActionsDisabled),
     ];
     candidates
         .into_iter()
@@ -2151,5 +2221,136 @@ mod tests {
         let opts: Vec<(String, String, String)> = vec![];
         let ctx = LintContext::for_env(&env, &opts).with_healthy_count(0);
         assert!(GreenButZeroInstances.applies(&ctx).is_some());
+    }
+
+    /// **Rule-trait invariants** across the entire rule registry.
+    ///
+    /// For each rule in `default_rules(&[])`:
+    /// 1. `id()` is non-empty (used as audit-log key + baseline key).
+    /// 2. `severity()` doesn't panic.
+    /// 3. Neither `applies(ctx)` nor `fix(ctx)` panics on a bare-Web
+    ///    or bare-Worker context (defensive coverage).
+    /// 4. **Consistency**: if `applies(ctx) == None`, then
+    ///    `fix(ctx) == None`. The reverse (applies=Some, fix=None)
+    ///    is allowed — rules without auto-remediation. But a rule
+    ///    that returns `Some(FixAction)` when `applies()` says "no
+    ///    issue here" would surface as a "fix issue that doesn't
+    ///    exist" CLI output.
+    ///
+    /// This is the structural guarantee that `cmd_lint_fix` relies
+    /// on when iterating `applies → fix` per issue. 0.19 review item.
+    #[test]
+    fn rules_satisfy_trait_invariants() {
+        let rules = default_rules(&[]);
+        // Two contexts — a bare Web env and a bare Worker env. Some
+        // rules legitimately fire on each (EBL002 missing health-
+        // check URL on Web; future EBL011 DLQ-stuck on Worker with
+        // dlq_depth) — that's fine. The consistency check is what
+        // matters: where applies() says No, fix() must too.
+        let web_env = Environment {
+            updated: Some(chrono::Utc::now()),
+            ..mk_env("web", "Web", "Green")
+        };
+        let worker_env = Environment {
+            updated: Some(chrono::Utc::now()),
+            ..mk_env("worker", "Worker", "Green")
+        };
+        let opts: Vec<(String, String, String)> = vec![];
+        for env in [&web_env, &worker_env] {
+            let ctx = LintContext::for_env(env, &opts);
+            for rule in &rules {
+                let id = rule.id();
+                assert!(!id.is_empty(), "rule has empty id");
+                let _ = rule.severity(); // doesn't panic
+                let applies_result = rule.applies(&ctx);
+                let fix_result = rule.fix(&ctx);
+                if applies_result.is_none() {
+                    assert!(
+                        fix_result.is_none(),
+                        "{id} on tier={}: fix() returned Some({fix_result:?}) when applies() returned None — \
+                         cmd_lint_fix's `applies → fix` chain assumes this never happens. Either \
+                         applies() should fire or fix() should short-circuit on None-applies.",
+                        env.tier
+                    );
+                }
+            }
+        }
+        // Sanity: the registry has the expected size. Bumps when a
+        // new EBL is added. Catches both regressions (rule removed)
+        // and additions-without-test-update (new rule landed; review
+        // whether its applies()/fix() satisfy the invariants above).
+        assert_eq!(rules.len(), 13, "rule registry size changed");
+    }
+
+    #[test]
+    fn ebl017_fires_when_managed_actions_enabled_is_false() {
+        let env = mk_env("prod", "Web", "Green");
+        let opts = vec![mk_opt(
+            "aws:elasticbeanstalk:managedactions",
+            "ManagedActionsEnabled",
+            "false",
+        )];
+        let ctx = LintContext::for_env(&env, &opts);
+        let issue = ManagedActionsDisabled.applies(&ctx).expect("should fire");
+        assert_eq!(issue.rule_id, "EBL017");
+        assert_eq!(
+            issue
+                .fields
+                .get("managed_actions_enabled")
+                .map(String::as_str),
+            Some("false")
+        );
+    }
+
+    #[test]
+    fn ebl017_fires_when_managed_actions_setting_absent() {
+        // Setting absent means EB defaults to disabled (per platform
+        // family). Same firing condition.
+        let env = mk_env("prod", "Web", "Green");
+        let opts: Vec<(String, String, String)> = vec![];
+        let ctx = LintContext::for_env(&env, &opts);
+        let issue = ManagedActionsDisabled
+            .applies(&ctx)
+            .expect("absent setting fires too");
+        assert_eq!(issue.rule_id, "EBL017");
+        assert_eq!(
+            issue
+                .fields
+                .get("managed_actions_enabled")
+                .map(String::as_str),
+            Some("")
+        );
+    }
+
+    #[test]
+    fn ebl017_does_not_fire_when_managed_actions_enabled() {
+        let env = mk_env("prod", "Web", "Green");
+        let opts = vec![mk_opt(
+            "aws:elasticbeanstalk:managedactions",
+            "ManagedActionsEnabled",
+            "true",
+        )];
+        let ctx = LintContext::for_env(&env, &opts);
+        assert!(ManagedActionsDisabled.applies(&ctx).is_none());
+        assert!(ManagedActionsDisabled.fix(&ctx).is_none());
+    }
+
+    #[test]
+    fn ebl017_value_match_is_case_insensitive() {
+        // EB sometimes returns "True" / "TRUE" depending on how the
+        // setting was written. Match should accept any casing.
+        let env = mk_env("prod", "Web", "Green");
+        for variant in ["True", "TRUE", "true"] {
+            let opts = vec![mk_opt(
+                "aws:elasticbeanstalk:managedactions",
+                "ManagedActionsEnabled",
+                variant,
+            )];
+            let ctx = LintContext::for_env(&env, &opts);
+            assert!(
+                ManagedActionsDisabled.applies(&ctx).is_none(),
+                "value '{variant}' should be treated as enabled"
+            );
+        }
     }
 }

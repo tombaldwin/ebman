@@ -4703,10 +4703,19 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
             // compact while the spawn runs.
             if let Some(issues) = &modal.lint_issues {
                 use crate::lint::Severity;
-                let to_show: Vec<&crate::lint::Issue> = issues
+                let mut to_show: Vec<&crate::lint::Issue> = issues
                     .iter()
                     .filter(|i| i.severity >= Severity::Warn)
                     .collect();
+                // Sort severity DESC then rule_id ASC so the operator
+                // sees `Error` issues at the top of the modal — when
+                // there are 3+ warnings, the worst one shouldn't be
+                // buried at the bottom (0.19 review item).
+                to_show.sort_by(|a, b| {
+                    b.severity
+                        .cmp(&a.severity)
+                        .then_with(|| a.rule_id.cmp(&b.rule_id))
+                });
                 if !to_show.is_empty() {
                     lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(
