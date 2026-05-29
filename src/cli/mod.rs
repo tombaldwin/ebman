@@ -32,6 +32,7 @@ pub mod drift;
 pub mod envs;
 pub mod explain;
 pub mod lint;
+pub mod versions;
 
 /// Re-exports from the shared deploy-poll module. CLI subcommand
 /// modules import via `crate::cli::{decide_poll, PollDecision}`;
