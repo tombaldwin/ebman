@@ -47,6 +47,7 @@ impl AppMsg {
             | HealthCheckProbe { gen, .. }
             | UnavailabilityEstimate { gen, .. }
             | ConfirmModalLint { gen, .. }
+            | LintInputsCached { gen, .. }
             | RolloutPreflight { gen, .. }
             | RolloutDispatched { gen, .. }
             | UndoCaptured { gen, .. }
@@ -170,6 +171,12 @@ impl App {
             AppMsg::ConfirmModalLint {
                 env_name, issues, ..
             } => self.handle_confirm_modal_lint(env_name, issues),
+            AppMsg::LintInputsCached {
+                env_name,
+                tags,
+                healthy,
+                ..
+            } => self.handle_lint_inputs_cached(env_name, tags, healthy),
             AppMsg::RolloutPreflight { region, result, .. } => {
                 self.handle_rollout_preflight(region, result)
             }
@@ -781,6 +788,25 @@ impl App {
         }
         modal.loading_lint = false;
         modal.lint_issues = Some(issues);
+    }
+
+    /// 0.21: write freshly-fetched lint inputs into the App caches
+    /// so the next modal-open against the same env hits cache.
+    /// `None` entries indicate the value came from cache (no need
+    /// to re-store) or the fetch failed.
+    fn handle_lint_inputs_cached(
+        &mut self,
+        env_name: String,
+        tags: Option<Vec<String>>,
+        healthy: Option<i64>,
+    ) {
+        let now = std::time::Instant::now();
+        if let Some(t) = tags {
+            self.env_tag_cache.insert(env_name.clone(), (t, now));
+        }
+        if let Some(h) = healthy {
+            self.env_health_cache.insert(env_name, (h, now));
+        }
     }
 
     /// Land one region's pre-flight result on the active

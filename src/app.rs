@@ -61,6 +61,7 @@ mod cmd_view;
 mod cmd_write;
 mod mode_keys;
 mod msg;
+mod spawn_why_red;
 pub use crate::mode_dlq::{DlqState, QueueView};
 
 /// Names of all built-in `:commands`. Used to detect collisions when loading
@@ -938,6 +939,18 @@ pub struct App {
     /// render's `⚠ DLQ:N` chip on Worker rows. Missing entry = "not
     /// checked yet" (don't fire an alert on cold state).
     pub worker_dlq_depths: std::collections::HashMap<String, i64>,
+    /// Lazy cache for `spawn_confirm_lint`'s parallel tag fetch.
+    /// Populated opportunistically by every lint call site that fires
+    /// the inline `list_tags(env.arn)` fetch. TTL is `LINT_INPUT_CACHE_TTL`
+    /// (60s). Modal-open latency drops to `max(t_opts)` when cache
+    /// is fresh — saves ~one round-trip per repeated modal-open
+    /// against the same env. Cleared on context switch alongside
+    /// the other env-keyed state. 0.21 addition.
+    pub(crate) env_tag_cache: std::collections::HashMap<String, (Vec<String>, std::time::Instant)>,
+    /// Same shape as `env_tag_cache` but for the
+    /// `fetch_env_instance_counts` healthy-count input that
+    /// EBL012 reads. Independent TTL — same constant.
+    pub(crate) env_health_cache: std::collections::HashMap<String, (i64, std::time::Instant)>,
     /// Pre-deploy snapshots keyed by env name. Captured at deploy
     /// dispatch time so `:rollback-deploy ENV` (and the watchdog
     /// armed by `:deploy --auto-rollback Nm`) can redeploy whatever
@@ -1501,6 +1514,18 @@ enum AppMsg {
         env_name: String,
         issues: Vec<crate::lint::Issue>,
     },
+    /// 0.21: side-channel cache update for the lint-input caches.
+    /// Emitted by `spawn_confirm_lint` (and any future lint call site)
+    /// after a fresh tag / health fetch lands. `tags`/`healthy` are
+    /// `None` when the value came from cache (no need to re-store).
+    /// Handler writes to `env_tag_cache` / `env_health_cache` so
+    /// the NEXT modal-open against the same env hits cache.
+    LintInputsCached {
+        gen: u64,
+        env_name: String,
+        tags: Option<Vec<String>>,
+        healthy: Option<i64>,
+    },
     /// Pre-flight result for one region of a `:rollout` flow.
     /// Carries the region's current version_label on success
     /// (so the plan overlay can show "currently build-820 →
@@ -1880,6 +1905,8 @@ impl App {
             hover_row: None,
             alerts: 0,
             worker_dlq_depths: std::collections::HashMap::new(),
+            env_tag_cache: std::collections::HashMap::new(),
+            env_health_cache: std::collections::HashMap::new(),
             // Restore persisted snapshots so a cross-session `:rollback`
             // / auto-rollback still has a target. Malformed lines are
             // silently skipped — better to drop one stale entry than
@@ -2152,6 +2179,8 @@ impl App {
             hover_row: None,
             alerts: 0,
             worker_dlq_depths: std::collections::HashMap::new(),
+            env_tag_cache: std::collections::HashMap::new(),
+            env_health_cache: std::collections::HashMap::new(),
             deploy_snapshots: std::collections::HashMap::new(),
             armed_watchdogs: std::collections::HashMap::new(),
             watching_deploys: std::collections::HashMap::new(),
@@ -2486,11 +2515,13 @@ impl App {
             .override_profile
             .clone()
             .or_else(|| self.context.profile.clone());
-        crate::audit::append_raw(
+        crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             profile.as_deref(),
             &region,
-            &format!("stage=dispatched action=SsmSession target={instance_id}"),
+            "SsmSession",
+            instance_id,
+            &[],
         );
 
         let size = terminal.size()?;
@@ -4074,133 +4105,8 @@ impl App {
         }
     }
 
-    fn spawn_why_red_queues(&self, app_name: String, env_name: String, session_id: u64) {
-        if self.demo_mode {
-            let result = Ok(crate::demo_fixture::worker_queues_for_env(&env_name));
-            let gen = self.generation;
-            let _ = self.msg_tx.send(AppMsg::WhyRedQueues {
-                gen,
-                session_id,
-                result,
-            });
-            return;
-        }
-        self.spawn_aws(
-            "describe_worker_queues",
-            move |aws| async move { aws.describe_worker_queues(&app_name, &env_name).await },
-            move |gen, result| AppMsg::WhyRedQueues {
-                gen,
-                session_id,
-                result,
-            },
-        );
-    }
-
-    /// Second-stage worker-queues fetch: once the queue stats land and
-    /// the DLQ has visible messages, peek a few bodies so the operator
-    /// sees what's failing without leaving the overlay. Uses the same
-    /// `peek_messages` (visibility_timeout=5s) as the DLQ overlay — the
-    /// brief invisibility is acceptable since the DLQ isn't being
-    /// consumed by anyone in normal operation.
-    fn spawn_why_red_dlq_peek(&self, dlq_url: String, session_id: u64) {
-        self.spawn_aws(
-            "peek_messages",
-            move |aws| async move { aws.peek_messages(&dlq_url, 3).await },
-            move |gen, result| AppMsg::WhyRedDlqMessages {
-                gen,
-                session_id,
-                result,
-            },
-        );
-    }
-
-    fn spawn_why_red_events(&self, env_name: String, session_id: u64) {
-        if self.demo_mode {
-            let result = Ok(crate::demo_fixture::events_for_env(&env_name));
-            let gen = self.generation;
-            let _ = self.msg_tx.send(AppMsg::WhyRedEvents {
-                gen,
-                session_id,
-                result,
-            });
-            return;
-        }
-        self.spawn_aws(
-            "list_events_for_env",
-            move |aws| async move { aws.list_events_for_env(&env_name, 50).await },
-            move |gen, result| AppMsg::WhyRedEvents {
-                gen,
-                session_id,
-                result,
-            },
-        );
-    }
-
-    fn spawn_why_red_alarms(&self, env_name: String, session_id: u64) {
-        if self.demo_mode {
-            let result = Ok(crate::demo_fixture::alarms_for_env(&env_name));
-            let gen = self.generation;
-            let _ = self.msg_tx.send(AppMsg::WhyRedAlarms {
-                gen,
-                session_id,
-                result,
-            });
-            return;
-        }
-        self.spawn_aws(
-            "list_alarms_for_env",
-            move |aws| async move { aws.list_alarms_for_env(&env_name).await },
-            move |gen, result| AppMsg::WhyRedAlarms {
-                gen,
-                session_id,
-                result,
-            },
-        );
-    }
-
-    fn spawn_why_red_instances(&self, env_name: String, session_id: u64) {
-        if self.demo_mode {
-            let result = Ok(crate::demo_fixture::instances_for(&env_name));
-            let gen = self.generation;
-            let _ = self.msg_tx.send(AppMsg::WhyRedInstances {
-                gen,
-                session_id,
-                result,
-            });
-            return;
-        }
-        self.spawn_aws(
-            "list_instances",
-            move |aws| async move { aws.list_instances(&env_name).await },
-            move |gen, result| AppMsg::WhyRedInstances {
-                gen,
-                session_id,
-                result,
-            },
-        );
-    }
-
-    fn spawn_why_red_deploys(&self, app_name: String, session_id: u64) {
-        if self.demo_mode {
-            let result = Ok(crate::demo_fixture::deploys_for_app(&app_name));
-            let gen = self.generation;
-            let _ = self.msg_tx.send(AppMsg::WhyRedDeploys {
-                gen,
-                session_id,
-                result,
-            });
-            return;
-        }
-        self.spawn_aws(
-            "list_application_versions",
-            move |aws| async move { aws.list_application_versions(&app_name).await },
-            move |gen, result| AppMsg::WhyRedDeploys {
-                gen,
-                session_id,
-                result,
-            },
-        );
-    }
+    // spawn_why_red_* cluster moved to src/app/spawn_why_red.rs in 0.21
+    // (6 methods: queues, dlq_peek, events, alarms, instances, deploys).
 
     /// Detail-Health-tab alarms fetch. Mirrors `spawn_why_red_alarms`
     /// but lands on `AppMsg::DetailAlarms` so the result populates the
@@ -4792,11 +4698,13 @@ impl App {
                 // and the Detail/Instances `s` keybind end up
                 // shell-ing out to `aws ssm start-session`; the audit
                 // line is the operator-facing breadcrumb.
-                crate::audit::append_raw(
+                crate::audit::append_action_dispatched(
                     self.context.account_id.as_deref(),
                     self.context.profile.as_deref(),
                     &self.context.region,
-                    &format!("stage=dispatched action=SsmSession target={id} via=cmd_ssh"),
+                    "SsmSession",
+                    id,
+                    &[("via", "cmd_ssh")],
                 );
                 self.pending_shell_target = Some(id.to_string());
                 self.status_message = Some(format!("opening SSM session to {id}…"));
@@ -6860,13 +6768,13 @@ impl App {
         let account = self.context.account_id.clone();
         let profile = self.context.profile.clone();
         let region = self.context.region.clone();
-        crate::audit::append_raw(
+        crate::audit::append_action_dispatched(
             account.as_deref(),
             profile.as_deref(),
             &region,
-            &format!(
-                "stage=dispatched action=AutoRollback target={env_name} version={label} health={health}"
-            ),
+            "AutoRollback",
+            env_name.as_str(),
+            &[("version", label.as_str()), ("health", health.as_str())],
         );
         self.push_pending("Auto-rollback", env_name.clone());
         self.pin_status(format!(
@@ -7806,13 +7714,13 @@ impl App {
             self.mode = Mode::Normal;
             return;
         }
-        crate::audit::append_raw(
+        crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
-            &format!(
-                "stage=dispatched action=UpdateOptionSettings target={env_name} summary=\"{summary}\""
-            ),
+            "UpdateOptionSettings",
+            env_name.as_str(),
+            &[("summary", summary.as_str())],
         );
         self.push_pending(summary.clone(), env_name.clone());
         // No status_message ack here — the pending-actions pill in the
@@ -8939,11 +8847,13 @@ impl App {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         // In-flight ack lives on the pending pill; completion toasts.
-        crate::audit::append_raw(
+        crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
-            &format!("stage=dispatched action=ConfigApply target={env_name} template={template}"),
+            "ConfigApply",
+            env_name.as_str(),
+            &[("template", template.as_str())],
         );
         self.push_pending(Action::ConfigApply.label(), env_name.clone());
         let env_for_msg = env_name.clone();
@@ -8980,11 +8890,13 @@ impl App {
         self.status_message = Some(format!(
             "deleting template '{template}' from app '{app_name}'…"
         ));
-        crate::audit::append_raw(
+        crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
-            &format!("stage=dispatched action=ConfigDelete target={target}"),
+            "ConfigDelete",
+            &target,
+            &[],
         );
         self.push_pending(Action::ConfigDelete.label(), target.clone());
         let template_for_msg = template.clone();
@@ -9141,13 +9053,13 @@ impl App {
             return;
         }
         let env_name = env.name.clone();
-        crate::audit::append_raw(
+        crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
-            &format!(
-                "stage=dispatched action=UpdateOptionSettings target={env_name} summary=\"{summary}\""
-            ),
+            "UpdateOptionSettings",
+            env_name.as_str(),
+            &[("summary", summary.as_str())],
         );
         self.push_pending(summary.clone(), env_name.clone());
         // No status_message ack here — the pending-actions pill in the
@@ -9250,13 +9162,19 @@ impl App {
         } else {
             format!("create-version-from-s3 {label}")
         };
-        crate::audit::append_raw(
+        let source_s3 = format!("s3://{bucket}/{key}");
+        let and_deploy_str = and_deploy.to_string();
+        crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
-            &format!(
-                "stage=dispatched action=DeployFromS3 target={env_name} label={label} source=s3://{bucket}/{key} and_deploy={and_deploy}"
-            ),
+            "DeployFromS3",
+            env_name.as_str(),
+            &[
+                ("label", label.as_str()),
+                ("source", source_s3.as_str()),
+                ("and_deploy", and_deploy_str.as_str()),
+            ],
         );
         self.push_pending(summary.clone(), env_name.clone());
         // In-flight ack lives on the pending pill; completion toasts.
@@ -10112,30 +10030,73 @@ impl App {
             None
         };
         let env_arn_owned = env.arn.clone();
+        // 0.21: opportunistic lint-input cache lookup. If tags or
+        // health are fresh (< LINT_INPUT_CACHE_TTL), skip the
+        // corresponding fetch — modal-open latency drops from
+        // `max(t_opts, t_tags, t_health)` to `t_opts` when both
+        // inputs are cached (typical for repeated modal-opens
+        // against the same env).
+        let now = std::time::Instant::now();
+        let cached_tags: Option<Vec<String>> = self
+            .env_tag_cache
+            .get(&env.name)
+            .and_then(|(v, t)| (now.duration_since(*t) < LINT_INPUT_CACHE_TTL).then(|| v.clone()));
+        let cached_health: Option<i64> = self
+            .env_health_cache
+            .get(&env.name)
+            .and_then(|(v, t)| (now.duration_since(*t) < LINT_INPUT_CACHE_TTL).then_some(*v));
+        let cache_env_name = env.name.clone();
         tokio::spawn(async move {
-            // Parallel fetch: option settings (existing), tags (new —
-            // EBL010), instance health summary (new — EBL012). The
-            // tags + health calls don't have to land — EBL010/012 just
-            // won't fire if their inputs are absent. Adding them here
-            // costs one extra round-trip-worth of latency at modal
-            // open per missing input; running in parallel via
-            // tokio::join! keeps the wall-clock at max(t_opts,
-            // t_tags, t_health) rather than the sum.
+            // Parallel fetch: option settings (always), tags + health
+            // (only if not cached). The `tags_fut` / `health_fut`
+            // async blocks resolve to the cached value when fresh —
+            // tokio::join! still polls all three but the cached
+            // branches return immediately.
             let opts_fut = aws.fetch_env_option_settings(&app_name, &env_name);
+            let tags_was_cached = cached_tags.is_some();
             let tags_fut = async {
-                match env_arn_owned.as_deref() {
-                    Some(arn) => aws.list_tags(arn).await.ok(),
-                    None => None,
+                if let Some(cached) = cached_tags {
+                    Some(cached)
+                } else {
+                    match env_arn_owned.as_deref() {
+                        Some(arn) => aws
+                            .list_tags(arn)
+                            .await
+                            .ok()
+                            .map(|kvs| kvs.into_iter().map(|(k, _)| k).collect()),
+                        None => None,
+                    }
                 }
             };
-            let health_fut = aws.fetch_env_instance_counts(&env_name);
-            let (opts_res, tags_opt, health_res) = tokio::join!(opts_fut, tags_fut, health_fut);
-            let env_tag_keys_owned: Vec<String> = tags_opt
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(k, _)| k)
-                .collect();
-            let healthy_count_owned = health_res.ok().map(|c| c.healthy as i64);
+            let health_was_cached = cached_health.is_some();
+            let health_fut = async {
+                if let Some(cached) = cached_health {
+                    Some(cached)
+                } else {
+                    aws.fetch_env_instance_counts(&env_name)
+                        .await
+                        .ok()
+                        .map(|c| c.healthy as i64)
+                }
+            };
+            let (opts_res, tags_opt, health_opt) = tokio::join!(opts_fut, tags_fut, health_fut);
+            // Send cache-update before lint computation so the cache
+            // is fresh for the NEXT modal-open even if lint logic
+            // changes shape.
+            if !tags_was_cached || !health_was_cached {
+                let _ = tx.send(AppMsg::LintInputsCached {
+                    gen,
+                    env_name: cache_env_name,
+                    tags: if tags_was_cached {
+                        None
+                    } else {
+                        tags_opt.clone()
+                    },
+                    healthy: if health_was_cached { None } else { health_opt },
+                });
+            }
+            let env_tag_keys_owned: Vec<String> = tags_opt.unwrap_or_default();
+            let healthy_count_owned = health_opt;
             let issues = match opts_res {
                 Ok(opts) => {
                     let mut ctx = crate::lint::LintContext::for_env(&env, &opts)
@@ -10205,11 +10166,13 @@ impl App {
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
-        crate::audit::append_raw(
+        crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
-            &format!("stage=dispatched action=Deploy target={env} version={label}"),
+            "Deploy",
+            env.as_str(),
+            &[("version", label.as_str())],
         );
         self.push_pending(Action::Deploy.label(), env.clone());
         let env_for_msg = env.clone();
@@ -10485,11 +10448,13 @@ impl App {
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
-        crate::audit::append_raw(
+        crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
-            &format!("stage=dispatched action=TerminateInstance target={env_name} instance={id}"),
+            "TerminateInstance",
+            env_name.as_str(),
+            &[("instance", id.as_str())],
         );
         // Pending target carries env + instance id so the operator can tell
         // simultaneous terminations apart. Label must match
@@ -11966,13 +11931,13 @@ impl App {
                 // Same flow as pressing `s` on Detail/Instances — the
                 // main loop tick consumes `pending_shell_target` and
                 // handles the TUI suspend/resume + alt-screen dance.
-                crate::audit::append_raw(
+                crate::audit::append_action_dispatched(
                     self.context.account_id.as_deref(),
                     self.context.profile.as_deref(),
                     &self.context.region,
-                    &format!(
-                        "stage=dispatched action=SsmSession target={value} via=cmd_ssh_picker"
-                    ),
+                    "SsmSession",
+                    value.as_str(),
+                    &[("via", "cmd_ssh_picker")],
                 );
                 self.pending_shell_target = Some(value.clone());
                 self.status_message = Some(format!("opening SSM session to {value}…"));
@@ -12388,6 +12353,12 @@ impl App {
                 // at envs that don't exist in the new context). Clear
                 // alongside undo_history.
                 self.promotion_history.clear();
+                // 0.21: lint-input caches are env-name keyed and
+                // context-scoped (instance IDs from health, tag keys
+                // are account/region-scoped). Same context-switch
+                // semantics as worker_dlq_depths above.
+                self.env_tag_cache.clear();
+                self.env_health_cache.clear();
                 // Pending actions reference env names from the
                 // previous context. Their spawned tasks (if any) are
                 // dropped at the generation guard in msg.rs, so the
@@ -15439,6 +15410,15 @@ pub enum PendingDispatchKind {
 /// deliberate action. The UX review flagged the absence of any
 /// abort affordance after dispatch as a real safety gap.
 pub const UNDO_WINDOW: Duration = Duration::from_secs(5);
+
+/// TTL for `App.env_tag_cache` + `App.env_health_cache` — the lazy
+/// caches that back `spawn_confirm_lint`'s parallel tag + health
+/// fetches. 60s matches the operator's typical "open a confirm
+/// modal, look at it, press Y" cadence — fresh enough that data
+/// drift across rapid modal cycles is negligible; long enough that
+/// repeated modal-opens against the same env benefit. 0.21
+/// addition (lint input caching).
+pub const LINT_INPUT_CACHE_TTL: Duration = Duration::from_secs(60);
 
 /// Items the Apps-scope action overlay (`Overlay::AppsActionMenu`)
 /// offers when the operator presses `a` from the Apps table. Each
