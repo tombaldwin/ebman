@@ -631,12 +631,11 @@ fn write_audit_line_raw(tail: &str) {
     }
 }
 
-/// Fire-and-forget webhook POST. Shells out to curl so we don't pull
-/// in an HTTP-client dep for the audit-fan-out (separate from
-/// `llm.rs`'s reqwest — `llm.rs` needs HTTPS + JSON parsing, this
-/// just needs a POST with a body). 10s cap so a slow webhook can't
-/// accumulate hung curls. The caller must be inside a tokio runtime;
-/// every audit-line site in ebman is, so this is fine in practice.
+/// Fire-and-forget webhook POST via `reqwest` (the same HTTP client
+/// `llm.rs` already pulls in, so no extra dependency). 10s timeout so
+/// a slow webhook can't accumulate hung requests. The caller must be
+/// inside a tokio runtime — guarded below with `Handle::try_current`
+/// so a non-runtime call path silently no-ops rather than panicking.
 fn fire_webhook(
     url: &str,
     account: Option<&str>,
@@ -651,47 +650,35 @@ fn fire_webhook(
         return;
     }
     tokio::spawn(async move {
-        use tokio::process::Command;
-        let result = Command::new("curl")
-            .args([
-                "-s",
-                "-S",
-                "-X",
-                "POST",
-                "-H",
-                "Content-Type: application/json",
-                "--max-time",
-                "10",
-                "--data-binary",
-                "@-",
-            ])
-            .arg(&url)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .spawn();
-        let Ok(mut child) = result else {
-            tracing::warn!(
-                target: "ebman::notify",
-                url = %url,
-                "audit webhook: could not spawn curl"
-            );
-            return;
-        };
-        if let Some(mut stdin) = child.stdin.take() {
-            use tokio::io::AsyncWriteExt;
-            let _ = stdin.write_all(body.as_bytes()).await;
-            let _ = stdin.shutdown().await;
-        }
-        match child.wait_with_output().await {
-            Ok(out) if out.status.success() => {}
-            Ok(out) => {
+        let client = match reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => {
                 tracing::warn!(
                     target: "ebman::notify",
                     url = %url,
-                    status = ?out.status.code(),
-                    stderr = %String::from_utf8_lossy(&out.stderr).trim(),
-                    "audit webhook returned non-zero"
+                    error = %e,
+                    "audit webhook: could not build reqwest client"
+                );
+                return;
+            }
+        };
+        match client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .body(body)
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {}
+            Ok(resp) => {
+                tracing::warn!(
+                    target: "ebman::notify",
+                    url = %url,
+                    status = %resp.status(),
+                    "audit webhook returned non-success status"
                 );
             }
             Err(e) => {
@@ -699,7 +686,7 @@ fn fire_webhook(
                     target: "ebman::notify",
                     url = %url,
                     error = %e,
-                    "audit webhook curl exited with error"
+                    "audit webhook request failed"
                 );
             }
         }
