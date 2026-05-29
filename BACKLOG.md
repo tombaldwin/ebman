@@ -877,6 +877,23 @@ ebman mcp serve                        → server mode (future: MCP for Claude C
 
 **Future-proofing test passed:** LLM explainer (`ebman explain`), MCP server (`ebman mcp serve`), cron-driven monitoring (`ebman lint --watch`), git pre-commit hooks (`ebman drift`), GitHub Actions integration (`ebman action deploy`), audit-stream consumption (`ebman audit --tail --json | jq`) all fit without restructuring.
 
+### 0.21.0 release (2026-05-29)
+
+Continuation push. Theme: lint caching + audit-migration finish + rule-dev guide + spawn_* proof-of-pattern.
+
+- [x] Lint input caching (App.env_tag_cache + env_health_cache, 60s TTL, AppMsg::LintInputsCached side-channel). Real ~200ms-per-modal-open latency win when cache is fresh.
+- [x] 10 more app.rs append_raw sites migrated to typed append_action_dispatched. The remaining DLQ/SSM/event/skipped/undone shapes stay raw deliberately (no natural completed stage; would need new typed helpers).
+- [x] docs/rule-development.md full "how to add a new lint rule" guide.
+- [x] spawn_why_red_* cluster (6 methods) moved to src/app/spawn_why_red.rs. Proof of pattern for the remaining 5 clusters.
+
+Deferred to 0.22 (genuinely needs focused review):
+- ResolvedConfig sub-struct (30+ field-access rewrites with subtle borrow patterns)
+- Remaining 5 spawn_* clusters (spawn_detail_*, spawn_dlq_*, spawn_batch_*, spawn_rollout_*, adhoc)
+- ebman audit replay (dispatch mapping design surface)
+- EBL014/015/016/018/020 (each needs live-EB verification)
+
+780 tests still pass (behaviour-preserving changes).
+
 ### 0.20.0 release (2026-05-29)
 
 Continuation of the 0.19 deferred-items push. Theme: rule engine depth + small operator surfaces.
