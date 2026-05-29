@@ -1226,6 +1226,166 @@ impl Rule for GreenButZeroInstances {
 /// filtered HERE — at registry-load time — so a disabled rule
 /// has zero per-env cost. Severity overrides not yet
 /// implemented (BONUS-tier 0.13 item).
+/// EBL013 — Launch configuration ASG (legacy). AWS is sunsetting
+/// EC2 launch configurations in favour of launch templates; EB envs
+/// still on the legacy shape will face migration friction down the
+/// line. Detection: any non-empty option in the
+/// `aws:autoscaling:launchconfiguration` namespace, which is the
+/// legacy ASG-config surface (EB envs created via the new launch-
+/// template path keep this namespace empty). Fix=Manual — migrating
+/// from launch config to launch template needs an EB env rebuild and
+/// careful capacity-loss planning, not a one-shot option flip.
+pub struct LaunchConfigurationLegacy;
+
+impl Rule for LaunchConfigurationLegacy {
+    fn id(&self) -> &'static str {
+        "EBL013"
+    }
+    fn severity(&self) -> Severity {
+        Severity::Warn
+    }
+    fn fix(&self, ctx: &LintContext) -> Option<FixAction> {
+        self.applies(ctx)?;
+        Some(FixAction::Manual {
+            instructions:
+                "Env is configured via the legacy `aws:autoscaling:launchconfiguration` namespace. \
+                 AWS is sunsetting EC2 launch configurations (no new account onboardings since \
+                 2024-12-31). To migrate: (1) check your platform version supports launch \
+                 templates (EB platform versions from 2022 onward); (2) rebuild the env via \
+                 `ebman action rebuild --env NAME` after EB has been configured to use launch \
+                 templates at the platform level. The migration is operator-context-dependent \
+                 (capacity-loss planning, dependent IAM roles, etc.); --fix can't drive it."
+                    .into(),
+        })
+    }
+    fn applies(&self, ctx: &LintContext) -> Option<Issue> {
+        // Any non-empty option in the launchconfiguration namespace
+        // signals legacy usage. New launch-template envs keep this
+        // namespace completely empty (option-settings fetch returns
+        // nothing for it).
+        let has_legacy = ctx
+            .options
+            .iter()
+            .any(|(ns, _, v)| ns == "aws:autoscaling:launchconfiguration" && !v.is_empty());
+        if !has_legacy {
+            return None;
+        }
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "namespace".into(),
+            "aws:autoscaling:launchconfiguration".into(),
+        );
+        Some(Issue {
+            rule_id: self.id().into(),
+            severity: self.severity(),
+            env_name: Some(ctx.env.name.clone()),
+            title: "Env using legacy launch configuration (AWS sunsetting EC2 LC)".into(),
+            detail:
+                "The env is configured via `aws:autoscaling:launchconfiguration:*` option \
+                 settings, which is the legacy EC2 launch-configuration shape. AWS is sunsetting \
+                 launch configurations: no new account onboardings since 2024-12-31, and the \
+                 deprecation path will eventually break envs that haven't migrated. EB envs on \
+                 modern platform versions can use launch templates (`aws:autoscaling:launchtemplate:*`) \
+                 which is the supported forward path."
+                    .into(),
+            suggestion: Some(
+                "Plan a launch-template migration: verify your platform version supports it, \
+                 then rebuild the env when ready (downtime applies)."
+                    .into(),
+            ),
+            fields,
+        })
+    }
+}
+
+/// Pure: split a comma-delimited list value (used by EB for things
+/// like `aws:ec2:vpc:Subnets`) into trimmed, non-empty entries. EB
+/// sometimes returns padded values like `"subnet-a, subnet-b"`; we
+/// tolerate.
+pub fn parse_csv_value(value: &str) -> Vec<&str> {
+    value
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// EBL019 — AllAtOnce deploy policy on a multi-subnet (likely multi-
+/// AZ) env. Stronger version of EBL001: a 100%-capacity-loss deploy
+/// is bad on any multi-instance env, but on a multi-AZ env it also
+/// takes ALL availability zones offline at once, defeating the whole
+/// point of running across multiple AZs. Detection: EBL001's
+/// condition (DeploymentPolicy=AllAtOnce + MaxSize>1) AND the env
+/// has 2+ subnets configured via `aws:ec2:vpc:Subnets`. The subnet
+/// heuristic is the cheapest proxy for "multi-AZ" — EB doesn't
+/// expose the AZ mapping in option settings, so we infer from the
+/// subnet count. False-positive on the rare case where two subnets
+/// live in the same AZ; operators can `lint.disable = ["EBL019"]`
+/// if that bites. Auto-fix is the same SetOption as EBL001.
+pub struct AllAtOnceMultiAz;
+
+impl Rule for AllAtOnceMultiAz {
+    fn id(&self) -> &'static str {
+        "EBL019"
+    }
+    fn severity(&self) -> Severity {
+        Severity::Warn
+    }
+    fn fix(&self, ctx: &LintContext) -> Option<FixAction> {
+        self.applies(ctx)?;
+        Some(FixAction::SetOption {
+            namespace: "aws:elasticbeanstalk:command".into(),
+            name: "DeploymentPolicy".into(),
+            value: "Rolling".into(),
+            description:
+                "DeploymentPolicy: AllAtOnce → Rolling (preserves capacity across AZs during deploys)"
+                    .into(),
+        })
+    }
+    fn applies(&self, ctx: &LintContext) -> Option<Issue> {
+        let policy = option_value(
+            ctx.options,
+            "aws:elasticbeanstalk:command",
+            "DeploymentPolicy",
+        );
+        if !policy.eq_ignore_ascii_case("AllAtOnce") {
+            return None;
+        }
+        let max_size = parse_i32(option_value(ctx.options, "aws:autoscaling:asg", "MaxSize"))?;
+        if max_size <= 1 {
+            return None;
+        }
+        let subnets_csv = option_value(ctx.options, "aws:ec2:vpc", "Subnets");
+        let subnet_count = parse_csv_value(subnets_csv).len();
+        if subnet_count < 2 {
+            return None;
+        }
+        let mut fields = BTreeMap::new();
+        fields.insert("policy".into(), policy.to_string());
+        fields.insert("max_size".into(), max_size.to_string());
+        fields.insert("subnet_count".into(), subnet_count.to_string());
+        Some(Issue {
+            rule_id: self.id().into(),
+            severity: self.severity(),
+            env_name: Some(ctx.env.name.clone()),
+            title: format!(
+                "AllAtOnce on multi-subnet env ({subnet_count} subnets): every AZ goes offline simultaneously"
+            ),
+            detail: format!(
+                "DeploymentPolicy is {policy} with MaxSize={max_size} and {subnet_count} subnets \
+                 configured. A deploy takes EVERY instance offline at the same time — including \
+                 instances in every AZ — defeating the multi-AZ fault tolerance you're paying \
+                 for. Rolling preserves at least one AZ during the deploy."
+            ),
+            suggestion: Some(
+                ":deployment-policy Rolling  (or RollingWithAdditionalBatch for zero downtime)"
+                    .into(),
+            ),
+            fields,
+        })
+    }
+}
+
 /// EBL017 — Managed Platform Updates disabled. Detection: the env's
 /// `aws:elasticbeanstalk:managedactions.ManagedActionsEnabled`
 /// option-setting is `"false"` (or any non-`"true"` value — EB
@@ -1309,7 +1469,9 @@ pub fn default_rules(disabled: &[String]) -> Vec<Box<dyn Rule>> {
         Box::new(MissingRequiredTags),
         Box::new(WorkerDlqStuck),
         Box::new(GreenButZeroInstances),
+        Box::new(LaunchConfigurationLegacy),
         Box::new(ManagedActionsDisabled),
+        Box::new(AllAtOnceMultiAz),
     ];
     candidates
         .into_iter()
@@ -2279,7 +2441,7 @@ mod tests {
         // new EBL is added. Catches both regressions (rule removed)
         // and additions-without-test-update (new rule landed; review
         // whether its applies()/fix() satisfy the invariants above).
-        assert_eq!(rules.len(), 13, "rule registry size changed");
+        assert_eq!(rules.len(), 15, "rule registry size changed");
     }
 
     #[test]
@@ -2333,6 +2495,138 @@ mod tests {
         let ctx = LintContext::for_env(&env, &opts);
         assert!(ManagedActionsDisabled.applies(&ctx).is_none());
         assert!(ManagedActionsDisabled.fix(&ctx).is_none());
+    }
+
+    #[test]
+    fn ebl013_fires_when_legacy_launchconfig_namespace_populated() {
+        let env = mk_env("prod", "Web", "Green");
+        let opts = vec![mk_opt(
+            "aws:autoscaling:launchconfiguration",
+            "InstanceType",
+            "t3.small",
+        )];
+        let ctx = LintContext::for_env(&env, &opts);
+        let issue = LaunchConfigurationLegacy
+            .applies(&ctx)
+            .expect("legacy namespace should fire");
+        assert_eq!(issue.rule_id, "EBL013");
+    }
+
+    #[test]
+    fn ebl013_does_not_fire_when_only_launchtemplate_namespace_populated() {
+        let env = mk_env("prod", "Web", "Green");
+        let opts = vec![mk_opt(
+            "aws:autoscaling:launchtemplate",
+            "InstanceType",
+            "t3.small",
+        )];
+        let ctx = LintContext::for_env(&env, &opts);
+        assert!(LaunchConfigurationLegacy.applies(&ctx).is_none());
+    }
+
+    #[test]
+    fn ebl013_does_not_fire_when_launchconfig_option_is_empty() {
+        // An EB env might have the namespace mentioned but with an
+        // empty value — treat as "not really set".
+        let env = mk_env("prod", "Web", "Green");
+        let opts = vec![mk_opt(
+            "aws:autoscaling:launchconfiguration",
+            "InstanceType",
+            "",
+        )];
+        let ctx = LintContext::for_env(&env, &opts);
+        assert!(LaunchConfigurationLegacy.applies(&ctx).is_none());
+    }
+
+    #[test]
+    fn parse_csv_value_handles_padded_entries() {
+        assert_eq!(
+            parse_csv_value("subnet-a, subnet-b , subnet-c"),
+            vec!["subnet-a", "subnet-b", "subnet-c"]
+        );
+        assert_eq!(parse_csv_value(""), Vec::<&str>::new());
+        assert_eq!(parse_csv_value(", ,, "), Vec::<&str>::new());
+        assert_eq!(parse_csv_value("only-one"), vec!["only-one"]);
+    }
+
+    #[test]
+    fn ebl019_fires_on_allatonce_multi_subnet() {
+        let env = mk_env("prod", "Web", "Green");
+        let opts = vec![
+            mk_opt(
+                "aws:elasticbeanstalk:command",
+                "DeploymentPolicy",
+                "AllAtOnce",
+            ),
+            mk_opt("aws:autoscaling:asg", "MaxSize", "4"),
+            mk_opt("aws:ec2:vpc", "Subnets", "subnet-a,subnet-b,subnet-c"),
+        ];
+        let ctx = LintContext::for_env(&env, &opts);
+        let issue = AllAtOnceMultiAz.applies(&ctx).expect("should fire");
+        assert_eq!(issue.rule_id, "EBL019");
+        assert_eq!(
+            issue.fields.get("subnet_count").map(String::as_str),
+            Some("3")
+        );
+        // Auto-fix: same SetOption as EBL001.
+        let fix = AllAtOnceMultiAz.fix(&ctx).expect("auto-fix");
+        match fix {
+            FixAction::SetOption { value, name, .. } => {
+                assert_eq!(name, "DeploymentPolicy");
+                assert_eq!(value, "Rolling");
+            }
+            _ => panic!("expected SetOption fix"),
+        }
+    }
+
+    #[test]
+    fn ebl019_does_not_fire_on_single_subnet() {
+        let env = mk_env("prod", "Web", "Green");
+        let opts = vec![
+            mk_opt(
+                "aws:elasticbeanstalk:command",
+                "DeploymentPolicy",
+                "AllAtOnce",
+            ),
+            mk_opt("aws:autoscaling:asg", "MaxSize", "4"),
+            mk_opt("aws:ec2:vpc", "Subnets", "subnet-a"),
+        ];
+        let ctx = LintContext::for_env(&env, &opts);
+        // EBL001 still fires; EBL019 specifically doesn't.
+        assert!(AllAtOnceMultiAz.applies(&ctx).is_none());
+        assert!(AllAtOnceMultiAz.fix(&ctx).is_none());
+    }
+
+    #[test]
+    fn ebl019_does_not_fire_on_rolling_policy() {
+        let env = mk_env("prod", "Web", "Green");
+        let opts = vec![
+            mk_opt(
+                "aws:elasticbeanstalk:command",
+                "DeploymentPolicy",
+                "Rolling",
+            ),
+            mk_opt("aws:autoscaling:asg", "MaxSize", "4"),
+            mk_opt("aws:ec2:vpc", "Subnets", "subnet-a,subnet-b"),
+        ];
+        let ctx = LintContext::for_env(&env, &opts);
+        assert!(AllAtOnceMultiAz.applies(&ctx).is_none());
+    }
+
+    #[test]
+    fn ebl019_does_not_fire_on_single_instance() {
+        let env = mk_env("prod", "Web", "Green");
+        let opts = vec![
+            mk_opt(
+                "aws:elasticbeanstalk:command",
+                "DeploymentPolicy",
+                "AllAtOnce",
+            ),
+            mk_opt("aws:autoscaling:asg", "MaxSize", "1"),
+            mk_opt("aws:ec2:vpc", "Subnets", "subnet-a,subnet-b"),
+        ];
+        let ctx = LintContext::for_env(&env, &opts);
+        assert!(AllAtOnceMultiAz.applies(&ctx).is_none());
     }
 
     #[test]

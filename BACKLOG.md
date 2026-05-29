@@ -877,6 +877,27 @@ ebman mcp serve                        → server mode (future: MCP for Claude C
 
 **Future-proofing test passed:** LLM explainer (`ebman explain`), MCP server (`ebman mcp serve`), cron-driven monitoring (`ebman lint --watch`), git pre-commit hooks (`ebman drift`), GitHub Actions integration (`ebman action deploy`), audit-stream consumption (`ebman audit --tail --json | jq`) all fit without restructuring.
 
+### 0.20.0 release (2026-05-29)
+
+Continuation of the 0.19 deferred-items push. Theme: rule engine depth + small operator surfaces.
+
+- [x] EBL013 launch-config ASG lint rule (Warn, Manual fix) + 3 tests
+- [x] EBL019 AllAtOnce on multi-subnet env lint rule (Warn, SetOption fix) + 4 tests + parse_csv_value helper
+- [x] :fleet-cost overlay (renders App.costs as total + by-app / by-tier / by-health) + 4 tests
+- [x] Promotion lineage tracking + :promotions overlay (in-memory; state.toml persistence is 0.21+) + 1 test
+- [x] docs/lint-rules.md single-page reference
+
+Deferred to 0.21+ (each warrants focused review beyond autonomous mode):
+- ResolvedConfig sub-struct
+- spawn_* clusters → src/app/spawn_*.rs
+- Remaining ~20 app.rs append_raw sites
+- Lint input caching on App (needs AppMsg variant + careful TTL plumbing at 3 sites)
+- ebman audit replay (audit→CLI dispatch mapping is sprawling)
+- EBL014/015/016/018/020 (each needs live-EB verification)
+- docs/rule-development.md (focused docs cycle)
+
+767 → 780 tests (+13).
+
 ### 0.19.0 release (2026-05-29)
 
 Autonomous slice through the 0.19 candidates list. The big foundation refactors (ResolvedConfig, spawn_* clusters, finish app.rs audit migration) deserve focused human review and stay deferred to 0.19.1/0.20. This release is the polish-and-ship slice.

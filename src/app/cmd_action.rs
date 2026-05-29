@@ -207,6 +207,18 @@ impl App {
             return;
         }
         let label = source.version_label.clone();
+        // Record the promotion intent BEFORE opening the modal so the
+        // operator can `:promotions` to confirm the chain even if they
+        // back out of the confirm modal. The lineage record is about
+        // intent (what the operator tried to promote), not just
+        // successful dispatches — useful for "we tried to promote X but
+        // the confirm modal flagged a Red env" post-mortems.
+        self.promotion_history.push(crate::app::PromotionRecord {
+            source: source_name.to_string(),
+            target: target_name.to_string(),
+            version_label: label.clone(),
+            at: chrono::Utc::now(),
+        });
         self.open_parameterised_action_on(
             target,
             Action::Deploy,
