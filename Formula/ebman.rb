@@ -12,20 +12,20 @@
 class Ebman < Formula
   desc "k9s-style TUI for AWS Elastic Beanstalk"
   homepage "https://github.com/tombaldwin/ebman"
-  version "0.19.0"
+  version "0.20.0"
   license "MIT OR Apache-2.0"
 
   if OS.mac?
     if Hardware::CPU.arm?
       url "https://github.com/tombaldwin/ebman/releases/download/v#{version}/ebman-v#{version}-aarch64-apple-darwin.tar.gz"
-      sha256 "e2995fbc9d69ad18155608d6bb9461b1783a7892ebc298520cb9f2c0b2656cd7"
+      sha256 "463314f49ef77bd6fef910d0e9092160cf8affcc3cc5374135843f6d509bc1cf"
     else
       url "https://github.com/tombaldwin/ebman/releases/download/v#{version}/ebman-v#{version}-x86_64-apple-darwin.tar.gz"
-      sha256 "dcf0f4f4f890975784f9a0ab8efdcc846ca258f0090149b2da73a296b8f4cd69"
+      sha256 "e257e1ec8bcc9f1fa22da17659ad69d51529a6013474668932ceade778d9c547"
     end
   elsif OS.linux?
     url "https://github.com/tombaldwin/ebman/releases/download/v#{version}/ebman-v#{version}-x86_64-unknown-linux-gnu.tar.gz"
-    sha256 "d5c1ec334d40d7ef5188922932983b91df315bc59294950e0bbe6b8de9c1d7dc"
+    sha256 "1bad9e7da7d08a31f72ae198f272cc5075c0a99b57d60d620d23b745396b945e"
   end
 
   depends_on "curl" # used by the live-log-tail S3 fetcher
