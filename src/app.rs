@@ -554,6 +554,24 @@ pub const PENDING_COMPLETED_TTL: Duration = Duration::from_secs(60);
 // `DetailTab` / `LogTail` / `LogTailStage` / `DetailState` (+ impl)
 // moved to `crate::mode_detail` — re-exported from app.rs above.
 
+/// One promotion event — captured when `:promote-env SOURCE TARGET`
+/// opens the deploy confirm modal. The operator intent is recorded
+/// regardless of whether the subsequent deploy succeeds — the
+/// `:promotions` overlay surfaces it as "this version was promoted
+/// from staging → prod (at T)" for post-mortem / lineage tracing.
+///
+/// In-memory only (cleared on context switch alongside the other
+/// env-keyed state). Cross-session persistence in state.toml is a
+/// 0.21+ follow-up — schema migration of the hand-rolled state
+/// parser is out of scope for the initial cut.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromotionRecord {
+    pub source: String,
+    pub target: String,
+    pub version_label: String,
+    pub at: chrono::DateTime<chrono::Utc>,
+}
+
 /// Snapshot of an env's pre-deploy state, captured by `spawn_action`
 /// just before a Deploy fires. `previous_version_label` is what the
 /// env was running at capture time — the rollback target. `taken_at`
@@ -971,6 +989,12 @@ pub struct App {
     /// cleared on `apply_rebuild` alongside the other env-keyed
     /// state.
     pub(crate) undo_history: std::collections::VecDeque<UndoEntry>,
+    /// Promotion-event log: SOURCE → TARGET pairs captured when
+    /// `:promote-env` opens a deploy confirm modal. The `:promotions`
+    /// overlay (0.20+) surfaces these as a lineage trace. In-memory
+    /// only — cleared on context switch. State.toml persistence is a
+    /// 0.21+ follow-up.
+    pub(crate) promotion_history: Vec<PromotionRecord>,
     /// `--demo` mode flag. Suppresses the periodic refresh (`spawn_refresh`
     /// becomes a no-op) and the update-check (`spawn_update_check` likewise)
     /// so hand-crafted fixture data from `demo_fixture::install` stays put.
@@ -1894,6 +1918,7 @@ impl App {
             tf_state: crate::terraform::load_from_cwd(),
             tf_managed_envs: std::collections::HashSet::new(),
             undo_history: std::collections::VecDeque::new(),
+            promotion_history: Vec::new(),
             demo_mode: false,
             env_instance_counts: std::collections::HashMap::new(),
             cost_enabled: persisted.cost_enabled.unwrap_or(false),
@@ -2139,6 +2164,7 @@ impl App {
             tf_state: None,
             tf_managed_envs: std::collections::HashSet::new(),
             undo_history: std::collections::VecDeque::new(),
+            promotion_history: Vec::new(),
             demo_mode: false,
             env_instance_counts: std::collections::HashMap::new(),
             cost_enabled: false,
@@ -3887,6 +3913,57 @@ impl App {
             self.status_message = Some("cost: off — column hidden, cache preserved".into());
         }
         self.persist_state();
+    }
+
+    /// `:promotions` — overlay showing the in-memory promotion
+    /// history captured by `:promote-env` in this session. Lineage
+    /// trace for "this version was promoted from staging → prod (at
+    /// T)" post-mortems. Empty state is a status toast, not an
+    /// overlay (low-noise UX for the common case).
+    pub(crate) fn cmd_promotions(&mut self) {
+        if self.promotion_history.is_empty() {
+            self.status_message = Some(
+                "promotions: no promotion history in this session — run `:promote-env SOURCE TARGET` first".into(),
+            );
+            return;
+        }
+        let body = render_promotions(&self.promotion_history, chrono::Utc::now());
+        self.current_overlay = Some(Overlay::TextDump {
+            title: format!("promotions ({})", self.promotion_history.len()),
+            body,
+        });
+    }
+
+    /// `:fleet-cost` — one-screen overlay summarising the current
+    /// context's Cost Explorer cache: total $/mo, broken down by
+    /// application, tier, and health. Read-only over the existing
+    /// `App.costs` cache (populated by `:cost on`). No AWS calls.
+    ///
+    /// Empty state when `:cost on` hasn't been run yet (or the
+    /// cache is empty): toast pointing the operator at the enable
+    /// command, no overlay opened.
+    pub(crate) fn cmd_fleet_cost(&mut self) {
+        if !self.cost_enabled {
+            self.error_message =
+                Some("cost tracking is off — run `:cost on` to populate the cache first".into());
+            return;
+        }
+        if self.costs.is_empty() {
+            self.status_message = Some(
+                "fleet-cost: no cost data yet (Cost Explorer fetch may still be in flight; try again in 10s)".into(),
+            );
+            return;
+        }
+        let body = render_fleet_cost(
+            &self.environments,
+            &self.costs,
+            self.costs_fetched_at,
+            chrono::Utc::now(),
+        );
+        self.current_overlay = Some(Overlay::TextDump {
+            title: format!("fleet cost ({})", self.context.region),
+            body,
+        });
     }
 
     /// Spawn a Cost Explorer fetch in the background. Result lands
@@ -11298,6 +11375,8 @@ impl App {
             "about" | "credits" => self.open_about_overlay(),
             "apps-info" => self.open_apps_info_overlay(),
             "cost" => self.cmd_cost(&rest),
+            "fleet-cost" => self.cmd_fleet_cost(),
+            "promotions" => self.cmd_promotions(),
             "listeners" => self.cmd_listeners(),
             "listener-edit" => self.cmd_listener_edit(&rest),
             "rds" => self.cmd_rds(),
@@ -12305,6 +12384,10 @@ impl App {
                 // context — meaningless after a switch. Drop them
                 // alongside the other env-keyed state.
                 self.undo_history.clear();
+                // Promotion lineage is env-name keyed (and would point
+                // at envs that don't exist in the new context). Clear
+                // alongside undo_history.
+                self.promotion_history.clear();
                 // Pending actions reference env names from the
                 // previous context. Their spawned tasks (if any) are
                 // dropped at the generation guard in msg.rs, so the
@@ -15410,6 +15493,130 @@ pub struct AppRollup {
 /// columns). Worker-DLQ alerts come from `dlq_depths` which the App
 /// owns globally — passed in so this stays a free fn that test code
 /// can call without a full `App`.
+/// Pure: render the `:promotions` overlay body. Newest-first
+/// ordering so the most-recent promotions sit at the top of the
+/// overlay (operators scan top-down).
+pub fn render_promotions(
+    records: &[PromotionRecord],
+    now: chrono::DateTime<chrono::Utc>,
+) -> String {
+    let mut out = String::new();
+    out.push_str("Promotion history (this session)\n");
+    out.push_str("────────────────────────────────\n\n");
+    // Group by version_label so consecutive promotions of the same
+    // build chain naturally (v1.4.2: staging → uat → prod).
+    let mut sorted: Vec<&PromotionRecord> = records.iter().collect();
+    sorted.sort_by_key(|r| std::cmp::Reverse(r.at));
+    for rec in sorted {
+        let age = now
+            .signed_duration_since(rec.at)
+            .to_std()
+            .unwrap_or(std::time::Duration::ZERO);
+        out.push_str(&format!("  {} → {}\n", rec.source, rec.target));
+        out.push_str(&format!(
+            "    version={}  ({} ago)\n\n",
+            rec.version_label,
+            humanize_short_age(age)
+        ));
+    }
+    out.push_str("esc / q to close");
+    out
+}
+
+/// Pure: render the `:fleet-cost` overlay body. Aggregates
+/// `App.costs` (monthly $/env, populated by `:cost on`) across the
+/// fleet, broken down by application, tier, and health. Pure so the
+/// formatting can be pinned in unit tests.
+///
+/// `fetched_at` and `now` drive the "X ago" freshness chip; pass
+/// `chrono::Utc::now()` for `now`. Renders a freshness warning when
+/// the cache is stale (> 24h) — Cost Explorer data has its own ~24h
+/// refresh lag anyway.
+pub fn render_fleet_cost(
+    envs: &[crate::aws::Environment],
+    costs: &HashMap<String, f64>,
+    fetched_at: Option<chrono::DateTime<chrono::Utc>>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> String {
+    use std::collections::BTreeMap;
+    // Total + by-application + by-tier + by-health aggregates. All
+    // BTreeMap so the rendered order is alphabetical (deterministic
+    // for tests; readable for operators scanning the overlay).
+    let mut total: f64 = 0.0;
+    let mut by_app: BTreeMap<String, f64> = BTreeMap::new();
+    let mut by_tier: BTreeMap<String, f64> = BTreeMap::new();
+    let mut by_health: BTreeMap<String, f64> = BTreeMap::new();
+    let mut covered = 0usize;
+    let mut missing = 0usize;
+    for e in envs {
+        match costs.get(&e.name).copied() {
+            Some(c) => {
+                total += c;
+                covered += 1;
+                *by_app.entry(e.application.clone()).or_default() += c;
+                let tier = if e.tier.is_empty() {
+                    "?".to_string()
+                } else {
+                    e.tier.clone()
+                };
+                *by_tier.entry(tier).or_default() += c;
+                let health = if e.health.is_empty() {
+                    "?".to_string()
+                } else {
+                    e.health.clone()
+                };
+                *by_health.entry(health).or_default() += c;
+            }
+            None => {
+                missing += 1;
+            }
+        }
+    }
+    let mut out = String::new();
+    out.push_str(&format!("Total: ${total:.2}/mo  ({covered} env(s) covered"));
+    if missing > 0 {
+        out.push_str(&format!(", {missing} without cost data"));
+    }
+    out.push_str(")\n");
+    if let Some(t) = fetched_at {
+        let age = now
+            .signed_duration_since(t)
+            .to_std()
+            .unwrap_or(std::time::Duration::ZERO);
+        out.push_str(&format!("Cached: {} ago", humanize_short_age(age)));
+        if age >= std::time::Duration::from_secs(24 * 60 * 60) {
+            out.push_str(" (stale — Cost Explorer refreshes ~24h)");
+        }
+        out.push('\n');
+    }
+    out.push('\n');
+    out.push_str("By application\n");
+    out.push_str("──────────────\n");
+    let mut by_app_sorted: Vec<(&String, &f64)> = by_app.iter().collect();
+    by_app_sorted.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
+    for (name, cost) in by_app_sorted {
+        out.push_str(&format!("  ${cost:>10.2}/mo  {name}\n"));
+    }
+    out.push('\n');
+    out.push_str("By tier\n");
+    out.push_str("───────\n");
+    let mut by_tier_sorted: Vec<(&String, &f64)> = by_tier.iter().collect();
+    by_tier_sorted.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
+    for (name, cost) in by_tier_sorted {
+        out.push_str(&format!("  ${cost:>10.2}/mo  {name}\n"));
+    }
+    out.push('\n');
+    out.push_str("By health\n");
+    out.push_str("─────────\n");
+    let mut by_health_sorted: Vec<(&String, &f64)> = by_health.iter().collect();
+    by_health_sorted.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
+    for (name, cost) in by_health_sorted {
+        out.push_str(&format!("  ${cost:>10.2}/mo  {name}\n"));
+    }
+    out.push_str("\nesc / q to close");
+    out
+}
+
 pub fn app_rollup(
     envs: &[crate::aws::Environment],
     app_name: &str,
@@ -16726,6 +16933,98 @@ mod tests {
             id: None,
             region: None,
         }
+    }
+
+    #[test]
+    fn render_promotions_orders_newest_first_and_includes_version() {
+        let now = chrono::Utc::now();
+        let records = vec![
+            super::PromotionRecord {
+                source: "staging".into(),
+                target: "uat".into(),
+                version_label: "v1.4.2".into(),
+                at: now - chrono::Duration::hours(2),
+            },
+            super::PromotionRecord {
+                source: "uat".into(),
+                target: "prod".into(),
+                version_label: "v1.4.2".into(),
+                at: now - chrono::Duration::minutes(5),
+            },
+        ];
+        let body = super::render_promotions(&records, now);
+        let prod_pos = body.find("uat → prod").expect("prod row");
+        let staging_pos = body.find("staging → uat").expect("staging row");
+        assert!(
+            prod_pos < staging_pos,
+            "newest (uat → prod, 5m ago) should sort above older (staging → uat, 2h ago)"
+        );
+        assert!(body.contains("version=v1.4.2"), "version label: {body}");
+    }
+
+    #[test]
+    fn render_fleet_cost_breaks_down_by_app_tier_health() {
+        let envs = vec![
+            mk_env("api-prod", "api", "Web", "Green"),
+            mk_env("api-staging", "api", "Web", "Yellow"),
+            mk_env("worker-prod", "api", "Worker", "Green"),
+            mk_env("billing-prod", "billing", "Web", "Red"),
+        ];
+        let mut costs = std::collections::HashMap::new();
+        costs.insert("api-prod".to_string(), 100.0);
+        costs.insert("api-staging".to_string(), 25.5);
+        costs.insert("worker-prod".to_string(), 40.0);
+        costs.insert("billing-prod".to_string(), 60.25);
+        let now = chrono::Utc::now();
+        let body = super::render_fleet_cost(&envs, &costs, Some(now), now);
+        assert!(body.contains("Total: $225.75/mo"), "total: {body}");
+        assert!(body.contains("4 env(s) covered"), "covered count: {body}");
+        // Per-app cost: api = 100 + 25.5 + 40 = 165.5
+        assert!(body.contains("$    165.50/mo  api"), "by app: {body}");
+        assert!(body.contains("$     60.25/mo  billing"), "by app: {body}");
+        // Per-tier: Web = 100 + 25.5 + 60.25 = 185.75
+        assert!(body.contains("$    185.75/mo  Web"), "by tier: {body}");
+        assert!(body.contains("$     40.00/mo  Worker"), "by tier: {body}");
+        // Per-health: Green = 100 + 40 = 140
+        assert!(body.contains("$    140.00/mo  Green"), "by health: {body}");
+    }
+
+    #[test]
+    fn render_fleet_cost_flags_uncovered_envs() {
+        let envs = vec![
+            mk_env("api-prod", "api", "Web", "Green"),
+            mk_env("api-uncached", "api", "Web", "Green"),
+        ];
+        let mut costs = std::collections::HashMap::new();
+        costs.insert("api-prod".to_string(), 50.0);
+        let now = chrono::Utc::now();
+        let body = super::render_fleet_cost(&envs, &costs, Some(now), now);
+        assert!(
+            body.contains("1 env(s) covered, 1 without cost data"),
+            "missing count: {body}"
+        );
+    }
+
+    #[test]
+    fn render_fleet_cost_flags_stale_cache() {
+        let envs = vec![mk_env("a", "x", "Web", "Green")];
+        let mut costs = std::collections::HashMap::new();
+        costs.insert("a".to_string(), 10.0);
+        let now = chrono::Utc::now();
+        let stale = now - chrono::Duration::hours(36);
+        let body = super::render_fleet_cost(&envs, &costs, Some(stale), now);
+        assert!(body.contains("stale"), "stale marker: {body}");
+    }
+
+    #[test]
+    fn render_fleet_cost_no_freshness_line_when_unset() {
+        let envs = vec![mk_env("a", "x", "Web", "Green")];
+        let mut costs = std::collections::HashMap::new();
+        costs.insert("a".to_string(), 10.0);
+        let now = chrono::Utc::now();
+        let body = super::render_fleet_cost(&envs, &costs, None, now);
+        assert!(!body.contains("Cached:"), "no cached line: {body}");
+        assert!(body.contains("Total: $10.00/mo"));
     }
 
     #[test]

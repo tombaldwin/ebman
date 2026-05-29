@@ -354,6 +354,18 @@ pub const COMMANDS: &[CommandSpec] = &[
         CommandKind::Prefill("cost "),
     ),
     cmd(
+        "fleet-cost",
+        ":fleet-cost — one-screen $/mo summary across the fleet (by app, tier, health). Reads the existing `:cost on` cache; no AWS calls.",
+        Category::View,
+        CommandKind::ZeroArg,
+    ),
+    cmd(
+        "promotions",
+        ":promotions — lineage trace of `:promote-env` events in this session (in-memory; cleared on context switch).",
+        Category::Inspection,
+        CommandKind::ZeroArg,
+    ),
+    cmd(
         "history",
         ":history — show recent info/error messages",
         Category::Inspection,

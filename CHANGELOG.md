@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-05-29 — Two new lint rules + fleet-cost + promotion lineage + rule docs
+
+Continuation of the 0.19 candidates push. Bigger refactors (ResolvedConfig, spawn_* clusters, finish app.rs audit migration, lint input caching, ebman audit replay) remain deferred for focused review — each has enough surface that landing them in an autonomous-mode burst is the wrong shape. This release ships the medium-scope items that have clear designs and verifiable detection.
+
+Theme: **rule engine depth + small operator surfaces.**
+
+### Added — lint rules
+
+- **EBL013 — Launch configuration ASG (legacy)** (Warn, Manual fix). Detection: any non-empty option in the `aws:autoscaling:launchconfiguration` namespace. AWS is sunsetting EC2 launch configurations (no new account onboardings since 2024-12-31); EB envs on the legacy shape will face migration friction. Fix=Manual (migration needs an env rebuild + capacity-loss planning). +3 tests.
+- **EBL019 — AllAtOnce on multi-subnet env** (Warn, `SetOption DeploymentPolicy=Rolling` fix). Stronger version of EBL001: detection is EBL001's condition (`AllAtOnce` + `MaxSize>1`) AND `aws:ec2:vpc:Subnets` has 2+ subnets. The subnet heuristic is the cheapest proxy for "multi-AZ" — EB doesn't expose AZ mapping in option settings, so we infer from subnet count. False-positive possible on the rare case where two subnets live in the same AZ; operators can `lint.disable = ["EBL019"]` to suppress. +4 tests + 1 helper test (`parse_csv_value`).
+
+### Added — operator features
+
+- **`:fleet-cost`** — One-screen overlay summarising `App.costs` (populated by `:cost on`) across the fleet: total $/mo, broken down by application, tier, and health. Reads the existing 24h-cached Cost Explorer data; no AWS calls. Flags stale cache (>24h) and uncovered envs (no cost data yet). +4 tests for the pure `render_fleet_cost` helper.
+- **Promotion lineage tracking + `:promotions` overlay** — When `:promote-env SOURCE TARGET` runs, the SOURCE → TARGET → version triple is captured in `App.promotion_history`. The `:promotions` overlay surfaces the chain newest-first: useful for post-mortem "this version was promoted from staging → uat → prod (at T)" lineage tracing. In-memory only (cleared on context switch alongside the other env-keyed state); state.toml persistence is a 0.21+ follow-up since the hand-rolled state parser needs schema migration. +1 test for the pure `render_promotions` helper.
+
+### Added — docs
+
+- **`docs/lint-rules.md`** — Single-page reference for every lint rule. Includes detection logic, fix shape, why-it-matters, and per-rule examples. Linked from `docs/commands.md`'s `:lint` entry. Source-of-truth for ops teams writing their `lint.disable` config. Mirrors the clippy lint docs structure.
+
+### Tests
+
+780 tests green (up from 767 in 0.19.0). 13 new tests:
+- 3 EBL013 tests (fires on legacy namespace / doesn't fire on launch-template / doesn't fire on empty option)
+- 4 EBL019 tests (fires on AllAtOnce multi-subnet / doesn't fire single-subnet / doesn't fire Rolling / doesn't fire MaxSize=1)
+- 1 `parse_csv_value` helper test (padded entries, empty values)
+- 4 `render_fleet_cost` tests (breakdown / uncovered envs / stale cache / no-freshness-line)
+- 1 `render_promotions` test (newest-first ordering + version label)
+
+### Deferred to 0.21 / later (each warrants focused review)
+
+- `App.cfg_resolved: ResolvedConfig` sub-struct — touches 30+ read sites
+- `spawn_*` clusters → `src/app/spawn_*.rs` grouping — 61+ methods, mechanical but invasive
+- Remaining ~20 `append_raw` sites in `src/app.rs` — needs new typed helpers for SSM / DLQ / CW Logs shapes
+- Lint input caching on `App` (env_tag_cache + env_health_cache) — needs new AppMsg variant + careful TTL handling at 3 spawn sites
+- `ebman audit replay <line-id>` — the audit→CLI dispatch mapping is sprawling; needs design
+- EBL014/015/016/018/020 — each needs live-EB verification of the exact detection shape
+- `docs/rule-development.md` — better as a focused docs cycle after a few more rules ship
+
 ## [0.19.0] — 2026-05-29 — Test pinning + new lint rule + small operator wins
 
 Autonomous slice through the 0.19 candidates list. The big foundation
