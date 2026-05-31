@@ -22,7 +22,20 @@ use color_eyre::eyre::Result;
 use crate::aws;
 use crate::cli::cli_esc;
 
-pub async fn run(args: &[String]) -> Result<()> {
+/// Parsed `ebman versions` arguments. Separated from [`run`] so the
+/// arg-parsing (the part with usage-error exit codes) is unit-testable
+/// without driving the live AWS path or tripping `std::process::exit`.
+#[derive(Debug, PartialEq, Eq)]
+struct VersionsArgs {
+    env_name: String,
+    json: bool,
+}
+
+/// Pure arg parser for `ebman versions --env NAME [--json]`. `args` is
+/// the full argv (`args[0]` is the subcommand name), matching the
+/// `run(args)` convention. Returns `Err(usage_message)` for the two
+/// usage-error (exit-2) cases: an unknown flag, or a missing `--env`.
+fn parse_versions_args(args: &[String]) -> Result<VersionsArgs, String> {
     let mut env_name: Option<String> = None;
     let mut json = false;
     let mut iter = args.iter().skip(1);
@@ -30,15 +43,22 @@ pub async fn run(args: &[String]) -> Result<()> {
         match arg.as_str() {
             "--env" => env_name = iter.next().cloned(),
             "--json" => json = true,
-            other => {
-                eprintln!("ebman versions: unknown arg '{other}'");
-                std::process::exit(2);
-            }
+            other => return Err(format!("ebman versions: unknown arg '{other}'")),
         }
     }
     let Some(env_name) = env_name else {
-        eprintln!("usage: ebman versions --env NAME [--json]");
-        std::process::exit(2);
+        return Err("usage: ebman versions --env NAME [--json]".into());
+    };
+    Ok(VersionsArgs { env_name, json })
+}
+
+pub async fn run(args: &[String]) -> Result<()> {
+    let VersionsArgs { env_name, json } = match parse_versions_args(args) {
+        Ok(parsed) => parsed,
+        Err(msg) => {
+            eprintln!("{msg}");
+            std::process::exit(2);
+        }
     };
 
     let aws_client = aws::AwsClient::with(None, None).await?;
@@ -90,4 +110,51 @@ pub async fn run(args: &[String]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn parses_env_and_defaults_json_false() {
+        let parsed = parse_versions_args(&argv(&["versions", "--env", "prod-api"])).unwrap();
+        assert_eq!(parsed.env_name, "prod-api");
+        assert!(!parsed.json);
+    }
+
+    #[test]
+    fn json_flag_sets_json_true_regardless_of_order() {
+        let a = parse_versions_args(&argv(&["versions", "--json", "--env", "prod"])).unwrap();
+        let b = parse_versions_args(&argv(&["versions", "--env", "prod", "--json"])).unwrap();
+        assert!(a.json && b.json);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn missing_env_is_usage_error() {
+        let err = parse_versions_args(&argv(&["versions", "--json"])).unwrap_err();
+        assert!(err.contains("usage:"), "got: {err}");
+    }
+
+    #[test]
+    fn unknown_flag_is_usage_error_naming_the_flag() {
+        let err = parse_versions_args(&argv(&["versions", "--env", "p", "--bogus"])).unwrap_err();
+        assert!(
+            err.contains("unknown arg") && err.contains("--bogus"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn env_as_trailing_token_consumes_nothing_and_is_usage_error() {
+        // `--env` with no following value: iter.next() yields None, so
+        // env_name stays unset → usage error (matches pre-refactor behaviour).
+        let err = parse_versions_args(&argv(&["versions", "--env"])).unwrap_err();
+        assert!(err.contains("usage:"), "got: {err}");
+    }
 }
