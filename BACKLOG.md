@@ -955,35 +955,35 @@ Aim for 8-12 of the items below; the rest can shape 0.20.
 #### Test coverage — SUPPORT
 - [x] **CLI subcommand unit tests** — Done (2026-06-01). Took the arg-parse seam rather than full `aws-smithy-mocks` end-to-end: each subcommand's inline argv parsing (which called `std::process::exit` directly — the reason it was untestable: `exit` kills the test process) was extracted into a pure `parse_*_args(&[String]) -> Result<_, String|Error>`, with `run()` mapping the error to `eprintln` + `exit`. Covered all 7 verbs: `versions` (+5), `drift` (+6, region-CSV resolution), `action` (+9, incl. the destructive→exit-3 gate distinct from usage-2 via an error type carrying the code), `lint` (+8, the full cross-flag validation matrix + `--interval` grammar + value-flag `--baseline --json` trap), `audit` (+4, deterministic `--since`→window_ms with `Utc::now()` left in `run`), `ctl` (+5, injected default-socket + request assembly), `explain` (+5, positional-vs-flag + EBL### check). `envs` skipped — its only parse is `any(== "--json")`, no error paths. +42 tests, all behaviour-preserving. Full `run()` AWS-path coverage (the mocked-AWS layer) remains a deeper future cut.
 - [ ] **Exhaustiveness test for `Action::label()` distinctness** — Parallels the 0.17.4 `destructive()` and 0.18 `wants_preflight()` extensions. Currently `action_labels_are_distinct_and_non_empty` was extended to include SsmRun in 0.17.3 but still omits `Action::Capacity` (per the 0.17.4 review note). Fix + extend. ~20 min.
-- [ ] **`audit::append_extras` wire-format pinning** — Golden-pinned test for the `key=value` / `key="..."` encoding so a future quoting-policy change doesn't silently invalidate downstream audit consumers. Same pattern as the 0.18 `issue_identity_hash` golden. ~30 min.
+- [x] **`audit::append_extras` wire-format pinning** — Shipped. `append_extras_golden_wire_shape` at `src/audit.rs:1096` golden-pins the `key=value` / `key="..."` encoding (verified 2026-06-01, code-review triage).
 - [ ] **Rule `fix()` shape exhaustiveness** — For each `Rule`, assert that `fix()` returns one of the documented `FixAction` variants (SetOption / Multiple / Manual). Catches a future rule that returns `None` from `fix()` when `applies()` returned `Some` — currently a runtime panic in `cmd_lint_fix`. Pure logic, ~40 min.
 
 #### New lint rules — SUPPORT
 Cheap to add (each ~50 lines + tests, all use the existing `LintContext` builder pattern). Pick 4-5 to lock the rule-engine maturity story.
-- [ ] **EBL013 — launch configuration ASG** (Warn). AWS is sunsetting launch configurations; envs on them get migration friction down the line. Detection: `aws:autoscaling:asg` namespace plus the absence of a LaunchTemplate ref. Fix=Manual (operator needs to plan the migration).
+- [x] **EBL013 — launch configuration ASG** (Warn). Shipped — `LaunchConfigurationLegacy` at `src/lint.rs:1238`, registered at `:1472` (verified 2026-06-01).
 - [ ] **EBL014 — deprecated CW namespace in `:scaling-triggers`** (Warn). `AWS/EC2 → MetricCollection_5Minutes` is a legacy mapping; newer envs should use `aws/applicationelb` or env-health metrics. Fix=Manual.
 - [ ] **EBL015 — custom platform with no published versions in 180+ days** (Info). Builds on the existing custom-platforms fetch. Operator probably forgot the platform exists. Fix=Manual.
 - [ ] **EBL016 — live health-check probe non-2xx** (Warn). Reuses the `spawn_health_check_probe` + `classify_health_check_status` code already shipped for confirm modals. Fires the probe at lint time, not just at deploy. Latency cost is real (one HTTP roundtrip per env at lint time); gate behind `--probe-live` flag in CLI to keep default lint fast.
-- [ ] **EBL017 — managed actions disabled** (Info). Detection: `aws:elasticbeanstalk:managedactions.ManagedActionsEnabled = "false"`. Op-sec gap: env doesn't get the platform's automatic security patches. Fix=Manual (operator may have a deliberate reason).
+- [x] **EBL017 — managed actions disabled** (Info). Shipped — `ManagedActionsDisabled` at `src/lint.rs:1397`, registered at `:1473` (verified 2026-06-01).
 - [ ] **EBL018 — env without WAF + on prod tier** (Warn). Detection: env's ALB has no `webacl_arn` listener association AND env name matches `prod` / `production` / `prd` (case-insensitive). Soft prod-detection — operators can disable per env via `lint.disable`. Fix=Manual (WAF setup is its own flow).
-- [ ] **EBL019 — `ConfigDeploymentPolicy=AllAtOnce` on multi-instance + multi-AZ env** (Warn). Stronger version of EBL001: catches the very-real "rolling deploy on a 2-AZ env taking the wrong instance offline first" footgun. Detection: EBL001's condition + `aws:autoscaling:asg.Availability Zones > 1`. Auto-fix=SetOption (same as EBL001).
+- [x] **EBL019 — `ConfigDeploymentPolicy=AllAtOnce` on multi-instance + multi-AZ env** (Warn). Shipped — `AllAtOnceMultiAz` at `src/lint.rs:1325`, registered at `:1474` (verified 2026-06-01).
 - [ ] **EBL020 — env with X-Ray enabled but instance profile has no `xray:PutTraceSegments`** (Warn). Detection: `aws:elasticbeanstalk:xray.XRayEnabled = "true"` plus IAM probe (uses the existing `iam:SimulatePrincipalPolicy` from `:explain` IAM path). Silent gap — operators see "X-Ray on" in config but no traces appear. Fix=Manual.
 
 #### Lint adoption polish — SUPPORT
 Close the loop on the lint engine maturing. Now that 12+ rules fire reliably, operators need adoption ergonomics.
-- [ ] **`docs/lint-rules.md`** — Single-page reference doc with every rule (id / severity / detection logic / fix shape / example issue). Mirrors the clippy lint docs structure. Source-of-truth for ops teams writing their `lint.disable` config. ~1.5 hrs.
-- [ ] **`docs/rule-development.md`** — How to add a new lint rule: the `Rule` trait, `LintContext` builder fields, `FixAction` variants, test conventions. Closes the loop on the rule engine being an extensible surface (operators with private rules can ship them in forks). ~1 hr.
+- [x] **`docs/lint-rules.md`** — Shipped (file present, 10 KB; verified 2026-06-01).
+- [x] **`docs/rule-development.md`** — Shipped (file present, 9 KB; verified 2026-06-01).
 - [ ] **`ebman lint --watch --webhook URL`** — For ops teams that don't want a tail process but do want periodic alerts. Hooks into the existing `notify_webhook` plumbing. Composes with `--watch --interval`. ~1 hr.
 - [ ] **`ebman lint --baseline-regenerate`** — Operators with stale baselines (post-0.18 when EBL010/011/012 started firing) can rebuild a baseline that captures the new firing pattern without delete + redo. Bonus subcommand on the existing baseline interface. ~30 min.
 - [ ] **Confirm-modal lint sorted by severity** — Currently the lint pill in the confirm modal lists issues in rule_id order (EBL001 < EBL002 …). Sort by severity DESC then rule_id ASC so the operator sees `Error` issues first. Pure render change. ~20 min.
 
 #### Operator features — BONUS (pick 2-3)
-- [ ] **`ebman lint --explain ISSUE_ID`** — CLI-shipped equivalent of TUI `:explain`. Reuses the `llm` module + `build_prompt` + cache. Operators integrating in CI want the same explainer they get interactively. ~1.5 hrs.
+- [~] **`ebman lint --explain ISSUE_ID`** — Redundant (verified 2026-06-01): the standalone `ebman explain ISSUE_ID` subcommand (`src/cli/explain.rs`) already ships the CLI explainer. No separate `--explain` flag needed; withdrawn.
 - [ ] **`ebman audit replay <line-id>`** — Given an audit-log line (or a timestamp-keyed ID), re-run the same command. Wire-format-aware now that 0.18 consolidated audit shapes. Refuses for ambiguous lines (multiple matches) and for destructive actions without `--yes`. Useful for incident review: "what would happen if I ran this again?". ~2 hrs.
-- [ ] **`:fleet-cost`** — Sum across all envs' Cost Explorer monthly spend, broken down by application / tier / health. Builds on the existing cost cache (`~/.cache/ebman/cost-{account}-{region}.toml`). One screen, one number per category. ~1.5 hrs.
+- [x] **`:fleet-cost`** — Shipped — `cmd_fleet_cost`, dispatched at `src/app.rs:11388` (verified 2026-06-01).
 - [ ] **`:diff A B --ignore-keys "..."`** — Suppresses noise in config-diff. Currently every config-diff shows `version_label` differences which are usually not the point. Operators can configure a default set via `[diff] ignore_keys = ["version_label", "..."]` in `config.toml`. ~30 min.
-- [ ] **Promotion lineage tracking** — When `:promote-env SOURCE TARGET` runs, record the chain. New `:promotions` overlay shows "v1.4.2: staging → uat (2026-05-20) → prod (2026-05-22)". Operators currently piece this together from `:lineage` per env. Needs new state in `state.toml` (env name → promoted-from). ~2 hrs.
-- [ ] **`ebman versions --env NAME [--json]`** — CLI-shipped equivalent of TUI `:versions`. Useful for "what versions are deployed in this app right now" CI scripts. Closes a long-standing CLI gap. ~1 hr.
+- [x] **Promotion lineage tracking** — Shipped — `:promotions` dispatched at `src/app.rs:11389` (`cmd_promotions`); verified 2026-06-01.
+- [x] **`ebman versions --env NAME [--json]`** — Shipped — `src/cli/versions.rs` (verified 2026-06-01; arg-parse tests added this session).
 
 #### Distribution + perf — SUPPORT
 Smaller wins that don't fit the other buckets.
@@ -1177,13 +1177,13 @@ Theme: **smart features — rule-based diagnostics with both TUI + CLI surfaces.
 
 Nine ideas surfaced by a backlog review after the 0.17.x + 0.18 ship-sequence. Ranked by **operator-value-per-hour**. The 0.19 candidates list above already pulls the top three (lint-explain CLI / audit replay / fleet-cost); these are the medium-term shelf.
 
-- [ ] **`ebman lint --explain ISSUE_ID`** — CLI-shipped equivalent of TUI `:explain`. Reuses `llm` module. ~1.5 hrs. (Promoted to 0.19 candidates.)
-- [ ] **`ebman audit replay <line-id>`** — Re-dispatch an audit-log entry. Wire-aware after 0.18. ~2 hrs. (Promoted to 0.19 candidates.)
-- [ ] **`:fleet-cost`** — Sum across-envs Cost Explorer spend by app/tier/health. Builds on cost cache. ~1.5 hrs. (Promoted to 0.19 candidates.)
+- [~] **`ebman lint --explain ISSUE_ID`** — Redundant; `ebman explain ISSUE_ID` already ships it (`src/cli/explain.rs`). Withdrawn 2026-06-01.
+- [ ] **`ebman audit replay <line-id>`** — Re-dispatch an audit-log entry. Wire-aware after 0.18. ~2 hrs. (Genuinely pending — verified 2026-06-01, no replay path in src/cli/audit.rs.)
+- [x] **`:fleet-cost`** — Shipped (`cmd_fleet_cost`, `src/app.rs:11388`; verified 2026-06-01).
 - [ ] **`:event-tail`** — like `:logs-tail` but for EB events across every env in parallel. "What's happening across prod right now" surface. Closes the gap between Detail/Events (one env) and the console's flat event firehose. Needs a fan-out coordinator + output rate-limiter so a noisy fleet doesn't blow out the overlay. ~4 hrs.
 - [ ] **`:incident START "headline" / END`** — single command sets up incident mode: freezes deploys, pins a banner, opens runbook overlay, starts an audit subsection. `:incident END` clears + writes a summary line. Builds on existing freeze + runbook + audit machinery. Design call on auto-runbook scope (just freeze + banner? or also: open `:why` on every Red env, start CW Logs tail on the noisiest one, dump current alarms-firing list to the audit?). ~3 hrs.
-- [ ] **Promotion lineage tracking** — when `:promote-env SOURCE TARGET` runs, record the chain. New `:promotions` overlay shows "v1.4.2: staging → uat (2026-05-20) → prod (2026-05-22)". Operators currently piece this together from `:lineage` per env. Needs new state in `state.toml` (env name → promoted-from). ~2 hrs.
-- [ ] **`:diff A B --ignore-keys "..."`** — suppresses noise in config-diff. Currently every config-diff shows `version_label` differences which are usually not the point. Builds on the existing diff renderer. ~30 min.
+- [x] **Promotion lineage tracking** — Shipped (`:promotions`, `cmd_promotions` at `src/app.rs:11389`; verified 2026-06-01).
+- [ ] **`:diff A B --ignore-keys "..."`** — Genuinely pending (verified 2026-06-01): `--ignore-keys` shipped on `:config-diff` (option-settings, `src/app.rs:5254`) but NOT on the env-metadata `:diff` command (`src/app.rs:11463`). Add it to the `diff_envs` renderer path. ~30 min.
 - [ ] **`ebman lint --watch --webhook URL`** — for ops teams that don't want a tail process but do want periodic alerts. Hooks into the existing `notify_webhook` plumbing. Composes with the existing `--watch --interval` shape. ~1 hr.
 - [ ] **`ebman lint --baseline-regenerate`** — operators with stale baselines (post-0.18 when EBL010/011/012 started firing) can rebuild a baseline that captures the new firing pattern without having to delete + redo. Bonus subcommand on the existing baseline interface. ~30 min.
 
