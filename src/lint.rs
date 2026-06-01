@@ -2426,14 +2426,34 @@ mod tests {
                 let _ = rule.severity(); // doesn't panic
                 let applies_result = rule.applies(&ctx);
                 let fix_result = rule.fix(&ctx);
-                if applies_result.is_none() {
-                    assert!(
-                        fix_result.is_none(),
-                        "{id} on tier={}: fix() returned Some({fix_result:?}) when applies() returned None — \
-                         cmd_lint_fix's `applies → fix` chain assumes this never happens. Either \
+                match (&applies_result, &fix_result) {
+                    // applies() said No → fix() must too. The CLI's
+                    // `applies → fix` loop in src/cli/lint.rs relies on this:
+                    // a rule that returned Some(FixAction) here would offer to
+                    // "fix" an issue that doesn't exist.
+                    (None, fix) => assert!(
+                        fix.is_none(),
+                        "{id} on tier={}: fix() returned Some({fix:?}) when applies() returned None — \
+                         the `applies → fix` chain assumes this never happens. Either \
                          applies() should fire or fix() should short-circuit on None-applies.",
                         env.tier
-                    );
+                    ),
+                    // applies() fired AND a fix is offered → the payload must be
+                    // well-formed. An empty namespace/name dispatches a malformed
+                    // UpdateEnvironment; an empty value silently no-ops the fix;
+                    // a blank Manual instruction prints "here's what to do: ".
+                    // None of these surface at the type level, so pin them here.
+                    (Some(_), Some(FixAction::SetOption { namespace, name, value, description })) => {
+                        assert!(!namespace.is_empty(), "{id}: SetOption fix has empty namespace");
+                        assert!(!name.is_empty(), "{id}: SetOption fix has empty name");
+                        assert!(!value.is_empty(), "{id}: SetOption fix has empty value");
+                        assert!(!description.is_empty(), "{id}: SetOption fix has empty description");
+                    }
+                    (Some(_), Some(FixAction::Manual { instructions })) => {
+                        assert!(!instructions.is_empty(), "{id}: Manual fix has empty instructions");
+                    }
+                    // applies() fired but no fix offered — legal (EBL003 etc.).
+                    (Some(_), None) => {}
                 }
             }
         }
