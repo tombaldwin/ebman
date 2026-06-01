@@ -17,15 +17,16 @@ impl App {
     /// before any AWS calls go out. Same one-at-a-time rule as
     /// single-env confirms.
     pub(crate) fn cmd_batch_action(&mut self, action: Action) {
-        if self.read_only {
-            self.error_message = Some("read-only mode — batch actions disabled".into());
-            return;
-        }
         if self.multi_selected.is_empty() {
             self.error_message = Some("no envs selected — press space to mark envs first".into());
             return;
         }
         let env_names: Vec<String> = self.multi_selected.iter().cloned().collect();
+        // Per-env safety gate: refuse if ANY selected env is pinned
+        // read-only (global / demo / freeze / safety.envs / accounts).
+        if self.deny_write_batch(&env_names, "batch action") {
+            return;
+        }
         let n = env_names.len();
         let label = format!("Batch {}", action.label().to_lowercase());
         let target = format!("{n} env(s)");
@@ -43,10 +44,6 @@ impl App {
     /// validated, queues through the cancel-window the same as
     /// `cmd_batch_action`.
     pub(crate) fn cmd_batch_deploy(&mut self, rest: &[&str]) {
-        if self.read_only {
-            self.error_message = Some("read-only mode — batch-deploy disabled".into());
-            return;
-        }
         if self.multi_selected.is_empty() {
             self.error_message = Some("no envs selected — press space to mark envs first".into());
             return;
@@ -56,6 +53,11 @@ impl App {
             return;
         };
         let env_names: Vec<String> = self.multi_selected.iter().cloned().collect();
+        // Per-env safety gate before the app-span check — a pinned env
+        // should refuse regardless of whether the selection is valid.
+        if self.deny_write_batch(&env_names, "batch-deploy") {
+            return;
+        }
         let apps: std::collections::BTreeSet<String> = env_names
             .iter()
             .filter_map(|n| {
@@ -91,13 +93,16 @@ impl App {
     /// skipped + reported so the operator can re-refresh and retry —
     /// rather than silently dispatching incomplete writes.
     pub(crate) fn cmd_batch_tag_or_untag(&mut self, is_tag: bool, rest: &[&str]) {
-        if self.read_only {
-            self.error_message = Some("read-only mode — batch tag/untag disabled".into());
-            return;
-        }
         if self.multi_selected.is_empty() {
             self.error_message = Some("no envs selected — press space to mark envs first".into());
             return;
+        }
+        {
+            // Per-env safety gate before arg parsing + ARN resolution.
+            let names: Vec<String> = self.multi_selected.iter().cloned().collect();
+            if self.deny_write_batch(&names, "batch tag/untag") {
+                return;
+            }
         }
         let (key, value) = if is_tag {
             let Some((k, v)) = parse_tag_args(rest) else {
@@ -157,10 +162,6 @@ impl App {
     /// convention. Operators needing literal multi-space values set
     /// per-env via `:set-option` instead.
     pub(crate) fn cmd_batch_set_option(&mut self, rest: &[&str]) {
-        if self.read_only {
-            self.error_message = Some("read-only mode — batch-set-option disabled".into());
-            return;
-        }
         if self.multi_selected.is_empty() {
             self.error_message = Some("no envs selected — press space to mark envs first".into());
             return;
@@ -173,6 +174,10 @@ impl App {
         let option_name = rest[1].to_string();
         let value = rest[2..].join(" ");
         let env_names: Vec<String> = self.multi_selected.iter().cloned().collect();
+        // Per-env safety gate: refuse if any selected env is pinned.
+        if self.deny_write_batch(&env_names, "batch-set-option") {
+            return;
+        }
         let n = env_names.len();
         self.queue_batch_dispatch(
             format!("Batch set-option {namespace}.{option_name}={value}"),

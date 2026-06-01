@@ -8188,6 +8188,51 @@ impl App {
         true
     }
 
+    /// Read-only gate for a *batch* destructive op over `env_names`.
+    /// Returns `true` (and sets `self.error_message`) when the op must
+    /// be refused. Unlike single-env [`deny_write`], a batch is gated
+    /// per-env: if ANY selected env is locked the whole batch is
+    /// refused (refuse-all, not skip-some — a safety pin shouldn't be
+    /// silently routed around for the unpinned remainder), with the
+    /// locked env names named so the operator can deselect them.
+    ///
+    /// Catches the env-independent gates (`--demo`, global read-only,
+    /// `:freeze-deploys`) first via a representative `is_read_only_for`
+    /// probe so those produce their normal whole-fleet message, then
+    /// scans for per-env / per-account pins. Mirrors the precedence in
+    /// [`is_read_only_for`]. `verb` names the op for the toast.
+    pub fn deny_write_batch(&mut self, env_names: &[String], verb: &str) -> bool {
+        // Demo mode + global/freeze gates are env-independent: probe
+        // with the first env (or "") so the existing single-env path
+        // produces the familiar "demo mode …" / "read-only mode …" /
+        // "deploys frozen …" toast rather than a per-env list.
+        let probe = env_names.first().map(|s| s.as_str()).unwrap_or("");
+        if self.demo_mode || self.read_only || self.deploy_freeze.is_some() {
+            return self.deny_write(probe, verb);
+        }
+        let locked: Vec<String> = env_names
+            .iter()
+            .filter(|n| self.is_read_only_for(n))
+            .cloned()
+            .collect();
+        if locked.is_empty() {
+            return false;
+        }
+        // Use the first locked env's reason as the headline (per-env
+        // and per-account pins read the same regardless of which env);
+        // list the locked names so the operator knows what to deselect.
+        let reason = self
+            .read_only_reason(&locked[0])
+            .unwrap_or_else(|| "read-only mode".into());
+        self.error_message = Some(format!(
+            "{reason} — {verb} refused: {} of {} selected env(s) locked ({})",
+            locked.len(),
+            env_names.len(),
+            locked.join(", ")
+        ));
+        true
+    }
+
     /// Human-readable explanation of *why* an env is read-only, used
     /// in the toast / footer when a destructive action is blocked.
     /// Returns `None` when the env isn't locked (caller shouldn't have
@@ -22031,6 +22076,72 @@ mod tests {
         let app = test_app();
         assert!(!app.is_read_only_for("any-env"));
         assert!(app.read_only_reason("any-env").is_none());
+    }
+
+    #[tokio::test]
+    async fn deny_write_batch_refuses_when_any_selected_env_is_pinned() {
+        // Regression: pre-fix, cmd_batch_* gated only on the global
+        // `read_only` flag, so a per-env safety pin (safety.envs.X) was
+        // silently bypassed for batch ops. deny_write_batch must refuse
+        // the whole batch if ANY selected env is pinned.
+        let mut app = test_app();
+        app.safety_envs.insert("prod-web".into(), true);
+        let selection = vec!["staging-web".to_string(), "prod-web".to_string()];
+        assert!(
+            app.deny_write_batch(&selection, "batch action"),
+            "a pinned env in the selection must refuse the batch"
+        );
+        let msg = app.error_message.clone().unwrap();
+        // Names the locked env + the safety.envs source.
+        assert!(msg.contains("prod-web"), "got: {msg}");
+        assert!(msg.contains("safety.envs.prod-web"), "got: {msg}");
+        // Refuse-all: the unpinned env is NOT quietly let through.
+        assert!(msg.contains("1 of 2"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn deny_write_batch_allows_when_no_env_pinned() {
+        let mut app = test_app();
+        app.safety_envs.insert("other-env".into(), true); // not in selection
+        let selection = vec!["staging-web".to_string(), "dev-web".to_string()];
+        assert!(
+            !app.deny_write_batch(&selection, "batch action"),
+            "no selected env pinned → batch proceeds"
+        );
+        assert!(app.error_message.is_none());
+    }
+
+    #[tokio::test]
+    async fn deny_write_batch_global_flag_uses_fleet_message_not_per_env_list() {
+        // The env-independent gates (global read-only / freeze / demo)
+        // should still produce their familiar whole-fleet toast rather
+        // than enumerating envs.
+        let mut app = test_app();
+        app.read_only = true;
+        let selection = vec!["a".to_string(), "b".to_string()];
+        assert!(app.deny_write_batch(&selection, "batch action"));
+        let msg = app.error_message.clone().unwrap();
+        assert!(msg.contains("read-only mode"), "got: {msg}");
+        // Not the per-env "N of M …" shape.
+        assert!(!msg.contains(" of "), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn cmd_batch_action_refuses_pinned_env_and_keeps_selection() {
+        // End-to-end through the command entry point: a refused batch
+        // must NOT clear multi_selected (so the operator can deselect
+        // the locked env and retry).
+        let mut app = test_app();
+        app.safety_envs.insert("prod-web".into(), true);
+        app.multi_selected.insert("prod-web".into());
+        app.multi_selected.insert("staging-web".into());
+        app.cmd_batch_action(crate::app::Action::Rebuild);
+        assert!(app.error_message.is_some());
+        assert_eq!(
+            app.multi_selected.len(),
+            2,
+            "refused batch must preserve the selection for retry"
+        );
     }
 
     #[tokio::test]
