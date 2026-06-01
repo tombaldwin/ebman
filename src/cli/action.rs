@@ -17,16 +17,45 @@ use crate::audit;
 use crate::aws;
 use crate::cli::{cli_esc, decide_poll, PollDecision};
 
-pub async fn run(args: &[String]) -> Result<()> {
+/// Parsed single-env `ebman action` invocation (rebuild / restart /
+/// terminate / deploy — NOT rollout, which has its own parser). The
+/// `action` verb is carried verbatim; whether it's a *known* verb is
+/// decided later in [`run`]'s dispatch match, matching the original
+/// ordering (unknown verbs reach the AWS client first).
+#[derive(Debug, PartialEq, Eq)]
+struct ActionArgs {
+    action: String,
+    env: String,
+    version: Option<String>,
+    wait_for_green: Option<String>,
+    auto_rollback: Option<String>,
+    yes: bool,
+}
+
+/// A usage/gate failure carrying the exact exit code the CLI charter
+/// assigns it — `2` for usage errors, `3` for the destructive-without-
+/// `--yes` gate. Pulling this out of [`run`] lets the gate logic be
+/// unit-tested without `std::process::exit` killing the test process.
+#[derive(Debug, PartialEq, Eq)]
+struct ActionArgError {
+    msg: String,
+    code: i32,
+}
+
+const ACTION_USAGE: &str = "usage: ebman action <rebuild|restart|terminate|deploy|rollout> --env NAME [--version LABEL] [--regions r1,r2,r3] [--yes] [--wait-for-green Nm] [--auto-rollback Nm]";
+
+/// Pure parser for the single-env action verbs. Mirrors the original
+/// inline logic exactly: empty/dash-prefixed verb → usage error;
+/// unknown flag → usage error; missing `--env` → usage error;
+/// `terminate` without `--yes` → destructive gate (exit 3). `rollout`
+/// is dispatched before this in [`run`] and never reaches here.
+fn parse_action_args(args: &[String]) -> Result<ActionArgs, ActionArgError> {
     let action_name = args.get(1).map(|s| s.as_str()).unwrap_or("");
     if action_name.is_empty() || action_name.starts_with('-') {
-        eprintln!(
-            "usage: ebman action <rebuild|restart|terminate|deploy|rollout> --env NAME [--version LABEL] [--regions r1,r2,r3] [--yes] [--wait-for-green Nm] [--auto-rollback Nm]"
-        );
-        std::process::exit(2);
-    }
-    if action_name == "rollout" {
-        return run_rollout(args).await;
+        return Err(ActionArgError {
+            msg: ACTION_USAGE.into(),
+            code: 2,
+        });
     }
     let mut env_name: Option<String> = None;
     let mut version: Option<String> = None;
@@ -42,20 +71,58 @@ pub async fn run(args: &[String]) -> Result<()> {
             "--auto-rollback" => auto_rollback = iter.next().cloned(),
             "--yes" => yes = true,
             other => {
-                eprintln!("ebman action: unknown flag '{other}'");
-                std::process::exit(2);
+                return Err(ActionArgError {
+                    msg: format!("ebman action: unknown flag '{other}'"),
+                    code: 2,
+                })
             }
         }
     }
     let Some(env) = env_name else {
-        eprintln!("ebman action: --env NAME is required");
-        std::process::exit(2);
+        return Err(ActionArgError {
+            msg: "ebman action: --env NAME is required".into(),
+            code: 2,
+        });
     };
     let destructive = matches!(action_name, "terminate");
     if destructive && !yes {
-        eprintln!("ebman action: '{action_name}' is destructive; re-run with --yes to confirm");
-        std::process::exit(3);
+        return Err(ActionArgError {
+            msg: format!(
+                "ebman action: '{action_name}' is destructive; re-run with --yes to confirm"
+            ),
+            code: 3,
+        });
     }
+    Ok(ActionArgs {
+        action: action_name.to_string(),
+        env,
+        version,
+        wait_for_green,
+        auto_rollback,
+        yes,
+    })
+}
+
+pub async fn run(args: &[String]) -> Result<()> {
+    let action_name = args.get(1).map(|s| s.as_str()).unwrap_or("");
+    if action_name == "rollout" {
+        return run_rollout(args).await;
+    }
+    let ActionArgs {
+        action: action_name,
+        env,
+        version,
+        wait_for_green,
+        auto_rollback,
+        ..
+    } = match parse_action_args(args) {
+        Ok(parsed) => parsed,
+        Err(ActionArgError { msg, code }) => {
+            eprintln!("{msg}");
+            std::process::exit(code);
+        }
+    };
+    let action_name = action_name.as_str();
     let aws = aws::AwsClient::with(None, None).await?;
 
     if action_name == "deploy" {
@@ -706,4 +773,105 @@ async fn run_rollout(args: &[String]) -> Result<()> {
         std::process::exit(3);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn rebuild_with_env_parses() {
+        let p = parse_action_args(&argv(&["action", "rebuild", "--env", "prod"])).unwrap();
+        assert_eq!(p.action, "rebuild");
+        assert_eq!(p.env, "prod");
+        assert!(!p.yes && p.version.is_none());
+    }
+
+    #[test]
+    fn deploy_collects_version_and_durations() {
+        let p = parse_action_args(&argv(&[
+            "action",
+            "deploy",
+            "--env",
+            "prod",
+            "--version",
+            "build-900",
+            "--wait-for-green",
+            "5m",
+            "--auto-rollback",
+            "10m",
+        ]))
+        .unwrap();
+        assert_eq!(p.action, "deploy");
+        assert_eq!(p.version.as_deref(), Some("build-900"));
+        assert_eq!(p.wait_for_green.as_deref(), Some("5m"));
+        assert_eq!(p.auto_rollback.as_deref(), Some("10m"));
+    }
+
+    #[test]
+    fn empty_verb_is_usage_error_code_2() {
+        // No verb at all → args.get(1) is None → empty → usage error.
+        let err = parse_action_args(&argv(&["action"])).unwrap_err();
+        assert_eq!(err.code, 2);
+        assert!(err.msg.contains("usage:"), "got: {}", err.msg);
+    }
+
+    #[test]
+    fn dash_prefixed_verb_is_usage_error_code_2() {
+        // A flag where the verb should be (`ebman action --env x`) is
+        // caught by the dash-prefix guard, not parsed as a verb.
+        let err = parse_action_args(&argv(&["action", "--env", "prod"])).unwrap_err();
+        assert_eq!(err.code, 2);
+        assert!(err.msg.contains("usage:"), "got: {}", err.msg);
+    }
+
+    #[test]
+    fn missing_env_is_usage_error_code_2() {
+        let err = parse_action_args(&argv(&["action", "rebuild"])).unwrap_err();
+        assert_eq!(err.code, 2);
+        assert!(err.msg.contains("--env"), "got: {}", err.msg);
+    }
+
+    #[test]
+    fn unknown_flag_is_usage_error_code_2_naming_the_flag() {
+        let err =
+            parse_action_args(&argv(&["action", "rebuild", "--env", "p", "--bogus"])).unwrap_err();
+        assert_eq!(err.code, 2);
+        assert!(
+            err.msg.contains("unknown flag") && err.msg.contains("--bogus"),
+            "got: {}",
+            err.msg
+        );
+    }
+
+    #[test]
+    fn terminate_without_yes_is_destructive_gate_code_3() {
+        // The one non-2 path: destructive verb missing --yes exits 3,
+        // distinct from a usage error. Pinning the code so the gate
+        // can't silently degrade to a usage (2) or success.
+        let err = parse_action_args(&argv(&["action", "terminate", "--env", "prod"])).unwrap_err();
+        assert_eq!(err.code, 3);
+        assert!(err.msg.contains("destructive"), "got: {}", err.msg);
+    }
+
+    #[test]
+    fn terminate_with_yes_parses() {
+        let p =
+            parse_action_args(&argv(&["action", "terminate", "--env", "prod", "--yes"])).unwrap();
+        assert_eq!(p.action, "terminate");
+        assert!(p.yes);
+    }
+
+    #[test]
+    fn non_destructive_verbs_do_not_require_yes() {
+        // rebuild / restart parse fine without --yes — only terminate gates.
+        for verb in ["rebuild", "restart"] {
+            let p = parse_action_args(&argv(&["action", verb, "--env", "prod"])).unwrap();
+            assert!(!p.yes, "{verb} should parse without --yes");
+        }
+    }
 }
