@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-06-01 — CLI test coverage + batch safety-pin fix + webhook→reqwest + spawn_* refactor finished
+
+A hardening release: no new operator-facing features, but a real safety fix, the first test coverage for the CLI surface, and the completion of the long-deferred `spawn_*` cluster refactor (the remaining 5-of-6 from 0.21).
+
+### Fixed — batch ops bypassed per-env / per-account safety pins
+
+- **`:batch-rebuild` / `:batch-restart` / `:batch-deploy` / `:batch-tag` / `:batch-untag` / `:batch-set-option` now honour per-env and per-account read-only pins.** Previously the batch entry points gated only on the global `read_only` flag, so an env pinned via `safety.envs.NAME.read_only = true` (or a `safety.accounts.PROFILE` lock, or an active `:freeze-deploys`) could still be batch-written — the single-env write paths already gated correctly via `deny_write`/`is_read_only_for`, but the batch paths didn't, and `spawn_batch_*` carry no gate of their own. New `App::deny_write_batch` refuses the **whole** batch if any selected env is locked (refuse-all, not skip-some — a pin shouldn't be silently routed around for the unpinned remainder), naming the locked envs so the operator can deselect them; the env-independent gates (global / `--demo` / freeze) keep their familiar whole-fleet message. Found in a code-review pass; +4 tests.
+
+### Added — CLI subcommand test coverage
+
+- **First arg-parse tests across `src/cli/*.rs`** (previously zero). Each subcommand's inline argv parsing — which called `std::process::exit` directly, the reason it had been untestable — was extracted into a pure `parse_*_args() -> Result<…>`, with `run()` mapping the error to `eprintln` + `exit`. Covers `versions`, `drift`, `action` (incl. the destructive→exit-3 gate as distinct from usage-2), `lint` (the full cross-flag validation matrix + `--interval` grammar + the value-flag `--baseline --json` trap), `audit` (deterministic `--since`→window), `ctl`, `explain`. +42 tests, all behaviour-preserving.
+
+### Added — lint robustness
+
+- **Lint `fix()` payload invariant test.** `rules_satisfy_trait_invariants` now also asserts that when a rule fires and offers a fix, the `FixAction` payload is well-formed (no empty namespace/name/value/description on `SetOption`, no empty `Manual` instructions) — guarding the `UpdateEnvironment` write path against a future malformed-fix rule.
+- **`audit::append_extras` wire-format golden pin** confirmed in place (the `key=value` / `key="..."` encoding downstream audit consumers depend on).
+
+### Changed — webhook transport
+
+- **`notify_webhook` audit fan-out migrated from a `curl` shell-out to the async `reqwest::Client`** already used by `llm.rs` (no new dependency; `rustls` backend already wired). 10s timeout; non-2xx and transport errors log a structured `tracing::warn` (parity with the old curl stderr path). The log-tail S3 fetcher still uses `curl`, so the Homebrew `depends_on "curl"` stays.
+
+### Internal — `spawn_*` cluster refactor finished (5 of 6)
+
+- **The remaining four clusters moved out of `app.rs`** into their own modules, completing the refactor begun with `spawn_why_red` in 0.21: `spawn_batch` (4 methods), `spawn_dlq` (5, leaving the interleaved `handle_dlq_key` in place), `spawn_rollout` (2), and `spawn_detail` (10, gathered from six scattered locations). Pure relocations (`fn` → `pub(super)`); each landed as its own build+clippy+test-green commit. `app.rs` is now 21,657 lines, down from 22,410 at the start of the sweep. The adhoc spawn singletons (`spawn_action`, `spawn_confirm_lint`, `spawn_refresh`, …) stay inline — they don't form a cohesive module. Closes the refactor deferred from 0.15–0.20.
+
+### Internal — backlog hygiene
+
+- Backlog triaged against the actual source: marked stale-shipped entries done with file:line proof (EBL013/017/019, `:fleet-cost`, `:promotions`, `ebman versions`, the lint docs, the append_extras golden), withdrew a redundant entry (`ebman lint --explain`, already covered by `ebman explain`), and corrected an over-claim (`:diff --ignore-keys` is genuinely pending — `--ignore-keys` shipped on `:config-diff` only).
+
 ## [0.21.0] — 2026-05-29 — Lint input caching + audit migration finish + rule-dev guide + spawn_* cluster move (1 of 6)
 
 The 0.19/0.20 push left ResolvedConfig and the rest of the spawn_* cluster moves as the last big refactors. 0.21 does Part 1: lint input caching (real latency win, ~200ms per repeated modal-open), the remaining standard-shape `append_raw` migrations in `src/app.rs`, the `docs/rule-development.md` extensibility guide, and the first spawn_* cluster move (`spawn_why_red_*`, 6 methods) as a proof of pattern for the remaining 5 clusters.
