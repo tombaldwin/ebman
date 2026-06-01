@@ -66,7 +66,34 @@ fn print_baseline_diff_json(new: &[&lint::Issue], cleared: &[&lint::BaselineIssu
     println!("{out}");
 }
 
-pub async fn run(args: &[String]) -> Result<()> {
+/// Fully-resolved `ebman lint` arguments: flags parsed, interval and
+/// region-CSV resolved, and all cross-flag validation already passed.
+/// Separated from [`run`] so the whole parse+validate surface (every
+/// exit-2 usage path) is unit-testable without `std::process::exit` or
+/// the live config/AWS I/O that follows it.
+#[derive(Debug, PartialEq, Eq)]
+struct LintArgs {
+    env_name: Option<String>,
+    regions: Vec<Option<String>>,
+    json: bool,
+    quiet: bool,
+    severity_filter: Option<lint::Severity>,
+    rule_filter: Vec<String>,
+    fix: bool,
+    dry_run: bool,
+    yes: bool,
+    watch: bool,
+    interval_secs: u64,
+    baseline_write: Option<String>,
+    baseline_against: Option<String>,
+}
+
+/// Pure parser + validator for `ebman lint`. Returns `Err(msg)` for
+/// every usage error (all exit-2 here, so the code is left implicit).
+/// Ordering note: validation runs here, before [`run`] loads config —
+/// a usage error now exits before the (silent) config read rather than
+/// after. No observable change; strictly less wasted work.
+fn parse_lint_args(args: &[String]) -> Result<LintArgs, String> {
     let mut env_name: Option<String> = None;
     let mut regions_csv: Option<String> = None;
     let mut json = false;
@@ -94,41 +121,42 @@ pub async fn run(args: &[String]) -> Result<()> {
             "--interval" => interval_str = iter.next().cloned(),
             "--baseline" => {
                 let Some(p) = iter.next() else {
-                    eprintln!("ebman lint: --baseline expects a file path");
-                    std::process::exit(2);
+                    return Err("ebman lint: --baseline expects a file path".into());
                 };
                 if p.starts_with("--") {
-                    eprintln!("ebman lint: --baseline expects a file path, got flag '{p}'");
-                    std::process::exit(2);
+                    return Err(format!(
+                        "ebman lint: --baseline expects a file path, got flag '{p}'"
+                    ));
                 }
                 baseline_write = Some(p.clone());
             }
             "--against-baseline" => {
                 let Some(p) = iter.next() else {
-                    eprintln!("ebman lint: --against-baseline expects a file path");
-                    std::process::exit(2);
+                    return Err("ebman lint: --against-baseline expects a file path".into());
                 };
                 if p.starts_with("--") {
-                    eprintln!("ebman lint: --against-baseline expects a file path, got flag '{p}'");
-                    std::process::exit(2);
+                    return Err(format!(
+                        "ebman lint: --against-baseline expects a file path, got flag '{p}'"
+                    ));
                 }
                 baseline_against = Some(p.clone());
             }
             "--severity" => {
                 let Some(v) = iter.next() else {
-                    eprintln!("ebman lint: --severity expects a value (info / warn / error)");
-                    std::process::exit(2);
+                    return Err(
+                        "ebman lint: --severity expects a value (info / warn / error)".into(),
+                    );
                 };
                 let Some(sev) = lint::Severity::parse(v) else {
-                    eprintln!("ebman lint: unknown severity '{v}' (info / warn / error)");
-                    std::process::exit(2);
+                    return Err(format!(
+                        "ebman lint: unknown severity '{v}' (info / warn / error)"
+                    ));
                 };
                 severity_filter = Some(sev);
             }
             "--rules" => {
                 let Some(v) = iter.next() else {
-                    eprintln!("ebman lint: --rules expects a comma-separated rule id list");
-                    std::process::exit(2);
+                    return Err("ebman lint: --rules expects a comma-separated rule id list".into());
                 };
                 rule_filter = v
                     .split(',')
@@ -137,45 +165,33 @@ pub async fn run(args: &[String]) -> Result<()> {
                     .collect();
             }
             other => {
-                eprintln!("ebman lint: unknown flag '{other}'");
-                std::process::exit(2);
+                return Err(format!("ebman lint: unknown flag '{other}'"));
             }
         }
     }
 
-    let mut disabled: Vec<String> = config::load_lint_disables();
-    disabled.extend(project::load_lint_disables_from_cwd());
-    let rules = lint::default_rules(&disabled);
-
-    let mut fix_disabled: Vec<String> = config::load_lint_fix_disables();
-    fix_disabled.extend(project::load_lint_fix_disables_from_cwd());
-
-    let safety_cfg = config::load();
-    let active_profile_for_safety = std::env::var("AWS_PROFILE").ok();
-
     if watch && fix {
-        eprintln!("ebman lint: --watch and --fix are mutually exclusive (use one)");
-        std::process::exit(2);
+        return Err("ebman lint: --watch and --fix are mutually exclusive (use one)".into());
     }
     if baseline_write.is_some() && baseline_against.is_some() {
-        eprintln!(
+        return Err(
             "ebman lint: --baseline (write) and --against-baseline (compare) are mutually exclusive"
+                .into(),
         );
-        std::process::exit(2);
     }
     if (baseline_write.is_some() || baseline_against.is_some()) && (fix || watch) {
-        eprintln!(
+        return Err(
             "ebman lint: --baseline / --against-baseline are incompatible with --fix / --watch"
+                .into(),
         );
-        std::process::exit(2);
     }
     if fix && !yes && !dry_run {
-        eprintln!("ebman lint --fix: requires --yes to dispatch writes (or --dry-run to preview)");
-        std::process::exit(2);
+        return Err(
+            "ebman lint --fix: requires --yes to dispatch writes (or --dry-run to preview)".into(),
+        );
     }
     if fix && yes && dry_run {
-        eprintln!("ebman lint --fix: --yes and --dry-run are mutually exclusive");
-        std::process::exit(2);
+        return Err("ebman lint --fix: --yes and --dry-run are mutually exclusive".into());
     }
     // Default interval = 60s. Parse the same way other deadlines
     // are parsed (`5m / 30m / 1h`); accept a bare integer as
@@ -185,17 +201,16 @@ pub async fn run(args: &[String]) -> Result<()> {
         Some(s) => {
             if let Ok(n) = s.parse::<u64>() {
                 if n == 0 {
-                    eprintln!("ebman lint: --interval must be > 0");
-                    std::process::exit(2);
+                    return Err("ebman lint: --interval must be > 0".into());
                 }
                 n
             } else if let Some(ms) = aws::parse_window_ms(s) {
                 ((ms / 1000) as u64).max(1)
             } else {
-                eprintln!(
+                return Err(
                     "ebman lint: --interval expects seconds (`30`) or a duration (`5m`/`1h`)"
+                        .into(),
                 );
-                std::process::exit(2);
             }
         }
     };
@@ -208,13 +223,65 @@ pub async fn run(args: &[String]) -> Result<()> {
                 .filter(|s| !s.is_empty())
                 .collect();
             if parsed.is_empty() {
-                eprintln!("ebman lint: --regions list is empty");
-                std::process::exit(2);
+                return Err("ebman lint: --regions list is empty".into());
             }
             parsed.into_iter().map(Some).collect()
         }
         None => vec![None],
     };
+
+    Ok(LintArgs {
+        env_name,
+        regions,
+        json,
+        quiet,
+        severity_filter,
+        rule_filter,
+        fix,
+        dry_run,
+        yes,
+        watch,
+        interval_secs,
+        baseline_write,
+        baseline_against,
+    })
+}
+
+pub async fn run(args: &[String]) -> Result<()> {
+    let LintArgs {
+        env_name,
+        regions,
+        json,
+        quiet,
+        severity_filter,
+        rule_filter,
+        fix,
+        // `dry_run` is consumed entirely by the parser's validation
+        // (--fix needs --yes XOR --dry-run); the apply path below keys
+        // on `yes` alone, so it isn't bound here.
+        dry_run: _,
+        yes,
+        watch,
+        interval_secs,
+        baseline_write,
+        baseline_against,
+    } = match parse_lint_args(args) {
+        Ok(parsed) => parsed,
+        Err(msg) => {
+            eprintln!("{msg}");
+            std::process::exit(2);
+        }
+    };
+
+    let mut disabled: Vec<String> = config::load_lint_disables();
+    disabled.extend(project::load_lint_disables_from_cwd());
+    let rules = lint::default_rules(&disabled);
+
+    let mut fix_disabled: Vec<String> = config::load_lint_fix_disables();
+    fix_disabled.extend(project::load_lint_fix_disables_from_cwd());
+
+    let safety_cfg = config::load();
+    let active_profile_for_safety = std::env::var("AWS_PROFILE").ok();
 
     let multi_region = regions.len() > 1;
     // `--watch` wraps the existing one-shot body in a polling loop
@@ -661,5 +728,146 @@ pub async fn run(args: &[String]) -> Result<()> {
         Ok(())
     } else {
         std::process::exit(3);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn bare_lint_has_sane_defaults() {
+        let p = parse_lint_args(&argv(&["lint"])).unwrap();
+        assert_eq!(p.regions, vec![None]);
+        assert_eq!(p.interval_secs, 60);
+        assert!(!p.json && !p.quiet && !p.fix && !p.watch);
+        assert!(p.severity_filter.is_none() && p.rule_filter.is_empty());
+        assert!(p.baseline_write.is_none() && p.baseline_against.is_none());
+    }
+
+    #[test]
+    fn collects_filters_and_flags() {
+        let p = parse_lint_args(&argv(&[
+            "lint",
+            "--env",
+            "prod",
+            "--json",
+            "--quiet",
+            "--severity",
+            "warn",
+            "--rules",
+            "EBL001, EBL004 ,EBL019",
+        ]))
+        .unwrap();
+        assert_eq!(p.env_name.as_deref(), Some("prod"));
+        assert!(p.json && p.quiet);
+        assert_eq!(p.severity_filter, Some(lint::Severity::Warn));
+        // CSV split + trimmed.
+        assert_eq!(p.rule_filter, vec!["EBL001", "EBL004", "EBL019"]);
+    }
+
+    #[test]
+    fn unknown_flag_and_severity_are_usage_errors() {
+        assert!(parse_lint_args(&argv(&["lint", "--bogus"]))
+            .unwrap_err()
+            .contains("unknown flag"));
+        assert!(parse_lint_args(&argv(&["lint", "--severity", "loud"]))
+            .unwrap_err()
+            .contains("unknown severity"));
+    }
+
+    #[test]
+    fn baseline_flag_requires_a_path_not_another_flag() {
+        // value-flag that swallows the next token must reject a flag
+        // sitting where the path should be (the `--baseline --json` trap).
+        let err = parse_lint_args(&argv(&["lint", "--baseline", "--json"])).unwrap_err();
+        assert!(err.contains("--baseline expects a file path"), "got: {err}");
+        // ...and a totally missing value is the same class of error.
+        let err2 = parse_lint_args(&argv(&["lint", "--baseline"])).unwrap_err();
+        assert!(
+            err2.contains("--baseline expects a file path"),
+            "got: {err2}"
+        );
+    }
+
+    #[test]
+    fn interval_accepts_bare_seconds_and_durations_rejects_zero_and_garbage() {
+        assert_eq!(
+            parse_lint_args(&argv(&["lint", "--interval", "30"]))
+                .unwrap()
+                .interval_secs,
+            30
+        );
+        assert_eq!(
+            parse_lint_args(&argv(&["lint", "--interval", "5m"]))
+                .unwrap()
+                .interval_secs,
+            300
+        );
+        assert!(parse_lint_args(&argv(&["lint", "--interval", "0"]))
+            .unwrap_err()
+            .contains("must be > 0"));
+        assert!(parse_lint_args(&argv(&["lint", "--interval", "soon"]))
+            .unwrap_err()
+            .contains("expects seconds"));
+    }
+
+    #[test]
+    fn fix_requires_yes_or_dry_run() {
+        // --fix alone is a usage error: it must pick apply (--yes) or
+        // preview (--dry-run) explicitly.
+        assert!(parse_lint_args(&argv(&["lint", "--fix"]))
+            .unwrap_err()
+            .contains("requires --yes"));
+        // --fix --yes and --fix --dry-run both parse.
+        assert!(
+            parse_lint_args(&argv(&["lint", "--fix", "--yes"]))
+                .unwrap()
+                .fix
+        );
+        assert!(
+            parse_lint_args(&argv(&["lint", "--fix", "--dry-run"]))
+                .unwrap()
+                .dry_run
+        );
+        // ...but not both at once.
+        assert!(
+            parse_lint_args(&argv(&["lint", "--fix", "--yes", "--dry-run"]))
+                .unwrap_err()
+                .contains("mutually exclusive")
+        );
+    }
+
+    #[test]
+    fn mutually_exclusive_mode_combinations_are_rejected() {
+        assert!(
+            parse_lint_args(&argv(&["lint", "--watch", "--fix", "--yes"]))
+                .unwrap_err()
+                .contains("--watch and --fix")
+        );
+        assert!(parse_lint_args(&argv(&[
+            "lint",
+            "--baseline",
+            "b.json",
+            "--against-baseline",
+            "a.json"
+        ]))
+        .unwrap_err()
+        .contains("mutually exclusive"));
+        assert!(
+            parse_lint_args(&argv(&["lint", "--baseline", "b.json", "--fix", "--yes"]))
+                .unwrap_err()
+                .contains("incompatible with --fix")
+        );
+    }
+
+    #[test]
+    fn empty_regions_csv_is_usage_error() {
+        let err = parse_lint_args(&argv(&["lint", "--regions", " , "])).unwrap_err();
+        assert!(err.contains("--regions list is empty"), "got: {err}");
     }
 }
