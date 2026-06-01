@@ -12,7 +12,25 @@ use color_eyre::eyre::Result;
 
 use crate::{aws, terraform};
 
-pub async fn run(args: &[String]) -> Result<()> {
+/// Parsed `ebman drift` flags. Region CSV is resolved to a list of
+/// `Option<String>` targets here (a single `None` means "the default
+/// region"), so the empty-CSV usage error is decided at parse time.
+#[derive(Debug, PartialEq, Eq)]
+struct DriftArgs {
+    env_name: Option<String>,
+    regions: Vec<Option<String>>,
+    tfstate_path: Option<std::path::PathBuf>,
+    tfdir: Option<std::path::PathBuf>,
+    json: bool,
+    quiet: bool,
+}
+
+/// Pure arg parser for `ebman drift`. Separated from [`run`] so the
+/// flag matrix + the three usage-error (exit-2) cases — unknown flag,
+/// `--regions` absent value, `--regions` CSV that trims to empty — are
+/// unit-testable without the live AWS / tfstate I/O or `process::exit`.
+/// Returns `Err(usage_message)` for those cases.
+fn parse_drift_args(args: &[String]) -> Result<DriftArgs, String> {
     let mut env_name: Option<String> = None;
     let mut regions_csv: Option<String> = None;
     let mut tfstate_path: Option<std::path::PathBuf> = None;
@@ -28,12 +46,50 @@ pub async fn run(args: &[String]) -> Result<()> {
             "--tfdir" => tfdir = iter.next().map(std::path::PathBuf::from),
             "--json" => json = true,
             "--quiet" => quiet = true,
-            other => {
-                eprintln!("ebman drift: unknown flag '{other}'");
-                std::process::exit(2);
-            }
+            other => return Err(format!("ebman drift: unknown flag '{other}'")),
         }
     }
+
+    let regions: Vec<Option<String>> = match regions_csv {
+        Some(csv) => {
+            let parsed: Vec<String> = csv
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if parsed.is_empty() {
+                return Err("ebman drift: --regions list is empty".into());
+            }
+            parsed.into_iter().map(Some).collect()
+        }
+        None => vec![None],
+    };
+
+    Ok(DriftArgs {
+        env_name,
+        regions,
+        tfstate_path,
+        tfdir,
+        json,
+        quiet,
+    })
+}
+
+pub async fn run(args: &[String]) -> Result<()> {
+    let DriftArgs {
+        env_name,
+        regions,
+        tfstate_path,
+        tfdir,
+        json,
+        quiet,
+    } = match parse_drift_args(args) {
+        Ok(parsed) => parsed,
+        Err(msg) => {
+            eprintln!("{msg}");
+            std::process::exit(2);
+        }
+    };
 
     let (tf_state, used_path) = if let Some(path) = tfstate_path.as_ref() {
         let Some(state) = terraform::load_from_path(path) else {
@@ -71,22 +127,6 @@ pub async fn run(args: &[String]) -> Result<()> {
             std::process::exit(2);
         };
         (state, Some(found))
-    };
-
-    let regions: Vec<Option<String>> = match regions_csv {
-        Some(csv) => {
-            let parsed: Vec<String> = csv
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-            if parsed.is_empty() {
-                eprintln!("ebman drift: --regions list is empty");
-                std::process::exit(2);
-            }
-            parsed.into_iter().map(Some).collect()
-        }
-        None => vec![None],
     };
 
     let multi_region = regions.len() > 1;
@@ -219,4 +259,81 @@ pub async fn run(args: &[String]) -> Result<()> {
         std::process::exit(3);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn bare_drift_defaults_to_single_default_region() {
+        let p = parse_drift_args(&argv(&["drift"])).unwrap();
+        assert_eq!(p.regions, vec![None]);
+        assert!(p.env_name.is_none() && !p.json && !p.quiet);
+        assert!(p.tfstate_path.is_none() && p.tfdir.is_none());
+    }
+
+    #[test]
+    fn collects_all_flags() {
+        let p = parse_drift_args(&argv(&[
+            "drift",
+            "--env",
+            "prod-api",
+            "--tfstate",
+            "/tmp/terraform.tfstate",
+            "--tfdir",
+            "/repo/infra",
+            "--json",
+            "--quiet",
+        ]))
+        .unwrap();
+        assert_eq!(p.env_name.as_deref(), Some("prod-api"));
+        assert_eq!(
+            p.tfstate_path,
+            Some(std::path::PathBuf::from("/tmp/terraform.tfstate"))
+        );
+        assert_eq!(p.tfdir, Some(std::path::PathBuf::from("/repo/infra")));
+        assert!(p.json && p.quiet);
+    }
+
+    #[test]
+    fn regions_csv_is_split_trimmed_and_wrapped() {
+        let p =
+            parse_drift_args(&argv(&["drift", "--regions", " us-east-1 , eu-west-2 "])).unwrap();
+        assert_eq!(
+            p.regions,
+            vec![Some("us-east-1".to_string()), Some("eu-west-2".to_string())]
+        );
+    }
+
+    #[test]
+    fn empty_regions_csv_is_usage_error() {
+        // A CSV that trims to nothing (e.g. " , , ") must not silently
+        // become a zero-region run — it's an exit-2 usage error.
+        let err = parse_drift_args(&argv(&["drift", "--regions", " , , "])).unwrap_err();
+        assert!(err.contains("--regions list is empty"), "got: {err}");
+    }
+
+    #[test]
+    fn unknown_flag_is_usage_error_naming_the_flag() {
+        let err = parse_drift_args(&argv(&["drift", "--bogus"])).unwrap_err();
+        assert!(
+            err.contains("unknown flag") && err.contains("--bogus"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn regions_as_trailing_token_falls_back_to_default_region() {
+        // `--regions` with no following value: iter.next() is None, so
+        // regions_csv stays None and we get the default-region case
+        // (vec![None]) — NOT the empty-CSV usage error. Pinning this so
+        // a future "require a value" tightening is a deliberate change.
+        let p = parse_drift_args(&argv(&["drift", "--regions"])).unwrap();
+        assert_eq!(p.regions, vec![None]);
+    }
 }
