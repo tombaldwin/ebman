@@ -19,7 +19,24 @@ use color_eyre::eyre::Result;
 use crate::cli::json_string;
 use crate::{aws, config, lint, llm, project};
 
-pub async fn run(args: &[String]) -> Result<()> {
+/// Parsed `ebman explain` invocation: the validated `EBL###` issue id
+/// plus flags. Separated from [`run`] so the positional-vs-flag
+/// disambiguation and the `EBL` prefix check are unit-testable without
+/// `std::process::exit` or the live AWS path.
+#[derive(Debug, PartialEq, Eq)]
+struct ExplainArgs {
+    issue_id: String,
+    env_name: Option<String>,
+    json: bool,
+    dry_run: bool,
+    no_cache: bool,
+}
+
+/// Pure parser for `ebman explain`. Returns `Err(msg)` for the three
+/// exit-2 usage paths: an unknown `--flag`, a missing positional
+/// ISSUE_ID, or an ISSUE_ID that isn't an `EBL###` id. A bare
+/// (non-dash) positional is the ISSUE_ID; last positional wins.
+fn parse_explain_args(args: &[String]) -> Result<ExplainArgs, String> {
     let mut issue_id: Option<String> = None;
     let mut env_name: Option<String> = None;
     let mut json = false;
@@ -33,8 +50,7 @@ pub async fn run(args: &[String]) -> Result<()> {
             "--dry-run" => dry_run = true,
             "--no-cache" => no_cache = true,
             other if other.starts_with("--") => {
-                eprintln!("ebman explain: unknown flag '{other}'");
-                std::process::exit(2);
+                return Err(format!("ebman explain: unknown flag '{other}'"));
             }
             other => {
                 // Positional ISSUE_ID; last positional wins (operator
@@ -44,13 +60,36 @@ pub async fn run(args: &[String]) -> Result<()> {
         }
     }
     let Some(issue_id) = issue_id else {
-        eprintln!("usage: ebman explain EBL### [--env NAME] [--json] [--dry-run] [--no-cache]");
-        std::process::exit(2);
+        return Err(
+            "usage: ebman explain EBL### [--env NAME] [--json] [--dry-run] [--no-cache]".into(),
+        );
     };
     if !issue_id.starts_with("EBL") {
-        eprintln!("ebman explain: ISSUE_ID must be an EBL### rule id (e.g. EBL001)");
-        std::process::exit(2);
+        return Err("ebman explain: ISSUE_ID must be an EBL### rule id (e.g. EBL001)".into());
     }
+    Ok(ExplainArgs {
+        issue_id,
+        env_name,
+        json,
+        dry_run,
+        no_cache,
+    })
+}
+
+pub async fn run(args: &[String]) -> Result<()> {
+    let ExplainArgs {
+        issue_id,
+        env_name,
+        json,
+        dry_run,
+        no_cache,
+    } = match parse_explain_args(args) {
+        Ok(parsed) => parsed,
+        Err(msg) => {
+            eprintln!("{msg}");
+            std::process::exit(2);
+        }
+    };
 
     let cfg = config::load();
     let settings = llm::Settings::from_config(&cfg);
@@ -172,4 +211,62 @@ pub async fn run(args: &[String]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn positional_issue_id_and_flags_parse() {
+        let p = parse_explain_args(&argv(&[
+            "explain",
+            "EBL001",
+            "--env",
+            "prod",
+            "--json",
+            "--dry-run",
+            "--no-cache",
+        ]))
+        .unwrap();
+        assert_eq!(p.issue_id, "EBL001");
+        assert_eq!(p.env_name.as_deref(), Some("prod"));
+        assert!(p.json && p.dry_run && p.no_cache);
+    }
+
+    #[test]
+    fn positional_order_independent_and_last_wins() {
+        // ISSUE_ID can come after flags, and a re-typed id wins.
+        let p = parse_explain_args(&argv(&["explain", "--json", "EBL001", "EBL019"])).unwrap();
+        assert_eq!(p.issue_id, "EBL019");
+        assert!(p.json);
+    }
+
+    #[test]
+    fn missing_issue_id_is_usage_error() {
+        let err = parse_explain_args(&argv(&["explain", "--json"])).unwrap_err();
+        assert!(err.contains("usage:"), "got: {err}");
+    }
+
+    #[test]
+    fn non_ebl_issue_id_is_usage_error() {
+        let err = parse_explain_args(&argv(&["explain", "clippy::foo"])).unwrap_err();
+        assert!(err.contains("must be an EBL### rule id"), "got: {err}");
+    }
+
+    #[test]
+    fn unknown_flag_is_usage_error_but_bare_word_is_the_id() {
+        // A `--`-prefixed unknown is an error...
+        assert!(parse_explain_args(&argv(&["explain", "EBL001", "--bogus"]))
+            .unwrap_err()
+            .contains("unknown flag"));
+        // ...but a bare non-dash word is treated as the positional id,
+        // not an unknown-flag error (here it then fails the EBL check).
+        let err = parse_explain_args(&argv(&["explain", "notaflag"])).unwrap_err();
+        assert!(err.contains("must be an EBL### rule id"), "got: {err}");
+    }
 }

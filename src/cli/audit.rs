@@ -10,7 +10,25 @@ use color_eyre::eyre::Result;
 
 use crate::{audit as audit_log, aws, util};
 
-pub async fn run(args: &[String]) -> Result<()> {
+/// Parsed `ebman audit` flags. `--since` is resolved only as far as a
+/// millisecond window here (the `Utc::now()` subtraction stays in
+/// [`run`] so this struct is deterministic + testable). `since_ms` is
+/// `None` when `--since` was absent.
+#[derive(Debug, PartialEq, Eq)]
+struct AuditArgs {
+    tail: bool,
+    since_ms: Option<i64>,
+    env_filter: Option<String>,
+    rule_filter: Option<String>,
+    action_filter: Option<String>,
+    json: bool,
+}
+
+/// Pure parser for `ebman audit`. Returns `Err(msg)` for the two
+/// exit-2 usage paths: an unknown flag, or a `--since` value that
+/// isn't a valid duration. Deliberately does NOT call `Utc::now()` —
+/// returning the parsed window keeps the parser deterministic.
+fn parse_audit_args(args: &[String]) -> Result<AuditArgs, String> {
     let mut tail = false;
     let mut since_str: Option<String> = None;
     let mut env_filter: Option<String> = None;
@@ -26,25 +44,51 @@ pub async fn run(args: &[String]) -> Result<()> {
             "--rule" => rule_filter = iter.next().cloned(),
             "--action" => action_filter = iter.next().cloned(),
             "--json" => json = true,
-            other => {
-                eprintln!("ebman audit: unknown flag '{other}'");
-                std::process::exit(2);
-            }
+            other => return Err(format!("ebman audit: unknown flag '{other}'")),
         }
     }
 
-    let since_dt: Option<chrono::DateTime<chrono::Utc>> = match since_str.as_deref() {
+    let since_ms: Option<i64> = match since_str.as_deref() {
         None => None,
         Some(s) => match aws::parse_window_ms(s) {
-            Some(ms) => Some(chrono::Utc::now() - chrono::Duration::milliseconds(ms)),
+            Some(ms) => Some(ms),
             None => {
-                eprintln!(
+                return Err(
                     "ebman audit: --since expects a duration like `5m` / `30m` / `1h` / `2d`"
-                );
-                std::process::exit(2);
+                        .into(),
+                )
             }
         },
     };
+
+    Ok(AuditArgs {
+        tail,
+        since_ms,
+        env_filter,
+        rule_filter,
+        action_filter,
+        json,
+    })
+}
+
+pub async fn run(args: &[String]) -> Result<()> {
+    let AuditArgs {
+        tail,
+        since_ms,
+        env_filter,
+        rule_filter,
+        action_filter,
+        json,
+    } = match parse_audit_args(args) {
+        Ok(parsed) => parsed,
+        Err(msg) => {
+            eprintln!("{msg}");
+            std::process::exit(2);
+        }
+    };
+
+    let since_dt: Option<chrono::DateTime<chrono::Utc>> =
+        since_ms.map(|ms| chrono::Utc::now() - chrono::Duration::milliseconds(ms));
 
     let filter = audit_log::AuditFilter {
         since: since_dt,
@@ -140,4 +184,48 @@ pub async fn run(args: &[String]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn collects_filters_and_flags() {
+        let p = parse_audit_args(&argv(&[
+            "audit", "--tail", "--env", "prod", "--rule", "EBL001", "--action", "Deploy", "--json",
+        ]))
+        .unwrap();
+        assert!(p.tail && p.json);
+        assert_eq!(p.env_filter.as_deref(), Some("prod"));
+        assert_eq!(p.rule_filter.as_deref(), Some("EBL001"));
+        assert_eq!(p.action_filter.as_deref(), Some("Deploy"));
+        assert!(p.since_ms.is_none());
+    }
+
+    #[test]
+    fn since_resolves_to_window_ms() {
+        // 2d = 2 * 86_400_000 ms. Deterministic — no Utc::now() in parse.
+        let p = parse_audit_args(&argv(&["audit", "--since", "2d"])).unwrap();
+        assert_eq!(p.since_ms, Some(172_800_000));
+    }
+
+    #[test]
+    fn bad_since_is_usage_error() {
+        let err = parse_audit_args(&argv(&["audit", "--since", "yesterday"])).unwrap_err();
+        assert!(err.contains("--since expects a duration"), "got: {err}");
+    }
+
+    #[test]
+    fn unknown_flag_is_usage_error() {
+        let err = parse_audit_args(&argv(&["audit", "--bogus"])).unwrap_err();
+        assert!(
+            err.contains("unknown flag") && err.contains("--bogus"),
+            "got: {err}"
+        );
+    }
 }
