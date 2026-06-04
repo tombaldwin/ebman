@@ -29,7 +29,7 @@ Type `:` to open the command bar. Tab-completion is not implemented, but `Ctrl-K
 ## Per-env inspection
 
 - `:why` / `:diagnose` — diagnostic overlay (events + alarms + instances + recent deploys; DLQ peek for Worker envs). Bound to `!`.
-- `:diff NAME` — side-by-side env comparison vs selected env. `:diff ENV-A ENV-B` names both explicitly.
+- `:diff NAME` — side-by-side env comparison vs selected env. `:diff ENV-A ENV-B` names both explicitly. Add `--ignore-keys "version,updated"` to suppress those metadata rows (field labels: `name`, `application`, `tier`, `status`, `health`, `platform`, `version`, `cname`, `updated`; `version_label` also matches `version`).
 - `:config-diff ENV` — option-setting deltas between the selected env and `ENV`.
 - `:config-diff-local [NAME]` — diff the deployed env against a local EB CLI saved config under `.elasticbeanstalk/saved_configs/`. No arg auto-picks the lone file.
 - `:lineage` — deploy-only timeline (one row per version label, newest first, with Δ between deploys).

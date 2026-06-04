@@ -196,7 +196,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     ),
     cmd(
         "diff",
-        ":diff NAME — side-by-side env comparison vs selected env;  :diff ENV-A ENV-B names both explicitly",
+        ":diff NAME — side-by-side env comparison vs selected env;  :diff ENV-A ENV-B names both explicitly;  --ignore-keys \"version,updated\" hides those rows",
         Category::Inspection,
         CommandKind::Prefill("diff "),
     ),
