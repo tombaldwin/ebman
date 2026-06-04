@@ -10,6 +10,7 @@ Type `:` to open the command bar. Tab-completion is not implemented, but `Ctrl-K
 - `:events on|off` — toggle the events panel.
 - `:event-time [utc|local|age]` — event timestamp display; no arg cycles (default UTC). Also bound to `T`.
 - `:cost on | off | status` — toggle the COST column ($/month per env via Cost Explorer; 24h cache).
+- `:fleet-cost` — one-screen $/month summary across the fleet (grouped by app, tier, health). Reads the `:cost on` cache; no AWS calls.
 - `:cols list | hide NAME | show NAME | reset` — column management.
 - `:filter NAME` / `:f NAME` — recall a saved filter.
 - `:save NAME` — save the current filter as `NAME`.
@@ -33,6 +34,7 @@ Type `:` to open the command bar. Tab-completion is not implemented, but `Ctrl-K
 - `:config-diff ENV` — option-setting deltas between the selected env and `ENV`.
 - `:config-diff-local [NAME]` — diff the deployed env against a local EB CLI saved config under `.elasticbeanstalk/saved_configs/`. No arg auto-picks the lone file.
 - `:lineage` — deploy-only timeline (one row per version label, newest first, with Δ between deploys).
+- `:promotions` — lineage trace of `:promote-env` events in this session (in-memory; cleared on context switch).
 - `:changes` — deploy + config-change timeline from the env's event history.
 - `:alarm-history NAME` — recent CloudWatch alarm transitions (StateUpdate / ConfigurationUpdate / Action, newest first).
 - `:ssh [i-abc]` — open an embedded SSM session into an env instance. No arg opens a picker over cached Detail/Instances. Needs `aws` CLI + session-manager-plugin on `PATH`.
