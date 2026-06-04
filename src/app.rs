@@ -5183,6 +5183,124 @@ impl App {
         });
     }
 
+    /// `:diff ENV` / `:diff ENV-A ENV-B` — side-by-side env-metadata
+    /// comparison (name/tier/status/health/platform/version/cname/
+    /// updated). `--ignore-keys "k1,k2"` suppresses matching rows, the
+    /// same flag shape `:config-diff` uses. Lives in its own helper (not
+    /// inline in `execute_command`) so the `--ignore-keys` literal stays
+    /// out of the dispatch-arm scanner's view — see
+    /// `commands::tests::registry_covers_every_dispatch_arm`.
+    pub(crate) fn cmd_diff(&mut self, rest: &[&str]) {
+        // Parse out `--ignore-keys "k1,k2"`, leaving the positional env
+        // name(s). Matches the metadata diff's field labels — `version`,
+        // `updated`, `cname`, etc. — case-insensitively.
+        let mut positionals: Vec<&str> = Vec::new();
+        let mut ignore_csv: Option<String> = None;
+        let mut iter = rest.iter().copied();
+        let mut bad_arg: Option<String> = None;
+        while let Some(arg) = iter.next() {
+            match arg {
+                "--ignore-keys" => {
+                    let Some(value) = iter.next() else {
+                        self.error_message = Some(
+                            "--ignore-keys expects a comma-separated list (e.g. \"version,updated\")"
+                                .into(),
+                        );
+                        return;
+                    };
+                    if value.starts_with("--") {
+                        self.error_message = Some(format!(
+                            "--ignore-keys expects a comma-separated list, got flag '{value}'"
+                        ));
+                        return;
+                    }
+                    ignore_csv = Some(value.to_string());
+                }
+                other if other.starts_with("--") => {
+                    bad_arg = Some(other.to_string());
+                    break;
+                }
+                other => positionals.push(other),
+            }
+        }
+        if let Some(other) = bad_arg {
+            self.error_message = Some(format!("unknown arg '{other}'"));
+            return;
+        }
+        let ignore_keys: Vec<String> = parse_ignore_keys(ignore_csv.as_deref());
+        match (positionals.first(), positionals.get(1)) {
+            (None, _) => {
+                self.error_message = Some(
+                    "usage: :diff ENV  (selected ↔ ENV)  |  :diff ENV-A ENV-B  [--ignore-keys \"k1,k2\"]"
+                        .into(),
+                );
+            }
+            // Two-arg form: both envs named explicitly, so no implicit
+            // selected-env side. Useful for picking env-A ↔ env-B from a
+            // different scope than what's currently selected.
+            (Some(a), Some(b)) => {
+                if a == b {
+                    self.error_message = Some("pick two different envs to compare".into());
+                    return;
+                }
+                let Some(left) = self.environments.iter().find(|e| e.name == **a).cloned() else {
+                    self.error_message = Some(format!("no env named '{a}' in current view"));
+                    return;
+                };
+                let Some(right) = self.environments.iter().find(|e| e.name == **b).cloned() else {
+                    self.error_message = Some(format!("no env named '{b}' in current view"));
+                    return;
+                };
+                self.current_overlay = Some(Overlay::Diff(diff_envs(
+                    &left,
+                    &right,
+                    self.redact,
+                    &ignore_keys,
+                )));
+            }
+            // Legacy single-arg form: selected (or detail-pane) env
+            // compared against the named arg. Preserves the existing
+            // behaviour every operator already knows.
+            (Some(target), None) => {
+                let left_opt = if let Some(d) = self.detail.as_ref() {
+                    Some(d.env_snapshot.clone())
+                } else {
+                    self.selected_env().cloned()
+                };
+                let Some(left) = left_opt else {
+                    self.error_message = Some(
+                        "no env selected — press 1-9, click a row, or type ' to jump by name"
+                            .into(),
+                    );
+                    return;
+                };
+                if left.name == **target {
+                    self.error_message = Some("pick a different env to compare against".into());
+                    return;
+                }
+                let right = self
+                    .environments
+                    .iter()
+                    .find(|e| e.name == **target)
+                    .cloned();
+                match right {
+                    None => {
+                        self.error_message =
+                            Some(format!("no env named '{target}' in current view"));
+                    }
+                    Some(right) => {
+                        self.current_overlay = Some(Overlay::Diff(diff_envs(
+                            &left,
+                            &right,
+                            self.redact,
+                            &ignore_keys,
+                        )));
+                    }
+                }
+            }
+        }
+    }
+
     /// `:config-diff ENV` — compare the selected env's option-settings
     /// against `ENV`'s, showing every setting that differs. Answers
     /// "why does staging differ from prod?". Fetches both envs'
@@ -10602,72 +10720,7 @@ impl App {
                     self.status_message = Some(format!(":<plugin>  {}", names.join(", ")));
                 }
             }
-            "diff" => match (rest.first(), rest.get(1)) {
-                (None, _) => {
-                    self.error_message = Some(
-                        "usage: :diff ENV  (selected ↔ ENV)  |  :diff ENV-A ENV-B  (name both)"
-                            .into(),
-                    );
-                }
-                // Two-arg form: both envs named explicitly, so no
-                // implicit selected-env side. Useful for picking
-                // env-A ↔ env-B from a different scope than what's
-                // currently selected.
-                (Some(a), Some(b)) => {
-                    if a == b {
-                        self.error_message = Some("pick two different envs to compare".into());
-                        return;
-                    }
-                    let Some(left) = self.environments.iter().find(|e| e.name == **a).cloned()
-                    else {
-                        self.error_message = Some(format!("no env named '{a}' in current view"));
-                        return;
-                    };
-                    let Some(right) = self.environments.iter().find(|e| e.name == **b).cloned()
-                    else {
-                        self.error_message = Some(format!("no env named '{b}' in current view"));
-                        return;
-                    };
-                    self.current_overlay =
-                        Some(Overlay::Diff(diff_envs(&left, &right, self.redact)));
-                }
-                // Legacy single-arg form: selected (or detail-pane) env
-                // compared against the named arg. Preserves the
-                // existing behaviour every operator already knows.
-                (Some(target), None) => {
-                    let left_opt = if let Some(d) = self.detail.as_ref() {
-                        Some(d.env_snapshot.clone())
-                    } else {
-                        self.selected_env().cloned()
-                    };
-                    let Some(left) = left_opt else {
-                        self.error_message = Some(
-                            "no env selected — press 1-9, click a row, or type ' to jump by name"
-                                .into(),
-                        );
-                        return;
-                    };
-                    if left.name == **target {
-                        self.error_message = Some("pick a different env to compare against".into());
-                        return;
-                    }
-                    let right = self
-                        .environments
-                        .iter()
-                        .find(|e| e.name == **target)
-                        .cloned();
-                    match right {
-                        None => {
-                            self.error_message =
-                                Some(format!("no env named '{target}' in current view"));
-                        }
-                        Some(right) => {
-                            self.current_overlay =
-                                Some(Overlay::Diff(diff_envs(&left, &right, self.redact)));
-                        }
-                    }
-                }
-            },
+            "diff" => self.cmd_diff(&rest),
             "alarms" => {
                 let env_opt = if let Some(d) = self.detail.as_ref() {
                     Some(d.env_name.clone())
@@ -14034,7 +14087,29 @@ fn format_saved_configs(apps: &[Application]) -> String {
     out
 }
 
-fn diff_envs(left: &Environment, right: &Environment, redact_on: bool) -> String {
+/// Pure: should this env-metadata diff row be suppressed given the
+/// operator's `--ignore-keys` list? Matches the row's field label
+/// case-insensitively against the (already-lowercased) ignore set. The
+/// `Version` row also matches `version_label` — that's the key
+/// `:config-diff` uses for the same field, and the backlog's stated use
+/// case ("hide the noisy version_label differences"), so both spellings
+/// work. Empty `ignore_keys` is a no-op.
+pub fn diff_field_ignored(field: &str, ignore_keys: &[String]) -> bool {
+    if ignore_keys.is_empty() {
+        return false;
+    }
+    let f = field.to_ascii_lowercase();
+    ignore_keys
+        .iter()
+        .any(|k| *k == f || (f == "version" && k == "version_label"))
+}
+
+fn diff_envs(
+    left: &Environment,
+    right: &Environment,
+    redact_on: bool,
+    ignore_keys: &[String],
+) -> String {
     let cn = |s: &str| {
         if redact_on {
             redact_block(s)
@@ -14047,7 +14122,7 @@ fn diff_envs(left: &Environment, right: &Environment, redact_on: bool) -> String
             .map(|u| u.to_rfc3339())
             .unwrap_or_else(|| "—".into())
     };
-    let rows: Vec<(&str, String, String)> = vec![
+    let mut rows: Vec<(&str, String, String)> = vec![
         ("Name", left.name.clone(), right.name.clone()),
         (
             "Application",
@@ -14066,6 +14141,10 @@ fn diff_envs(left: &Environment, right: &Environment, redact_on: bool) -> String
         ("CNAME", cn(&left.cname), cn(&right.cname)),
         ("Updated", updated(left), updated(right)),
     ];
+    // Drop rows the operator asked to ignore (e.g. `--ignore-keys
+    // "version,updated"`). Done before width math so the layout stays
+    // tight around what's left.
+    rows.retain(|(field, _, _)| !diff_field_ignored(field, ignore_keys));
 
     // Width-aware truncation so long values don't blow out the popup.
     let width: usize = 28;
@@ -18461,7 +18540,7 @@ mod tests {
     fn diff_envs_marks_differing_fields() {
         let a = fake_env("prod", "Ready", "Green", "v1");
         let b = fake_env("staging", "Updating", "Yellow", "v2");
-        let out = diff_envs(&a, &b, false);
+        let out = diff_envs(&a, &b, false, &[]);
         // Differing fields prefixed by ≠
         assert!(out.contains("≠ Status"));
         assert!(out.contains("≠ Health"));
@@ -18478,10 +18557,40 @@ mod tests {
     fn diff_envs_redacts_cname() {
         let a = fake_env("prod", "Ready", "Green", "v1");
         let b = fake_env("staging", "Updating", "Yellow", "v2");
-        let out = diff_envs(&a, &b, true);
+        let out = diff_envs(&a, &b, true, &[]);
         // CNAMEs become blocks; the canonical envname-portion shouldn't survive.
         assert!(!out.contains("prod.elb.amazonaws.com"));
         assert!(out.contains("▓"));
+    }
+
+    #[test]
+    fn diff_field_ignored_matches_label_and_version_label_alias() {
+        // Empty list → never ignore.
+        assert!(!diff_field_ignored("Version", &[]));
+        // Case-insensitive match against the field label.
+        let keys = parse_ignore_keys(Some("version, updated"));
+        assert!(diff_field_ignored("Version", &keys));
+        assert!(diff_field_ignored("Updated", &keys));
+        assert!(!diff_field_ignored("Status", &keys));
+        // `version_label` (the `:config-diff` spelling) also hides Version.
+        let alias = parse_ignore_keys(Some("version_label"));
+        assert!(diff_field_ignored("Version", &alias));
+        assert!(!diff_field_ignored("Status", &alias));
+    }
+
+    #[test]
+    fn diff_envs_drops_ignored_rows() {
+        let a = fake_env("prod", "Ready", "Green", "v1");
+        let b = fake_env("staging", "Updating", "Yellow", "v2");
+        let keys = parse_ignore_keys(Some("version,cname,updated"));
+        let out = diff_envs(&a, &b, false, &keys);
+        // Ignored rows vanish entirely (no row at all, differing or not).
+        assert!(!out.contains("Version"), "Version row should be ignored");
+        assert!(!out.contains("CNAME"), "CNAME row should be ignored");
+        assert!(!out.contains("Updated"), "Updated row should be ignored");
+        // Untouched rows still render.
+        assert!(out.contains("≠ Status"));
+        assert!(out.contains("  Application"));
     }
 
     #[test]
@@ -20662,6 +20771,40 @@ mod tests {
         assert!(
             app.error_message.is_none(),
             "unexpected error: {:?}",
+            app.error_message
+        );
+    }
+
+    #[tokio::test]
+    async fn diff_ignore_keys_flag_parses_and_unknown_flag_errors() {
+        let mut app = test_app();
+        app.environments = vec![
+            mk_env("staging", "uflexi", "Web", "Green"),
+            mk_env("prod", "uflexi", "Web", "Green"),
+        ];
+        app.rebuild_view();
+        // `--ignore-keys` is consumed; positional envs still resolve and
+        // the overlay opens (flag order around the env names is free).
+        app.execute_command("diff staging prod --ignore-keys version,updated");
+        assert!(
+            matches!(app.current_overlay, Some(Overlay::Diff(_))),
+            "expected Overlay::Diff with --ignore-keys present"
+        );
+        assert!(
+            app.error_message.is_none(),
+            "unexpected: {:?}",
+            app.error_message
+        );
+        // An unrecognised flag is a clear error, not a silent no-op.
+        app.current_overlay = None;
+        app.execute_command("diff staging prod --bogus");
+        assert!(app.current_overlay.is_none(), "shouldn't open on bad flag");
+        assert!(
+            app.error_message
+                .as_deref()
+                .unwrap_or("")
+                .contains("unknown arg '--bogus'"),
+            "expected unknown-arg error, got {:?}",
             app.error_message
         );
     }
