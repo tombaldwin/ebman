@@ -5227,6 +5227,14 @@ impl App {
             self.error_message = Some(format!("unknown arg '{other}'"));
             return;
         }
+        // Reject excess positionals rather than silently dropping them
+        // (`:config-diff` does the same for its second positional).
+        if positionals.len() > 2 {
+            self.error_message = Some(
+                "usage: :diff takes at most two env names (selected ↔ ENV, or ENV-A ENV-B)".into(),
+            );
+            return;
+        }
         let ignore_keys: Vec<String> = parse_ignore_keys(ignore_csv.as_deref());
         match (positionals.first(), positionals.get(1)) {
             (None, _) => {
@@ -20805,6 +20813,22 @@ mod tests {
                 .unwrap_or("")
                 .contains("unknown arg '--bogus'"),
             "expected unknown-arg error, got {:?}",
+            app.error_message
+        );
+        // A third positional is rejected, not silently dropped.
+        app.error_message = None;
+        app.current_overlay = None;
+        app.execute_command("diff staging prod extra");
+        assert!(
+            app.current_overlay.is_none(),
+            "shouldn't open with 3 positionals"
+        );
+        assert!(
+            app.error_message
+                .as_deref()
+                .unwrap_or("")
+                .contains("at most two"),
+            "expected too-many-args error, got {:?}",
             app.error_message
         );
     }
