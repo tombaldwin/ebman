@@ -3770,8 +3770,14 @@ impl App {
                         self.mode = Mode::QuickJump;
                     }
                     KeyCode::Char('/') => {
+                        // Clearing `filter` mutates view state, so the
+                        // cached slices must be rebuilt — otherwise
+                        // opening filter mode while a filter is already
+                        // active leaves the old filtered subset on
+                        // screen (stale) until the first keystroke.
                         self.filter.clear();
                         self.mode = Mode::Filter;
+                        self.rebuild_view();
                     }
                     KeyCode::Char('p') => self.open_profile_picker(),
                     KeyCode::Char('r') => self.open_region_picker(),
@@ -21355,6 +21361,40 @@ mod tests {
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(app.mode, Mode::Normal);
         assert!(app.filter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn slash_with_active_filter_rebuilds_to_full_fleet() {
+        // Regression: opening filter mode while a filter is already
+        // active must clear the filter AND rebuild the cached view, so
+        // the full fleet shows immediately — not the stale filtered
+        // subset left over until the next keystroke. (Surfaced by the
+        // demo gif's closing reveal; house rule: filter mutations call
+        // rebuild_view().)
+        let mut app = test_app();
+        app.environments = vec![
+            mk_env("prod-web", "uflexi", "Web", "Green"),
+            mk_env("staging-web", "uflexi", "Web", "Green"),
+        ];
+        app.rebuild_view();
+        // Apply a filter that matches exactly one env.
+        press(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+        for c in "prod".chars() {
+            press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.cached_filtered.len(), 1, "filter should hide one env");
+        // `/` re-opens filter mode: filter empties and the view must
+        // rebuild to show all envs right away.
+        press(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+        assert_eq!(app.mode, Mode::Filter);
+        assert!(app.filter.is_empty());
+        assert_eq!(
+            app.cached_filtered.len(),
+            2,
+            "full fleet should be visible the moment filter mode opens"
+        );
     }
 
     #[tokio::test]
