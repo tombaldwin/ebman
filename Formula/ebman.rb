@@ -24,8 +24,13 @@ class Ebman < Formula
       sha256 "1fd1445653ecb9e63adc642dd5d2551e60ae9ea004be483e2607275b4026bf88"
     end
   elsif OS.linux?
-    url "https://github.com/tombaldwin/ebman/releases/download/v#{version}/ebman-v#{version}-x86_64-unknown-linux-gnu.tar.gz"
-    sha256 "1543deca07c1d59796e13d6b7deabe97ecf19deae36d6aa9b9794a4c31255f3d"
+    if Hardware::CPU.arm?
+      url "https://github.com/tombaldwin/ebman/releases/download/v#{version}/ebman-v#{version}-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+    else
+      url "https://github.com/tombaldwin/ebman/releases/download/v#{version}/ebman-v#{version}-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "1543deca07c1d59796e13d6b7deabe97ecf19deae36d6aa9b9794a4c31255f3d"
+    end
   end
 
   depends_on "curl" # used by the live-log-tail S3 fetcher
