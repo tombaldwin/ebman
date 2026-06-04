@@ -41,8 +41,9 @@ Enter
 Sleep 4500ms
 
 # Hover the eye on the table for a beat — gives time to register the
-# Red `ledgerly-staging-api`, the Yellow `ledgerly-batch` with its
-# DLQ chip, the COST column, the INST counts.
+# Red `poly-staging-api`, the Yellow `poly-batch` with its DLQ chip,
+# the COST column, the INST counts, and the Grey `ironwood` row whose
+# INST/COST read `—` (an env Beanstalk can't account for).
 Sleep 2500ms
 
 # Filter to the staging envs. The fixture's sort puts staging-api
@@ -98,6 +99,16 @@ Sleep 1000ms
 # Esc again to leave Detail back to the main env table.
 Escape
 Sleep 800ms
+
+# Clear the `/staging` filter so the full fleet is back on screen for
+# the closing frame — `/` enters Filter mode and empties the buffer,
+# Enter commits the now-empty filter (= show all). The Grey `ironwood`
+# row lands back in view as the loop point: a quiet last beat for
+# anyone watching closely.
+Type "/"
+Sleep 400ms
+Enter
+Sleep 2500ms
 
 # Clean exit so the loop point isn't a half-rendered overlay.
 Type ":q"

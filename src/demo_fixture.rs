@@ -1,19 +1,32 @@
 //! Hand-crafted demo data for `ebman --demo`. Builds a believable
-//! six-env fleet across two applications so VHS / asciinema captures
-//! and screenshots can be reproduced without touching a real AWS
-//! account.
+//! fleet for the fictional `poly` (Polymorphism) account so VHS /
+//! asciinema captures and screenshots can be reproduced without
+//! touching a real AWS account.
 //!
-//! Story: a fictional `ledgerly` company runs:
-//!   * `ledgerly-prod-{api,worker}`
-//!   * `ledgerly-staging-{api,worker}`
-//!   * `ledgerly-canary-api`
-//!   * `ledgerly-dev-api`
+//! Story: the `poly` company runs:
+//!   * `poly-prod-{api,worker}`
+//!   * `poly-staging-{api,worker}`
+//!   * `poly-canary-api`
+//!   * `poly-dev-api`
 //!
-//! Plus a `ledgerly-batch` Worker env with a DLQ backlog, sitting on
-//! the same application as the API envs. Health distribution covers
-//! Green / Yellow / Red / Updating so the table renders every health
+//! Plus a `poly-batch` Worker env with a DLQ backlog, sitting on the
+//! same application as the API envs. Health distribution covers Green
+//! / Yellow / Red / Grey / Updating so the table renders every health
 //! tier; one Worker env has DLQ messages so the row-level red-tint
 //! kicks in even though EB calls it Yellow.
+//!
+//! There is also one environment named `ironwood` in Grey (health-
+//! unknown) state: EB reports nothing about it, it runs a build the
+//! deploy history has no record of (`build-1420`), it sits on a
+//! different (decade-old Go / retired AL2018.03) platform from the
+//! Node.js fleet, and it is absent from the cost / instance-count
+//! maps so INST and COST render a muted `—`. It's a quiet easter egg — a nod to the PROJECT IRONWOOD
+//! ARG buried in the Polymorphism website (`~/git/web`,
+//! `docs/ironwood.md`). The SSM session below carries the matching
+//! tell. Casual viewers see a normal fleet with one env Beanstalk
+//! can't account for; lore-aware ones recognise it. Canon facts
+//! (host `edge-lhr-03`, loopback `127.0.0.1`, the 1977 timestamp,
+//! 1420 MHz) are echoed verbatim, never invented here.
 //!
 //! Pure data — no random number generator, no system time outside of
 //! a single fixed reference timestamp. `install(&mut App)` overwrites
@@ -48,7 +61,7 @@ fn envs() -> Vec<Environment> {
         |name: &str, tier: &str, status: &str, health: &str, version: &str, minutes_ago: i64| {
             Environment {
                 name: name.into(),
-                application: "ledgerly".into(),
+                application: "poly".into(),
                 status: status.into(),
                 health: health.into(),
                 platform: "Node.js 20 running on 64bit Amazon Linux 2023".into(),
@@ -57,7 +70,7 @@ fn envs() -> Vec<Environment> {
                 cname: format!("{name}.us-east-1.elasticbeanstalk.com"),
                 version_label: version.into(),
                 arn: Some(format!(
-                    "arn:aws:elasticbeanstalk:us-east-1:123456789012:environment/ledgerly/{name}"
+                    "arn:aws:elasticbeanstalk:us-east-1:123456789012:environment/poly/{name}"
                 )),
                 updated: Some(now - chrono::Duration::minutes(minutes_ago)),
                 id: Some(format!(
@@ -69,16 +82,9 @@ fn envs() -> Vec<Environment> {
             }
         };
     vec![
+        mk("poly-prod-api", "Web", "Ready", "Green", "build-823", 47),
         mk(
-            "ledgerly-prod-api",
-            "Web",
-            "Ready",
-            "Green",
-            "build-823",
-            47,
-        ),
-        mk(
-            "ledgerly-prod-worker",
+            "poly-prod-worker",
             "Worker",
             "Ready",
             "Green",
@@ -86,17 +92,10 @@ fn envs() -> Vec<Environment> {
             47,
         ),
         // Yellow + DLQ scenario.
-        mk(
-            "ledgerly-batch",
-            "Worker",
-            "Ready",
-            "Yellow",
-            "build-820",
-            192,
-        ),
+        mk("poly-batch", "Worker", "Ready", "Yellow", "build-820", 192),
         // Currently deploying — shows the Updating status tint.
         mk(
-            "ledgerly-canary-api",
+            "poly-canary-api",
             "Web",
             "Updating",
             "Green",
@@ -104,30 +103,34 @@ fn envs() -> Vec<Environment> {
             2,
         ),
         // Red transition.
+        mk("poly-staging-api", "Web", "Ready", "Red", "build-825", 12),
         mk(
-            "ledgerly-staging-api",
-            "Web",
-            "Ready",
-            "Red",
-            "build-825",
-            12,
-        ),
-        mk(
-            "ledgerly-staging-worker",
+            "poly-staging-worker",
             "Worker",
             "Ready",
             "Green",
             "build-823",
             47,
         ),
-        mk(
-            "ledgerly-dev-api",
-            "Web",
-            "Ready",
-            "Grey",
-            "build-825",
-            1440,
-        ),
+        mk("poly-dev-api", "Web", "Ready", "Grey", "build-825", 1440),
+        // Grey / health-unknown easter egg. EB reports no health for
+        // it, it runs a build (`build-1420`, the 1420 MHz hydrogen
+        // line) that `deploys_for_app` has no record of, and it is
+        // deliberately absent from the cost / instance-count maps so
+        // its INST and COST cells render a muted `—`. See the module
+        // doc + PROJECT IRONWOOD canon (`~/git/web/docs/ironwood.md`).
+        //
+        // Its platform also differs from the rest of the fleet: a
+        // decade-old Go on a long-retired Amazon Linux 2018.03 — the
+        // others are all Node.js 20 on AL2023. Canon tie: the relay is
+        // `relay.go`. Reinforces "nobody deployed this" — it isn't
+        // even on the same stack as everything else, and it's been on
+        // a dead platform branch untouched for years.
+        Environment {
+            platform: "Go 1.4 running on 64bit Amazon Linux 2018.03".into(),
+            solution_stack: "64bit Amazon Linux 2018.03 v2.7.0 running Go 1.4".into(),
+            ..mk("ironwood", "Web", "Ready", "Grey", "build-1420", 25920)
+        },
     ]
 }
 
@@ -146,9 +149,19 @@ pub fn events_for_env(env_name: &str) -> Vec<EbEvent> {
 /// operator would actually run during a Red-env triage (`uptime`,
 /// `tail` on the EB engine log, etc.). The trailing prompt is left
 /// blinking so the pane looks live; F12 detaches as usual.
+///
+/// The session doubles as the PROJECT IRONWOOD easter egg (see the
+/// module doc): `hostname` resolves to the canon host `edge-lhr-03`,
+/// `uptime` reads 642 days (a nod to the 642 ly star fix), and `who`
+/// reveals a second, never-ending session — `ironwood` logged in from
+/// loopback (`127.0.0.1`) since `1977-08-15 22:16`, the "Wow! signal"
+/// timestamp from the canon timeline. The triage `tail` lines are
+/// real and stay the headline; the tell is in the specifics, never in
+/// narration (canon tone rule 2). Casual viewers read a triage
+/// session; lore-aware ones spot the loopback login.
 pub fn canned_ssm_session(instance_id: &str) -> String {
     // Short session-id matching what `aws ssm start-session` prints.
-    let session_id = format!("tom-demo-{}", &instance_id[2..10.min(instance_id.len())]);
+    let session_id = format!("poly-ops-{}", &instance_id[2..10.min(instance_id.len())]);
     let mut lines = Vec::<String>::new();
     let push = |lines: &mut Vec<String>, s: &str| {
         lines.push(s.to_string());
@@ -158,16 +171,27 @@ pub fn canned_ssm_session(instance_id: &str) -> String {
         &format!("Starting session with SessionId: {session_id}"),
     );
     push(&mut lines, "");
+    push(&mut lines, "sh-4.2$ hostname");
+    push(&mut lines, "edge-lhr-03");
     push(&mut lines, "sh-4.2$ uptime");
     push(
         &mut lines,
-        " 14:30:15 up 3 days,  4:22,  1 user,  load average: 0.42, 0.38, 0.31",
+        " 14:30:15 up 642 days,  4:22,  1 user,  load average: 0.42, 0.38, 0.31",
     );
     push(&mut lines, "sh-4.2$ tail -3 /var/log/eb-engine/health.log");
     push(&mut lines, "2026-05-24T14:27:42Z [WARN]  5xx rate 12.7%");
     push(
         &mut lines,
         "2026-05-24T14:28:55Z [ERROR] health Yellow → Red",
+    );
+    push(&mut lines, "sh-4.2$ who");
+    push(
+        &mut lines,
+        "poly       pts/0        2026-05-24 14:22 (10.0.0.4)",
+    );
+    push(
+        &mut lines,
+        "ironwood   pts/0        1977-08-15 22:16 (127.0.0.1)",
     );
     push(&mut lines, "sh-4.2$ ");
     // vt100 wants \r\n line endings (it's emulating an xterm).
@@ -191,7 +215,7 @@ pub fn alarms_for_env(env_name: &str) -> Vec<CwAlarm> {
 /// labels line up with the fleet's `version_label` values so an
 /// operator scanning `:why` sees "what shipped last, on which env".
 pub fn deploys_for_app(app_name: &str) -> Vec<AppVersion> {
-    if app_name != "ledgerly" {
+    if app_name != "poly" {
         return Vec::new();
     }
     let now = fixture_now();
@@ -215,13 +239,9 @@ pub fn deploys_for_app(app_name: &str) -> Vec<AppVersion> {
 /// `spawn_why_red_queues` in demo mode.
 pub fn worker_queues_for_env(env_name: &str) -> WorkerQueues {
     match env_name {
-        "ledgerly-batch" => WorkerQueues {
-            main_url: Some(
-                "https://sqs.us-east-1.amazonaws.com/123456789012/ledgerly-batch".into(),
-            ),
-            dlq_url: Some(
-                "https://sqs.us-east-1.amazonaws.com/123456789012/ledgerly-batch-dlq".into(),
-            ),
+        "poly-batch" => WorkerQueues {
+            main_url: Some("https://sqs.us-east-1.amazonaws.com/123456789012/poly-batch".into()),
+            dlq_url: Some("https://sqs.us-east-1.amazonaws.com/123456789012/poly-batch-dlq".into()),
             main_stats: Some(QueueStats {
                 visible: 7,
                 in_flight: 3,
@@ -233,12 +253,12 @@ pub fn worker_queues_for_env(env_name: &str) -> WorkerQueues {
                 delayed: 0,
             }),
         },
-        "ledgerly-prod-worker" => WorkerQueues {
+        "poly-prod-worker" => WorkerQueues {
             main_url: Some(
-                "https://sqs.us-east-1.amazonaws.com/123456789012/ledgerly-prod-worker".into(),
+                "https://sqs.us-east-1.amazonaws.com/123456789012/poly-prod-worker".into(),
             ),
             dlq_url: Some(
-                "https://sqs.us-east-1.amazonaws.com/123456789012/ledgerly-prod-worker-dlq".into(),
+                "https://sqs.us-east-1.amazonaws.com/123456789012/poly-prod-worker-dlq".into(),
             ),
             main_stats: Some(QueueStats {
                 visible: 4,
@@ -247,13 +267,12 @@ pub fn worker_queues_for_env(env_name: &str) -> WorkerQueues {
             }),
             dlq_stats: Some(QueueStats::default()),
         },
-        "ledgerly-staging-worker" => WorkerQueues {
+        "poly-staging-worker" => WorkerQueues {
             main_url: Some(
-                "https://sqs.us-east-1.amazonaws.com/123456789012/ledgerly-staging-worker".into(),
+                "https://sqs.us-east-1.amazonaws.com/123456789012/poly-staging-worker".into(),
             ),
             dlq_url: Some(
-                "https://sqs.us-east-1.amazonaws.com/123456789012/ledgerly-staging-worker-dlq"
-                    .into(),
+                "https://sqs.us-east-1.amazonaws.com/123456789012/poly-staging-worker-dlq".into(),
             ),
             main_stats: Some(QueueStats::default()),
             dlq_stats: Some(QueueStats::default()),
@@ -279,11 +298,11 @@ pub fn instances_for(env_name: &str) -> Vec<Instance> {
         launched_at: Some(now - chrono::Duration::minutes(ago_min)),
     };
     match env_name {
-        "ledgerly-staging-api" => vec![
+        "poly-staging-api" => vec![
             mk("i-0abc123def456789a", "Severe", "Red", "us-east-1a", 84),
             mk("i-0bcd234ef567890ab", "Ok", "Green", "us-east-1b", 84),
         ],
-        "ledgerly-batch" => vec![
+        "poly-batch" => vec![
             mk(
                 "i-0cde345f6789012bc",
                 "Warning",
@@ -293,20 +312,20 @@ pub fn instances_for(env_name: &str) -> Vec<Instance> {
             ),
             mk("i-0def4567890123cde", "Ok", "Green", "us-east-1b", 240),
         ],
-        "ledgerly-prod-api" => vec![
+        "poly-prod-api" => vec![
             mk("i-0ef56789012345def", "Ok", "Green", "us-east-1a", 1500),
             mk("i-0f6789012345678ef", "Ok", "Green", "us-east-1b", 1500),
             mk("i-01234567890abcdef", "Ok", "Green", "us-east-1c", 1500),
         ],
-        "ledgerly-prod-worker" => vec![
+        "poly-prod-worker" => vec![
             mk("i-0234567890abcdef0", "Ok", "Green", "us-east-1a", 1500),
             mk("i-03456789012abcdef", "Ok", "Green", "us-east-1b", 1500),
         ],
-        "ledgerly-staging-worker" => vec![
+        "poly-staging-worker" => vec![
             mk("i-04567890abcdef012", "Ok", "Green", "us-east-1a", 84),
             mk("i-05678901abcdef234", "Ok", "Green", "us-east-1b", 84),
         ],
-        "ledgerly-canary-api" => vec![
+        "poly-canary-api" => vec![
             // Canary mid-deploy — one of two is being replaced.
             mk("i-067890abcdef34567", "Pending", "Grey", "us-east-1a", 2),
         ],
@@ -322,7 +341,7 @@ fn events() -> Vec<EbEvent> {
     let mk = |env: &str, msg: &str, sev: &str, version: Option<&str>, ago: i64| EbEvent {
         at: Some(now - chrono::Duration::minutes(ago)),
         env: env.into(),
-        application: "ledgerly".into(),
+        application: "poly".into(),
         message: msg.into(),
         severity: sev.into(),
         version_label: version.map(String::from),
@@ -330,53 +349,63 @@ fn events() -> Vec<EbEvent> {
     vec![
         // Newest first — App display order.
         mk(
-            "ledgerly-staging-api",
+            "poly-staging-api",
             "Environment health has transitioned from Yellow to Red. Application running 95% of the time. 50% of the requests are erroring with HTTP 4xx.",
             "ERROR",
             None,
             8,
         ),
         mk(
-            "ledgerly-staging-api",
+            "poly-staging-api",
             "Environment health has transitioned from Green to Yellow. Application running 99% of the time.",
             "WARN",
             None,
             10,
         ),
         mk(
-            "ledgerly-canary-api",
+            "poly-canary-api",
             "Environment update is starting. Deploying new version to instance(s).",
             "INFO",
             Some("build-825"),
             2,
         ),
         mk(
-            "ledgerly-staging-api",
+            "poly-staging-api",
             "New application version deployed.",
             "INFO",
             Some("build-825"),
             12,
         ),
         mk(
-            "ledgerly-staging-api",
+            "poly-staging-api",
             "Environment update completed successfully.",
             "INFO",
             Some("build-823"),
             240,
         ),
         mk(
-            "ledgerly-prod-api",
+            "poly-prod-api",
             "Environment update completed successfully.",
             "INFO",
             Some("build-823"),
             48,
         ),
         mk(
-            "ledgerly-batch",
+            "poly-batch",
             "Environment update completed successfully.",
             "INFO",
             Some("build-820"),
             193,
+        ),
+        // ironwood (Grey) — the genuine EB "health unknown" event, so
+        // drilling into the row isn't empty. Eerie only in context (an
+        // env nobody deployed): the wording is real EB, no narration.
+        mk(
+            "ironwood",
+            "Environment health has transitioned to Unknown. No data has been received from instances.",
+            "WARN",
+            None,
+            25920,
         ),
     ]
 }
@@ -387,7 +416,7 @@ fn events() -> Vec<EbEvent> {
 fn alarms() -> Vec<CwAlarm> {
     vec![
         CwAlarm {
-            name: "ledgerly-staging-api-4xx-elevated".into(),
+            name: "poly-staging-api-4xx-elevated".into(),
             state: "ALARM".into(),
             state_reason:
                 "Threshold Crossed: 1 datapoint [120.0 (24/05/26 14:25:00)] was greater than the threshold (50.0)."
@@ -396,14 +425,14 @@ fn alarms() -> Vec<CwAlarm> {
             namespace: "AWS/ElasticBeanstalk".into(),
         },
         CwAlarm {
-            name: "ledgerly-batch-dlq-depth".into(),
+            name: "poly-batch-dlq-depth".into(),
             state: "ALARM".into(),
             state_reason: "Threshold Crossed: 1 out of the last 1 datapoints [12.0] was greater than the threshold (5.0).".into(),
             metric_name: "ApproximateNumberOfMessagesVisible".into(),
             namespace: "AWS/SQS".into(),
         },
         CwAlarm {
-            name: "ledgerly-prod-api-p99-latency".into(),
+            name: "poly-prod-api-p99-latency".into(),
             state: "OK".into(),
             state_reason: "Threshold Crossed: 1 out of the last 1 datapoints [0.42] was not greater than the threshold (1.0).".into(),
             metric_name: "ApplicationLatencyP99".into(),
@@ -418,22 +447,22 @@ fn instance_counts() -> HashMap<String, EnvInstanceCounts> {
         |out: &mut HashMap<String, EnvInstanceCounts>, name: &str, healthy: i32, total: i32| {
             out.insert(name.to_string(), EnvInstanceCounts { healthy, total });
         };
-    put(&mut out, "ledgerly-prod-api", 3, 3);
-    put(&mut out, "ledgerly-prod-worker", 2, 2);
-    put(&mut out, "ledgerly-batch", 1, 2);
-    put(&mut out, "ledgerly-canary-api", 0, 1);
-    put(&mut out, "ledgerly-staging-api", 1, 2);
-    put(&mut out, "ledgerly-staging-worker", 2, 2);
-    put(&mut out, "ledgerly-dev-api", 0, 0);
+    put(&mut out, "poly-prod-api", 3, 3);
+    put(&mut out, "poly-prod-worker", 2, 2);
+    put(&mut out, "poly-batch", 1, 2);
+    put(&mut out, "poly-canary-api", 0, 1);
+    put(&mut out, "poly-staging-api", 1, 2);
+    put(&mut out, "poly-staging-worker", 2, 2);
+    put(&mut out, "poly-dev-api", 0, 0);
     out
 }
 
 /// Worker DLQ depths — populates the row-level red-tint for
-/// `ledgerly-batch` and gives `:why` something to render under the
+/// `poly-batch` and gives `:why` something to render under the
 /// Worker section.
 fn worker_dlq_depths() -> HashMap<String, i64> {
     let mut out = HashMap::new();
-    out.insert("ledgerly-batch".to_string(), 12);
+    out.insert("poly-batch".to_string(), 12);
     out
 }
 
@@ -441,13 +470,13 @@ fn worker_dlq_depths() -> HashMap<String, i64> {
 /// row) has numbers. Buckets: green < $50, muted $50–$500, red >= $500.
 fn costs() -> HashMap<String, f64> {
     let mut out = HashMap::new();
-    out.insert("ledgerly-prod-api".into(), 612.0);
-    out.insert("ledgerly-prod-worker".into(), 184.0);
-    out.insert("ledgerly-batch".into(), 96.0);
-    out.insert("ledgerly-canary-api".into(), 42.0);
-    out.insert("ledgerly-staging-api".into(), 38.0);
-    out.insert("ledgerly-staging-worker".into(), 28.0);
-    out.insert("ledgerly-dev-api".into(), 11.0);
+    out.insert("poly-prod-api".into(), 612.0);
+    out.insert("poly-prod-worker".into(), 184.0);
+    out.insert("poly-batch".into(), 96.0);
+    out.insert("poly-canary-api".into(), 42.0);
+    out.insert("poly-staging-api".into(), 38.0);
+    out.insert("poly-staging-worker".into(), 28.0);
+    out.insert("poly-dev-api".into(), 11.0);
     out
 }
 
@@ -475,7 +504,7 @@ pub fn install(app: &mut App) {
     app.costs = costs();
     app.costs_fetched_at = Some(fixture_now());
     app.context.account_id = Some("123456789012".into());
-    app.context.profile = Some("ledgerly-demo".into());
+    app.context.profile = Some("poly-demo".into());
     app.context.caller_arn = Some("arn:aws:iam::123456789012:user/demo-operator".into());
     app.last_refresh = Some(fixture_now());
     app.rebuild_view();
@@ -494,6 +523,9 @@ mod tests {
         assert!(healths.contains("Green"), "missing Green");
         assert!(healths.contains("Yellow"), "missing Yellow");
         assert!(healths.contains("Red"), "missing Red");
+        // Grey = EB's "health unknown" tier; the `ironwood` egg + the
+        // dev env both ride on it, and the table needs the tint shown.
+        assert!(healths.contains("Grey"), "missing Grey");
         // Updating is a status, not a health — make sure at least
         // one env is in Updating so that tint also renders.
         assert!(
@@ -503,27 +535,90 @@ mod tests {
     }
 
     #[test]
+    fn fixture_has_ironwood_health_unknown_easter_egg() {
+        // The PROJECT IRONWOOD egg: one env named `ironwood` in Grey
+        // (health-unknown), running a build the deploy history has no
+        // record of, and absent from the cost / instance-count maps so
+        // both columns render the muted `—` ("EB knows nothing").
+        let env = envs()
+            .into_iter()
+            .find(|e| e.name == "ironwood")
+            .expect("ironwood env should be present");
+        assert_eq!(env.health, "Grey", "ironwood should be health-unknown");
+        assert_eq!(env.version_label, "build-1420", "ironwood build drifted");
+        // Its platform must differ from the Node.js fleet — that's part
+        // of the "nobody deployed this" tell. Assert it's a distinct
+        // family (Go) and not the shared Node.js stack.
+        let fleet = envs();
+        let fleet_platforms: std::collections::BTreeSet<&str> = fleet
+            .iter()
+            .filter(|e| e.name != "ironwood")
+            .map(|e| e.platform.as_str())
+            .collect();
+        assert!(
+            !fleet_platforms.contains(env.platform.as_str()),
+            "ironwood must not share the fleet's platform"
+        );
+        assert!(
+            env.platform.to_ascii_lowercase().contains("go "),
+            "ironwood platform should be the Go relay stack, got {:?}",
+            env.platform
+        );
+        // The build it runs must NOT appear in the app's deploy
+        // history — that's the "where did this come from?" tell.
+        assert!(
+            !deploys_for_app("poly")
+                .iter()
+                .any(|d| d.label == "build-1420"),
+            "build-1420 must stay out of the deploy history"
+        );
+        // Absent from both maps → muted `—` in INST and COST.
+        assert!(
+            !instance_counts().contains_key("ironwood"),
+            "ironwood must have no instance counts"
+        );
+        assert!(
+            !costs().contains_key("ironwood"),
+            "ironwood must have no cost figure"
+        );
+    }
+
+    #[test]
+    fn canned_ssm_session_carries_the_ironwood_tell() {
+        // The session doubles as the egg: canon host, the loopback
+        // login, and the 1977 "Wow! signal" timestamp — all verbatim
+        // from `~/git/web/docs/ironwood.md` §4. Keep them in sync.
+        let s = canned_ssm_session("i-0abc123def456789a");
+        assert!(s.contains("edge-lhr-03"), "missing canon host");
+        assert!(s.contains("127.0.0.1"), "missing loopback login");
+        assert!(s.contains("ironwood"), "missing ironwood session");
+        assert!(s.contains("1977-08-15 22:16"), "missing Wow!-signal stamp");
+        // The real triage line stays the headline.
+        assert!(s.contains("health Yellow → Red"), "lost the triage story");
+    }
+
+    #[test]
     fn fixture_dlq_env_has_messages() {
         // The `:why` Worker section's DLQ peek is one of the
         // demo's headline moments. The fixture must keep it non-empty.
         let dlqs = worker_dlq_depths();
         assert!(
-            dlqs.get("ledgerly-batch").copied().unwrap_or(0) > 0,
-            "ledgerly-batch DLQ should be non-empty"
+            dlqs.get("poly-batch").copied().unwrap_or(0) > 0,
+            "poly-batch DLQ should be non-empty"
         );
     }
 
     #[test]
     fn fixture_red_env_has_an_alarm_and_a_health_event() {
-        // Demo flow: operator presses `!` on ledgerly-staging-api,
+        // Demo flow: operator presses `!` on poly-staging-api,
         // sees both an ERROR-level health event and an ALARM. Both
         // need to be present for the overlay not to look thin.
         assert!(events()
             .iter()
-            .any(|e| e.env == "ledgerly-staging-api" && e.severity == "ERROR"));
+            .any(|e| e.env == "poly-staging-api" && e.severity == "ERROR"));
         assert!(alarms()
             .iter()
-            .any(|a| a.name.starts_with("ledgerly-staging-api") && a.state == "ALARM"));
+            .any(|a| a.name.starts_with("poly-staging-api") && a.state == "ALARM"));
     }
 
     #[test]
