@@ -4,9 +4,9 @@
 # Usage:
 #   scripts/update-formula.sh v0.8.0
 #
-# For the given tag, downloads the three release tarballs published by
+# For the given tag, downloads the four release tarballs published by
 # .github/workflows/release.yml from the matching GitHub Release, computes
-# SHA-256s, and rewrites the `version` + three `sha256` fields in:
+# SHA-256s, and rewrites the `version` + four `sha256` fields in:
 #   - ./Formula/ebman.rb                       (in this repo)
 #   - ../homebrew-tap/Formula/ebman.rb         (sibling tap repo)
 #
@@ -16,7 +16,7 @@
 # commit && git push` once happy.
 #
 # Pre-reqs: gh CLI authed, the v<X.Y.Z> GitHub Release exists with all
-# three tarballs attached (the release workflow does this on tag push).
+# four tarballs attached (the release workflow does this on tag push).
 
 set -euo pipefail
 
@@ -66,6 +66,7 @@ fetch_sha() {
 SHA_AARCH64_DARWIN="$(fetch_sha aarch64-apple-darwin)"
 SHA_X86_DARWIN="$(fetch_sha x86_64-apple-darwin)"
 SHA_X86_LINUX="$(fetch_sha x86_64-unknown-linux-gnu)"
+SHA_AARCH64_LINUX="$(fetch_sha aarch64-unknown-linux-gnu)"
 
 # Rewrite the version line + each target's sha256. The url line uses
 # `#{version}` interpolation so it doesn't need touching.
@@ -82,9 +83,11 @@ rewrite() {
   # relying on sed's address ranges.
   awk -v aarch="$SHA_AARCH64_DARWIN" \
       -v xdarwin="$SHA_X86_DARWIN" \
-      -v xlinux="$SHA_X86_LINUX" '
-    /aarch64-apple-darwin.tar.gz/  { print; getline; sub(/sha256 "[^"]+"/, "sha256 \"" aarch "\""); print; next }
-    /x86_64-apple-darwin.tar.gz/   { print; getline; sub(/sha256 "[^"]+"/, "sha256 \"" xdarwin "\""); print; next }
+      -v xlinux="$SHA_X86_LINUX" \
+      -v alinux="$SHA_AARCH64_LINUX" '
+    /aarch64-apple-darwin.tar.gz/     { print; getline; sub(/sha256 "[^"]+"/, "sha256 \"" aarch "\""); print; next }
+    /x86_64-apple-darwin.tar.gz/      { print; getline; sub(/sha256 "[^"]+"/, "sha256 \"" xdarwin "\""); print; next }
+    /aarch64-unknown-linux-gnu.tar.gz/ { print; getline; sub(/sha256 "[^"]+"/, "sha256 \"" alinux "\""); print; next }
     /x86_64-unknown-linux-gnu.tar.gz/ { print; getline; sub(/sha256 "[^"]+"/, "sha256 \"" xlinux "\""); print; next }
     { print }
   ' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
