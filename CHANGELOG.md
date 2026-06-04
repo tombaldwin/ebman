@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-06-04 — `:diff --ignore-keys` + filter-rebuild fix + ARM64 Linux + IRONWOOD demo reskin
+
+A small features-and-polish release: one operator-facing command flag, a real view-staleness bug fix, an ARM64 Linux build target, and a reskin of the `--demo` fixture used for the README hero gif.
+
+### Added — `:diff --ignore-keys "k1,k2"`
+
+- **The env-metadata `:diff` now takes the same `--ignore-keys` flag `:config-diff` already had**, suppressing matching rows so the comparison shows only what you care about. Matches the field labels case-insensitively (`name`, `application`, `tier`, `status`, `health`, `platform`, `version`, `cname`, `updated`); `version_label` also matches the `version` row for parity with `:config-diff`. Works with both `:diff ENV` and `:diff ENV-A ENV-B`. The dispatch moved into a `cmd_diff` helper (mirrors `cmd_config_diff`); excess positionals are now rejected rather than silently dropped. Pure helper `diff_field_ignored` + tests.
+
+### Fixed — stale view when re-opening filter mode
+
+- **Pressing `/` to start a new filter while one was already active left the old filtered subset on screen** until the next keystroke. `/` cleared `self.filter` without rebuilding the cached view (violating the house rule that filter mutations call `rebuild_view()`). Now rebuilds immediately, so the full fleet is back the moment filter mode opens. Surfaced while rendering the demo gif's closing reveal; +1 regression test.
+
+### Added — ARM64 Linux release artifact
+
+- **`aarch64-unknown-linux-gnu` added to the release matrix**, built natively on a `ubuntu-24.04-arm` runner (no cross-compile). Homebrew picks it up via a new `OS.linux? && Hardware::CPU.arm?` branch; `scripts/update-formula.sh` fills its sha at release time. Operators on Graviton / ARM Linux no longer have to `cargo install` from source. (First build runs on this tag — if it needs adjustment the draft release simply won't cut, nothing partial ships.)
+
+### Changed — `--demo` fixture reskinned to the PROJECT IRONWOOD world
+
+- The synthetic `--demo` fleet behind the README hero gif moved from `ledgerly` to `poly` (a nod to the ARG hidden in the Polymorphism website), including a Grey/health-unknown `ironwood` environment on a deliberately-divergent platform. No behavioural change to ebman — fixture data + the canned SSM-session text only. Demo gif re-rendered.
+
+### Docs
+
+- Documented `:fleet-cost` and `:promotions` in `docs/commands.md` (shipped in 0.20.0, never added — caught by the release docs audit).
+
 ## [0.22.0] — 2026-06-01 — CLI test coverage + batch safety-pin fix + webhook→reqwest + spawn_* refactor finished
 
 A hardening release: no new operator-facing features, but a real safety fix, the first test coverage for the CLI surface, and the completion of the long-deferred `spawn_*` cluster refactor (the remaining 5-of-6 from 0.21).
