@@ -18,18 +18,18 @@ class Ebman < Formula
   if OS.mac?
     if Hardware::CPU.arm?
       url "https://github.com/tombaldwin/ebman/releases/download/v#{version}/ebman-v#{version}-aarch64-apple-darwin.tar.gz"
-      sha256 "eeaba2e49d58a7d3fa03ebebfab7a481a540e9f16a6abab67342385c9c1d927f"
+      sha256 "8a0e5ce678090668c07370b520c263888bfb024febf3a9d2f87e15016bb13e54"
     else
       url "https://github.com/tombaldwin/ebman/releases/download/v#{version}/ebman-v#{version}-x86_64-apple-darwin.tar.gz"
-      sha256 "1fd1445653ecb9e63adc642dd5d2551e60ae9ea004be483e2607275b4026bf88"
+      sha256 "7d736439dac3873fef72646435d5646fb8604407bca4f1d784a55e86fc245cbf"
     end
   elsif OS.linux?
     if Hardware::CPU.arm?
       url "https://github.com/tombaldwin/ebman/releases/download/v#{version}/ebman-v#{version}-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+      sha256 "51507208efda7a302b108738bfc89a8ead1c956c2c285507a376b189cd48bcfa"
     else
       url "https://github.com/tombaldwin/ebman/releases/download/v#{version}/ebman-v#{version}-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "1543deca07c1d59796e13d6b7deabe97ecf19deae36d6aa9b9794a4c31255f3d"
+      sha256 "e620ef11ab359531fd4ab1cd3600a9239550ac61aee2c8edc3e316d9b8aa6713"
     end
   end
 
