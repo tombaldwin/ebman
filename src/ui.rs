@@ -4294,7 +4294,15 @@ fn draw_dlq(f: &mut Frame, area: Rect, app: &mut App) {
 
     // Footer / confirm
     if dlq.confirm_purge {
-        let line = Paragraph::new(Line::from(vec![
+        // Typed text turns green once it exactly matches the env name.
+        let typed_style = Style::default()
+            .fg(if dlq.purge_typed.text() == dlq.env_name.as_str() {
+                theme.health_green
+            } else {
+                theme.text
+            })
+            .add_modifier(Modifier::BOLD);
+        let mut spans = vec![
             Span::styled(
                 " PURGE DLQ — type ",
                 Style::default()
@@ -4313,26 +4321,20 @@ fn draw_dlq(f: &mut Frame, area: Rect, app: &mut App) {
                     .fg(theme.health_red)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                dlq.purge_typed.clone(),
-                Style::default()
-                    .fg(if dlq.purge_typed == dlq.env_name {
-                        theme.health_green
-                    } else {
-                        theme.text
-                    })
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                caret_glyph(&theme),
-                Style::default()
-                    .fg(theme.health_yellow)
-                    .add_modifier(Modifier::SLOW_BLINK),
-            ),
-        ]));
+        ];
+        spans.extend(input_caret_spans(
+            dlq.purge_typed.text(),
+            dlq.purge_typed.cursor_col(),
+            typed_style,
+            Style::default()
+                .fg(theme.health_yellow)
+                .add_modifier(Modifier::SLOW_BLINK),
+            &theme,
+        ));
+        let line = Paragraph::new(Line::from(spans));
         f.render_widget(line, chunks[2]);
     } else if let Some(input) = &dlq.replay_input {
-        let line = Paragraph::new(Line::from(vec![
+        let mut spans = vec![
             Span::styled(
                 " REPLAY → main queue — ",
                 Style::default()
@@ -4343,17 +4345,17 @@ fn draw_dlq(f: &mut Frame, area: Rect, app: &mut App) {
                 "all / count (20) / window (1h 24h 7d): ",
                 Style::default().fg(theme.muted),
             ),
-            Span::styled(
-                input.clone(),
-                Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                caret_glyph(&theme),
-                Style::default()
-                    .fg(theme.health_yellow)
-                    .add_modifier(Modifier::SLOW_BLINK),
-            ),
-        ]));
+        ];
+        spans.extend(input_caret_spans(
+            input.text(),
+            input.cursor_col(),
+            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.health_yellow)
+                .add_modifier(Modifier::SLOW_BLINK),
+            &theme,
+        ));
+        let line = Paragraph::new(Line::from(spans));
         f.render_widget(line, chunks[2]);
     } else {
         let keys = match dlq.viewing {
