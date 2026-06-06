@@ -3639,9 +3639,9 @@ dependencies = [
 
 [[package]]
 name = "tb-tui-common"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea36c7443d40b23953efb276a48bfdccd4733b34d92312368560a779b6d3d554"
+checksum = "fe6d68881cf530e6daaee64a8e87a1e9479b41f96fc537db4272b50c30f90471"
 dependencies = [
  "crossterm",
  "ratatui",

@@ -21,7 +21,7 @@ categories = ["command-line-utilities"]
 # what Rust imports as `tui_common`. To co-develop both crates from a
 # side-by-side checkout, uncomment the `[patch.crates-io]` block at the
 # bottom of this file (don't commit it uncommented).
-tui-common = { version = "0.1.2", package = "tb-tui-common" }
+tui-common = { version = "0.1.3", package = "tb-tui-common" }
 ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }

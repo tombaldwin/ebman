@@ -2056,6 +2056,11 @@ impl App {
                 }
             }
         }
+        // The project / EB-CLI blocks above mutate `app.filter` after the
+        // initial `rebuild_view()`, so the cached view is stale w.r.t. the
+        // configured filter — rebuild once more so the first frame honours
+        // it (house rule: filter mutations call rebuild_view).
+        app.rebuild_view();
         // Derive the tf-managed name set from the loaded tfstate
         // so the env-table badge can do O(1) lookups per row.
         app.refresh_tf_managed_envs();
