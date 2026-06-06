@@ -174,21 +174,19 @@ impl App {
                     p.move_selection(-1);
                 }
             }
-            KeyCode::Backspace => {
+            // TextInput consumes editing keys (insert / backspace /
+            // cursor move / Ctrl-W); after any accepted edit, keep the
+            // selection on a still-matching row.
+            _ => {
                 if let Some(p) = self.picker.as_mut() {
-                    p.filter.pop();
-                }
-            }
-            KeyCode::Char(c) if is_text_input(&key) => {
-                if let Some(p) = self.picker.as_mut() {
-                    p.filter.push(c);
-                    let filt = p.filtered();
-                    if !filt.iter().any(|i| Some(*i) == p.list_state.selected()) {
-                        p.list_state.select(filt.first().copied());
+                    if p.filter.handle_key(key) {
+                        let filt = p.filtered();
+                        if !filt.iter().any(|i| Some(*i) == p.list_state.selected()) {
+                            p.list_state.select(filt.first().copied());
+                        }
                     }
                 }
             }
-            _ => {}
         }
     }
 }

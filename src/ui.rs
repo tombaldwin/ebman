@@ -4441,7 +4441,7 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                 .split(popup);
             let title = format!("swap CNAMEs: {source} ↔ ?");
             let block = titled_block(&theme, &title, true, theme.title_alt);
-            let prompt = Paragraph::new(Line::from(vec![
+            let mut prompt_spans = vec![
                 Span::styled(
                     " /",
                     Style::default()
@@ -4449,15 +4449,17 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(" "),
-                Span::styled(picker.filter.clone(), Style::default().fg(theme.text)),
-                Span::styled(
-                    caret_glyph(&theme),
-                    Style::default()
-                        .fg(theme.health_yellow)
-                        .add_modifier(Modifier::SLOW_BLINK),
-                ),
-            ]))
-            .block(block);
+            ];
+            prompt_spans.extend(input_caret_spans(
+                picker.filter.text(),
+                picker.filter.cursor_col(),
+                Style::default().fg(theme.text),
+                Style::default()
+                    .fg(theme.health_yellow)
+                    .add_modifier(Modifier::SLOW_BLINK),
+                &theme,
+            ));
+            let prompt = Paragraph::new(Line::from(prompt_spans)).block(block);
             f.render_widget(prompt, layout[0]);
             let filtered = picker.filtered();
             let items: Vec<ListItem> = filtered
@@ -7011,7 +7013,7 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         .split(popup);
 
     let filter_block = titled_block(&theme, picker.title().trim(), true, theme.title_alt);
-    let filter_inner = Paragraph::new(Line::from(vec![
+    let mut filter_spans = vec![
         Span::styled(
             " /",
             Style::default()
@@ -7019,15 +7021,17 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
-        Span::styled(picker.filter.clone(), Style::default().fg(theme.text)),
-        Span::styled(
-            caret_glyph(&theme),
-            Style::default()
-                .fg(theme.health_yellow)
-                .add_modifier(Modifier::SLOW_BLINK),
-        ),
-    ]))
-    .block(filter_block);
+    ];
+    filter_spans.extend(input_caret_spans(
+        picker.filter.text(),
+        picker.filter.cursor_col(),
+        Style::default().fg(theme.text),
+        Style::default()
+            .fg(theme.health_yellow)
+            .add_modifier(Modifier::SLOW_BLINK),
+        &theme,
+    ));
+    let filter_inner = Paragraph::new(Line::from(filter_spans)).block(filter_block);
     f.render_widget(filter_inner, layout[0]);
 
     let filtered = picker.filtered();

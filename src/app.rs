@@ -732,7 +732,7 @@ pub enum PickerKind {
 pub struct Picker {
     pub kind: PickerKind,
     pub items: Vec<String>,
-    pub filter: String,
+    pub filter: TextInput,
     pub list_state: ListState,
 }
 
@@ -758,7 +758,7 @@ impl Picker {
         Self {
             kind,
             items,
-            filter: String::new(),
+            filter: TextInput::new(),
             list_state,
         }
     }
@@ -776,7 +776,7 @@ impl Picker {
         if self.filter.is_empty() {
             return (0..self.items.len()).collect();
         }
-        let needle = self.filter.to_lowercase();
+        let needle = self.filter.text().to_lowercase();
         self.items
             .iter()
             .enumerate()
@@ -8037,9 +8037,6 @@ impl App {
                 {
                     picker.move_selection(-1);
                 }
-                KeyCode::Backspace => {
-                    picker.filter.pop();
-                }
                 KeyCode::Enter => {
                     let Some(target) = picker.selected_value() else {
                         return;
@@ -8085,17 +8082,19 @@ impl App {
                         ssm_run_instances: None,
                     }));
                 }
-                KeyCode::Char(c) if is_text_input(&key) => {
-                    picker.filter.push(c);
-                    let filt = picker.filtered();
-                    if !filt
-                        .iter()
-                        .any(|i| Some(*i) == picker.list_state.selected())
-                    {
-                        picker.list_state.select(filt.first().copied());
+                // TextInput consumes editing keys (incl. Backspace);
+                // reselect a still-matching row after any accepted edit.
+                _ => {
+                    if picker.filter.handle_key(key) {
+                        let filt = picker.filtered();
+                        if !filt
+                            .iter()
+                            .any(|i| Some(*i) == picker.list_state.selected())
+                        {
+                            picker.list_state.select(filt.first().copied());
+                        }
                     }
                 }
-                _ => {}
             },
             ActionFlow::Confirm(modal) => match (key.code, modal.kind) {
                 (KeyCode::Esc, _) => self.close_action_flow(),
@@ -21622,6 +21621,26 @@ mod tests {
         press(&mut app, KeyCode::End, KeyModifiers::NONE);
         press(&mut app, KeyCode::Char('w'), KeyModifiers::CONTROL);
         assert_eq!(app.palette_input.text(), "");
+    }
+
+    #[tokio::test]
+    async fn picker_filter_is_cursor_aware_via_shared_textinput() {
+        // The picker (region/profile/…) filter now stores a TextInput.
+        // `j`/`k` stay list-nav, but other chars edit, and the cursor
+        // moves mid-string. Open the region picker with `r`.
+        let mut app = test_app();
+        press(&mut app, KeyCode::Char('r'), KeyModifiers::NONE);
+        assert_eq!(app.mode, Mode::Picker);
+        for c in "eu".chars() {
+            press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        let txt = |a: &App| a.picker.as_ref().unwrap().filter.text().to_string();
+        assert_eq!(txt(&app), "eu");
+        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Char('X'), KeyModifiers::NONE);
+        assert_eq!(txt(&app), "eXu");
+        press(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(txt(&app), "eu");
     }
 
     #[tokio::test]
