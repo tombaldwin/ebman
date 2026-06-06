@@ -25,14 +25,10 @@ impl App {
                 self.rebuild_view();
             }
             KeyCode::Enter => self.mode = Mode::Normal,
-            KeyCode::Backspace => {
-                self.filter.pop();
-                self.rebuild_view();
-            }
-            KeyCode::Char(c) if is_text_input(&key) => {
-                self.filter.push(c);
-                self.rebuild_view();
-            }
+            // TextInput consumes editing keys (cursor move / Ctrl-W);
+            // rebuild the view on any accepted edit so the table tracks
+            // the filter live.
+            _ if self.filter.handle_key(key) => self.rebuild_view(),
             _ => {}
         }
     }

@@ -430,7 +430,7 @@ fn estimated_info_row_width(app: &App) -> usize {
     w += sep_w + "Last: ".chars().count() + last.chars().count();
     w += sep_w + "Caller: ".chars().count() + caller.chars().count();
     if !app.filter.is_empty() {
-        w += sep_w + "Filter: ".chars().count() + app.filter.chars().count();
+        w += sep_w + "Filter: ".chars().count() + app.filter.text().chars().count();
     }
     w
 }
@@ -1231,7 +1231,7 @@ fn draw_log_tail_overlay(f: &mut Frame, area: Rect, app: &App) {
         }
     );
     let footer_text = if *filter_active {
-        format!(" filter: {filter_input}_ (esc cancel)")
+        format!(" filter: {}_ (esc cancel)", filter_input.text())
     } else if let Some(err) = last_err {
         format!(" {}{err}", warn_glyph(theme.icons))
     } else {
@@ -2373,7 +2373,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: bool) {
     line2.extend(kv("Caller", &caller, theme));
     if !app.filter.is_empty() {
         line2.push(sep(theme));
-        let filter_text = app.filter.clone();
+        let filter_text = app.filter.text().to_string();
         line2.push(Span::styled("Filter: ", Style::default().fg(theme.muted)));
         line2.push(Span::styled(
             filter_text,
@@ -2433,7 +2433,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: bool) {
                 .iter()
                 .map(|(name, encoded)| {
                     let active = !app.filter.is_empty()
-                        && crate::app::view_filter_value(encoded) == app.filter;
+                        && crate::app::view_filter_value(encoded) == app.filter.text();
                     let (fg, bg) = if active {
                         (theme.contrast_text(theme.title_alt), theme.title_alt)
                     } else {
@@ -2445,8 +2445,8 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: bool) {
             chips.extend(pill_chain(&pills, theme));
         } else {
             for (name, encoded) in app.saved_views.iter() {
-                let active =
-                    !app.filter.is_empty() && crate::app::view_filter_value(encoded) == app.filter;
+                let active = !app.filter.is_empty()
+                    && crate::app::view_filter_value(encoded) == app.filter.text();
                 chips.push(Span::styled(
                     format!(" {name} "),
                     if active {
@@ -3307,7 +3307,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
             hint = "type `:views` to switch back to default, or `:filters` to drop a saved one"
                 .to_string();
         } else {
-            heading = format!("no envs match  `{}`", app.filter);
+            heading = format!("no envs match  `{}`", app.filter.text());
             hint = "press / to edit, or Esc in filter mode to clear".to_string();
         }
         let block_height: u16 = 4;
@@ -3756,15 +3756,14 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
                     .add_modifier(Modifier::BOLD),
             ));
             top.push(Span::raw(" "));
-            top.push(Span::styled(
-                app.filter.clone(),
+            top.extend(input_caret_spans(
+                app.filter.text(),
+                app.filter.cursor_col(),
                 Style::default().fg(theme.text),
-            ));
-            top.push(Span::styled(
-                caret_glyph(theme),
                 Style::default()
                     .fg(theme.health_yellow)
                     .add_modifier(Modifier::SLOW_BLINK),
+                theme,
             ));
             top.push(Span::styled(
                 "  [enter] apply  [esc] cancel",
@@ -3828,7 +3827,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
                 ));
             } else if !app.filter.is_empty() {
                 top.push(Span::styled(
-                    format!(" filter: {}", app.filter),
+                    format!(" filter: {}", app.filter.text()),
                     Style::default().fg(theme.health_yellow),
                 ));
             } else if let Some(hint) = context_hint(app) {
@@ -4858,26 +4857,25 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                         Span::styled(" to confirm:", Style::default().fg(theme.muted)),
                     ]));
                     lines.push(Line::from(""));
-                    let matches = modal.typed == modal.target_env;
-                    lines.push(Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(
-                            modal.typed.clone(),
-                            Style::default()
-                                .fg(if matches {
-                                    theme.health_green
-                                } else {
-                                    theme.text
-                                })
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(
-                            caret_glyph(&theme),
-                            Style::default()
-                                .fg(theme.health_yellow)
-                                .add_modifier(Modifier::SLOW_BLINK),
-                        ),
-                    ]));
+                    let matches = modal.typed.text() == modal.target_env.as_str();
+                    let typed_style = Style::default()
+                        .fg(if matches {
+                            theme.health_green
+                        } else {
+                            theme.text
+                        })
+                        .add_modifier(Modifier::BOLD);
+                    let mut typed_spans = vec![Span::raw("  ")];
+                    typed_spans.extend(input_caret_spans(
+                        modal.typed.text(),
+                        modal.typed.cursor_col(),
+                        typed_style,
+                        Style::default()
+                            .fg(theme.health_yellow)
+                            .add_modifier(Modifier::SLOW_BLINK),
+                        &theme,
+                    ));
+                    lines.push(Line::from(typed_spans));
                     lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(
                         if matches {
@@ -5858,7 +5856,10 @@ fn draw_detail_events(
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" "),
-            Span::styled(detail.search_input.clone(), Style::default().fg(theme.text)),
+            Span::styled(
+                detail.search_input.text().to_string(),
+                Style::default().fg(theme.text),
+            ),
         ];
         if detail.search_active {
             spans.push(Span::styled(
@@ -6552,7 +6553,10 @@ fn draw_detail_logs(f: &mut Frame, area: Rect, detail: &crate::app::DetailState,
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::raw(" "),
-                    Span::styled(tail.search_input.clone(), Style::default().fg(theme.text)),
+                    Span::styled(
+                        tail.search_input.text().to_string(),
+                        Style::default().fg(theme.text),
+                    ),
                 ];
                 if tail.search_active {
                     spans.push(Span::styled(
