@@ -98,18 +98,24 @@ impl App {
         let gen = self.generation;
         let is_add = value.is_some();
         let op_label = if is_add { "tag" } else { "untag" };
-        let detail = match &value {
-            Some(v) => {
-                format!("stage=dispatched action=Tag target={env} key={key} value={v}")
-            }
-            None => format!("stage=dispatched action=Untag target={env} key={key}"),
-        };
-        crate::audit::append_raw(
-            self.context.account_id.as_deref(),
-            self.context.profile.as_deref(),
-            &self.context.region,
-            &detail,
-        );
+        match &value {
+            Some(v) => crate::audit::append_action_dispatched(
+                self.context.account_id.as_deref(),
+                self.context.profile.as_deref(),
+                &self.context.region,
+                "Tag",
+                &env,
+                &[("key", &key), ("value", v)],
+            ),
+            None => crate::audit::append_action_dispatched(
+                self.context.account_id.as_deref(),
+                self.context.profile.as_deref(),
+                &self.context.region,
+                "Untag",
+                &env,
+                &[("key", &key)],
+            ),
+        }
         let pending_label = format!("{op_label} {key}");
         self.push_pending(pending_label.clone(), env.clone());
         let env_for_msg = env.clone();
@@ -158,27 +164,26 @@ impl App {
             .find(|e| e.name == env)
             .map(|e| e.application.clone())
         else {
-            crate::audit::append_raw(
+            crate::audit::append_action_skipped(
                 self.context.account_id.as_deref(),
                 self.context.profile.as_deref(),
                 &self.context.region,
-                &format!(
-                    "stage=skipped action=SetOption target={env} reason=\"env not in current view\""
-                ),
+                "SetOption",
+                &env,
+                "env not in current view",
             );
             return;
         };
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
-        let detail = format!(
-            "stage=dispatched action=SetOption target={env} ns={namespace} name={name} value={value}"
-        );
-        crate::audit::append_raw(
+        crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
-            &detail,
+            "SetOption",
+            &env,
+            &[("ns", &namespace), ("name", &name), ("value", &value)],
         );
         let pending_label = format!("set-option {namespace}.{name}");
         self.push_pending(pending_label.clone(), env.clone());

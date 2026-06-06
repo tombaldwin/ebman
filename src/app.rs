@@ -10183,14 +10183,12 @@ impl App {
             }
             PendingDispatchKind::BatchSetOption { .. } => "BatchSetOption".into(),
         };
-        crate::audit::append_raw(
+        crate::audit::append_action_undone(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
-            &format!(
-                "stage=undone action={action_for_audit} target={}",
-                pd.target
-            ),
+            &action_for_audit,
+            &pd.target,
         );
         self.status_message = Some(msg);
     }

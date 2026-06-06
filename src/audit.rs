@@ -1,22 +1,25 @@
 //! Audit log: writers, parser, renderer, filter.
 //!
 //! Writers and parser are co-located so the line format has a single
-//! source of truth. Four public writer APIs cover the typed shapes:
+//! source of truth. The typed writer APIs cover every shape:
 //!
 //! - [`append_action_dispatched`] / [`append_action_completed`] —
 //!   normal TUI action lines (rebuild / restart / deploy / etc.).
+//! - [`append_action_skipped`] / [`append_action_undone`] — one-shot
+//!   action lines with no completion pair (a batch member skipped
+//!   because its env left the view; an operator-driven undo).
 //! - [`append_rollout`] — cross-region rollout lines tagged with a
 //!   per-run `rollout_id` for post-mortem correlation.
 //! - [`append_lint_fix`] — `ebman lint --fix` dispatches, tagged
 //!   with the originating `rule_id`.
+//! - [`append_dlq_op`] — one-shot DLQ ops (delete / resend / purge /
+//!   replay), recorded at fire time.
 //!
 //! Plus [`append_raw`] — the lower-level "I already have a detail
-//! string" entry point used by ad-hoc audit sites (notification
-//! events, batch-action helpers, etc.) where the typed APIs above
-//! don't fit. 0.15 left ~30 hand-rolled `stage=dispatched action=X
-//! target=Y` strings calling `append_raw` instead of the typed
-//! `append_action_*` siblings; migrating them is tracked as a 0.16
-//! follow-up.
+//! string" entry point. As of 0.24 the hand-rolled `append_raw` action
+//! sites have all moved to the typed siblings above; the only remaining
+//! caller is the passive `stage=event kind=red_transition` health-log
+//! line, which is genuinely an event, not an action.
 //!
 //! All paths funnel into the same private [`write_audit_line`]
 //! helper (or its `_raw` sibling) so file rotation + webhook
@@ -525,6 +528,66 @@ pub fn append_lint_fix(
     write_audit_line_raw(&line);
 }
 
+/// Append a `stage=skipped` line — an action that was deliberately not
+/// dispatched (e.g. a batch member whose env vanished from the current
+/// view mid-run). `reason` is quoted via [`escape_value`]. Same wire
+/// shape the batch paths used to hand-roll; lifted here so the format
+/// lives in one place alongside the other typed audit helpers.
+pub fn append_action_skipped(
+    account: Option<&str>,
+    profile: Option<&str>,
+    region: &str,
+    action_label: &str,
+    target: &str,
+    reason: &str,
+) {
+    let detail = format!(
+        "stage=skipped action={action_label} target={target} reason=\"{}\"",
+        escape_value(reason)
+    );
+    write_audit_line(account, profile, region, &detail);
+}
+
+/// Append a `stage=undone` line — an operator-driven undo of a prior
+/// action. No outcome (the undo dispatch logs its own completion via the
+/// normal action path); this records that the undo was initiated.
+pub fn append_action_undone(
+    account: Option<&str>,
+    profile: Option<&str>,
+    region: &str,
+    action_label: &str,
+    target: &str,
+) {
+    let detail = format!("stage=undone action={action_label} target={target}");
+    write_audit_line(account, profile, region, &detail);
+}
+
+/// Append a one-shot DLQ operation line (delete / resend / purge /
+/// replay). These have no dispatched+completed pair — they're recorded
+/// at fire time. `op` is the verb (`sqs-delete` / `dlq-resend` /
+/// `dlq-purge` / `dlq-replay`); `extras` carry per-op context
+/// (`msg_id`, `queue`, `count`) and are encoded like every other typed
+/// helper. Centralizes the format the four DLQ spawn sites hand-rolled.
+pub fn append_dlq_op(
+    account: Option<&str>,
+    profile: Option<&str>,
+    region: &str,
+    op: &str,
+    env: &str,
+    extras: &[(&str, &str)],
+) {
+    write_audit_line(account, profile, region, &dlq_op_detail(op, env, extras));
+}
+
+/// Pure detail-builder behind [`append_dlq_op`] — `"{op} env={env}"`
+/// plus encoded extras. Split out so the wire shape is unit-testable
+/// without the file-write side effect.
+fn dlq_op_detail(op: &str, env: &str, extras: &[(&str, &str)]) -> String {
+    let mut detail = format!("{op} env={env}");
+    append_extras(&mut detail, extras);
+    detail
+}
+
 /// Build the JSON body that goes to `notify_webhook`. Pure +
 /// deterministic so the shape is unit-testable. Top-level `text`
 /// gets the rendered audit line so the body is
@@ -724,6 +787,24 @@ use crate::util::json_escape;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dlq_op_detail_preserves_wire_shape() {
+        // Format must match what the four DLQ spawn sites hand-rolled
+        // before centralizing — `ebman audit` parses these lines.
+        assert_eq!(
+            dlq_op_detail("dlq-replay", "prod", &[("count", "12")]),
+            "dlq-replay env=prod count=12"
+        );
+        assert_eq!(
+            dlq_op_detail("dlq-purge", "prod", &[]),
+            "dlq-purge env=prod"
+        );
+        assert_eq!(
+            dlq_op_detail("sqs-delete", "prod", &[("queue", "DLQ"), ("msg_id", "abc")]),
+            "sqs-delete env=prod queue=DLQ msg_id=abc"
+        );
+    }
 
     #[test]
     fn parse_kv_simple_pairs() {
