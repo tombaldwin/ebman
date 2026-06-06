@@ -237,73 +237,58 @@ pub struct ConfigEdit {
     pub kind: ConfigItemKind,
     pub key: String,
     pub original: String,
-    pub input: String,
-    pub caret: usize,
+    /// The editable buffer + cursor. Shared `TextInput` so the cursor
+    /// math (insert/delete/move, UTF-8 boundaries) isn't duplicated.
+    pub input: TextInput,
     pub mode: ConfigEditMode,
 }
 
 impl ConfigEdit {
-    /// Char count of the value buffer.
-    fn char_len(&self) -> usize {
-        self.input.chars().count()
-    }
-
-    /// Byte offset of the caret within `input`. Always a valid char
-    /// boundary — `char_indices` yields boundaries, and a caret at
-    /// the very end maps to `input.len()`.
-    fn caret_byte(&self) -> usize {
-        self.input
-            .char_indices()
-            .nth(self.caret)
-            .map(|(b, _)| b)
-            .unwrap_or(self.input.len())
+    /// Char offset of the caret — used by tests + render split.
+    pub fn caret(&self) -> usize {
+        self.input.cursor_col()
     }
 
     /// Insert a char at the caret and step the caret past it.
     pub fn insert(&mut self, c: char) {
-        let b = self.caret_byte();
-        self.input.insert(b, c);
-        self.caret += 1;
+        self.input.insert(c);
     }
 
     /// Delete the char *before* the caret (Backspace).
     pub fn backspace(&mut self) {
-        if self.caret == 0 {
-            return;
-        }
-        self.caret -= 1;
-        let b = self.caret_byte();
-        self.input.remove(b);
+        self.input.backspace();
     }
 
     /// Delete the char *at* the caret (Delete / Del).
     pub fn delete(&mut self) {
-        if self.caret >= self.char_len() {
-            return;
-        }
-        let b = self.caret_byte();
-        self.input.remove(b);
+        self.input.delete_forward();
     }
 
     pub fn move_left(&mut self) {
-        self.caret = self.caret.saturating_sub(1);
+        self.input.left();
     }
 
     pub fn move_right(&mut self) {
-        self.caret = (self.caret + 1).min(self.char_len());
+        self.input.right();
     }
 
     pub fn move_home(&mut self) {
-        self.caret = 0;
+        self.input.home();
     }
 
     pub fn move_end(&mut self) {
-        self.caret = self.char_len();
+        self.input.end();
     }
 
-    /// Split `input` at the caret for rendering — `(before, after)`.
+    /// Split the buffer at the caret for rendering — `(before, after)`.
     pub fn split_at_caret(&self) -> (&str, &str) {
-        self.input.split_at(self.caret_byte())
+        let text = self.input.text();
+        let byte = text
+            .char_indices()
+            .nth(self.input.cursor_col())
+            .map(|(b, _)| b)
+            .unwrap_or(text.len());
+        text.split_at(byte)
     }
 }
 
@@ -877,7 +862,6 @@ mod tests {
             key: "K".into(),
             original: value.into(),
             input: value.into(),
-            caret: value.chars().count(),
             mode: ConfigEditMode::Value,
         }
     }
@@ -885,49 +869,49 @@ mod tests {
     #[test]
     fn config_edit_caret_moves_and_clamps() {
         let mut e = mk_edit("abc");
-        assert_eq!(e.caret, 3);
+        assert_eq!(e.caret(), 3);
         e.move_right(); // already at end — clamps
-        assert_eq!(e.caret, 3);
+        assert_eq!(e.caret(), 3);
         e.move_left();
         e.move_left();
-        assert_eq!(e.caret, 1);
+        assert_eq!(e.caret(), 1);
         e.move_home();
-        assert_eq!(e.caret, 0);
+        assert_eq!(e.caret(), 0);
         e.move_left(); // at start — clamps
-        assert_eq!(e.caret, 0);
+        assert_eq!(e.caret(), 0);
         e.move_end();
-        assert_eq!(e.caret, 3);
+        assert_eq!(e.caret(), 3);
     }
 
     #[test]
     fn config_edit_insert_at_caret() {
         let mut e = mk_edit("ac");
         e.move_left(); // caret between a and c
-        assert_eq!(e.caret, 1);
+        assert_eq!(e.caret(), 1);
         e.insert('b');
-        assert_eq!(e.input, "abc");
-        assert_eq!(e.caret, 2);
+        assert_eq!(e.input.text(), "abc");
+        assert_eq!(e.caret(), 2);
         e.move_home();
         e.insert('X');
-        assert_eq!(e.input, "Xabc");
-        assert_eq!(e.caret, 1);
+        assert_eq!(e.input.text(), "Xabc");
+        assert_eq!(e.caret(), 1);
     }
 
     #[test]
     fn config_edit_backspace_and_delete() {
         let mut e = mk_edit("abc");
         e.backspace(); // removes 'c'
-        assert_eq!(e.input, "ab");
-        assert_eq!(e.caret, 2);
+        assert_eq!(e.input.text(), "ab");
+        assert_eq!(e.caret(), 2);
         e.move_home();
         e.backspace(); // at start — no-op
-        assert_eq!(e.input, "ab");
+        assert_eq!(e.input.text(), "ab");
         e.delete(); // removes 'a' at caret
-        assert_eq!(e.input, "b");
-        assert_eq!(e.caret, 0);
+        assert_eq!(e.input.text(), "b");
+        assert_eq!(e.caret(), 0);
         e.move_end();
         e.delete(); // at end — no-op
-        assert_eq!(e.input, "b");
+        assert_eq!(e.input.text(), "b");
     }
 
     #[test]
@@ -947,13 +931,13 @@ mod tests {
         // Caret arithmetic is char-based — a multi-byte char must
         // not panic insert/remove (which take byte offsets).
         let mut e = mk_edit("café");
-        assert_eq!(e.caret, 4);
+        assert_eq!(e.caret(), 4);
         e.move_left(); // before 'é'
         e.insert('X');
-        assert_eq!(e.input, "cafXé");
+        assert_eq!(e.input.text(), "cafXé");
         e.move_end();
         e.backspace(); // removes 'é'
-        assert_eq!(e.input, "cafX");
+        assert_eq!(e.input.text(), "cafX");
     }
 
     #[test]

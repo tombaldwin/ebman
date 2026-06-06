@@ -6372,15 +6372,13 @@ impl App {
             return;
         };
         let key = item.key.clone();
-        // Caret starts at the end of the value so the operator can
-        // append immediately, or arrow left to edit mid-string.
-        let caret = item.value.chars().count();
+        // TextInput seeds the caret at the end of the value so the
+        // operator can append immediately, or arrow left to edit.
         detail.config_edit = Some(ConfigEdit {
             kind: item.kind,
             key: item.key.clone(),
             original: item.value.clone(),
-            input: item.value.clone(),
-            caret,
+            input: item.value.clone().into(),
             mode: ConfigEditMode::Value,
         });
         self.status_message = Some(format!("editing {key} — enter saves, esc cancels"));
@@ -6451,23 +6449,25 @@ impl App {
         let ns = "aws:elasticbeanstalk:application:environment";
         match edit.mode {
             ConfigEditMode::Value => {
-                if edit.input == edit.original {
+                if edit.input.text() == edit.original.as_str() {
                     self.status_message = Some(format!("{} unchanged", edit.key));
                     return;
                 }
                 match edit.kind {
                     ConfigItemKind::EnvVar => self.spawn_option_settings_update(
                         format!("env set {}", edit.key),
-                        vec![(ns.into(), edit.key.clone(), edit.input.clone())],
+                        vec![(ns.into(), edit.key.clone(), edit.input.text().to_string())],
                         vec![],
                     ),
-                    ConfigItemKind::Tag => {
-                        self.spawn_tag_update(vec![(edit.key.clone(), edit.input.clone())], vec![])
-                    }
+                    ConfigItemKind::Tag => self.spawn_tag_update(
+                        vec![(edit.key.clone(), edit.input.text().to_string())],
+                        vec![],
+                    ),
                 }
             }
             ConfigEditMode::NewRow => {
-                let Some((k, v)) = crate::mode_detail::parse_new_config_row(&edit.input) else {
+                let Some((k, v)) = crate::mode_detail::parse_new_config_row(edit.input.text())
+                else {
                     self.error_message = Some("new row needs KEY=VALUE (non-empty key)".into());
                     return;
                 };
@@ -6481,7 +6481,7 @@ impl App {
                 }
             }
             ConfigEditMode::RenameKey => {
-                let new_key = edit.input.trim().to_string();
+                let new_key = edit.input.trimmed().to_string();
                 if new_key.is_empty() {
                     self.error_message = Some("rename: the new key can't be empty".into());
                     return;
@@ -6539,8 +6539,7 @@ impl App {
             kind,
             key: String::new(),
             original: String::new(),
-            input: String::new(),
-            caret: 0,
+            input: TextInput::new(),
             mode: ConfigEditMode::NewRow,
         });
         let what = match kind {
@@ -6573,13 +6572,11 @@ impl App {
             return;
         };
         let key = item.key.clone();
-        let caret = key.chars().count();
         detail.config_edit = Some(ConfigEdit {
             kind: item.kind,
             key: item.key.clone(),
             original: item.key.clone(),
-            input: item.key.clone(),
-            caret,
+            input: item.key.clone().into(),
             mode: ConfigEditMode::RenameKey,
         });
         self.status_message = Some(format!(
