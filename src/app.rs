@@ -21201,6 +21201,48 @@ mod tests {
         out
     }
 
+    /// Render the App into a `TestBackend` and return the raw `Buffer`,
+    /// so tests can assert on *style* (fg/bg/modifier per cell), not just
+    /// the flattened symbols `render` gives. Pairs with `find_row` /
+    /// `row_has_fg` below for grep-then-check-colour assertions.
+    fn render_buf(app: &mut App, w: u16, h: u16) -> ratatui::buffer::Buffer {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|f| crate::ui::draw(f, app)).expect("draw");
+        terminal.backend().buffer().clone()
+    }
+
+    /// First row (y) whose flattened symbols contain `needle`, if any.
+    fn find_row(buf: &ratatui::buffer::Buffer, needle: &str) -> Option<u16> {
+        (0..buf.area.height).find(|&y| {
+            let mut row = String::new();
+            for x in 0..buf.area.width {
+                row.push_str(buf[(x, y)].symbol());
+            }
+            row.contains(needle)
+        })
+    }
+
+    /// Whether any cell in row `y` is painted with foreground `color`.
+    fn row_has_fg(buf: &ratatui::buffer::Buffer, y: u16, color: ratatui::style::Color) -> bool {
+        (0..buf.area.width).any(|x| buf[(x, y)].fg == color)
+    }
+
+    /// Total cells painted with foreground `color` — for differential
+    /// assertions ("match adds N green cells vs no-match") that ignore
+    /// constant chrome (header/footer) painted in the same colour.
+    fn count_fg(buf: &ratatui::buffer::Buffer, color: ratatui::style::Color) -> usize {
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .filter(|&x| buf[(x, y)].fg == color)
+                    .count()
+            })
+            .sum()
+    }
+
     fn mk_env(name: &str, app: &str, tier: &str, health: &str) -> crate::aws::Environment {
         crate::aws::Environment {
             name: name.into(),
@@ -21575,6 +21617,71 @@ mod tests {
             "caret should split 'zzq<caret>z' — 'zzqz' no longer contiguous"
         );
         assert!(mid.contains("zzq"), "text before the caret still renders");
+    }
+
+    #[tokio::test]
+    async fn render_colours_health_dots_by_tier() {
+        // Styled-harness demo: assert the env table paints each row's
+        // health indicator in the tier colour, not just that the row
+        // exists. The Green row must carry no Red cell (and vice versa),
+        // which a text-only assertion can't catch.
+        let mut app = test_app();
+        app.environments = vec![
+            mk_env("svc-red", "uflexi", "Web", "Red"),
+            mk_env("svc-green", "uflexi", "Web", "Green"),
+        ];
+        app.rebuild_view();
+        // Clear the cursor so neither asserted row gets the REVERSED
+        // selection highlight (which swaps fg/bg and would mask the dot).
+        app.table_state.select(None);
+        let buf = render_buf(&mut app, 120, 30);
+        let theme = app.theme.clone();
+        let red_row = find_row(&buf, "svc-red").expect("red env row rendered");
+        let green_row = find_row(&buf, "svc-green").expect("green env row rendered");
+        assert!(
+            row_has_fg(&buf, red_row, theme.health_red),
+            "Red env row should paint a health_red cell"
+        );
+        assert!(
+            row_has_fg(&buf, green_row, theme.health_green),
+            "Green env row should paint a health_green cell"
+        );
+        assert!(
+            !row_has_fg(&buf, green_row, theme.health_red),
+            "Green env row must not paint any health_red cell"
+        );
+    }
+
+    #[tokio::test]
+    async fn render_greens_type_to_confirm_only_on_exact_match() {
+        // Styled-harness demo: the type-to-confirm field turns green only
+        // when the typed text exactly matches the target env name.
+        let mut app = test_app();
+        // Red env behind the modal so the only green on screen can come
+        // from the modal's match indicator, not a table health dot.
+        app.environments = vec![mk_env("prod", "uflexi", "Web", "Red")];
+        app.rebuild_view();
+        app.mode = Mode::Action;
+        let mut modal = mk_modal(Action::Terminate, "prod");
+        modal.kind = ConfirmKind::TypeName;
+
+        // Differential count so constant green chrome (header) doesn't
+        // confound the check: the exact match must add green cells (the
+        // typed field + enter hint) over the partial-match baseline.
+        let theme = app.theme.clone();
+        modal.typed = "pro".into();
+        app.action_flow = Some(ActionFlow::Confirm(modal.clone()));
+        let no_match_green = count_fg(&render_buf(&mut app, 120, 30), theme.health_green);
+
+        modal.typed = "prod".into();
+        app.action_flow = Some(ActionFlow::Confirm(modal));
+        let matched_green = count_fg(&render_buf(&mut app, 120, 30), theme.health_green);
+
+        assert!(
+            matched_green > no_match_green,
+            "exact type-to-confirm match should paint more green than a partial match \
+             (matched={matched_green}, no_match={no_match_green})"
+        );
     }
 
     #[tokio::test]
