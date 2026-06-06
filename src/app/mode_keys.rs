@@ -114,14 +114,10 @@ impl App {
             KeyCode::Down => self.palette_move(1),
             KeyCode::Up => self.palette_move(-1),
             KeyCode::Enter => self.palette_execute(),
-            KeyCode::Backspace => {
-                self.palette_input.pop();
-                self.palette_refilter();
-            }
-            KeyCode::Char(c) if is_text_input(&key) => {
-                self.palette_input.push(c);
-                self.palette_refilter();
-            }
+            // TextInput consumes editing keys (insert / backspace /
+            // delete / cursor move / Ctrl-W word-delete); re-filter on
+            // any accepted edit. Non-editing keys fall through.
+            _ if self.palette_input.handle_key(key) => self.palette_refilter(),
             _ => {}
         }
     }
@@ -141,14 +137,9 @@ impl App {
                 self.quickjump_input.clear();
                 self.mode = Mode::Normal;
             }
-            KeyCode::Backspace => {
-                self.quickjump_input.pop();
-                self.quickjump_apply();
-            }
-            KeyCode::Char(c) if is_text_input(&key) => {
-                self.quickjump_input.push(c);
-                self.quickjump_apply();
-            }
+            // TextInput consumes editing keys; re-run the prefix jump on
+            // any accepted edit. Non-editing keys fall through.
+            _ if self.quickjump_input.handle_key(key) => self.quickjump_apply(),
             _ => {}
         }
     }

@@ -16,6 +16,8 @@ use ratatui::{
 };
 use tokio::sync::mpsc;
 
+use tui_common::TextInput;
+
 use crate::{
     aws::{
         AppVersion, Application, AwsClient, AwsContext, CwAlarm, Environment, Event as EbEvent,
@@ -912,7 +914,7 @@ pub struct App {
     pub sort_desc: bool,
     pub command_input: String,
     pub completion: CompletionState,
-    pub quickjump_input: String,
+    pub quickjump_input: TextInput,
     pub extra_regions: Vec<String>,
     pub event_panel: EventPanel,
     /// Env names the user has marked for batch action via `space`. Cleared on
@@ -1057,7 +1059,7 @@ pub struct App {
     pub current_overlay: Option<Overlay>,
     pub message_log: VecDeque<(chrono::DateTime<chrono::Utc>, MsgKind, String)>,
     pub toasts: VecDeque<Toast>,
-    pub palette_input: String,
+    pub palette_input: TextInput,
     pub palette_items: Vec<PaletteItem>,
     pub palette_filtered: Vec<usize>,
     pub palette_state: ListState,
@@ -1866,7 +1868,7 @@ impl App {
             sort_desc,
             command_input: String::new(),
             completion: CompletionState::default(),
-            quickjump_input: String::new(),
+            quickjump_input: TextInput::new(),
             extra_regions: config.extra_regions,
             event_panel: EventPanel {
                 events: Vec::new(),
@@ -1961,7 +1963,7 @@ impl App {
             current_overlay: None,
             message_log: VecDeque::with_capacity(MESSAGE_LOG_CAP),
             toasts: VecDeque::with_capacity(TOAST_CAP),
-            palette_input: String::new(),
+            palette_input: TextInput::new(),
             palette_items: Vec::new(),
             palette_filtered: Vec::new(),
             palette_state: ListState::default(),
@@ -2143,7 +2145,7 @@ impl App {
             sort_desc: false,
             command_input: String::new(),
             completion: CompletionState::default(),
-            quickjump_input: String::new(),
+            quickjump_input: TextInput::new(),
             extra_regions: config.extra_regions.clone(),
             event_panel: EventPanel {
                 events: Vec::new(),
@@ -2209,7 +2211,7 @@ impl App {
             current_overlay: None,
             message_log: VecDeque::with_capacity(MESSAGE_LOG_CAP),
             toasts: VecDeque::with_capacity(TOAST_CAP),
-            palette_input: String::new(),
+            palette_input: TextInput::new(),
             palette_items: Vec::new(),
             palette_filtered: Vec::new(),
             palette_state: ListState::default(),
@@ -5915,7 +5917,7 @@ impl App {
     }
 
     fn palette_refilter(&mut self) {
-        let needle = self.palette_input.to_lowercase();
+        let needle = self.palette_input.text().to_lowercase();
         let mut scored: Vec<(usize, isize)> = self
             .palette_items
             .iter()
@@ -5983,7 +5985,7 @@ impl App {
         if self.quickjump_input.is_empty() {
             return;
         }
-        let needle = self.quickjump_input.to_lowercase();
+        let needle = self.quickjump_input.text().to_lowercase();
         for (pos, row) in self.cached_display.iter().enumerate() {
             if let DisplayRow::Env(i) = row {
                 let e = &self.environments[*i];
@@ -21578,6 +21580,48 @@ mod tests {
         // Second star unpins it.
         press(&mut app, KeyCode::Char('*'), KeyModifiers::NONE);
         assert!(!app.pinned.contains("api-prod"));
+    }
+
+    #[tokio::test]
+    async fn quickjump_input_is_cursor_aware_via_shared_textinput() {
+        // QuickJump now stores a tui_common::TextInput, so it gains
+        // mid-string editing (Left + insert, Backspace at the cursor)
+        // rather than the old append-only buffer.
+        let mut app = test_app();
+        app.environments = vec![mk_env("prod", "uflexi", "Web", "Green")];
+        app.rebuild_view();
+        press(&mut app, KeyCode::Char('\''), KeyModifiers::NONE);
+        assert_eq!(app.mode, Mode::QuickJump);
+        for c in "abc".chars() {
+            press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        assert_eq!(app.quickjump_input.text(), "abc");
+        // Move the cursor left one and insert — mid-string, not appended.
+        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Char('X'), KeyModifiers::NONE);
+        assert_eq!(app.quickjump_input.text(), "abXc");
+        press(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(app.quickjump_input.text(), "abc");
+    }
+
+    #[tokio::test]
+    async fn palette_input_is_cursor_aware_via_shared_textinput() {
+        // Palette search likewise delegates editing to the shared
+        // TextInput — Home + insert lands at the front, and Ctrl-W
+        // word-deletes (a capability the old append-only buffer lacked).
+        let mut app = test_app();
+        press(&mut app, KeyCode::Char('k'), KeyModifiers::CONTROL);
+        assert_eq!(app.mode, Mode::Palette);
+        for c in "tag".chars() {
+            press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        assert_eq!(app.palette_input.text(), "tag");
+        press(&mut app, KeyCode::Home, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Char('X'), KeyModifiers::NONE);
+        assert_eq!(app.palette_input.text(), "Xtag");
+        press(&mut app, KeyCode::End, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Char('w'), KeyModifiers::CONTROL);
+        assert_eq!(app.palette_input.text(), "");
     }
 
     #[tokio::test]
