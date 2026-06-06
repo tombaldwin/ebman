@@ -60,19 +60,18 @@ impl App {
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
-        crate::audit::append_raw(
+        let queue_label = if matches!(dlq.viewing, QueueView::Main) {
+            "MAIN"
+        } else {
+            "DLQ"
+        };
+        crate::audit::append_dlq_op(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
-            &format!(
-                "sqs-delete env={env_name} queue={} msg_id={}",
-                if matches!(dlq.viewing, QueueView::Main) {
-                    "MAIN"
-                } else {
-                    "DLQ"
-                },
-                msg.id
-            ),
+            "sqs-delete",
+            &env_name,
+            &[("queue", queue_label), ("msg_id", &msg.id)],
         );
         tokio::spawn(async move {
             let result = aws
@@ -118,11 +117,13 @@ impl App {
         let env_name = dlq.env_name.clone();
         let main_url = dlq.main_queue_url.clone();
         let dlq_url = dlq.dlq_url.clone();
-        crate::audit::append_raw(
+        crate::audit::append_dlq_op(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
-            &format!("dlq-resend env={env_name} msg_id={}", msg.id),
+            "dlq-resend",
+            &env_name,
+            &[("msg_id", &msg.id)],
         );
         tokio::spawn(async move {
             let result = match aws.send_message(&main_url, &msg.body).await {
@@ -152,11 +153,13 @@ impl App {
         if self.deny_write(&env_name, "purge") {
             return;
         }
-        crate::audit::append_raw(
+        crate::audit::append_dlq_op(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
-            &format!("dlq-purge env={env_name}"),
+            "dlq-purge",
+            &env_name,
+            &[],
         );
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
@@ -203,11 +206,13 @@ impl App {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let count = messages.len();
-        crate::audit::append_raw(
+        crate::audit::append_dlq_op(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
             &self.context.region,
-            &format!("dlq-replay env={env_name} count={count}"),
+            "dlq-replay",
+            &env_name,
+            &[("count", &count.to_string())],
         );
         self.status_message = Some(format!("replaying {count} message(s) to the main queue…"));
         tokio::spawn(async move {
