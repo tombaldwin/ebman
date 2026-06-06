@@ -260,7 +260,7 @@ pub enum Overlay {
         scroll: u16,
         following: bool,
         since_ms: i64,
-        filter_input: String,
+        filter_input: TextInput,
         filter_active: bool,
         filter_pattern: Option<regex::Regex>,
         last_err: Option<String>,
@@ -6049,7 +6049,7 @@ impl App {
             metrics: Vec::new(),
             metrics_range_secs: 3600, // 1h default
             auto_refresh: false,
-            search_input: String::new(),
+            search_input: TextInput::new(),
             search_active: false,
             search_pattern: None,
             search_error: None,
@@ -6303,7 +6303,7 @@ impl App {
                         detail.log_tail.search_error = None;
                         return;
                     }
-                    match regex::RegexBuilder::new(&detail.log_tail.search_input)
+                    match regex::RegexBuilder::new(detail.log_tail.search_input.text())
                         .case_insensitive(true)
                         .build()
                     {
@@ -6324,7 +6324,7 @@ impl App {
                     detail.search_error = None;
                     return;
                 }
-                match regex::RegexBuilder::new(&detail.search_input)
+                match regex::RegexBuilder::new(detail.search_input.text())
                     .case_insensitive(true)
                     .build()
                 {
@@ -6338,21 +6338,16 @@ impl App {
                     }
                 }
             }
-            KeyCode::Backspace => {
+            // TextInput consumes editing keys (cursor move / Ctrl-W
+            // included) for whichever search field is active; the regex
+            // is compiled on Enter, so no live side-effect on edit.
+            _ => {
                 if on_logs {
-                    detail.log_tail.search_input.pop();
+                    detail.log_tail.search_input.handle_key(key);
                 } else {
-                    detail.search_input.pop();
+                    detail.search_input.handle_key(key);
                 }
             }
-            KeyCode::Char(c) if is_text_input(&key) => {
-                if on_logs {
-                    detail.log_tail.search_input.push(c);
-                } else {
-                    detail.search_input.push(c);
-                }
-            }
-            _ => {}
         }
     }
 
@@ -8055,7 +8050,7 @@ impl App {
                         action: Action::SwapCnames,
                         target_env: source,
                         swap_with: Some(target),
-                        typed: String::new(),
+                        typed: TextInput::new(),
                         kind: ConfirmKind::YesNo,
                         dryrun: None,
                         loading_dryrun: false,
@@ -8112,7 +8107,9 @@ impl App {
                     self.queue_action_dispatch(m);
                 }
                 (KeyCode::Char('n'), ConfirmKind::YesNo) => self.close_action_flow(),
-                (KeyCode::Enter, ConfirmKind::TypeName) if modal.typed == modal.target_env => {
+                (KeyCode::Enter, ConfirmKind::TypeName)
+                    if modal.typed.text() == modal.target_env.as_str() =>
+                {
                     // Same cancel-window treatment as Y-confirms. Terminate
                     // is the loudest example — the typed-name guard already
                     // prevents accidental dispatch, but the 5s window is a
@@ -8121,11 +8118,10 @@ impl App {
                     self.close_action_flow();
                     self.queue_action_dispatch(m);
                 }
-                (KeyCode::Backspace, ConfirmKind::TypeName) => {
-                    modal.typed.pop();
-                }
-                (KeyCode::Char(c), ConfirmKind::TypeName) if is_text_input(&key) => {
-                    modal.typed.push(c);
+                // TextInput consumes editing keys for the type-to-confirm
+                // field (cursor move / Ctrl-W included).
+                (_, ConfirmKind::TypeName) => {
+                    modal.typed.handle_key(key);
                 }
                 _ => {}
             },
@@ -8234,7 +8230,7 @@ impl App {
                     action,
                     target_env: env.name.clone(),
                     swap_with: None,
-                    typed: String::new(),
+                    typed: TextInput::new(),
                     kind: ConfirmKind::TypeName,
                     dryrun: None,
                     loading_dryrun: wants_preflight,
@@ -8314,7 +8310,7 @@ impl App {
                     action,
                     target_env: env.name.clone(),
                     swap_with: None,
-                    typed: String::new(),
+                    typed: TextInput::new(),
                     kind: ConfirmKind::YesNo,
                     dryrun: None,
                     loading_dryrun: false,
@@ -8346,7 +8342,7 @@ impl App {
                     action,
                     target_env: env.name.clone(),
                     swap_with: None,
-                    typed: String::new(),
+                    typed: TextInput::new(),
                     kind: ConfirmKind::YesNo,
                     dryrun: None,
                     loading_dryrun: false,
@@ -8420,7 +8416,7 @@ impl App {
                         if filter_input.is_empty() {
                             *filter_pattern = None;
                         } else {
-                            match regex::RegexBuilder::new(filter_input)
+                            match regex::RegexBuilder::new(filter_input.text())
                                 .case_insensitive(true)
                                 .build()
                             {
@@ -8430,15 +8426,12 @@ impl App {
                         }
                         return;
                     }
-                    KeyCode::Backspace => {
-                        filter_input.pop();
+                    // TextInput consumes editing keys (cursor / Ctrl-W);
+                    // the regex is compiled on Enter.
+                    _ => {
+                        filter_input.handle_key(key);
                         return;
                     }
-                    KeyCode::Char(c) if is_text_input(&key) => {
-                        filter_input.push(c);
-                        return;
-                    }
-                    _ => return,
                 }
             }
         }
@@ -9904,7 +9897,7 @@ impl App {
             action,
             target_env: env.name.clone(),
             swap_with: params.swap_with,
-            typed: String::new(),
+            typed: TextInput::new(),
             kind: ConfirmKind::YesNo,
             dryrun: None,
             loading_dryrun: wants_preflight,
@@ -21669,7 +21662,7 @@ mod tests {
             action,
             target_env: env.into(),
             swap_with: None,
-            typed: String::new(),
+            typed: TextInput::new(),
             kind: ConfirmKind::YesNo,
             dryrun: None,
             loading_dryrun: false,

@@ -17,6 +17,7 @@
 //! wrappers in this file.
 
 use ratatui::widgets::ListState;
+use tui_common::TextInput;
 
 use crate::app::Picker;
 use crate::aws::Event as EbEvent;
@@ -317,7 +318,7 @@ pub struct ConfirmModal {
     pub action: Action,
     pub target_env: String,
     pub swap_with: Option<String>,
-    pub typed: String,
+    pub typed: TextInput,
     pub kind: ConfirmKind,
     pub dryrun: Option<DryRunInfo>,
     pub loading_dryrun: bool,
