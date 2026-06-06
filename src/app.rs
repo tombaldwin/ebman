@@ -21548,6 +21548,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn render_places_caret_at_cursor_in_command_mode() {
+        // Uses the TestBackend `render` harness to verify caret *rendering*
+        // (not just the buffer model): the caret glyph splits the text at
+        // the cursor column. The `:` command line is rendered in exactly
+        // one place (the top bar), so a needle absent from the table is
+        // unique on screen. With the cursor at the end "zzqz" renders
+        // contiguously; move it left and the caret splits "zzq<caret>z".
+        // Glyph-agnostic — doesn't depend on the Powerline/ASCII caret.
+        let mut app = test_app();
+        app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
+        app.rebuild_view();
+        press(&mut app, KeyCode::Char(':'), KeyModifiers::NONE);
+        for c in "zzqz".chars() {
+            press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        let at_end = render(&mut app, 120, 30);
+        assert!(
+            at_end.contains("zzqz"),
+            "caret at end keeps 'zzqz' contiguous"
+        );
+        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        let mid = render(&mut app, 120, 30);
+        assert!(
+            !mid.contains("zzqz"),
+            "caret should split 'zzq<caret>z' — 'zzqz' no longer contiguous"
+        );
+        assert!(mid.contains("zzq"), "text before the caret still renders");
+    }
+
+    #[tokio::test]
     async fn esc_in_filter_mode_clears_the_filter() {
         let mut app = test_app();
         app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
