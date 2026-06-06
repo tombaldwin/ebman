@@ -21230,6 +21230,18 @@ mod tests {
         (0..buf.area.width).any(|x| buf[(x, y)].fg == color)
     }
 
+    /// Cells in row `y` whose symbol == `sym` and foreground == `fg`.
+    fn count_symbol_fg(
+        buf: &ratatui::buffer::Buffer,
+        y: u16,
+        sym: &str,
+        fg: ratatui::style::Color,
+    ) -> usize {
+        (0..buf.area.width)
+            .filter(|&x| buf[(x, y)].symbol() == sym && buf[(x, y)].fg == fg)
+            .count()
+    }
+
     /// Total cells painted with foreground `color` — for differential
     /// assertions ("match adds N green cells vs no-match") that ignore
     /// constant chrome (header/footer) painted in the same colour.
@@ -21682,6 +21694,94 @@ mod tests {
             "exact type-to-confirm match should paint more green than a partial match \
              (matched={matched_green}, no_match={no_match_green})"
         );
+    }
+
+    #[tokio::test]
+    async fn render_demo_ironwood_row_shows_muted_dashes() {
+        // The IRONWOOD demo tell: the `ironwood` env is absent from the
+        // cost + instance-count maps, so its INST and COST cells render a
+        // muted `—` ("Beanstalk can't account for it"). Drives the real
+        // demo fixture so this is the on-screen artifact, not a synthetic.
+        let mut app = test_app();
+        crate::demo_fixture::install(&mut app);
+        app.table_state.select(None); // avoid the REVERSED selection mask
+        let theme = app.theme.clone();
+        let buf = render_buf(&mut app, 160, 30);
+        let y = find_row(&buf, "ironwood").expect("ironwood row rendered");
+        // INST + COST both muted em-dashes → at least two such cells.
+        assert!(
+            count_symbol_fg(&buf, y, "—", theme.muted) >= 2,
+            "ironwood row should show muted — for INST and COST"
+        );
+    }
+
+    #[tokio::test]
+    async fn render_cost_column_red_tints_expensive_envs() {
+        // `:cost on`: a >= $500/mo env paints its COST cell health_red.
+        // poly-prod-api ($612, Green health) is the only red in its row
+        // (its health dot is green), while the cheaper green-bucket
+        // poly-staging-worker ($28, Green) has no red at all.
+        let mut app = test_app();
+        crate::demo_fixture::install(&mut app);
+        app.table_state.select(None);
+        let theme = app.theme.clone();
+        let buf = render_buf(&mut app, 160, 30);
+        let pricey = find_row(&buf, "poly-prod-api").expect("prod-api row");
+        let cheap = find_row(&buf, "poly-staging-worker").expect("staging-worker row");
+        assert!(
+            row_has_fg(&buf, pricey, theme.health_red),
+            "the $612 env should paint a health_red COST cell"
+        );
+        assert!(
+            !row_has_fg(&buf, cheap, theme.health_red),
+            "a cheap green-health env row should have no red cell"
+        );
+    }
+
+    #[tokio::test]
+    async fn render_dlq_depth_tints_the_ready_pill_amber() {
+        // A Worker env that EB reports Green but whose DLQ has messages
+        // gets its `Ready` pill rendered in health_yellow — the row-level
+        // "this isn't actually fine" signal. Differential: same env with
+        // an empty DLQ shows no amber pill.
+        let mut app = test_app();
+        app.environments = vec![mk_env("worker-x", "uflexi", "Worker", "Green")];
+        app.rebuild_view();
+        app.table_state.select(None);
+        let theme = app.theme.clone();
+
+        let clean = render_buf(&mut app, 140, 30);
+        let clean_amber = count_fg(&clean, theme.health_yellow);
+
+        app.worker_dlq_depths.insert("worker-x".into(), 12);
+        let backed_up = render_buf(&mut app, 140, 30);
+        let dlq_amber = count_fg(&backed_up, theme.health_yellow);
+
+        assert!(
+            dlq_amber > clean_amber,
+            "a non-empty DLQ should add amber (Ready-pill) cells \
+             (dlq={dlq_amber}, clean={clean_amber})"
+        );
+    }
+
+    #[tokio::test]
+    async fn render_redact_masks_the_cname() {
+        // `:redact` (Ctrl-X) blanks sensitive columns — the CNAME renders
+        // as ▓ blocks, and the real hostname no longer appears.
+        let mut app = test_app();
+        app.environments = vec![mk_env("svc", "uflexi", "Web", "Green")];
+        app.rebuild_view();
+        app.table_state.select(None);
+        app.redact = false;
+        let shown = render(&mut app, 160, 30);
+        assert!(shown.contains("svc.example.com"), "cname visible when off");
+        app.redact = true;
+        let hidden = render(&mut app, 160, 30);
+        assert!(
+            !hidden.contains("svc.example.com"),
+            "cname must be masked when redact is on"
+        );
+        assert!(hidden.contains('▓'), "redacted cells render as ▓ blocks");
     }
 
     #[tokio::test]
