@@ -853,21 +853,22 @@ fn draw_palette(f: &mut Frame, area: Rect, app: &App) {
         .split(inner);
 
     // Input bar (no border — drawn directly inside the outer frame).
-    let input = Paragraph::new(Line::from(vec![
-        Span::styled(
-            " ❯ ",
-            Style::default()
-                .fg(theme.title_alt)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(app.palette_input.clone(), Style::default().fg(theme.text)),
-        Span::styled(
-            caret_glyph(theme),
-            Style::default()
-                .fg(theme.title_alt)
-                .add_modifier(Modifier::SLOW_BLINK),
-        ),
-    ]));
+    let mut input_spans = vec![Span::styled(
+        " ❯ ",
+        Style::default()
+            .fg(theme.title_alt)
+            .add_modifier(Modifier::BOLD),
+    )];
+    input_spans.extend(input_caret_spans(
+        app.palette_input.text(),
+        app.palette_input.cursor_col(),
+        Style::default().fg(theme.text),
+        Style::default()
+            .fg(theme.title_alt)
+            .add_modifier(Modifier::SLOW_BLINK),
+        theme,
+    ));
+    let input = Paragraph::new(Line::from(input_spans));
     f.render_widget(input, layout[0]);
 
     // Thin horizontal rule between input and list.
@@ -3800,15 +3801,14 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
                     .add_modifier(Modifier::BOLD),
             ));
             top.push(Span::raw(" "));
-            top.push(Span::styled(
-                app.quickjump_input.clone(),
+            top.extend(input_caret_spans(
+                app.quickjump_input.text(),
+                app.quickjump_input.cursor_col(),
                 Style::default().fg(app.theme.text),
-            ));
-            top.push(Span::styled(
-                caret_glyph(theme),
                 Style::default()
                     .fg(app.theme.accent)
                     .add_modifier(Modifier::SLOW_BLINK),
+                theme,
             ));
             top.push(Span::styled(
                 "   jump to env by name prefix   [enter] keep   [esc] cancel",
@@ -7541,6 +7541,32 @@ fn caret_glyph(theme: &Theme) -> &'static str {
     } else {
         "\u{258e}"
     }
+}
+
+/// Render a single-line text input as `before-caret` + caret glyph +
+/// `after-caret`, so the blinking caret sits at `cursor_col` (a char
+/// offset) instead of always at the end. Shared by the `TextInput`-backed
+/// input renderers (quickjump / palette / …) now that those inputs
+/// support mid-string cursor movement. `cursor_col` past the end clamps
+/// to the end (caret after all text).
+fn input_caret_spans(
+    text: &str,
+    cursor_col: usize,
+    text_style: Style,
+    caret_style: Style,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    let byte = text
+        .char_indices()
+        .nth(cursor_col)
+        .map(|(i, _)| i)
+        .unwrap_or(text.len());
+    let (before, after) = text.split_at(byte);
+    vec![
+        Span::styled(before.to_string(), text_style),
+        Span::styled(caret_glyph(theme), caret_style),
+        Span::styled(after.to_string(), text_style),
+    ]
 }
 
 /// Pure: chevron used in the non-Powerline group-banner row to mark the
