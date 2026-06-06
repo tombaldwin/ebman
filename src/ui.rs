@@ -1652,7 +1652,7 @@ fn draw_why_red_overlay(f: &mut Frame, area: Rect, app: &mut App) {
     // Operator-configured runbook for this env (config.toml `runbooks.ENV`),
     // surfaced at the top of the triage overlay so it's the first thing
     // the responder sees.
-    if let Some(url) = app.runbooks.get(env_name) {
+    if let Some(url) = app.cfg.runbooks.get(env_name) {
         lines.push(Line::from(vec![
             Span::styled(
                 " runbook  ",
@@ -5147,7 +5147,7 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
                 env,
                 detail,
                 app.redact,
-                &app.required_tags,
+                &app.cfg.required_tags,
                 &app.theme,
             ));
         }

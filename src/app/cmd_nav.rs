@@ -56,7 +56,7 @@ impl App {
         match rest.first() {
             Some(name) => {
                 let name = (*name).to_string();
-                if self.accounts.contains_key(&name) {
+                if self.cfg.accounts.contains_key(&name) {
                     self.spawn_assume_role_switch(name);
                 } else {
                     // Fallback to :profile path — validate against the
