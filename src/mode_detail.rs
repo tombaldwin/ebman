@@ -10,6 +10,8 @@
 //! status / pending toasts. The types are testable in isolation; the
 //! App-coupled control flow is the next split.
 
+use tui_common::TextInput;
+
 use crate::aws::{Environment, Event as EbEvent, Instance, MetricSeries, WorkerQueues};
 
 /// One drillable item on the Health tab. Render + Enter-dispatch derive
@@ -361,7 +363,7 @@ pub struct LogTail {
     /// Sticky error so the user can see why the tail failed.
     pub error: Option<String>,
     /// When set, the tab is filtered to lines matching this regex.
-    pub search_input: String,
+    pub search_input: TextInput,
     pub search_active: bool,
     pub search_pattern: Option<regex::Regex>,
     pub search_error: Option<String>,
@@ -394,7 +396,7 @@ pub struct DetailState {
     pub metrics: Vec<MetricSeries>,
     pub metrics_range_secs: i64,
     pub auto_refresh: bool,
-    pub search_input: String,
+    pub search_input: TextInput,
     pub search_active: bool, // true while user is typing a pattern
     pub search_pattern: Option<regex::Regex>,
     pub search_error: Option<String>,
@@ -651,7 +653,7 @@ mod tests {
             metrics: vec![],
             metrics_range_secs: 3600,
             auto_refresh: false,
-            search_input: String::new(),
+            search_input: TextInput::new(),
             search_active: false,
             search_pattern: None,
             search_error: None,

@@ -6,6 +6,7 @@
 //! whole async-result surface (it was previously one ~1,140-line `match`).
 
 use super::*;
+use tui_common::TextInput;
 
 impl AppMsg {
     /// The context generation a result message was produced for, when it
@@ -1049,7 +1050,7 @@ impl App {
             scroll: 0,
             following: true,
             since_ms,
-            filter_input: String::new(),
+            filter_input: TextInput::new(),
             filter_active: false,
             filter_pattern: None,
             last_err: None,
