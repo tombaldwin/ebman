@@ -15,6 +15,7 @@
 
 use chrono::{DateTime, Duration, Utc};
 use ratatui::widgets::ListState;
+use tui_common::TextInput;
 
 use crate::aws::QueueMessage;
 
@@ -30,7 +31,7 @@ pub struct DlqState {
     pub loading: bool,
     pub error: Option<String>,
     pub confirm_purge: bool,
-    pub purge_typed: String,
+    pub purge_typed: TextInput,
     /// Which queue is currently loaded — DLQ (default) or the main worker
     /// queue. Toggled by `m`. The same UI surfaces both; resend / purge are
     /// disabled in Main view because purging a working queue is too dangerous.
@@ -41,7 +42,7 @@ pub struct DlqState {
     /// When `Some`, the time-windowed replay prompt is open and this holds
     /// the operator's typed spec (`all` / a count / a window like `24h`).
     /// Dead-letter view only.
-    pub replay_input: Option<String>,
+    pub replay_input: Option<TextInput>,
 }
 
 /// What subset of the loaded DLQ messages a replay should cover. Parsed

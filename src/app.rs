@@ -6850,7 +6850,7 @@ impl App {
             loading: false,
             error: None,
             confirm_purge: false,
-            purge_typed: String::new(),
+            purge_typed: TextInput::new(),
             viewing,
             confirm_delete_idx: None,
             replay_input: None,
@@ -6881,7 +6881,7 @@ impl App {
             loading: false,
             error: None,
             confirm_purge: false,
-            purge_typed: String::new(),
+            purge_typed: TextInput::new(),
             viewing: QueueView::Dlq,
             confirm_delete_idx: None,
             replay_input: None,
@@ -6905,7 +6905,7 @@ impl App {
             loading: false,
             error: None,
             confirm_purge: false,
-            purge_typed: String::new(),
+            purge_typed: TextInput::new(),
             viewing: QueueView::Dlq,
             confirm_delete_idx: None,
             replay_input: None,
@@ -6946,18 +6946,18 @@ impl App {
                     dlq.confirm_purge = false;
                     dlq.purge_typed.clear();
                 }
-                KeyCode::Enter if dlq.purge_typed == dlq.env_name => {
+                KeyCode::Enter if dlq.purge_typed.text() == dlq.env_name.as_str() => {
                     let dlq_url = dlq.dlq_url.clone();
                     let env_name = dlq.env_name.clone();
                     dlq.confirm_purge = false;
                     dlq.purge_typed.clear();
                     self.spawn_dlq_purge(env_name, dlq_url);
                 }
-                KeyCode::Backspace => {
-                    dlq.purge_typed.pop();
+                // TextInput consumes editing keys (Backspace / cursor /
+                // Ctrl-W); a non-matching Enter falls through as a no-op.
+                _ => {
+                    dlq.purge_typed.handle_key(key);
                 }
-                KeyCode::Char(c) if is_text_input(&key) => dlq.purge_typed.push(c),
-                _ => {}
             }
             return;
         }
@@ -6965,7 +6965,7 @@ impl App {
         if let Some(input) = dlq.replay_input.as_mut() {
             match key.code {
                 KeyCode::Esc => dlq.replay_input = None,
-                KeyCode::Enter => match crate::mode_dlq::parse_replay_spec(input) {
+                KeyCode::Enter => match crate::mode_dlq::parse_replay_spec(input.text()) {
                     None => {
                         dlq.error = Some(
                             "replay: type `all`, a count (e.g. 20), or a window (1h / 24h / 7d)"
@@ -6990,11 +6990,11 @@ impl App {
                         }
                     }
                 },
-                KeyCode::Backspace => {
-                    input.pop();
+                // TextInput consumes editing keys; the spec is parsed on
+                // Enter, so no live side-effect on edit.
+                _ => {
+                    input.handle_key(key);
                 }
-                KeyCode::Char(c) if is_text_input(&key) => input.push(c),
-                _ => {}
             }
             return;
         }
@@ -7067,7 +7067,7 @@ impl App {
                 } else if dlq.messages.is_empty() {
                     self.error_message = Some("replay: DLQ is empty".into());
                 } else {
-                    dlq.replay_input = Some(String::new());
+                    dlq.replay_input = Some(TextInput::new());
                     dlq.error = None;
                 }
             }
