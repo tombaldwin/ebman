@@ -12,26 +12,16 @@ homepage = "https://github.com/tombaldwin/ebman"
 keywords = ["aws", "elasticbeanstalk", "tui", "ratatui"]
 categories = ["command-line-utilities"]
 
-# Workspace: the ebman package sits at the root alongside the
-# `tb-tui-common` crate (in the `tui-common/` directory; renamed for
-# crates.io land-grab avoidance in 0.8.0 but kept under the same
-# directory name for git-history continuity). Five modules ship there:
-# `font_probe`, `overlay`, `theme`, `splash`, and `util`. The sibling
-# pgman repo depends on `tb-tui-common` from crates.io so fixes flow
-# both ways instead of being copy-pasted between repos.
-[workspace]
-members = ["tui-common"]
-# Default to building / testing both crates so `cargo test` from the
-# repo root sweeps everything without needing `--workspace`.
-default-members = [".", "tui-common"]
-
 [dependencies]
-# Local `path` for dev so changes flow without a republish; `version`
-# resolves the dep at publish time (cargo strips the `path` and uses
-# the crates.io copy of `tb-tui-common`). `package = "tb-tui-common"`
-# lets every existing `use tui_common::*` line keep working — the
-# manifest key (`tui-common`) is what Rust imports as `tui_common`.
-tui-common = { path = "tui-common", version = "0.1.1", package = "tb-tui-common" }
+# `tb-tui-common` — shared TUI helpers (font_probe / overlay / theme /
+# splash / util), now its own repo + crate:
+# https://github.com/tombaldwin/tb-tui-common (also consumed by pgman).
+# Pulled from crates.io. `package = "tb-tui-common"` keeps every
+# `use tui_common::*` line working — the manifest key (`tui-common`) is
+# what Rust imports as `tui_common`. To co-develop both crates from a
+# side-by-side checkout, uncomment the `[patch.crates-io]` block at the
+# bottom of this file (don't commit it uncommented).
+tui-common = { version = "0.1.1", package = "tb-tui-common" }
 ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
@@ -109,3 +99,11 @@ tokio = { version = "1", features = ["test-util"] }
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# Local co-development of tb-tui-common: uncomment to point ebman at a
+# sibling checkout instead of the crates.io copy, so edits to the shared
+# crate show up here without a republish. Leave commented in git — it's a
+# dev-only override and a committed path would break `cargo publish` and
+# anyone building from a clean clone.
+# [patch.crates-io]
+# tb-tui-common = { path = "../tb-tui-common" }
