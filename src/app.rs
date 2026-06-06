@@ -880,6 +880,42 @@ pub struct EventPanel {
     pub height: u16,
 }
 
+/// Config-derived values resolved once at startup (from `config.toml` +
+/// the active profile), grouped off `App` so the dozen mirror fields
+/// don't clutter the top-level state. Round-tripped by `:settings` via
+/// `current_config_snapshot`; reassigned wholesale on profile/config
+/// reload. Pure config — runtime UI state stays on `App`.
+#[derive(Debug, Clone, Default)]
+pub struct ResolvedConfig {
+    /// Mirror of `Config::notify_webhook` (fan-out reads a process-wide
+    /// `OnceLock` in [`crate::audit`]; held here for `:settings` save).
+    pub notify_webhook: Option<String>,
+    /// `config.toml` `alias.NAME = "expansion"` command aliases.
+    pub command_aliases: std::collections::HashMap<String, String>,
+    /// Operator-disabled lint rule IDs (`lint.disable = "EBL001,…"`).
+    pub lint_disable: Vec<String>,
+    /// Resolved `[explain]` LLM settings (provider + model + auth).
+    pub explain_settings: crate::llm::Settings,
+    /// Tag keys every env must carry (`required_tags`).
+    pub required_tags: Vec<String>,
+    /// Raw `icons = …` string before resolution to `IconStyle` (so
+    /// `:settings` round-trips `"auto"` without flattening it).
+    pub cfg_icons_raw: String,
+    /// Per-profile theme overrides (`profile_themes` key).
+    pub profile_themes: std::collections::HashMap<String, String>,
+    /// Per-env runbook URLs (`runbooks.ENV`).
+    pub runbooks: std::collections::HashMap<String, String>,
+    /// Per-env read-only locks (`safety.envs.NAME.read_only`).
+    pub safety_envs: std::collections::HashMap<String, bool>,
+    /// Per-account read-only locks (`safety.accounts.NAME.read_only`).
+    pub safety_accounts: std::collections::HashMap<String, bool>,
+    /// Named AssumeRole accounts (`accounts.NAME.*`).
+    pub accounts: std::collections::HashMap<String, crate::config::AccountSpec>,
+    /// Base theme name (`theme = …`), kept separate from the running
+    /// `theme` so a profile-themed session reverts cleanly.
+    pub base_theme_name: String,
+}
+
 pub struct App {
     pub context: AwsContext,
     pub scope: Scope,
@@ -1161,67 +1197,8 @@ pub struct App {
     /// on screen to the control plane.
     pub last_rendered_buffer: Option<ratatui::buffer::Buffer>,
     pub notify_bell: bool,
-    /// Mirror of `Config::notify_webhook`. The actual fan-out
-    /// reads from a process-wide `OnceLock` in [`crate::audit`] so
-    /// `audit::append_raw` (called from many sites) doesn't need a
-    /// `&self` borrow. We hold it on App too just so `:settings`-
-    /// style round-trips can serialise the current value back to
-    /// config.toml.
-    pub notify_webhook: Option<String>,
-    /// User-defined command aliases from `config.toml`'s
-    /// `alias.NAME = "expansion"` entries. Looked up in
-    /// `execute_command` before the dispatch match; an alias
-    /// expansion + the rest of the typed args become the new
-    /// command line, then re-parsed. Single-level expansion only
-    /// (no transitive chaining) to keep cycle detection simple.
-    /// Named `command_aliases` to disambiguate from the existing
-    /// `App.aliases` (env-rename labels, state.toml-persisted).
-    pub command_aliases: std::collections::HashMap<String, String>,
-    /// Operator-disabled lint rule IDs from `config.toml`'s
-    /// `lint.disable = "EBL001,EBL006"` line. Mirrored here so
-    /// :settings round-trips preserve operator-set disables on
-    /// save. The `ebman lint` CLI uses its own `config::load_lint_disables`
-    /// loader so the disables apply to both surfaces.
-    pub lint_disable: Vec<String>,
-    /// Resolved `[explain]` settings (LLM provider + model + auth)
-    /// loaded from `config.toml`. Read by `cmd_explain_issue` to
-    /// dispatch the `:explain EBL###` overlay; round-tripped
-    /// through `current_config_snapshot` so `:settings save`
-    /// doesn't drop the lines. Single field instead of six discrete
-    /// `explain_*` mirrors — sets the template for the next
-    /// `[section]` block in config.toml.
-    pub explain_settings: crate::llm::Settings,
-    pub required_tags: Vec<String>,
-    /// The raw `icons = …` string from `config.toml` (before resolution to
-    /// [`crate::theme::IconStyle`]). Kept verbatim so `:settings` can round-trip
-    /// values like `"auto"` without flattening them to the resolved style.
-    pub cfg_icons_raw: String,
-    /// Per-profile theme overrides loaded from `config.toml`'s
-    /// `profile_themes` key. Empty when nothing is configured. Consulted
-    /// by `maybe_apply_profile_theme` on initial setup + every profile
-    /// switch through `apply_rebuild` so the visual cue follows the
-    /// active profile without restart.
-    pub profile_themes: std::collections::HashMap<String, String>,
-    /// Per-environment runbook URLs from `config.toml`'s `runbooks.ENV`
-    /// keys. Surfaced in the `:why` triage overlay; empty when unset.
-    pub runbooks: std::collections::HashMap<String, String>,
-    /// Per-env read-only locks (config.toml `safety.envs.NAME.read_only`).
-    /// `Some(true)` blocks destructive actions against the named env
-    /// even when the global `--read-only` toggle is off.
-    pub safety_envs: std::collections::HashMap<String, bool>,
-    /// Per-account read-only locks (config.toml
-    /// `safety.accounts.NAME.read_only`). Matched against the active
-    /// account name (the `:account NAME` key or the AWS profile name).
-    pub safety_accounts: std::collections::HashMap<String, bool>,
-    /// Named AssumeRole accounts loaded from `config.toml`'s
-    /// `accounts.NAME.*` keys. `:account NAME` consults this map first;
-    /// if the name matches, builds an `AwsClient` via STS AssumeRole.
-    /// Otherwise falls back to the legacy `:profile NAME` aliasing.
-    pub accounts: std::collections::HashMap<String, crate::config::AccountSpec>,
-    /// Base theme name from `theme = …` — kept separate from the
-    /// running `theme` so a profile-themed session reverts cleanly when
-    /// the operator switches back to a profile with no override.
-    pub base_theme_name: String,
+    /// Config-derived values resolved at startup — see ResolvedConfig.
+    pub cfg: ResolvedConfig,
     pub newly_red: HashSet<String>,
     /// Env names that appeared for the first time on the most recent
     /// refresh (weren't in `prev_health` last cycle). Used by the env
@@ -1998,18 +1975,20 @@ impl App {
             shell_return_mode: Mode::Normal,
             last_rendered_buffer: None,
             notify_bell: config.notify_bell,
-            notify_webhook: config.notify_webhook.clone(),
-            command_aliases: config.command_aliases.clone(),
-            lint_disable: config.lint_disable.clone(),
-            explain_settings,
-            required_tags: config.required_tags,
-            cfg_icons_raw: config.icons.clone(),
-            profile_themes: config.profile_themes.clone(),
-            runbooks: config.runbooks.clone(),
-            safety_envs: config.safety_envs.clone(),
-            safety_accounts: config.safety_accounts.clone(),
-            accounts: config.accounts.clone(),
-            base_theme_name: config.theme.clone(),
+            cfg: ResolvedConfig {
+                notify_webhook: config.notify_webhook.clone(),
+                command_aliases: config.command_aliases.clone(),
+                lint_disable: config.lint_disable.clone(),
+                explain_settings,
+                required_tags: config.required_tags,
+                cfg_icons_raw: config.icons.clone(),
+                profile_themes: config.profile_themes.clone(),
+                runbooks: config.runbooks.clone(),
+                safety_envs: config.safety_envs.clone(),
+                safety_accounts: config.safety_accounts.clone(),
+                accounts: config.accounts.clone(),
+                base_theme_name: config.theme.clone(),
+            },
             newly_red: HashSet::new(),
             newly_added: HashSet::new(),
             health_delta: Vec::new(),
@@ -2063,7 +2042,7 @@ impl App {
                 // a single-app repo's envs without a hard pin.
                 app.filter = app_name.into();
             }
-            app.runbooks.extend(proj.runbooks);
+            app.cfg.runbooks.extend(proj.runbooks);
         }
         // EB CLI application name fills in as a filter prefill when
         // `.ebman/` hasn't already set one. Same "soft scope" intent
@@ -2245,18 +2224,20 @@ impl App {
             shell_return_mode: Mode::Normal,
             last_rendered_buffer: None,
             notify_bell: config.notify_bell,
-            notify_webhook: config.notify_webhook.clone(),
-            command_aliases: config.command_aliases.clone(),
-            lint_disable: config.lint_disable.clone(),
-            explain_settings,
-            required_tags: config.required_tags.clone(),
-            cfg_icons_raw: config.icons.clone(),
-            profile_themes: config.profile_themes.clone(),
-            runbooks: config.runbooks.clone(),
-            safety_envs: config.safety_envs.clone(),
-            safety_accounts: config.safety_accounts.clone(),
-            accounts: config.accounts.clone(),
-            base_theme_name: config.theme.clone(),
+            cfg: ResolvedConfig {
+                notify_webhook: config.notify_webhook.clone(),
+                command_aliases: config.command_aliases.clone(),
+                lint_disable: config.lint_disable.clone(),
+                explain_settings,
+                required_tags: config.required_tags.clone(),
+                cfg_icons_raw: config.icons.clone(),
+                profile_themes: config.profile_themes.clone(),
+                runbooks: config.runbooks.clone(),
+                safety_envs: config.safety_envs.clone(),
+                safety_accounts: config.safety_accounts.clone(),
+                accounts: config.accounts.clone(),
+                base_theme_name: config.theme.clone(),
+            },
             newly_red: HashSet::new(),
             newly_added: HashSet::new(),
             health_delta: Vec::new(),
@@ -4211,7 +4192,7 @@ impl App {
             env_count: self.environments.len(),
             app_count: self.applications.len(),
             multi_regions_count: self.multi_regions.len(),
-            multi_account_enabled: !self.accounts.is_empty(),
+            multi_account_enabled: !self.cfg.accounts.is_empty(),
         };
         let ctx = crate::report_bug::ScrubContext {
             account_id: self.context.account_id.clone(),
@@ -4943,11 +4924,11 @@ impl App {
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
-        let mut disabled = self.lint_disable.clone();
+        let mut disabled = self.cfg.lint_disable.clone();
         disabled.extend(crate::project::load_lint_disables_from_cwd());
         let app_name = env.application.clone();
         let env_name_for_fetch = env.name.clone();
-        let settings = self.explain_settings.clone();
+        let settings = self.cfg.explain_settings.clone();
         // Snapshot the lint-context inputs that aren't already
         // implied by `&env` + `&opts`. All four 0.18 wire-ups land
         // here too so `:explain` sees the same rule firing pattern
@@ -4955,7 +4936,7 @@ impl App {
         // EBL011 worker DLQ, EBL012 healthy-count).
         let newer_stack_owned =
             crate::aws::newer_stack_version(&env.solution_stack, &self.latest_stacks);
-        let required_tags_owned = self.required_tags.clone();
+        let required_tags_owned = self.cfg.required_tags.clone();
         let dlq_depth_owned = if env.tier.eq_ignore_ascii_case("Worker") {
             self.worker_dlq_depths.get(&env.name).copied()
         } else {
@@ -7714,22 +7695,22 @@ impl App {
             // Snapshot the BASE theme name, not the currently-applied one;
             // otherwise a profile-overridden theme would persist as the
             // new default and erase the operator's per-profile mapping.
-            theme: self.base_theme_name.clone(),
-            icons: self.cfg_icons_raw.clone(),
+            theme: self.cfg.base_theme_name.clone(),
+            icons: self.cfg.cfg_icons_raw.clone(),
             notify_bell: self.notify_bell,
-            required_tags: self.required_tags.clone(),
-            profile_themes: self.profile_themes.clone(),
+            required_tags: self.cfg.required_tags.clone(),
+            profile_themes: self.cfg.profile_themes.clone(),
             // Accounts live in config.toml only — :settings doesn't
             // surface them in the form (the assume-role schema would
             // need its own editor), so the snapshot just preserves
             // whatever was loaded.
-            accounts: self.accounts.clone(),
-            runbooks: self.runbooks.clone(),
-            safety_envs: self.safety_envs.clone(),
-            safety_accounts: self.safety_accounts.clone(),
-            notify_webhook: self.notify_webhook.clone(),
-            command_aliases: self.command_aliases.clone(),
-            lint_disable: self.lint_disable.clone(),
+            accounts: self.cfg.accounts.clone(),
+            runbooks: self.cfg.runbooks.clone(),
+            safety_envs: self.cfg.safety_envs.clone(),
+            safety_accounts: self.cfg.safety_accounts.clone(),
+            notify_webhook: self.cfg.notify_webhook.clone(),
+            command_aliases: self.cfg.command_aliases.clone(),
+            lint_disable: self.cfg.lint_disable.clone(),
             // `lint.fix_disable` is a CLI-only knob (no TUI surface
             // consumes it; `ebman lint --fix` reads via
             // `config::load_lint_fix_disables` directly). We re-read
@@ -7748,7 +7729,7 @@ impl App {
         // Config struct's discrete fields and uses empty-string
         // sentinels for defaults so the serialiser only emits the
         // lines the operator has actually configured.
-        self.explain_settings.write_to_config(&mut snapshot);
+        self.cfg.explain_settings.write_to_config(&mut snapshot);
         snapshot
     }
 
@@ -7775,11 +7756,17 @@ impl App {
         if self.deploy_freeze.is_some() {
             return true;
         }
-        if self.safety_envs.get(env_name).copied().unwrap_or(false) {
+        if self.cfg.safety_envs.get(env_name).copied().unwrap_or(false) {
             return true;
         }
         if let Some(profile) = self.context.profile.as_deref() {
-            if self.safety_accounts.get(profile).copied().unwrap_or(false) {
+            if self
+                .cfg
+                .safety_accounts
+                .get(profile)
+                .copied()
+                .unwrap_or(false)
+            {
                 return true;
             }
         }
@@ -7895,13 +7882,19 @@ impl App {
                 )
             });
         }
-        if self.safety_envs.get(env_name).copied().unwrap_or(false) {
+        if self.cfg.safety_envs.get(env_name).copied().unwrap_or(false) {
             return Some(format!(
                 "read-only mode (env pinned via safety.envs.{env_name})"
             ));
         }
         if let Some(profile) = self.context.profile.as_deref() {
-            if self.safety_accounts.get(profile).copied().unwrap_or(false) {
+            if self
+                .cfg
+                .safety_accounts
+                .get(profile)
+                .copied()
+                .unwrap_or(false)
+            {
                 return Some(format!(
                     "read-only mode (account pinned via safety.accounts.{profile})"
                 ));
@@ -7918,10 +7911,11 @@ impl App {
     fn maybe_apply_profile_theme(&mut self) {
         let profile = self.context.profile.as_deref().unwrap_or("default");
         let target_name = self
+            .cfg
             .profile_themes
             .get(profile)
             .cloned()
-            .unwrap_or_else(|| self.base_theme_name.clone());
+            .unwrap_or_else(|| self.cfg.base_theme_name.clone());
         // Avoid rebuilding the Arc<Theme> when nothing changed.
         if self.theme.name == target_name {
             return;
@@ -7969,7 +7963,7 @@ impl App {
         };
         t.icons = resolved_icons;
         self.theme = Arc::new(t);
-        self.cfg_icons_raw = icons_raw;
+        self.cfg.cfg_icons_raw = icons_raw;
         // Refresh interval — the ticker reads `self.refresh_interval` on
         // each tick boundary, so the new value applies on the next cycle.
         self.refresh_interval = cfg.refresh_interval;
@@ -7980,7 +7974,7 @@ impl App {
         // surprise the operator.
         self.extra_regions = cfg.extra_regions.clone();
         self.notify_bell = cfg.notify_bell;
-        self.required_tags = cfg.required_tags.clone();
+        self.cfg.required_tags = cfg.required_tags.clone();
         // Theme swap invalidates the cached per-app colour assignments —
         // those store final `Color` values, not palette indices, so they'd
         // otherwise carry the old palette into the new theme's rendering.
@@ -9552,7 +9546,7 @@ impl App {
         let gen = self.generation;
         // Snapshot operator-tunable disables — user-level (already
         // mirrored on App) + project-local (read fresh from cwd).
-        let mut disabled = self.lint_disable.clone();
+        let mut disabled = self.cfg.lint_disable.clone();
         disabled.extend(crate::project::load_lint_disables_from_cwd());
         let env_for_msg = env.name.clone();
         let app_name = env.application.clone();
@@ -9563,7 +9557,7 @@ impl App {
         // count enables EBL012. All four wire-up tracks landed in 0.18.
         let newer_stack_owned =
             crate::aws::newer_stack_version(&env.solution_stack, &self.latest_stacks);
-        let required_tags_owned = self.required_tags.clone();
+        let required_tags_owned = self.cfg.required_tags.clone();
         // EBL011 only fires for Worker envs and only when we have a
         // cached DLQ depth (populated by the Queue tab / worker poll).
         let dlq_depth_owned = if env.tier.eq_ignore_ascii_case("Worker") {
@@ -10512,7 +10506,7 @@ impl App {
         // expansion only so `alias.x = "x"` can't loop. The
         // expansion is owned (String) because the borrowed `raw`
         // doesn't outlive this scope.
-        let expanded = expand_command_alias(line, &self.command_aliases);
+        let expanded = expand_command_alias(line, &self.cfg.command_aliases);
         let line = expanded.as_str();
         let mut parts = line.split_whitespace();
         let Some(cmd) = parts.next() else { return };
@@ -11205,7 +11199,7 @@ impl App {
     /// of the swap (overlay tear-down, throttle reset, identity refresh)
     /// flows through the existing `apply_rebuild` handler.
     fn spawn_assume_role_switch(&mut self, account_name: String) {
-        let Some(spec) = self.accounts.get(&account_name).cloned() else {
+        let Some(spec) = self.cfg.accounts.get(&account_name).cloned() else {
             self.error_message = Some(format!(
                 "no `accounts.{account_name}` in config.toml — add `accounts.{account_name}.role_arn = …`"
             ));
@@ -17285,7 +17279,7 @@ mod tests {
         // confirm the pin is wired (0.17.4 review finding).
         let mut app = test_app();
         app.demo_mode = true;
-        app.safety_envs.insert("prod-eu-1".into(), true);
+        app.cfg.safety_envs.insert("prod-eu-1".into(), true);
         let denied = app.deny_write("prod-eu-1", "rebuild");
         assert!(denied);
         let err = app.error_message.as_deref().unwrap();
@@ -19638,7 +19632,8 @@ mod tests {
         // observable side-effect (the toast text) rather than
         // having to mock a deploy.
         let mut app = test_app();
-        app.command_aliases
+        app.cfg
+            .command_aliases
             .insert("emergency".into(), "freeze-deploys incident #1234".into());
         app.execute_command("emergency");
         assert!(app.deploy_freeze.is_some());
@@ -19717,7 +19712,7 @@ mod tests {
         // the freeze reason wins in the toast — it's the more-
         // recent operator gesture and the more informative message.
         let mut app = test_app();
-        app.safety_envs.insert("prod".into(), true);
+        app.cfg.safety_envs.insert("prod".into(), true);
         app.execute_command("freeze-deploys incident");
         let reason = app.read_only_reason("prod").unwrap_or_default();
         assert!(
@@ -21427,8 +21422,8 @@ mod tests {
         // Global off + per-env pin → that one env is locked, others
         // aren't.
         let mut app = test_app();
-        app.safety_envs.insert("uflexi-prod".into(), true);
-        app.safety_envs.insert("uflexi-staging".into(), false);
+        app.cfg.safety_envs.insert("uflexi-prod".into(), true);
+        app.cfg.safety_envs.insert("uflexi-staging".into(), false);
         assert!(app.is_read_only_for("uflexi-prod"));
         assert!(!app.is_read_only_for("uflexi-staging"));
         assert!(!app.is_read_only_for("uflexi-dev"));
@@ -21441,7 +21436,7 @@ mod tests {
         // locked.
         let mut app = test_app();
         app.context.profile = Some("prod-acct".into());
-        app.safety_accounts.insert("prod-acct".into(), true);
+        app.cfg.safety_accounts.insert("prod-acct".into(), true);
         assert!(app.is_read_only_for("any-env"));
         assert!(app
             .read_only_reason("any-env")
@@ -21464,7 +21459,7 @@ mod tests {
         // silently bypassed for batch ops. deny_write_batch must refuse
         // the whole batch if ANY selected env is pinned.
         let mut app = test_app();
-        app.safety_envs.insert("prod-web".into(), true);
+        app.cfg.safety_envs.insert("prod-web".into(), true);
         let selection = vec!["staging-web".to_string(), "prod-web".to_string()];
         assert!(
             app.deny_write_batch(&selection, "batch action"),
@@ -21481,7 +21476,7 @@ mod tests {
     #[tokio::test]
     async fn deny_write_batch_allows_when_no_env_pinned() {
         let mut app = test_app();
-        app.safety_envs.insert("other-env".into(), true); // not in selection
+        app.cfg.safety_envs.insert("other-env".into(), true); // not in selection
         let selection = vec!["staging-web".to_string(), "dev-web".to_string()];
         assert!(
             !app.deny_write_batch(&selection, "batch action"),
@@ -21511,7 +21506,7 @@ mod tests {
         // must NOT clear multi_selected (so the operator can deselect
         // the locked env and retry).
         let mut app = test_app();
-        app.safety_envs.insert("prod-web".into(), true);
+        app.cfg.safety_envs.insert("prod-web".into(), true);
         app.multi_selected.insert("prod-web".into());
         app.multi_selected.insert("staging-web".into());
         app.cmd_batch_action(crate::app::Action::Rebuild);

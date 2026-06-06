@@ -490,7 +490,7 @@ impl App {
         // ones get read fresh inside the spawn so a mid-session
         // edit to `.ebman/ebman.toml` takes effect without
         // restarting ebman.
-        let user_disables = self.lint_disable.clone();
+        let user_disables = self.cfg.lint_disable.clone();
         // Plumb live lint-context inputs. All four 0.18 wire-ups land
         // here (EBL008 newer-stack, EBL010 required-tags + env-tags,
         // EBL011 worker DLQ, EBL012 healthy-count). The tags + health
@@ -498,7 +498,7 @@ impl App {
         // spawn_confirm_lint for the latency rationale).
         let newer_stack_owned =
             crate::aws::newer_stack_version(&env.solution_stack, &self.latest_stacks);
-        let required_tags_owned = self.required_tags.clone();
+        let required_tags_owned = self.cfg.required_tags.clone();
         let dlq_depth_owned = if env.tier.eq_ignore_ascii_case("Worker") {
             self.worker_dlq_depths.get(&env.name).copied()
         } else {

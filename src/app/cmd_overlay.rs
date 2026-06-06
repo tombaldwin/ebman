@@ -23,6 +23,7 @@ impl App {
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let configured: std::collections::HashMap<String, String> = self
+            .cfg
             .accounts
             .keys()
             .map(|n| (n.clone(), n.clone()))
@@ -60,6 +61,7 @@ impl App {
     pub(crate) fn cmd_org_health(&mut self) {
         let profiles = crate::profiles::load_profiles();
         let accounts: Vec<(String, crate::config::AccountSpec)> = self
+            .cfg
             .accounts
             .iter()
             .map(|(n, s)| (n.clone(), s.clone()))
@@ -291,6 +293,7 @@ impl App {
         let label = label.to_string();
         let profiles = crate::profiles::load_profiles();
         let accounts: Vec<(String, crate::config::AccountSpec)> = self
+            .cfg
             .accounts
             .iter()
             .map(|(n, s)| (n.clone(), s.clone()))
@@ -401,6 +404,7 @@ impl App {
         let needle = needle.to_string();
         let profiles = crate::profiles::load_profiles();
         let accounts: Vec<(String, crate::config::AccountSpec)> = self
+            .cfg
             .accounts
             .iter()
             .map(|(n, s)| (n.clone(), s.clone()))
