@@ -153,7 +153,8 @@ impl App {
             Some(name) if self.saved_views.contains_key(*name) => {
                 if let Some(snap) = self.saved_views.get(*name).cloned() {
                     super::apply_view(self, &snap);
-                    self.status_message = Some(format!("filter: {name} → \"{}\"", self.filter));
+                    self.status_message =
+                        Some(format!("filter: {name} → \"{}\"", self.filter.text()));
                 }
             }
             Some(name) => {
@@ -176,10 +177,12 @@ impl App {
                 if self.filter.is_empty() {
                     self.error_message = Some("nothing to save — set a filter with / first".into());
                 } else {
-                    let encoded = super::encode_filter_only_view(&self.filter);
+                    let encoded = super::encode_filter_only_view(self.filter.text());
                     self.saved_views.insert((*name).to_string(), encoded);
-                    self.status_message =
-                        Some(format!("saved filter '{name}' = \"{}\"", self.filter));
+                    self.status_message = Some(format!(
+                        "saved filter '{name}' = \"{}\"",
+                        self.filter.text()
+                    ));
                     self.persist_state();
                 }
             }

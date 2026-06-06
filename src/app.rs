@@ -889,7 +889,7 @@ pub struct App {
     pub table_state: TableState,
     pub table_area: Rect,
     pub mode: Mode,
-    pub filter: String,
+    pub filter: TextInput,
     pub load_state: LoadState,
     pub loading_since: Option<Instant>,
     pub refresh_interval: Duration,
@@ -1850,7 +1850,7 @@ impl App {
             table_state,
             table_area: Rect::default(),
             mode: Mode::Normal,
-            filter: persisted.filter.unwrap_or_default(),
+            filter: persisted.filter.unwrap_or_default().into(),
             load_state: LoadState::Idle,
             loading_since: None,
             refresh_interval,
@@ -2056,12 +2056,12 @@ impl App {
         // repo is the more-specific source.
         if let Some(proj) = project {
             if let Some(filter) = proj.filter {
-                app.filter = filter;
+                app.filter = filter.into();
             } else if let Some(app_name) = proj.application {
                 // Treat `application` as a filter prefill when no
                 // explicit `filter` was set — pre-scopes the table to
                 // a single-app repo's envs without a hard pin.
-                app.filter = app_name;
+                app.filter = app_name.into();
             }
             app.runbooks.extend(proj.runbooks);
         }
@@ -2072,7 +2072,7 @@ impl App {
         if app.filter.is_empty() {
             if let Some(eb) = eb_cli {
                 if let Some(app_name) = eb.application {
-                    app.filter = app_name;
+                    app.filter = app_name.into();
                 }
             }
         }
@@ -2127,7 +2127,7 @@ impl App {
             table_state,
             table_area: Rect::default(),
             mode: Mode::Normal,
-            filter: String::new(),
+            filter: TextInput::new(),
             load_state: LoadState::Idle,
             loading_since: None,
             refresh_interval: config.refresh_interval,
@@ -3856,7 +3856,7 @@ impl App {
                     esc(self.context.account_id.as_deref().unwrap_or("")),
                     env_count,
                     esc(&selected),
-                    esc(&self.filter),
+                    esc(self.filter.text()),
                     load,
                     self.sort_key.label(),
                     self.grouped,
@@ -6712,7 +6712,7 @@ impl App {
             names.iter().position(|n| {
                 self.saved_views
                     .get(n)
-                    .map(|encoded| view_filter_value(encoded) == self.filter)
+                    .map(|encoded| view_filter_value(encoded) == self.filter.text())
                     .unwrap_or(false)
             })
         };
@@ -10977,7 +10977,7 @@ impl App {
             filter: if self.filter.is_empty() {
                 None
             } else {
-                Some(self.filter.clone())
+                Some(self.filter.text().to_string())
             },
             sort: Some(format!(
                 "{}:{}",
@@ -11794,7 +11794,7 @@ impl App {
         };
         match item {
             AppsActionItem::Drill => {
-                self.filter = app_name.clone();
+                self.filter = app_name.clone().into();
                 self.set_scope(Scope::Envs);
                 self.rebuild_view();
                 self.status_message = Some(format!("filtered envs to application '{app_name}'"));
@@ -11857,7 +11857,7 @@ impl App {
         let Some(name) = self.applications.get(idx).map(|a| a.name.clone()) else {
             return;
         };
-        self.filter = name.clone();
+        self.filter = name.clone().into();
         self.set_scope(Scope::Envs);
         self.rebuild_view();
         self.status_message = Some(format!("filtered envs to application '{name}'"));
@@ -11915,7 +11915,7 @@ impl App {
         if self.filter.is_empty() {
             self.cached_filtered.extend(0..self.environments.len());
         } else {
-            let needle = self.filter.to_lowercase();
+            let needle = self.filter.text().to_lowercase();
             for (i, e) in self.environments.iter().enumerate() {
                 let alias_hit = self
                     .aliases
@@ -14382,7 +14382,7 @@ pub fn wrap_with_hanging_indent(text: &str, width: usize, lead: &str, cont: &str
 fn encode_view(app: &App) -> String {
     let mut parts: Vec<String> = Vec::new();
     if !app.filter.is_empty() {
-        parts.push(format!("filter={}", app.filter));
+        parts.push(format!("filter={}", app.filter.text()));
     }
     parts.push(format!(
         "sort={}:{}",
@@ -14460,7 +14460,7 @@ fn apply_view(app: &mut App, snap: &str) {
             _ => {}
         }
     }
-    app.filter = new_filter;
+    app.filter = new_filter.into();
     app.resort_envs(); // also rebuilds the view.
 }
 
@@ -18647,12 +18647,12 @@ mod tests {
         // Start on "dev".
         app.filter = "tag:env=dev".into();
         app.cycle_saved_view(1);
-        assert_eq!(app.filter, "tag:env=prod");
+        assert_eq!(app.filter.text(), "tag:env=prod");
         app.cycle_saved_view(1);
-        assert_eq!(app.filter, "tag:env=staging");
+        assert_eq!(app.filter.text(), "tag:env=staging");
         // Wraps back to first.
         app.cycle_saved_view(1);
-        assert_eq!(app.filter, "tag:env=dev");
+        assert_eq!(app.filter.text(), "tag:env=dev");
     }
 
     #[tokio::test]
@@ -18667,16 +18667,21 @@ mod tests {
         );
         app.filter = "tag:env=dev".into();
         app.cycle_saved_view(-1);
-        assert_eq!(app.filter, "tag:env=staging");
+        assert_eq!(app.filter.text(), "tag:env=staging");
         // No active filter (freeform or empty) → forward goes to first,
         // backward goes to last.
         app.filter = "some-random-text".into();
         app.cycle_saved_view(1);
-        assert_eq!(app.filter, "tag:env=dev", "forward-with-no-active → first");
+        assert_eq!(
+            app.filter.text(),
+            "tag:env=dev",
+            "forward-with-no-active → first"
+        );
         app.filter = "some-random-text".into();
         app.cycle_saved_view(-1);
         assert_eq!(
-            app.filter, "tag:env=staging",
+            app.filter.text(),
+            "tag:env=staging",
             "backward-with-no-active → last"
         );
     }
@@ -18689,7 +18694,7 @@ mod tests {
         let mut app = test_app();
         app.filter = "keep-me".into();
         app.cycle_saved_view(1);
-        assert_eq!(app.filter, "keep-me");
+        assert_eq!(app.filter.text(), "keep-me");
     }
 
     #[tokio::test]
@@ -18710,7 +18715,7 @@ mod tests {
         app.filter = "tag:env=dev".into();
         app.grouped = false;
         app.cycle_saved_view(1); // dev → by-app
-        assert_eq!(app.filter, "tag:env=prod");
+        assert_eq!(app.filter.text(), "tag:env=prod");
         assert!(
             app.grouped,
             "full view must apply its grouped=true alongside the filter"
@@ -21269,7 +21274,7 @@ mod tests {
         for c in "prod".chars() {
             press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
         }
-        assert_eq!(app.filter, "prod");
+        assert_eq!(app.filter.text(), "prod");
         // Esc clears the filter and returns to Normal.
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(app.mode, Mode::Normal);
@@ -21496,16 +21501,33 @@ mod tests {
         for c in "prod".chars() {
             press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
         }
-        assert_eq!(app.filter, "prod");
+        assert_eq!(app.filter.text(), "prod");
         // Backspace removes the last char.
         press(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
-        assert_eq!(app.filter, "pro");
+        assert_eq!(app.filter.text(), "pro");
         // Enter commits the filter and returns to Normal — the filter
         // string SURVIVES (it's how `:filter` works as a stateful
         // search).
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(app.mode, Mode::Normal);
-        assert_eq!(app.filter, "pro");
+        assert_eq!(app.filter.text(), "pro");
+    }
+
+    #[tokio::test]
+    async fn filter_input_is_cursor_aware_via_shared_textinput() {
+        // The main filter now stores a TextInput — Left + insert edits
+        // mid-string and the view still rebuilds on each accepted edit.
+        let mut app = test_app();
+        app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
+        app.rebuild_view();
+        press(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+        for c in "prod".chars() {
+            press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        assert_eq!(app.filter.text(), "prod");
+        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Char('X'), KeyModifiers::NONE);
+        assert_eq!(app.filter.text(), "proXd");
     }
 
     #[tokio::test]
@@ -21517,7 +21539,7 @@ mod tests {
         for c in "x".chars() {
             press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
         }
-        assert_eq!(app.filter, "x");
+        assert_eq!(app.filter.text(), "x");
         // Esc abandons the filter — both the text AND the mode revert.
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(app.mode, Mode::Normal);
