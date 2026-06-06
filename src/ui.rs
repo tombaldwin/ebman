@@ -3777,15 +3777,14 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
                     .fg(theme.title)
                     .add_modifier(Modifier::BOLD),
             ));
-            top.push(Span::styled(
-                app.command_input.clone(),
+            top.extend(input_caret_spans(
+                app.command_input.text(),
+                app.command_input.cursor_col(),
                 Style::default().fg(theme.text),
-            ));
-            top.push(Span::styled(
-                caret_glyph(theme),
                 Style::default()
                     .fg(theme.title)
                     .add_modifier(Modifier::SLOW_BLINK),
+                theme,
             ));
             top.push(Span::styled(
                 "   [enter] run  [esc] cancel",

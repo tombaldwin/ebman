@@ -912,7 +912,7 @@ pub struct App {
     pub grouped: bool,
     pub sort_key: SortKey,
     pub sort_desc: bool,
-    pub command_input: String,
+    pub command_input: TextInput,
     pub completion: CompletionState,
     pub quickjump_input: TextInput,
     pub extra_regions: Vec<String>,
@@ -1866,7 +1866,7 @@ impl App {
             grouped,
             sort_key,
             sort_desc,
-            command_input: String::new(),
+            command_input: TextInput::new(),
             completion: CompletionState::default(),
             quickjump_input: TextInput::new(),
             extra_regions: config.extra_regions,
@@ -2143,7 +2143,7 @@ impl App {
             grouped: config.grouped_default.unwrap_or(false),
             sort_key: SortKey::App,
             sort_desc: false,
-            command_input: String::new(),
+            command_input: TextInput::new(),
             completion: CompletionState::default(),
             quickjump_input: TextInput::new(),
             extra_regions: config.extra_regions.clone(),
@@ -4287,7 +4287,7 @@ impl App {
         // First Tab: snapshot what the operator had typed so a
         // subsequent reverse-Tab (or text input) can restore.
         if self.completion.origin.is_none() {
-            self.completion.origin = Some(self.command_input.clone());
+            self.completion.origin = Some(self.command_input.text().to_string());
             self.completion.index = 0;
         }
         let origin = self.completion.origin.clone().unwrap_or_default();
@@ -4304,7 +4304,7 @@ impl App {
         if candidates.is_empty() {
             // Restore the operator's typed prefix and surface a
             // hint so the silent-no-op doesn't feel broken.
-            self.command_input = origin;
+            self.command_input = origin.into();
             self.status_message = Some(format!(
                 "no command matches '{prefix}' (Tab cycles command names)"
             ));
@@ -4314,7 +4314,7 @@ impl App {
         let cur = self.completion.index as i32;
         let next = (cur + delta).rem_euclid(n) as usize;
         self.completion.index = next;
-        self.command_input = format!("{}{rest}", candidates[next]);
+        self.command_input = format!("{}{rest}", candidates[next]).into();
         self.status_message = Some(format!(
             "completion {}/{} — Tab cycles, Esc cancels",
             next + 1,
@@ -5963,7 +5963,7 @@ impl App {
         match item.action {
             PaletteAction::RunCommand(cmd) => self.execute_command(&cmd),
             PaletteAction::PrefillCommand(prefix) => {
-                self.command_input = prefix;
+                self.command_input = prefix.into();
                 self.mode = Mode::Command;
             }
             PaletteAction::JumpEnv(name) => {
@@ -16894,7 +16894,7 @@ mod tests {
         app.command_input = "bat".into();
         // First Tab → first match (batch-deploy alphabetically).
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
-        let first = app.command_input.clone();
+        let first = app.command_input.text().to_string();
         assert!(
             first.starts_with("bat"),
             "Tab should keep the bat-prefix; got {first:?}"
@@ -16905,7 +16905,7 @@ mod tests {
         );
         // Second Tab cycles forward; should differ from first.
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
-        let second = app.command_input.clone();
+        let second = app.command_input.text().to_string();
         assert_ne!(first, second, "second Tab should advance the cycle");
     }
 
@@ -16938,6 +16938,26 @@ mod tests {
             app.command_input, forward,
             "Tab Tab BackTab should land on the first match"
         );
+    }
+
+    #[tokio::test]
+    async fn command_input_is_cursor_aware_via_shared_textinput() {
+        // The `:` command line stores a TextInput — mid-string editing
+        // works and any edit still resets the completion cycle.
+        let mut app = test_app();
+        press(&mut app, KeyCode::Char(':'), KeyModifiers::NONE);
+        assert_eq!(app.mode, Mode::Command);
+        for c in "deploy".chars() {
+            press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        // Move back two and insert a char mid-string.
+        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
+        // Cursor was between 'l' and 'o', so 'e' lands there.
+        assert_eq!(app.command_input.text(), "depleoy");
+        // Editing clears any pending completion cycle.
+        assert!(app.completion.origin.is_none());
     }
 
     #[test]
@@ -21253,7 +21273,7 @@ mod tests {
         assert_eq!(app.mode, Mode::Command);
         // Typed chars land in the command input buffer.
         press(&mut app, KeyCode::Char('q'), KeyModifiers::NONE);
-        assert_eq!(app.command_input, "q");
+        assert_eq!(app.command_input.text(), "q");
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(app.mode, Mode::Normal);
         // Input cleared on cancel.

@@ -11,7 +11,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::{is_text_input, App, Mode};
+use super::{App, Mode};
 
 impl App {
     /// `Mode::Filter` — typing builds up `self.filter` and re-runs
@@ -72,27 +72,19 @@ impl App {
                 self.mode = Mode::Normal;
             }
             KeyCode::Enter => {
-                let cmd = self.command_input.clone();
+                let cmd = self.command_input.text().to_string();
                 self.command_input.clear();
                 self.completion.origin = None;
                 self.mode = Mode::Normal;
                 self.execute_command(&cmd);
             }
-            KeyCode::Backspace => {
-                // Reset the completion cycle — the operator
-                // is editing, not cycling. Same intent as
-                // typing a new character.
-                self.completion.origin = None;
-                self.command_input.pop();
-            }
             KeyCode::Tab => self.command_completion_step(1),
             KeyCode::BackTab => self.command_completion_step(-1),
-            KeyCode::Char(c) if is_text_input(&key) => {
-                // Any printable key resets the completion
-                // cycle so the operator's next Tab starts a
-                // fresh search.
+            // Any edit — typing, backspace, cursor move, Ctrl-W — is
+            // delegated to TextInput and resets the completion cycle so
+            // the operator's next Tab starts a fresh search.
+            _ if self.command_input.handle_key(key) => {
                 self.completion.origin = None;
-                self.command_input.push(c);
             }
             _ => {}
         }
