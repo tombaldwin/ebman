@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.24.0] — 2026-06-08 — cursor-aware text editing everywhere + tb-tui-common is its own crate + structural refactors
+
+The headline is operator-facing: **every text-input prompt is now cursor-aware**. The rest is structural — the shared TUI crate moved out into its own repo, and three long-deferred refactors landed — plus a two-layer render-test harness so the UI's visual invariants are now test-covered.
+
+### Added — cursor-aware text editing in every prompt
+
+- **The `/` filter, `:` command line, `^K` palette, `'` name-jump, pickers, Detail/Logs search, and type-to-confirm fields all share one cursor-aware single-line editor.** Insert mid-string, `←`/`→` to move, `Home`/`End` (or `^A`/`^E`) to jump, `^W` word-delete, `Backspace`/`Delete` — instead of the old append-only buffers. The caret renders at the real cursor column (search/filter footers keep a caret-at-end glyph). The widget lives in the shared `tb-tui-common` crate (below), so the same editor backs pgman too.
+
+### Changed — `tb-tui-common` extracted to its own repository
+
+- The shared TUI helpers (font probe, overlay sizing, theme contrast, splash, atomic-write, and the new `TextInput` widget) moved out of the ebman monorepo into **[github.com/tombaldwin/tb-tui-common](https://github.com/tombaldwin/tb-tui-common)** (history preserved). ebman and pgman both depend on it from crates.io, so a fix to the shared layer lands in both. No behaviour change for ebman users.
+
+### Refactored — three deferred structural cleanups
+
+- **`App.cfg: ResolvedConfig`** — the dozen config-derived mirror fields (required_tags, accounts, runbooks, safety pins, command aliases, …) collapsed into one nested struct (deferred 4× since 0.16).
+- **Typed audit helpers** — the remaining hand-rolled `append_raw` action sites moved to typed `append_action_skipped` / `append_action_undone` / `append_dlq_op` helpers (wire format byte-preserved). Only the passive red-transition event stays raw.
+- **DLQ handler extraction** — the `Mode::Dlq` control flow moved to `src/app/mode_dlq_handlers.rs`, completing the `spawn_*` cut.
+
+### Added — styled render-test harness
+
+- A `TestBackend`-backed `render_buf` + cell-style helpers let tests assert on **colour, not just text** — health-tier dots, the cost-column red tint, the DLQ amber pill, redaction blocks, and caret placement are now regression-covered. Six new render tests; `tb-tui-common` published 0.1.1 → 0.1.3.
+
+### Fixed
+
+- **Super/Cmd-modified chars were typed as text** into every input after the migration (the shared `handle_key` checked only Ctrl/Alt). `tb-tui-common 0.1.3` restores the `CONTROL|ALT|SUPER` guard the old code enforced. Caught by the pre-tag code review.
+- **A configured project (`.ebman`) / EB-CLI filter prefill could render the first frame unfiltered** — `App::new` set the filter after the initial `rebuild_view()` with no follow-up; now rebuilds. (Benign in practice; fixed for robustness.)
+
 ## [0.23.0] — 2026-06-04 — `:diff --ignore-keys` + filter-rebuild fix + ARM64 Linux + IRONWOOD demo reskin
 
 A small features-and-polish release: one operator-facing command flag, a real view-staleness bug fix, an ARM64 Linux build target, and a reskin of the `--demo` fixture used for the README hero gif.
