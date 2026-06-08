@@ -5,6 +5,7 @@
 [![CI](https://github.com/tombaldwin/ebman/actions/workflows/ci.yml/badge.svg)](https://github.com/tombaldwin/ebman/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![homebrew](https://img.shields.io/badge/homebrew-tombaldwin%2Ftap-orange.svg)](https://github.com/tombaldwin/homebrew-tap)
+[![by Polymorphism](https://img.shields.io/badge/by-Polymorphism-1E3776.svg)](https://www.poly.io/products/ebman/)
 
 **A k9s-style TUI for AWS Elastic Beanstalk.** Triage red envs, stream logs, edit option settings, deploy new versions — all from the keyboard. If you've used k9s with Kubernetes, the muscle memory carries: `:` for commands, `/` to filter, `Enter` to drill in, `?` for context-aware help.
 
@@ -102,3 +103,8 @@ ebman is k9s-for-EB: keyboard-driven, drill-down-first, focused on operators who
 ## License
 
 Dual-licensed under MIT or Apache-2.0. See `LICENSE-MIT` and `LICENSE-APACHE`.
+
+---
+
+Built and open-sourced by [Polymorphism](https://www.poly.io) — enterprise software,
+cloud & AI. More on the [ebman product page](https://www.poly.io/products/ebman/).
