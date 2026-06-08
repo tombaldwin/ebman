@@ -39,6 +39,10 @@ Press `?` in-app for a per-context keymap — Detail, DLQ, Action menu, and the 
 | `?` | Help |
 | `q` / `^C` | Quit |
 
+## Text-input prompts
+
+Any single-line prompt — the `/` filter, the `:` command line, `^K` palette, `'` name-jump, pickers, Detail/Logs search, and type-to-confirm fields — shares a cursor-aware editor: type to insert, `Backspace` / `Delete`, `←` / `→` to move, `Home` / `End` (or `^A` / `^E`) to jump, `^W` to delete the previous word. `Enter` accepts, `Esc` cancels.
+
 ## Detail view
 
 Tabs cycle with `Tab` / `Shift-Tab` (or `l` / `h`). `^R` re-fetches the active tab; `R` toggles per-tab auto-refresh; `a` opens the env actions menu; `b` opens the env in the AWS console.
