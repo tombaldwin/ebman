@@ -57,6 +57,8 @@ impl AppMsg {
             | DeployFromLocal { gen, .. }
             | LogTailOpened { gen, .. }
             | LogTailEvents { gen, .. }
+            | EventTailOpened { gen, .. }
+            | EventTailEvents { gen, .. }
             | DetailLogGroups { gen, .. }
             | DetailAlarms { gen, .. }
             | EnvVarsForEdit { gen, .. }
@@ -214,6 +216,10 @@ impl App {
                 result,
                 ..
             } => self.handle_log_tail_events(session_id, next_since_ms, result),
+            AppMsg::EventTailOpened { session_id, .. } => self.handle_event_tail_opened(session_id),
+            AppMsg::EventTailEvents {
+                session_id, result, ..
+            } => self.handle_event_tail_events(session_id, result),
             AppMsg::DetailLogGroups {
                 env_name, groups, ..
             } => self.handle_detail_log_groups(env_name, groups),
@@ -1083,6 +1089,16 @@ impl App {
         ) {
             self.help.pre_overlay.as_mut()
         } else {
+            // The session is live but no overlay slot holds it — the
+            // overlay was replaced by something else without going
+            // through the close handler (e.g. the operator opened
+            // `:why` mid-tail). Reap the polling task so it doesn't
+            // keep hitting CW Logs invisibly; the session bump makes
+            // any already-queued messages drop at the guard above.
+            if let Some(handle) = self.log_tail_task.take() {
+                handle.abort();
+            }
+            self.log_tail_session = self.log_tail_session.wrapping_add(1);
             return;
         };
         let Some(Overlay::LogTail {
@@ -1100,6 +1116,76 @@ impl App {
                 *last_err = None;
                 for ev in new_events {
                     if events.len() >= LOG_TAIL_MAX_LINES {
+                        events.pop_front();
+                    }
+                    events.push_back(ev);
+                }
+            }
+            Err(msg) => {
+                *last_err = Some(msg);
+            }
+        }
+    }
+
+    fn handle_event_tail_opened(&mut self, session_id: u64) {
+        if session_id != self.event_tail_session {
+            return;
+        }
+        self.current_overlay = Some(Overlay::EventTail {
+            events: std::collections::VecDeque::with_capacity(EVENT_TAIL_MAX_EVENTS),
+            scroll: 0,
+            following: true,
+            filter_input: TextInput::new(),
+            filter_active: false,
+            filter_pattern: None,
+            last_err: None,
+            session_id,
+        });
+        self.status_message = None;
+    }
+
+    fn handle_event_tail_events(
+        &mut self,
+        session_id: u64,
+        result: Result<Vec<crate::aws::Event>, String>,
+    ) {
+        if session_id != self.event_tail_session {
+            return;
+        }
+        // Same two-slot routing as LogTail: events arriving while the
+        // user is in `?` help land in the stashed overlay.
+        let target = if matches!(
+            self.current_overlay.as_ref(),
+            Some(Overlay::EventTail { session_id: s, .. }) if *s == session_id
+        ) {
+            self.current_overlay.as_mut()
+        } else if matches!(
+            self.help.pre_overlay.as_ref(),
+            Some(Overlay::EventTail { session_id: s, .. }) if *s == session_id
+        ) {
+            self.help.pre_overlay.as_mut()
+        } else {
+            // Overlay replaced without the close handler running —
+            // reap the poller instead of letting it hit DescribeEvents
+            // invisibly until context switch. Same shape as the
+            // LogTail reap above.
+            if let Some(handle) = self.event_tail_task.take() {
+                handle.abort();
+            }
+            self.event_tail_session = self.event_tail_session.wrapping_add(1);
+            return;
+        };
+        let Some(Overlay::EventTail {
+            events, last_err, ..
+        }) = target
+        else {
+            return;
+        };
+        match result {
+            Ok(new_events) => {
+                *last_err = None;
+                for ev in new_events {
+                    if events.len() >= EVENT_TAIL_MAX_EVENTS {
                         events.pop_front();
                     }
                     events.push_back(ev);

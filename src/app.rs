@@ -269,6 +269,23 @@ pub enum Overlay {
         /// late events for stale sessions are dropped on arrival.
         session_id: u64,
     },
+    /// Cross-fleet EB event tail opened by `:event-tail` — every env
+    /// in the current context, merged into one stream (the console's
+    /// flat event firehose, in-app). Same polling/session shape as
+    /// [`Overlay::LogTail`]; the buffer is capped at
+    /// [`EVENT_TAIL_MAX_EVENTS`] (oldest dropped when growing).
+    EventTail {
+        events: std::collections::VecDeque<crate::aws::Event>,
+        scroll: u16,
+        following: bool,
+        filter_input: TextInput,
+        filter_active: bool,
+        filter_pattern: Option<regex::Regex>,
+        last_err: Option<String>,
+        /// Unique-per-session id; the polling task carries the same id and
+        /// late events for stale sessions are dropped on arrival.
+        session_id: u64,
+    },
     /// `:about` / `:credits` — the project card with the animated
     /// 8-bit giant-grabs-the-beanstalk scene. The `Instant` is the
     /// open time; the renderer derives the animation frame from its
@@ -277,6 +294,45 @@ pub enum Overlay {
 }
 
 pub const LOG_TAIL_MAX_LINES: usize = 2000;
+
+/// Ring-buffer cap for the `:event-tail` overlay. EB events are far
+/// sparser than log lines, so a smaller cap than
+/// [`LOG_TAIL_MAX_LINES`] still holds hours of fleet history.
+pub const EVENT_TAIL_MAX_EVENTS: usize = 1000;
+
+/// First `:event-tail` batch — the fleet's most recent events,
+/// unwatermarked, so the overlay opens with context.
+const EVENT_TAIL_FIRST_BATCH: i32 = 100;
+
+/// Per-poll `:event-tail` batch cap. Applied server-side via
+/// `max_records`; with the `start_time` watermark a normal 5s window
+/// never comes close, so this only bites on a very noisy fleet — and
+/// there it's the rate limiter that keeps the overlay responsive.
+const EVENT_TAIL_POLL_BATCH: i32 = 300;
+
+/// Advance the `:event-tail` poll watermark past the newest event in
+/// `events`. +1ms because DescribeEvents' `start_time` is inclusive —
+/// without it every poll re-ships the previous newest event. Falls
+/// back to (and never regresses below) the previous watermark when
+/// the batch is empty or carries older/undated events.
+pub(crate) fn next_event_watermark_ms(events: &[crate::aws::Event], prev_ms: i64) -> i64 {
+    events
+        .iter()
+        .filter_map(|e| e.at.map(|at| at.timestamp_millis() + 1))
+        .max()
+        .unwrap_or(prev_ms)
+        .max(prev_ms)
+}
+
+/// Filter predicate for the `:event-tail` overlay — the regex runs
+/// over env name, application, severity and message so `/prod`,
+/// `/error` and free text all narrow the stream.
+pub(crate) fn event_tail_matches(pattern: &regex::Regex, ev: &crate::aws::Event) -> bool {
+    pattern.is_match(&ev.env)
+        || pattern.is_match(&ev.application)
+        || pattern.is_match(&ev.severity)
+        || pattern.is_match(&ev.message)
+}
 
 /// One drillable row in the `:why` triage overlay. The renderer pushes
 /// these in lockstep with the lines it emits (events / alarms /
@@ -680,6 +736,21 @@ pub(crate) struct DeployFreeze {
     pub frozen_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Session-scoped incident mode set by `:incident START "headline"`.
+/// A composite gesture over existing machinery: starting an incident
+/// also sets a [`DeployFreeze`] (same fleet-wide write-lock) and
+/// writes an `IncidentStart` audit line; the header renders a
+/// high-priority banner pill while it's active. `:incident END`
+/// clears both and writes an `IncidentEnd` summary line. Like the
+/// freeze, not persisted to state.toml — an in-session gesture.
+#[derive(Debug, Clone)]
+pub(crate) struct Incident {
+    /// Operator-supplied headline (e.g. "checkout 5xx spike").
+    /// Empty string when none was given.
+    pub headline: String,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+}
+
 impl DeploySnapshot {
     /// On-disk shape — `"label|RFC3339-ts"`. Pipe separator keeps the
     /// existing line-oriented state.toml parser happy. The pipe is
@@ -1022,6 +1093,11 @@ pub struct App {
     /// the common case (no freeze active); `Some(...)` makes
     /// every destructive op refuse with the freeze's reason.
     pub(crate) deploy_freeze: Option<DeployFreeze>,
+    /// Session-scoped incident mode set by `:incident START`. Rides
+    /// on top of `deploy_freeze` (START sets one, END clears it);
+    /// carried separately so the header banner + END summary know
+    /// the headline and start time.
+    pub(crate) incident: Option<Incident>,
     /// Parsed terraform.tfstate from a walk-up of cwd at App
     /// construction time, refreshed on `apply_rebuild` (context
     /// switch) and on `:drift refresh`. `None` when no tfstate
@@ -1159,6 +1235,12 @@ pub struct App {
     /// Monotonically increasing id for `:logs-tail` sessions. Lets late
     /// `AppMsg::LogTailEvents` from a previous session be dropped on arrival.
     pub log_tail_session: u64,
+    /// Handle to the `:event-tail` polling task — same lifecycle as
+    /// `log_tail_task` (aborted on overlay close / context switch).
+    pub event_tail_task: Option<tokio::task::JoinHandle<()>>,
+    /// Monotonically increasing id for `:event-tail` sessions; late
+    /// `AppMsg::EventTail*` from a previous session are dropped.
+    pub event_tail_session: u64,
     /// Same pattern for `:why` diagnostic overlays. Late
     /// `AppMsg::WhyRed{Events,Alarms,Instances,Deploys}` for a prior
     /// invocation get dropped when this counter has moved on.
@@ -1403,6 +1485,19 @@ enum AppMsg {
         session_id: u64,
         next_since_ms: i64,
         result: Result<Vec<crate::aws::LogEvent>, String>,
+    },
+    /// Sent once at the start of an `:event-tail` session — installs the
+    /// `Overlay::EventTail` (empty; the first poll fills it).
+    EventTailOpened {
+        gen: u64,
+        session_id: u64,
+    },
+    /// New fleet events pushed by the `:event-tail` polling task, oldest
+    /// first. Same session-id drop rule as `LogTailEvents`.
+    EventTailEvents {
+        gen: u64,
+        session_id: u64,
+        result: Result<Vec<crate::aws::Event>, String>,
     },
     /// One section's result for the `:why` diagnostic overlay. The session
     /// id matches the `Overlay::WhyRed { session_id, .. }` active when the
@@ -1920,6 +2015,7 @@ impl App {
             armed_watchdogs: std::collections::HashMap::new(),
             watching_deploys: std::collections::HashMap::new(),
             deploy_freeze: None,
+            incident: None,
             // Load tfstate from cwd at construction time. Failure
             // is silent (`None`) — operators not using terraform
             // shouldn't see any UI surface; operators with a
@@ -1966,6 +2062,8 @@ impl App {
             form: None,
             log_tail_task: None,
             log_tail_session: 0,
+            event_tail_task: None,
+            event_tail_session: 0,
             why_red_session: 0,
             why_items: Vec::new(),
             update_available: None,
@@ -2176,6 +2274,7 @@ impl App {
             armed_watchdogs: std::collections::HashMap::new(),
             watching_deploys: std::collections::HashMap::new(),
             deploy_freeze: None,
+            incident: None,
             // Tests / demo mode don't probe the operator's cwd
             // for tfstate — keeps test runs deterministic and
             // prevents demo screencasts from leaking real fleet
@@ -2220,6 +2319,8 @@ impl App {
             form: None,
             log_tail_task: None,
             log_tail_session: 0,
+            event_tail_task: None,
+            event_tail_session: 0,
             why_red_session: 0,
             why_items: Vec::new(),
             update_available: None,
@@ -3003,6 +3104,13 @@ impl App {
             }
             if matches!(self.current_overlay.as_ref(), Some(Overlay::LogTail { .. })) {
                 self.handle_log_tail_key(key);
+                return;
+            }
+            if matches!(
+                self.current_overlay.as_ref(),
+                Some(Overlay::EventTail { .. })
+            ) {
+                self.handle_event_tail_key(key);
                 return;
             }
             if matches!(
@@ -7634,11 +7742,20 @@ impl App {
         if let Some(freeze) = self.deploy_freeze.as_ref() {
             let age = (chrono::Utc::now() - freeze.frozen_at).num_seconds().max(0);
             let age = crate::app::humanize_short_age(std::time::Duration::from_secs(age as u64));
+            // When the freeze came from `:incident START`, point the
+            // operator at the gesture that actually closes it — a bare
+            // :thaw-deploys would lift the lock but leave the incident
+            // banner up, which is rarely what they meant.
+            let unlock_hint = if self.incident.is_some() {
+                ":incident END to close"
+            } else {
+                ":thaw-deploys to unfreeze"
+            };
             return Some(if freeze.reason.is_empty() {
-                format!("deploys frozen ({age} ago) — :thaw-deploys to unfreeze")
+                format!("deploys frozen ({age} ago) — {unlock_hint}")
             } else {
                 format!(
-                    "deploys frozen ({age} ago): {} — :thaw-deploys to unfreeze",
+                    "deploys frozen ({age} ago): {} — {unlock_hint}",
                     freeze.reason
                 )
             });
@@ -8463,6 +8580,187 @@ impl App {
             }
         });
         self.log_tail_task = Some(handle);
+    }
+
+    /// `:event-tail` — open the cross-fleet event tail overlay and
+    /// start its polling task. First batch is the fleet's most recent
+    /// events regardless of age (so the overlay isn't empty on open);
+    /// subsequent polls pass a `start_time` watermark so a busy fleet
+    /// re-ships only what's new. DescribeEvents is more
+    /// throttle-sensitive than FilterLogEvents, hence the 5s cadence
+    /// (vs logs-tail's 2s). Errors keep the loop alive.
+    fn spawn_event_tail(&mut self) {
+        if let Some(handle) = self.event_tail_task.take() {
+            handle.abort();
+        }
+        self.event_tail_session = self.event_tail_session.wrapping_add(1);
+        let session_id = self.event_tail_session;
+        let aws = self.aws.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        let handle = tokio::spawn(async move {
+            // Install the (empty) overlay first so the operator sees
+            // the tail open immediately; the first batch fills it.
+            let _ = tx.send(AppMsg::EventTailOpened { gen, session_id });
+            let mut since_ms = match aws.list_events(EVENT_TAIL_FIRST_BATCH).await {
+                Ok(mut events) => {
+                    // DescribeEvents returns newest-first; the ring
+                    // buffer appends oldest-first.
+                    events.reverse();
+                    // Watermark = newest event + 1ms, NOT local now():
+                    // clamping to now() would skip anything that lands
+                    // between the server-side snapshot and our clock
+                    // (eventual consistency / clock skew). Events in
+                    // (newest, now] weren't in this batch, so there's
+                    // no duplicate risk. Empty fleet history falls
+                    // back to now.
+                    let watermark = if events.is_empty() {
+                        chrono::Utc::now().timestamp_millis()
+                    } else {
+                        next_event_watermark_ms(&events, 0)
+                    };
+                    let _ = tx.send(AppMsg::EventTailEvents {
+                        gen,
+                        session_id,
+                        result: Ok(events),
+                    });
+                    watermark
+                }
+                Err(e) => {
+                    let _ = tx.send(AppMsg::EventTailEvents {
+                        gen,
+                        session_id,
+                        result: Err(format!("{e}")),
+                    });
+                    chrono::Utc::now().timestamp_millis()
+                }
+            };
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                match aws.list_events_since(since_ms, EVENT_TAIL_POLL_BATCH).await {
+                    Ok(mut events) => {
+                        since_ms = next_event_watermark_ms(&events, since_ms);
+                        events.reverse();
+                        let _ = tx.send(AppMsg::EventTailEvents {
+                            gen,
+                            session_id,
+                            result: Ok(events),
+                        });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AppMsg::EventTailEvents {
+                            gen,
+                            session_id,
+                            result: Err(format!("{e}")),
+                        });
+                        // Keep going on errors — transient throttling
+                        // shouldn't kill the session.
+                    }
+                }
+            }
+        });
+        self.event_tail_task = Some(handle);
+    }
+
+    /// Key handling while the `:event-tail` overlay is open — the
+    /// same surface as [`handle_log_tail_key`] minus the log-group
+    /// picker (there's no group to switch; the tail is fleet-wide).
+    fn handle_event_tail_key(&mut self, key: KeyEvent) {
+        // Filter input mode swallows printable keys.
+        {
+            let Some(Overlay::EventTail {
+                filter_active,
+                filter_input,
+                filter_pattern,
+                ..
+            }) = self.current_overlay.as_mut()
+            else {
+                return;
+            };
+            if *filter_active {
+                match key.code {
+                    KeyCode::Esc => {
+                        *filter_active = false;
+                        filter_input.clear();
+                        *filter_pattern = None;
+                        return;
+                    }
+                    KeyCode::Enter => {
+                        *filter_active = false;
+                        if filter_input.is_empty() {
+                            *filter_pattern = None;
+                        } else {
+                            match regex::RegexBuilder::new(filter_input.text())
+                                .case_insensitive(true)
+                                .build()
+                            {
+                                Ok(re) => *filter_pattern = Some(re),
+                                Err(_) => *filter_pattern = None,
+                            }
+                        }
+                        return;
+                    }
+                    // TextInput consumes editing keys (cursor / Ctrl-W);
+                    // the regex is compiled on Enter.
+                    _ => {
+                        filter_input.handle_key(key);
+                        return;
+                    }
+                }
+            }
+        }
+        let Some(Overlay::EventTail {
+            scroll,
+            following,
+            filter_active,
+            filter_input,
+            filter_pattern,
+            ..
+        }) = self.current_overlay.as_mut()
+        else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                if let Some(handle) = self.event_tail_task.take() {
+                    handle.abort();
+                }
+                // Bump session id so a late `EventTailOpened` from the
+                // aborted task can't re-open the dismissed overlay.
+                self.event_tail_session = self.event_tail_session.wrapping_add(1);
+                self.current_overlay = None;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if *scroll > 0 {
+                    *scroll -= 1;
+                }
+                if *scroll == 0 {
+                    *following = true;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                *scroll = scroll.saturating_add(1);
+                *following = false;
+            }
+            KeyCode::Char('G') | KeyCode::End => {
+                *scroll = 0;
+                *following = true;
+            }
+            KeyCode::Char('g') | KeyCode::Home => {
+                *scroll = u16::MAX;
+                *following = false;
+            }
+            KeyCode::Char('/') => {
+                *filter_active = true;
+                filter_input.clear();
+                *filter_pattern = None;
+            }
+            KeyCode::Char('n') => {
+                filter_input.clear();
+                *filter_pattern = None;
+            }
+            _ => {}
+        }
     }
 
     /// Dispatch an `UpdateEnvironment(option_settings)` call. Used by the
@@ -10550,6 +10848,7 @@ impl App {
             "rollbacks-armed" | "rb-armed" => self.cmd_rollbacks_armed(),
             "abort-rollback" => self.cmd_abort_rollback(&rest),
             "freeze-deploys" => self.cmd_freeze_deploys(&rest),
+            "incident" => self.cmd_incident(&rest),
             "thaw-deploys" => self.cmd_thaw_deploys(),
             "undo" => self.cmd_undo(),
             "lint" => self.cmd_lint(&rest),
@@ -10594,6 +10893,14 @@ impl App {
                 };
                 let explicit_group = rest.first().map(|s| s.to_string());
                 self.spawn_logs_tail(env.name.clone(), explicit_group);
+            }
+            "event-tail" | "tail-events" => {
+                // `:event-tail` — cross-fleet EB event stream. No env
+                // selection needed; the tail covers every env in the
+                // current context. The polling task is tracked on
+                // App.event_tail_task so re-issue / close abort cleanly.
+                self.status_message = Some("event tail: fetching fleet events…".into());
+                self.spawn_event_tail();
             }
             "logs-stream" => self.cmd_logs_stream(&rest),
             "notify" => self.cmd_notify(&rest),
@@ -11307,6 +11614,12 @@ impl App {
                     handle.abort();
                 }
                 self.log_tail_session = self.log_tail_session.wrapping_add(1);
+                // Same teardown for the fleet event tail — it polls
+                // DescribeEvents against the previous context.
+                if let Some(handle) = self.event_tail_task.take() {
+                    handle.abort();
+                }
+                self.event_tail_session = self.event_tail_session.wrapping_add(1);
                 // Reset throttle back-off across context switches — the new
                 // account/region has its own rate limits.
                 self.throttle_until = None;
@@ -19480,6 +19793,95 @@ mod tests {
         );
     }
 
+    // ── :incident ───────────────────────────────────────────────────
+
+    #[test]
+    fn incident_args_parse_start_end_and_reject_garbage() {
+        use crate::app::cmd_misc::{parse_incident_args, IncidentCmd};
+        // Quoted headline arrives as whitespace-split quote-carrying
+        // tokens (execute_command has no shell tokenizer).
+        assert_eq!(
+            parse_incident_args(&["START", "\"checkout", "5xx", "spike\""]),
+            Ok(IncidentCmd::Start("checkout 5xx spike".into()))
+        );
+        assert_eq!(
+            parse_incident_args(&["start", "bare", "headline"]),
+            Ok(IncidentCmd::Start("bare headline".into()))
+        );
+        assert_eq!(
+            parse_incident_args(&["START"]),
+            Ok(IncidentCmd::Start(String::new()))
+        );
+        assert_eq!(parse_incident_args(&["END"]), Ok(IncidentCmd::End));
+        assert_eq!(parse_incident_args(&["end"]), Ok(IncidentCmd::End));
+        assert!(parse_incident_args(&[]).is_err());
+        assert!(parse_incident_args(&["END", "extra"]).is_err());
+        assert!(parse_incident_args(&["pause"]).is_err());
+    }
+
+    #[tokio::test]
+    async fn incident_start_freezes_and_end_thaws() {
+        let mut app = test_app();
+        app.execute_command("incident START \"checkout 5xx spike\"");
+        assert!(app.incident.is_some(), "incident should be active");
+        assert!(app.deploy_freeze.is_some(), "START must set the freeze");
+        assert!(
+            app.is_read_only_for("any-env"),
+            "incident freeze blocks every env"
+        );
+        let reason = app.read_only_reason("any-env").unwrap_or_default();
+        assert!(
+            reason.contains("incident: checkout 5xx spike"),
+            "freeze reason carries the headline, got: {reason}"
+        );
+        app.execute_command("incident END");
+        assert!(app.incident.is_none(), "END clears the incident");
+        assert!(app.deploy_freeze.is_none(), "END thaws deploys");
+        let status = app.status_message.clone().unwrap_or_default();
+        assert!(
+            status.contains("incident closed") && status.contains("checkout 5xx spike"),
+            "END summary names the incident, got: {status}"
+        );
+    }
+
+    #[tokio::test]
+    async fn incident_restart_updates_headline_but_keeps_start_time() {
+        let mut app = test_app();
+        app.execute_command("incident START first");
+        let t0 = app.incident.as_ref().unwrap().started_at;
+        app.execute_command("incident START \"first, refined\"");
+        let incident = app.incident.as_ref().unwrap();
+        assert_eq!(incident.headline, "first, refined");
+        assert_eq!(
+            incident.started_at, t0,
+            "headline update must not reset the incident clock"
+        );
+    }
+
+    #[tokio::test]
+    async fn incident_end_without_active_incident_errors() {
+        let mut app = test_app();
+        app.execute_command("incident END");
+        assert!(app.incident.is_none());
+        let err = app.error_message.clone().unwrap_or_default();
+        assert!(err.contains("no active incident"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn incident_banner_renders_red_in_header() {
+        let mut app = test_app();
+        app.execute_command("incident START \"db failover\"");
+        let theme = app.theme.clone();
+        let buf = render_buf(&mut app, 120, 30);
+        let row = find_row(&buf, "INCIDENT").expect("banner pill rendered");
+        assert!(
+            row_has_fg(&buf, row, theme.contrast_text(theme.health_red)),
+            "banner text uses contrast fg over the red pill bg"
+        );
+        let text = render(&mut app, 120, 30);
+        assert!(text.contains("db failover"), "headline visible in header");
+    }
+
     #[tokio::test]
     async fn handle_unavailability_estimate_silent_on_fetch_failure() {
         // Option-settings fetch failed → line stays None; UI
@@ -21945,6 +22347,214 @@ mod tests {
         assert!(
             app.pending_dispatch.is_none(),
             "capital U in Normal mode should cancel the pending dispatch"
+        );
+    }
+
+    // ── :event-tail ─────────────────────────────────────────────────
+
+    fn mk_fleet_event(env: &str, severity: &str, message: &str, at_ms: i64) -> crate::aws::Event {
+        crate::aws::Event {
+            at: chrono::DateTime::from_timestamp_millis(at_ms),
+            env: env.into(),
+            application: "shop".into(),
+            message: message.into(),
+            severity: severity.into(),
+            version_label: None,
+        }
+    }
+
+    #[test]
+    fn event_watermark_advances_past_newest_and_never_regresses() {
+        let events = vec![
+            mk_fleet_event("a", "INFO", "one", 1_000),
+            mk_fleet_event("b", "INFO", "two", 5_000),
+            mk_fleet_event("c", "INFO", "three", 3_000),
+        ];
+        // +1ms past the newest event, regardless of order.
+        assert_eq!(next_event_watermark_ms(&events, 0), 5_001);
+        // Empty batch keeps the previous watermark.
+        assert_eq!(next_event_watermark_ms(&[], 7_000), 7_000);
+        // A batch of only-older events (throttled retry replaying
+        // history) must not move the watermark backwards.
+        assert_eq!(next_event_watermark_ms(&events, 9_000), 9_000);
+        // Undated events fall back to the previous watermark.
+        let undated = vec![crate::aws::Event {
+            at: None,
+            ..mk_fleet_event("a", "INFO", "x", 0)
+        }];
+        assert_eq!(next_event_watermark_ms(&undated, 4_000), 4_000);
+    }
+
+    #[test]
+    fn event_tail_filter_matches_env_severity_and_message() {
+        let re = |s: &str| {
+            regex::RegexBuilder::new(s)
+                .case_insensitive(true)
+                .build()
+                .unwrap()
+        };
+        let ev = mk_fleet_event("api-prod", "ERROR", "Deploy failed: timeout", 0);
+        assert!(event_tail_matches(&re("prod"), &ev), "env name");
+        assert!(event_tail_matches(&re("error"), &ev), "severity");
+        assert!(event_tail_matches(&re("timeout"), &ev), "message");
+        assert!(event_tail_matches(&re("shop"), &ev), "application");
+        assert!(!event_tail_matches(&re("staging"), &ev));
+    }
+
+    #[tokio::test]
+    async fn event_tail_events_append_capped_and_stale_sessions_drop() {
+        let mut app = test_app();
+        app.event_tail_session = 3;
+        app.handle_msg(AppMsg::EventTailOpened {
+            gen: app.generation,
+            session_id: 3,
+        });
+        assert!(
+            matches!(app.current_overlay, Some(Overlay::EventTail { .. })),
+            "opened installs the overlay"
+        );
+        // Fill past the ring cap: oldest must be dropped.
+        let batch: Vec<crate::aws::Event> = (0..EVENT_TAIL_MAX_EVENTS as i64 + 5)
+            .map(|i| mk_fleet_event("api", "INFO", &format!("m{i}"), i))
+            .collect();
+        app.handle_msg(AppMsg::EventTailEvents {
+            gen: app.generation,
+            session_id: 3,
+            result: Ok(batch),
+        });
+        let Some(Overlay::EventTail { events, .. }) = app.current_overlay.as_ref() else {
+            panic!("overlay should still be open");
+        };
+        assert_eq!(events.len(), EVENT_TAIL_MAX_EVENTS);
+        assert_eq!(events.front().unwrap().message, "m5", "oldest dropped");
+        // A stale session's batch is dropped on arrival.
+        app.handle_msg(AppMsg::EventTailEvents {
+            gen: app.generation,
+            session_id: 2,
+            result: Ok(vec![mk_fleet_event("late", "INFO", "stale", 0)]),
+        });
+        let Some(Overlay::EventTail { events, .. }) = app.current_overlay.as_ref() else {
+            panic!("overlay should still be open");
+        };
+        assert!(!events.iter().any(|e| e.env == "late"));
+    }
+
+    #[tokio::test]
+    async fn event_tail_q_closes_and_defeats_late_reopen() {
+        let mut app = test_app();
+        app.event_tail_session = 1;
+        app.handle_msg(AppMsg::EventTailOpened {
+            gen: app.generation,
+            session_id: 1,
+        });
+        press(&mut app, KeyCode::Char('q'), KeyModifiers::NONE);
+        assert!(app.current_overlay.is_none(), "q closes the overlay");
+        // A late Opened from the aborted task must not re-open it.
+        app.handle_msg(AppMsg::EventTailOpened {
+            gen: app.generation,
+            session_id: 1,
+        });
+        assert!(
+            app.current_overlay.is_none(),
+            "session bump on close defeats the late re-open"
+        );
+    }
+
+    #[tokio::test]
+    async fn event_tail_poller_reaped_when_overlay_replaced() {
+        // Opening another overlay on top of the tail (without going
+        // through the close handler) must not leave the poll task
+        // running invisibly: the next poll result reaps it.
+        let mut app = test_app();
+        app.event_tail_session = 1;
+        app.handle_msg(AppMsg::EventTailOpened {
+            gen: app.generation,
+            session_id: 1,
+        });
+        app.event_tail_task = Some(tokio::spawn(async {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            }
+        }));
+        app.current_overlay = Some(Overlay::TextDump {
+            title: "something else".into(),
+            body: "…".into(),
+        });
+        app.handle_msg(AppMsg::EventTailEvents {
+            gen: app.generation,
+            session_id: 1,
+            result: Ok(vec![]),
+        });
+        assert!(app.event_tail_task.is_none(), "poller must be reaped");
+        assert_eq!(
+            app.event_tail_session, 2,
+            "session bump drops already-queued messages"
+        );
+        assert!(
+            matches!(app.current_overlay, Some(Overlay::TextDump { .. })),
+            "the replacement overlay is untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn log_tail_poller_reaped_when_overlay_replaced() {
+        // Same reap contract for :logs-tail — the quirk predates
+        // :event-tail and both tails share the fix.
+        let mut app = test_app();
+        app.log_tail_session = 1;
+        app.handle_msg(AppMsg::LogTailOpened {
+            gen: app.generation,
+            session_id: 1,
+            env_name: "api-prod".into(),
+            log_group: "/aws/elasticbeanstalk/api-prod/web.stdout.log".into(),
+            since_ms: 0,
+        });
+        app.log_tail_task = Some(tokio::spawn(async {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            }
+        }));
+        app.current_overlay = Some(Overlay::TextDump {
+            title: "something else".into(),
+            body: "…".into(),
+        });
+        app.handle_msg(AppMsg::LogTailEvents {
+            gen: app.generation,
+            session_id: 1,
+            next_since_ms: 5,
+            result: Ok(vec![]),
+        });
+        assert!(app.log_tail_task.is_none(), "poller must be reaped");
+        assert_eq!(app.log_tail_session, 2);
+    }
+
+    #[tokio::test]
+    async fn event_tail_error_row_renders_red() {
+        let mut app = test_app();
+        app.event_tail_session = 1;
+        app.handle_msg(AppMsg::EventTailOpened {
+            gen: app.generation,
+            session_id: 1,
+        });
+        app.handle_msg(AppMsg::EventTailEvents {
+            gen: app.generation,
+            session_id: 1,
+            result: Ok(vec![
+                mk_fleet_event("api-prod", "ERROR", "update failed", 1_000),
+                mk_fleet_event("api-prod", "INFO", "all fine", 2_000),
+            ]),
+        });
+        let theme = app.theme.clone();
+        let buf = render_buf(&mut app, 120, 30);
+        let err_row = find_row(&buf, "update failed").expect("error event row rendered");
+        assert!(
+            row_has_fg(&buf, err_row, theme.health_red),
+            "ERROR severity cell painted health_red"
+        );
+        let info_row = find_row(&buf, "all fine").expect("info event row rendered");
+        assert!(
+            !row_has_fg(&buf, info_row, theme.health_red),
+            "INFO row carries no red"
         );
     }
 }

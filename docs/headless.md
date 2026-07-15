@@ -30,10 +30,13 @@ ebman action rollout ... --staggered 5m --wait-for-green 10m               # can
 ebman lint   [--env NAME] [--regions r1,r2,r3] [--json]                    # rule-engine diagnostics; exit 3 on issues
 ebman lint   --fix (--yes | --dry-run) [--rules ID1,ID2] [--env NAME]      # opt-in auto-remediation (EBL001/004/006 ship with fixes)
 ebman lint   --watch [--interval 60s] [--json] [--severity warn]           # cron-friendly monitoring loop; Ctrl-C to exit
+ebman lint   --watch --webhook URL                                          # POST findings to a webhook when the issue set changes
+ebman lint   --probe-live                                                   # enable EBL016: live HTTP probe of each env's health-check URL
 ebman lint   --baseline FILE                                                # snapshot today's issues for CI grandfathering
 ebman lint   --against-baseline FILE [--json]                              # diff vs snapshot; exit 3 only on NEW issues
 ebman drift  [--env NAME] [--regions r1,r2,r3] [--tfstate PATH] [--json]   # terraform drift report; exit 3 on drift
 ebman audit  [--tail] [--since DUR] [--env NAME] [--action NAME] [--json]  # surface ~/.cache/ebman/audit.log for scripts
+ebman audit replay LINE_ID [--yes]                                          # re-dispatch an audited action (timestamp-prefix ID)
 ebman explain EBL### [--env NAME] [--json] [--dry-run] [--no-cache]        # LLM-backed explanation of a lint issue (opt-in)
 ebman versions --env NAME [--json]                                          # application versions for env's app, newest-first
 ```

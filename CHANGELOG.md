@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.25.0] — 2026-07-15 — incident operations: :incident mode + :event-tail + audit replay + lint completion
+
+Theme: **incident operations** — the 0.25 lineup. The three big items serve the same operator moment (something's on fire across the fleet) and compose with machinery that already existed.
+
+### Added — incident story
+
+- **`:event-tail`** (alias `:tail-events`) — live cross-fleet EB event stream: every env in the current context merged into one overlay, the console's flat event firehose in-app. First batch shows the fleet's most recent events; a 5s poll with a `start_time` watermark ships only what's new (DescribeEvents is throttle-sensitive, hence slower than logs-tail's 2s). Ring-buffered at 1000 events; `j`/`k`/`g`/`G` scroll/follow, `/` regex filter over env + application + severity + message, ERROR/WARN rows tinted. Same session-id + generation guards as `:logs-tail`; torn down on context switch. 5 new tests including a styled render assertion.
+- **`:incident START "headline"` / `:incident END`** — incident mode as one gesture: START freezes deploys fleet-wide (the same session-scoped lock as `:freeze-deploys`, reason = the headline), pins a red `🚨 INCIDENT` header banner with a running clock, and writes an `IncidentStart` audit line; END thaws, clears the banner, and writes `IncidentEnd` with the duration. Re-issuing START updates the headline without resetting the clock. Freeze refusal toasts point at `:incident END` (not `:thaw-deploys`) while an incident is active. Deliberately minimal — auto-`:why` / auto-logs-tail can grow onto START if the composite earns use. 5 new tests.
+- **`ebman audit replay LINE_ID [--yes]`** — re-dispatch a previously-audited action for incident review. `LINE_ID` is a prefix of the line's RFC3339 timestamp (the first `ebman audit` column); ambiguous prefixes refuse with candidates listed. Supported: Rebuild / Restart / Deploy (needs `version=` on the line) / Terminate (needs `--yes`, exit 3). Replays against the line's original profile + region. **Safety pins (`safety.envs.*` / `safety.accounts.*`) are enforced** — the first `ebman action`-shaped CLI path to do so — and the replay writes its own `replay_of=`-tagged dispatched/completed audit lines. 10 new tests.
+
+### Added — lint completion
+
+- **EBL014** — ASG scaling on the legacy default network metric (`aws:autoscaling:trigger MeasureName=NetworkOut/NetworkIn`) while the ASG genuinely scales (`MaxSize > MinSize`). Warn, Manual fix. (Reshaped from the roadmap's "deprecated CW namespace" framing — EB's trigger namespace has no CW-namespace key; the honest checkable signal is the legacy measure itself.)
+- **EBL016** — live health-check probe failing, behind **`ebman lint --probe-live`** (CLI-only; one curl HEAD per env with the Deploy confirm modal's probe helpers, too slow for default lint). A failed probe (non-2xx / timeout / connect) fires; a failed *probe run* skips — never a false positive.
+- **EBL020** — X-Ray enabled but the instance-profile role can't write traces: an `iam:SimulatePrincipalPolicy` probe of `xray:PutTraceSegments` (CLI-only, run only when `XRayEnabled=true` so the common path pays no IAM calls) came back denied. New `AwsClient::instance_profile_role_arn` resolves the EB option value (name or ARN) to the simulatable role principal — SDK-compiled, call shape unverified live (same status the ACM fetch shipped with).
+- **`ebman lint --watch --webhook URL`** — POST findings through the existing `notify_webhook` body shape when the issue set *changes* between cycles (keyed by `lint::issue_identity`, the baseline key) — no re-paging the channel with the same warnings every interval, and the dirty→clean transition sends an explicit all-clear. Requires `--watch`; 3 new arg-parse/summary tests.
+- Rule registry: 15 → 18 (EBL014 / EBL016 / EBL020). EBL015 (stale custom platform) and EBL018 (prod without WAF) stay on the roadmap with recorded reasons — each needs new AWS surface (`DescribePlatformVersion` dates / an `aws-sdk-wafv2` dependency) that can't be verified here.
+
+### Pre-tag review (2 agents: architecture, bugs) — 3 Important + 6 Minor findings, all addressed
+
+- **Event-tail first batch no longer clamps its watermark to local `now()`** — events landing between the server-side snapshot and the local clock (eventual consistency / clock skew) were permanently skipped by the second poll. Watermark is now newest-event+1ms.
+- **`lint --watch --webhook` no longer posts a false all-clear during an AWS outage** — a cycle that skipped any region/env on a fetch failure is marked degraded: no page, baseline unchanged, next full cycle compares against the last good state.
+- **`audit replay` account-pin bypass closed** — lines written under default creds (`profile=-`) are now pin-checked against the ambient `AWS_PROFILE` the dispatch will actually run under (same fallback `lint --fix` uses).
+- Minors: incident pill glyph is ascii-safe (`!!` fallback) and its headline capped at 60 chars (a longer one evicted every lower-priority pill); `:incident END` says "deploys were already thawed" when a mid-incident `:thaw-deploys` beat it; replaying an `outcome=err` line prints a note; EBL016's volatile failure reason moved out of `fields` so it can't churn baselines/webhook identity; webhook delivery failures reach stderr in CLI mode (opt-in flag — TUI stays tracing-only); event-tail title shows `shown/held` counts while filtered.
+- Architecture verdict: nothing tag-blocking; five refactor candidates recorded in BACKLOG for 0.26 (shared `TailView` extraction, `Config::pin_reason` helper, `cli/lint.rs run()` decomposition, replay module split, LintContext probe-fields note).
+
+### Fixed
+
+- **Tail pollers no longer outlive their overlay.** Opening another overlay on top of `:logs-tail` (and the new `:event-tail`) without closing it first used to leave the polling task running invisibly — hitting CW Logs / DescribeEvents until a context switch. The next poll result now reaps the orphaned task and bumps the session so queued messages drop. The `:logs-tail` half is a fix for behavior that shipped in 0.9. +2 regression tests.
+- Four stale BACKLOG checkboxes (lint input caching → shipped 0.21; `:diff --ignore-keys` ×2 → 0.23; ARM64 tarball → 0.23) corrected with annotations.
+
 ## [0.24.0] — 2026-06-08 — cursor-aware text editing everywhere + tb-tui-common is its own crate + structural refactors
 
 The headline is operator-facing: **every text-input prompt is now cursor-aware**. The rest is structural — the shared TUI crate moved out into its own repo, and three long-deferred refactors landed — plus a two-layer render-test harness so the UI's visual invariants are now test-covered.

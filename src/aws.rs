@@ -713,18 +713,36 @@ impl AwsClient {
     }
 
     pub async fn list_events(&self, max: i32) -> Result<Vec<Event>> {
-        self.list_events_inner(None, max).await
+        self.list_events_inner(None, None, max).await
     }
 
     pub async fn list_events_for_env(&self, env_name: &str, max: i32) -> Result<Vec<Event>> {
-        self.list_events_inner(Some(env_name.to_string()), max)
+        self.list_events_inner(Some(env_name.to_string()), None, max)
             .await
     }
 
-    async fn list_events_inner(&self, env_name: Option<String>, max: i32) -> Result<Vec<Event>> {
+    /// Fleet-wide events newer than `since_ms` (epoch millis) — the
+    /// `:event-tail` polling primitive. `start_time` keeps each poll's
+    /// batch small so a busy fleet doesn't re-ship its whole history
+    /// every cycle.
+    pub async fn list_events_since(&self, since_ms: i64, max: i32) -> Result<Vec<Event>> {
+        self.list_events_inner(None, Some(since_ms), max).await
+    }
+
+    async fn list_events_inner(
+        &self,
+        env_name: Option<String>,
+        since_ms: Option<i64>,
+        max: i32,
+    ) -> Result<Vec<Event>> {
         let mut req = self.client.describe_events().max_records(max);
         if let Some(n) = env_name {
             req = req.environment_name(n);
+        }
+        if let Some(ms) = since_ms {
+            req = req.start_time(aws_sdk_elasticbeanstalk::primitives::DateTime::from_millis(
+                ms,
+            ));
         }
         let resp = req.send().await?;
         let events = resp
@@ -1547,6 +1565,30 @@ impl AwsClient {
             return Ok(format!("(binary, {} bytes — not shown)", b.as_ref().len()));
         }
         Ok(String::new())
+    }
+
+    /// Resolve an EB `IamInstanceProfile` option value (bare name or
+    /// full ARN) to the ARN of the ROLE inside the profile — the
+    /// principal `simulate_principal_policy` needs (instance-profile
+    /// ARNs aren't simulatable principals). Returns `Ok(None)` when
+    /// the profile exists but carries no role. Used by the EBL020
+    /// X-Ray lint probe. (SDK-compiled; call shape unverified against
+    /// a live account — same status as the ACM listener fetch.)
+    pub async fn instance_profile_role_arn(&self, profile: &str) -> Result<Option<String>> {
+        // GetInstanceProfile wants the bare name; EB sometimes stores
+        // the full ARN (`arn:aws:iam::123:instance-profile/name`).
+        let name = profile.rsplit('/').next().unwrap_or(profile);
+        let resp = self
+            .iam
+            .get_instance_profile()
+            .instance_profile_name(name)
+            .send()
+            .await
+            .wrap_err("GetInstanceProfile failed")?;
+        Ok(resp
+            .instance_profile
+            .and_then(|p| p.roles.into_iter().next())
+            .map(|r| r.arn))
     }
 
     pub async fn simulate_principal_policy(

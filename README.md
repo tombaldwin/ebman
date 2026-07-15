@@ -67,6 +67,7 @@ Built for operators who triage EB envs daily and don't want the AWS console roun
 - **Live env table** with sort / filter / group-by-app / health sparkline / severity tints / mouse support.
 - **Per-env drill-down** — tabs for Health / Events / Instances / Metrics / Queue / Logs / Config.
 - **Red-env triage** — `:why` opens a one-screen diagnostic: recent events + alarms + instance health + last deploys, with a DLQ peek for Worker envs.
+- **Incident mode** — `:incident START "headline"` freezes deploys fleet-wide, pins a header banner with a running clock, and audit-logs the window; `:event-tail` streams EB events across every env in one overlay; `ebman audit replay <line-id>` re-runs an audited action for post-incident review.
 - **Honest health** — envs with alarms in ALARM, DLQs with messages, or stale platforms surface on the row itself, not behind a tab.
 - **Forensics** — `:diff env-A env-B` for option-setting deltas, `:lineage` for the deploy timeline, `:alarm-history NAME` for CW state transitions, `:config-diff-local` against a local EB CLI saved config.
 - **Daily-driver writes** — env vars, tags, deploys (label / local zip / S3, with `--preview`), saved configs, CW alarms CRUD, ALB scheme, instance type, capacity, deployment policy, plus a generic `:set-option` escape hatch.

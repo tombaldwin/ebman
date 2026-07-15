@@ -36,6 +36,7 @@ Type `:` to open the command bar. Tab-completion is not implemented, but `Ctrl-K
 - `:lineage` — deploy-only timeline (one row per version label, newest first, with Δ between deploys).
 - `:promotions` — lineage trace of `:promote-env` events in this session (in-memory; cleared on context switch).
 - `:changes` — deploy + config-change timeline from the env's event history.
+- `:event-tail` (alias `:tail-events`) — live cross-fleet EB event stream: every env in the current context, merged newest-last, polled every 5s. `j`/`k` scroll (pauses follow), `g`/`G` top/follow, `/` regex filter over env + application + severity + message, `n` clears the filter, `Esc`/`q` closes. Ring-buffered at 1000 events. Unlike Detail/Events (one env), this is the console's flat event firehose, in-app.
 - `:alarm-history NAME` — recent CloudWatch alarm transitions (StateUpdate / ConfigurationUpdate / Action, newest first).
 - `:ssh [i-abc]` — open an embedded SSM session into an env instance. No arg opens a picker over cached Detail/Instances. Needs `aws` CLI + session-manager-plugin on `PATH`.
 - `:ssm-run "<cmd>"` — fan a shell command across the env's instances via SSM Run Command (AWS-RunShellScript). 60s wall-clock cap. Opens a Y/N confirm modal (0.17.3+) showing the command + fan-out count + env before dispatch. Treat-as-write so the read-only / per-env safety pin / `--demo` mode all gate it.
@@ -62,6 +63,7 @@ Type `:` to open the command bar. Tab-completion is not implemented, but `Ctrl-K
 - `:explain` / `:explain ARN ACTION` — diagnose the last IAM AccessDenied via `iam:SimulatePrincipalPolicy`. Explicit-pairs form evaluates a given principal/action.
 - `:explain EBL###` — LLM-backed explanation of a lint issue against the selected env (e.g. `:explain EBL001`). Routes to the configured Provider (Anthropic or Ollama). Opt-in via `[explain] enabled = true` in `config.toml` + provider API key. Responses cached at `~/.cache/ebman/explain/`. Also available as `ebman explain EBL### [--env NAME]` for CI.
 - `ebman audit [--tail] [--since DUR] [--env NAME] [--rule ID] [--action NAME] [--json]` — CLI-only; surface the local `~/.cache/ebman/audit.log` with structure + windows + filtering for Slack-bot routing / on-call dashboards.
+- `ebman audit replay LINE_ID [--yes]` — CLI-only; re-dispatch a previously-audited action for incident review ("run exactly what that line ran"). `LINE_ID` is a prefix of the line's RFC3339 timestamp; ambiguous prefixes refuse with the candidates listed. Supported: Rebuild / Restart / Terminate / Deploy (deploy needs `version=` on the line). Safety pins are honoured; Terminate requires `--yes` (exit 3 otherwise). The replay itself writes `replay_of=`-tagged dispatched/completed audit lines.
 
 ## Write — env state
 
@@ -77,6 +79,7 @@ Type `:` to open the command bar. Tab-completion is not implemented, but `Ctrl-K
 - `:abort-rollback [ENV]` — disarm an armed `--auto-rollback` watchdog. No arg drains all in the current context.
 - `:freeze-deploys [REASON…]` — session-scoped fleet-wide write-lock. Every destructive op refuses while frozen. Useful during incident triage. Re-issue to update the reason in place.
 - `:thaw-deploys` — clear the session-scoped freeze.
+- `:incident START "headline"` / `:incident END` — incident mode, one gesture: START freezes deploys fleet-wide (reason = the headline), pins a red `🚨 INCIDENT` banner in the header with a running clock, and writes an `IncidentStart` audit line. END thaws, clears the banner, and writes `IncidentEnd` with the duration. Re-issue START to update the headline without resetting the clock. Note END thaws unconditionally — it's the all-clear, even if a separate `:freeze-deploys` predated the incident. Session-scoped; exiting ebman clears it.
 - `:upgrade [ARN]` — list compatible platforms; with ARN, dispatch the migration.
 - `:clone NEW-NAME` — clone selected env.
 - `:scale N` — set ASG min=max=N. Use `:stop` for 0, `:start` for 1.

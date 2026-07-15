@@ -404,6 +404,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         CommandKind::ZeroArg,
     ),
     cmd(
+        "incident",
+        ":incident START \"headline\" | END — incident mode: START freezes deploys fleet-wide, pins a header banner, and audit-logs IncidentStart; END thaws, clears the banner, and logs IncidentEnd with the duration. Re-issue START to update the headline. Session-scoped, like :freeze-deploys.",
+        Category::Lifecycle,
+        CommandKind::Prefill("incident "),
+    ),
+    cmd(
         "undo",
         ":undo — reverse the most-recent option-settings write (10-entry ring buffer; :undo of :undo redoes the original)",
         Category::EnvConfig,
@@ -632,6 +638,13 @@ pub const COMMANDS: &[CommandSpec] = &[
         ":logs-tail [LOG_GROUP] — open live CW Logs tail overlay (picker if multiple groups)",
         Category::EnvConfig,
         CommandKind::Prefill("logs-tail "),
+    ),
+    cmd_with_aliases(
+        "event-tail",
+        &["tail-events"],
+        ":event-tail — live cross-fleet EB event stream (every env in the current context)",
+        Category::Inspection,
+        CommandKind::ZeroArg,
     ),
     cmd(
         "notify",

@@ -152,6 +152,29 @@ fn build_chain_pills(app: &App) -> Vec<(String, Color, Color)> {
             theme.health_red,
         ));
     }
+    // Incident banner — `:incident START` is active. First in the
+    // chain after alerts: during an incident this is the one signal
+    // everyone sharing the terminal must see, so it survives the
+    // width-pruning pass ahead of the UX pills.
+    if let Some(incident) = app.incident.as_ref() {
+        let age = (chrono::Utc::now() - incident.started_at)
+            .to_std()
+            .unwrap_or_default();
+        let glyph = incident_glyph(theme);
+        let label = if incident.headline.is_empty() {
+            format!("{glyph}INCIDENT ({})", crate::app::humanize_short_age(age))
+        } else {
+            // Cap the headline: `prune_pills_to_width` only pops whole
+            // trailing pills, so an uncapped headline would evict every
+            // lower-priority pill and still clip.
+            format!(
+                "{glyph}INCIDENT ({}): {}",
+                crate::app::humanize_short_age(age),
+                truncate_for_display(&incident.headline, 60)
+            )
+        };
+        chain.push((label, fg(theme.health_red), theme.health_red));
+    }
     // Pending-dispatch countdown — operator just authorised an action
     // and is in the 5s cancel window. Red bg so the operator catches
     // it peripherally; the 100ms anim ticker re-renders the second
@@ -324,6 +347,15 @@ fn multi_select_glyph(theme: &Theme) -> &'static str {
     match theme.icons {
         IconStyle::Ascii => "+ ",
         _ => "▶ ",
+    }
+}
+
+/// Glyph for the incident banner pill. `🚨` is unicode-only; ascii
+/// terminals get a loud `!!` tag instead of tofu.
+fn incident_glyph(theme: &Theme) -> &'static str {
+    match theme.icons {
+        IconStyle::Ascii => "!! ",
+        _ => "🚨 ",
     }
 }
 
@@ -617,6 +649,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 draw_text_dump_overlay(f, f.area(), app, &title, &body)
             }
             Overlay::LogTail { .. } => draw_log_tail_overlay(f, f.area(), app),
+            Overlay::EventTail { .. } => draw_event_tail_overlay(f, f.area(), app),
             Overlay::WhyRed { .. } => draw_why_red_overlay(f, f.area(), app),
             Overlay::AppsActionMenu {
                 app_name,
@@ -1236,6 +1269,102 @@ fn draw_log_tail_overlay(f: &mut Frame, area: Rect, app: &App) {
         format!(" {}{err}", warn_glyph(theme.icons))
     } else {
         " j/k scroll · g/G top/follow · / filter · n clear-filter · Tab change group · esc / q close".to_string()
+    };
+    let mut paragraph_lines = visible_lines;
+    paragraph_lines.push(Line::raw(""));
+    paragraph_lines.push(Line::from(Span::styled(
+        footer_text,
+        Style::default().fg(theme.muted),
+    )));
+    let p = Paragraph::new(paragraph_lines)
+        .wrap(Wrap { trim: false })
+        .block(
+            titled_block(&app.theme, &title_text, true, app.theme.title)
+                .padding(Padding::uniform(1)),
+        );
+    f.render_widget(p, popup);
+}
+
+fn draw_event_tail_overlay(f: &mut Frame, area: Rect, app: &App) {
+    let Some(crate::app::Overlay::EventTail {
+        events,
+        scroll,
+        following,
+        filter_input,
+        filter_active,
+        filter_pattern,
+        last_err,
+        ..
+    }) = app.current_overlay.as_ref()
+    else {
+        return;
+    };
+    let popup = centered_overlay(OverlaySize::Wide, area);
+    f.render_widget(Clear, popup);
+    let theme = &app.theme;
+    // Format each event as `HH:MM:SS  SEV  env  message`. Env names are
+    // left un-truncated (they're the routing key in a fleet stream);
+    // the message is capped so one verbose event can't wrap into a
+    // whole page.
+    let mut lines: Vec<Line> = Vec::with_capacity(events.len());
+    for ev in events.iter() {
+        if let Some(pat) = filter_pattern.as_ref() {
+            if !crate::app::event_tail_matches(pat, ev) {
+                continue;
+            }
+        }
+        let ts = ev
+            .at
+            .map(|at| at.format("%H:%M:%S").to_string())
+            .unwrap_or_else(|| "--:--:--".into());
+        let sev_style = match ev.severity.as_str() {
+            "ERROR" | "FATAL" => Style::default().fg(theme.health_red),
+            "WARN" => Style::default().fg(theme.health_yellow),
+            _ => Style::default().fg(theme.muted),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{ts}  "), Style::default().fg(theme.muted)),
+            Span::styled(format!("{:<5} ", ev.severity), sev_style),
+            Span::styled(
+                format!("{}  ", ev.env),
+                Style::default().fg(theme.title_alt),
+            ),
+            Span::styled(
+                truncate_for_display(&ev.message, 200),
+                Style::default().fg(theme.text),
+            ),
+        ]));
+    }
+    let body_rows = popup.height.saturating_sub(6) as usize;
+    let total = lines.len();
+    let start = if *following {
+        total.saturating_sub(body_rows)
+    } else {
+        let max_start = total.saturating_sub(body_rows);
+        max_start.saturating_sub(*scroll as usize)
+    };
+    let visible_lines: Vec<Line> = lines.into_iter().skip(start).take(body_rows).collect();
+    // `total` is the post-filter line count; show `shown/held` while a
+    // filter is active so the title doesn't overstate what's visible.
+    let title_text = format!(
+        "event-tail — fleet · {} events{}",
+        if filter_pattern.is_some() {
+            format!("{total}/{}", events.len())
+        } else {
+            events.len().to_string()
+        },
+        if *following {
+            " · following"
+        } else {
+            " · paused (G to follow)"
+        }
+    );
+    let footer_text = if *filter_active {
+        format!(" filter: {}_ (esc cancel)", filter_input.text())
+    } else if let Some(err) = last_err {
+        format!(" {}{err}", warn_glyph(theme.icons))
+    } else {
+        " j/k scroll · g/G top/follow · / filter · n clear-filter · esc / q close".to_string()
     };
     let mut paragraph_lines = visible_lines;
     paragraph_lines.push(Line::raw(""));
