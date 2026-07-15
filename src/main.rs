@@ -205,7 +205,7 @@ FLAGS:
 SUBCOMMANDS:
     envs [--json]                                List environments in current profile / region.
     lint [--env NAME] [--regions r1,r2,r3] [--json] [--severity LVL] [--rules ID1,ID2] [--quiet]
-         [--fix (--yes | --dry-run)] [--watch [--interval 60s]]
+         [--fix (--yes | --dry-run)] [--watch [--interval 60s] [--webhook URL]] [--probe-live]
          [--baseline FILE | --against-baseline FILE]
                                                   Run the diagnostic rule engine against one env
                                                   (or every env in the context) and emit findings
@@ -228,6 +228,13 @@ SUBCOMMANDS:
                                                   Canonical monitoring shape:
                                                   `ebman lint --watch --interval 5m --json > alerts.jsonl`.
                                                   --watch and --fix are mutually exclusive.
+                                                  --webhook URL (watch only) POSTs findings to
+                                                  the URL when the issue set CHANGES between
+                                                  cycles (Slack-shaped body; includes the
+                                                  all-clear on dirty → clean).
+                                                  --probe-live enables EBL016: one live HTTP HEAD
+                                                  of each env's health-check URL (2s cap; off by
+                                                  default to keep lint fast).
                                                   --baseline FILE snapshots current issues to JSON
                                                   (CI adoption: grandfather existing warnings).
                                                   --against-baseline FILE diffs vs the snapshot;
@@ -273,6 +280,16 @@ SUBCOMMANDS:
                                                   polls 1s for new entries (until Ctrl-C). --since
                                                   filters to entries within a duration (5m/1h/2d).
                                                   Exit codes: 0 ok, 1 io err, 2 usage.
+    audit replay LINE_ID [--yes]                 Re-dispatch a previously-audited action. LINE_ID
+                                                  is a prefix of the line's RFC3339 timestamp (the
+                                                  first `ebman audit` column); ambiguous prefixes
+                                                  are refused with candidates listed. Supported
+                                                  actions: Rebuild / Restart / Terminate / Deploy
+                                                  (others refuse — the line doesn't carry enough to
+                                                  reconstruct them). Honours safety.envs.* /
+                                                  safety.accounts.* pins; Terminate needs --yes.
+                                                  Exit codes: 0 ok, 1 aws err, 2 usage/no-match/
+                                                  ambiguous, 3 pin-refused or destructive-gate.
     explain EBL### [--env NAME] [--json] [--dry-run] [--no-cache]
                                                   LLM-backed explanation of a lint issue. Routes to
                                                   the configured Provider (Anthropic API or local

@@ -176,6 +176,32 @@ Fix: plan a launch-template migration — verify the platform version supports i
 
 Live: 0.20+.
 
+### EBL014 — ASG scaling on legacy default network metric
+
+**Severity:** Warn · **Auto-fix:** Manual (right metric is workload-dependent)
+
+Detection: `aws:autoscaling:trigger:MeasureName` is `NetworkOut` or `NetworkIn` (EB's legacy out-of-the-box default) AND the ASG genuinely scales (`MaxSize > MinSize`). Fixed-size envs (`min == max`) skip — the trigger is inert there and warning would be noise.
+
+Why it matters: network bytes track response sizes, not load. A CPU-bound fleet scales late; a payload-size change makes it thrash. Modern signals are `CPUUtilization`, ALB request count, or env-health-driven scaling.
+
+Fix: `:scaling-triggers` with `MeasureName=CPUUtilization` is the common default; request-count or latency-driven fleets should use ALB metrics.
+
+Scope note: the roadmap framed this as "deprecated CW namespace", but EB's trigger namespace carries no CW-namespace key — the honest checkable signal is the legacy network measure itself.
+
+Live: 0.25+.
+
+### EBL016 — Live health-check probe failing
+
+**Severity:** Warn · **Auto-fix:** Manual (the failure is in the app or its network path, not an option setting)
+
+Detection: **CLI-only, opt-in via `ebman lint --probe-live`** — one HTTP HEAD (2s cap, follows redirects, same curl probe the Deploy confirm modal ships) against each env's `Application Healthcheck URL` composed over its CNAME. Fires when the probe returns non-2xx, times out, or can't connect. Without `--probe-live` the rule never fires — a per-env HTTP round-trip is too slow for default lint. The TUI lint sites never probe.
+
+Why it matters: EB's internal health can diverge from what an outside client sees. A failing external probe on a nominally-Green env usually means the health path moved, a security group closed, or the app errors on paths the ELB checks don't exercise.
+
+Fix: `curl -IL http://<cname><path>` from your network and fix what the response shows.
+
+Live: 0.25+.
+
 ### EBL017 — Managed Platform Updates disabled
 
 **Severity:** Info · **Auto-fix:** Manual
@@ -200,16 +226,25 @@ Fix: same as EBL001 — switch to `Rolling`. Subnet count is the cheapest proxy 
 
 Live: 0.20+.
 
+### EBL020 — X-Ray enabled but instance profile can't write traces
+
+**Severity:** Warn · **Auto-fix:** Manual (IAM attachment is outside EB option settings)
+
+Detection: `aws:elasticbeanstalk:xray:XRayEnabled = true` AND an `iam:SimulatePrincipalPolicy` probe of `xray:PutTraceSegments` against the env's instance-profile role returns a deny. **CLI-only**: `ebman lint` runs the probe (only for envs with X-Ray on, so the common path pays no IAM calls); the TUI lint sites skip the probe and this rule never fires there — same split as EBL011's CLI gap. A failed probe (missing `iam:Simulate*` permission, unresolvable profile) makes the rule skip, never false-positive.
+
+Why it matters: the daemon runs, the config says tracing is on, and every segment is silently dropped — an empty service map with nothing in between to explain it.
+
+Fix: attach `AWSXRayDaemonWriteAccess` (or an equivalent `xray:PutTraceSegments` grant) to the instance-profile role.
+
+Live: 0.25+. IAM probe call shape is SDK-compiled but unverified against a live account (same status the ACM listener fetch shipped with).
+
 ---
 
 ## Roadmap
 
 Held / pending live-EB verification:
-- EBL014 — deprecated CW namespace in `:scaling-triggers`
-- EBL015 — custom platform with no published versions in 180+ days
-- EBL016 — live health-check probe non-2xx (`--probe-live` gated)
-- EBL018 — env without WAF + on prod tier
-- EBL020 — env with X-Ray enabled but instance profile has no `xray:PutTraceSegments`
+- EBL015 — custom platform with no published versions in 180+ days. Held 0.25: `ListPlatformVersions` carries no dates, so this needs a per-platform `DescribePlatformVersion` fetch plus an account-level (env-less) issue shape the engine doesn't have yet.
+- EBL018 — env without WAF + on prod tier. Held 0.25: WAF association isn't in EB option settings; detection needs a new `aws-sdk-wafv2` dependency (`GetWebACLForResource` against the env's ALB) — too much unverifiable surface for the value.
 
 These rules have clear semantics but each needs detection-shape verification against a live EB env before shipping.
 

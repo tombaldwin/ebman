@@ -86,6 +86,8 @@ struct LintArgs {
     interval_secs: u64,
     baseline_write: Option<String>,
     baseline_against: Option<String>,
+    probe_live: bool,
+    webhook: Option<String>,
 }
 
 /// Pure parser + validator for `ebman lint`. Returns `Err(msg)` for
@@ -93,6 +95,62 @@ struct LintArgs {
 /// Ordering note: validation runs here, before [`run`] loads config —
 /// a usage error now exits before the (silent) config read rather than
 /// after. No observable change; strictly less wasted work.
+/// EBL020 input probe: when the env has `XRayEnabled=true`, resolve
+/// its instance-profile role and IAM-simulate `xray:PutTraceSegments`
+/// against it. `Some(true)` = denied (the rule's firing signal),
+/// `Some(false)` = allowed, `None` = X-Ray off / no profile / probe
+/// failed (the rule skips — never a false positive from a failed
+/// probe). Lives at the call site rather than in `LintContext`
+/// because rules are pure and synchronous.
+async fn probe_xray_trace_denied(
+    aws: &aws::AwsClient,
+    options: &[(String, String, String)],
+) -> Option<bool> {
+    let xray_on = options.iter().any(|(ns, n, v)| {
+        ns == "aws:elasticbeanstalk:xray" && n == "XRayEnabled" && v.eq_ignore_ascii_case("true")
+    });
+    if !xray_on {
+        return None;
+    }
+    let profile = options.iter().find_map(|(ns, n, v)| {
+        (ns == "aws:autoscaling:launchconfiguration" && n == "IamInstanceProfile" && !v.is_empty())
+            .then(|| v.clone())
+    })?;
+    let role_arn = aws.instance_profile_role_arn(&profile).await.ok()??;
+    let results = aws
+        .simulate_principal_policy(&role_arn, &["xray:PutTraceSegments".to_string()], &[])
+        .await
+        .ok()?;
+    let first = results.first()?;
+    Some(!first.decision.eq_ignore_ascii_case("allowed"))
+}
+
+/// Pure: one-line webhook body for a lint cycle. Caps at 5 issues so
+/// a noisy fleet doesn't blow out the Slack message; an empty set
+/// renders the all-clear (sent on the dirty→clean transition).
+fn webhook_summary(issues: &[lint::Issue]) -> String {
+    if issues.is_empty() {
+        return "lint: ✓ clean (previous issues cleared)".to_string();
+    }
+    let mut parts: Vec<String> = issues
+        .iter()
+        .take(5)
+        .map(|i| {
+            format!(
+                "{} {} {}: {}",
+                i.severity.as_str(),
+                i.rule_id,
+                i.env_name.as_deref().unwrap_or("-"),
+                i.title
+            )
+        })
+        .collect();
+    if issues.len() > 5 {
+        parts.push(format!("…and {} more", issues.len() - 5));
+    }
+    format!("lint: {} issue(s) — {}", issues.len(), parts.join("; "))
+}
+
 fn parse_lint_args(args: &[String]) -> Result<LintArgs, String> {
     let mut env_name: Option<String> = None;
     let mut regions_csv: Option<String> = None;
@@ -107,6 +165,8 @@ fn parse_lint_args(args: &[String]) -> Result<LintArgs, String> {
     let mut interval_str: Option<String> = None;
     let mut baseline_write: Option<String> = None;
     let mut baseline_against: Option<String> = None;
+    let mut probe_live = false;
+    let mut webhook: Option<String> = None;
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -119,6 +179,18 @@ fn parse_lint_args(args: &[String]) -> Result<LintArgs, String> {
             "--yes" => yes = true,
             "--watch" => watch = true,
             "--interval" => interval_str = iter.next().cloned(),
+            "--probe-live" => probe_live = true,
+            "--webhook" => {
+                let Some(u) = iter.next() else {
+                    return Err("ebman lint: --webhook expects a URL".into());
+                };
+                if u.starts_with("--") {
+                    return Err(format!(
+                        "ebman lint: --webhook expects a URL, got flag '{u}'"
+                    ));
+                }
+                webhook = Some(u.clone());
+            }
             "--baseline" => {
                 let Some(p) = iter.next() else {
                     return Err("ebman lint: --baseline expects a file path".into());
@@ -172,6 +244,12 @@ fn parse_lint_args(args: &[String]) -> Result<LintArgs, String> {
 
     if watch && fix {
         return Err("ebman lint: --watch and --fix are mutually exclusive (use one)".into());
+    }
+    if webhook.is_some() && !watch {
+        return Err(
+            "ebman lint: --webhook only makes sense with --watch (one-shot runs print their findings)"
+                .into(),
+        );
     }
     if baseline_write.is_some() && baseline_against.is_some() {
         return Err(
@@ -244,6 +322,8 @@ fn parse_lint_args(args: &[String]) -> Result<LintArgs, String> {
         interval_secs,
         baseline_write,
         baseline_against,
+        probe_live,
+        webhook,
     })
 }
 
@@ -265,6 +345,8 @@ pub async fn run(args: &[String]) -> Result<()> {
         interval_secs,
         baseline_write,
         baseline_against,
+        probe_live,
+        webhook,
     } = match parse_lint_args(args) {
         Ok(parsed) => parsed,
         Err(msg) => {
@@ -282,6 +364,11 @@ pub async fn run(args: &[String]) -> Result<()> {
 
     let safety_cfg = config::load();
     let active_profile_for_safety = std::env::var("AWS_PROFILE").ok();
+    if webhook.is_some() {
+        // CLI mode installs no tracing subscriber — route webhook
+        // delivery failures to stderr so a broken URL isn't silent.
+        audit::webhook_errors_to_stderr();
+    }
 
     let multi_region = regions.len() > 1;
     // `--watch` wraps the existing one-shot body in a polling loop
@@ -296,12 +383,21 @@ pub async fn run(args: &[String]) -> Result<()> {
     // iteration always sets it — but the initial value keeps the
     // borrow checker honest and documents the invariant).
     let mut last_cycle_clean;
+    // `--webhook` change-guard: identity set of the last cycle POSTed.
+    // `None` until the first cycle, so the first findings (or first
+    // clean state) always fire once.
+    let mut last_webhook_identities: Option<std::collections::BTreeSet<String>> = None;
     loop {
         let cycle_started = chrono::Utc::now();
         if watch && !quiet && !json {
             println!("--- {} ---", cycle_started.to_rfc3339());
         }
         let mut all_issues: Vec<lint::Issue> = Vec::new();
+        // A cycle that skipped any region/env (transient AWS failure)
+        // has an incomplete issue set — the webhook change-guard must
+        // neither page on it (a shrunk set reads as a false all-clear
+        // mid-outage) nor adopt it as the new baseline.
+        let mut cycle_degraded = false;
         for region_opt in &regions {
             let aws = match aws::AwsClient::with(None, region_opt.clone()).await {
                 Ok(c) => c,
@@ -312,6 +408,7 @@ pub async fn run(args: &[String]) -> Result<()> {
                             "warning: skipping region '{region_label}' — AwsClient::with: {e}"
                         );
                     }
+                    cycle_degraded = true;
                     continue;
                 }
             };
@@ -324,6 +421,7 @@ pub async fn run(args: &[String]) -> Result<()> {
                             "warning: skipping region '{region_label}' — list_environments: {e}"
                         );
                     }
+                    cycle_degraded = true;
                     continue;
                 }
             };
@@ -390,6 +488,7 @@ pub async fn run(args: &[String]) -> Result<()> {
                                 env.name
                             );
                         }
+                        cycle_degraded = true;
                         continue;
                     }
                 };
@@ -414,6 +513,38 @@ pub async fn run(args: &[String]) -> Result<()> {
                 }
                 if let Some(count) = healthy_count {
                     ctx = ctx.with_healthy_count(count);
+                }
+                // EBL020 probe — only when the env actually has X-Ray
+                // on (rare), so the common path pays no IAM calls.
+                // Probe failures (no iam:Simulate* perms, missing
+                // profile) leave the field unset: the rule skips
+                // rather than false-positives. CLI-only, same pattern
+                // as dlq_depth staying TUI-only.
+                let xray_denied = probe_xray_trace_denied(&aws, &opts).await;
+                if let Some(denied) = xray_denied {
+                    ctx = ctx.with_xray_trace_denied(denied);
+                }
+                // EBL016 probe — opt-in via --probe-live (one curl
+                // HEAD per env is too slow for default lint). Only
+                // a FAILURE reason is attached; pass/skip leaves the
+                // field unset and the rule silent.
+                let probe_failure: Option<String> = if probe_live && !env.cname.is_empty() {
+                    let path = opts
+                        .iter()
+                        .find_map(|(ns, n, v)| {
+                            (ns == "aws:elasticbeanstalk:application"
+                                && n == "Application Healthcheck URL"
+                                && !v.is_empty())
+                            .then(|| v.clone())
+                        })
+                        .unwrap_or_else(|| "/".to_string());
+                    let url = crate::app::build_health_check_probe_url(&env.cname, &path);
+                    crate::app::run_health_check_probe(&url).await.err()
+                } else {
+                    None
+                };
+                if let Some(reason) = probe_failure.as_deref() {
+                    ctx = ctx.with_health_probe_failure(reason);
                 }
                 let mut issues = lint::run_rules(&rules, &ctx);
                 if let Some(min) = severity_filter {
@@ -576,6 +707,47 @@ pub async fn run(args: &[String]) -> Result<()> {
                 }
 
                 all_issues.extend(issues);
+            }
+        }
+
+        // `--webhook URL` (watch mode): POST the cycle's findings when
+        // the issue SET changed since the last post — a 60s interval
+        // must not re-page the channel with the same three warnings
+        // every minute, but a new issue (or the all-clear) should land
+        // immediately. Identity comes from `lint::issue_identity`, the
+        // same key the baseline machinery uses.
+        if let Some(url) = webhook.as_deref() {
+            if cycle_degraded {
+                // Incomplete data: don't page, don't move the baseline.
+                // The next full cycle compares against the last GOOD
+                // state, so a real change during the outage still fires.
+                if !quiet {
+                    eprintln!("warning: cycle degraded (fetch failures) — webhook suppressed");
+                }
+            } else {
+                let identities: std::collections::BTreeSet<String> =
+                    all_issues.iter().map(lint::issue_identity).collect();
+                // A first cycle that's already clean posts nothing —
+                // the all-clear body claims issues cleared, and none
+                // did. Only a change from a KNOWN previous state (or
+                // first findings) is worth a page.
+                let first_cycle_clean = last_webhook_identities.is_none() && identities.is_empty();
+                if !first_cycle_clean && last_webhook_identities.as_ref() != Some(&identities) {
+                    let detail = webhook_summary(&all_issues);
+                    audit::fire_webhook(
+                        url,
+                        None,
+                        active_profile_for_safety.as_deref(),
+                        if multi_region {
+                            "multi"
+                        } else {
+                            regions[0].as_deref().unwrap_or("default")
+                        },
+                        &detail,
+                        &cycle_started.to_rfc3339(),
+                    );
+                }
+                last_webhook_identities = Some(identities);
             }
         }
 
@@ -869,5 +1041,54 @@ mod tests {
     fn empty_regions_csv_is_usage_error() {
         let err = parse_lint_args(&argv(&["lint", "--regions", " , "])).unwrap_err();
         assert!(err.contains("--regions list is empty"), "got: {err}");
+    }
+
+    #[test]
+    fn probe_live_flag_parses() {
+        let p = parse_lint_args(&argv(&["lint", "--probe-live"])).unwrap();
+        assert!(p.probe_live);
+        let p = parse_lint_args(&argv(&["lint"])).unwrap();
+        assert!(!p.probe_live);
+    }
+
+    #[test]
+    fn webhook_requires_watch_and_a_real_url() {
+        let p = parse_lint_args(&argv(&[
+            "lint",
+            "--watch",
+            "--webhook",
+            "https://hooks.example/x",
+        ]))
+        .unwrap();
+        assert_eq!(p.webhook.as_deref(), Some("https://hooks.example/x"));
+        // Without --watch: usage error (one-shot runs print findings).
+        let err =
+            parse_lint_args(&argv(&["lint", "--webhook", "https://hooks.example/x"])).unwrap_err();
+        assert!(err.contains("--watch"), "got: {err}");
+        // Value-flag trap: a following flag is not a URL.
+        let err = parse_lint_args(&argv(&["lint", "--watch", "--webhook", "--json"])).unwrap_err();
+        assert!(err.contains("expects a URL"), "got: {err}");
+        let err = parse_lint_args(&argv(&["lint", "--watch", "--webhook"])).unwrap_err();
+        assert!(err.contains("expects a URL"), "got: {err}");
+    }
+
+    #[test]
+    fn webhook_summary_caps_and_handles_all_clear() {
+        assert!(webhook_summary(&[]).contains("clean"));
+        let mk = |n: usize| lint::Issue {
+            rule_id: format!("EBL00{n}"),
+            severity: lint::Severity::Warn,
+            env_name: Some(format!("env-{n}")),
+            title: format!("issue {n}"),
+            detail: String::new(),
+            suggestion: None,
+            fields: Default::default(),
+        };
+        let issues: Vec<lint::Issue> = (1..=7).map(mk).collect();
+        let s = webhook_summary(&issues);
+        assert!(s.starts_with("lint: 7 issue(s)"), "got: {s}");
+        assert!(s.contains("EBL001 env-1: issue 1"), "got: {s}");
+        assert!(s.contains("…and 2 more"), "got: {s}");
+        assert!(!s.contains("issue 6"), "cap at 5, got: {s}");
     }
 }

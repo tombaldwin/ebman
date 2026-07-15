@@ -6,7 +6,9 @@
 - **Strict-typed confirm** for irreversible actions: typing the env name is required to Terminate; typing the literal string to Purge.
 - **Pre-flight checks** in the confirm modal: `DescribeInstancesHealth` impact count, last 3 events, traffic warnings for env-in-deploy / recently-changed / currently-Red.
 - **Audit log** records dispatch + outcome of every action.
-- **Per-env / per-account safety pins** in `config.toml` (`safety.envs.NAME.read_only = true` / `safety.accounts.NAME.read_only = true`) refuse destructive actions even when the global `--read-only` toggle is off.
+- **Per-env / per-account safety pins** in `config.toml` (`safety.envs.NAME.read_only = true` / `safety.accounts.NAME.read_only = true`) refuse destructive actions even when the global `--read-only` toggle is off. Enforced CLI-side too: `ebman audit replay` and `ebman lint --fix` refuse pinned targets before dispatch.
+- **Session-scoped fleet freeze**: `:freeze-deploys [REASON]` (or `:incident START "headline"`, which sets the same lock plus a header banner and audit lines) makes every destructive op refuse until `:thaw-deploys` / `:incident END` or exit. Not persisted — an in-session gesture, not durable policy.
+- **`ebman audit replay`** re-dispatches a previously-audited action and is itself audit-logged (`replay_of=`-tagged dispatched/completed lines); destructive verbs still require `--yes`.
 
 ## What's stored locally
 

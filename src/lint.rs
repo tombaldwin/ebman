@@ -162,6 +162,20 @@ pub struct LintContext<'a> {
     /// `None` means the data isn't loaded — the corresponding
     /// rule skips. `Some(0)` is the firing signal for EBL012.
     pub healthy_instance_count: Option<i64>,
+    /// Result of the `xray:PutTraceSegments` IAM simulation against
+    /// the env's instance-profile role, when the caller ran it
+    /// (CLI-only today — `ebman lint` probes when `XRayEnabled` is
+    /// true; the TUI sites leave it `None`, same pattern as the
+    /// CLI's `dlq_depth`). `Some(true)` = simulation says denied —
+    /// the EBL020 firing signal. `None` = not probed; rule skips.
+    pub xray_trace_denied: Option<bool>,
+    /// Failure reason from a live HTTP probe of the env's
+    /// health-check URL, when the caller ran one (CLI-only, behind
+    /// `ebman lint --probe-live` — one HTTP round-trip per env is
+    /// too slow for default lint). `Some(reason)` = probe came back
+    /// non-2xx / timed out / couldn't connect — the EBL016 firing
+    /// signal. `None` = not probed or probe passed; rule skips.
+    pub health_probe_failure: Option<&'a str>,
 }
 
 impl<'a> LintContext<'a> {
@@ -183,6 +197,8 @@ impl<'a> LintContext<'a> {
             env_tag_keys: &[],
             dlq_depth: None,
             healthy_instance_count: None,
+            xray_trace_denied: None,
+            health_probe_failure: None,
         }
     }
 
@@ -234,6 +250,22 @@ impl<'a> LintContext<'a> {
     /// Enables EBL012 (Green-but-0-instances divergence).
     pub fn with_healthy_count(mut self, healthy_instance_count: i64) -> Self {
         self.healthy_instance_count = Some(healthy_instance_count);
+        self
+    }
+
+    /// Attach the result of an `xray:PutTraceSegments` IAM
+    /// simulation against the env's instance-profile role. Enables
+    /// EBL020 (X-Ray enabled but traces silently denied).
+    pub fn with_xray_trace_denied(mut self, denied: bool) -> Self {
+        self.xray_trace_denied = Some(denied);
+        self
+    }
+
+    /// Attach a live health-check probe failure reason. Enables
+    /// EBL016 (`--probe-live`); pass only when the probe FAILED —
+    /// a passing probe leaves the field `None`.
+    pub fn with_health_probe_failure(mut self, reason: &'a str) -> Self {
+        self.health_probe_failure = Some(reason);
         self
     }
 }
@@ -1455,6 +1487,209 @@ impl Rule for ManagedActionsDisabled {
     }
 }
 
+/// EBL014 — scaling trigger driving a *scaling* ASG off the legacy
+/// default network metric. EB's out-of-the-box trigger is
+/// `aws:autoscaling:trigger` `MeasureName=NetworkOut` — a poor
+/// scaling signal for web workloads (bytes-out tracks response
+/// sizes, not load; the modern signals are CPUUtilization, ALB
+/// RequestCount, or env-health metrics). Fires only when the ASG
+/// can actually scale (MaxSize > MinSize) — on a fixed-size env
+/// the trigger is inert and warning would be noise. Fix=Manual:
+/// the right replacement metric is workload-dependent.
+///
+/// (BACKLOG framed this as "deprecated CW namespace"; EB's trigger
+/// namespace has no CW-namespace key, so the honest checkable
+/// signal is the legacy NetworkIn/NetworkOut measure itself.)
+pub struct ScalingTriggerLegacyNetworkMeasure;
+
+impl Rule for ScalingTriggerLegacyNetworkMeasure {
+    fn id(&self) -> &'static str {
+        "EBL014"
+    }
+    fn severity(&self) -> Severity {
+        Severity::Warn
+    }
+    fn fix(&self, ctx: &LintContext) -> Option<FixAction> {
+        self.applies(ctx)?;
+        Some(FixAction::Manual {
+            instructions:
+                "The env scales on the legacy default network metric. Pick a signal that tracks \
+                 your actual load: `:scaling-triggers` with MeasureName=CPUUtilization is the \
+                 common default; latency- or request-count-driven fleets should use ALB metrics \
+                 or env-health-based scaling instead. The right metric is workload-dependent, \
+                 so --fix can't choose one."
+                    .into(),
+        })
+    }
+    fn applies(&self, ctx: &LintContext) -> Option<Issue> {
+        let measure = option_value(ctx.options, "aws:autoscaling:trigger", "MeasureName");
+        if !measure.eq_ignore_ascii_case("NetworkOut") && !measure.eq_ignore_ascii_case("NetworkIn")
+        {
+            return None;
+        }
+        let min_size = parse_i32(option_value(ctx.options, "aws:autoscaling:asg", "MinSize"))?;
+        let max_size = parse_i32(option_value(ctx.options, "aws:autoscaling:asg", "MaxSize"))?;
+        if max_size <= min_size {
+            return None;
+        }
+        let mut fields = BTreeMap::new();
+        fields.insert("measure_name".into(), measure.to_string());
+        fields.insert("min_size".into(), min_size.to_string());
+        fields.insert("max_size".into(), max_size.to_string());
+        Some(Issue {
+            rule_id: self.id().into(),
+            severity: self.severity(),
+            env_name: Some(ctx.env.name.clone()),
+            title: format!("ASG scales on legacy default metric ({measure})"),
+            detail: format!(
+                "The env's scaling trigger uses `aws:autoscaling:trigger` \
+                 MeasureName={measure} — EB's legacy out-of-the-box default. Network \
+                 bytes track response sizes, not load, so the fleet scales late under \
+                 CPU-bound pressure and thrashes on payload-size changes. The ASG here \
+                 genuinely scales (MinSize={min_size}, MaxSize={max_size}), so the \
+                 trigger choice is live."
+            ),
+            suggestion: Some(
+                "Switch the trigger to CPUUtilization (`:scaling-triggers`), or move to \
+                 ALB-request-count / env-health-driven scaling."
+                    .into(),
+            ),
+            fields,
+        })
+    }
+}
+
+/// EBL020 — X-Ray daemon enabled but the instance-profile role
+/// can't write traces. `aws:elasticbeanstalk:xray` `XRayEnabled=true`
+/// starts the daemon on every instance, but without
+/// `xray:PutTraceSegments` on the instance profile the segments are
+/// silently dropped — the operator sees "X-Ray on" in config and an
+/// empty service map, with nothing in between to explain the gap.
+/// The IAM answer comes from an `iam:SimulatePrincipalPolicy` probe
+/// run by the caller (CLI-only; see `LintContext::xray_trace_denied`)
+/// — the rule itself stays pure and skips when the probe didn't run.
+pub struct XrayEnabledButTracesDenied;
+
+impl Rule for XrayEnabledButTracesDenied {
+    fn id(&self) -> &'static str {
+        "EBL020"
+    }
+    fn severity(&self) -> Severity {
+        Severity::Warn
+    }
+    fn fix(&self, ctx: &LintContext) -> Option<FixAction> {
+        self.applies(ctx)?;
+        Some(FixAction::Manual {
+            instructions:
+                "Attach X-Ray write permissions to the env's instance-profile role — the \
+                 managed policy `AWSXRayDaemonWriteAccess` is the standard grant \
+                 (xray:PutTraceSegments + PutTelemetryRecords). IAM policy attachment is \
+                 outside EB option settings, so --fix can't drive it."
+                    .into(),
+        })
+    }
+    fn applies(&self, ctx: &LintContext) -> Option<Issue> {
+        let enabled = option_value(ctx.options, "aws:elasticbeanstalk:xray", "XRayEnabled");
+        if !enabled.eq_ignore_ascii_case("true") {
+            return None;
+        }
+        // Probe not run (TUI path / probe error) or allowed → skip.
+        if ctx.xray_trace_denied != Some(true) {
+            return None;
+        }
+        let profile = option_value(
+            ctx.options,
+            "aws:autoscaling:launchconfiguration",
+            "IamInstanceProfile",
+        );
+        let mut fields = BTreeMap::new();
+        fields.insert("xray_enabled".into(), "true".into());
+        if !profile.is_empty() {
+            fields.insert("instance_profile".into(), profile.to_string());
+        }
+        Some(Issue {
+            rule_id: self.id().into(),
+            severity: self.severity(),
+            env_name: Some(ctx.env.name.clone()),
+            title: "X-Ray enabled but instance profile can't write traces".into(),
+            detail: "`XRayEnabled=true` runs the X-Ray daemon on every instance, but an IAM \
+                 simulation of `xray:PutTraceSegments` against the env's instance-profile \
+                 role came back denied — segments are being dropped silently. The service \
+                 map stays empty while the config claims tracing is on."
+                .into(),
+            suggestion: Some(
+                "Attach `AWSXRayDaemonWriteAccess` (or an equivalent xray:PutTraceSegments \
+                 grant) to the instance-profile role."
+                    .into(),
+            ),
+            fields,
+        })
+    }
+}
+
+/// EBL016 — the env's health-check URL fails a live HTTP probe.
+/// Detection input comes from the caller (CLI-only, behind
+/// `ebman lint --probe-live` — one curl HEAD per env is too slow
+/// for default lint): the same probe the Deploy confirm modal
+/// ships (`build_health_check_probe_url` + curl + 2s cap), run at
+/// lint time instead of deploy time. A failing probe on a
+/// nominally-healthy env means EB's own health checks and the
+/// operator's mental model have drifted — usually a health path
+/// that changed, a security-group hole, or an env serving 5xx
+/// that EB's ELB checks don't exercise.
+pub struct HealthCheckProbeFailing;
+
+impl Rule for HealthCheckProbeFailing {
+    fn id(&self) -> &'static str {
+        "EBL016"
+    }
+    fn severity(&self) -> Severity {
+        Severity::Warn
+    }
+    fn fix(&self, ctx: &LintContext) -> Option<FixAction> {
+        self.applies(ctx)?;
+        Some(FixAction::Manual {
+            instructions:
+                "Probe the env's health-check URL yourself (`curl -IL http://<cname><path>`) and \
+                 fix what it surfaces: wrong `Application Healthcheck URL` path, a security group \
+                 blocking public HTTP, or the app genuinely failing. Not auto-fixable — the \
+                 failure is in the running app or its network path, not in an option setting."
+                    .into(),
+        })
+    }
+    fn applies(&self, ctx: &LintContext) -> Option<Issue> {
+        let reason = ctx.health_probe_failure?;
+        // The failure reason stays out of `fields` deliberately:
+        // `issue_identity` hashes fields, and a reason that flips
+        // between runs ("timeout" vs "HTTP 503") would re-trigger the
+        // webhook change-guard and churn baselines. The reason lives
+        // in `detail`; identity is rule + env + cname.
+        let mut fields = BTreeMap::new();
+        if !ctx.env.cname.is_empty() {
+            fields.insert("cname".into(), ctx.env.cname.clone());
+        }
+        Some(Issue {
+            rule_id: self.id().into(),
+            severity: self.severity(),
+            env_name: Some(ctx.env.name.clone()),
+            title: "Live health-check probe failing".into(),
+            detail: format!(
+                "A live HTTP probe of the env's health-check URL failed: {reason}. EB's \
+                 internal health can lag or diverge from what an outside client sees — a \
+                 failing external probe on an env you believe is healthy usually means the \
+                 health path moved, a security group closed, or the app is erroring on \
+                 paths EB's ELB checks don't exercise."
+            ),
+            suggestion: Some(
+                "curl the URL from your network and fix what the response shows; re-run \
+                 `ebman lint --probe-live` to confirm."
+                    .into(),
+            ),
+            fields,
+        })
+    }
+}
+
 pub fn default_rules(disabled: &[String]) -> Vec<Box<dyn Rule>> {
     let candidates: Vec<Box<dyn Rule>> = vec![
         Box::new(AllAtOnceMultiInstance),
@@ -1470,8 +1705,11 @@ pub fn default_rules(disabled: &[String]) -> Vec<Box<dyn Rule>> {
         Box::new(WorkerDlqStuck),
         Box::new(GreenButZeroInstances),
         Box::new(LaunchConfigurationLegacy),
+        Box::new(ScalingTriggerLegacyNetworkMeasure),
+        Box::new(HealthCheckProbeFailing),
         Box::new(ManagedActionsDisabled),
         Box::new(AllAtOnceMultiAz),
+        Box::new(XrayEnabledButTracesDenied),
     ];
     candidates
         .into_iter()
@@ -2461,7 +2699,125 @@ mod tests {
         // new EBL is added. Catches both regressions (rule removed)
         // and additions-without-test-update (new rule landed; review
         // whether its applies()/fix() satisfy the invariants above).
-        assert_eq!(rules.len(), 15, "rule registry size changed");
+        assert_eq!(rules.len(), 18, "rule registry size changed");
+    }
+
+    // ── EBL016 — live health-check probe ────────────────────────────
+
+    #[test]
+    fn ebl016_fires_only_when_probe_failure_attached() {
+        let env = mk_env("prod", "Web", "Green");
+        let no_probe = ctx(&env, &[]);
+        assert!(
+            HealthCheckProbeFailing.applies(&no_probe).is_none(),
+            "no probe run → skip (default lint stays silent)"
+        );
+        let failed = ctx(&env, &[]).with_health_probe_failure("HTTP 503");
+        let issue = HealthCheckProbeFailing
+            .applies(&failed)
+            .expect("failure reason attached → fire");
+        assert_eq!(issue.rule_id, "EBL016");
+        assert!(issue.detail.contains("HTTP 503"));
+        // Volatile reason must stay OUT of fields — issue_identity
+        // hashes fields, and a flapping reason would churn baselines
+        // + the webhook change-guard.
+        assert!(!issue.fields.contains_key("probe_failure"));
+        assert!(matches!(
+            HealthCheckProbeFailing.fix(&failed),
+            Some(FixAction::Manual { .. })
+        ));
+    }
+
+    // ── EBL014 — legacy network scaling trigger ─────────────────────
+
+    #[test]
+    fn ebl014_fires_on_network_measure_when_asg_scales() {
+        let env = mk_env("prod", "Web", "Green");
+        let opts = vec![
+            mk_opt("aws:autoscaling:trigger", "MeasureName", "NetworkOut"),
+            mk_opt("aws:autoscaling:asg", "MinSize", "2"),
+            mk_opt("aws:autoscaling:asg", "MaxSize", "6"),
+        ];
+        let issue = ScalingTriggerLegacyNetworkMeasure
+            .applies(&ctx(&env, &opts))
+            .expect("should fire");
+        assert_eq!(issue.rule_id, "EBL014");
+        assert!(issue.title.contains("NetworkOut"));
+        assert_eq!(issue.fields.get("max_size").map(String::as_str), Some("6"));
+        assert!(matches!(
+            ScalingTriggerLegacyNetworkMeasure.fix(&ctx(&env, &opts)),
+            Some(FixAction::Manual { .. })
+        ));
+    }
+
+    #[test]
+    fn ebl014_skips_fixed_size_asg_and_modern_measures() {
+        let env = mk_env("prod", "Web", "Green");
+        // min == max: the trigger is inert — no warning.
+        let fixed = vec![
+            mk_opt("aws:autoscaling:trigger", "MeasureName", "NetworkOut"),
+            mk_opt("aws:autoscaling:asg", "MinSize", "3"),
+            mk_opt("aws:autoscaling:asg", "MaxSize", "3"),
+        ];
+        assert!(ScalingTriggerLegacyNetworkMeasure
+            .applies(&ctx(&env, &fixed))
+            .is_none());
+        // CPU-based trigger: the modern default — no warning.
+        let cpu = vec![
+            mk_opt("aws:autoscaling:trigger", "MeasureName", "CPUUtilization"),
+            mk_opt("aws:autoscaling:asg", "MinSize", "2"),
+            mk_opt("aws:autoscaling:asg", "MaxSize", "6"),
+        ];
+        assert!(ScalingTriggerLegacyNetworkMeasure
+            .applies(&ctx(&env, &cpu))
+            .is_none());
+        // No trigger options at all (options not loaded): skip.
+        assert!(ScalingTriggerLegacyNetworkMeasure
+            .applies(&ctx(&env, &[]))
+            .is_none());
+    }
+
+    // ── EBL020 — X-Ray enabled but traces denied ────────────────────
+
+    #[test]
+    fn ebl020_fires_only_when_probe_says_denied() {
+        let env = mk_env("prod", "Web", "Green");
+        let opts = vec![
+            mk_opt("aws:elasticbeanstalk:xray", "XRayEnabled", "true"),
+            mk_opt(
+                "aws:autoscaling:launchconfiguration",
+                "IamInstanceProfile",
+                "aws-elasticbeanstalk-ec2-role",
+            ),
+        ];
+        let denied = ctx(&env, &opts).with_xray_trace_denied(true);
+        let issue = XrayEnabledButTracesDenied
+            .applies(&denied)
+            .expect("should fire when probe says denied");
+        assert_eq!(issue.rule_id, "EBL020");
+        assert_eq!(
+            issue.fields.get("instance_profile").map(String::as_str),
+            Some("aws-elasticbeanstalk-ec2-role")
+        );
+        assert!(matches!(
+            XrayEnabledButTracesDenied.fix(&denied),
+            Some(FixAction::Manual { .. })
+        ));
+        // Probe says allowed → no issue.
+        let allowed = ctx(&env, &opts).with_xray_trace_denied(false);
+        assert!(XrayEnabledButTracesDenied.applies(&allowed).is_none());
+        // Probe didn't run (TUI path) → skip, never false-positive.
+        assert!(XrayEnabledButTracesDenied
+            .applies(&ctx(&env, &opts))
+            .is_none());
+    }
+
+    #[test]
+    fn ebl020_skips_when_xray_disabled_even_if_probe_denied() {
+        let env = mk_env("prod", "Web", "Green");
+        let opts = vec![mk_opt("aws:elasticbeanstalk:xray", "XRayEnabled", "false")];
+        let c = ctx(&env, &opts).with_xray_trace_denied(true);
+        assert!(XrayEnabledButTracesDenied.applies(&c).is_none());
     }
 
     #[test]

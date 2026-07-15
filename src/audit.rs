@@ -699,7 +699,10 @@ fn write_audit_line_raw(tail: &str) {
 /// a slow webhook can't accumulate hung requests. The caller must be
 /// inside a tokio runtime — guarded below with `Handle::try_current`
 /// so a non-runtime call path silently no-ops rather than panicking.
-fn fire_webhook(
+/// `pub(crate)` so `ebman lint --watch --webhook URL` can post its
+/// per-cycle findings through the same body shape + client settings
+/// as the audit-line fan-out.
+pub(crate) fn fire_webhook(
     url: &str,
     account: Option<&str>,
     profile: Option<&str>,
@@ -713,6 +716,12 @@ fn fire_webhook(
         return;
     }
     tokio::spawn(async move {
+        // In the TUI, failures go to tracing only (stderr would tear
+        // the alternate screen). CLI subcommands may print — the ones
+        // that take an operator-supplied webhook opt in via
+        // `webhook_errors_to_stderr()` so a broken URL isn't silently
+        // swallowed forever (CLI runs install no tracing subscriber).
+        let to_stderr = WEBHOOK_ERRORS_TO_STDERR.load(std::sync::atomic::Ordering::Relaxed);
         let client = match reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
             .build()
@@ -725,6 +734,9 @@ fn fire_webhook(
                     error = %e,
                     "audit webhook: could not build reqwest client"
                 );
+                if to_stderr {
+                    eprintln!("warning: webhook client build failed: {e}");
+                }
                 return;
             }
         };
@@ -743,6 +755,9 @@ fn fire_webhook(
                     status = %resp.status(),
                     "audit webhook returned non-success status"
                 );
+                if to_stderr {
+                    eprintln!("warning: webhook POST returned {}", resp.status());
+                }
             }
             Err(e) => {
                 tracing::warn!(
@@ -751,9 +766,22 @@ fn fire_webhook(
                     error = %e,
                     "audit webhook request failed"
                 );
+                if to_stderr {
+                    eprintln!("warning: webhook POST failed: {e}");
+                }
             }
         }
     });
+}
+
+/// See the comment in [`fire_webhook`]: CLI paths that take an
+/// operator-supplied webhook URL flip this so delivery failures reach
+/// stderr. Never set from TUI code.
+static WEBHOOK_ERRORS_TO_STDERR: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn webhook_errors_to_stderr() {
+    WEBHOOK_ERRORS_TO_STDERR.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// If `path` exists and is larger than `max_bytes`, move it to

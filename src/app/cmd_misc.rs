@@ -293,6 +293,118 @@ impl App {
         }
     }
 
+    /// `:incident START "headline"` / `:incident END` — composite
+    /// incident-mode gesture over existing machinery. START freezes
+    /// deploys (the same session-scoped fleet-wide write-lock as
+    /// `:freeze-deploys`, reason = the headline), pins a header
+    /// banner, and writes an `IncidentStart` audit line. END thaws,
+    /// clears the banner, and writes an `IncidentEnd` line carrying
+    /// the duration. Re-issuing START mid-incident replaces the
+    /// headline in place (same shape as freeze re-issue).
+    ///
+    /// Deliberately minimal for now: no auto-`:why`, no auto
+    /// logs-tail — those can grow onto START if the composite earns
+    /// use (BACKLOG 0.25 design note).
+    pub(crate) fn cmd_incident(&mut self, rest: &[&str]) {
+        match parse_incident_args(rest) {
+            Err(msg) => self.error_message = Some(msg),
+            Ok(IncidentCmd::Start(headline)) => {
+                let was_active = self.incident.is_some();
+                let now = chrono::Utc::now();
+                // Keep the original start time on a headline update —
+                // the incident began when it began.
+                let started_at = self.incident.as_ref().map(|i| i.started_at).unwrap_or(now);
+                self.incident = Some(crate::app::Incident {
+                    headline: headline.clone(),
+                    started_at,
+                });
+                // Freeze rides along; reason mirrors the headline so
+                // refusal toasts explain themselves. Preserve an
+                // earlier freeze's timestamp if one was already on.
+                let frozen_at = self
+                    .deploy_freeze
+                    .as_ref()
+                    .map(|f| f.frozen_at)
+                    .unwrap_or(now);
+                self.deploy_freeze = Some(crate::app::DeployFreeze {
+                    reason: if headline.is_empty() {
+                        "incident".to_string()
+                    } else {
+                        format!("incident: {headline}")
+                    },
+                    frozen_at,
+                });
+                let audit_headline = if headline.is_empty() {
+                    "no-headline".to_string()
+                } else {
+                    headline.clone()
+                };
+                crate::audit::append_action_dispatched(
+                    self.context.account_id.as_deref(),
+                    self.context.profile.as_deref(),
+                    &self.context.region,
+                    "IncidentStart",
+                    "",
+                    &[("headline", audit_headline.as_str())],
+                );
+                let verb = if was_active { "updated" } else { "started" };
+                self.pin_status(if headline.is_empty() {
+                    format!("incident {verb} — deploys frozen; :incident END to close")
+                } else {
+                    format!("incident {verb}: {headline} — deploys frozen; :incident END to close")
+                });
+            }
+            Ok(IncidentCmd::End) => {
+                let Some(incident) = self.incident.take() else {
+                    self.error_message = Some(
+                        "no active incident — start one with :incident START \"headline\"".into(),
+                    );
+                    return;
+                };
+                // END is the all-clear: thaw unconditionally, even if
+                // the freeze predated the incident (the operator is
+                // declaring the fleet safe to write again). A
+                // mid-incident `:thaw-deploys` (the "deploy the
+                // hotfix" escape hatch) may have already lifted it —
+                // the summary reflects which happened.
+                let was_frozen = self.deploy_freeze.take().is_some();
+                let elapsed = (chrono::Utc::now() - incident.started_at)
+                    .to_std()
+                    .unwrap_or_default();
+                let duration = crate::app::humanize_short_age(elapsed);
+                let audit_headline = if incident.headline.is_empty() {
+                    "no-headline".to_string()
+                } else {
+                    incident.headline.clone()
+                };
+                crate::audit::append_action_dispatched(
+                    self.context.account_id.as_deref(),
+                    self.context.profile.as_deref(),
+                    &self.context.region,
+                    "IncidentEnd",
+                    "",
+                    &[
+                        ("headline", audit_headline.as_str()),
+                        ("duration", duration.as_str()),
+                    ],
+                );
+                let thaw_note = if was_frozen {
+                    "deploys re-enabled"
+                } else {
+                    "deploys were already thawed"
+                };
+                self.pin_status(if incident.headline.is_empty() {
+                    format!("incident closed after {duration} — {thaw_note}")
+                } else {
+                    format!(
+                        "incident closed after {duration}: {} — {thaw_note}",
+                        incident.headline
+                    )
+                });
+            }
+        }
+    }
+
     /// `:undo` — reverse the most-recent option-settings write
     /// captured in `undo_history`. Pops the back of the deque and
     /// re-dispatches via `spawn_option_settings_update`, which
@@ -776,5 +888,43 @@ impl App {
                 ));
             }
         }
+    }
+}
+
+/// Parsed `:incident` subcommand.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum IncidentCmd {
+    /// Headline may be empty ("" — allowed, same as a reasonless
+    /// freeze). Surrounding quotes are stripped: `execute_command`
+    /// splits on whitespace with no shell-style tokenizer, so a
+    /// quoted headline arrives as multiple quote-carrying tokens
+    /// (same reconstruction pattern as `:ssm-run`).
+    Start(String),
+    End,
+}
+
+/// Pure parser for `:incident START "headline" | END`. The
+/// subcommand is case-insensitive; anything else is a usage error.
+pub(crate) fn parse_incident_args(rest: &[&str]) -> Result<IncidentCmd, String> {
+    const USAGE: &str = "usage: :incident START \"headline\"  |  :incident END";
+    let Some(sub) = rest.first() else {
+        return Err(USAGE.into());
+    };
+    match sub.to_ascii_lowercase().as_str() {
+        "start" => {
+            let headline = rest[1..]
+                .join(" ")
+                .trim()
+                .trim_matches(|c| c == '"' || c == '\'')
+                .to_string();
+            Ok(IncidentCmd::Start(headline))
+        }
+        "end" | "stop" | "close" => {
+            if rest.len() > 1 {
+                return Err(format!("{USAGE}  (END takes no arguments)"));
+            }
+            Ok(IncidentCmd::End)
+        }
+        other => Err(format!("unknown :incident subcommand '{other}' — {USAGE}")),
     }
 }
