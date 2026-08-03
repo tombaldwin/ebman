@@ -877,6 +877,37 @@ ebman mcp serve                        → server mode (future: MCP for Claude C
 
 **Future-proofing test passed:** LLM explainer (`ebman explain`), MCP server (`ebman mcp serve`), cron-driven monitoring (`ebman lint --watch`), git pre-commit hooks (`ebman drift`), GitHub Actions integration (`ebman action deploy`), audit-stream consumption (`ebman audit --tail --json | jq`) all fit without restructuring.
 
+### 0.26 candidates (2026-08-03)
+
+#### MCP server (`ebman mcp serve`) — HEADLINE (spec locked 2026-08-03)
+
+Deferred 5× on "no operator demand"; demand surfaced 2026-08-03 (an agent session driving a fleet upgrade + release would have used it directly instead of shelling out and re-parsing). The charter already reserves the namespace; this locks the shape so the build session doesn't re-litigate it.
+
+**What it is.** A standalone stdio MCP server exposing ebman's *read* seams as MCP tools, so Claude Code (and any MCP client) can query fleet state first-class. It is NOT a bridge to a running TUI — it constructs its own `AwsClient` per call exactly like the CLI subcommands do (`ebman ctl` remains the drive-a-running-TUI surface; a `ctl` bridge tool can come later if wanted).
+
+**Transport + protocol.** JSON-RPC 2.0 over stdio (newline-delimited), the standard Claude Code MCP shape (`claude mcp add ebman -- ebman mcp serve`). Tools-only server: implement `initialize`, `tools/list`, `tools/call`, `ping`, and the `notifications/initialized` no-op — five methods, small enough to hand-roll. **Dependency decision:** add `serde_json` (serde+derive already in tree; incoming JSON-RPC must be *parsed*, which `util::json_string` can't do) and hand-roll the protocol loop in house style — do NOT take the `rmcp` SDK (pulls schemars + tokio-util machinery for five methods; version drift risk for a protocol this small).
+
+**Tool surface (v1 — reads only, mirrors the CLI charter's flat read verbs).** Every tool takes optional `profile` / `region` (→ `AwsClient::with`, same as CLI); results are the existing `--json` shapes verbatim so consumers and docs stay aligned:
+- `list_environments` — envs with health/status/version/cname (seam: `ebman envs --json` path).
+- `lint` — rule-engine findings; params `env?`, `severity?`, `rules?` (seam: `cli/lint.rs` context assembly — extract the per-env builder first per the 0.26 refactor list, then both callers share it). No `--probe-live` in v1 (network side-effects from an agent tool need their own think).
+- `drift` — terraform drift report; params `env?`, `tfstate_path?`.
+- `audit_log` — parsed audit entries; params `since?`, `env?`, `action?`, `limit?` (seam: `audit::parse_audit_line` + `AuditFilter`).
+- `recent_events` — fleet or per-env EB events; params `env?`, `max?` (seam: `list_events` / `list_events_for_env`).
+- `list_versions` — application versions for an env's app (seam: `cli/versions.rs`).
+- `fleet_cost` — cached Cost Explorer summary; reads the `cost-{account}-{region}.toml` cache only, never triggers a fetch (agents polling Cost Explorer is a bill, not a feature).
+- Excluded from v1: `explain` (the MCP client IS an LLM — hand it `lint` output instead), all writes.
+
+**Writes (v2, explicitly out of v1 scope).** If/when wanted: `action_deploy` / `action_restart` / `action_rebuild` behind a server-start flag (`ebman mcp serve --allow-writes`), never terminate. Safety pins + freeze enforced via the `Config::pin_reason` helper (0.26 refactor list — build it first), `--demo` refused, and every dispatch audit-logged with a `source=mcp` extra so the trail distinguishes agent writes from operator writes. The v1/v2 split is deliberate: read-only ships without any new safety surface to review.
+
+**Safety posture (v1).** Reads only; no credentials handling beyond what the CLI already does; honours `AWS_PROFILE`; no state mutation, no audit lines written (reads never audit — matches `ebman envs`/`ebman audit` doing no `init_from_config_disk`). Redaction: `list_environments` respects nothing extra in v1 (CNAMEs/ARNs are already in `envs --json`); note in docs that an MCP client sees whatever the CLI JSON shows.
+
+**Structure.** `src/cli/mcp.rs` (dispatch arm `"mcp"` in main.rs matching the charter's `ebman mcp serve`), pure `parse_mcp_args` (only `serve` sub-verb in v1, exit 2 otherwise), a `handle_rpc(request: Value) -> Option<Value>` pure-ish core that's unit-testable with synthetic JSON-RPC frames (tool dispatch itself needs the async AwsClient — test the protocol layer with a mocked tool table, same seam style as the CLI arg parsers). Tool schemas as static JSON (hand-written, pinned by a test that they parse).
+
+**Docs + estimate.** `docs/headless.md` gains an MCP section with the `claude mcp add` line + tool table; `docs/commands.md` CLI section; main.rs `--help`. Estimate: protocol loop + 7 read tools + tests + docs ≈ one focused session (~4–6h). Depends on: nothing hard; pairs well with the `cli/lint.rs run()` decomposition from the 0.25 refactor list (shared per-env context builder).
+
+#### Also queued for 0.26
+- The five refactor candidates from the 0.25 pre-tag review (see "Refactor candidates for 0.26" in the 0.25 section below) — `TailView` extraction, `Config::pin_reason`, `cli/lint.rs run()` decomposition (a soft prerequisite for the MCP `lint` tool), replay module split, LintContext probe-fields note.
+
 ### 0.25 candidates (2026-07-15)
 
 Theme: **incident operations.** The three biggest pending items on the shelf all serve the same operator moment — something's on fire across the fleet — and they compose with machinery that already exists (freeze, runbooks, audit, `:logs-tail`). Verified against the code before listing: EBL014/015/016/018/020 are absent from `src/lint.rs`, no replay path exists in `src/cli/`, and the stale checkboxes from earlier candidate lists (lint input caching → 0.21, `:diff --ignore-keys` → 0.23, ARM64 tarball → 0.23) were fixed in this same pass.
@@ -1110,7 +1141,7 @@ Theme: **make the stubs live + lint adoption ergonomics.** 0.16 shipped EBL007-0
 - **24 remaining dispatched-only `append_raw` sites** — Migrate to `audit::append_action_dispatched`. Gets webhook fan-out for every destructive dispatch. Mechanical; ~2hrs. Hold for 0.18.
 - **CLI subcommand unit tests** — 0 tests across `src/cli/*.rs`. Real coverage gap. Hold for 0.18 as a dedicated test-coverage release.
 - **`:explain` IAM split** — `:why iam` / `:why role` for IAM AccessDenied path, leaving `:explain` for lint. UX win but disambiguation needs operator input. Hold pending feedback.
-- **MCP server (`ebman mcp serve`)** — Now deferred 5×. Stop tracking unless external demand surfaces.
+- **MCP server (`ebman mcp serve`)** — ~~Now deferred 5×. Stop tracking unless external demand surfaces.~~ Demand surfaced 2026-08-03; spec locked as the 0.26 HEADLINE (see "0.26 candidates" section).
 - **`:queue` action-queue inspector** — Held; abort semantics still unsolved.
 - **`ebman explain --env NAME` cross-issue synthesis** — Useful but bigger prompt-engineering surface. Re-evaluate post-0.17 once new rules land.
 
