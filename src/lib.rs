@@ -32,6 +32,7 @@ pub mod terraform;
 pub use tui_common::font_probe;
 pub use tui_common::overlay;
 pub mod demo_fixture;
+pub mod freeze;
 pub mod mode_action;
 pub mod mode_detail;
 pub mod mode_dlq;

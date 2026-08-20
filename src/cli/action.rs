@@ -159,6 +159,7 @@ pub async fn run(args: &[String]) -> Result<()> {
     };
     let action_name = action_name.as_str();
     refuse_if_pinned(&env);
+    crate::cli::refuse_if_frozen("ebman action");
     let aws = aws::AwsClient::with(None, None).await?;
 
     if action_name == "deploy" {
@@ -607,6 +608,7 @@ async fn run_rollout(args: &[String]) -> Result<()> {
     // Same pin gate as the single-env verbs — a rollout is a deploy
     // fan-out of one env name across regions.
     refuse_if_pinned(&env);
+    crate::cli::refuse_if_frozen("ebman action rollout");
     let wait_for_green_secs = match wait_for_green.as_deref() {
         Some(s) => match aws::parse_window_ms(s) {
             Some(ms) => Some((ms / 1000) as u64),
