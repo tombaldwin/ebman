@@ -89,7 +89,13 @@ pub fn parse(text: &str) -> CostCache {
                 continue;
             }
             if let Ok(amount) = value.parse::<f64>() {
-                out.costs.insert(env_name.to_string(), amount);
+                // `parse::<f64>` accepts "NaN"/"inf" — a hand-edited
+                // or corrupted cache would otherwise break the JSON
+                // the MCP fleet_cost tool renders ({:.2} of NaN is a
+                // bare `NaN` token) and poison sort comparators.
+                if amount.is_finite() {
+                    out.costs.insert(env_name.to_string(), amount);
+                }
             }
         }
     }

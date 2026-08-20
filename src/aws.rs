@@ -852,36 +852,44 @@ impl AwsClient {
     ) -> Result<WorkerQueues> {
         let mut main_url: Option<String> = None;
         let mut dlq_url: Option<String> = None;
+        // Errors must stay distinguishable from "this env has no
+        // queues": the pre-0.27 shape swallowed every failure into
+        // an empty result, so an AccessDenied rendered as "no worker
+        // queues" and silently blinded DLQ red-alerting.
+        let mut discovery_err: Option<String> = None;
 
         // Primary path: ask EB for the env's resources. Includes the URLs of
         // the queues EB created automatically when WorkerQueueURL is empty.
-        if let Ok(resp) = self
+        match self
             .client
             .describe_environment_resources()
             .environment_name(env_name)
             .send()
             .await
         {
-            if let Some(res) = resp.environment_resources {
-                for q in res.queues.unwrap_or_default() {
-                    let name = q.name.unwrap_or_default();
-                    let url = q.url.unwrap_or_default();
-                    if url.is_empty() {
-                        continue;
-                    }
-                    match name.as_str() {
-                        "WorkerQueue" => main_url = Some(url),
-                        "WorkerDeadLetterQueue" => dlq_url = Some(url),
-                        _ => {}
+            Ok(resp) => {
+                if let Some(res) = resp.environment_resources {
+                    for q in res.queues.unwrap_or_default() {
+                        let name = q.name.unwrap_or_default();
+                        let url = q.url.unwrap_or_default();
+                        if url.is_empty() {
+                            continue;
+                        }
+                        match name.as_str() {
+                            "WorkerQueue" => main_url = Some(url),
+                            "WorkerDeadLetterQueue" => dlq_url = Some(url),
+                            _ => {}
+                        }
                     }
                 }
             }
+            Err(e) => discovery_err = Some(format!("DescribeEnvironmentResources: {e}")),
         }
 
         // Fallback / override: look at user-supplied option settings in case
         // the env explicitly points at a queue the user manages outside EB.
         if main_url.is_none() || dlq_url.is_none() {
-            if let Ok(resp) = self
+            match self
                 .client
                 .describe_configuration_settings()
                 .application_name(application_name)
@@ -889,27 +897,39 @@ impl AwsClient {
                 .send()
                 .await
             {
-                for setting in resp.configuration_settings.unwrap_or_default() {
-                    for opt in setting.option_settings.unwrap_or_default() {
-                        let ns = opt.namespace.unwrap_or_default();
-                        let name = opt.option_name.unwrap_or_default();
-                        if ns != "aws:elasticbeanstalk:sqsd" {
-                            continue;
-                        }
-                        match name.as_str() {
-                            "WorkerQueueURL" => {
-                                let v = opt.value.unwrap_or_default();
-                                if !v.is_empty() && main_url.is_none() {
-                                    main_url = Some(v);
-                                }
+                Err(e) => {
+                    // Both discovery paths failed → the caller must
+                    // see an error, never an empty "no queues".
+                    if discovery_err.is_some() && main_url.is_none() {
+                        return Err(eyre!(
+                            "{} + DescribeConfigurationSettings: {e}",
+                            discovery_err.unwrap_or_default()
+                        ));
+                    }
+                }
+                Ok(resp) => {
+                    for setting in resp.configuration_settings.unwrap_or_default() {
+                        for opt in setting.option_settings.unwrap_or_default() {
+                            let ns = opt.namespace.unwrap_or_default();
+                            let name = opt.option_name.unwrap_or_default();
+                            if ns != "aws:elasticbeanstalk:sqsd" {
+                                continue;
                             }
-                            "DeadLetterQueueURL" => {
-                                let v = opt.value.unwrap_or_default();
-                                if !v.is_empty() && dlq_url.is_none() {
-                                    dlq_url = Some(v);
+                            match name.as_str() {
+                                "WorkerQueueURL" => {
+                                    let v = opt.value.unwrap_or_default();
+                                    if !v.is_empty() && main_url.is_none() {
+                                        main_url = Some(v);
+                                    }
                                 }
+                                "DeadLetterQueueURL" => {
+                                    let v = opt.value.unwrap_or_default();
+                                    if !v.is_empty() && dlq_url.is_none() {
+                                        dlq_url = Some(v);
+                                    }
+                                }
+                                _ => {}
                             }
-                            _ => {}
                         }
                     }
                 }
@@ -1101,46 +1121,60 @@ impl AwsClient {
             .r#type(GroupDefinitionType::Tag)
             .key("elasticbeanstalk:environment-name")
             .build();
-        let resp = self
-            .cost
-            .get_cost_and_usage()
-            .time_period(time_period)
-            .granularity(aws_sdk_costexplorer::types::Granularity::Monthly)
-            .metrics("UnblendedCost")
-            .group_by(group_by)
-            .send()
-            .await
-            .wrap_err("GetCostAndUsage failed")?;
-
         // Result format: results_by_time[N].groups[].keys[0] is the
         // tag value (prefixed with `elasticbeanstalk:environment-name$`
         // — the Cost Explorer SDK encodes the tag key in the group
         // key, separated by `$`). Strip the prefix to recover the env
         // name. Sum across the time buckets in case the window spans
-        // multiple months.
+        // multiple months. Pages through NextPageToken — the pre-0.27
+        // single-call shape silently truncated large grouped results,
+        // and the partial map was then cached for 24h (missing envs
+        // indistinguishable from untagged ones).
         let mut totals: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
-        for period in resp.results_by_time.unwrap_or_default() {
-            for group in period.groups.unwrap_or_default() {
-                let raw_key = match group.keys.as_ref().and_then(|k| k.first()) {
-                    Some(k) => k.clone(),
-                    None => continue,
-                };
-                // Cost Explorer encodes a tag group key as
-                // `elasticbeanstalk:environment-name$<value>`. The
-                // empty-tag bucket (resources untagged) shows up as
-                // the bare prefix — skip it.
-                let env_name = match raw_key.split_once('$') {
-                    Some((_, v)) if !v.is_empty() => v.to_string(),
-                    _ => continue,
-                };
-                let amount: f64 = group
-                    .metrics
-                    .as_ref()
-                    .and_then(|m| m.get("UnblendedCost"))
-                    .and_then(|m| m.amount.as_deref())
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(0.0);
-                *totals.entry(env_name).or_insert(0.0) += amount;
+        let mut next_page: Option<String> = None;
+        loop {
+            let mut req = self
+                .cost
+                .get_cost_and_usage()
+                .time_period(time_period.clone())
+                .granularity(aws_sdk_costexplorer::types::Granularity::Monthly)
+                .metrics("UnblendedCost")
+                .group_by(group_by.clone());
+            if let Some(t) = next_page.take() {
+                req = req.next_page_token(t);
+            }
+            let resp = req.send().await.wrap_err("GetCostAndUsage failed")?;
+            for period in resp.results_by_time.unwrap_or_default() {
+                for group in period.groups.unwrap_or_default() {
+                    let raw_key = match group.keys.as_ref().and_then(|k| k.first()) {
+                        Some(k) => k.clone(),
+                        None => continue,
+                    };
+                    // Cost Explorer encodes a tag group key as
+                    // `elasticbeanstalk:environment-name$<value>`. The
+                    // empty-tag bucket (resources untagged) shows up as
+                    // the bare prefix — skip it.
+                    let env_name = match raw_key.split_once('$') {
+                        Some((_, v)) if !v.is_empty() => v.to_string(),
+                        _ => continue,
+                    };
+                    let amount: f64 = group
+                        .metrics
+                        .as_ref()
+                        .and_then(|m| m.get("UnblendedCost"))
+                        .and_then(|m| m.amount.as_deref())
+                        .and_then(|s| s.parse().ok())
+                        // Non-finite amounts (a corrupted response
+                        // would otherwise poison the sum, the sort
+                        // comparator, and the serialized cache).
+                        .filter(|a: &f64| a.is_finite())
+                        .unwrap_or(0.0);
+                    *totals.entry(env_name).or_insert(0.0) += amount;
+                }
+            }
+            match resp.next_page_token {
+                Some(t) if !t.is_empty() => next_page = Some(t),
+                _ => break,
             }
         }
         let mut out: Vec<EnvCost> = totals
@@ -1959,32 +1993,65 @@ impl AwsClient {
         since_ms: i64,
         limit: i32,
     ) -> Result<(Vec<LogEvent>, i64)> {
-        let resp = self
-            .cw_logs
-            .filter_log_events()
-            .log_group_name(log_group)
-            .start_time(since_ms)
-            .limit(limit)
-            .send()
-            .await
-            .wrap_err("FilterLogEvents failed")?;
+        // Follow `next_token` up to a page cap: FilterLogEvents
+        // truncates at `limit` OR its 1MB response cap and hands back
+        // a token. The pre-0.27 single-page shape advanced the
+        // watermark past events it never received — during a traffic
+        // spike (the exact moment an operator is watching the tail),
+        // lines silently vanished with no gap indicator. The cap
+        // bounds one poll's work; anything beyond it is picked up by
+        // the next poll because the watermark only advances past
+        // RETURNED events.
+        const MAX_PAGES_PER_POLL: usize = 5;
         let mut out: Vec<LogEvent> = Vec::new();
         let mut max_ts = since_ms;
-        for e in resp.events.unwrap_or_default() {
-            let ts = e.timestamp.unwrap_or(since_ms);
-            if ts > max_ts {
-                max_ts = ts;
+        let mut next_token: Option<String> = None;
+        let mut truncated = false;
+        for _page in 0..MAX_PAGES_PER_POLL {
+            let mut req = self
+                .cw_logs
+                .filter_log_events()
+                .log_group_name(log_group)
+                .start_time(since_ms)
+                .limit(limit);
+            if let Some(t) = next_token.take() {
+                req = req.next_token(t);
             }
-            out.push(LogEvent {
-                timestamp_ms: ts,
-                stream: e.log_stream_name.unwrap_or_default(),
-                message: e.message.unwrap_or_default(),
-            });
+            let resp = req.send().await.wrap_err("FilterLogEvents failed")?;
+            for e in resp.events.unwrap_or_default() {
+                let ts = e.timestamp.unwrap_or(since_ms);
+                if ts > max_ts {
+                    max_ts = ts;
+                }
+                out.push(LogEvent {
+                    timestamp_ms: ts,
+                    stream: e.log_stream_name.unwrap_or_default(),
+                    message: e.message.unwrap_or_default(),
+                });
+            }
+            match resp.next_token {
+                Some(t) if !t.is_empty() => {
+                    next_token = Some(t);
+                    truncated = true;
+                }
+                _ => {
+                    truncated = false;
+                    break;
+                }
+            }
         }
-        // Move the cursor past the last event we saw so the next poll
-        // doesn't return it again.
+        // Move the cursor past the newest event we RECEIVED so the
+        // next poll doesn't return it again. If the page cap left a
+        // token unfollowed, do NOT skip past `max_ts` — same-ms events
+        // in unfetched pages would be lost; the next poll re-fetches
+        // from `max_ts` and the (rare) duplicates are bounded to one
+        // millisecond of events.
         let next_since = if max_ts > since_ms {
-            max_ts + 1
+            if truncated {
+                max_ts
+            } else {
+                max_ts + 1
+            }
         } else {
             since_ms
         };
@@ -4431,6 +4498,21 @@ mod tests {
         )
     }
 
+    fn client_with_cw_logs(cw_logs: CwLogsClient) -> AwsClient {
+        let cfg = aws_config::SdkConfig::builder()
+            .region(Region::new("us-east-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        AwsClient::for_tests(
+            Client::new(&cfg),
+            SqsClient::new(&cfg),
+            CwClient::new(&cfg),
+            cw_logs,
+            S3Client::new(&cfg),
+            Ec2Client::new(&cfg),
+        )
+    }
+
     fn client_with_cw(cw: CwClient) -> AwsClient {
         let cfg = aws_config::SdkConfig::builder()
             .region(Region::new("us-east-1"))
@@ -4951,6 +5033,59 @@ mod tests {
         );
         assert_eq!(page1.num_calls(), 1, "first page fetched once");
         assert_eq!(page2.num_calls(), 1, "second page fetched once");
+    }
+
+    #[tokio::test]
+    async fn log_tail_fetch_follows_next_token_without_skipping_events() {
+        // 0.27 fix: a truncated FilterLogEvents page used to advance
+        // the watermark past events it never received — silent line
+        // drops during traffic spikes.
+        use aws_sdk_cloudwatchlogs::operation::filter_log_events::FilterLogEventsOutput;
+        use aws_sdk_cloudwatchlogs::types::FilteredLogEvent;
+
+        let mk = |ts: i64, msg: &str| {
+            FilteredLogEvent::builder()
+                .timestamp(ts)
+                .log_stream_name("i-abc")
+                .message(msg)
+                .build()
+        };
+        let page1 = aws_smithy_mocks::mock!(CwLogsClient::filter_log_events)
+            .match_requests(|req| req.next_token().is_none())
+            .then_output(move || {
+                FilterLogEventsOutput::builder()
+                    .events(mk(1_000, "a"))
+                    .events(mk(1_005, "b"))
+                    .next_token("PAGE_2")
+                    .build()
+            });
+        let page2 = aws_smithy_mocks::mock!(CwLogsClient::filter_log_events)
+            .match_requests(|req| req.next_token() == Some("PAGE_2"))
+            .then_output(move || {
+                FilterLogEventsOutput::builder()
+                    .events(mk(1_005, "c"))
+                    .events(mk(1_010, "d"))
+                    .build()
+            });
+        let cw_logs = aws_smithy_mocks::mock_client!(aws_sdk_cloudwatchlogs, [&page1, &page2]);
+        let client = client_with_cw_logs(cw_logs);
+
+        let (events, next_since) = client
+            .fetch_recent_log_events("/aws/eb/env", 500, 1000)
+            .await
+            .expect("ok");
+        let msgs: Vec<&str> = events.iter().map(|e| e.message.as_str()).collect();
+        assert_eq!(
+            msgs,
+            vec!["a", "b", "c", "d"],
+            "both pages' events delivered — none skipped"
+        );
+        assert_eq!(
+            next_since, 1_011,
+            "watermark advances past the newest RECEIVED event"
+        );
+        assert_eq!(page1.num_calls(), 1);
+        assert_eq!(page2.num_calls(), 1);
     }
 
     // ── MultiSelect picker plumbing ─────────────────────────────────────

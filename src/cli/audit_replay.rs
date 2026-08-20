@@ -334,6 +334,7 @@ pub(crate) async fn run_replay(args: &[String]) -> Result<()> {
                 plan.env,
                 entry.when
             );
+            crate::cli::drain_before_return().await;
             Ok(())
         }
         Err(e) => {
@@ -348,7 +349,7 @@ pub(crate) async fn run_replay(args: &[String]) -> Result<()> {
                 &extras,
             );
             eprintln!("err: {err_text}");
-            std::process::exit(1);
+            crate::cli::exit_after_drain(1).await;
         }
     }
 }

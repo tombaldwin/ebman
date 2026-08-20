@@ -1115,6 +1115,10 @@ pub async fn run(args: &[String]) -> Result<()> {
         }
     }
 
+    // Drain in-flight webhook POSTs (lint --fix audit fan-out and
+    // --watch --webhook cycle posts) before the process ends —
+    // fire-and-forget tasks are cancelled at runtime drop.
+    audit::drain_webhooks(std::time::Duration::from_secs(12)).await;
     if fix {
         if FIX_DISPATCH_FAILED.load(std::sync::atomic::Ordering::Relaxed) || last_cycle_degraded {
             std::process::exit(1);

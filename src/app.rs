@@ -1050,6 +1050,12 @@ pub struct App {
     /// render's `⚠ DLQ:N` chip on Worker rows. Missing entry = "not
     /// checked yet" (don't fire an alert on cold state).
     pub worker_dlq_depths: std::collections::HashMap<String, i64>,
+    /// Monotonic counter of context-switch spawns (`:region`,
+    /// `:profile`, `:account`). Stamped into `AppMsg::Rebuild` so a
+    /// slow older switch losing the race to a newer one is dropped in
+    /// `apply_rebuild` instead of overwriting the operator's last
+    /// choice. Distinct from `generation`, which bumps on APPLY.
+    pub(crate) rebuild_epoch: u64,
     /// Lazy cache for `spawn_confirm_lint`'s parallel tag fetch.
     /// Populated opportunistically by every lint call site that fires
     /// the inline `list_tags(env.arn)` fetch. TTL is `LINT_INPUT_CACHE_TTL`
@@ -1340,7 +1346,11 @@ enum AppMsg {
     /// all of them. Feeds into the Red-alert calc + the table render.
     WorkerQueueCheck {
         gen: u64,
-        results: Vec<(String, i64)>,
+        /// Per-env outcome: `Ok(Some(depth))` = DLQ depth fetched,
+        /// `Ok(None)` = env genuinely has no DLQ, `Err(msg)` = fetch
+        /// failed — the handler keeps the previous depth so an
+        /// AccessDenied/throttle can't silently clear an alert.
+        results: Vec<(String, Result<Option<i64>, String>)>,
     },
     /// Per-env `(healthy, total)` instance counts, fanned out after
     /// `Refresh` lands via `spawn_env_instance_counts`. Failed envs are
@@ -1349,7 +1359,14 @@ enum AppMsg {
         gen: u64,
         results: Vec<(String, crate::aws::EnvInstanceCounts)>,
     },
-    Rebuild(Result<Box<AwsClient>, String>),
+    Rebuild {
+        /// Monotonic rebuild epoch captured at spawn. `apply_rebuild`
+        /// drops arrivals whose epoch is stale — without it, a slow
+        /// switch (SSO refresh) losing the race to a fast one left the
+        /// app settled on the FIRST choice, not the last.
+        epoch: u64,
+        result: Result<Box<AwsClient>, String>,
+    },
     Identity {
         gen: u64,
         result: Result<Identity, String>,
@@ -1485,10 +1502,7 @@ enum AppMsg {
     },
     /// Sent once at the start of an `:event-tail` session — installs the
     /// `Overlay::EventTail` (empty; the first poll fills it).
-    EventTailOpened {
-        gen: u64,
-        session_id: u64,
-    },
+    EventTailOpened { gen: u64, session_id: u64 },
     /// New fleet events pushed by the `:event-tail` polling task, oldest
     /// first. Same session-id drop rule as `LogTailEvents`.
     EventTailEvents {
@@ -1629,10 +1643,7 @@ enum AppMsg {
     /// `:undo` capture — emitted from the option-settings update
     /// spawn after a successful write, carrying the reverse-action
     /// so `App.undo_history` can push it for later `:undo`.
-    UndoCaptured {
-        gen: u64,
-        entry: UndoEntry,
-    },
+    UndoCaptured { gen: u64, entry: UndoEntry },
     /// `:rollback` — the env's recent events came back; the handler
     /// scans them for the previously-deployed version label and opens
     /// the deploy-confirm modal for it.
@@ -1710,10 +1721,7 @@ enum AppMsg {
     /// current cached health: if Green, the watchdog disarms with a
     /// status toast; otherwise it dispatches a rollback deploy to
     /// the captured `DeploySnapshot.previous_version_label`.
-    AutoRollbackCheck {
-        gen: u64,
-        env_name: String,
-    },
+    AutoRollbackCheck { gen: u64, env_name: String },
     /// Result of an `UpdateTagsForResource` call from `:tag` / `:untag`.
     /// On success we re-issue the Config-tab tag fetch so the UI reflects
     /// the new state immediately.
@@ -1986,6 +1994,7 @@ impl App {
             hover_row: None,
             alerts: 0,
             worker_dlq_depths: std::collections::HashMap::new(),
+            rebuild_epoch: 0,
             env_tag_cache: std::collections::HashMap::new(),
             env_health_cache: std::collections::HashMap::new(),
             // Restore persisted snapshots so a cross-session `:rollback`
@@ -2270,6 +2279,7 @@ impl App {
             hover_row: None,
             alerts: 0,
             worker_dlq_depths: std::collections::HashMap::new(),
+            rebuild_epoch: 0,
             env_tag_cache: std::collections::HashMap::new(),
             env_health_cache: std::collections::HashMap::new(),
             deploy_snapshots: std::collections::HashMap::new(),
@@ -11104,6 +11114,8 @@ impl App {
     fn spawn_rebuild(&mut self) {
         self.load_state = LoadState::Loading;
         self.loading_since = Some(Instant::now());
+        self.rebuild_epoch = self.rebuild_epoch.wrapping_add(1);
+        let epoch = self.rebuild_epoch;
         let profile = self.override_profile.clone();
         let region = self.override_region.clone();
         let tx = self.msg_tx.clone();
@@ -11112,7 +11124,7 @@ impl App {
                 Ok(c) => Ok(Box::new(c)),
                 Err(e) => Err(flatten_err("aws_client_with", e)),
             };
-            let _ = tx.send(AppMsg::Rebuild(result));
+            let _ = tx.send(AppMsg::Rebuild { epoch, result });
         });
     }
 
@@ -11131,13 +11143,15 @@ impl App {
         self.load_state = LoadState::Loading;
         self.loading_since = Some(Instant::now());
         self.status_message = Some(format!("assuming role for account '{account_name}'…"));
+        self.rebuild_epoch = self.rebuild_epoch.wrapping_add(1);
+        let epoch = self.rebuild_epoch;
         let tx = self.msg_tx.clone();
         tokio::spawn(async move {
             let result = match AwsClient::assume_role(&account_name, &spec).await {
                 Ok(c) => Ok(Box::new(c)),
                 Err(e) => Err(flatten_err("aws_client_assume_role", e)),
             };
-            let _ = tx.send(AppMsg::Rebuild(result));
+            let _ = tx.send(AppMsg::Rebuild { epoch, result });
         });
     }
 
@@ -11336,13 +11350,19 @@ impl App {
             let futs = workers.into_iter().map(|(env, app)| {
                 let aws = aws.clone();
                 async move {
-                    aws.describe_worker_queues(&app, &env)
-                        .await
-                        .ok()
-                        .and_then(|q| q.dlq_stats.map(|s| (env, s.visible)))
+                    // Errors stay errors — a failed fetch must not be
+                    // indistinguishable from "no DLQ" (the pre-0.27
+                    // shape silently blinded red-alerting on
+                    // AccessDenied/throttle).
+                    let outcome = match aws.describe_worker_queues(&app, &env).await {
+                        Ok(q) => Ok(q.dlq_stats.map(|s| s.visible)),
+                        Err(e) => Err(flatten_err("describe_worker_queues", e)),
+                    };
+                    (env, outcome)
                 }
             });
-            let results: Vec<(String, i64)> = join_all(futs).await.into_iter().flatten().collect();
+            let results: Vec<(String, Result<Option<i64>, String>)> =
+                join_all(futs).await.into_iter().collect();
             let _ = tx.send(AppMsg::WorkerQueueCheck { gen, results });
         });
     }
@@ -11446,7 +11466,12 @@ impl App {
         apply(detail, result);
     }
 
-    fn apply_rebuild(&mut self, result: Result<Box<AwsClient>, String>) {
+    fn apply_rebuild(&mut self, epoch: u64, result: Result<Box<AwsClient>, String>) {
+        // Stale arrival: a NEWER switch was spawned after this one —
+        // applying it would settle the app on an older choice.
+        if epoch != self.rebuild_epoch {
+            return;
+        }
         match result {
             Ok(client) => {
                 self.generation = self.generation.wrapping_add(1);
@@ -18817,7 +18842,10 @@ mod tests {
         // context-scoped state including armed_watchdogs +
         // deploy_snapshots. Use a stub client so the call doesn't
         // need real AWS.
-        app.apply_rebuild(Ok(Box::new(crate::aws::AwsClient::stub())));
+        app.apply_rebuild(
+            app.rebuild_epoch,
+            Ok(Box::new(crate::aws::AwsClient::stub())),
+        );
         assert!(
             app.armed_watchdogs.is_empty(),
             "context switch should drop armed watchdogs"
@@ -19925,7 +19953,10 @@ mod tests {
                 deadline_at: chrono::Utc::now() + chrono::Duration::seconds(300),
             },
         );
-        app.apply_rebuild(Ok(Box::new(crate::aws::AwsClient::stub())));
+        app.apply_rebuild(
+            app.rebuild_epoch,
+            Ok(Box::new(crate::aws::AwsClient::stub())),
+        );
         assert!(
             app.watching_deploys.is_empty(),
             "watching_deploys must clear on context rebuild"
@@ -21216,6 +21247,56 @@ mod tests {
             ..crate::config::Config::default()
         };
         App::for_tests(crate::aws::AwsClient::stub(), cfg)
+    }
+
+    #[tokio::test]
+    async fn stale_rebuild_arrival_is_dropped() {
+        // Two rapid context switches: the SLOW first one landing after
+        // the fast second must not overwrite the operator's last
+        // choice.
+        let mut app = test_app();
+        app.rebuild_epoch = 2; // two switches spawned; latest epoch = 2
+        let gen_before = app.generation;
+        app.handle_msg(AppMsg::Rebuild {
+            epoch: 1, // the older switch's arrival
+            result: Err("slow switch landed late".into()),
+        });
+        assert_eq!(
+            app.generation, gen_before,
+            "stale epoch must be dropped before any apply"
+        );
+        assert!(
+            app.error_message.is_none(),
+            "no error surfaced for a dropped arrival"
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_queue_fetch_error_keeps_previous_dlq_depth() {
+        // 0.27 fix: a failed fetch must not clear the env's alert —
+        // the old clear-and-rebuild dropped it every errored tick.
+        let mut app = test_app();
+        app.handle_msg(AppMsg::WorkerQueueCheck {
+            gen: app.generation,
+            results: vec![("wk-prod".into(), Ok(Some(7)))],
+        });
+        assert_eq!(app.worker_dlq_depths.get("wk-prod"), Some(&7));
+        // Fetch error → depth survives.
+        app.handle_msg(AppMsg::WorkerQueueCheck {
+            gen: app.generation,
+            results: vec![("wk-prod".into(), Err("AccessDenied".into()))],
+        });
+        assert_eq!(
+            app.worker_dlq_depths.get("wk-prod"),
+            Some(&7),
+            "error must not read as 'no DLQ'"
+        );
+        // Genuine no-DLQ → cleared; fresh depth → updated.
+        app.handle_msg(AppMsg::WorkerQueueCheck {
+            gen: app.generation,
+            results: vec![("wk-prod".into(), Ok(None))],
+        });
+        assert!(!app.worker_dlq_depths.contains_key("wk-prod"));
     }
 
     /// Synthesize a `KeyEvent::Press` and dispatch it through
