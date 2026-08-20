@@ -1661,6 +1661,11 @@ enum AppMsg {
     DlqMessages {
         gen: u64,
         env_name: String,
+        /// The queue the peek ran against — the handler drops results
+        /// for a queue that's no longer `dlq.viewing` (an `m`-toggle
+        /// mid-fetch used to display the WRONG queue's messages, with
+        /// receipt handles AWS would reject).
+        queue_url: String,
         result: Result<Vec<QueueMessage>, String>,
     },
     DlqActionResult {
@@ -6334,7 +6339,18 @@ impl App {
                 detail.instances_scroll = (next as u16).saturating_sub(3);
             }
             DetailTab::Logs => {
-                detail.log_tail.scroll = scroll_apply(detail.log_tail.scroll, delta);
+                // Upper-bound by the unwrapped line count — the
+                // paragraph wraps, so the exact ceiling depends on
+                // width, but this stops j from scrolling far into
+                // blank space (recovery was symmetric k presses).
+                let total: usize = detail
+                    .log_tail
+                    .by_instance
+                    .iter()
+                    .map(|(_, t)| t.lines().count())
+                    .sum();
+                detail.log_tail.scroll = scroll_apply(detail.log_tail.scroll, delta)
+                    .min(total.min(u16::MAX as usize) as u16);
             }
             DetailTab::Queue => {
                 // Cursor wraps between the two queue rows (Main / DLQ).
@@ -11599,11 +11615,18 @@ impl App {
                 self.applications.clear();
                 self.costs.clear();
                 self.costs_fetched_at = None;
+                // Help's stash (pre_mode / pre_overlay) points at
+                // modes and overlays this switch just tore down —
+                // closing help would restore e.g. Mode::Detail with
+                // detail == None (a ghost state).
+                self.help.pre_mode = None;
+                self.help.pre_overlay = None;
                 if self.mode == Mode::Detail
                     || self.mode == Mode::Dlq
                     || self.mode == Mode::Action
                     || self.mode == Mode::Picker
                     || self.mode == Mode::Form
+                    || self.mode == Mode::Help
                 {
                     self.mode = Mode::Normal;
                 }
@@ -12034,12 +12057,21 @@ impl App {
                     .collect();
                 let now = chrono::Utc::now();
                 for (env_name, deadline_at) in armed {
-                    let (status, health) = self
+                    let Some((status, health)) = self
                         .environments
                         .iter()
                         .find(|e| e.name == env_name)
                         .map(|e| (e.status.clone(), e.health.clone()))
-                        .unwrap_or_default();
+                    else {
+                        // Env left the fleet (terminated mid-watch) —
+                        // disarm instead of dispatching a doomed
+                        // redeploy at the deadline.
+                        self.armed_watchdogs.remove(&env_name);
+                        self.pin_status(format!(
+                            "auto-rollback for {env_name}: env no longer in the fleet — watchdog disarmed"
+                        ));
+                        continue;
+                    };
                     let healthy = deploy_settled_green(&status, &health);
                     if healthy {
                         self.armed_watchdogs.remove(&env_name);
@@ -12075,12 +12107,20 @@ impl App {
                     })
                     .collect();
                 for (env_name, deadline_at, target_label, total_secs) in watching {
-                    let (status, health) = self
+                    let Some((status, health)) = self
                         .environments
                         .iter()
                         .find(|e| e.name == env_name)
                         .map(|e| (e.status.clone(), e.health.clone()))
-                        .unwrap_or_default();
+                    else {
+                        // Env left the fleet — stop watching with an
+                        // honest note rather than timing out later.
+                        self.watching_deploys.remove(&env_name);
+                        self.pin_error(format!(
+                            "deploy watch for {env_name}: env no longer in the fleet"
+                        ));
+                        continue;
+                    };
                     let healthy = deploy_settled_green(&status, &health);
                     if healthy {
                         self.watching_deploys.remove(&env_name);

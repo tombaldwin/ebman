@@ -249,9 +249,17 @@ impl App {
                 }
             }
             KeyCode::Char('p') => {
+                // Same DLQ-view gate as resend/replay — the `m`-toggle
+                // comment always promised it, but `p` armed the purge
+                // (of the DLQ URL!) while the operator was looking at
+                // the MAIN queue.
                 if let Some(dlq) = self.dlq.as_mut() {
-                    dlq.confirm_purge = true;
-                    dlq.purge_typed.clear();
+                    if matches!(dlq.viewing, QueueView::Main) {
+                        self.error_message = Some("purge is only available in DLQ view".into());
+                    } else {
+                        dlq.confirm_purge = true;
+                        dlq.purge_typed.clear();
+                    }
                 }
             }
             _ => {}

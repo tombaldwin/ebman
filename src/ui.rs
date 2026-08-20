@@ -342,6 +342,17 @@ fn pending_glyph(theme: &Theme) -> &'static str {
     }
 }
 
+/// Pick the ascii fallback for a decorative glyph when the operator's
+/// font can't render unicode (`icons = "ascii"` — the mode's contract
+/// is "stays readable when the font lacks the glyphs", so raw literals
+/// in draw paths are stragglers).
+fn glyph<'a>(icons: IconStyle, unicode: &'a str, ascii: &'a str) -> &'a str {
+    match icons {
+        IconStyle::Ascii => ascii,
+        _ => unicode,
+    }
+}
+
 /// Glyph for the multi-select-active pill.
 fn multi_select_glyph(theme: &Theme) -> &'static str {
     match theme.icons {
@@ -751,7 +762,11 @@ fn draw_form(f: &mut Frame, area: Rect, app: &mut App) {
             if is_cursor {
                 cursor_line = Some(lines.len());
             }
-            let pointer = if is_cursor { "▶ " } else { "  " };
+            let pointer = if is_cursor {
+                glyph(theme.icons, "▶ ", "> ")
+            } else {
+                "  "
+            };
             let label_style = if is_cursor {
                 Style::default()
                     .fg(theme.title_alt)
@@ -784,7 +799,12 @@ fn draw_form(f: &mut Frame, area: Rect, app: &mut App) {
                     // ◀ value ▶ when focused; just value otherwise.
                     let _ = options; // currently unused; keeps the type
                     if is_cursor {
-                        format!("◀ {} ▶", fld.value)
+                        format!(
+                            "{} {} {}",
+                            glyph(theme.icons, "◀", "<"),
+                            fld.value,
+                            glyph(theme.icons, "▶", ">")
+                        )
                     } else {
                         fld.value.clone()
                     }
@@ -811,7 +831,7 @@ fn draw_form(f: &mut Frame, area: Rect, app: &mut App) {
             ];
             if fld.error.is_some() {
                 row_spans.push(Span::styled(
-                    "  ✗",
+                    glyph(theme.icons, "  ✗", "  x"),
                     Style::default()
                         .fg(theme.health_red)
                         .add_modifier(Modifier::BOLD),
@@ -1090,7 +1110,34 @@ fn draw_saved_configs_interactive(
     // how many item rows we can show before clipping; if items overflow,
     // window them around the cursor.
     let row_budget = popup.height.saturating_sub(8) as usize;
-    let (visible_start, visible_end) = visible_window(cursor, items.len(), row_budget);
+    let (mut visible_start, mut visible_end) = visible_window(cursor, items.len(), row_budget);
+    // Header rows (one per app-name group inside the window) and the
+    // "more below" trailer consume rows the item budget didn't count —
+    // a window spanning several apps used to clip the cursor row and
+    // footer off the unscrolled popup. Count and re-window once; a
+    // second pass would change the header count by at most one row.
+    let count_headers = |start: usize, end: usize| -> usize {
+        let mut prev = if start > 0 {
+            items.get(start - 1).map(|(a, _)| a.as_str())
+        } else {
+            None
+        };
+        let mut n = 0;
+        for (a, _) in &items[start..end] {
+            if Some(a.as_str()) != prev {
+                n += 1;
+                prev = Some(a.as_str());
+            }
+        }
+        n
+    };
+    let headers = count_headers(visible_start, visible_end);
+    let reduced = row_budget.saturating_sub(headers + 1).max(1);
+    if reduced < visible_end - visible_start {
+        let (s, e) = visible_window(cursor, items.len(), reduced);
+        visible_start = s;
+        visible_end = e;
+    }
     let mut lines: Vec<Line> = Vec::with_capacity(row_budget + 6);
     let banner = if confirm_delete {
         let cur_label = items
@@ -1147,7 +1194,11 @@ fn draw_saved_configs_interactive(
             .as_ref()
             .map(|ta| ta != app_name)
             .unwrap_or(false);
-        let marker = if i == cursor { " ▶ " } else { "   " };
+        let marker = if i == cursor {
+            glyph(theme.icons, " ▶ ", " > ")
+        } else {
+            "   "
+        };
         let style = if i == cursor {
             let bg = if confirm_delete {
                 theme.row_red_bg
@@ -2165,7 +2216,7 @@ fn draw_why_red_overlay(f: &mut Frame, area: Rect, app: &mut App) {
             let original = std::mem::take(line);
             let mut spans: Vec<Span<'static>> = Vec::with_capacity(original.spans.len() + 1);
             spans.push(Span::styled(
-                "▶",
+                glyph(theme.icons, "▶", ">"),
                 Style::default()
                     .fg(theme.title_alt)
                     .add_modifier(Modifier::BOLD),
@@ -2736,14 +2787,14 @@ fn draw_apps_table(f: &mut Frame, area: Rect, app: &mut App) {
             let selected = app.apps_selected.contains(&a.name);
             let prefix = if pinned {
                 Span::styled(
-                    "★ ",
+                    glyph(theme.icons, "★ ", "* "),
                     Style::default()
                         .fg(theme.accent)
                         .add_modifier(Modifier::BOLD),
                 )
             } else if selected {
                 Span::styled(
-                    "▶ ",
+                    glyph(theme.icons, "▶ ", "> "),
                     Style::default()
                         .fg(theme.title_alt)
                         .add_modifier(Modifier::BOLD),
@@ -2949,12 +3000,12 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                     .cloned()
                     .unwrap_or_else(|| e.name.clone());
                 let star = if app.pinned.contains(&e.name) {
-                    "★ "
+                    glyph(app.theme.icons, "★ ", "* ")
                 } else {
                     ""
                 };
                 let checked = if app.multi_selected.contains(&e.name) {
-                    "✓ "
+                    glyph(app.theme.icons, "✓ ", "x ")
                 } else {
                     ""
                 };
@@ -2967,7 +3018,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                     ""
                 };
                 let alert = if app.newly_red.contains(&e.name) {
-                    "▲ "
+                    glyph(app.theme.icons, "▲ ", "! ")
                 } else {
                     ""
                 };
@@ -2978,9 +3029,9 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                     Some(u) => {
                         let dur = now.signed_duration_since(u);
                         if dur < chrono::Duration::hours(24) && dur > chrono::Duration::zero() {
-                            ("◆ ", theme.title_alt)
+                            (glyph(app.theme.icons, "◆ ", "# "), theme.title_alt)
                         } else if dur > chrono::Duration::days(30) {
-                            ("◇ ", theme.muted)
+                            (glyph(app.theme.icons, "◇ ", "o "), theme.muted)
                         } else {
                             ("", theme.text)
                         }
@@ -3758,7 +3809,7 @@ fn draw_events(f: &mut Frame, area: Rect, app: &mut App) {
         let lines = vec![
             Line::from(""),
             Line::from(Span::styled(
-                "  ◌  no events yet",
+                format!("  {}  no events yet", glyph(app.theme.icons, "◌", "o")),
                 Style::default()
                     .fg(app.theme.muted)
                     .add_modifier(Modifier::BOLD),
@@ -3784,7 +3835,11 @@ fn draw_events(f: &mut Frame, area: Rect, app: &mut App) {
             let when = format_event_time(e.at, app.event_panel.time_format, now);
             let sev_style = severity_style(&e.severity, &app.theme);
             let is_cursor = app.event_panel.cursor == Some(i);
-            let marker = if is_cursor { "▶ " } else { "  " };
+            let marker = if is_cursor {
+                glyph(app.theme.icons, "▶ ", "> ")
+            } else {
+                "  "
+            };
             let marker_style = if is_cursor {
                 Style::default()
                     .fg(app.theme.title_alt)
@@ -6061,7 +6116,7 @@ fn draw_detail_events(
         let lines = vec![
             Line::from(""),
             Line::from(Span::styled(
-                " ◌  no events for this env",
+                format!(" {}  no events for this env", glyph(theme.icons, "◌", "o")),
                 Style::default()
                     .fg(theme.muted)
                     .add_modifier(Modifier::BOLD),
@@ -6080,7 +6135,11 @@ fn draw_detail_events(
         let lines = vec![
             Line::from(""),
             Line::from(Span::styled(
-                format!(" ◌  no events match filter ({} hidden)", total),
+                format!(
+                    " {}  no events match filter ({} hidden)",
+                    glyph(theme.icons, "◌", "o"),
+                    total
+                ),
                 Style::default()
                     .fg(theme.muted)
                     .add_modifier(Modifier::BOLD),
@@ -6153,7 +6212,7 @@ fn draw_detail_instances(
         let lines = vec![
             Line::from(""),
             Line::from(Span::styled(
-                "  ◌  no instance data",
+                format!("  {}  no instance data", glyph(theme.icons, "◌", "o")),
                 Style::default()
                     .fg(theme.muted)
                     .add_modifier(Modifier::BOLD),
@@ -6205,7 +6264,11 @@ fn draw_detail_instances(
             Some(bg) => s.bg(bg),
             None => s,
         };
-        let marker = if is_cursor { "▶ " } else { "  " };
+        let marker = if is_cursor {
+            glyph(theme.icons, "▶ ", "> ")
+        } else {
+            "  "
+        };
         let marker_style = with_bg(if is_cursor {
             Style::default()
                 .fg(theme.title_alt)
@@ -6843,7 +6906,11 @@ fn config_editable_row(
         e.mode != crate::app::ConfigEditMode::NewRow && e.kind == item.kind && e.key == key
     });
     let is_cursor = detail.config_cursor == this && editing.is_none();
-    let marker = if is_cursor { "▶ " } else { "  " };
+    let marker = if is_cursor {
+        glyph(theme.icons, "▶ ", "> ")
+    } else {
+        "  "
+    };
     let editor_style = Style::default()
         .fg(theme.title_alt)
         .add_modifier(Modifier::BOLD);
