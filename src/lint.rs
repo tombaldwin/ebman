@@ -176,6 +176,14 @@ pub struct LintContext<'a> {
     /// non-2xx / timed out / couldn't connect — the EBL016 firing
     /// signal. `None` = not probed or probe passed; rule skips.
     pub health_probe_failure: Option<&'a str>,
+    /// Result of the WAF-association probe against the env's ALB,
+    /// when the caller ran it (CLI-only — `ebman lint` probes
+    /// prod-named envs with `LoadBalancerType=application`; see
+    /// `probe_waf_missing`). `Some(true)` = the ALB has no WebACL
+    /// associated — the EBL018 firing signal. `Some(false)` = WAF
+    /// present. `None` = not probed (classic/network LB, non-prod
+    /// name, probe error, or TUI path); rule skips.
+    pub waf_missing: Option<bool>,
 }
 
 impl<'a> LintContext<'a> {
@@ -199,6 +207,7 @@ impl<'a> LintContext<'a> {
             healthy_instance_count: None,
             xray_trace_denied: None,
             health_probe_failure: None,
+            waf_missing: None,
         }
     }
 
@@ -268,6 +277,22 @@ impl<'a> LintContext<'a> {
         self.health_probe_failure = Some(reason);
         self
     }
+
+    /// Attach the WAF-association probe result for the env's ALB.
+    /// Enables EBL018 (prod env without WAF).
+    pub fn with_waf_missing(mut self, missing: bool) -> Self {
+        self.waf_missing = Some(missing);
+        self
+    }
+}
+
+/// Soft prod-detection for EBL018: does the env name look like a
+/// production environment? Case-insensitive substring match on
+/// `prod` (covers `production`) or `prd`. Deliberately loose — the
+/// per-env escape hatch is `lint.disable = ["EBL018"]`.
+pub fn is_prod_named(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.contains("prod") || lower.contains("prd")
 }
 
 /// A single diagnostic rule. Implementors are pure functions
@@ -1627,6 +1652,115 @@ impl Rule for XrayEnabledButTracesDenied {
     }
 }
 
+/// EBL018 — a prod-named env's ALB has no WAF WebACL associated.
+/// Internet-facing production load balancers with no WAF pass every
+/// scanner probe straight to the app tier — the low-traffic health
+/// flapping that motivated this rule (2026-08: `.env` / traversal
+/// sweeps 500-ing against Tomcat and tripping enhanced health) is
+/// the mild version; the severe version is the probe that works.
+/// Detection input comes from the caller (CLI-only; see
+/// `LintContext::waf_missing`): a `wafv2:GetWebACLForResource` probe
+/// against the env's ALB, run only for prod-named envs with
+/// `LoadBalancerType=application`. Classic ELBs are out of scope —
+/// WAFv2 can't associate with them (that fleet's WAF story is
+/// CloudFront-level, which this rule can't verify). The rule itself
+/// stays pure and skips when the probe didn't run.
+pub struct NoWafOnProdAlb;
+
+impl Rule for NoWafOnProdAlb {
+    fn id(&self) -> &'static str {
+        "EBL018"
+    }
+    fn severity(&self) -> Severity {
+        Severity::Warn
+    }
+    fn fix(&self, ctx: &LintContext) -> Option<FixAction> {
+        self.applies(ctx)?;
+        Some(FixAction::Manual {
+            instructions:
+                "Create a WAFv2 WebACL (the `AWSManagedRulesCommonRuleSet` managed group is \
+                 the standard starting point) and associate it with the env's ALB. WAF \
+                 association lives outside EB option settings, so --fix can't drive it."
+                    .into(),
+        })
+    }
+    fn applies(&self, ctx: &LintContext) -> Option<Issue> {
+        // Probe not run (TUI path / non-prod name / classic LB /
+        // probe error) or WAF present → skip.
+        if ctx.waf_missing != Some(true) || !is_prod_named(&ctx.env.name) {
+            return None;
+        }
+        let mut fields = BTreeMap::new();
+        fields.insert("load_balancer_type".into(), "application".into());
+        Some(Issue {
+            rule_id: self.id().into(),
+            severity: self.severity(),
+            env_name: Some(ctx.env.name.clone()),
+            title: "Prod env's ALB has no WAF WebACL associated".into(),
+            detail: "The env is prod-named with an application load balancer, and a \
+                 `wafv2:GetWebACLForResource` probe found no WebACL associated — every \
+                 scanner sweep and injection probe reaches the app tier unfiltered."
+                .into(),
+            suggestion: Some(
+                "Associate a WAFv2 WebACL with the ALB — `AWSManagedRulesCommonRuleSet` \
+                 blocks the commodity probe traffic. Not prod? Disable per-env via \
+                 `lint.disable = [\"EBL018\"]`."
+                    .into(),
+            ),
+            fields,
+        })
+    }
+}
+
+/// EBL015 — custom platform with no published versions in 180+ days
+/// (Info). The first account-level lint pass: input is one
+/// `(branch_name, latest_version_date)` pair per custom platform
+/// (assembled by the CLI from `ListPlatformVersions` +
+/// `DescribePlatformVersion`, which is where the dates live), not a
+/// per-env `LintContext` — so this is a pure function outside the
+/// `Rule` registry rather than a trait impl. Callers honour
+/// `lint.disable` themselves (the registry's load-time filter can't
+/// see it). Issues carry `env_name: None` — the fleet-wide slot the
+/// `Issue` struct reserved from day one.
+pub fn stale_custom_platform_issues(
+    platforms: &[(String, chrono::DateTime<chrono::Utc>)],
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<Issue> {
+    const STALE_DAYS: i64 = 180;
+    let mut out: Vec<Issue> = platforms
+        .iter()
+        .filter_map(|(branch, latest)| {
+            let age_days = (now - *latest).num_days();
+            if age_days < STALE_DAYS {
+                return None;
+            }
+            let mut fields = BTreeMap::new();
+            fields.insert("platform".into(), branch.clone());
+            Some(Issue {
+                rule_id: "EBL015".into(),
+                severity: Severity::Info,
+                env_name: None,
+                title: format!("Custom platform '{branch}' has no versions in {age_days} days"),
+                detail: format!(
+                    "The custom platform's newest version was published {age_days} days ago \
+                     ({}). Long-idle custom platforms usually mean the operator forgot the \
+                     platform exists — its AMIs age (unpatched base images), and envs still \
+                     pinned to it drift ever further from current runtimes.",
+                    latest.format("%Y-%m-%d")
+                ),
+                suggestion: Some(
+                    "Publish a rebuilt version, migrate its envs to a managed platform, or \
+                     delete it (`:custom-platform-delete`) if it's genuinely dead."
+                        .into(),
+                ),
+                fields,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.title.cmp(&b.title));
+    out
+}
+
 /// EBL016 — the env's health-check URL fails a live HTTP probe.
 /// Detection input comes from the caller (CLI-only, behind
 /// `ebman lint --probe-live` — one curl HEAD per env is too slow
@@ -1710,6 +1844,7 @@ pub fn default_rules(disabled: &[String]) -> Vec<Box<dyn Rule>> {
         Box::new(ManagedActionsDisabled),
         Box::new(AllAtOnceMultiAz),
         Box::new(XrayEnabledButTracesDenied),
+        Box::new(NoWafOnProdAlb),
     ];
     candidates
         .into_iter()
@@ -2699,7 +2834,7 @@ mod tests {
         // new EBL is added. Catches both regressions (rule removed)
         // and additions-without-test-update (new rule landed; review
         // whether its applies()/fix() satisfy the invariants above).
-        assert_eq!(rules.len(), 18, "rule registry size changed");
+        assert_eq!(rules.len(), 19, "rule registry size changed");
     }
 
     // ── EBL016 — live health-check probe ────────────────────────────
@@ -2726,6 +2861,64 @@ mod tests {
             HealthCheckProbeFailing.fix(&failed),
             Some(FixAction::Manual { .. })
         ));
+    }
+
+    // ── EBL018 — prod ALB without WAF ───────────────────────────────
+
+    #[test]
+    fn ebl018_fires_only_on_probed_prod_envs() {
+        let prod = mk_env("shop-Prod", "Web", "Green");
+        let no_probe = ctx(&prod, &[]);
+        assert!(
+            NoWafOnProdAlb.applies(&no_probe).is_none(),
+            "no probe run → skip (TUI / classic LB / probe error)"
+        );
+        let waf_present = ctx(&prod, &[]).with_waf_missing(false);
+        assert!(NoWafOnProdAlb.applies(&waf_present).is_none());
+        let missing = ctx(&prod, &[]).with_waf_missing(true);
+        let issue = NoWafOnProdAlb.applies(&missing).expect("should fire");
+        assert_eq!(issue.rule_id, "EBL018");
+        assert_eq!(issue.severity, Severity::Warn);
+        assert!(matches!(
+            NoWafOnProdAlb.fix(&missing),
+            Some(FixAction::Manual { .. })
+        ));
+        // Non-prod name skips even with a (mistaken) probe result.
+        let staging = mk_env("shop-staging", "Web", "Green");
+        let staging_missing = ctx(&staging, &[]).with_waf_missing(true);
+        assert!(NoWafOnProdAlb.applies(&staging_missing).is_none());
+    }
+
+    #[test]
+    fn is_prod_named_matches_loosely() {
+        assert!(is_prod_named("shop-prod"));
+        assert!(is_prod_named("PRODUCTION-eu"));
+        assert!(is_prod_named("api-prd-1"));
+        assert!(!is_prod_named("shop-staging"));
+        assert!(!is_prod_named("dev"));
+    }
+
+    // ── EBL015 — stale custom platform (account-level) ──────────────
+
+    #[test]
+    fn ebl015_fires_on_stale_platforms_only() {
+        use chrono::{Duration, TimeZone, Utc};
+        let now = Utc.with_ymd_and_hms(2026, 8, 20, 0, 0, 0).unwrap();
+        let platforms = vec![
+            ("old-tomcat".to_string(), now - Duration::days(400)),
+            ("fresh-node".to_string(), now - Duration::days(30)),
+            ("edge-exact".to_string(), now - Duration::days(180)),
+        ];
+        let issues = stale_custom_platform_issues(&platforms, now);
+        assert_eq!(issues.len(), 2, "180d boundary is inclusive; 30d skips");
+        for i in &issues {
+            assert_eq!(i.rule_id, "EBL015");
+            assert_eq!(i.severity, Severity::Info);
+            assert!(i.env_name.is_none(), "account-level issue has no env");
+        }
+        assert!(issues[0].title.contains("edge-exact"));
+        assert!(issues[1].title.contains("old-tomcat"));
+        assert!(stale_custom_platform_issues(&[], now).is_empty());
     }
 
     // ── EBL014 — legacy network scaling trigger ─────────────────────

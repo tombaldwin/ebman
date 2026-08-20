@@ -1193,31 +1193,83 @@ pub fn visible_window(cursor: usize, total: usize, budget: usize) -> (usize, usi
     (start, start + budget)
 }
 
+/// Shared chrome for the two streaming tail overlays (`:logs-tail` /
+/// `:event-tail`): window the pre-formatted, pre-filtered lines to
+/// the Wide popup, append the footer (filter-entry echo, last error,
+/// or the overlay's key hints), and render the titled paragraph.
+/// The callers keep only what genuinely differs: line formatting,
+/// filter predicate, and title text.
+struct TailChrome<'a> {
+    title: &'a str,
+    key_hints: &'a str,
+    last_err: Option<&'a String>,
+}
+
+fn draw_tail_overlay_chrome(
+    f: &mut Frame,
+    area: Rect,
+    app: &App,
+    view: &crate::app::TailView,
+    lines: Vec<Line>,
+    chrome: TailChrome<'_>,
+) {
+    let popup = centered_overlay(OverlaySize::Wide, area);
+    f.render_widget(Clear, popup);
+    let theme = &app.theme;
+    // popup.height minus borders/padding/title/footer (≈6). Slice the tail
+    // when following; otherwise honour the view's scroll.
+    let body_rows = popup.height.saturating_sub(6) as usize;
+    let start = crate::app::tail_window_start(lines.len(), body_rows, view);
+    let mut paragraph_lines: Vec<Line> = lines.into_iter().skip(start).take(body_rows).collect();
+    let footer_text = if view.filter_active {
+        format!(" filter: {}_ (esc cancel)", view.filter_input.text())
+    } else if let Some(err) = chrome.last_err {
+        format!(" {}{err}", warn_glyph(theme.icons))
+    } else {
+        chrome.key_hints.to_string()
+    };
+    paragraph_lines.push(Line::raw(""));
+    paragraph_lines.push(Line::from(Span::styled(
+        footer_text,
+        Style::default().fg(theme.muted),
+    )));
+    let p = Paragraph::new(paragraph_lines)
+        .wrap(Wrap { trim: false })
+        .block(
+            titled_block(&app.theme, chrome.title, true, app.theme.title)
+                .padding(Padding::uniform(1)),
+        );
+    f.render_widget(p, popup);
+}
+
+/// Suffix for a tail overlay's title reflecting the follow state.
+fn tail_follow_suffix(following: bool) -> &'static str {
+    if following {
+        " · following"
+    } else {
+        " · paused (G to follow)"
+    }
+}
+
 fn draw_log_tail_overlay(f: &mut Frame, area: Rect, app: &App) {
     let Some(crate::app::Overlay::LogTail {
         log_group,
         env_name,
         events,
-        scroll,
-        following,
-        filter_input,
-        filter_active,
-        filter_pattern,
+        view,
         last_err,
         ..
     }) = app.current_overlay.as_ref()
     else {
         return;
     };
-    let popup = centered_overlay(OverlaySize::Wide, area);
-    f.render_widget(Clear, popup);
     let theme = &app.theme;
     // Format each event as `HH:MM:SS  STREAM_TAIL  message`. Stream names
     // are EB instance ids — keep just the last 8 chars so the line stays
     // scannable.
     let mut lines: Vec<Line> = Vec::with_capacity(events.len());
     for ev in events.iter() {
-        if let Some(pat) = filter_pattern.as_ref() {
+        if let Some(pat) = view.filter_pattern.as_ref() {
             if !pat.is_match(&ev.message) {
                 continue;
             }
@@ -1242,65 +1294,36 @@ fn draw_log_tail_overlay(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(ev.message.clone(), msg_style),
         ]));
     }
-    // popup.height minus borders/padding/title/footer (≈6). Slice the tail
-    // when following; otherwise honour `scroll`.
-    let body_rows = popup.height.saturating_sub(6) as usize;
-    let total = lines.len();
-    let start = if *following {
-        total.saturating_sub(body_rows)
-    } else {
-        let max_start = total.saturating_sub(body_rows);
-        max_start.saturating_sub(*scroll as usize)
-    };
-    let visible_lines: Vec<Line> = lines.into_iter().skip(start).take(body_rows).collect();
     let title_text = format!(
         "logs-tail — {env_name} · {} · {} lines{}",
         log_group.rsplit('/').next().unwrap_or(log_group.as_str()),
         events.len(),
-        if *following {
-            " · following"
-        } else {
-            " · paused (G to follow)"
-        }
+        tail_follow_suffix(view.following)
     );
-    let footer_text = if *filter_active {
-        format!(" filter: {}_ (esc cancel)", filter_input.text())
-    } else if let Some(err) = last_err {
-        format!(" {}{err}", warn_glyph(theme.icons))
-    } else {
-        " j/k scroll · g/G top/follow · / filter · n clear-filter · Tab change group · esc / q close".to_string()
-    };
-    let mut paragraph_lines = visible_lines;
-    paragraph_lines.push(Line::raw(""));
-    paragraph_lines.push(Line::from(Span::styled(
-        footer_text,
-        Style::default().fg(theme.muted),
-    )));
-    let p = Paragraph::new(paragraph_lines)
-        .wrap(Wrap { trim: false })
-        .block(
-            titled_block(&app.theme, &title_text, true, app.theme.title)
-                .padding(Padding::uniform(1)),
-        );
-    f.render_widget(p, popup);
+    draw_tail_overlay_chrome(
+        f,
+        area,
+        app,
+        view,
+        lines,
+        TailChrome {
+            title: &title_text,
+            key_hints: " j/k scroll · g/G top/follow · / filter · n clear-filter · Tab change group · esc / q close",
+            last_err: last_err.as_ref(),
+        },
+    );
 }
 
 fn draw_event_tail_overlay(f: &mut Frame, area: Rect, app: &App) {
     let Some(crate::app::Overlay::EventTail {
         events,
-        scroll,
-        following,
-        filter_input,
-        filter_active,
-        filter_pattern,
+        view,
         last_err,
         ..
     }) = app.current_overlay.as_ref()
     else {
         return;
     };
-    let popup = centered_overlay(OverlaySize::Wide, area);
-    f.render_widget(Clear, popup);
     let theme = &app.theme;
     // Format each event as `HH:MM:SS  SEV  env  message`. Env names are
     // left un-truncated (they're the routing key in a fleet stream);
@@ -1308,7 +1331,7 @@ fn draw_event_tail_overlay(f: &mut Frame, area: Rect, app: &App) {
     // whole page.
     let mut lines: Vec<Line> = Vec::with_capacity(events.len());
     for ev in events.iter() {
-        if let Some(pat) = filter_pattern.as_ref() {
+        if let Some(pat) = view.filter_pattern.as_ref() {
             if !crate::app::event_tail_matches(pat, ev) {
                 continue;
             }
@@ -1335,50 +1358,29 @@ fn draw_event_tail_overlay(f: &mut Frame, area: Rect, app: &App) {
             ),
         ]));
     }
-    let body_rows = popup.height.saturating_sub(6) as usize;
-    let total = lines.len();
-    let start = if *following {
-        total.saturating_sub(body_rows)
-    } else {
-        let max_start = total.saturating_sub(body_rows);
-        max_start.saturating_sub(*scroll as usize)
-    };
-    let visible_lines: Vec<Line> = lines.into_iter().skip(start).take(body_rows).collect();
-    // `total` is the post-filter line count; show `shown/held` while a
+    // The line count is post-filter; show `shown/held` while a
     // filter is active so the title doesn't overstate what's visible.
     let title_text = format!(
         "event-tail — fleet · {} events{}",
-        if filter_pattern.is_some() {
-            format!("{total}/{}", events.len())
+        if view.filter_pattern.is_some() {
+            format!("{}/{}", lines.len(), events.len())
         } else {
             events.len().to_string()
         },
-        if *following {
-            " · following"
-        } else {
-            " · paused (G to follow)"
-        }
+        tail_follow_suffix(view.following)
     );
-    let footer_text = if *filter_active {
-        format!(" filter: {}_ (esc cancel)", filter_input.text())
-    } else if let Some(err) = last_err {
-        format!(" {}{err}", warn_glyph(theme.icons))
-    } else {
-        " j/k scroll · g/G top/follow · / filter · n clear-filter · esc / q close".to_string()
-    };
-    let mut paragraph_lines = visible_lines;
-    paragraph_lines.push(Line::raw(""));
-    paragraph_lines.push(Line::from(Span::styled(
-        footer_text,
-        Style::default().fg(theme.muted),
-    )));
-    let p = Paragraph::new(paragraph_lines)
-        .wrap(Wrap { trim: false })
-        .block(
-            titled_block(&app.theme, &title_text, true, app.theme.title)
-                .padding(Padding::uniform(1)),
-        );
-    f.render_widget(p, popup);
+    draw_tail_overlay_chrome(
+        f,
+        area,
+        app,
+        view,
+        lines,
+        TailChrome {
+            title: &title_text,
+            key_hints: " j/k scroll · g/G top/follow · / filter · n clear-filter · esc / q close",
+            last_err: last_err.as_ref(),
+        },
+    );
 }
 
 fn draw_text_dump_overlay(f: &mut Frame, area: Rect, app: &App, title: &str, text: &str) {

@@ -125,6 +125,41 @@ async fn probe_xray_trace_denied(
     Some(!first.decision.eq_ignore_ascii_case("allowed"))
 }
 
+/// EBL018 input probe: for a prod-named env fronted by an ALB, ask
+/// WAFv2 whether a WebACL is associated. `Some(true)` = no WAF (the
+/// rule's firing signal), `Some(false)` = WAF present, `None` =
+/// non-prod name / classic-or-network LB / no ALB ARN resolvable /
+/// probe failed (the rule skips — never a false positive). Classic
+/// ELBs are structurally out: WAFv2 can't associate with them.
+async fn probe_waf_missing(
+    aws: &aws::AwsClient,
+    env: &aws::Environment,
+    options: &[(String, String, String)],
+) -> Option<bool> {
+    if !lint::is_prod_named(&env.name) {
+        return None;
+    }
+    let alb = options.iter().any(|(ns, n, v)| {
+        ns == "aws:elasticbeanstalk:environment"
+            && n == "LoadBalancerType"
+            && v.eq_ignore_ascii_case("application")
+    });
+    if !alb {
+        return None;
+    }
+    let resources = aws.describe_env_resources(&env.name).await.ok()?;
+    // For ALBs, DescribeEnvironmentResources reports the full ARN in
+    // the name slot (classic ELBs report a bare name — filtered here).
+    let alb_arn = resources
+        .load_balancers
+        .iter()
+        .find(|n| n.starts_with("arn:"))?;
+    match aws.web_acl_for_resource(alb_arn).await {
+        Ok(acl) => Some(acl.is_none()),
+        Err(_) => None,
+    }
+}
+
 /// Owned per-env lint inputs — everything a `LintContext` borrows,
 /// fetched and held in one place. Extracted (0.26) so `ebman lint`
 /// and the MCP `lint` tool share a single assembly path instead of
@@ -139,6 +174,7 @@ pub(crate) struct EnvLintInputs {
     pub xray_denied: Option<bool>,
     pub probe_failure: Option<String>,
     pub newer_stack: Option<String>,
+    pub waf_missing: Option<bool>,
 }
 
 /// Fetch one env's lint inputs: parallel option-settings + tags +
@@ -175,6 +211,9 @@ pub(crate) async fn fetch_env_lint_inputs(
     // so the common path pays no IAM calls. Probe failures leave the
     // field unset: skip, never false-positive.
     let xray_denied = probe_xray_trace_denied(aws, &options).await;
+    // EBL018 probe — only for prod-named ALB envs (both gates checked
+    // inside), so the common path pays no WAF calls.
+    let waf_missing = probe_waf_missing(aws, env, &options).await;
     // EBL016 probe — opt-in via `probe_live` (one curl HEAD per env
     // is too slow for default lint). Only a FAILURE is recorded.
     let probe_failure: Option<String> = if probe_live && !env.cname.is_empty() {
@@ -199,6 +238,7 @@ pub(crate) async fn fetch_env_lint_inputs(
         xray_denied,
         probe_failure,
         newer_stack,
+        waf_missing,
     })
 }
 
@@ -224,6 +264,9 @@ pub(crate) fn build_lint_context<'a>(
     }
     if let Some(reason) = inputs.probe_failure.as_deref() {
         ctx = ctx.with_health_probe_failure(reason);
+    }
+    if let Some(missing) = inputs.waf_missing {
+        ctx = ctx.with_waf_missing(missing);
     }
     ctx
 }
@@ -748,6 +791,60 @@ pub async fn run(args: &[String]) -> Result<()> {
 
                 all_issues.extend(issues);
             }
+
+            // EBL015 — account-level pass (stale custom platforms).
+            // Outside the per-env registry, so `lint.disable` is
+            // honoured here; skipped when linting a single --env (the
+            // operator scoped the run) and in the common zero-custom-
+            // platform account the extra cost is one empty list call.
+            if env_name.is_none() && !disabled.iter().any(|d| d == "EBL015") {
+                match aws.list_custom_platforms().await {
+                    Ok(platforms) if !platforms.is_empty() => {
+                        let mut by_branch: std::collections::BTreeMap<String, Vec<String>> =
+                            std::collections::BTreeMap::new();
+                        for p in platforms {
+                            by_branch.entry(p.branch.clone()).or_default().push(p.arn);
+                        }
+                        let mut dated: Vec<(String, chrono::DateTime<chrono::Utc>)> = Vec::new();
+                        for (branch, arns) in by_branch {
+                            match aws.latest_platform_version_date(&arns).await {
+                                Ok(Some(latest)) => dated.push((branch, latest)),
+                                // No date reported / describe failed:
+                                // skip the platform, never false-fire.
+                                Ok(None) => {}
+                                Err(e) => {
+                                    if !quiet {
+                                        eprintln!(
+                                            "warning: EBL015 skipped for '{branch}' — \
+                                             DescribePlatformVersion: {e}"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        let mut issues =
+                            lint::stale_custom_platform_issues(&dated, chrono::Utc::now());
+                        if let Some(min) = severity_filter {
+                            issues.retain(|i| i.severity >= min);
+                        }
+                        if !rule_filter.is_empty() {
+                            issues.retain(|i| rule_filter.contains(&i.rule_id));
+                        }
+                        if let Some(region) = region_opt {
+                            for issue in &mut issues {
+                                issue.fields.insert("region".into(), region.clone());
+                            }
+                        }
+                        all_issues.extend(issues);
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        if !quiet {
+                            eprintln!("warning: EBL015 skipped — ListPlatformVersions: {e}");
+                        }
+                    }
+                }
+            }
         }
 
         // `--webhook URL` (watch mode): POST the cycle's findings when
@@ -1139,12 +1236,15 @@ mod tests {
             xray_denied: None,
             probe_failure: None,
             newer_stack: None,
+            waf_missing: None,
         };
         let issues = run_rules_for_env(&rules, &env, &bare, &[]);
         assert!(issues.iter().any(|i| i.rule_id == "EBL017"));
-        // Probe failure input reaches EBL016 through the same path.
+        // Probe inputs reach EBL016 / EBL018 through the same path
+        // (the env is prod-named, so the WAF signal fires).
         let probed = EnvLintInputs {
             probe_failure: Some("HTTP 503".into()),
+            waf_missing: Some(true),
             options: vec![],
             env_tag_keys: vec![],
             healthy_count: None,
@@ -1153,6 +1253,7 @@ mod tests {
         };
         let issues = run_rules_for_env(&rules, &env, &probed, &[]);
         assert!(issues.iter().any(|i| i.rule_id == "EBL016"));
+        assert!(issues.iter().any(|i| i.rule_id == "EBL018"));
     }
 
     #[test]

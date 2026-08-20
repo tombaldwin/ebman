@@ -2776,6 +2776,52 @@ impl AwsClient {
         Ok(out)
     }
 
+    /// WAFv2 `GetWebACLForResource` for a REGIONAL resource (an env's
+    /// ALB). Returns the associated WebACL's ARN, or `None` when
+    /// nothing is attached. The wafv2 client is built lazily from the
+    /// stored `SdkConfig` — this is a rare, lint-probe-only call
+    /// (EBL018), not worth a permanent sub-client field.
+    pub async fn web_acl_for_resource(&self, resource_arn: &str) -> Result<Option<String>> {
+        let waf = aws_sdk_wafv2::Client::new(&self.config);
+        let resp = waf
+            .get_web_acl_for_resource()
+            .resource_arn(resource_arn)
+            .send()
+            .await
+            .wrap_err("GetWebACLForResource failed")?;
+        Ok(resp.web_acl.map(|a| a.arn))
+    }
+
+    /// The newest version-publish date across a custom platform's
+    /// version ARNs, via per-version `DescribePlatformVersion` (the
+    /// only API that carries dates — `ListPlatformVersions` doesn't).
+    /// `None` when no version reported a date. Feeds EBL015.
+    pub async fn latest_platform_version_date(
+        &self,
+        version_arns: &[String],
+    ) -> Result<Option<DateTime<Utc>>> {
+        let mut latest: Option<DateTime<Utc>> = None;
+        for arn in version_arns {
+            let resp = self
+                .client
+                .describe_platform_version()
+                .platform_arn(arn)
+                .send()
+                .await
+                .wrap_err("DescribePlatformVersion failed")?;
+            let date = resp
+                .platform_description
+                .and_then(|d| d.date_created)
+                .and_then(|t| DateTime::<Utc>::from_timestamp(t.secs(), t.subsec_nanos()));
+            if let Some(d) = date {
+                if latest.is_none_or(|l| d > l) {
+                    latest = Some(d);
+                }
+            }
+        }
+        Ok(latest)
+    }
+
     /// Delete a custom platform by ARN. EB returns success immediately even
     /// though the underlying AMI / EBS cleanup runs async. Will fail if any
     /// envs are still using the platform.

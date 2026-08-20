@@ -6,7 +6,6 @@
 //! whole async-result surface (it was previously one ~1,140-line `match`).
 
 use super::*;
-use tui_common::TextInput;
 
 impl AppMsg {
     /// The context generation a result message was produced for, when it
@@ -1053,12 +1052,8 @@ impl App {
             log_group,
             env_name,
             events: std::collections::VecDeque::with_capacity(LOG_TAIL_MAX_LINES),
-            scroll: 0,
-            following: true,
             since_ms,
-            filter_input: TextInput::new(),
-            filter_active: false,
-            filter_pattern: None,
+            view: super::tail::TailView::new(),
             last_err: None,
             session_id,
         });
@@ -1095,10 +1090,7 @@ impl App {
             // `:why` mid-tail). Reap the polling task so it doesn't
             // keep hitting CW Logs invisibly; the session bump makes
             // any already-queued messages drop at the guard above.
-            if let Some(handle) = self.log_tail_task.take() {
-                handle.abort();
-            }
-            self.log_tail_session = self.log_tail_session.wrapping_add(1);
+            super::tail::reap_tail_task(&mut self.log_tail_task, &mut self.log_tail_session);
             return;
         };
         let Some(Overlay::LogTail {
@@ -1133,11 +1125,7 @@ impl App {
         }
         self.current_overlay = Some(Overlay::EventTail {
             events: std::collections::VecDeque::with_capacity(EVENT_TAIL_MAX_EVENTS),
-            scroll: 0,
-            following: true,
-            filter_input: TextInput::new(),
-            filter_active: false,
-            filter_pattern: None,
+            view: super::tail::TailView::new(),
             last_err: None,
             session_id,
         });
@@ -1169,10 +1157,7 @@ impl App {
             // reap the poller instead of letting it hit DescribeEvents
             // invisibly until context switch. Same shape as the
             // LogTail reap above.
-            if let Some(handle) = self.event_tail_task.take() {
-                handle.abort();
-            }
-            self.event_tail_session = self.event_tail_session.wrapping_add(1);
+            super::tail::reap_tail_task(&mut self.event_tail_task, &mut self.event_tail_session);
             return;
         };
         let Some(Overlay::EventTail {
