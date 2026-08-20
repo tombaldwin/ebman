@@ -40,21 +40,30 @@ fn marker_path() -> PathBuf {
     crate::util::cache_dir().join("freeze.json")
 }
 
-/// Write (or overwrite) the marker for this process. 0600 like every
-/// other cache artifact.
-pub fn write_marker(reason: &str, incident: bool) {
-    write_marker_at(&marker_path(), std::process::id(), reason, incident);
+/// Write (or overwrite) the marker for this process. Returns `Err`
+/// when persistence failed — the caller MUST surface that, because a
+/// silently-absent marker fails OPEN (agent + CLI writes are NOT
+/// blocked) while the operator believes the fleet is frozen.
+pub fn write_marker(reason: &str, incident: bool) -> std::io::Result<()> {
+    write_marker_at(&marker_path(), std::process::id(), reason, incident)
 }
 
-fn write_marker_at(path: &Path, pid: u32, reason: &str, incident: bool) {
+fn write_marker_at(path: &Path, pid: u32, reason: &str, incident: bool) -> std::io::Result<()> {
     let body = format!(
         "{{\"pid\":{pid},\"reason\":{},\"incident\":{incident},\"at\":{}}}\n",
         crate::util::json_string(reason),
         crate::util::json_string(&chrono::Utc::now().to_rfc3339()),
     );
-    if let Err(e) = crate::util::write_secure(path, body.as_bytes()) {
+    // Atomic: write a temp then rename, so a concurrent reader never
+    // catches a half-written (fail-open) marker (M1). Same 0600.
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    crate::util::write_secure(&tmp, body.as_bytes())?;
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
         tracing::warn!(error = %e, "could not persist freeze marker — cross-process enforcement inactive");
+        return Err(e);
     }
+    Ok(())
 }
 
 /// Remove the marker, but only if THIS process owns it — a thaw in
@@ -82,11 +91,17 @@ pub fn read_active() -> Option<FreezeMarker> {
 fn read_active_with(path: &Path, alive: impl Fn(u32) -> bool) -> Option<FreezeMarker> {
     let m = parse_file(path)?;
     if alive(m.pid) {
-        Some(m)
-    } else {
-        let _ = std::fs::remove_file(path);
-        None
+        return Some(m);
     }
+    // Dead pid → stale. Re-read immediately before removing and only
+    // delete if the on-disk pid is STILL the dead one (I1): between
+    // our read and here, another session could have overwritten the
+    // file with a live-pid freeze, and a blind remove would silently
+    // drop a VALID cross-process freeze.
+    if parse_file(path).map(|m2| m2.pid) == Some(m.pid) {
+        let _ = std::fs::remove_file(path);
+    }
+    None
 }
 
 fn parse_file(path: &Path) -> Option<FreezeMarker> {
@@ -138,7 +153,7 @@ mod tests {
     #[test]
     fn marker_round_trips() {
         let p = tmp("rt");
-        write_marker_at(&p, 4242, "checkout 5xx", true);
+        write_marker_at(&p, 4242, "checkout 5xx", true).unwrap();
         let m = parse_file(&p).expect("parses");
         assert_eq!(m.pid, 4242);
         assert_eq!(m.reason, "checkout 5xx");
@@ -150,7 +165,7 @@ mod tests {
     #[test]
     fn dead_pid_marker_is_ignored_and_cleaned() {
         let p = tmp("dead");
-        write_marker_at(&p, 4242, "stale", false);
+        write_marker_at(&p, 4242, "stale", false).unwrap();
         assert!(read_active_with(&p, |_| false).is_none());
         assert!(!p.exists(), "stale marker must be removed by the reader");
     }
@@ -158,7 +173,7 @@ mod tests {
     #[test]
     fn live_pid_marker_is_active() {
         let p = tmp("live");
-        write_marker_at(&p, 4242, "deploy freeze", false);
+        write_marker_at(&p, 4242, "deploy freeze", false).unwrap();
         let m = read_active_with(&p, |_| true).expect("active");
         assert_eq!(m.remedy(), ":thaw-deploys");
         assert!(p.exists());
@@ -168,11 +183,40 @@ mod tests {
     #[test]
     fn clear_only_removes_own_marker() {
         let p = tmp("own");
-        write_marker_at(&p, 111, "someone else's", false);
+        write_marker_at(&p, 111, "someone else's", false).unwrap();
         clear_if_pid_at(&p, 222);
         assert!(p.exists(), "another session's marker survives");
         clear_if_pid_at(&p, 111);
         assert!(!p.exists());
+    }
+
+    #[test]
+    fn reader_cleanup_does_not_delete_a_freshly_written_live_marker() {
+        // I1 (0.28 pre-tag): a reader that decided a marker is stale
+        // (dead pid) must NOT delete it if another session overwrote
+        // the file with a LIVE-pid freeze in the meantime.
+        let p = tmp("toctou");
+        write_marker_at(&p, 4242, "dead session", false).unwrap();
+        // Reader sees pid 4242 as dead, but between its read and the
+        // delete the file now holds a live-pid marker. Model that by
+        // overwriting inside the liveness closure.
+        let overwritten = std::cell::Cell::new(false);
+        let result = read_active_with(&p, |_pid| {
+            if !overwritten.get() {
+                // First call: rewrite the file with a "live" pid.
+                write_marker_at(&p, 111, "new live freeze", true).unwrap();
+                overwritten.set(true);
+            }
+            false // report the ORIGINAL pid as dead
+        });
+        assert!(
+            result.is_none(),
+            "original dead marker not returned as active"
+        );
+        assert!(p.exists(), "the freshly-written live marker must survive");
+        let m = parse_file(&p).unwrap();
+        assert_eq!(m.pid, 111, "live marker intact");
+        let _ = std::fs::remove_file(&p);
     }
 
     #[test]
@@ -186,7 +230,7 @@ mod tests {
     #[test]
     fn reason_with_quotes_survives() {
         let p = tmp("quotes");
-        write_marker_at(&p, 1, "the \"big\" one\nline2", false);
+        write_marker_at(&p, 1, "the \"big\" one\nline2", false).unwrap();
         let m = parse_file(&p).expect("parses");
         assert_eq!(m.reason, "the \"big\" one\nline2");
         let _ = std::fs::remove_file(&p);

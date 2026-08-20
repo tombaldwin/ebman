@@ -253,8 +253,14 @@ impl App {
         });
         // Persist the cross-process marker so MCP writes + the CLI
         // write paths honour the freeze. Demo freeze is play-acting.
+        // A persist failure must be surfaced (I2): a silently-absent
+        // marker fails OPEN — agent/CLI writes would NOT be blocked.
+        let mut marker_failed = false;
         if !self.demo_mode {
-            crate::freeze::write_marker(&reason_for_store, false);
+            if let Err(e) = crate::freeze::write_marker(&reason_for_store, false) {
+                marker_failed = true;
+                tracing::warn!(error = %e, "freeze marker persist failed");
+            }
         }
         let audit_reason = if reason_for_store.is_empty() {
             "no-reason".to_string()
@@ -270,11 +276,20 @@ impl App {
             &[("reason", audit_reason.as_str())],
         );
         let verb = if was_frozen { "updated" } else { "set" };
-        self.pin_status(if reason_for_store.is_empty() {
-            format!("freeze {verb}: deploys + writes blocked until :thaw-deploys")
+        if marker_failed {
+            // Persist failed → this TUI's own writes are still frozen
+            // (in-memory), but cross-process (agent/CLI) writes are
+            // NOT blocked. Say so rather than claiming full coverage.
+            self.pin_error(format!(
+                "freeze {verb} for THIS session, but the cross-process marker FAILED to write — agent (MCP) and other-terminal CLI writes are NOT blocked"
+            ));
         } else {
-            format!("freeze {verb}: deploys + writes blocked — reason: {reason_for_store}")
-        });
+            self.pin_status(if reason_for_store.is_empty() {
+                format!("freeze {verb}: deploys + writes blocked until :thaw-deploys")
+            } else {
+                format!("freeze {verb}: deploys + writes blocked — reason: {reason_for_store}")
+            });
+        }
     }
 
     /// `:thaw-deploys` — clear the session-scoped freeze. No-op
@@ -342,14 +357,17 @@ impl App {
                     },
                     frozen_at,
                 });
+                let mut marker_failed = false;
                 if !self.demo_mode {
-                    crate::freeze::write_marker(
-                        self.deploy_freeze
-                            .as_ref()
-                            .map(|f| f.reason.as_str())
-                            .unwrap_or("incident"),
-                        true,
-                    );
+                    let reason = self
+                        .deploy_freeze
+                        .as_ref()
+                        .map(|f| f.reason.clone())
+                        .unwrap_or_else(|| "incident".to_string());
+                    if let Err(e) = crate::freeze::write_marker(&reason, true) {
+                        marker_failed = true;
+                        tracing::warn!(error = %e, "freeze marker persist failed");
+                    }
                 }
                 let audit_headline = if headline.is_empty() {
                     "no-headline".to_string()
@@ -365,11 +383,19 @@ impl App {
                     &[("headline", audit_headline.as_str())],
                 );
                 let verb = if was_active { "updated" } else { "started" };
-                self.pin_status(if headline.is_empty() {
-                    format!("incident {verb} — deploys frozen; :incident END to close")
+                if marker_failed {
+                    self.pin_error(format!(
+                        "incident {verb} for THIS session, but the cross-process marker FAILED to write — agent (MCP) and other-terminal CLI writes are NOT blocked"
+                    ));
                 } else {
-                    format!("incident {verb}: {headline} — deploys frozen; :incident END to close")
-                });
+                    self.pin_status(if headline.is_empty() {
+                        format!("incident {verb} — deploys frozen; :incident END to close")
+                    } else {
+                        format!(
+                            "incident {verb}: {headline} — deploys frozen; :incident END to close"
+                        )
+                    });
+                }
             }
             Ok(IncidentCmd::End) => {
                 let Some(incident) = self.incident.take() else {

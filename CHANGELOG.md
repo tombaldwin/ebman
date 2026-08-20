@@ -16,6 +16,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added — MCP v2 writes + cross-process freeze (0.28 HEADLINE)
 
+### Pre-tag review (2 lenses: bugs+safety, architecture) — 2 Critical + 2 Important + 1 Minor, all fixed before tag
+
+- **C1 — write-surface wedge on cancellation/panic.** `dispatching` was reset in a block AFTER the awaited dispatch; the 30s tool timeout (a normal path) drops that future mid-await, leaving `dispatching=true` forever — every subsequent write refused "another write is in flight" until restart. Fixed: `dispatching` is an `AtomicBool` reset by an RAII guard that runs on unwind. Live-verified 5/5 sequential writes don't wedge.
+- **C2 — `lint --fix` had no cross-process freeze gate** (freeze.rs's own doc claimed it did). A freeze set in a TUI blocked MCP, `ebman action`, and `audit replay` but NOT `ebman lint --fix --yes` — the exact cross-process hole the marker exists to close, same class as the 0.14.1 regression. Fixed + live-verified (exit 3 under freeze; `--dry-run` still runs).
+- **I1 — freeze reader could delete a fresh valid marker** (TOCTOU): a reader cleaning a dead-pid marker now re-reads and only removes it if the on-disk pid is still the dead one, so it can't drop another session's just-written live freeze.
+- **I2 — freeze persist failure failed open with a false toast.** `write_marker` now returns `Result`; a persist failure shows "cross-process marker FAILED — agent/CLI writes are NOT blocked" instead of claiming full coverage.
+- **M1 — atomic marker write** (temp + rename) so a concurrent reader never catches a half-written marker.
+
 - **MCP writes are opt-in** — `ebman mcp serve --allow-writes` (flag only) adds two-phase `deploy` / `restart` / `rebuild` / `terminate` / `set_option` (+ `confirm_action`). Without the flag the server is byte-for-byte the 0.27 read-only surface. Writes honor pins, cross-process freeze, and read-only (re-checked at BOTH plan and confirm — the token window can't be used to slip a write past a freshly-declared incident), are serialized one-at-a-time, dispatch-only (poll the read tools for progress), and audit as `via=mcp client=<name>`.
 
 - **`ebman mcp serve --allow-writes`** — five two-phase write tools (`deploy`, `restart`, `rebuild`, `terminate`, `set_option`) + `confirm_action`, present in `tools/list` only under the flag. Each verb returns a transcript-visible plan with a single-use 60s `confirm_token`; `confirm_action` dispatches. `terminate` requires `confirm_name` == env name (strict-typed confirm, one retry/token); `set_option` caps at 10 settings, gates to existing namespaces, and redacts old env-var values in its plan. Pins + a live TUI session's freeze + read-only refuse before a plan issues; writes are serialized server-wide; dispatch-only (poll the read tools); audit lines tagged `via=mcp client=<name>`. Demo mode is synthetic. Rollout is excluded by design (compose from `deploy` + read polling).

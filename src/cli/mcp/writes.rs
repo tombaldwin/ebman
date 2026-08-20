@@ -25,11 +25,13 @@
 
 use super::*;
 
-/// Two-phase write state — one slot, guarded by the server's mutex.
+/// Two-phase write state — the single pending-plan slot, guarded by
+/// the server's mutex. `dispatching` (whether a write is in flight)
+/// lives on `Server` as an `AtomicBool` so the RAII reset guard can
+/// clear it synchronously even on an unwind (see `tool_confirm_action`).
 #[derive(Default)]
 pub(super) struct WriteState {
     pub pending: Option<PendingWrite>,
-    pub dispatching: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -243,11 +245,8 @@ impl Server {
             // Unreachable via the gated table; belt-and-braces.
             return Err("writes are disabled — start the server with --allow-writes".into());
         }
-        {
-            let st = self.writes.lock().await;
-            if st.dispatching {
-                return Err("another write is in flight — wait for it to complete".into());
-            }
+        if self.dispatching.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("another write is in flight — wait for it to complete".into());
         }
         let env_name = arg_str(args, "env").ok_or("'env' is required")?;
 
@@ -409,7 +408,7 @@ impl Server {
         let token = mint_token();
         {
             let mut st = self.writes.lock().await;
-            if st.dispatching {
+            if self.dispatching.load(std::sync::atomic::Ordering::SeqCst) {
                 return Err("another write is in flight — wait for it to complete".into());
             }
             // A new plan replaces any pending one: the agent
@@ -459,7 +458,7 @@ impl Server {
         let token = arg_str(args, "confirm_token").ok_or("'confirm_token' is required")?;
         let pending = {
             let mut st = self.writes.lock().await;
-            if st.dispatching {
+            if self.dispatching.load(std::sync::atomic::Ordering::SeqCst) {
                 return Err("another write is in flight — wait for it to complete".into());
             }
             let Some(p) = st.pending.as_mut() else {
@@ -501,16 +500,28 @@ impl Server {
                 st.pending = None;
                 return Err(msg);
             }
-            st.dispatching = true;
+            // Set BEFORE releasing the writes lock: a concurrent
+            // plan/confirm checking `dispatching` must see it true.
+            self.dispatching
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             st.pending.take().expect("checked above")
         };
 
-        let result = self.dispatch_write(&pending).await;
-        {
-            let mut st = self.writes.lock().await;
-            st.dispatching = false;
+        // RAII reset (0.28 pre-tag review I2): if `dispatch_write`
+        // panics or unwinds, `dispatching` must still clear —
+        // otherwise a single panicked task wedges the whole write
+        // surface forever ("another write is in flight" on every
+        // subsequent call). An AtomicBool store in Drop is
+        // synchronous and runs on unwind; the plain set-false after
+        // the await would be skipped.
+        struct DispatchGuard<'a>(&'a std::sync::atomic::AtomicBool);
+        impl Drop for DispatchGuard<'_> {
+            fn drop(&mut self) {
+                self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
         }
-        result
+        let _guard = DispatchGuard(&self.dispatching);
+        self.dispatch_write(&pending).await
     }
 
     async fn dispatch_write(&self, p: &PendingWrite) -> Result<String, String> {

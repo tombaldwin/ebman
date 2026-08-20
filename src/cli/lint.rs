@@ -608,6 +608,13 @@ pub async fn run(args: &[String]) -> Result<()> {
 
     let safety_cfg = config::load();
     let active_profile_for_safety = std::env::var("AWS_PROFILE").ok();
+    // Cross-process fleet freeze: a real fix dispatch (--fix --yes)
+    // must refuse while a live TUI session holds :freeze-deploys /
+    // :incident (a --dry-run plans nothing, so it stays allowed).
+    // This path had the same blind spot action/replay had.
+    if fix && yes {
+        crate::cli::refuse_if_frozen("ebman lint --fix");
+    }
     if webhook.is_some() {
         // CLI mode installs no tracing subscriber — route webhook
         // delivery failures to stderr so a broken URL isn't silent.

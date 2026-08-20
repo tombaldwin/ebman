@@ -900,6 +900,15 @@ Demand: the same agent sessions that drove v1 (fleet upgrade + release ops) need
 
 **Docs:** headless.md gains the v2 section (two-phase example transcript incl. terminate's `confirm_name`); safety-and-privacy.md updates the "reads-only" bullet to the opt-in + two-phase + pin + freeze-marker story, and the freeze docs drop the "not persisted / in-session gesture" phrasing for the new pid-scoped marker semantics; commands.md `--help` entry; configuration.md notes freeze.json's location and that deleting it is the manual unfreeze of last resort.
 
+#### 0.29 queue — 0.28 pre-tag review deferrals (2026-08-20)
+
+The write/freeze pre-tag review (2 lenses) fixed 2 Critical + 2 Important + 1 Minor before tag (see CHANGELOG). Deferred, non-blocking:
+- [ ] **Unified MCP tool registry** (arch I1) — the spec's `&[ToolDef{name, schema, is_write, handler}]` single table; today name/schema/handler live in three sites (tool_table descriptors + call_tool match + RPC existence check) with no compile-time or test link. A coverage test that every `tool_table(true)` name resolves to a real handler was NOT added this run — add it OR the full slice refactor (~half day). Drift is currently a runtime `isError`, not a panic.
+- [ ] **Shared verb-dispatch helper** (arch M2) — `dispatch_write` (writes.rs) and `action::run` (cli/action.rs) both hand-map verb→method + the audit pair; a shared `dispatch_verb()` removes the drift surface (~2h).
+- [ ] **pin/freeze check-order + freeze-message rendering unified** (arch M3) — CLI checks pin-then-freeze, MCP checks freeze-then-pin; the freeze refusal string is rendered in two places. Cosmetic inconsistency for an operator comparing outputs.
+- [ ] **Superseded-token message** (bugs/arch M1) — a token replaced by a newer plan reports "unknown confirm_token", indistinguishable from a typo; distinguish "superseded by a newer plan".
+- [ ] **CLI rollout/auto-rollback freeze is start-only** (bugs M3) — a freeze declared mid-rollout doesn't stop later regions; matches the pin start-gate semantics, flagged as a conscious choice.
+
 #### Also queued for 0.28
 - [x] **Live-verification sweep** — DONE 2026-08-20. All three SDK-compiled-unverified calls confirmed against real resources in us-west-1: EBL020 `simulate_principal_policy` against Uflexi-prod's `aws-elasticbeanstalk-ec2-role` (returned EvalActionName/EvalDecision `allowed`); EBL015 `describe_platform_version` against a managed platform ARN (returned a real DateCreated); EBL018 `web_acl_for_resource` against a throwaway bare ALB (empty response → Ok(None) → rule fires; ALB + SG torn down clean, no orphans).
 - [x] **Demo-mode poller quieting** — SHIPPED: `DEMO_QUIET_AWS_ERRORS` downgrades the stub's expected failures to debug in `--demo` (real mode keeps the loud contract).
