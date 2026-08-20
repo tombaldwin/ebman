@@ -2029,7 +2029,12 @@ impl AwsClient {
         log_group: &str,
         since_ms: i64,
         limit: i32,
-    ) -> Result<(Vec<LogEvent>, i64)> {
+        // Event ids already delivered at exactly `since_ms` — the
+        // truncated-poll watermark doesn't advance past the boundary
+        // millisecond (see below), so its events are re-fetched; this
+        // set filters them out instead of showing duplicate lines.
+        skip_at_since: &std::collections::HashSet<String>,
+    ) -> Result<(Vec<LogEvent>, i64, std::collections::HashSet<String>)> {
         // Follow `next_token` up to a page cap: FilterLogEvents
         // truncates at `limit` OR its 1MB response cap and hands back
         // a token. The pre-0.27 single-page shape advanced the
@@ -2044,6 +2049,7 @@ impl AwsClient {
         let mut max_ts = since_ms;
         let mut next_token: Option<String> = None;
         let mut truncated = false;
+        let mut boundary_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
         for _page in 0..MAX_PAGES_PER_POLL {
             let mut req = self
                 .cw_logs
@@ -2057,8 +2063,16 @@ impl AwsClient {
             let resp = req.send().await.wrap_err("FilterLogEvents failed")?;
             for e in resp.events.unwrap_or_default() {
                 let ts = e.timestamp.unwrap_or(since_ms);
+                let id = e.event_id.unwrap_or_default();
+                if ts == since_ms && !id.is_empty() && skip_at_since.contains(&id) {
+                    continue;
+                }
                 if ts > max_ts {
                     max_ts = ts;
+                    boundary_ids.clear();
+                }
+                if ts == max_ts && !id.is_empty() {
+                    boundary_ids.insert(id);
                 }
                 out.push(LogEvent {
                     timestamp_ms: ts,
@@ -2092,7 +2106,14 @@ impl AwsClient {
         } else {
             since_ms
         };
-        Ok((out, next_since))
+        // Only the truncated path re-fetches the boundary ms; the
+        // clean path advanced past it, so no ids need carrying.
+        let carry = if truncated {
+            boundary_ids
+        } else {
+            std::collections::HashSet::new()
+        };
+        Ok((out, next_since, carry))
     }
 
     /// Run a CloudWatch Logs Insights query against `log_groups` over the
@@ -4891,6 +4912,46 @@ mod tests {
     // settings when explicit overrides exist.
 
     #[tokio::test]
+    async fn log_tail_skips_already_delivered_boundary_ids() {
+        // After a page-capped poll the watermark stays AT the boundary
+        // millisecond and its events are re-fetched — the carried id
+        // set must filter them so the overlay shows no duplicates.
+        use aws_sdk_cloudwatchlogs::operation::filter_log_events::FilterLogEventsOutput;
+        use aws_sdk_cloudwatchlogs::types::FilteredLogEvent;
+
+        let page = aws_smithy_mocks::mock!(CwLogsClient::filter_log_events).then_output(|| {
+            FilterLogEventsOutput::builder()
+                .events(
+                    FilteredLogEvent::builder()
+                        .timestamp(1_000)
+                        .event_id("e1")
+                        .log_stream_name("i-abc")
+                        .message("already delivered")
+                        .build(),
+                )
+                .events(
+                    FilteredLogEvent::builder()
+                        .timestamp(1_000)
+                        .event_id("e2")
+                        .log_stream_name("i-abc")
+                        .message("new at boundary")
+                        .build(),
+                )
+                .build()
+        });
+        let cw_logs = aws_smithy_mocks::mock_client!(aws_sdk_cloudwatchlogs, [&page]);
+        let client = client_with_cw_logs(cw_logs);
+        let skip: std::collections::HashSet<String> = ["e1".to_string()].into_iter().collect();
+        let (events, next_since, _carry) = client
+            .fetch_recent_log_events("/aws/eb/env", 1_000, 1000, &skip)
+            .await
+            .expect("ok");
+        let msgs: Vec<&str> = events.iter().map(|e| e.message.as_str()).collect();
+        assert_eq!(msgs, vec!["new at boundary"], "e1 filtered, e2 delivered");
+        assert_eq!(next_since, 1_000, "no newer event — watermark holds");
+    }
+
+    #[tokio::test]
     async fn worker_queues_primary_error_with_empty_fallback_is_an_error() {
         // 0.27 re-review C-class: AccessDenied on the primary
         // discovery call + an Ok-but-empty fallback (the COMMON
@@ -5191,10 +5252,14 @@ mod tests {
         let cw_logs = aws_smithy_mocks::mock_client!(aws_sdk_cloudwatchlogs, [&page1, &page2]);
         let client = client_with_cw_logs(cw_logs);
 
-        let (events, next_since) = client
-            .fetch_recent_log_events("/aws/eb/env", 500, 1000)
+        let (events, next_since, carry) = client
+            .fetch_recent_log_events("/aws/eb/env", 500, 1000, &Default::default())
             .await
             .expect("ok");
+        assert!(
+            carry.is_empty(),
+            "clean (non-truncated) poll carries no boundary ids"
+        );
         let msgs: Vec<&str> = events.iter().map(|e| e.message.as_str()).collect();
         assert_eq!(
             msgs,

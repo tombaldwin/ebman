@@ -38,7 +38,10 @@ pub struct DlqState {
     pub viewing: QueueView,
     /// Pending single-message delete confirmation. Holds the index of the
     /// message the user pressed `x` on; `y` confirms, anything else cancels.
-    pub confirm_delete_idx: Option<usize>,
+    /// Armed single-message delete confirm, keyed by MESSAGE ID (not
+    /// list index — a refresh landing mid-confirm reorders the list,
+    /// and an index-armed `y` deleted whatever now sat at that slot).
+    pub confirm_delete_id: Option<String>,
     /// When `Some`, the time-windowed replay prompt is open and this holds
     /// the operator's typed spec (`all` / a count / a window like `24h`).
     /// Dead-letter view only.

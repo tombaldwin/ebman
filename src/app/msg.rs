@@ -380,17 +380,20 @@ impl App {
         for (env_name, outcome) in results {
             match outcome {
                 Ok(Some(depth)) => {
-                    self.worker_dlq_depths.insert(env_name, depth);
+                    self.worker_dlq_depths.insert(env_name.clone(), depth);
+                    self.worker_dlq_stale.remove(&env_name);
                 }
                 Ok(None) => {
                     self.worker_dlq_depths.remove(&env_name);
+                    self.worker_dlq_stale.remove(&env_name);
                 }
                 Err(e) => {
                     tracing::warn!(
                         env = %env_name,
                         error = %e,
-                        "worker queue check failed — keeping previous DLQ depth"
+                        "worker queue check failed — keeping previous DLQ depth (marked stale)"
                     );
+                    self.worker_dlq_stale.insert(env_name);
                 }
             }
         }
@@ -1651,10 +1654,6 @@ impl App {
         match result {
             Ok(messages) => {
                 dlq.messages = messages;
-                // An armed delete-confirm indexes the OLD list — a
-                // refresh landing mid-confirm could retarget the `y`
-                // onto whatever now sits at that index. Disarm.
-                dlq.confirm_delete_idx = None;
                 if dlq.messages.is_empty() {
                     dlq.list_state.select(None);
                 } else {

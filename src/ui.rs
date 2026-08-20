@@ -4450,7 +4450,7 @@ fn draw_dlq(f: &mut Frame, area: Rect, app: &mut App) {
             format!("{} messages", dlq.messages.len()),
             Style::default().fg(theme.health_yellow),
         ),
-        if dlq.confirm_delete_idx.is_some() {
+        if dlq.confirm_delete_id.is_some() {
             Span::styled(
                 format!("   {}delete this message? y / n", warn_glyph(theme.icons)),
                 Style::default()
@@ -5688,9 +5688,16 @@ fn draw_detail_health(f: &mut Frame, area: Rect, detail: &crate::app::DetailStat
         0
     };
     if dlq_depth > 0 {
+        // Last check failed → the depth is the last-known value, not
+        // a live reading. Say so instead of presenting it as current.
+        let stale_suffix = if app.worker_dlq_stale.contains(&env.name) {
+            " (stale)"
+        } else {
+            ""
+        };
         status_line.push(Span::raw("   "));
         status_line.push(Span::styled(
-            format!("{}DLQ:{dlq_depth}", warn_glyph(theme.icons)),
+            format!("{}DLQ:{dlq_depth}{stale_suffix}", warn_glyph(theme.icons)),
             Style::default()
                 .fg(theme.health_red)
                 .add_modifier(Modifier::BOLD),

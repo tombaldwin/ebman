@@ -78,6 +78,25 @@ fn parse_mcp_args(args: &[String]) -> Result<McpArgs, String> {
     Ok(McpArgs { demo, no_redact })
 }
 
+/// Non-object frames (batch arrays, bare scalars) are invalid
+/// requests per JSON-RPC 2.0 — answer -32600 rather than silently
+/// dropping them (a strict client would wait out its timeout). MCP
+/// 2025-06-18 removed batching, so arrays are not-supported by spec.
+/// Returns the response frame to send, `None` for a valid object.
+fn invalid_request_response(req: &Value) -> Option<String> {
+    if req.is_object() {
+        return None;
+    }
+    Some(
+        json!({
+            "jsonrpc": "2.0",
+            "id": null,
+            "error": {"code": -32600, "message": "invalid request: expected a single JSON-RPC object"}
+        })
+        .to_string(),
+    )
+}
+
 /// One env's drift entry: (env name, tf-matched, drifted fields).
 type DriftReport = (String, bool, Vec<terraform::DriftField>);
 
@@ -1013,22 +1032,8 @@ pub async fn run(args: &[String]) -> Result<()> {
                 continue;
             }
         };
-        // Non-object frames (batch arrays, bare scalars) are invalid
-        // requests per JSON-RPC 2.0 — answer -32600 rather than
-        // silently dropping them (a strict client would wait out its
-        // timeout). MCP 2025-06-18 removed batching, so arrays are
-        // not-supported by spec.
-        if !req.is_object() {
-            let _ = out_tx
-                .send(
-                    json!({
-                        "jsonrpc": "2.0",
-                        "id": null,
-                        "error": {"code": -32600, "message": "invalid request: expected a single JSON-RPC object"}
-                    })
-                    .to_string(),
-                )
-                .await;
+        if let Some(resp) = invalid_request_response(&req) {
+            let _ = out_tx.send(resp).await;
             continue;
         }
         // tools/call may hit AWS for many seconds — spawn it so the
@@ -1361,6 +1366,23 @@ mod tests {
         let null_id: Value =
             serde_json::from_str(r#"{"jsonrpc":"2.0","id":null,"method":"ping"}"#).unwrap();
         assert!(server.handle_request(&null_id).await.is_none());
+    }
+
+    #[test]
+    fn non_object_frames_get_invalid_request() {
+        // Batch arrays and scalars answer -32600 (id null); a real
+        // object passes through untouched.
+        let arr: Value =
+            serde_json::from_str(r#"[{"jsonrpc":"2.0","id":1,"method":"ping"}]"#).unwrap();
+        let resp = invalid_request_response(&arr).expect("array is invalid");
+        let parsed: Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(parsed["error"]["code"], -32600);
+        assert!(parsed["id"].is_null());
+        let scalar: Value = serde_json::from_str("42").unwrap();
+        assert!(invalid_request_response(&scalar).is_some());
+        let obj: Value =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#).unwrap();
+        assert!(invalid_request_response(&obj).is_none());
     }
 
     #[test]
