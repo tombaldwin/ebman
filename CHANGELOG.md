@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed / Changed — the 0.27 queue, retired (max-review remainders, all four phases)
+
+**Phase 1 — error honesty & async correctness:** `describe_worker_queues` errors are errors, not "no queues" (per-env reconcile keeps DLQ depths on fetch failure — AccessDenied/throttle can no longer silently clear an alert); logs-tail follows `FilterLogEvents` pagination with a watermark that only advances past received events (mock-tested — no more silent line drops during spikes); Cost Explorer pagination + non-finite filtering; webhook POSTs drain before one-shot CLI exits (the outcome POST was being cancelled at runtime drop); `AppMsg::Rebuild` carries a spawn epoch so rapid context switches settle on the LAST choice; the events panel cursor-follows (its scroll was dead state); forms scroll to the focused field on small terminals.
+
+**Phase 2 — four batches:** *CLI parity* — the `take_value` guard extended to every subcommand parser, unknown subcommands error with help instead of launching the TUI, `envs` rejects unknown flags, `versions --json` emits `created:null`, project-config parse failures warn instead of silently dropping profile pins, `ctl` rejects newlines, rollout regions deduped, `audit --tail` re-reads torn lines, watch interval is start-to-start. *Security hygiene* — 0600 on audit.log / ebman.log / crash reports / explain cache; control.sock gains SO_PEERCRED same-uid checks (closes the chmod race); audit free-text fields auto-quote (injection round-trip test); the bug-report scrubber stops mojibake-ing multibyte text. *TUI-UX* — DLQ fresh loads select row 0, `p` purge gated to DLQ view, DLQ fetches carry queue identity (an `m`-toggle mid-fetch can't show the wrong queue), watchdogs disarm honestly when an env leaves the fleet, help-restore ghost states cleared on context switch, Detail Logs scroll bounded, saved-configs windows budget for group headers, ascii icon-mode covers the straggler glyphs. *MCP protocol* — batch arrays/scalars answer `-32600`, `id:null` is a notification, stdin line-capped at 16MB via LinesCodec, **drift redaction now covers `ebman drift` (`--no-redact` opts out) and the TUI `:drift` overlay**, EBL015 warnings surface in MCP lint results.
+
+**Phase 3 — architecture:** new `src/probe.rs` (health-check probe helpers out of app.rs); `rewrite_credential_error` relocated to aws.rs; MCP `append_string_array` generalization. Deferred with reasons: ui.rs submodule split (own session), MCP registry unification (gated on v2 `--allow-writes`). Wontfix by decision: unicode display-width column math, serde_yml alias hardening in llm.rs, `audit --tail` batch-vs-stream text alignment.
+
+
 ## [0.26.1] — 2026-08-20 — same-day patch: the max-depth review's Critical fixes
 
 ### Fixed — 0.26 max-depth review (6 parallel lenses over the whole codebase, post-release)
