@@ -680,9 +680,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 }
 
-fn draw_form(f: &mut Frame, area: Rect, app: &App) {
+fn draw_form(f: &mut Frame, area: Rect, app: &mut App) {
     use crate::form::{FieldKind, FormState};
-    let Some(form) = app.form.as_ref() else {
+    let Some(form) = app.form.as_mut() else {
         return;
     };
     let popup = centered_overlay(OverlaySize::Text, area);
@@ -741,8 +741,16 @@ fn draw_form(f: &mut Frame, area: Rect, app: &App) {
             .unwrap_or(0)
             .clamp(8, 32);
         let mut lines: Vec<Line> = Vec::new();
+        // Line index of the focused field's row (or focused MultiSelect
+        // option row) — drives the cursor-follow below so a form taller
+        // than the popup (9-field :asg-trigger on 80x24) scrolls
+        // instead of letting Tab move focus below the fold.
+        let mut cursor_line: Option<usize> = None;
         for (i, fld) in form.fields.iter().enumerate() {
             let is_cursor = i == form.cursor;
+            if is_cursor {
+                cursor_line = Some(lines.len());
+            }
             let pointer = if is_cursor { "▶ " } else { "  " };
             let label_style = if is_cursor {
                 Style::default()
@@ -822,6 +830,9 @@ fn draw_form(f: &mut Frame, area: Rect, app: &App) {
                     let selected = crate::form::is_multi_selected(&fld.value, opt);
                     let marker = if selected { "[x]" } else { "[ ]" };
                     let row_is_cursor = is_cursor && idx == fld.option_cursor;
+                    if row_is_cursor {
+                        cursor_line = Some(lines.len());
+                    }
                     let row_style = if row_is_cursor {
                         Style::default().fg(theme.text).bg(theme.row_selected_bg)
                     } else if selected {
@@ -859,7 +870,18 @@ fn draw_form(f: &mut Frame, area: Rect, app: &App) {
                 )));
             }
         }
-        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), chunks[2]);
+        form.scroll = config_scroll_follow(
+            form.scroll,
+            cursor_line,
+            chunks[2].height as usize,
+            lines.len(),
+        );
+        f.render_widget(
+            Paragraph::new(lines)
+                .wrap(Wrap { trim: false })
+                .scroll((form.scroll, 0)),
+            chunks[2],
+        );
     }
     let footer = match form.state {
         FormState::Loading => " esc to cancel",
@@ -3710,7 +3732,20 @@ fn status_pill_for(status: &str, theme: &Theme, alert: StatusAlert) -> Span<'sta
     }
 }
 
-fn draw_events(f: &mut Frame, area: Rect, app: &App) {
+fn draw_events(f: &mut Frame, area: Rect, app: &mut App) {
+    // Cursor-follow (same contract as every other list: the ▶ row
+    // stays inside the viewport). `event_panel.scroll` was previously
+    // dead state pinned at 0 — holding J walked the cursor below the
+    // fold and every subsequent key (incl. `y` yank) operated on an
+    // invisible row. Events render one line each (no wrap), so the
+    // cursor index IS the line index.
+    let body_rows = area.height.saturating_sub(2) as usize;
+    app.event_panel.scroll = config_scroll_follow(
+        app.event_panel.scroll,
+        app.event_panel.cursor,
+        body_rows,
+        app.event_panel.events.len(),
+    );
     let scope_suffix = match app.event_panel.for_env.as_deref() {
         Some(env) => format!(" · {env}"),
         None => " · all envs".to_string(),

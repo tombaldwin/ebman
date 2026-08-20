@@ -188,11 +188,12 @@ pub async fn run(args: &[String]) -> Result<()> {
     match result {
         Ok(()) => {
             println!("ok: {action_name} on {env} dispatched");
+            crate::cli::drain_before_return().await;
             Ok(())
         }
         Err(e) => {
             eprintln!("err: {e}");
-            std::process::exit(1);
+            crate::cli::exit_after_drain(1).await;
         }
     }
 }
@@ -282,7 +283,7 @@ async fn run_deploy(
             &[("version", &version)],
         );
         eprintln!("err: {msg}");
-        std::process::exit(1);
+        crate::cli::exit_after_drain(1).await;
     }
     audit::append_action_completed(
         None,
@@ -296,6 +297,7 @@ async fn run_deploy(
 
     if wait_for_green_secs.is_none() && auto_rollback_secs.is_none() {
         println!("ok: deploy on {env} dispatched (version={version})");
+        crate::cli::drain_before_return().await;
         return Ok(());
     }
 
@@ -340,6 +342,7 @@ async fn run_deploy(
             }
             PollDecision::Success => {
                 println!("ok: deploy on {env} reached Green at t={elapsed}s (version={version})");
+                crate::cli::drain_before_return().await;
                 return Ok(());
             }
             PollDecision::WaitForGreenTimeout => {
@@ -349,7 +352,7 @@ async fn run_deploy(
                         "timeout: deploy on {env} did not reach Green within {}s (status={status}, health={health}, version={version})",
                         wait_for_green_secs.unwrap_or(0)
                     );
-                    std::process::exit(4);
+                    crate::cli::exit_after_drain(4).await;
                 }
                 let remaining = auto_rollback_secs.unwrap_or(0).saturating_sub(elapsed);
                 println!(
@@ -370,10 +373,10 @@ async fn run_deploy(
                 );
                 if let Err(e) = aws.deploy_version(env, &snapshot_label).await {
                     eprintln!("err: rollback deploy_version: {e}");
-                    std::process::exit(1);
+                    crate::cli::exit_after_drain(1).await;
                 }
                 println!("ok: rollback dispatched on {env} (version={snapshot_label})");
-                std::process::exit(5);
+                crate::cli::exit_after_drain(5).await;
             }
         }
     }
@@ -856,8 +859,9 @@ async fn run_rollout(args: &[String]) -> Result<()> {
     }
 
     if any_failure {
-        std::process::exit(3);
+        crate::cli::exit_after_drain(3).await;
     }
+    crate::cli::drain_before_return().await;
     Ok(())
 }
 

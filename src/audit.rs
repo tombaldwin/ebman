@@ -715,7 +715,17 @@ pub(crate) fn fire_webhook(
     if tokio::runtime::Handle::try_current().is_err() {
         return;
     }
+    WEBHOOKS_IN_FLIGHT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     tokio::spawn(async move {
+        // Decrement-on-drop so every exit path (success, error, panic)
+        // releases the drain counter.
+        struct InFlight;
+        impl Drop for InFlight {
+            fn drop(&mut self) {
+                WEBHOOKS_IN_FLIGHT.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let _guard = InFlight;
         // In the TUI, failures go to tracing only (stderr would tear
         // the alternate screen). CLI subcommands may print — the ones
         // that take an operator-supplied webhook opt in via
@@ -782,6 +792,30 @@ static WEBHOOK_ERRORS_TO_STDERR: std::sync::atomic::AtomicBool =
 
 pub(crate) fn webhook_errors_to_stderr() {
     WEBHOOK_ERRORS_TO_STDERR.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Count of webhook POSTs currently in flight. `fire_webhook` is
+/// fire-and-forget, which is right for the TUI — but one-shot CLI
+/// commands return from `#[tokio::main]` immediately after their last
+/// audit line, and runtime drop CANCELS spawned tasks: the outcome
+/// POST (the line a paging integration most needs) usually never left
+/// the machine. CLI exits call [`drain_webhooks`] first.
+static WEBHOOKS_IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Wait (bounded) for in-flight webhook POSTs to finish. Call before
+/// a one-shot CLI command returns/exits; a no-op when no webhook is
+/// configured or nothing is in flight. Polling is fine here: the
+/// steady state is "zero in flight", and the worst case is one
+/// 10s-timeout POST.
+pub async fn drain_webhooks(max_wait: std::time::Duration) {
+    let deadline = tokio::time::Instant::now() + max_wait;
+    while WEBHOOKS_IN_FLIGHT.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+        if tokio::time::Instant::now() >= deadline {
+            tracing::warn!(target: "ebman::notify", "webhook drain timed out with POSTs in flight");
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
 }
 
 /// If `path` exists and is larger than `max_bytes`, move it to

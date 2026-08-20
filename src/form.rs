@@ -26,6 +26,10 @@ pub struct Form {
     /// Env name the form was opened against. Captured at open-time so a
     /// later cursor move on the main table doesn't redirect the submit.
     pub env_name: String,
+    /// Vertical scroll for the field area, maintained by the renderer's
+    /// cursor-follow so the focused field/option stays visible on small
+    /// terminals (a 9-field form overflows an 80×24 popup).
+    pub scroll: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,6 +140,7 @@ impl Form {
             submit,
             summary: summary.into(),
             env_name: env_name.into(),
+            scroll: 0,
         }
     }
 
@@ -715,6 +720,7 @@ mod tests {
         use crate::config::Config;
         let base = Config::default();
         let f = Form {
+            scroll: 0,
             title: "settings".into(),
             fields: vec![
                 FormField {
@@ -813,6 +819,7 @@ mod tests {
         use crate::config::Config;
         let base = Config::default();
         let f = Form {
+            scroll: 0,
             title: "x".into(),
             fields: vec![FormField {
                 key: "this-field-does-not-map".into(),
@@ -838,6 +845,7 @@ mod tests {
     #[test]
     fn local_config_submit_yields_no_option_settings() {
         let f = Form {
+            scroll: 0,
             title: "x".into(),
             fields: vec![],
             cursor: 0,
@@ -854,6 +862,7 @@ mod tests {
     #[test]
     fn form_to_option_settings_drops_empty_optional_integers() {
         let f = Form {
+            scroll: 0,
             title: "t".into(),
             fields: vec![
                 FormField {
@@ -936,6 +945,7 @@ mod tests {
         // A blank text field — e.g. an untouched DBPassword on a pre-filled
         // edit form — must not be sent as an empty value.
         let f = Form {
+            scroll: 0,
             title: "t".into(),
             fields: vec![
                 FormField {

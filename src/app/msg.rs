@@ -17,7 +17,7 @@ impl AppMsg {
     fn generation(&self) -> Option<u64> {
         use AppMsg::*;
         match self {
-            Rebuild(_) | UpdateCheck(_) => None,
+            Rebuild { .. } | UpdateCheck(_) => None,
             Refresh { gen, .. }
             | Identity { gen, .. }
             | Applications { gen, .. }
@@ -91,7 +91,7 @@ impl App {
         }
         match msg {
             AppMsg::Refresh { result, .. } => self.apply_refresh(result),
-            AppMsg::Rebuild(result) => self.apply_rebuild(result),
+            AppMsg::Rebuild { epoch, result } => self.apply_rebuild(epoch, result),
             AppMsg::Identity { result, .. } => self.handle_identity(result),
             AppMsg::Applications { result, .. } => self.handle_applications(result),
             AppMsg::SolutionStacks { result, .. } => self.handle_solution_stacks(result),
@@ -367,14 +367,29 @@ impl App {
         }
     }
 
-    fn handle_worker_queue_check(&mut self, results: Vec<(String, i64)>) {
-        // Rebuild the cache from scratch so workers whose DLQ drained back
-        // to zero are reflected. Missing entries = "fetch failed this
-        // tick"; we drop them so a transient SQS error doesn't blank the
-        // chip for everyone.
-        self.worker_dlq_depths.clear();
-        for (env_name, depth) in results {
-            self.worker_dlq_depths.insert(env_name, depth);
+    fn handle_worker_queue_check(&mut self, results: Vec<(String, Result<Option<i64>, String>)>) {
+        // Per-env reconcile (NOT a clear-and-rebuild — that dropped a
+        // failed env's entry every tick, silently clearing its
+        // `⚠ DLQ:N` chip and alert, the exact thing the old comment
+        // claimed to avoid): a fetched depth updates, a genuine
+        // "no DLQ" removes, and a fetch error keeps the previous
+        // depth so alerts survive an AccessDenied/throttle blip.
+        for (env_name, outcome) in results {
+            match outcome {
+                Ok(Some(depth)) => {
+                    self.worker_dlq_depths.insert(env_name, depth);
+                }
+                Ok(None) => {
+                    self.worker_dlq_depths.remove(&env_name);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        env = %env_name,
+                        error = %e,
+                        "worker queue check failed — keeping previous DLQ depth"
+                    );
+                }
+            }
         }
         // Recompute alerts now that the cache is fresh — the count set
         // during apply_refresh used the *previous* tick's cache. Workers
@@ -1676,7 +1691,14 @@ mod tests {
         // `Rebuild` / `UpdateCheck` aren't tied to an AWS context — they
         // must always be delivered, never gen-dropped.
         assert_eq!(AppMsg::UpdateCheck(None).generation(), None);
-        assert_eq!(AppMsg::Rebuild(Err("boom".into())).generation(), None);
+        assert_eq!(
+            AppMsg::Rebuild {
+                epoch: 0,
+                result: Err("boom".into())
+            }
+            .generation(),
+            None
+        );
     }
 
     #[test]
