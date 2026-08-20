@@ -879,7 +879,7 @@ ebman mcp serve                        → server mode (future: MCP for Claude C
 
 ### 0.26 candidates (2026-08-03)
 
-#### MCP server (`ebman mcp serve`) — HEADLINE (spec locked 2026-08-03)
+#### MCP server (`ebman mcp serve`) — HEADLINE — SHIPPED 2026-08-03 (same-day as the spec; see CHANGELOG Unreleased)
 
 Deferred 5× on "no operator demand"; demand surfaced 2026-08-03 (an agent session driving a fleet upgrade + release would have used it directly instead of shelling out and re-parsing). The charter already reserves the namespace; this locks the shape so the build session doesn't re-litigate it.
 
@@ -935,11 +935,11 @@ Theme: **incident operations.** The three biggest pending items on the shelf all
 
 #### Refactor candidates for 0.26 (pre-tag architecture review, 2026-07-15)
 Surfaced by the 0.25 pre-tag review; none blocked the tag. Ranked by leverage:
-- [ ] **`src/app/tail.rs` extraction with a shared `TailView` state struct** (~4-6h) — retires three duplications at once: `handle_log_tail_key` vs `handle_event_tail_key` (~95 near-identical lines each), the ~45 shared scaffolding lines in `draw_log_tail_overlay` vs `draw_event_tail_overlay`, and the two 4-line reap branches in msg.rs. Deliberately NOT done piecemeal in 0.25 — extracting only event-tail would split near-identical twins across files; the right cut covers both tails (4 modules).
-- [ ] **`Config::pin_reason(env, profile)` helper** (~30 min) — the safety-pin check now has three copies (cli/audit.rs `safety_pin_reason`, cli/lint.rs `--fix` inline, TUI `is_read_only_for`). One testable home in config.rs before a fourth copy drifts.
-- [ ] **`cli/lint.rs run()` decomposition** (~1-2h) — 548 lines; 0.25 added the X-Ray probe, live-probe, and webhook change-guard inline in a triple-nested loop. Extract per-env LintContext assembly.
-- [ ] **Split replay out of `cli/audit.rs`** (~30-45 min) — replay is ~470 of its 700 lines with clean seams; mechanical move to `cli/audit_replay.rs` next time either half grows.
-- [ ] **LintContext probe-fields design note** — the Option-field-per-probe pattern is fine at 4 probe fields / 18 rules; at ~6-8 probe fields, fold into a typed `Probes` sub-struct and unify the two tri-state encodings (`Option<bool>` vs `Option<&str>`) behind a `ProbeOutcome` enum.
+- [ ] **`src/app/tail.rs` extraction with a shared `TailView` state struct** (~4-6h) — SKIPPED in the 0.26 run per stop-conditions (4-module refactor not required by the headline); needs its own session. — retires three duplications at once: `handle_log_tail_key` vs `handle_event_tail_key` (~95 near-identical lines each), the ~45 shared scaffolding lines in `draw_log_tail_overlay` vs `draw_event_tail_overlay`, and the two 4-line reap branches in msg.rs. Deliberately NOT done piecemeal in 0.25 — extracting only event-tail would split near-identical twins across files; the right cut covers both tails (4 modules).
+- [x] **`Config::pin_reason(env, profile)` helper** — SHIPPED 2026-08-03 (0.26 run). — the safety-pin check now has three copies (cli/audit.rs `safety_pin_reason`, cli/lint.rs `--fix` inline, TUI `is_read_only_for`). One testable home in config.rs before a fourth copy drifts.
+- [x] **`cli/lint.rs run()` decomposition** — SHIPPED 2026-08-03 (0.26 run): `fetch_env_lint_inputs` / `build_lint_context` / `run_rules_for_env`, shared with the MCP lint tool. — 548 lines; 0.25 added the X-Ray probe, live-probe, and webhook change-guard inline in a triple-nested loop. Extract per-env LintContext assembly.
+- [x] **Split replay out of `cli/audit.rs`** — SHIPPED 2026-08-03 (0.26 run): `cli/audit_replay.rs`. — replay is ~470 of its 700 lines with clean seams; mechanical move to `cli/audit_replay.rs` next time either half grows.
+- [x] **LintContext probe-fields design note** — recorded (this entry IS the note; act at ~6-8 probe fields). — the Option-field-per-probe pattern is fine at 4 probe fields / 18 rules; at ~6-8 probe fields, fold into a typed `Probes` sub-struct and unify the two tri-state encodings (`Option<bool>` vs `Option<&str>`) behind a `ProbeOutcome` enum.
 - Watch item: `fire_webhook`'s signature is audit-line-shaped; lint's call stuffs `"multi"` into region and `None` into account. Fine at two callers, revisit at three.
 
 #### Deliberately out of the lineup

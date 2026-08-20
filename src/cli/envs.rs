@@ -7,6 +7,28 @@ use color_eyre::eyre::Result;
 use crate::aws;
 use crate::cli::cli_esc;
 
+/// The flat, stable `envs --json` schema — shared verbatim by the
+/// MCP `list_environments` tool so agent-facing and script-facing
+/// shapes can't drift apart.
+pub(crate) fn render_envs_json(envs: &[aws::Environment]) -> String {
+    let entries: Vec<String> = envs
+        .iter()
+        .map(|e| {
+            format!(
+                "{{\"name\":\"{}\",\"application\":\"{}\",\"status\":\"{}\",\"health\":\"{}\",\"platform\":\"{}\",\"cname\":\"{}\",\"version_label\":\"{}\"}}",
+                cli_esc(&e.name),
+                cli_esc(&e.application),
+                cli_esc(&e.status),
+                cli_esc(&e.health),
+                cli_esc(&e.platform),
+                cli_esc(&e.cname),
+                cli_esc(&e.version_label),
+            )
+        })
+        .collect();
+    format!("[{}]", entries.join(","))
+}
+
 pub async fn run(args: &[String]) -> Result<()> {
     let json = args.iter().any(|a| a == "--json");
     let aws = aws::AwsClient::with(None, None).await?;
@@ -15,23 +37,7 @@ pub async fn run(args: &[String]) -> Result<()> {
         .await
         .map_err(|e| color_eyre::eyre::eyre!("list_environments: {e}"))?;
     if json {
-        // Hand-rolled JSON to avoid pulling serde_json. Schema is flat and stable.
-        let entries: Vec<String> = envs
-            .iter()
-            .map(|e| {
-                format!(
-                    "{{\"name\":\"{}\",\"application\":\"{}\",\"status\":\"{}\",\"health\":\"{}\",\"platform\":\"{}\",\"cname\":\"{}\",\"version_label\":\"{}\"}}",
-                    cli_esc(&e.name),
-                    cli_esc(&e.application),
-                    cli_esc(&e.status),
-                    cli_esc(&e.health),
-                    cli_esc(&e.platform),
-                    cli_esc(&e.cname),
-                    cli_esc(&e.version_label),
-                )
-            })
-            .collect();
-        println!("[{}]", entries.join(","));
+        println!("{}", render_envs_json(&envs));
     } else {
         println!("NAME\tAPPLICATION\tSTATUS\tHEALTH\tPLATFORM\tCNAME\tVERSION");
         for e in &envs {

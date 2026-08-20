@@ -55,7 +55,10 @@ fn fixture_now() -> chrono::DateTime<chrono::Utc> {
 
 /// Build the six-env fleet. Order matters — it's the on-screen sort
 /// order before App's own sort kicks in.
-fn envs() -> Vec<Environment> {
+/// The synthetic fleet. `pub` (0.26) so `ebman mcp serve --demo` can
+/// serve it through the tool layer — the demo AwsClient is a
+/// fail-loudly stub, so demo data has to enter above the client.
+pub fn envs() -> Vec<Environment> {
     let now = fixture_now();
     let mk =
         |name: &str, tier: &str, status: &str, health: &str, version: &str, minutes_ago: i64| {
@@ -495,6 +498,43 @@ fn costs() -> HashMap<String, f64> {
 /// breadcrumb. Drill-into-other-tabs is best-effort and may show
 /// stub errors; closing that gap needs spawn-site gating in demo
 /// mode, which is a separate piece of work.
+/// Canned option settings for the demo fleet — one shared shape for
+/// every env (the fixture's value is variety in health/status, not
+/// per-env config drift). Deliberately includes:
+/// - env vars with a fake secret so `mcp serve --demo` exercises
+///   `get_option_settings` redaction end-to-end;
+/// - `MeasureName=NetworkOut` on a scaling ASG so demo `lint` fires
+///   EBL014 (and EBL017 fires via the absent managed-actions key) —
+///   a demo lint that finds nothing demonstrates nothing.
+pub fn option_settings_for(_env_name: &str) -> Vec<(String, String, String)> {
+    let o = |ns: &str, n: &str, v: &str| (ns.to_string(), n.to_string(), v.to_string());
+    vec![
+        o("aws:autoscaling:asg", "MinSize", "2"),
+        o("aws:autoscaling:asg", "MaxSize", "6"),
+        o("aws:autoscaling:trigger", "MeasureName", "NetworkOut"),
+        o(
+            "aws:elasticbeanstalk:command",
+            "DeploymentPolicy",
+            "Rolling",
+        ),
+        o(
+            "aws:elasticbeanstalk:application",
+            "Application Healthcheck URL",
+            "/healthz",
+        ),
+        o(
+            "aws:elasticbeanstalk:application:environment",
+            "DATABASE_URL",
+            "postgres://poly:hunter2@db.internal:5432/poly",
+        ),
+        o(
+            "aws:elasticbeanstalk:application:environment",
+            "POLY_ENV",
+            "production",
+        ),
+    ]
+}
+
 pub fn install(app: &mut App) {
     app.environments = envs();
     app.event_panel.events = events();

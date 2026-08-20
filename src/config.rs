@@ -114,6 +114,33 @@ pub struct AccountSpec {
     pub region: Option<String>,
 }
 
+impl Config {
+    /// The safety-pin check every CLI dispatch site shares: per-env
+    /// pin first, then per-account pin against the profile the
+    /// dispatch will run under. Returns the pin's config path
+    /// (`safety.envs.NAME.read_only` / `safety.accounts.NAME.read_only`)
+    /// for the refusal message, `None` when unpinned.
+    ///
+    /// Callers: `ebman audit replay`, `ebman lint --fix`, and the
+    /// future `mcp serve --allow-writes` path. The TUI's
+    /// `App::is_read_only_for` / `read_only_reason` deliberately do
+    /// NOT route through this — they compose additional session
+    /// gates (global `--read-only`, `:freeze-deploys`, demo mode)
+    /// with their own precedence and toast wording; only the
+    /// config-pin layer is shared semantics.
+    pub fn pin_reason(&self, env: &str, profile: Option<&str>) -> Option<String> {
+        if self.safety_envs.get(env).copied().unwrap_or(false) {
+            return Some(format!("safety.envs.{env}.read_only"));
+        }
+        if let Some(p) = profile {
+            if self.safety_accounts.get(p).copied().unwrap_or(false) {
+                return Some(format!("safety.accounts.{p}.read_only"));
+            }
+        }
+        None
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -787,5 +814,26 @@ explain.max_tokens = 512
         assert_eq!(reparsed.icons, cfg.icons);
         assert!(reparsed.extra_regions.is_empty());
         assert!(reparsed.required_tags.is_empty());
+    }
+
+    #[test]
+    fn pin_reason_env_wins_then_account_then_none() {
+        let mut cfg = Config::default();
+        cfg.safety_envs.insert("prod".into(), true);
+        cfg.safety_envs.insert("unpinned-false".into(), false);
+        cfg.safety_accounts.insert("prod-admin".into(), true);
+        // Env pin wins even when the account is also pinned.
+        assert_eq!(
+            cfg.pin_reason("prod", Some("prod-admin")).as_deref(),
+            Some("safety.envs.prod.read_only")
+        );
+        assert_eq!(
+            cfg.pin_reason("other", Some("prod-admin")).as_deref(),
+            Some("safety.accounts.prod-admin.read_only")
+        );
+        // An explicit `= false` pin is not a pin.
+        assert_eq!(cfg.pin_reason("unpinned-false", None), None);
+        assert_eq!(cfg.pin_reason("other", Some("dev")), None);
+        assert_eq!(cfg.pin_reason("other", None), None);
     }
 }
