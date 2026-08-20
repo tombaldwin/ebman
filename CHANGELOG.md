@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.26.1] — 2026-08-20 — same-day patch: the max-depth review's Critical fixes
+
 ### Fixed — 0.26 max-depth review (6 parallel lenses over the whole codebase, post-release)
 
 Eight Critical-class findings, all fixed:
