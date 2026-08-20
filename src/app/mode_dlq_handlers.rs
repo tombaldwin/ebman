@@ -31,7 +31,7 @@ impl App {
             confirm_purge: false,
             purge_typed: TextInput::new(),
             viewing: QueueView::Dlq,
-            confirm_delete_idx: None,
+            confirm_delete_id: None,
             replay_input: None,
         };
         self.dlq = Some(dlq);
@@ -60,7 +60,7 @@ impl App {
             confirm_purge: false,
             purge_typed: TextInput::new(),
             viewing: QueueView::Dlq,
-            confirm_delete_idx: None,
+            confirm_delete_id: None,
             replay_input: None,
         };
         self.dlq = Some(dlq);
@@ -80,14 +80,14 @@ impl App {
     pub(super) fn handle_dlq_key(&mut self, key: KeyEvent) {
         let Some(dlq) = self.dlq.as_mut() else { return };
         // Single-message delete confirmation: Y/N inline. Anything else cancels.
-        if let Some(idx) = dlq.confirm_delete_idx {
+        if let Some(msg_id) = dlq.confirm_delete_id.clone() {
             match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
-                    dlq.confirm_delete_idx = None;
-                    self.spawn_dlq_delete_one(idx);
+                    dlq.confirm_delete_id = None;
+                    self.spawn_dlq_delete_one(&msg_id);
                 }
                 _ => {
-                    dlq.confirm_delete_idx = None;
+                    dlq.confirm_delete_id = None;
                 }
             }
             return;
@@ -243,8 +243,8 @@ impl App {
                 // Single-message delete. The dispatch loop catches y/n in the
                 // next iteration via `confirm_delete_idx`.
                 if let Some(idx) = dlq.list_state.selected() {
-                    if dlq.messages.get(idx).is_some() {
-                        dlq.confirm_delete_idx = Some(idx);
+                    if let Some(msg) = dlq.messages.get(idx) {
+                        dlq.confirm_delete_id = Some(msg.id.clone());
                     }
                 }
             }

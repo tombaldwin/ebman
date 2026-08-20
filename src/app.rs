@@ -1050,6 +1050,13 @@ pub struct App {
     /// render's `⚠ DLQ:N` chip on Worker rows. Missing entry = "not
     /// checked yet" (don't fire an alert on cold state).
     pub worker_dlq_depths: std::collections::HashMap<String, i64>,
+    /// Envs whose last worker-queue check FAILED — their entry in
+    /// `worker_dlq_depths` is the last-known depth, kept so an
+    /// AccessDenied/throttle can't silently clear an alert. The UI
+    /// appends a staleness marker so the operator knows the number
+    /// may be old. Cleared per-env on the next successful check and
+    /// wholesale on context switch.
+    pub worker_dlq_stale: std::collections::HashSet<String>,
     /// Monotonic counter of context-switch spawns (`:region`,
     /// `:profile`, `:account`). Stamped into `AppMsg::Rebuild` so a
     /// slow older switch losing the race to a newer one is dropped in
@@ -1999,6 +2006,7 @@ impl App {
             hover_row: None,
             alerts: 0,
             worker_dlq_depths: std::collections::HashMap::new(),
+            worker_dlq_stale: std::collections::HashSet::new(),
             rebuild_epoch: 0,
             env_tag_cache: std::collections::HashMap::new(),
             env_health_cache: std::collections::HashMap::new(),
@@ -2284,6 +2292,7 @@ impl App {
             hover_row: None,
             alerts: 0,
             worker_dlq_depths: std::collections::HashMap::new(),
+            worker_dlq_stale: std::collections::HashSet::new(),
             rebuild_epoch: 0,
             env_tag_cache: std::collections::HashMap::new(),
             env_health_cache: std::collections::HashMap::new(),
@@ -6995,7 +7004,7 @@ impl App {
             confirm_purge: false,
             purge_typed: TextInput::new(),
             viewing,
-            confirm_delete_idx: None,
+            confirm_delete_id: None,
             replay_input: None,
         };
         self.dlq = Some(dlq);
@@ -8525,9 +8534,13 @@ impl App {
                 log_group: group.clone(),
                 since_ms,
             });
+            let mut boundary_ids: std::collections::HashSet<String> = Default::default();
             loop {
-                match aws.fetch_recent_log_events(&group, since_ms, 1000).await {
-                    Ok((events, next_since)) => {
+                match aws
+                    .fetch_recent_log_events(&group, since_ms, 1000, &boundary_ids)
+                    .await
+                {
+                    Ok((events, next_since, carry)) => {
                         let next_since_ms = next_since;
                         let _ = tx.send(AppMsg::LogTailEvents {
                             gen,
@@ -8536,6 +8549,7 @@ impl App {
                             result: Ok(events),
                         });
                         since_ms = next_since;
+                        boundary_ids = carry;
                     }
                     Err(e) => {
                         let _ = tx.send(AppMsg::LogTailEvents {
@@ -11616,6 +11630,7 @@ impl App {
                 // Per-env caches from the old context — stale numbers
                 // would render as current until the first refresh.
                 self.worker_dlq_depths.clear();
+                self.worker_dlq_stale.clear();
                 self.env_instance_counts.clear();
                 self.applications.clear();
                 self.costs.clear();
@@ -21147,7 +21162,7 @@ mod tests {
             results: vec![("wk-prod".into(), Ok(Some(7)))],
         });
         assert_eq!(app.worker_dlq_depths.get("wk-prod"), Some(&7));
-        // Fetch error → depth survives.
+        // Fetch error → depth survives, marked stale.
         app.handle_msg(AppMsg::WorkerQueueCheck {
             gen: app.generation,
             results: vec![("wk-prod".into(), Err("AccessDenied".into()))],
@@ -21157,6 +21172,14 @@ mod tests {
             Some(&7),
             "error must not read as 'no DLQ'"
         );
+        assert!(app.worker_dlq_stale.contains("wk-prod"));
+        // Successful re-check clears the staleness.
+        app.handle_msg(AppMsg::WorkerQueueCheck {
+            gen: app.generation,
+            results: vec![("wk-prod".into(), Ok(Some(3)))],
+        });
+        assert!(!app.worker_dlq_stale.contains("wk-prod"));
+        assert_eq!(app.worker_dlq_depths.get("wk-prod"), Some(&3));
         // Genuine no-DLQ → cleared; fresh depth → updated.
         app.handle_msg(AppMsg::WorkerQueueCheck {
             gen: app.generation,

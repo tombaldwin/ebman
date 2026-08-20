@@ -43,7 +43,7 @@ impl App {
     /// (`dlq.viewing`). The message's `receipt_handle` keeps it deletable
     /// even though our visibility timeout window is short — SQS treats the
     /// receipt handle as the canonical authorisation token for delete.
-    pub(super) fn spawn_dlq_delete_one(&mut self, idx: usize) {
+    pub(super) fn spawn_dlq_delete_one(&mut self, msg_id: &str) {
         let env_for_guard = match self.dlq.as_ref() {
             Some(d) => d.env_name.clone(),
             None => return,
@@ -54,7 +54,12 @@ impl App {
             return;
         }
         let Some(dlq) = self.dlq.as_mut() else { return };
-        let Some(msg) = dlq.messages.get(idx).cloned() else {
+        // Resolve by MESSAGE ID at dispatch time — the armed confirm
+        // survives refreshes safely; a message that vanished from the
+        // list refuses instead of deleting a neighbour.
+        let Some(msg) = dlq.messages.iter().find(|m| m.id == msg_id).cloned() else {
+            self.error_message =
+                Some("delete: message no longer in the loaded list — refreshed away?".into());
             return;
         };
         let queue_url = match dlq.viewing {

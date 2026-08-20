@@ -187,6 +187,11 @@ async fn main() -> Result<()> {
     });
 
     let result = app_inst.run(&mut terminal, control_rx).await;
+    // Drain in-flight audit-webhook POSTs before the runtime drops —
+    // an action completed just before `q` otherwise loses its outcome
+    // POST (same class as the CLI exits; the TUI path was the last
+    // bypass). Runs before terminal restore is fine: nothing prints.
+    ebman::audit::drain_webhooks(std::time::Duration::from_secs(5)).await;
     // Belt-and-braces: persist state regardless of how `run()` exited.
     // The internal call at the end of `run()` only fires on the Ok path,
     // so a `terminal.draw()?` error mid-shutdown (which can happen when
