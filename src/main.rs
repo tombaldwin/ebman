@@ -27,6 +27,10 @@ async fn main() -> Result<()> {
         // `--help`, `--control-socket`) don't pay the
         // `config::load` disk read. The two read-only subcommands
         // (envs, ctl) skip it too — they emit no audit lines.
+        // CLI subcommands surface project-config parse failures on
+        // stderr (the TUI routes them to tracing instead — alternate
+        // screen). Set before dispatch so every subcommand benefits.
+        ebman::project::warnings_to_stderr();
         match first.as_str() {
             "envs" => return ebman::cli::envs::run(&args).await,
             "action" => {
@@ -45,6 +49,15 @@ async fn main() -> Result<()> {
             "mcp" => return ebman::cli::mcp::run(&args).await,
             "explain" => return ebman::cli::explain::run(&args).await,
             "versions" => return ebman::cli::versions::run(&args).await,
+            // A bare non-flag word that isn't a known subcommand is a
+            // typo (`ebman lnit`) — erroring beats silently opening
+            // the alternate screen (which, in CI, is a confusing
+            // raw-mode failure instead of a usage error).
+            other if !other.starts_with('-') => {
+                eprintln!("ebman: unknown subcommand '{other}'\n");
+                print_help();
+                std::process::exit(2);
+            }
             _ => {}
         }
     }

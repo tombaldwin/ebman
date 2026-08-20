@@ -54,6 +54,26 @@ pub(crate) use crate::util::{json_escape as cli_esc, json_string};
 /// spawned tasks, so a fire-and-forget outcome POST written just
 /// before exit usually never left the machine. No-op when nothing is
 /// in flight; bounded at slightly over the POST timeout.
+/// Shared value-flag guard: reject a missing value or a following
+/// flag consumed as one. Class fix from the 0.26 max-review — a
+/// swallowed value silently changed semantics (`lint --fix --yes
+/// --env` widened to the whole fleet; `--rules --json` disabled a CI
+/// gate and ate the JSON flag).
+pub(crate) fn take_value<'a, I: Iterator<Item = &'a String>>(
+    iter: &mut I,
+    prog: &str,
+    flag: &str,
+    what: &str,
+) -> Result<String, String> {
+    let Some(v) = iter.next() else {
+        return Err(format!("{prog}: {flag} expects {what}"));
+    };
+    if v.starts_with("--") {
+        return Err(format!("{prog}: {flag} expects {what}, got flag '{v}'"));
+    }
+    Ok(v.clone())
+}
+
 pub(crate) async fn exit_after_drain(code: i32) -> ! {
     crate::audit::drain_webhooks(std::time::Duration::from_secs(12)).await;
     std::process::exit(code);

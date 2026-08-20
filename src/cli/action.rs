@@ -42,6 +42,16 @@ struct ActionArgError {
     code: i32,
 }
 
+/// `take_value` adapted to the action parser's typed error (exit 2).
+fn take_flag_value<'a, I: Iterator<Item = &'a String>>(
+    iter: &mut I,
+    flag: &str,
+    what: &str,
+) -> Result<String, ActionArgError> {
+    crate::cli::take_value(iter, "ebman action", flag, what)
+        .map_err(|msg| ActionArgError { msg, code: 2 })
+}
+
 const ACTION_USAGE: &str = "usage: ebman action <rebuild|restart|terminate|deploy|rollout> --env NAME [--version LABEL] [--regions r1,r2,r3] [--yes] [--wait-for-green Nm] [--auto-rollback Nm]";
 
 /// Pure parser for the single-env action verbs. Mirrors the original
@@ -65,10 +75,20 @@ fn parse_action_args(args: &[String]) -> Result<ActionArgs, ActionArgError> {
     let mut iter = args.iter().skip(2);
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "--env" => env_name = iter.next().cloned(),
-            "--version" => version = iter.next().cloned(),
-            "--wait-for-green" => wait_for_green = iter.next().cloned(),
-            "--auto-rollback" => auto_rollback = iter.next().cloned(),
+            "--env" => env_name = Some(take_flag_value(&mut iter, "--env", "an env name")?),
+            "--version" => {
+                version = Some(take_flag_value(&mut iter, "--version", "a version label")?)
+            }
+            "--wait-for-green" => {
+                wait_for_green = Some(take_flag_value(
+                    &mut iter,
+                    "--wait-for-green",
+                    "a duration",
+                )?)
+            }
+            "--auto-rollback" => {
+                auto_rollback = Some(take_flag_value(&mut iter, "--auto-rollback", "a duration")?)
+            }
             "--yes" => yes = true,
             other => {
                 return Err(ActionArgError {
@@ -472,6 +492,22 @@ async fn dispatch_one_region(
 }
 
 /// `ebman action rollout --version LABEL --regions r1,r2,r3 --env NAME --yes [...]`
+/// `take_value` for the rollout parser, which exits directly (its
+/// error paths all print + exit 2 inline).
+fn rollout_value<'a, I: Iterator<Item = &'a String>>(
+    iter: &mut I,
+    flag: &str,
+    what: &str,
+) -> String {
+    match crate::cli::take_value(iter, "ebman action rollout", flag, what) {
+        Ok(v) => v,
+        Err(msg) => {
+            eprintln!("{msg}");
+            std::process::exit(2);
+        }
+    }
+}
+
 /// — cross-region deploy with pre-flight + per-region dispatch +
 /// audit-log correlation. Sequential by default (halt on first
 /// failure); `--parallel` fans out concurrently with optional
@@ -500,11 +536,15 @@ async fn run_rollout(args: &[String]) -> Result<()> {
     let mut iter = args.iter().skip(2);
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "--env" => env_name = iter.next().cloned(),
-            "--version" => version = iter.next().cloned(),
-            "--regions" => regions_csv = iter.next().cloned(),
-            "--wait-for-green" => wait_for_green = iter.next().cloned(),
-            "--profile" => profile = iter.next().cloned(),
+            "--env" => env_name = Some(rollout_value(&mut iter, "--env", "an env name")),
+            "--version" => version = Some(rollout_value(&mut iter, "--version", "a version label")),
+            "--regions" => {
+                regions_csv = Some(rollout_value(&mut iter, "--regions", "a region list"))
+            }
+            "--wait-for-green" => {
+                wait_for_green = Some(rollout_value(&mut iter, "--wait-for-green", "a duration"))
+            }
+            "--profile" => profile = Some(rollout_value(&mut iter, "--profile", "a profile name")),
             "--yes" => yes = true,
             "--json" => json = true,
             "--quiet" => quiet = true,
@@ -527,7 +567,9 @@ async fn run_rollout(args: &[String]) -> Result<()> {
                 max_concurrency = Some(n);
             }
             "--continue-on-fail" => continue_on_fail = true,
-            "--staggered" => staggered = iter.next().cloned(),
+            "--staggered" => {
+                staggered = Some(rollout_value(&mut iter, "--staggered", "a duration"))
+            }
             other => {
                 eprintln!("ebman action rollout: unknown flag '{other}'");
                 std::process::exit(2);
@@ -548,11 +590,16 @@ async fn run_rollout(args: &[String]) -> Result<()> {
         );
         std::process::exit(2);
     };
-    let regions: Vec<String> = regions_csv
+    let mut regions: Vec<String> = regions_csv
         .split(',')
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
+    // Dedupe preserving order — `r1,r1` used to dispatch twice, the
+    // second racing the first ("already updating") and marking the
+    // rollout partial for a self-inflicted reason.
+    let mut seen = std::collections::HashSet::new();
+    regions.retain(|r| seen.insert(r.clone()));
     if regions.is_empty() {
         eprintln!("ebman action rollout: --regions list is empty");
         std::process::exit(2);
