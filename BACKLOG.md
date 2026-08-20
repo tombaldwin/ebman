@@ -877,6 +877,35 @@ ebman mcp serve                        → server mode (future: MCP for Claude C
 
 **Future-proofing test passed:** LLM explainer (`ebman explain`), MCP server (`ebman mcp serve`), cron-driven monitoring (`ebman lint --watch`), git pre-commit hooks (`ebman drift`), GitHub Actions integration (`ebman action deploy`), audit-stream consumption (`ebman audit --tail --json | jq`) all fit without restructuring.
 
+### 0.28 candidates (2026-08-20)
+
+Theme: **agents that can act — MCP v2 writes, safety-first.** Panel-shipped 0.27.0 the same day this was spec'd; 0.27 soaks while this spec holds the decisions so the build session doesn't re-litigate.
+
+#### MCP v2: `ebman mcp serve --allow-writes` — HEADLINE (spec locked 2026-08-20)
+
+Demand: the same agent sessions that drove v1 (fleet upgrade + release ops) need `deploy`/`restart`/`rebuild` without shelling out — and the CLI shell-out path they'd otherwise use has *weaker* ergonomics for confirmation than a purpose-built two-phase tool. v1's year of hardening (redaction contract, degradation contract, bounded concurrency, protocol battery) is the foundation.
+
+**Locked decisions — do not reopen in the build session:**
+
+1. **Opt-in is flag-only.** `--allow-writes` on the command line, never a config key — enablement must be visible in the process table and `.mcp.json`, not hidden in a dotfile. Composes with `--demo` (the write layer's e2e harness).
+2. **Three write tools, no more:** `deploy` (env + version label), `restart`, `rebuild`. Terminate is EXCLUDED (destructive, no agent demand); `set_option` EXCLUDED (broad blast radius; `lint --fix` covers the auto-remediation case); rollout EXCLUDED (compose it agent-side from `deploy` + `recent_events` polling). v3 may widen with its own review.
+3. **Every write is two-phase, uniformly.** Phase 1: the write tool validates (env exists, pin check, version exists for deploy) and returns `{"pending": true, "confirm_token": "...", "plan": {...}}` — the plan carries env, current→target version, health, and the 3 most recent events, so the agent's transcript SHOWS what's about to happen. Phase 2: a `confirm_action` tool takes the token and dispatches. Tokens: random 128-bit, single-use, in-memory, 60s TTL; expired/reused/unknown → `isError` with "re-plan required". One mental model for all three verbs — no "restart is safe enough to skip confirm" carve-outs.
+4. **Safety stack at the tool layer:** `Config::pin_reason(env, ambient AWS_PROFILE)` refusal (the shared check, isError with the pin name — this is what pin_reason was built for); writes SERIALIZED server-wide (one in flight; concurrent phase-2 → isError "another write is in flight"); dispatch-only semantics (no wait-for-green — the agent polls reads; keeps every call inside the 30s bound).
+5. **Audit + webhook parity with the CLI:** `--allow-writes` (and only it) calls `audit::init_from_config_disk()`; dispatched/completed pairs via the typed writers with extras `via=mcp client="<clientInfo.name>"`; drain webhooks on shutdown (the existing drain machinery). Demo mode writes NO audit lines and fires NO webhooks — synthetic success only.
+6. **tools/list is honest:** write tools + `confirm_action` appear ONLY under `--allow-writes`. Descriptions state dispatch-only semantics + the two-phase contract explicitly (v1 rule: the caveat lives IN the tool).
+7. **Registry unification lands as the enabling refactor** (the 0.26 architecture review's design, gated on exactly this): one static table (name → schema, handler, is_write) feeding tools/list, the existence check, and dispatch; `cli/mcp.rs` splits to `cli/mcp/mod.rs` (protocol/loop) + `cli/mcp/tools.rs` at the same time. Do this FIRST — the write tools then slot into the table.
+8. **Known limitation, documented not solved:** MCP cannot see a TUI session's `:freeze-deploys`/`:incident` (session-scoped state, separate process). Pins are the cross-process mechanism; the docs say so plainly. A shared freeze-file is a v3 question.
+
+**Tests (minimum):** golden tools/list with and without the flag; demo two-phase happy path (plan → confirm → synthetic ok); expired + reused + unknown token; pin refusal via injected config; write serialization (second phase-2 while one in flight); deploy plan carries current→target + events; no audit lines in demo.
+
+**Docs:** headless.md gains the v2 section (two-phase example transcript); safety-and-privacy.md updates the "reads-only" bullet to describe the opt-in + two-phase + pin story; commands.md `--help` entry.
+
+#### Also queued for 0.28
+- [ ] **Live-verification sweep** of SDK-compiled-unverified calls (EBL018 WAF probe, EBL020 IAM sim, EBL015 platform dates) against throwaway resources — needs operator approval to create a temporary ALB env (~pennies).
+- [ ] **Demo-mode poller quieting** — the fail-loudly stub logs an ERROR per refresh tick in `--demo`; downgrade stub-client failures to debug in demo mode (the loud contract matters in real mode only).
+- [ ] **Cost Explorer page-loop cap** (last uncapped pagination; 20 pages ≈ absurdity bound).
+- [ ] **Drop `:custom-platform-create` from the backlog** unless custom platforms enter real use — slipped three cycles on honest grounds; carrying it costs attention.
+
 ### 0.27 queue — 0.26 max-depth review remainders (2026-08-20) — RETIRED same-day (all four phases shipped; see CHANGELOG Unreleased). Wontfix by decision: unicode display-width math, serde_yml alias hardening, audit --tail text alignment. ui.rs submodule split SHIPPED 2026-08-20 (ui/overlays + ui/detail + ui/help; root 9,400 -> 5,000 lines). The round-2 review remainders (log-tail boundary dedupe, DLQ staleness marker, TUI quit drain, id-keyed delete confirm, -32600 test) also shipped same-day. Only remaining deferral: MCP registry unification (gated on v2 --allow-writes).
 
 Six-lens full-codebase review post-0.26.0. All 8 Critical-class + the quick Important findings were fixed same-day (see CHANGELOG Unreleased). Remaining, each deferred with a reason:
