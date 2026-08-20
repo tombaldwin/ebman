@@ -77,6 +77,7 @@ Built for operators who triage EB envs daily and don't want the AWS console roun
 - **Bulk ops** — `space` multi-selects, then `:batch-*` fans out in parallel with audit + pending-pill rows.
 - **Safety + audit** — `--read-only` flag, typed-name confirms, per-env / per-account read-only pins, full audit log at `~/.cache/ebman/audit.log`.
 - **Headless / scriptable** — `--control-socket PATH`, `ebman envs --json`, `ebman action rebuild --env NAME`, `ebman ctl screen / state / cmd <:cmd>`.
+- **Agent-native (MCP)** — `ebman mcp serve` exposes the read surface (envs, lint, drift, option settings, events, versions, cost) as MCP tools, so Claude Code or any MCP client can query your fleet first-class instead of shelling out and re-parsing. `--allow-writes` adds opt-in, two-phase `deploy` / `restart` / `rebuild` / `terminate` / `set_option` (the tool returns a plan, then `confirm_action` dispatches) — honouring the same safety pins, read-only, and a cross-process incident freeze the TUI uses, and auditing every dispatch.
 
 ## Why ebman?
 
@@ -97,7 +98,7 @@ ebman is k9s-for-EB: keyboard-driven, drill-down-first, focused on operators who
 - [Command reference](docs/commands.md) — every `:command` grouped by job (navigation, per-env, write, multi-account, bulk).
 - [Configuration](docs/configuration.md) — `~/.config/ebman/config.toml`, plugin commands, project-local pinning.
 - [Fonts](docs/fonts.md) — installing a Nerd Font for the Powerline glyph set.
-- [Headless interface](docs/headless.md) — `--control-socket` + `ebman ctl` for scripts / CI.
+- [Headless interface](docs/headless.md) — `--control-socket` + `ebman ctl` for scripts / CI; the CLI subcommands; and the **`ebman mcp serve`** MCP server (read tools + opt-in two-phase writes) for Claude Code and other agents.
 - [Safety, privacy, what's stored locally](docs/safety-and-privacy.md) — read-only mode, audit log, bug-report scrubbing.
 - [Development](docs/development.md) — build / test / clippy + distribution notes.
 
