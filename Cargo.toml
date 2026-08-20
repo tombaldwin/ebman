@@ -24,7 +24,8 @@ categories = ["command-line-utilities"]
 tui-common = { version = "0.1.3", package = "tb-tui-common" }
 ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+# io-util + io-std: the MCP server's stdio JSON-RPC transport.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "io-util", "io-std"] }
 tokio-stream = "0.1"
 futures = "0.3"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
@@ -53,6 +54,9 @@ aws-sdk-iam = "1"
 aws-sdk-secretsmanager = "1"
 aws-sdk-ssm = "1"
 serde = { version = "1", features = ["derive"] }
+# MCP server (`ebman mcp serve`): incoming JSON-RPC must be *parsed*,
+# which the hand-rolled `util::json_string` emit path can't do.
+serde_json = "1"
 toml = "0.8"
 # YAML parsing for the EB CLI saved-configs format (`.elasticbeanstalk/
 # saved_configs/*.cfg.yml`) so `:config-diff-local` can compare a local

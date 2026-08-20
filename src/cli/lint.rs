@@ -125,6 +125,122 @@ async fn probe_xray_trace_denied(
     Some(!first.decision.eq_ignore_ascii_case("allowed"))
 }
 
+/// Owned per-env lint inputs — everything a `LintContext` borrows,
+/// fetched and held in one place. Extracted (0.26) so `ebman lint`
+/// and the MCP `lint` tool share a single assembly path instead of
+/// each growing its own copy of the fetch + probe choreography.
+/// `dlq_depth` is deliberately absent: the CLI doesn't poll worker
+/// queues, so EBL011 stays TUI-only (stated in the MCP tool's
+/// coverage caveats).
+pub(crate) struct EnvLintInputs {
+    pub options: Vec<(String, String, String)>,
+    pub env_tag_keys: Vec<String>,
+    pub healthy_count: Option<i64>,
+    pub xray_denied: Option<bool>,
+    pub probe_failure: Option<String>,
+    pub newer_stack: Option<String>,
+}
+
+/// Fetch one env's lint inputs: parallel option-settings + tags +
+/// instance-counts (matching the TUI's `spawn_confirm_lint`
+/// plumbing), then the two gated probes (EBL020 IAM sim when X-Ray
+/// is on; EBL016 HTTP probe when `probe_live`). Tags and health are
+/// tolerated independently — a missing input means the corresponding
+/// rule doesn't fire. `Err` carries the option-settings fetch error,
+/// the one input lint can't run without.
+pub(crate) async fn fetch_env_lint_inputs(
+    aws: &aws::AwsClient,
+    env: &aws::Environment,
+    latest_stacks: &std::collections::HashMap<String, String>,
+    probe_live: bool,
+) -> Result<EnvLintInputs, String> {
+    let opts_fut = aws.fetch_env_option_settings(&env.application, &env.name);
+    let tags_fut = async {
+        match env.arn.as_deref() {
+            Some(arn) => aws.list_tags(arn).await.ok(),
+            None => None,
+        }
+    };
+    let health_fut = aws.fetch_env_instance_counts(&env.name);
+    let (opts_res, tags_opt, health_res) = tokio::join!(opts_fut, tags_fut, health_fut);
+    let options = opts_res.map_err(|e| e.to_string())?;
+    let env_tag_keys: Vec<String> = tags_opt
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(k, _)| k)
+        .collect();
+    let healthy_count = health_res.ok().map(|c| c.healthy as i64);
+    let newer_stack = aws::newer_stack_version(&env.solution_stack, latest_stacks);
+    // EBL020 probe — only when the env actually has X-Ray on (rare),
+    // so the common path pays no IAM calls. Probe failures leave the
+    // field unset: skip, never false-positive.
+    let xray_denied = probe_xray_trace_denied(aws, &options).await;
+    // EBL016 probe — opt-in via `probe_live` (one curl HEAD per env
+    // is too slow for default lint). Only a FAILURE is recorded.
+    let probe_failure: Option<String> = if probe_live && !env.cname.is_empty() {
+        let path = options
+            .iter()
+            .find_map(|(ns, n, v)| {
+                (ns == "aws:elasticbeanstalk:application"
+                    && n == "Application Healthcheck URL"
+                    && !v.is_empty())
+                .then(|| v.clone())
+            })
+            .unwrap_or_else(|| "/".to_string());
+        let url = crate::app::build_health_check_probe_url(&env.cname, &path);
+        crate::app::run_health_check_probe(&url).await.err()
+    } else {
+        None
+    };
+    Ok(EnvLintInputs {
+        options,
+        env_tag_keys,
+        healthy_count,
+        xray_denied,
+        probe_failure,
+        newer_stack,
+    })
+}
+
+/// Pure: assemble a borrowing `LintContext` over fetched inputs.
+/// Shared by [`run_rules_for_env`] and `run`'s `--fix` path (which
+/// needs the context again for `rule.fix(&ctx)`).
+pub(crate) fn build_lint_context<'a>(
+    env: &'a aws::Environment,
+    inputs: &'a EnvLintInputs,
+    required_tags: &'a [String],
+) -> lint::LintContext<'a> {
+    let mut ctx = lint::LintContext::for_env(env, &inputs.options)
+        .with_required_tags(required_tags)
+        .with_env_tag_keys(&inputs.env_tag_keys);
+    if let Some(newer) = inputs.newer_stack.as_deref() {
+        ctx = ctx.with_newer_stack_available(newer);
+    }
+    if let Some(count) = inputs.healthy_count {
+        ctx = ctx.with_healthy_count(count);
+    }
+    if let Some(denied) = inputs.xray_denied {
+        ctx = ctx.with_xray_trace_denied(denied);
+    }
+    if let Some(reason) = inputs.probe_failure.as_deref() {
+        ctx = ctx.with_health_probe_failure(reason);
+    }
+    ctx
+}
+
+/// Pure: build the `LintContext` over fetched inputs and run the
+/// rule set. The second half of the shared assembly path — both
+/// `run` and the MCP `lint` tool call this after
+/// [`fetch_env_lint_inputs`].
+pub(crate) fn run_rules_for_env(
+    rules: &[Box<dyn lint::Rule>],
+    env: &aws::Environment,
+    inputs: &EnvLintInputs,
+    required_tags: &[String],
+) -> Vec<lint::Issue> {
+    lint::run_rules(rules, &build_lint_context(env, inputs, required_tags))
+}
+
 /// Pure: one-line webhook body for a lint cycle. Caps at 5 issues so
 /// a noisy fleet doesn't blow out the Slack message; an empty set
 /// renders the all-clear (sent on the dirty→clean transition).
@@ -465,88 +581,24 @@ pub async fn run(args: &[String]) -> Result<()> {
             };
 
             for env in targets {
-                // Parallel per-env fetch: option settings (existing) +
-                // tags (EBL010) + instance counts (EBL012). Matches the
-                // TUI plumbing in `spawn_confirm_lint`. Tags + health
-                // tolerated independently — missing input means the
-                // corresponding rule just doesn't fire for that env.
-                let opts_fut = aws.fetch_env_option_settings(&env.application, &env.name);
-                let tags_fut = async {
-                    match env.arn.as_deref() {
-                        Some(arn) => aws.list_tags(arn).await.ok(),
-                        None => None,
-                    }
-                };
-                let health_fut = aws.fetch_env_instance_counts(&env.name);
-                let (opts_res, tags_opt, health_res) = tokio::join!(opts_fut, tags_fut, health_fut);
-                let opts = match opts_res {
-                    Ok(opts) => opts,
-                    Err(e) => {
-                        if !quiet {
-                            eprintln!(
-                                "warning: skipping {} — fetch_env_option_settings: {e}",
-                                env.name
-                            );
+                // Fetch + build + run via the shared assembly path
+                // (`fetch_env_lint_inputs` / `run_rules_for_env`) —
+                // the same pair the MCP `lint` tool calls.
+                let inputs =
+                    match fetch_env_lint_inputs(&aws, env, &latest_stacks, probe_live).await {
+                        Ok(inputs) => inputs,
+                        Err(e) => {
+                            if !quiet {
+                                eprintln!(
+                                    "warning: skipping {} — fetch_env_option_settings: {e}",
+                                    env.name
+                                );
+                            }
+                            cycle_degraded = true;
+                            continue;
                         }
-                        cycle_degraded = true;
-                        continue;
-                    }
-                };
-                let env_tag_keys: Vec<String> = tags_opt
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|(k, _)| k)
-                    .collect();
-                let healthy_count = health_res.ok().map(|c| c.healthy as i64);
-                let dlq_depth = None::<i64>; // CLI doesn't poll worker
-                                             // queues; leave EBL011 unwired
-                                             // for now (TUI-only signal).
-                let newer_stack = aws::newer_stack_version(&env.solution_stack, &latest_stacks);
-                let mut ctx = lint::LintContext::for_env(env, &opts)
-                    .with_required_tags(&safety_cfg.required_tags)
-                    .with_env_tag_keys(&env_tag_keys);
-                if let Some(newer) = newer_stack.as_deref() {
-                    ctx = ctx.with_newer_stack_available(newer);
-                }
-                if let Some(depth) = dlq_depth {
-                    ctx = ctx.with_dlq_depth(depth);
-                }
-                if let Some(count) = healthy_count {
-                    ctx = ctx.with_healthy_count(count);
-                }
-                // EBL020 probe — only when the env actually has X-Ray
-                // on (rare), so the common path pays no IAM calls.
-                // Probe failures (no iam:Simulate* perms, missing
-                // profile) leave the field unset: the rule skips
-                // rather than false-positives. CLI-only, same pattern
-                // as dlq_depth staying TUI-only.
-                let xray_denied = probe_xray_trace_denied(&aws, &opts).await;
-                if let Some(denied) = xray_denied {
-                    ctx = ctx.with_xray_trace_denied(denied);
-                }
-                // EBL016 probe — opt-in via --probe-live (one curl
-                // HEAD per env is too slow for default lint). Only
-                // a FAILURE reason is attached; pass/skip leaves the
-                // field unset and the rule silent.
-                let probe_failure: Option<String> = if probe_live && !env.cname.is_empty() {
-                    let path = opts
-                        .iter()
-                        .find_map(|(ns, n, v)| {
-                            (ns == "aws:elasticbeanstalk:application"
-                                && n == "Application Healthcheck URL"
-                                && !v.is_empty())
-                            .then(|| v.clone())
-                        })
-                        .unwrap_or_else(|| "/".to_string());
-                    let url = crate::app::build_health_check_probe_url(&env.cname, &path);
-                    crate::app::run_health_check_probe(&url).await.err()
-                } else {
-                    None
-                };
-                if let Some(reason) = probe_failure.as_deref() {
-                    ctx = ctx.with_health_probe_failure(reason);
-                }
-                let mut issues = lint::run_rules(&rules, &ctx);
+                    };
+                let mut issues = run_rules_for_env(&rules, env, &inputs, &safety_cfg.required_tags);
                 if let Some(min) = severity_filter {
                     issues.retain(|i| i.severity >= min);
                 }
@@ -560,24 +612,9 @@ pub async fn run(args: &[String]) -> Result<()> {
                 }
 
                 if fix && !issues.is_empty() {
-                    let env_pinned = safety_cfg
-                        .safety_envs
-                        .get(&env.name)
-                        .copied()
-                        .unwrap_or(false);
-                    let account_pinned = active_profile_for_safety
-                        .as_deref()
-                        .and_then(|p| safety_cfg.safety_accounts.get(p).copied())
-                        .unwrap_or(false);
-                    if env_pinned || account_pinned {
-                        let reason = if env_pinned {
-                            format!("safety.envs.{}.read_only", env.name)
-                        } else {
-                            format!(
-                                "safety.accounts.{}.read_only",
-                                active_profile_for_safety.as_deref().unwrap_or("?")
-                            )
-                        };
+                    if let Some(reason) =
+                        safety_cfg.pin_reason(&env.name, active_profile_for_safety.as_deref())
+                    {
                         if !quiet {
                             eprintln!(
                                 "ebman lint --fix: refusing {} — pinned by {reason}",
@@ -589,6 +626,9 @@ pub async fn run(args: &[String]) -> Result<()> {
                         continue;
                     }
                     let region_label = region_opt.as_deref().unwrap_or("default").to_string();
+                    // Rebuild the (cheap, borrowing) context for the
+                    // fix pass — `run_rules_for_env` consumed its own.
+                    let ctx = build_lint_context(env, &inputs, &safety_cfg.required_tags);
                     let mut to_set: Vec<(String, String, String)> = Vec::new();
                     let mut planned: Vec<(String, lint::FixAction)> = Vec::new();
                     let mut planned_set_indices: Vec<usize> = Vec::new();
@@ -1070,6 +1110,49 @@ mod tests {
         assert!(err.contains("expects a URL"), "got: {err}");
         let err = parse_lint_args(&argv(&["lint", "--watch", "--webhook"])).unwrap_err();
         assert!(err.contains("expects a URL"), "got: {err}");
+    }
+
+    #[test]
+    fn run_rules_for_env_wires_inputs_through_the_context() {
+        // EBL017 fires on a bare env (managed actions absent) —
+        // proves the shared builder produces a working context.
+        let env = aws::Environment {
+            name: "prod".into(),
+            application: "shop".into(),
+            status: "Ready".into(),
+            health: "Green".into(),
+            platform: "Node.js 20".into(),
+            solution_stack: String::new(),
+            tier: "Web".into(),
+            cname: "prod.example.com".into(),
+            version_label: "b1".into(),
+            arn: None,
+            updated: Some(chrono::Utc::now()),
+            id: None,
+            region: None,
+        };
+        let rules = lint::default_rules(&[]);
+        let bare = EnvLintInputs {
+            options: vec![],
+            env_tag_keys: vec![],
+            healthy_count: None,
+            xray_denied: None,
+            probe_failure: None,
+            newer_stack: None,
+        };
+        let issues = run_rules_for_env(&rules, &env, &bare, &[]);
+        assert!(issues.iter().any(|i| i.rule_id == "EBL017"));
+        // Probe failure input reaches EBL016 through the same path.
+        let probed = EnvLintInputs {
+            probe_failure: Some("HTTP 503".into()),
+            options: vec![],
+            env_tag_keys: vec![],
+            healthy_count: None,
+            xray_denied: None,
+            newer_stack: None,
+        };
+        let issues = run_rules_for_env(&rules, &env, &probed, &[]);
+        assert!(issues.iter().any(|i| i.rule_id == "EBL016"));
     }
 
     #[test]

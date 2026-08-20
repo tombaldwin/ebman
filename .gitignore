@@ -16,3 +16,6 @@ crash-*.log
 
 # Claude Code working directory
 .claude/
+
+# Candor scanner local reports
+.candor/

@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added — `ebman mcp serve`: the MCP server (0.26 HEADLINE)
+
+- **Stdio MCP server exposing ebman's read surface as agent tools** — `claude mcp add ebman -- ebman mcp serve` and Claude Code can query fleet state first-class. Hand-rolled JSON-RPC 2.0 (five methods, `serde_json` parse + house-style emit; no SDK dep), pinned `protocolVersion` with golden `initialize`/`tools/list` frame tests, concurrent `tools/call` bounded at 30s (a slow lint fan-out can't starve `ping` — verified live), stdout protocol-only.
+- **Eight read tools**, each output-capped and carrying its coverage caveats in the description (EBL011/016/020 can't fire in the `lint` tool and the description says so): `list_environments` (the `envs --json` schema verbatim), `lint`, `get_option_settings` (**env-var values + DBPassword redacted by default**, `--no-redact` opts out), `drift`, `audit_log`, `recent_events`, `list_versions`, `fleet_cost` (cache-only — never calls Cost Explorer).
+- **`--demo` is the zero-AWS e2e harness**: the synthetic fixture fleet served through the real tool layer, with a planted EBL014 finding and a fake secret so demo lint and redaction both demonstrate something. 9 new tests + a live stdio smoke.
+- Expired-credential tool errors surface as the `aws sso login --profile X` hint via a new shared `rewrite_credential_error` (extracted from the TUI's `format_aws_error` — signal lists now live once).
+- v1 is **reads-only**; writes (`--allow-writes`) remain a spec'd v2 with their own safety review.
+
+### Refactored — 0.25 review queue (3 of 5)
+
+- **`Config::pin_reason`** — the safety-pin check's three copies (audit replay, lint `--fix`, and the spec'd MCP v2) collapsed into one tested home in config.rs. TUI keeps its richer session-gate composite by design.
+- **`cli/lint.rs run()` decomposition** — per-env input fetch + context assembly extracted into `fetch_env_lint_inputs` / `build_lint_context` / `run_rules_for_env`, shared verbatim by the MCP `lint` tool (the reason this was the MCP prerequisite).
+- **Replay split** — `ebman audit replay` moved to `cli/audit_replay.rs` (~470 lines out of the log reader it started in); dispatch unchanged.
+- Deferred with reasons: the `TailView` extraction (4-module refactor, stays queued for a dedicated session) and the LintContext probe-fields note (recorded in BACKLOG; no code change until ~6-8 probe fields).
+
 ## [0.25.0] — 2026-07-15 — incident operations: :incident mode + :event-tail + audit replay + lint completion
 
 Theme: **incident operations** — the 0.25 lineup. The three big items serve the same operator moment (something's on fire across the fleet) and compose with machinery that already existed.

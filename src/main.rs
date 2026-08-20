@@ -40,6 +40,9 @@ async fn main() -> Result<()> {
             }
             "drift" => return ebman::cli::drift::run(&args).await,
             "audit" => return ebman::cli::audit::run(&args).await,
+            // Reads-only in v1: no audit lines, no config-gated
+            // webhook fan-out — so no init_from_config_disk.
+            "mcp" => return ebman::cli::mcp::run(&args).await,
             "explain" => return ebman::cli::explain::run(&args).await,
             "versions" => return ebman::cli::versions::run(&args).await,
             _ => {}
@@ -280,6 +283,14 @@ SUBCOMMANDS:
                                                   polls 1s for new entries (until Ctrl-C). --since
                                                   filters to entries within a duration (5m/1h/2d).
                                                   Exit codes: 0 ok, 1 io err, 2 usage.
+    mcp serve [--demo] [--no-redact]             Stdio MCP server exposing the read surface
+                                                  (envs / lint / option settings / drift / audit /
+                                                  events / versions / cost) as agent tools for
+                                                  Claude Code etc. Reads-only; get_option_settings
+                                                  redacts env-var values + DBPassword by default
+                                                  (--no-redact opts out). --demo serves the
+                                                  synthetic fleet with zero AWS calls.
+                                                  Register: claude mcp add ebman -- ebman mcp serve
     audit replay LINE_ID [--yes]                 Re-dispatch a previously-audited action. LINE_ID
                                                   is a prefix of the line's RFC3339 timestamp (the
                                                   first `ebman audit` column); ambiguous prefixes

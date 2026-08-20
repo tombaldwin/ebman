@@ -9,6 +9,7 @@
 - **Per-env / per-account safety pins** in `config.toml` (`safety.envs.NAME.read_only = true` / `safety.accounts.NAME.read_only = true`) refuse destructive actions even when the global `--read-only` toggle is off. Enforced CLI-side too: `ebman audit replay` and `ebman lint --fix` refuse pinned targets before dispatch.
 - **Session-scoped fleet freeze**: `:freeze-deploys [REASON]` (or `:incident START "headline"`, which sets the same lock plus a header banner and audit lines) makes every destructive op refuse until `:thaw-deploys` / `:incident END` or exit. Not persisted — an in-session gesture, not durable policy.
 - **`ebman audit replay`** re-dispatches a previously-audited action and is itself audit-logged (`replay_of=`-tagged dispatched/completed lines); destructive verbs still require `--yes`.
+- **`ebman mcp serve` is reads-only** (v1): no tool can dispatch a write. Its `get_option_settings` tool redacts env-var values and `DBPassword` by default — an MCP client sees config *keys*, not secrets — with `--no-redact` as the explicit opt-out.
 
 ## What's stored locally
 

@@ -42,3 +42,28 @@ ebman versions --env NAME [--json]                                          # ap
 ```
 
 Exit-code convention (CI scripts can branch on these): `0` clean, `1` AWS-layer error, `2` usage error, `3` issues / drift found.
+
+## MCP server (`ebman mcp serve`)
+
+A stdio MCP server exposing ebman's read surface as tools, so Claude Code (or any MCP client) can query fleet state first-class:
+
+```bash
+claude mcp add ebman -- ebman mcp serve          # register with Claude Code
+ebman mcp serve --demo                            # synthetic fleet, zero AWS — try the protocol
+ebman mcp serve --no-redact                       # disable get_option_settings env-var redaction
+```
+
+v1 is **reads-only** — no tool can dispatch a write. Tools (all take optional `profile` / `region`):
+
+| Tool | Returns | Notes |
+|---|---|---|
+| `list_environments` | env list | same schema as `ebman envs --json` |
+| `lint` | rule findings | EBL011 never fires here (no queue polling); EBL016/EBL020 are probe-gated and don't run — stated in the tool description |
+| `get_option_settings` | one env's resolved options | env-var **values** + `DBPassword` redacted by default (keys visible) |
+| `drift` | terraform drift report | tfstate discovered from the server's cwd; pass `tfstate_path` otherwise |
+| `audit_log` | local audit entries | this machine's log only; default 100, cap 500 |
+| `recent_events` | EB events, newest first | default 50, cap 200 |
+| `list_versions` | app versions for an env's app | default 50 |
+| `fleet_cost` | cached $/month per env | cache-only; never calls Cost Explorer |
+
+Tool calls run concurrently with a 30s bound; expired-credential errors surface as the `aws sso login --profile X` hint so the agent can relay it. Failures come back as `isError` tool results, not protocol errors.

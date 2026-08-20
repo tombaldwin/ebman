@@ -27,11 +27,13 @@
 
 pub mod action;
 pub mod audit;
+pub mod audit_replay;
 pub mod ctl;
 pub mod drift;
 pub mod envs;
 pub mod explain;
 pub mod lint;
+pub mod mcp;
 pub mod versions;
 
 /// Re-exports from the shared deploy-poll module. CLI subcommand
