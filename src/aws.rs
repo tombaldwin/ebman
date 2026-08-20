@@ -3959,6 +3959,59 @@ fn normalize_tier(name: &str) -> String {
     }
 }
 
+/// The two actionable rewrites of [`rewrite_credential_error`],
+/// split so each caller can append its own surface-appropriate
+/// follow-up hint (TUI: Ctrl-R / `p`; MCP: nothing to press).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CredentialHint {
+    Expired(String),
+    Invalid(String),
+}
+
+/// Pure: rewrite an AWS-layer error into the actionable credentials
+/// command when it matches a known signal, `None` for everything
+/// else. Shared by the TUI's `format_aws_error` and the MCP server's
+/// tool-error path so the signal lists live once.
+///
+/// **ORDER MATTERS**: the SSO arm MUST run before the invalid-creds
+/// arm. The SSO signal list includes generic "unable to load
+/// credentials" / "no credentials in the property bag" tokens that
+/// AWS sometimes emits ALONGSIDE InvalidClientTokenId (e.g. SSO
+/// refresh failure with a stale token in the chain). Routing those
+/// to `aws configure --profile X` would misdirect the operator —
+/// `aws sso login` is the correct first remediation. Do NOT reorder
+/// for "alphabetical tidiness". 0.17.4 review caught this as a
+/// latent risk.
+pub fn rewrite_credential_error(profile: &str, msg: &str) -> Option<CredentialHint> {
+    let lower = msg.to_lowercase();
+    let sso_signals = [
+        "expiredtoken",
+        "expired token",
+        "token has expired",
+        "the security token included in the request is expired",
+        "unable to load credentials",
+        "no credentials in the property bag",
+        "sso session has expired",
+    ];
+    if sso_signals.iter().any(|s| lower.contains(s)) {
+        return Some(CredentialHint::Expired(format!(
+            "credentials expired — run: aws sso login --profile {profile}"
+        )));
+    }
+    let invalid_creds_signals = [
+        "invalidclienttokenid",
+        "the security token included in the request is invalid",
+        "signaturedoesnotmatch",
+        "the request signature we calculated does not match",
+    ];
+    if invalid_creds_signals.iter().any(|s| lower.contains(s)) {
+        return Some(CredentialHint::Invalid(format!(
+            "credentials invalid for profile '{profile}' — run: aws configure --profile {profile}"
+        )));
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

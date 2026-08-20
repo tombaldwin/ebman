@@ -36,6 +36,7 @@ pub mod mode_action;
 pub mod mode_detail;
 pub mod mode_dlq;
 pub mod plugins;
+pub mod probe;
 pub mod profiles;
 pub mod project;
 pub mod report_bug;
