@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.26.0] — 2026-08-20 — the MCP server: ebman's read surface as agent tools
+
+Theme: **agent access + lint completion.** The MCP server was spec'd, built, live-dogfooded against the real fleet, and hardened by review in one cycle — and the dogfooding itself surfaced the demand for EBL018 (a real fleet's health flapping traced to unfiltered scanner traffic) plus a Critical redaction gap the pre-tag review caught before it ever shipped.
+
 ### Added — `ebman mcp serve`: the MCP server (0.26 HEADLINE)
 
 - **Stdio MCP server exposing ebman's read surface as agent tools** — `claude mcp add ebman -- ebman mcp serve` and Claude Code can query fleet state first-class. Hand-rolled JSON-RPC 2.0 (five methods, `serde_json` parse + house-style emit; no SDK dep), pinned `protocolVersion` with golden `initialize`/`tools/list` frame tests, concurrent `tools/call` bounded at 30s (a slow lint fan-out can't starve `ping` — verified live), stdout protocol-only.
