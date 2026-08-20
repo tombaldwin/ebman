@@ -714,7 +714,9 @@ impl Server {
                 .map(|(name, usd)| format!("{}:{usd:.2}", util::json_string(name)))
                 .collect()
         };
-        let total: f64 = cache.costs.values().sum();
+        // f64's Sum impl folds from -0.0, so an empty cache would render
+        // "-0.00"; adding 0.0 normalises negative zero to positive.
+        let total: f64 = cache.costs.values().sum::<f64>() + 0.0;
         Ok(format!(
             "{{\"account\":{},\"region\":{},\"fetched_at\":{},\"stale\":{stale},\"total_usd_month\":{total:.2},\"by_env\":{{{}}}}}",
             util::json_string(&account),
@@ -1027,6 +1029,15 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(resp["result"]["isError"], true);
+    }
+
+    #[test]
+    fn empty_cost_cache_total_formats_positive_zero() {
+        // f64's Sum impl folds from -0.0; without the `+ 0.0` normalise
+        // an empty cost cache renders total_usd_month as "-0.00".
+        let costs: std::collections::HashMap<String, f64> = Default::default();
+        let total: f64 = costs.values().sum::<f64>() + 0.0;
+        assert_eq!(format!("{total:.2}"), "0.00");
     }
 
     #[test]
