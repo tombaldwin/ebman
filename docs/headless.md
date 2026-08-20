@@ -67,7 +67,7 @@ v1 is **reads-only** — no tool can dispatch a write. Tools (all take optional 
 | Tool | Returns | Notes |
 |---|---|---|
 | `list_environments` | env list | same schema as `ebman envs --json` |
-| `lint` | rule findings | EBL011 never fires here (no queue polling); EBL016/EBL020 are probe-gated and don't run — stated in the tool description |
+| `lint` | rule findings | EBL011 never fires here (no queue polling) and EBL016 doesn't run (no live HTTP probe) — stated in the tool description. The EBL020 X-Ray probe, the EBL018 WAF probe, and the EBL015 account-level pass all run (EBL015 only when not scoped to one env) |
 | `get_option_settings` | one env's resolved options | env-var **values** + `DBPassword` redacted by default (keys visible) |
 | `drift` | terraform drift report | tfstate discovered from the server's cwd; pass `tfstate_path` otherwise |
 | `audit_log` | local audit entries | this machine's log only; default 100, cap 500 |
