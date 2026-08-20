@@ -5,11 +5,9 @@
 //! (peek) or `AppMsg::DlqActionResult` (mutations) for the handler in
 //! `msg.rs` to fold back into the viewer.
 //!
-//! Read-only safety: the three mutating spawners (resend / purge /
-//! replay) gate through `deny_write` exactly as the single-env write
-//! paths do. `spawn_dlq_delete_one` reuses the `DlqOp::Resent` result
-//! variant (the handler drops the message by id, which is what a delete
-//! needs).
+//! Read-only safety: all four mutating spawners (delete-one / resend /
+//! purge / replay) gate through `deny_write` exactly as the single-env
+//! write paths do.
 //!
 //! 0.21+ lift: cluster moved out of `src/app.rs` as part of the
 //! `spawn_*` clusters refactor. Pure relocation; the `handle_dlq_key`
@@ -28,12 +26,14 @@ impl App {
             QueueView::Dlq => dlq.dlq_url.clone(),
             QueueView::Main => dlq.main_queue_url.clone(),
         };
+        let queue_for_msg = queue_url.clone();
         self.spawn_aws(
             "peek_messages",
             move |aws| async move { aws.peek_messages(&queue_url, 50).await },
             move |gen, result| AppMsg::DlqMessages {
                 gen,
                 env_name,
+                queue_url: queue_for_msg,
                 result,
             },
         );

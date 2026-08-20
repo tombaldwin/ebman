@@ -279,8 +279,11 @@ impl App {
                 env_name, result, ..
             } => self.handle_detail_queues(env_name, result),
             AppMsg::DlqMessages {
-                env_name, result, ..
-            } => self.handle_dlq_messages(env_name, result),
+                env_name,
+                queue_url,
+                result,
+                ..
+            } => self.handle_dlq_messages(env_name, queue_url, result),
             AppMsg::DlqActionResult {
                 env_name, result, ..
             } => self.handle_dlq_action_result(env_name, result),
@@ -1620,20 +1623,39 @@ impl App {
         });
     }
 
-    fn handle_dlq_messages(&mut self, env_name: String, result: Result<Vec<QueueMessage>, String>) {
+    fn handle_dlq_messages(
+        &mut self,
+        env_name: String,
+        queue_url: String,
+        result: Result<Vec<QueueMessage>, String>,
+    ) {
         let Some(dlq) = self.dlq.as_mut() else { return };
         if dlq.env_name != env_name {
+            return;
+        }
+        // Drop a peek that raced an `m`-toggle: the result belongs to
+        // the queue that WAS loaded, not the one now viewed.
+        let current_url = match dlq.viewing {
+            QueueView::Dlq => &dlq.dlq_url,
+            QueueView::Main => &dlq.main_queue_url,
+        };
+        if &queue_url != current_url {
             return;
         }
         dlq.loading = false;
         match result {
             Ok(messages) => {
                 dlq.messages = messages;
-                let cur = dlq.list_state.selected().unwrap_or(0);
                 if dlq.messages.is_empty() {
                     dlq.list_state.select(None);
-                } else if cur >= dlq.messages.len() {
-                    dlq.list_state.select(Some(0));
+                } else {
+                    // Select row 0 on a fresh load too — `unwrap_or(0)`
+                    // used to mask the None case, leaving Enter/x/r
+                    // inert and the first `j` skipping to row 1.
+                    match dlq.list_state.selected() {
+                        Some(cur) if cur < dlq.messages.len() => {}
+                        _ => dlq.list_state.select(Some(0)),
+                    }
                 }
                 dlq.error = None;
             }
