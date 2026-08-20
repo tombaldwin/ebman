@@ -253,7 +253,7 @@ pub fn write_cache(issue: &Issue, body: &str) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(path, body);
+    let _ = crate::util::write_secure(&path, body.as_bytes());
 }
 
 /// Dispatch an explain request to the configured provider.

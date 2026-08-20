@@ -215,35 +215,31 @@ pub fn scrub(text: &str, ctx: &ScrubContext) -> String {
 /// matches `\d{12}` style without pulling in the `regex` crate's
 /// machinery for this single pattern.
 fn scrub_12_digit_numbers(text: &str) -> String {
-    let bytes = text.as_bytes();
+    // Char-based walk: the previous byte-based version pushed
+    // non-ASCII bytes with `c as char`, mojibake-ing every multibyte
+    // character in the payload (each UTF-8 continuation byte became
+    // its own Latin-1 codepoint).
     let mut out = String::with_capacity(text.len());
+    let chars: Vec<char> = text.chars().collect();
     let mut i = 0;
-    while i < bytes.len() {
-        let c = bytes[i];
-        if c.is_ascii_digit() {
-            // Lookahead: 12 consecutive digits?
+    while i < chars.len() {
+        if chars[i].is_ascii_digit() {
             let mut j = i;
-            while j < bytes.len() && bytes[j].is_ascii_digit() {
+            while j < chars.len() && chars[j].is_ascii_digit() {
                 j += 1;
             }
-            let run = j - i;
-            if run == 12 {
-                // Replace. Only when the run is exactly 12 — longer
-                // numeric strings (timestamps, sizes) are different
-                // shape; shorter ones aren't account IDs.
+            // Replace only an exactly-12-digit run — longer numeric
+            // strings (timestamps, sizes) are a different shape;
+            // shorter ones aren't account IDs.
+            if j - i == 12 {
                 out.push_str("[account]");
-                i = j;
-                continue;
             } else {
-                // Copy the digit run verbatim.
-                out.push_str(&text[i..j]);
-                i = j;
-                continue;
+                out.extend(&chars[i..j]);
             }
+            i = j;
+            continue;
         }
-        // SAFETY: text is &str, byte boundary aligned at i because
-        // we only advance over ASCII digits above.
-        out.push(c as char);
+        out.push(chars[i]);
         i += 1;
     }
     out
@@ -349,6 +345,13 @@ pub fn tail_ebman_log(n: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn scrubber_preserves_multibyte_text() {
+        // The byte-based walk mojibake'd every non-ASCII char.
+        let s = super::scrub_12_digit_numbers("env-caf\u{e9} \u{2192} 123456789012 done \u{1f680}");
+        assert_eq!(s, "env-caf\u{e9} \u{2192} [account] done \u{1f680}");
+    }
+
     use super::*;
 
     fn ctx_with(env_names: &[&str], app_names: &[&str], profile: Option<&str>) -> ScrubContext {
