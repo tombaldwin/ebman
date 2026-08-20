@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed / Refactored — max-review round 2 + live app testing (2026-08-20)
+
+Three review lenses over the fix-phase commits plus hands-on testing (CLI matrix against the live fleet, MCP hostile-input battery + 40-call flood, the TUI driven headlessly over the control socket in demo and real-fleet sessions — zero panics). Fixed: the worker-queue error-honesty fix's own two leak paths (primary-error + empty fallback; `queue_stats` errors) with an error-path mock test; one oversized/invalid MCP line no longer kills the session (FramedRead's post-error `None` is resumption, not EOF — verified live); two more webhook-drain bypass exits plus the TUI quit path; the `take_value` class completed (explain/versions/ctl/`--control-socket`, with SUN_LEN validation after a live bind failure was found to be tracing-only); 0600 now migrates pre-existing files (found live on ebman.log); the env-var editor temp file is 0600 and always cleaned up; log-tail boundary-millisecond duplicates deduped by event id; the DLQ chip renders `(stale)` when its depth survived a failed check; DLQ delete-confirm keyed by message id (refresh-safe); form cursor-follow made exact (no wrap); ascii glyph fallbacks completed; the `warnings_to_stderr` gate no longer arms for flag-launched TUIs.
+
+**ui.rs submodule split** — the last deferred architecture item: `ui/overlays.rs` + `ui/detail.rs` + `ui/help.rs` carved out of the 9,400-line root (now ~5,000), app/-pattern, zero call-site churn, render-smoked across every moved draw path.
+
+
 ### Fixed / Changed — the 0.27 queue, retired (max-review remainders, all four phases)
 
 **Phase 1 — error honesty & async correctness:** `describe_worker_queues` errors are errors, not "no queues" (per-env reconcile keeps DLQ depths on fetch failure — AccessDenied/throttle can no longer silently clear an alert); logs-tail follows `FilterLogEvents` pagination with a watermark that only advances past received events (mock-tested — no more silent line drops during spikes); Cost Explorer pagination + non-finite filtering; webhook POSTs drain before one-shot CLI exits (the outcome POST was being cancelled at runtime drop); `AppMsg::Rebuild` carries a spawn epoch so rapid context switches settle on the LAST choice; the events panel cursor-follows (its scroll was dead state); forms scroll to the focused field on small terminals.

@@ -877,7 +877,7 @@ ebman mcp serve                        → server mode (future: MCP for Claude C
 
 **Future-proofing test passed:** LLM explainer (`ebman explain`), MCP server (`ebman mcp serve`), cron-driven monitoring (`ebman lint --watch`), git pre-commit hooks (`ebman drift`), GitHub Actions integration (`ebman action deploy`), audit-stream consumption (`ebman audit --tail --json | jq`) all fit without restructuring.
 
-### 0.27 queue — 0.26 max-depth review remainders (2026-08-20) — RETIRED same-day (all four phases shipped; see CHANGELOG Unreleased). Wontfix by decision: unicode display-width math, serde_yml alias hardening, audit --tail text alignment. Still queued: ui.rs submodule split (own session), MCP registry unification (v2-gated).
+### 0.27 queue — 0.26 max-depth review remainders (2026-08-20) — RETIRED same-day (all four phases shipped; see CHANGELOG Unreleased). Wontfix by decision: unicode display-width math, serde_yml alias hardening, audit --tail text alignment. ui.rs submodule split SHIPPED 2026-08-20 (ui/overlays + ui/detail + ui/help; root 9,400 -> 5,000 lines). The round-2 review remainders (log-tail boundary dedupe, DLQ staleness marker, TUI quit drain, id-keyed delete confirm, -32600 test) also shipped same-day. Only remaining deferral: MCP registry unification (gated on v2 --allow-writes).
 
 Six-lens full-codebase review post-0.26.0. All 8 Critical-class + the quick Important findings were fixed same-day (see CHANGELOG Unreleased). Remaining, each deferred with a reason:
 
