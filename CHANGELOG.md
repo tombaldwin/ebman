@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.27.0] — 2026-08-20 — the hardening release: two max-depth reviews, live-tested, panel-approved
+
+### ⚠ Behavior changes — read before upgrading CI
+
+- **`ebman lint` / `ebman drift` exit `1` on AWS-layer failure** where they silently exited 0 — a pipeline that's been passing green on expired credentials goes red on its first run (it was already lying; now it says so). `lint --baseline` refuses to snapshot a degraded run.
+- **`ebman drift` redacts env-var values and `DBPassword` by default** (text and `--json`), matching `get_option_settings` and the MCP tools. Pass `--no-redact` if your tooling consumes raw values; drifted/clean signal and exit codes unchanged. The TUI `:drift` overlay always redacts.
+- **`safety.envs.*` / `safety.accounts.*` pins are now enforced by `ebman action`** (all verbs, exit 3) and by the TUI `:rollout`, which also honors `--read-only` and `:incident`/`:freeze-deploys`.
+- **`ebman action` verbs now write audit-log entries and fire `notify_webhook`** — expect new posts from headless dispatches.
+- **Stricter argument parsing everywhere**: value flags reject a missing value or a following flag (`lint --fix --yes --env` with no value used to auto-fix the *entire fleet*); unknown flags and unknown subcommands exit 2 instead of being ignored or launching the TUI.
+- **`~/.cache/ebman/` artifacts are chmod 0600**, including pre-existing files — grant access explicitly if a log shipper reads them.
+- **Interactive SSM sessions (`s`, `:ssh`) are treated as writes** — blocked in read-only mode and on pinned envs.
+
+
 ### Fixed / Refactored — max-review round 2 + live app testing (2026-08-20)
 
 Three review lenses over the fix-phase commits plus hands-on testing (CLI matrix against the live fleet, MCP hostile-input battery + 40-call flood, the TUI driven headlessly over the control socket in demo and real-fleet sessions — zero panics). Fixed: the worker-queue error-honesty fix's own two leak paths (primary-error + empty fallback; `queue_stats` errors) with an error-path mock test; one oversized/invalid MCP line no longer kills the session (FramedRead's post-error `None` is resumption, not EOF — verified live); two more webhook-drain bypass exits plus the TUI quit path; the `take_value` class completed (explain/versions/ctl/`--control-socket`, with SUN_LEN validation after a live bind failure was found to be tracing-only); 0600 now migrates pre-existing files (found live on ebman.log); the env-var editor temp file is 0600 and always cleaned up; log-tail boundary-millisecond duplicates deduped by event id; the DLQ chip renders `(stale)` when its depth survived a failed check; DLQ delete-confirm keyed by message id (refresh-safe); form cursor-follow made exact (no wrap); ascii glyph fallbacks completed; the `warnings_to_stderr` gate no longer arms for flag-launched TUIs.
