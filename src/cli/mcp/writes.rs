@@ -194,6 +194,42 @@ pub(super) fn write_tool_descriptors() -> Vec<Value> {
     ]
 }
 
+/// Freeze + pin gate shared by both write phases. Returns a refusal
+/// message when the write must not proceed, `None` when clear. Run at
+/// BOTH plan and confirm: the token window is long enough for an
+/// operator to declare an incident (or add a pin) in between, and the
+/// gates exist precisely to stop a write dispatching mid-incident.
+fn write_gate(
+    safety_cfg: &crate::config::Config,
+    env: &str,
+    profile: &Option<String>,
+    active_freeze: Option<crate::freeze::FreezeMarker>,
+) -> Option<String> {
+    // Cross-process freeze (the pid-scoped marker a live TUI session
+    // persists for :freeze-deploys / :incident). Passed in by the
+    // caller so the gate stays pure + hermetically testable.
+    if let Some(m) = active_freeze {
+        let reason = if m.reason.is_empty() {
+            "no reason given".to_string()
+        } else {
+            m.reason.clone()
+        };
+        return Some(format!(
+            "fleet freeze active ({reason}) — lift with `{}` in the owning TUI (pid {})",
+            m.remedy(),
+            m.pid
+        ));
+    }
+    // Safety pins — the shared check every write path uses.
+    let pin_profile = profile
+        .clone()
+        .or_else(|| std::env::var("AWS_PROFILE").ok());
+    if let Some(pin) = safety_cfg.pin_reason(env, pin_profile.as_deref()) {
+        return Some(format!("refusing {env} — pinned by {pin}"));
+    }
+    None
+}
+
 impl Server {
     /// Phase 1 for every write verb: shared gates (writes enabled,
     /// not mid-dispatch, freeze, pins, env exists), verb-specific
@@ -215,30 +251,18 @@ impl Server {
         }
         let env_name = arg_str(args, "env").ok_or("'env' is required")?;
 
-        // Cross-process freeze (the pid-scoped marker a live TUI
-        // session persists for :freeze-deploys / :incident).
-        if let Some(m) = crate::freeze::read_active() {
-            let reason = if m.reason.is_empty() {
-                "no reason given".to_string()
-            } else {
-                m.reason.clone()
-            };
-            return Err(format!(
-                "fleet freeze active ({reason}) — lift with `{}` in the owning TUI (pid {})",
-                m.remedy(),
-                m.pid
-            ));
-        }
-        // Safety pins — the shared check every write path uses.
+        // Freeze + pin gate — run at plan time AND re-run at confirm
+        // (the 60s token window is long enough for an operator to
+        // declare an incident or add a pin between the two; the whole
+        // point of the gates is to stop a write dispatching then).
         let profile = arg_str(args, "profile");
-        let pin_profile = profile
-            .clone()
-            .or_else(|| std::env::var("AWS_PROFILE").ok());
-        if let Some(pin) = self
-            .safety_cfg
-            .pin_reason(&env_name, pin_profile.as_deref())
-        {
-            return Err(format!("refusing {env_name} — pinned by {pin}"));
+        if let Some(msg) = write_gate(
+            &self.safety_cfg,
+            &env_name,
+            &profile,
+            crate::freeze::read_active(),
+        ) {
+            return Err(msg);
         }
 
         let envs = self.fetch_envs(args).await?;
@@ -464,6 +488,19 @@ impl Server {
                     ));
                 }
             }
+            // Re-gate at CONFIRM time (R1, 0.28 panel): freeze/pin
+            // were checked at plan time, but the token window is long
+            // enough for an incident to be declared since. A refusal
+            // here drops the plan — reality changed, re-plan required.
+            if let Some(msg) = write_gate(
+                &self.safety_cfg,
+                &p.env,
+                &p.profile,
+                crate::freeze::read_active(),
+            ) {
+                st.pending = None;
+                return Err(msg);
+            }
             st.dispatching = true;
             st.pending.take().expect("checked above")
         };
@@ -556,5 +593,31 @@ impl Server {
             )),
             Err(e) => Err(tool_error(&p.profile, verb_label, &e)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_gate_refuses_under_freeze_and_pin() {
+        let cfg = crate::config::Config::default();
+        // No freeze, no pin -> clear.
+        assert!(write_gate(&cfg, "prod", &None, None).is_none());
+        // Active freeze -> refusal names it + the remedy.
+        let m = crate::freeze::FreezeMarker {
+            pid: 4242,
+            reason: "checkout 5xx".into(),
+            incident: true,
+            at: "now".into(),
+        };
+        let msg = write_gate(&cfg, "prod", &None, Some(m)).expect("refused");
+        assert!(msg.contains("freeze active") && msg.contains(":incident END"));
+        // Pin -> refusal (no freeze).
+        let mut pinned = crate::config::Config::default();
+        pinned.safety_envs.insert("prod".into(), true);
+        let msg2 = write_gate(&pinned, "prod", &None, None).expect("pin refused");
+        assert!(msg2.contains("pinned by"));
     }
 }

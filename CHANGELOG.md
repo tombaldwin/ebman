@@ -6,7 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.28.0] — 2026-08-20 — agents that can act: MCP v2 writes + cross-process freeze
+
+### ⚠ Behavior changes — read before upgrading
+
+- **Cross-process fleet freeze**: `:freeze-deploys` / `:incident START` in a *running* TUI now blocks `ebman action`, `audit replay`, `lint --fix`, and MCP writes from **other** processes/terminals, via a pid-scoped marker at `~/.cache/ebman/freeze.json` (0600). Lift with `:thaw-deploys` / `:incident END` in the owning session, or delete the file. A crashed or cleanly-exited TUI leaves no lingering freeze (the marker is ignored once its pid is gone). This only affects operators who use freeze/incident, and the refusal names the reason, the owning pid, and the exact remedy.
+- **New local file**: `~/.cache/ebman/freeze.json` appears while a freeze/incident is active.
+- Everything else in 0.28 is inert for existing users — MCP writes are opt-in (see below) and the rest is internal.
+
 ### Added — MCP v2 writes + cross-process freeze (0.28 HEADLINE)
+
+- **MCP writes are opt-in** — `ebman mcp serve --allow-writes` (flag only) adds two-phase `deploy` / `restart` / `rebuild` / `terminate` / `set_option` (+ `confirm_action`). Without the flag the server is byte-for-byte the 0.27 read-only surface. Writes honor pins, cross-process freeze, and read-only (re-checked at BOTH plan and confirm — the token window can't be used to slip a write past a freshly-declared incident), are serialized one-at-a-time, dispatch-only (poll the read tools for progress), and audit as `via=mcp client=<name>`.
 
 - **`ebman mcp serve --allow-writes`** — five two-phase write tools (`deploy`, `restart`, `rebuild`, `terminate`, `set_option`) + `confirm_action`, present in `tools/list` only under the flag. Each verb returns a transcript-visible plan with a single-use 60s `confirm_token`; `confirm_action` dispatches. `terminate` requires `confirm_name` == env name (strict-typed confirm, one retry/token); `set_option` caps at 10 settings, gates to existing namespaces, and redacts old env-var values in its plan. Pins + a live TUI session's freeze + read-only refuse before a plan issues; writes are serialized server-wide; dispatch-only (poll the read tools); audit lines tagged `via=mcp client=<name>`. Demo mode is synthetic. Rollout is excluded by design (compose from `deploy` + read polling).
 - **Cross-process fleet freeze** — the TUI persists `:freeze-deploys` / `:incident START` to a pid-scoped marker (`~/.cache/ebman/freeze.json`, 0600); the MCP write tools AND all three CLI write paths (`ebman action`, `audit replay`, `lint --fix`) now refuse while a live TUI session holds a freeze (fix-the-class — they had the same blind spot). A crashed TUI's marker is ignored and cleaned by the next reader, so it can't phantom-freeze.
