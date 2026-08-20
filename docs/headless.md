@@ -35,6 +35,7 @@ ebman lint   --probe-live                                                   # en
 ebman lint   --baseline FILE                                                # snapshot today's issues for CI grandfathering
 ebman lint   --against-baseline FILE [--json]                              # diff vs snapshot; exit 3 only on NEW issues
 ebman drift  [--env NAME] [--regions r1,r2,r3] [--tfstate PATH] [--json]   # terraform drift report; exit 3 on drift
+ebman drift  --no-redact                                                    # show drifted env-var values verbatim (redacted by default, 0.27+)
 ebman audit  [--tail] [--since DUR] [--env NAME] [--action NAME] [--json]  # surface ~/.cache/ebman/audit.log for scripts
 ebman audit replay LINE_ID [--yes]                                          # re-dispatch an audited action (timestamp-prefix ID)
 ebman explain EBL### [--env NAME] [--json] [--dry-run] [--no-cache]        # LLM-backed explanation of a lint issue (opt-in)

@@ -76,6 +76,24 @@ pub fn json_string(s: &str) -> String {
     out
 }
 
+/// Redaction policy shared by the MCP `get_option_settings`/`drift`/
+/// `audit_log` tools, `ebman drift`, and the TUI `:drift` overlay:
+/// env-var VALUES are secrets (`aws:elasticbeanstalk:application:
+/// environment` carries DB URLs, API keys); keys stay visible so
+/// config shape is inspectable. `DBPassword` matches the `:rds`
+/// precedent. Everything else passes through.
+pub fn redact_option_value(namespace: &str, name: &str, value: &str, redact: bool) -> String {
+    if !redact {
+        return value.to_string();
+    }
+    if namespace == "aws:elasticbeanstalk:application:environment"
+        || name.eq_ignore_ascii_case("DBPassword")
+    {
+        return "(redacted)".to_string();
+    }
+    value.to_string()
+}
+
 /// Open (create-if-missing) a file for appending with 0600 perms —
 /// operator-only. The cache artifacts this guards (audit.log with SSM
 /// command strings, ebman.log, crash reports, explain cache) were

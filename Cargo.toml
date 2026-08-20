@@ -52,6 +52,7 @@ aws-sdk-organizations = "1.110.0"
 aws-sdk-costexplorer = "1"
 aws-sdk-iam = "1"
 aws-sdk-wafv2 = "1"
+tokio-util = { version = "0.7", features = ["codec"] }
 aws-sdk-secretsmanager = "1"
 aws-sdk-ssm = "1"
 serde = { version = "1", features = ["derive"] }

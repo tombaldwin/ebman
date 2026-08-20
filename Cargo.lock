@@ -1535,6 +1535,7 @@ dependencies = [
  "tb-tui-common",
  "tokio",
  "tokio-stream",
+ "tokio-util",
  "toml",
  "tracing",
  "tracing-appender",
