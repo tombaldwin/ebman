@@ -866,7 +866,14 @@ impl App {
         // Pull the values we need before re-borrowing for the
         // dispatch fire — borrow checker can't see we'd switch
         // to a different field of the same enum variant.
-        let (should_continue, next_region, env_name, version_label, wait_for_green_secs) = {
+        let (
+            should_continue,
+            next_region,
+            env_name,
+            version_label,
+            wait_for_green_secs,
+            rollout_id,
+        ) = {
             let Some(crate::mode_action::ActionFlow::Rollout(flow)) = self.action_flow.as_mut()
             else {
                 return;
@@ -875,14 +882,29 @@ impl App {
                 return;
             };
             row.outcome = Some(result.clone());
-            // Move the cursor. If `Err`, halt; otherwise next.
-            let next = match &flow.state {
+            // Mirror the CLI's per-region audit line — RolloutDispatched
+            // arrival means the region's outcome is known.
+            crate::audit::append_rollout(
+                &flow.rollout_id,
+                &region,
+                &flow.env_name,
+                &flow.version_label,
+                "completed",
+                result.as_ref().err().map(String::as_str),
+            );
+            // Move the cursor. If `Err`, halt; otherwise advance to the
+            // next region that PASSED pre-flight — failed ones keep
+            // outcome None ("skipped"), matching the y-confirm gate's
+            // promise (previously only leading failures were skipped;
+            // a mid-sequence failed region got a doomed dispatch).
+            let next_start = match &flow.state {
                 crate::mode_action::RolloutState::Dispatching { next_index } => next_index + 1,
                 _ => return,
             };
             let halt = result.is_err();
             let n = flow.regions.len();
-            let done = halt || next >= n;
+            let next_eligible = (next_start..n).find(|&i| flow.regions[i].env_found == Some(true));
+            let done = halt || next_eligible.is_none();
             if done {
                 flow.state = crate::mode_action::RolloutState::Done;
                 let n_ok = flow
@@ -907,8 +929,16 @@ impl App {
                         flow.rollout_id
                     ));
                 }
-                (false, None, String::new(), String::new(), None)
+                (
+                    false,
+                    None,
+                    String::new(),
+                    String::new(),
+                    None,
+                    String::new(),
+                )
             } else {
+                let next = next_eligible.expect("checked by done");
                 flow.state = crate::mode_action::RolloutState::Dispatching { next_index: next };
                 let next_region = flow.regions[next].region.clone();
                 (
@@ -917,6 +947,7 @@ impl App {
                     flow.env_name.clone(),
                     flow.version_label.clone(),
                     flow.wait_for_green_secs,
+                    flow.rollout_id.clone(),
                 )
             }
         };
@@ -924,6 +955,7 @@ impl App {
             let profile = self.context.profile.clone();
             if let Some(region) = next_region {
                 self.spawn_rollout_dispatch(
+                    rollout_id,
                     profile,
                     region,
                     env_name,
@@ -932,12 +964,6 @@ impl App {
                 );
             }
         }
-        // Audit-log entries are written by the spawn-side
-        // (RolloutDispatched arrival means the dispatch already
-        // landed in EB); a future enhancement could mirror the
-        // CLI's `write_rollout_audit_line` here for finer-grained
-        // history. Keeping it as a follow-up to stay focused on
-        // the TUI state-machine first.
     }
 
     /// Push a captured undo entry onto the history deque. Cap'd at
@@ -1611,6 +1637,10 @@ impl App {
                 Ok(DlqOp::Resent { message_id }) => {
                     dlq.messages.retain(|m| m.id != message_id);
                     self.status_message = Some(format!("message {message_id} resent"));
+                }
+                Ok(DlqOp::Deleted { message_id }) => {
+                    dlq.messages.retain(|m| m.id != message_id);
+                    self.status_message = Some(format!("message {message_id} deleted"));
                 }
                 Ok(DlqOp::Purged) => {
                     dlq.messages.clear();

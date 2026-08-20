@@ -38,10 +38,13 @@ required_tags = "Owner,Project"
 # Red-transition notifications — ebman emits a `tracing::warn!` and writes
 # a `stage=event kind=red_transition env=…` line to the audit log at
 # `~/.cache/ebman/audit.log` for every env that transitions into Red.
-# Wire your own notifier (Slack, PagerDuty, …) by tailing that file. The
-# previous built-in `webhook_url` POST was trimmed — single-URL POST was
-# too rigid for real ops workflows, and the audit log already carried the
-# same data with timestamps.
+# Wire your own notifier (Slack, PagerDuty, …) by tailing that file — or
+# set `notify_webhook` and ebman POSTs every audit line (dispatches,
+# outcomes, red transitions) to the URL as a Slack-compatible JSON body.
+# Note the scope: EVERY audit line goes to the URL, including `cmd="…"`
+# strings from `:ssm-run` — point it only at a channel you'd paste those
+# into.
+# notify_webhook = "https://hooks.slack.com/services/T000/B000/XXXX"
 
 # AssumeRole targets reachable via `:account NAME`. One stanza per
 # account. `source_profile` carries the base creds for the
@@ -88,9 +91,11 @@ safety.accounts.prod.read_only = true
 # explainer for lint issues. OFF BY DEFAULT — operators must
 # explicitly opt in here AND export the provider API key.
 # Presence of ANTHROPIC_API_KEY alone is not implicit consent.
+# NOTE: ebman's config parser does not support inline `# comments`
+# after a value — keep each value on its own line, comments on theirs.
 # explain.enabled = true
-# explain.provider = "anthropic"           # or "ollama"
-# explain.model = "claude-haiku-4-5"       # cheap + fast; or Sonnet/Opus
+# explain.provider = "anthropic"
+# explain.model = "claude-haiku-4-5"
 # explain.api_key_env = "ANTHROPIC_API_KEY"
 # explain.ollama_url = "http://localhost:11434"
 # explain.max_tokens = 1024

@@ -306,7 +306,7 @@ SUBCOMMANDS:
                                                   the configured Provider (Anthropic API or local
                                                   Ollama) and prints an operator-readable summary
                                                   of why the issue matters and what to do next.
-                                                  Requires `[explain] enabled = true` in
+                                                  Requires `explain.enabled = true` in
                                                   config.toml + an exported ANTHROPIC_API_KEY
                                                   (Anthropic) or a running Ollama server. Responses
                                                   cached to ~/.cache/ebman/explain/; --no-cache

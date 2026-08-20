@@ -1758,6 +1758,11 @@ pub enum DlqOp {
     Resent {
         message_id: String,
     },
+    /// Single-message delete (`x`) — drops the row by id like Resent,
+    /// but the toast must not claim a resend that never happened.
+    Deleted {
+        message_id: String,
+    },
     Purged,
     /// Outcome of a batch replay: `count` messages moved to the main queue
     /// (sent + deleted from the DLQ), `failures` that errored mid-way.
@@ -3483,9 +3488,19 @@ impl App {
                     {
                         // Queue an SSM session into the selected instance.
                         // The run loop handles the TUI suspend/resume.
-                        if let Some(d) = self.detail.as_ref() {
-                            if let Some(inst) = d.instances.get(d.instances_cursor) {
-                                self.pending_shell_target = Some(inst.id.clone());
+                        // An interactive shell is a write surface
+                        // (docs/commands.md documents SSM as
+                        // treat-as-write) — read-only / freeze / pins
+                        // must block it like `:ssm-run`.
+                        let target = self.detail.as_ref().and_then(|d| {
+                            Some((
+                                d.env_name.clone(),
+                                d.instances.get(d.instances_cursor)?.id.clone(),
+                            ))
+                        });
+                        if let Some((env_name, instance_id)) = target {
+                            if !self.deny_write(&env_name, "ssm-session") {
+                                self.pending_shell_target = Some(instance_id);
                             }
                         }
                     }
@@ -3535,19 +3550,6 @@ impl App {
                         ) =>
                     {
                         self.cycle_metrics_range(-1);
-                    }
-                    // ] / [ on the main env table cycle through the saved-
-                    // view chips above the table. Operators with saved
-                    // views get a one-key flip between them instead of
-                    // typing `:view NAME` (or `:filter NAME` for legacy
-                    // filter-only views) each time. Guard on
-                    // `detail.is_none()` so Detail-pane bindings (which
-                    // also use ] / [) keep working.
-                    KeyCode::Char(']') if self.detail.is_none() && !self.saved_views.is_empty() => {
-                        self.cycle_saved_view(1);
-                    }
-                    KeyCode::Char('[') if self.detail.is_none() && !self.saved_views.is_empty() => {
-                        self.cycle_saved_view(-1);
                     }
                     KeyCode::Char('/')
                         if matches!(
@@ -3758,6 +3760,20 @@ impl App {
                                 }
                             }
                         };
+                    }
+                    // ] / [ on the main env table cycle through the
+                    // saved-view chips above the table — a one-key flip
+                    // instead of typing `:view NAME` each time. Placed
+                    // AFTER the guarded Ctrl-]/Ctrl-[ arms (match-arm
+                    // order — the compiler won't warn on shadowing).
+                    // These lived unreachably inside the Detail-mode
+                    // match until the 0.26 max-review; docs/keys.md
+                    // documented them as a main-table binding all along.
+                    KeyCode::Char(']') if !self.saved_views.is_empty() => {
+                        self.cycle_saved_view(1);
+                    }
+                    KeyCode::Char('[') if !self.saved_views.is_empty() => {
+                        self.cycle_saved_view(-1);
                     }
                     KeyCode::Char(' ') if self.scope == Scope::Envs => {
                         if let Some(env) = self.selected_env().cloned() {
@@ -4733,6 +4749,18 @@ impl App {
                 if !id.starts_with("i-") {
                     self.error_message =
                         Some(format!("expected an EC2 instance ID (`i-…`), got '{id}'"));
+                    return;
+                }
+                // Interactive shell = write surface (same gate as
+                // `:ssm-run`). The env for pin purposes is the open
+                // Detail env when there is one; global read-only /
+                // freeze / incident apply regardless.
+                let gate_env = self
+                    .detail
+                    .as_ref()
+                    .map(|d| d.env_name.clone())
+                    .unwrap_or_default();
+                if self.deny_write(&gate_env, "ssm-session") {
                     return;
                 }
                 // Log the dispatch. Both this (typed-command) path
@@ -8033,8 +8061,10 @@ impl App {
                     let env_name = flow.env_name.clone();
                     let version_label = flow.version_label.clone();
                     let wait_for_green_secs = flow.wait_for_green_secs;
+                    let rollout_id = flow.rollout_id.clone();
                     let profile = self.context.profile.clone();
                     self.spawn_rollout_dispatch(
+                        rollout_id,
                         profile,
                         region,
                         env_name,
@@ -8257,10 +8287,15 @@ impl App {
                 return;
             }
         }
-        let Some(Overlay::LogTail { view, .. }) = self.current_overlay.as_mut() else {
+        let Some(Overlay::LogTail { view, events, .. }) = self.current_overlay.as_mut() else {
             return;
         };
-        if tail::handle_tail_key(view, key) == tail::TailKeyOutcome::Close {
+        let outcome = tail::handle_tail_key(view, key);
+        // Clamp the scroll to the buffer: `g` sets the u16::MAX
+        // sentinel, and without a ceiling every subsequent `j` costs
+        // one dead press (~63k of them) before the view moves again.
+        view.scroll = view.scroll.min(events.len() as u16);
+        if outcome == tail::TailKeyOutcome::Close {
             // Reap so a late `LogTailOpened` from the aborted task can't
             // re-open the overlay the user just dismissed.
             tail::reap_tail_task(&mut self.log_tail_task, &mut self.log_tail_session);
@@ -8570,10 +8605,14 @@ impl App {
     /// same surface as [`handle_log_tail_key`] minus the log-group
     /// picker (there's no group to switch; the tail is fleet-wide).
     fn handle_event_tail_key(&mut self, key: KeyEvent) {
-        let Some(Overlay::EventTail { view, .. }) = self.current_overlay.as_mut() else {
+        let Some(Overlay::EventTail { view, events, .. }) = self.current_overlay.as_mut() else {
             return;
         };
-        if tail::handle_tail_key(view, key) == tail::TailKeyOutcome::Close {
+        let outcome = tail::handle_tail_key(view, key);
+        // Same scroll ceiling as the log tail — `g`'s u16::MAX
+        // sentinel must not leave `j` dead for thousands of presses.
+        view.scroll = view.scroll.min(events.len() as u16);
+        if outcome == tail::TailKeyOutcome::Close {
             // Reap so a late `EventTailOpened` from the aborted task
             // can't re-open the dismissed overlay.
             tail::reap_tail_task(&mut self.event_tail_task, &mut self.event_tail_session);
@@ -11512,10 +11551,34 @@ impl App {
                 // Picker overlays (profile / region / log-group / ssh
                 // instance) all carry context-scoped state too.
                 self.picker = None;
+                // An open form (`:capacity`, `:subnets`, env-var
+                // editor…) was built against the OLD context's env; a
+                // `^S` after the switch would deny_write-check the new
+                // context's config with the old env name and dispatch
+                // against the new client — cross-account silent write
+                // if the new account has a same-named env. Same class
+                // as the detail/:ssm-run clear above.
+                self.form = None;
+                // Batch selections are env-name keyed; a stale set
+                // would let `:batch-rebuild` fan out old names against
+                // the new client.
+                self.multi_selected.clear();
+                self.apps_selected.clear();
+                // DLQ state carries queue URLs from the old account
+                // (and `:help`'s topic inference reads it).
+                self.dlq = None;
+                // Per-env caches from the old context — stale numbers
+                // would render as current until the first refresh.
+                self.worker_dlq_depths.clear();
+                self.env_instance_counts.clear();
+                self.applications.clear();
+                self.costs.clear();
+                self.costs_fetched_at = None;
                 if self.mode == Mode::Detail
                     || self.mode == Mode::Dlq
                     || self.mode == Mode::Action
                     || self.mode == Mode::Picker
+                    || self.mode == Mode::Form
                 {
                     self.mode = Mode::Normal;
                 }

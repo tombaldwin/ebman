@@ -3,7 +3,7 @@
 //! Provider (Anthropic API or Ollama), assembles the prompt via
 //! [`crate::llm::build_prompt`], dispatches, prints the response.
 //!
-//! Requires explicit operator consent via `[explain] enabled = true`
+//! Requires explicit operator consent via `explain.enabled = true`
 //! in `config.toml`. The presence of `ANTHROPIC_API_KEY` is not
 //! implicit consent — the surface refuses with a clear message
 //! pointing at the config edit needed.

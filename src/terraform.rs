@@ -127,7 +127,7 @@ struct RawSetting {
 pub fn find_tfstate(start: &Path) -> Option<PathBuf> {
     for ancestor in start.ancestors() {
         let backend = ancestor.join(".terraform").join("terraform.tfstate");
-        if backend.is_file() {
+        if backend.is_file() && !file_is_backend_pointer(&backend) {
             return Some(backend);
         }
         let local = ancestor.join("terraform.tfstate");
@@ -136,6 +136,33 @@ pub fn find_tfstate(start: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn file_is_backend_pointer(path: &Path) -> bool {
+    match std::fs::read_to_string(path) {
+        Ok(text) => is_backend_pointer(&text),
+        Err(_) => false,
+    }
+}
+
+/// Since Terraform 0.9, `.terraform/terraform.tfstate` for a REMOTE
+/// backend holds backend *configuration* (`{"backend": ...}`), not
+/// resource state. `RawTfState`'s `#[serde(default)] resources` made
+/// it parse "successfully" as zero envs — every env reported
+/// not-tf-managed, drift badges vanished, and `ebman drift
+/// --exit-code` passed green in CI: the exact silent failure this
+/// module's docstring promises to avoid. It also SHADOWED a genuine
+/// root-level terraform.tfstate when both existed. A pointer file is
+/// one with a `backend` key and no resources; unparseable
+/// backend-keyed files count as pointers too (skip, keep walking).
+pub(crate) fn is_backend_pointer(text: &str) -> bool {
+    if !text.contains("\"backend\"") {
+        return false;
+    }
+    match serde_yml::from_str::<RawTfState>(text) {
+        Ok(raw) => raw.resources.is_empty(),
+        Err(_) => true,
+    }
 }
 
 /// Pure: parse tfstate JSON into a `TfState`. Returns `None` on
@@ -829,6 +856,39 @@ mod tests {
         std::fs::write(dir.join("terraform.tfstate"), "{}").expect("write local");
         assert_eq!(find_tfstate(&dir), Some(backend));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn find_tfstate_skips_remote_backend_pointer() {
+        // Remote-backend projects: .terraform/terraform.tfstate is a
+        // backend-config pointer with no resources — it must not
+        // shadow the real root-level state (or, alone, produce a
+        // zero-env "all clean" drift report).
+        let dir = std::env::temp_dir().join(format!("ebman-tf-ptr-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".terraform")).expect("mk .terraform");
+        std::fs::write(
+            dir.join(".terraform/terraform.tfstate"),
+            r#"{"version": 3, "backend": {"type": "s3", "config": {}}}"#,
+        )
+        .expect("write pointer");
+        let local = dir.join("terraform.tfstate");
+        std::fs::write(&local, r#"{"resources": []}"#).expect("write local");
+        assert_eq!(find_tfstate(&dir), Some(local));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn backend_pointer_detection() {
+        assert!(is_backend_pointer(
+            r#"{"version": 3, "backend": {"type": "s3"}}"#
+        ));
+        assert!(!is_backend_pointer(r#"{"resources": [{"type": "x"}]}"#));
+        // Real state that happens to mention backend but has resources.
+        assert!(!is_backend_pointer(
+            r#"{"backend": {"type": "s3"}, "resources": [{"type": "aws_elastic_beanstalk_environment", "instances": []}]}"#
+        ));
+        assert!(!is_backend_pointer("{}"));
     }
 
     #[test]

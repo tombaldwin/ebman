@@ -103,6 +103,21 @@ fn parse_action_args(args: &[String]) -> Result<ActionArgs, ActionArgError> {
     })
 }
 
+/// Safety-pin gate for every `ebman action` dispatch — the shared
+/// `Config::pin_reason` check that `audit replay` and `lint --fix`
+/// use, matched against the ambient `AWS_PROFILE`. Exit 3 (refused),
+/// same as the replay refusal. Without this, the largest CLI write
+/// surface bypassed `safety.envs.*` / `safety.accounts.*` entirely
+/// (0.26 max-review C3 — the class the 0.14.1 patch fixed for
+/// `lint --fix`).
+fn refuse_if_pinned(env: &str) {
+    let profile = std::env::var("AWS_PROFILE").ok();
+    if let Some(reason) = crate::config::load().pin_reason(env, profile.as_deref()) {
+        eprintln!("ebman action: refusing {env} — pinned by {reason}");
+        std::process::exit(3);
+    }
+}
+
 pub async fn run(args: &[String]) -> Result<()> {
     let action_name = args.get(1).map(|s| s.as_str()).unwrap_or("");
     if action_name == "rollout" {
@@ -123,21 +138,53 @@ pub async fn run(args: &[String]) -> Result<()> {
         }
     };
     let action_name = action_name.as_str();
+    refuse_if_pinned(&env);
     let aws = aws::AwsClient::with(None, None).await?;
 
     if action_name == "deploy" {
         return run_deploy(&aws, &env, version, wait_for_green, auto_rollback).await;
     }
 
-    let result = match action_name {
-        "rebuild" => aws.rebuild_env(&env).await,
-        "restart" => aws.restart_app_server(&env).await,
-        "terminate" => aws.terminate_env(&env).await,
+    let label = match action_name {
+        "rebuild" => "Rebuild",
+        "restart" => "Restart",
+        "terminate" => "Terminate",
         other => {
             eprintln!("ebman action: unknown action '{other}'");
             std::process::exit(2);
         }
     };
+    // Mirror the TUI's dispatched/completed audit pair — headless
+    // dispatches were previously invisible to the audit log (and the
+    // webhook fan-out), contradicting the safety docs.
+    let cli_profile = std::env::var("AWS_PROFILE").ok();
+    audit::append_action_dispatched(
+        None,
+        cli_profile.as_deref(),
+        &aws.context.region,
+        label,
+        &env,
+        &[],
+    );
+    let result = match action_name {
+        "rebuild" => aws.rebuild_env(&env).await,
+        "restart" => aws.restart_app_server(&env).await,
+        "terminate" => aws.terminate_env(&env).await,
+        _ => unreachable!("label match above rejects unknown actions"),
+    };
+    let err_text = result.as_ref().err().map(|e| e.to_string());
+    audit::append_action_completed(
+        None,
+        cli_profile.as_deref(),
+        &aws.context.region,
+        label,
+        &env,
+        match err_text.as_deref() {
+            None => Ok(()),
+            Some(e) => Err(e),
+        },
+        &[],
+    );
     match result {
         Ok(()) => {
             println!("ok: {action_name} on {env} dispatched");
@@ -214,10 +261,38 @@ async fn run_deploy(
     }
 
     println!("dispatching deploy: env={env} version={version}");
+    let cli_profile = std::env::var("AWS_PROFILE").ok();
+    audit::append_action_dispatched(
+        None,
+        cli_profile.as_deref(),
+        &aws.context.region,
+        "Deploy",
+        env,
+        &[("version", &version)],
+    );
     if let Err(e) = aws.deploy_version(env, &version).await {
-        eprintln!("err: deploy_version: {e}");
+        let msg = format!("deploy_version: {e}");
+        audit::append_action_completed(
+            None,
+            cli_profile.as_deref(),
+            &aws.context.region,
+            "Deploy",
+            env,
+            Err(&msg),
+            &[("version", &version)],
+        );
+        eprintln!("err: {msg}");
         std::process::exit(1);
     }
+    audit::append_action_completed(
+        None,
+        cli_profile.as_deref(),
+        &aws.context.region,
+        "Deploy",
+        env,
+        Ok(()),
+        &[("version", &version)],
+    );
 
     if wait_for_green_secs.is_none() && auto_rollback_secs.is_none() {
         println!("ok: deploy on {env} dispatched (version={version})");
@@ -284,6 +359,14 @@ async fn run_deploy(
             PollDecision::DispatchRollback => {
                 eprintln!(
                     "auto-rollback firing on {env}: env still status={status} health={health} at t={elapsed}s; redeploying snapshot version={snapshot_label}"
+                );
+                audit::append_action_dispatched(
+                    None,
+                    cli_profile.as_deref(),
+                    &aws.context.region,
+                    "Deploy",
+                    env,
+                    &[("version", &snapshot_label), ("auto_rollback_of", &version)],
                 );
                 if let Err(e) = aws.deploy_version(env, &snapshot_label).await {
                     eprintln!("err: rollback deploy_version: {e}");
@@ -471,6 +554,9 @@ async fn run_rollout(args: &[String]) -> Result<()> {
         eprintln!("ebman action rollout: --regions list is empty");
         std::process::exit(2);
     }
+    // Same pin gate as the single-env verbs — a rollout is a deploy
+    // fan-out of one env name across regions.
+    refuse_if_pinned(&env);
     let wait_for_green_secs = match wait_for_green.as_deref() {
         Some(s) => match aws::parse_window_ms(s) {
             Some(ms) => Some((ms / 1000) as u64),

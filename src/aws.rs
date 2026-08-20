@@ -2157,9 +2157,33 @@ impl AwsClient {
                     .await;
                 let invocation = match resp {
                     Ok(o) => o,
-                    Err(_) => {
+                    Err(e) => {
                         // InvocationDoesNotExist on the first cycle is
-                        // expected. Skip and retry next cycle.
+                        // expected (SSM registers invocations async) —
+                        // skip and retry next cycle. Every OTHER error
+                        // (AccessDenied, throttle, validation) used to
+                        // fall through here too, spinning to the
+                        // wall-clock deadline and reporting the
+                        // permission gap as "TimedOut(local)" — the
+                        // operator debugged the instances instead of
+                        // IAM. Resolve those instances now with the
+                        // real error.
+                        let msg = format!("{e}");
+                        let text = e
+                            .as_service_error()
+                            .map(|se| format!("{se:?}"))
+                            .unwrap_or(msg);
+                        if text.contains("InvocationDoesNotExist") {
+                            continue;
+                        }
+                        pending.remove(&id);
+                        completed.push(SsmRunResult {
+                            instance_id: id,
+                            status: "Error".into(),
+                            exit_code: -1,
+                            stdout: String::new(),
+                            stderr: format!("GetCommandInvocation: {text}"),
+                        });
                         continue;
                     }
                 };
@@ -2570,7 +2594,11 @@ impl AwsClient {
             filters.push(
                 PlatformFilter::builder()
                     .r#type("PlatformBranchName")
-                    .operator("=")
+                    // begins_with: `branch` is the bare family when
+                    // derived from a solution-stack name, the full
+                    // branch when derived from an ARN — both prefix
+                    // the real PlatformBranchName.
+                    .operator("begins_with")
                     .values(branch.clone())
                     .build(),
             );
@@ -3449,15 +3477,26 @@ fn map_env(e: aws_sdk_elasticbeanstalk::types::EnvironmentDescription) -> Enviro
 /// strip any leading "running " marker. ARNs follow a separate scheme and
 /// already carry the branch in their path.
 fn platform_branch_from(stack_or_arn: &str) -> String {
-    if let Some(rest) = stack_or_arn.split(" running ").nth(1) {
-        return rest.trim().to_string();
-    }
+    // ARN first — every real platform ARN's name segment itself
+    // contains " running " (e.g. ".../platform/Python 3.9 running on
+    // 64bit Amazon Linux 2023/4.0.1"), so the solution-stack split
+    // below would mangle it into "on 64bit …". The second-to-last
+    // path segment IS the full branch name.
     if stack_or_arn.starts_with("arn:") {
-        // Branch is the second-to-last path segment.
         let parts: Vec<&str> = stack_or_arn.split('/').collect();
         if parts.len() >= 2 {
             return parts[parts.len() - 2].to_string();
         }
+        return String::new();
+    }
+    // Solution stack ("64bit Amazon Linux 2023 v4.0.1 running
+    // Python 3.9") yields the branch FAMILY ("Python 3.9"). Real
+    // branch names are "<family> running on <os>" — which is why the
+    // PlatformBranchName filter uses begins_with, not `=` (an exact
+    // match against the bare family matched nothing, so `:upgrade`
+    // always reported an empty compatible-platform list).
+    if let Some(rest) = stack_or_arn.split(" running ").nth(1) {
+        return rest.trim().to_string();
     }
     String::new()
 }
@@ -3537,12 +3576,24 @@ pub fn parse_window_ms(input: &str) -> Option<i64> {
     if num <= 0 {
         return None;
     }
+    // checked_mul: an absurd window ("999999999999d") must reject,
+    // not overflow — the wrapped value silently filters everything
+    // out in release and panics in debug (and via the MCP audit_log
+    // tool, that panic left the request unanswered forever).
     let ms = match unit {
-        'm' => num * 60_000,
-        'h' => num * 60 * 60_000,
-        'd' => num * 24 * 60 * 60_000,
+        's' => num.checked_mul(1_000),
+        'm' => num.checked_mul(60_000),
+        'h' => num.checked_mul(60 * 60_000),
+        'd' => num.checked_mul(24 * 60 * 60_000),
         _ => return None,
-    };
+    }?;
+    // Bound to chrono-safe range: callers subtract this from now()
+    // as a chrono::Duration, which panics past ±262,000 years.
+    // 100 years of milliseconds is far beyond any real window.
+    const MAX_WINDOW_MS: i64 = 100 * 365 * 24 * 60 * 60 * 1_000;
+    if ms > MAX_WINDOW_MS {
+        return None;
+    }
     Some(ms)
 }
 
@@ -3846,6 +3897,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn platform_branch_from_arn_takes_full_branch_segment() {
+        // The ARN's name segment itself contains " running " — the
+        // solution-stack split must not fire first (it used to,
+        // returning "on 64bit Amazon Linux 2023/4.0.1").
+        assert_eq!(
+            platform_branch_from(
+                "arn:aws:elasticbeanstalk:us-east-1::platform/Python 3.9 running on 64bit Amazon Linux 2023/4.0.1"
+            ),
+            "Python 3.9 running on 64bit Amazon Linux 2023"
+        );
+    }
+
+    #[test]
+    fn platform_branch_from_solution_stack_yields_family_prefix() {
+        // Bare family — a prefix of the real PlatformBranchName
+        // ("Python 3.9 running on …"), which is why the filter uses
+        // begins_with rather than `=`.
+        assert_eq!(
+            platform_branch_from("64bit Amazon Linux 2023 v4.0.1 running Python 3.9"),
+            "Python 3.9"
+        );
+        assert_eq!(platform_branch_from(""), "");
+    }
+
+    #[test]
     fn platform_family_from_solution_stack() {
         assert_eq!(
             platform_family("64bit Amazon Linux 2 v3.5.0 running Java 17"),
@@ -4027,6 +4103,9 @@ mod tests {
 
     #[test]
     fn parse_window_ms_accepts_minutes_hours_days() {
+        // Seconds — the unit every doc example (`--interval 60s`)
+        // used but the parser rejected until the 0.26 max-review.
+        assert_eq!(super::parse_window_ms("60s"), Some(60_000));
         assert_eq!(super::parse_window_ms("30m"), Some(30 * 60_000));
         assert_eq!(super::parse_window_ms("1h"), Some(60 * 60_000));
         assert_eq!(super::parse_window_ms("6h"), Some(6 * 60 * 60_000));
@@ -4046,15 +4125,23 @@ mod tests {
         assert_eq!(super::parse_window_ms("30"), None);
         // Missing number.
         assert_eq!(super::parse_window_ms("h"), None);
-        // Unknown unit (y / w / s).
+        // Unknown unit (y / w).
         assert_eq!(super::parse_window_ms("1y"), None);
         assert_eq!(super::parse_window_ms("2w"), None);
-        assert_eq!(super::parse_window_ms("60s"), None);
         // Non-positive — silently substituting 0 would surprise the operator.
         assert_eq!(super::parse_window_ms("0h"), None);
         assert_eq!(super::parse_window_ms("-1h"), None);
         // Garbage.
         assert_eq!(super::parse_window_ms("hour"), None);
+        // Overflow / absurd windows reject rather than wrap (the
+        // wrapped value panicked in debug and silently filtered
+        // everything in release; chrono panics past ±262k years).
+        assert_eq!(super::parse_window_ms("999999999999d"), None);
+        assert_eq!(super::parse_window_ms("9999999999d"), None);
+        assert_eq!(
+            super::parse_window_ms("36500d"),
+            Some(36_500 * 24 * 60 * 60_000)
+        );
     }
 
     #[test]

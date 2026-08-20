@@ -64,13 +64,32 @@ impl App {
     /// predicate. Polling cadence 5s; deadline `wait_for_green_secs`
     /// from the dispatch's start.
     pub(crate) fn spawn_rollout_dispatch(
-        &self,
+        &mut self,
+        rollout_id: String,
         profile: Option<String>,
         region: String,
         env_name: String,
         version_label: String,
         wait_for_green_secs: Option<u64>,
     ) {
+        // Dispatch-time re-check (same defense-in-depth as
+        // `spawn_action`): read-only / freeze / incident / pins may
+        // have changed since the plan was confirmed, and the
+        // continuation path re-enters here for every region.
+        if self.deny_write(&env_name, "rollout") {
+            if let Some(crate::mode_action::ActionFlow::Rollout(flow)) = self.action_flow.as_mut() {
+                flow.state = crate::mode_action::RolloutState::Done;
+            }
+            return;
+        }
+        crate::audit::append_rollout(
+            &rollout_id,
+            &region,
+            &env_name,
+            &version_label,
+            "dispatched",
+            None,
+        );
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         tokio::spawn(async move {
