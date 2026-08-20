@@ -111,9 +111,13 @@ pub(crate) struct Server {
     /// Safety config loaded once at startup (pins). Demo servers get
     /// the default (hermetic).
     safety_cfg: crate::config::Config,
-    /// Two-phase write state: at most one pending plan, at most one
-    /// in-flight dispatch (spec: writes are serialized server-wide).
+    /// Two-phase write state: the single pending-plan slot (spec:
+    /// writes are serialized server-wide).
     writes: tokio::sync::Mutex<writes::WriteState>,
+    /// Whether a write dispatch is in flight — separate AtomicBool so
+    /// the confirm path's RAII guard can reset it on an unwind
+    /// (pre-tag review I2).
+    dispatching: std::sync::atomic::AtomicBool,
     /// `clientInfo.name` from initialize — lands in audit extras so
     /// agent-dispatched writes are attributable.
     client_name: std::sync::Mutex<String>,
@@ -143,6 +147,7 @@ impl Server {
             allow_writes,
             safety_cfg,
             writes: tokio::sync::Mutex::new(writes::WriteState::default()),
+            dispatching: std::sync::atomic::AtomicBool::new(false),
             client_name: std::sync::Mutex::new("unknown".to_string()),
         }
     }
@@ -636,6 +641,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatching_flag_clears_after_dispatch() {
+        // C1 (0.28 pre-tag): the RAII guard must reset `dispatching`
+        // after every dispatch (incl. cancellation/panic), or the
+        // write surface wedges. Here: a completed demo dispatch leaves
+        // the flag false and a second write goes through.
+        let s = demo_writes_server();
+        let env = &demo_fixture::envs()[0].name;
+        let (_, p1) = call(&s, "restart", json!({"env": env})).await;
+        let t1 = p1["confirm_token"].as_str().unwrap().to_string();
+        assert!(
+            !call(&s, "confirm_action", json!({"confirm_token": t1}))
+                .await
+                .0
+        );
+        assert!(
+            !s.dispatching.load(std::sync::atomic::Ordering::SeqCst),
+            "guard must clear dispatching after dispatch"
+        );
+        // second write not wedged
+        let (_, p2) = call(&s, "restart", json!({"env": env})).await;
+        let t2 = p2["confirm_token"].as_str().unwrap().to_string();
+        assert!(
+            !call(&s, "confirm_action", json!({"confirm_token": t2}))
+                .await
+                .0
+        );
+    }
+
+    #[tokio::test]
     async fn write_serialization_blocks_second_dispatch_slot() {
         // A pending plan exists; injecting a dispatching=true state
         // makes confirm refuse. (Full concurrency is exercised live;
@@ -644,10 +678,8 @@ mod tests {
         let env = &demo_fixture::envs()[0].name;
         let (_, plan) = call(&s, "restart", json!({"env": env})).await;
         let token = plan["confirm_token"].as_str().unwrap().to_string();
-        {
-            let mut st = s.writes.lock().await;
-            st.dispatching = true;
-        }
+        s.dispatching
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         assert!(
             call(&s, "confirm_action", json!({"confirm_token": token}))
                 .await
