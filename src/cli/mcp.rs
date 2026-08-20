@@ -121,17 +121,28 @@ fn redact_audit_entries(entries: &mut [audit_log::AuditEntry]) {
     }
 }
 
-/// Splice a degraded-coverage note into the standard lint
-/// `{"issues":[...]}` document. No-op for an empty skip list, so the
-/// common-case schema is byte-identical to the CLI's.
-fn append_skipped_envs(mut body: String, skipped: &[String]) -> String {
-    if skipped.is_empty() {
+/// Splice a string array into the trailing `}` of a JSON document.
+/// No-op for an empty list, so the common-case schema stays
+/// byte-identical to the CLI's.
+fn append_string_array(mut body: String, key: &str, items: &[String]) -> String {
+    if items.is_empty() {
         return body;
     }
-    let items: Vec<String> = skipped.iter().map(|s| util::json_string(s)).collect();
+    let rendered: Vec<String> = items.iter().map(|s| util::json_string(s)).collect();
     body.truncate(body.len() - 1);
-    body.push_str(&format!(",\"skipped_envs\":[{}]}}", items.join(",")));
+    body.push_str(&format!(
+        ",{}:[{}]}}",
+        util::json_string(key),
+        rendered.join(",")
+    ));
     body
+}
+
+/// Degraded-coverage note for the lint/drift tools (see the tool
+/// descriptions: the agent must check it before treating a run as
+/// full coverage).
+fn append_skipped_envs(body: String, skipped: &[String]) -> String {
+    append_string_array(body, "skipped_envs", skipped)
 }
 
 pub(crate) use crate::util::redact_option_value;
@@ -468,6 +479,7 @@ impl Server {
             None => envs.iter().collect(),
         };
         let mut all_issues: Vec<lint::Issue> = Vec::new();
+        let mut platform_warnings: Vec<String> = Vec::new();
         // Envs whose input fetch failed — reported in the result as
         // `skipped_envs` so the agent knows coverage shrank (the CLI's
         // `cycle_degraded` tolerance, in tool-result shape). One
@@ -526,10 +538,14 @@ impl Server {
                 // disabled; failures skip silently (a tool result
                 // shouldn't fail over an Info-severity side pass).
                 if env_filter.is_none() && !disabled.iter().any(|d| d == "EBL015") {
-                    if let Ok((issues, _warnings)) =
+                    if let Ok((issues, warnings)) =
                         fetch_stale_platform_issues(&client, chrono::Utc::now()).await
                     {
                         all_issues.extend(issues);
+                        // Per-branch date-fetch failures surface like the
+                        // CLI's stderr warnings do — dropped silently, an
+                        // agent can't know EBL015 coverage shrank.
+                        platform_warnings = warnings;
                     }
                 }
             }
@@ -540,9 +556,10 @@ impl Server {
         if !rule_filter.is_empty() {
             all_issues.retain(|i| rule_filter.contains(&i.rule_id));
         }
-        Ok(append_skipped_envs(
-            lint::render_issues_json(&all_issues),
-            &skipped,
+        Ok(append_string_array(
+            append_skipped_envs(lint::render_issues_json(&all_issues), &skipped),
+            "warnings",
+            &platform_warnings,
         ))
     }
 
@@ -876,7 +893,7 @@ impl Server {
 }
 
 /// Tool-error formatting: route through the shared credential
-/// rewrite (`app::rewrite_credential_error`) so an expired SSO token
+/// rewrite (`aws::rewrite_credential_error`) so an expired SSO token
 /// reaches the agent as `aws sso login --profile X`, then fall back
 /// to `op failed: msg`.
 fn tool_error(profile: &Option<String>, op: &str, msg: &str) -> String {
@@ -884,9 +901,9 @@ fn tool_error(profile: &Option<String>, op: &str, msg: &str) -> String {
         .clone()
         .or_else(|| std::env::var("AWS_PROFILE").ok())
         .unwrap_or_else(|| "default".into());
-    match crate::app::rewrite_credential_error(&profile_name, msg) {
-        Some(crate::app::CredentialHint::Expired(text))
-        | Some(crate::app::CredentialHint::Invalid(text)) => text,
+    match crate::aws::rewrite_credential_error(&profile_name, msg) {
+        Some(crate::aws::CredentialHint::Expired(text))
+        | Some(crate::aws::CredentialHint::Invalid(text)) => text,
         None => format!("{op} failed: {msg}"),
     }
 }

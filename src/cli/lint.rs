@@ -238,8 +238,8 @@ pub(crate) async fn fetch_env_lint_inputs(
                 .then(|| v.clone())
             })
             .unwrap_or_else(|| "/".to_string());
-        let url = crate::app::build_health_check_probe_url(&env.cname, &path);
-        crate::app::run_health_check_probe(&url).await.err()
+        let url = crate::probe::build_health_check_probe_url(&env.cname, &path);
+        crate::probe::run_health_check_probe(&url).await.err()
     } else {
         None
     };
