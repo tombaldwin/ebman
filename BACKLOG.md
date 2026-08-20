@@ -881,7 +881,7 @@ ebman mcp serve                        → server mode (future: MCP for Claude C
 
 Theme: **agents that can act — MCP v2 writes, safety-first.** Panel-shipped 0.27.0 the same day this was spec'd; 0.27 soaks while this spec holds the decisions so the build session doesn't re-litigate.
 
-#### MCP v2: `ebman mcp serve --allow-writes` — HEADLINE (spec locked 2026-08-20; v3 items folded in same day — tool-set widening + cross-process freeze)
+#### MCP v2: `ebman mcp serve --allow-writes` — HEADLINE — SHIPPED 2026-08-20 (spec locked + built same day; v3 tool-set + cross-process freeze folded in and shipped — see CHANGELOG Unreleased)
 
 Demand: the same agent sessions that drove v1 (fleet upgrade + release ops) need `deploy`/`restart`/`rebuild` without shelling out — and the CLI shell-out path they'd otherwise use has *weaker* ergonomics for confirmation than a purpose-built two-phase tool. v1's year of hardening (redaction contract, degradation contract, bounded concurrency, protocol battery) is the foundation.
 
@@ -901,10 +901,10 @@ Demand: the same agent sessions that drove v1 (fleet upgrade + release ops) need
 **Docs:** headless.md gains the v2 section (two-phase example transcript incl. terminate's `confirm_name`); safety-and-privacy.md updates the "reads-only" bullet to the opt-in + two-phase + pin + freeze-marker story, and the freeze docs drop the "not persisted / in-session gesture" phrasing for the new pid-scoped marker semantics; commands.md `--help` entry; configuration.md notes freeze.json's location and that deleting it is the manual unfreeze of last resort.
 
 #### Also queued for 0.28
-- [ ] **Live-verification sweep** of SDK-compiled-unverified calls (EBL018 WAF probe, EBL020 IAM sim, EBL015 platform dates) against throwaway resources — needs operator approval to create a temporary ALB env (~pennies).
-- [ ] **Demo-mode poller quieting** — the fail-loudly stub logs an ERROR per refresh tick in `--demo`; downgrade stub-client failures to debug in demo mode (the loud contract matters in real mode only).
-- [ ] **Cost Explorer page-loop cap** (last uncapped pagination; 20 pages ≈ absurdity bound).
-- [ ] **Drop `:custom-platform-create` from the backlog** unless custom platforms enter real use — slipped three cycles on honest grounds; carrying it costs attention.
+- [ ] **Live-verification sweep** of SDK-compiled-unverified calls (EBL018 WAF probe, EBL020 IAM sim, EBL015 platform dates) — STILL OPEN, needs operator approval to create a temporary ALB env (~pennies). Not done this run per the spec's approval gate.
+- [x] **Demo-mode poller quieting** — SHIPPED: `DEMO_QUIET_AWS_ERRORS` downgrades the stub's expected failures to debug in `--demo` (real mode keeps the loud contract).
+- [x] **Cost Explorer page-loop cap** — SHIPPED (20-page bound).
+- [x] **`:custom-platform-create` DROPPED** (2026-08-20) — slipped three cycles with no real demand; removed from the backlog rather than carried. Reopen with a fresh spec if custom platforms enter use.
 
 ### 0.27 queue — 0.26 max-depth review remainders (2026-08-20) — RETIRED same-day (all four phases shipped; see CHANGELOG Unreleased). Wontfix by decision: unicode display-width math, serde_yml alias hardening, audit --tail text alignment. ui.rs submodule split SHIPPED 2026-08-20 (ui/overlays + ui/detail + ui/help; root 9,400 -> 5,000 lines). The round-2 review remainders (log-tail boundary dedupe, DLQ staleness marker, TUI quit drain, id-keyed delete confirm, -32600 test) also shipped same-day. Only remaining deferral: MCP registry unification (gated on v2 --allow-writes).
 

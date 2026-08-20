@@ -1169,7 +1169,11 @@ impl AwsClient {
         // indistinguishable from untagged ones).
         let mut totals: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
         let mut next_page: Option<String> = None;
-        loop {
+        // Page cap: Cost Explorer paginates, but 20 pages of grouped
+        // monthly cost is already absurd for one account's EB fleet —
+        // bound the loop so a pathological response can't spin.
+        const MAX_COST_PAGES: usize = 20;
+        for _page in 0..MAX_COST_PAGES {
             let mut req = self
                 .cost
                 .get_cost_and_usage()
