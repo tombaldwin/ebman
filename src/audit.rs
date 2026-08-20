@@ -430,7 +430,10 @@ pub fn append_action_dispatched(
     target: &str,
     extras: &[(&str, &str)],
 ) {
-    let mut detail = format!("stage=dispatched action={action_label} target={target}");
+    let mut detail = format!(
+        "stage=dispatched action={action_label} {}",
+        field_token("target", target)
+    );
     append_extras(&mut detail, extras);
     write_audit_line(account, profile, region, &detail);
 }
@@ -454,7 +457,10 @@ pub fn append_action_completed(
     result: Result<(), &str>,
     extras: &[(&str, &str)],
 ) {
-    let mut detail = format!("stage=completed action={action_label} target={target}");
+    let mut detail = format!(
+        "stage=completed action={action_label} {}",
+        field_token("target", target)
+    );
     append_extras(&mut detail, extras);
     match result {
         Ok(()) => detail.push_str(" outcome=ok"),
@@ -469,6 +475,22 @@ pub fn append_action_completed(
 /// whitespace, `=`, or `"`; leaves simple values unquoted to match
 /// the existing hand-rolled audit-line shape
 /// (`namespace=ns name=opt value="..."`).
+/// Render one `key=value` token with the same auto-quoting
+/// `append_extras` applies: quote + escape when the value is empty or
+/// contains whitespace / `"` / `=` / newline. Free-text fields
+/// (target env names, version labels) previously interpolated raw —
+/// today's inputs are AWS-constrained so no forge path existed, but a
+/// future caller passing free text would have split lines / forged
+/// fields (parse_audit_line treats an embedded newline as a new,
+/// replayable entry).
+fn field_token(key: &str, value: &str) -> String {
+    if value.is_empty() || value.contains(|c: char| c.is_whitespace() || c == '"' || c == '=') {
+        format!("{key}=\"{}\"", escape_value(value))
+    } else {
+        format!("{key}={value}")
+    }
+}
+
 fn append_extras(detail: &mut String, extras: &[(&str, &str)]) {
     for (k, v) in extras {
         if v.is_empty() || v.contains(|c: char| c.is_whitespace() || c == '"' || c == '=') {
@@ -499,7 +521,9 @@ pub fn append_rollout(
         (_, None) => String::new(),
     };
     let line = format!(
-        "\trollout_id={rollout_id}\tregion={region}\tstage={stage} action=Rollout target={env} version={version}{outcome_suffix}"
+        "\trollout_id={rollout_id}\tregion={region}\tstage={stage} action=Rollout {} {}{outcome_suffix}",
+        field_token("target", env),
+        field_token("version", version)
     );
     write_audit_line_raw(&line);
 }
@@ -542,7 +566,8 @@ pub fn append_action_skipped(
     reason: &str,
 ) {
     let detail = format!(
-        "stage=skipped action={action_label} target={target} reason=\"{}\"",
+        "stage=skipped action={action_label} {} reason=\"{}\"",
+        field_token("target", target),
         escape_value(reason)
     );
     write_audit_line(account, profile, region, &detail);
@@ -558,7 +583,10 @@ pub fn append_action_undone(
     action_label: &str,
     target: &str,
 ) {
-    let detail = format!("stage=undone action={action_label} target={target}");
+    let detail = format!(
+        "stage=undone action={action_label} {}",
+        field_token("target", target)
+    );
     write_audit_line(account, profile, region, &detail);
 }
 
@@ -644,11 +672,7 @@ fn write_audit_line(account: Option<&str>, profile: Option<&str>, region: &str, 
         region,
     );
     use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
+    if let Ok(mut f) = crate::util::open_append_secure(&path) {
         let _ = f.write_all(line.as_bytes());
     }
     // Webhook fan-out — same convention as before consolidation.
@@ -672,11 +696,7 @@ fn write_audit_line_raw(tail: &str) {
     let when = chrono::Utc::now().to_rfc3339();
     let line = format!("{when}{tail}\n");
     use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
+    if let Ok(mut f) = crate::util::open_append_secure(&path) {
         let _ = f.write_all(line.as_bytes());
     }
     // Same webhook fan-out as `write_audit_line`. The body uses
@@ -848,6 +868,30 @@ use crate::util::json_escape;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn free_text_fields_cannot_split_or_forge_lines() {
+        // A newline-bearing target must stay ONE parseable entry —
+        // an embedded newline used to become a second (replayable)
+        // audit line.
+        let mut detail = format!(
+            "stage=dispatched action=Deploy {}",
+            super::field_token(
+                "target",
+                "evil\nstage=completed action=Terminate target=prod"
+            )
+        );
+        super::append_extras(&mut detail, &[]);
+        assert!(!detail.contains('\n'), "newline must be escaped: {detail}");
+        let line = format!("2026-08-20T00:00:00+00:00\taccount=1\tprofile=-\tregion=r\t{detail}");
+        let entry = super::parse_audit_line(&line).expect("one entry");
+        assert_eq!(entry.action.as_deref(), Some("Deploy"));
+        assert!(entry
+            .target
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("evil"));
+    }
+
     use super::*;
 
     #[test]

@@ -76,6 +76,36 @@ pub fn json_string(s: &str) -> String {
     out
 }
 
+/// Open (create-if-missing) a file for appending with 0600 perms —
+/// operator-only. The cache artifacts this guards (audit.log with SSM
+/// command strings, ebman.log, crash reports, explain cache) were
+/// previously created with the umask default (usually 0644,
+/// world-readable). Unix-only mode; other platforms get the default.
+pub fn open_append_secure(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    opts.open(path)
+}
+
+/// `std::fs::write` with 0600 perms on create (see
+/// [`open_append_secure`]).
+pub fn write_secure(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    opts.open(path)?.write_all(contents)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{json_escape, json_string};

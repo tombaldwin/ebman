@@ -410,7 +410,7 @@ fn write_crash_report(info: &panic::PanicHookInfo<'_>) {
          \n--- backtrace ---\n{backtrace}\n",
         env!("CARGO_PKG_VERSION")
     );
-    let _ = std::fs::write(&path, report);
+    let _ = util::write_secure(&path, report.as_bytes());
     eprintln!("ebman: crash report written to {}", path.display());
 }
 
@@ -469,6 +469,10 @@ fn prune_old_crash_reports(dir: &std::path::Path, keep: usize) {
 fn init_logging() -> Result<LogReloadHandle> {
     let log_dir = dirs_log_dir();
     std::fs::create_dir_all(&log_dir).ok();
+    // Pre-create the log with 0600 — tracing_appender opens with the
+    // umask default (usually world-readable) and the log carries env
+    // names, ARNs, and error bodies.
+    let _ = util::open_append_secure(&log_dir.join("ebman.log"));
     let file_appender = tracing_appender::rolling::never(log_dir, "ebman.log");
 
     let env_filter = EnvFilter::try_from_default_env()

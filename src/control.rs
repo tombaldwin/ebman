@@ -64,6 +64,9 @@ pub fn spawn_listener(path: PathBuf, tx: mpsc::UnboundedSender<ControlOp>) {
         };
         restrict_socket_perms(&path);
         tracing::info!(path = %path.display(), "control socket listening");
+        // Our own uid, read off the socket file we just created —
+        // avoids a libc dependency for geteuid().
+        let own_uid = socket_owner_uid(&path);
         loop {
             let (stream, _) = match listener.accept().await {
                 Ok(s) => s,
@@ -72,6 +75,16 @@ pub fn spawn_listener(path: PathBuf, tx: mpsc::UnboundedSender<ControlOp>) {
                     continue;
                 }
             };
+            // Peer-credential check on EVERY connection: the 0600
+            // chmod happens after bind, and a connection racing that
+            // window could sit in the backlog with the umask-default
+            // perms. SO_PEERCRED closes the race (and hardens the
+            // socket beyond file perms generally — the socket drives
+            // arbitrary TUI commands including `readonly off`).
+            if !peer_is_owner(&stream, own_uid) {
+                tracing::warn!("control socket: rejected connection from another uid");
+                continue;
+            }
             let tx2 = tx.clone();
             tokio::spawn(async move {
                 let _ = handle_connection(stream, tx2).await;
@@ -88,6 +101,38 @@ fn restrict_socket_perms(path: &Path) {
 
 #[cfg(not(unix))]
 fn restrict_socket_perms(_path: &Path) {}
+
+/// The uid owning the freshly-bound socket file — i.e. our own uid.
+/// `None` (metadata failed / non-unix) fails open to the perms-only
+/// posture that shipped before the peer check.
+#[cfg(unix)]
+fn socket_owner_uid(path: &Path) -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).ok().map(|m| m.uid())
+}
+
+#[cfg(not(unix))]
+fn socket_owner_uid(_path: &Path) -> Option<u32> {
+    None
+}
+
+/// SO_PEERCRED check: the connecting process must run as the same uid
+/// that owns the socket. Root (uid 0) is also allowed — it could read
+/// the socket regardless.
+#[cfg(unix)]
+fn peer_is_owner(stream: &tokio::net::UnixStream, own_uid: Option<u32>) -> bool {
+    let Some(own) = own_uid else { return true };
+    match stream.peer_cred() {
+        Ok(cred) => cred.uid() == own || cred.uid() == 0,
+        // Can't read peer creds: refuse rather than trust.
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn peer_is_owner(_stream: &tokio::net::UnixStream, _own_uid: Option<u32>) -> bool {
+    true
+}
 
 async fn handle_connection(
     stream: tokio::net::UnixStream,
