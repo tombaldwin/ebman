@@ -284,11 +284,13 @@ SUBCOMMANDS:
                                                   exits 3 only on NEW issues, cleared ones are
                                                   informational. Identity is (rule_id, env_name,
                                                   fields); title / detail drift doesn't churn.
-    drift [--env NAME] [--regions r1,r2,r3] [--tfstate PATH] [--tfdir PATH] [--json] [--quiet]
+    drift [--env NAME] [--regions r1,r2,r3] [--tfstate PATH] [--tfdir PATH] [--json] [--quiet] [--no-redact]
                                                   Terraform drift report. Discovers tfstate via
                                                   walk-up from cwd (or --tfdir / --tfstate
                                                   overrides). Compares tf-declared option settings
-                                                  + version_label against live EB state.
+                                                  + version_label against live EB state. Drifted
+                                                  env-var values + DBPassword are redacted by
+                                                  default; --no-redact shows them verbatim.
                                                   Exit codes: 0 no drift, 1 aws err, 2 usage,
                                                   3 drift detected. CI-friendly default exit code.
                                                   --regions fans out across regions against a
