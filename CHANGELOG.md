@@ -14,12 +14,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Expired-credential tool errors surface as the `aws sso login --profile X` hint via a new shared `rewrite_credential_error` (extracted from the TUI's `format_aws_error` — signal lists now live once).
 - v1 is **reads-only**; writes (`--allow-writes`) remain a spec'd v2 with their own safety review.
 
+### Added — lint completion: EBL018 + EBL015 (the 0.25 holds, demand surfaced)
+
+- **EBL018 — prod env's ALB has no WAF WebACL** (Warn, Manual fix). Probe-gated like EBL020: for prod-named envs (`prod`/`production`/`prd`, case-insensitive; escape hatch `lint.disable`) with `LoadBalancerType=application`, a `wafv2:GetWebACLForResource` probe (new `aws-sdk-wafv2` dep, lazily-built client) checks the env's ALB; no association fires the rule. Classic ELBs are structurally out of scope (WAFv2 can't attach to them). Demand surfaced 2026-08-20: live dogfooding traced two days of enhanced-health flapping to unfiltered `.env`/path-traversal scanner sweeps 500-ing against Tomcat — exactly the traffic a WebACL absorbs. Registry 18 → 19.
+- **EBL015 — custom platform with no versions published in 180+ days** (Info). **The first account-level rule**: a pure `stale_custom_platform_issues` pass outside the per-env registry (dates come from per-platform `DescribePlatformVersion` via new `AwsClient::latest_platform_version_date`), firing with `env_name: None` — the fleet-wide slot the `Issue` struct reserved from day one. Skipped when lint is scoped to a single `--env`; honours `lint.disable` at its call sites; runs in both `ebman lint` and the MCP `lint` tool.
+- The lint-rules roadmap is now empty — every spec'd rule ships.
+
+### Changed — MCP server follow-ups from live dogfooding
+
+- **The `lint` tool fans out per-env input fetches concurrently** (order-preserved) — serial cost was ~2s/env, which brushed the 30s tool bound on large fleets.
+- **`fleet_cost` no longer renders `-0.00`** for an empty cost cache (f64's `Sum` folds from `-0.0`; normalised + regression-tested).
+- The `lint` tool description stopped claiming EBL020 can't fire there — the shared assembly path has run the X-Ray probe since the decomposition landed; caveats now state exactly EBL011 + EBL016.
+- `docs/headless.md` documents the region-resolution gotcha (a shell-exported `AWS_REGION` beats profile config; pin with `claude mcp add --env AWS_REGION=...`).
+
+### Refactored — TailView extraction (the queued 4-module cut)
+
+- **New `src/app/tail.rs`**: `TailView` (shared scroll/follow/regex-filter state embedded in both tail overlays), `handle_tail_key` (the shared key surface — `handle_log_tail_key` and `handle_event_tail_key` are now thin wrappers; LogTail keeps only its Tab group-switcher), `reap_tail_task` (the abort+session-bump teardown contract, previously copy-pasted at six sites), and `tail_window_start` (the follow/scroll window math both renderers duplicated). 5 new tests on the extracted surface.
+- `ui.rs`: the two tail renderers share `draw_tail_overlay_chrome` (popup, windowing, filter/error/hints footer, titled paragraph); each keeps only its line formatting and title.
+- Net: ~240 duplicated lines retired; behaviour pinned by the existing reap/session regression tests, which pass unchanged.
+
 ### Refactored — 0.25 review queue (3 of 5)
 
 - **`Config::pin_reason`** — the safety-pin check's three copies (audit replay, lint `--fix`, and the spec'd MCP v2) collapsed into one tested home in config.rs. TUI keeps its richer session-gate composite by design.
 - **`cli/lint.rs run()` decomposition** — per-env input fetch + context assembly extracted into `fetch_env_lint_inputs` / `build_lint_context` / `run_rules_for_env`, shared verbatim by the MCP `lint` tool (the reason this was the MCP prerequisite).
 - **Replay split** — `ebman audit replay` moved to `cli/audit_replay.rs` (~470 lines out of the log reader it started in); dispatch unchanged.
-- Deferred with reasons: the `TailView` extraction (4-module refactor, stays queued for a dedicated session) and the LintContext probe-fields note (recorded in BACKLOG; no code change until ~6-8 probe fields).
+- The `TailView` extraction landed later in the same cycle (see above), making it 4 of 5; the LintContext probe-fields note stays recorded in BACKLOG (no code change until ~6-8 probe fields).
 
 ## [0.25.0] — 2026-07-15 — incident operations: :incident mode + :event-tail + audit replay + lint completion
 

@@ -240,13 +240,37 @@ Live: 0.25+. IAM probe call shape is SDK-compiled but unverified against a live 
 
 ---
 
+### EBL018 — Prod env's ALB has no WAF WebACL
+
+**Severity:** Warn · **Auto-fix:** Manual (WAF association is outside EB option settings)
+
+Detection: env name matches `prod` / `production` / `prd` (case-insensitive substring — deliberately loose, escape hatch is `lint.disable = ["EBL018"]`) AND `LoadBalancerType = application` AND a `wafv2:GetWebACLForResource` probe against the env's ALB finds no WebACL associated. **Probe-gated** (CLI + MCP `lint`; the TUI lint sites skip it). Classic ELBs are structurally out of scope — WAFv2 can't associate with them; that fleet's WAF story is CloudFront-level, which this rule can't verify. A failed probe (missing `wafv2:GetWebACLForResource` permission) makes the rule skip, never false-positive.
+
+Why it matters: an internet-facing prod ALB with no WAF passes every scanner sweep straight to the app tier. The 2026-08 motivating case: `.env` / path-traversal sweeps 500-ing against Tomcat and flapping enhanced health for days on a low-traffic env.
+
+Fix: associate a WAFv2 WebACL — `AWSManagedRulesCommonRuleSet` blocks commodity probe traffic.
+
+Live: 0.26+. WAFv2 probe call shape is SDK-compiled but unverified against an ALB-fronted env (the dogfood fleet is classic-ELB).
+
+---
+
+### EBL015 — Custom platform with no versions published in 180+ days
+
+**Severity:** Info · **Auto-fix:** none (the fix is a decision: rebuild, migrate, or delete)
+
+Detection: for each custom platform (grouped by branch), the newest version's `DescribePlatformVersion` date is 180+ days old. **The first account-level rule**: it lives outside the per-env registry as a separate pass (`stale_custom_platform_issues`), fires with no env name, is skipped when lint is scoped to a single `--env`, and honours `lint.disable = ["EBL015"]` at its call sites. Platforms whose versions report no date are skipped, never false-fired.
+
+Why it matters: long-idle custom platforms usually mean the operator forgot they exist — AMIs age unpatched, and envs still pinned to them drift ever further from current runtimes.
+
+Fix: publish a rebuilt version, migrate its envs to a managed platform, or delete it (`:custom-platform-delete`).
+
+Live: 0.26+. `DescribePlatformVersion` call shape is SDK-compiled but unverified live (the dogfood account has no custom platforms).
+
+---
+
 ## Roadmap
 
-Held / pending live-EB verification:
-- EBL015 — custom platform with no published versions in 180+ days. Held 0.25: `ListPlatformVersions` carries no dates, so this needs a per-platform `DescribePlatformVersion` fetch plus an account-level (env-less) issue shape the engine doesn't have yet.
-- EBL018 — env without WAF + on prod tier. Held 0.25: WAF association isn't in EB option settings; detection needs a new `aws-sdk-wafv2` dependency (`GetWebACLForResource` against the env's ALB) — too much unverifiable surface for the value.
-
-These rules have clear semantics but each needs detection-shape verification against a live EB env before shipping.
+The 0.25-held rules (EBL015, EBL018) shipped in 0.26 — the roadmap is currently empty.
 
 ---
 

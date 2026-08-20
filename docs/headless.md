@@ -53,6 +53,15 @@ ebman mcp serve --demo                            # synthetic fleet, zero AWS �
 ebman mcp serve --no-redact                       # disable get_option_settings env-var redaction
 ```
 
+The server resolves profile/region through the standard AWS chain (env vars beat
+profile config) and deliberately does **not** read ebman's own `state.toml` — so a
+shell-exported `AWS_REGION` pointing at another project's region silently wins. If
+your shell exports one, pin the region at registration:
+
+```bash
+claude mcp add ebman --env AWS_REGION=us-west-1 -- ebman mcp serve
+```
+
 v1 is **reads-only** — no tool can dispatch a write. Tools (all take optional `profile` / `region`):
 
 | Tool | Returns | Notes |

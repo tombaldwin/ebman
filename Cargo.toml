@@ -51,6 +51,7 @@ aws-credential-types = { version = "1.2.13", features = ["hardcoded-credentials"
 aws-sdk-organizations = "1.110.0"
 aws-sdk-costexplorer = "1"
 aws-sdk-iam = "1"
+aws-sdk-wafv2 = "1"
 aws-sdk-secretsmanager = "1"
 aws-sdk-ssm = "1"
 serde = { version = "1", features = ["derive"] }

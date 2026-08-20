@@ -110,7 +110,7 @@ fn tool_table() -> Value {
         },
         {
             "name": "lint",
-            "description": "Run ebman's diagnostic rule engine over the fleet (or one env). CAVEATS: EBL011 (worker DLQ) never fires here (queue depths aren't polled outside the TUI); EBL016 (live health probe) and EBL020 (X-Ray IAM) are probe-gated and do not run in this tool. A clean result does NOT clear those rules.",
+            "description": "Run ebman's diagnostic rule engine over the fleet (or one env). CAVEATS: EBL011 (worker DLQ) never fires here (queue depths aren't polled outside the TUI); EBL016 (live health probe) does not run in this tool. A clean result does NOT clear those rules. EBL015 (stale custom platforms, account-level) runs only when not scoped to a single env.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -385,14 +385,15 @@ impl Server {
             })
             .unwrap_or_default();
         // Hermetic in demo mode: no config-driven disables.
-        let rules = match self.backend {
-            Backend::Demo => lint::default_rules(&[]),
+        let disabled = match self.backend {
+            Backend::Demo => Vec::new(),
             Backend::Aws => {
                 let mut disabled = crate::config::load_lint_disables();
                 disabled.extend(crate::project::load_lint_disables_from_cwd());
-                lint::default_rules(&disabled)
+                disabled
             }
         };
+        let rules = lint::default_rules(&disabled);
         let required_tags = match self.backend {
             Backend::Demo => Vec::new(),
             Backend::Aws => crate::config::load().required_tags,
@@ -419,6 +420,7 @@ impl Server {
                         xray_denied: None,
                         probe_failure: None,
                         newer_stack: None,
+                        waf_missing: None,
                     };
                     all_issues.extend(run_rules_for_env(&rules, env, &inputs, &required_tags));
                 }
@@ -432,11 +434,44 @@ impl Server {
                     // as the CLI path.
                     Err(_) => std::collections::HashMap::new(),
                 };
-                for env in targets {
-                    let inputs = fetch_env_lint_inputs(&client, env, &latest_stacks, false)
-                        .await
+                // Fan out per-env input fetches concurrently — serial cost
+                // is ~2s/env, which brushes the 30s tool timeout on large
+                // fleets. Order is preserved (join_all keeps input order),
+                // so output stays deterministic.
+                let fetches = targets
+                    .iter()
+                    .map(|env| fetch_env_lint_inputs(&client, env, &latest_stacks, false));
+                let fetched = futures::future::join_all(fetches).await;
+                for (env, inputs) in targets.iter().zip(fetched) {
+                    let inputs = inputs
                         .map_err(|e| tool_error(&profile, "fetch_env_option_settings", &e))?;
                     all_issues.extend(run_rules_for_env(&rules, env, &inputs, &required_tags));
+                }
+                // EBL015 — account-level pass, mirroring the CLI:
+                // skipped when the caller scoped to one env or disabled
+                // the rule; platform-date fetch failures skip silently
+                // (never false-fire, and a tool result shouldn't fail
+                // over an Info-severity side pass).
+                if env_filter.is_none() && !disabled.iter().any(|d| d == "EBL015") {
+                    if let Ok(platforms) = client.list_custom_platforms().await {
+                        let mut by_branch: std::collections::BTreeMap<String, Vec<String>> =
+                            std::collections::BTreeMap::new();
+                        for p in platforms {
+                            by_branch.entry(p.branch.clone()).or_default().push(p.arn);
+                        }
+                        let mut dated: Vec<(String, chrono::DateTime<chrono::Utc>)> = Vec::new();
+                        for (branch, arns) in by_branch {
+                            if let Ok(Some(latest)) =
+                                client.latest_platform_version_date(&arns).await
+                            {
+                                dated.push((branch, latest));
+                            }
+                        }
+                        all_issues.extend(lint::stale_custom_platform_issues(
+                            &dated,
+                            chrono::Utc::now(),
+                        ));
+                    }
                 }
             }
         }

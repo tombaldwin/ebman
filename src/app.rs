@@ -64,6 +64,9 @@ mod cmd_write;
 mod mode_dlq_handlers;
 mod mode_keys;
 mod msg;
+mod tail;
+pub(crate) use tail::tail_window_start;
+pub use tail::TailView;
 mod spawn_batch;
 mod spawn_detail;
 mod spawn_dlq;
@@ -258,12 +261,9 @@ pub enum Overlay {
         log_group: String,
         env_name: String,
         events: std::collections::VecDeque<crate::aws::LogEvent>,
-        scroll: u16,
-        following: bool,
         since_ms: i64,
-        filter_input: TextInput,
-        filter_active: bool,
-        filter_pattern: Option<regex::Regex>,
+        /// Shared scroll/follow/filter surface (see [`tail::TailView`]).
+        view: tail::TailView,
         last_err: Option<String>,
         /// Unique-per-session id; the polling task carries the same id and
         /// late events for stale sessions are dropped on arrival.
@@ -276,11 +276,8 @@ pub enum Overlay {
     /// [`EVENT_TAIL_MAX_EVENTS`] (oldest dropped when growing).
     EventTail {
         events: std::collections::VecDeque<crate::aws::Event>,
-        scroll: u16,
-        following: bool,
-        filter_input: TextInput,
-        filter_active: bool,
-        filter_pattern: Option<regex::Regex>,
+        /// Shared scroll/follow/filter surface (see [`tail::TailView`]).
+        view: tail::TailView,
         last_err: Option<String>,
         /// Unique-per-session id; the polling task carries the same id and
         /// late events for stale sessions are dropped on arrival.
@@ -8247,115 +8244,27 @@ impl App {
     /// overlay and tears down the polling task.
     fn handle_log_tail_key(&mut self, key: KeyEvent) {
         // Group-switcher: Tab opens a Picker over the env's discovered CW
-        // log groups. Handled up-front before the destructured borrow of
+        // log groups. Handled up-front before the borrow of
         // `current_overlay` below so the picker open can re-borrow `self`.
-        if matches!(key.code, KeyCode::Tab)
-            && !matches!(
+        // (In filter-entry mode Tab is input, not the switcher.)
+        if matches!(key.code, KeyCode::Tab) {
+            let in_filter = matches!(
                 self.current_overlay.as_ref(),
-                Some(Overlay::LogTail {
-                    filter_active: true,
-                    ..
-                })
-            )
-        {
-            self.open_log_group_picker();
-            return;
-        }
-        // Filter input mode swallows printable keys.
-        {
-            let Some(Overlay::LogTail {
-                filter_active,
-                filter_input,
-                filter_pattern,
-                ..
-            }) = self.current_overlay.as_mut()
-            else {
+                Some(Overlay::LogTail { view, .. }) if view.filter_active
+            );
+            if !in_filter {
+                self.open_log_group_picker();
                 return;
-            };
-            if *filter_active {
-                match key.code {
-                    KeyCode::Esc => {
-                        *filter_active = false;
-                        filter_input.clear();
-                        *filter_pattern = None;
-                        return;
-                    }
-                    KeyCode::Enter => {
-                        *filter_active = false;
-                        if filter_input.is_empty() {
-                            *filter_pattern = None;
-                        } else {
-                            match regex::RegexBuilder::new(filter_input.text())
-                                .case_insensitive(true)
-                                .build()
-                            {
-                                Ok(re) => *filter_pattern = Some(re),
-                                Err(_) => *filter_pattern = None,
-                            }
-                        }
-                        return;
-                    }
-                    // TextInput consumes editing keys (cursor / Ctrl-W);
-                    // the regex is compiled on Enter.
-                    _ => {
-                        filter_input.handle_key(key);
-                        return;
-                    }
-                }
             }
         }
-        let Some(Overlay::LogTail {
-            scroll,
-            following,
-            filter_active,
-            filter_input,
-            filter_pattern,
-            ..
-        }) = self.current_overlay.as_mut()
-        else {
+        let Some(Overlay::LogTail { view, .. }) = self.current_overlay.as_mut() else {
             return;
         };
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => {
-                if let Some(handle) = self.log_tail_task.take() {
-                    handle.abort();
-                }
-                // Bump session id so a late `LogTailOpened` from the
-                // aborted task can't re-open the overlay after the user
-                // dismissed it (abort + channel-send race).
-                self.log_tail_session = self.log_tail_session.wrapping_add(1);
-                self.current_overlay = None;
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if *scroll > 0 {
-                    *scroll -= 1;
-                }
-                if *scroll == 0 {
-                    *following = true;
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                *scroll = scroll.saturating_add(1);
-                *following = false;
-            }
-            KeyCode::Char('G') | KeyCode::End => {
-                *scroll = 0;
-                *following = true;
-            }
-            KeyCode::Char('g') | KeyCode::Home => {
-                *scroll = u16::MAX;
-                *following = false;
-            }
-            KeyCode::Char('/') => {
-                *filter_active = true;
-                filter_input.clear();
-                *filter_pattern = None;
-            }
-            KeyCode::Char('n') => {
-                filter_input.clear();
-                *filter_pattern = None;
-            }
-            _ => {}
+        if tail::handle_tail_key(view, key) == tail::TailKeyOutcome::Close {
+            // Reap so a late `LogTailOpened` from the aborted task can't
+            // re-open the overlay the user just dismissed.
+            tail::reap_tail_task(&mut self.log_tail_task, &mut self.log_tail_session);
+            self.current_overlay = None;
         }
     }
 
@@ -8500,10 +8409,7 @@ impl App {
     /// once the group is known.
     fn spawn_logs_tail(&mut self, env_name: String, explicit_group: Option<String>) {
         // Tear down any prior session so we don't have two pollers racing.
-        if let Some(handle) = self.log_tail_task.take() {
-            handle.abort();
-        }
-        self.log_tail_session = self.log_tail_session.wrapping_add(1);
+        tail::reap_tail_task(&mut self.log_tail_task, &mut self.log_tail_session);
         let session_id = self.log_tail_session;
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
@@ -8590,10 +8496,8 @@ impl App {
     /// throttle-sensitive than FilterLogEvents, hence the 5s cadence
     /// (vs logs-tail's 2s). Errors keep the loop alive.
     fn spawn_event_tail(&mut self) {
-        if let Some(handle) = self.event_tail_task.take() {
-            handle.abort();
-        }
-        self.event_tail_session = self.event_tail_session.wrapping_add(1);
+        // Tear down any prior session so we don't have two pollers racing.
+        tail::reap_tail_task(&mut self.event_tail_task, &mut self.event_tail_session);
         let session_id = self.event_tail_session;
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
@@ -8666,100 +8570,14 @@ impl App {
     /// same surface as [`handle_log_tail_key`] minus the log-group
     /// picker (there's no group to switch; the tail is fleet-wide).
     fn handle_event_tail_key(&mut self, key: KeyEvent) {
-        // Filter input mode swallows printable keys.
-        {
-            let Some(Overlay::EventTail {
-                filter_active,
-                filter_input,
-                filter_pattern,
-                ..
-            }) = self.current_overlay.as_mut()
-            else {
-                return;
-            };
-            if *filter_active {
-                match key.code {
-                    KeyCode::Esc => {
-                        *filter_active = false;
-                        filter_input.clear();
-                        *filter_pattern = None;
-                        return;
-                    }
-                    KeyCode::Enter => {
-                        *filter_active = false;
-                        if filter_input.is_empty() {
-                            *filter_pattern = None;
-                        } else {
-                            match regex::RegexBuilder::new(filter_input.text())
-                                .case_insensitive(true)
-                                .build()
-                            {
-                                Ok(re) => *filter_pattern = Some(re),
-                                Err(_) => *filter_pattern = None,
-                            }
-                        }
-                        return;
-                    }
-                    // TextInput consumes editing keys (cursor / Ctrl-W);
-                    // the regex is compiled on Enter.
-                    _ => {
-                        filter_input.handle_key(key);
-                        return;
-                    }
-                }
-            }
-        }
-        let Some(Overlay::EventTail {
-            scroll,
-            following,
-            filter_active,
-            filter_input,
-            filter_pattern,
-            ..
-        }) = self.current_overlay.as_mut()
-        else {
+        let Some(Overlay::EventTail { view, .. }) = self.current_overlay.as_mut() else {
             return;
         };
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => {
-                if let Some(handle) = self.event_tail_task.take() {
-                    handle.abort();
-                }
-                // Bump session id so a late `EventTailOpened` from the
-                // aborted task can't re-open the dismissed overlay.
-                self.event_tail_session = self.event_tail_session.wrapping_add(1);
-                self.current_overlay = None;
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if *scroll > 0 {
-                    *scroll -= 1;
-                }
-                if *scroll == 0 {
-                    *following = true;
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                *scroll = scroll.saturating_add(1);
-                *following = false;
-            }
-            KeyCode::Char('G') | KeyCode::End => {
-                *scroll = 0;
-                *following = true;
-            }
-            KeyCode::Char('g') | KeyCode::Home => {
-                *scroll = u16::MAX;
-                *following = false;
-            }
-            KeyCode::Char('/') => {
-                *filter_active = true;
-                filter_input.clear();
-                *filter_pattern = None;
-            }
-            KeyCode::Char('n') => {
-                filter_input.clear();
-                *filter_pattern = None;
-            }
-            _ => {}
+        if tail::handle_tail_key(view, key) == tail::TailKeyOutcome::Close {
+            // Reap so a late `EventTailOpened` from the aborted task
+            // can't re-open the dismissed overlay.
+            tail::reap_tail_task(&mut self.event_tail_task, &mut self.event_tail_session);
+            self.current_overlay = None;
         }
     }
 
@@ -11610,16 +11428,10 @@ impl App {
                 // it would otherwise keep hitting the previous account's CW.
                 // Also bump session id so any in-flight LogTailOpened from
                 // the aborted task is dropped on arrival.
-                if let Some(handle) = self.log_tail_task.take() {
-                    handle.abort();
-                }
-                self.log_tail_session = self.log_tail_session.wrapping_add(1);
+                tail::reap_tail_task(&mut self.log_tail_task, &mut self.log_tail_session);
                 // Same teardown for the fleet event tail — it polls
                 // DescribeEvents against the previous context.
-                if let Some(handle) = self.event_tail_task.take() {
-                    handle.abort();
-                }
-                self.event_tail_session = self.event_tail_session.wrapping_add(1);
+                tail::reap_tail_task(&mut self.event_tail_task, &mut self.event_tail_session);
                 // Reset throttle back-off across context switches — the new
                 // account/region has its own rate limits.
                 self.throttle_until = None;
