@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added — MCP v2 writes + cross-process freeze (0.28 HEADLINE)
+
+- **`ebman mcp serve --allow-writes`** — five two-phase write tools (`deploy`, `restart`, `rebuild`, `terminate`, `set_option`) + `confirm_action`, present in `tools/list` only under the flag. Each verb returns a transcript-visible plan with a single-use 60s `confirm_token`; `confirm_action` dispatches. `terminate` requires `confirm_name` == env name (strict-typed confirm, one retry/token); `set_option` caps at 10 settings, gates to existing namespaces, and redacts old env-var values in its plan. Pins + a live TUI session's freeze + read-only refuse before a plan issues; writes are serialized server-wide; dispatch-only (poll the read tools); audit lines tagged `via=mcp client=<name>`. Demo mode is synthetic. Rollout is excluded by design (compose from `deploy` + read polling).
+- **Cross-process fleet freeze** — the TUI persists `:freeze-deploys` / `:incident START` to a pid-scoped marker (`~/.cache/ebman/freeze.json`, 0600); the MCP write tools AND all three CLI write paths (`ebman action`, `audit replay`, `lint --fix`) now refuse while a live TUI session holds a freeze (fix-the-class — they had the same blind spot). A crashed TUI's marker is ignored and cleaned by the next reader, so it can't phantom-freeze.
+- **Registry-unification refactor**: `cli/mcp.rs` split to `cli/mcp/{mod,tools,writes}.rs` (the enabling move the 0.26 architecture review gated on v2 writes).
+- Smaller: demo-mode AWS error spam downgraded to debug (`--demo` stub fails by design); Cost Explorer pagination capped at 20 pages. `:custom-platform-create` dropped from the backlog (three-cycle slip, no demand).
+
+
 ## [0.27.0] — 2026-08-20 — the hardening release: two max-depth reviews, live-tested, panel-approved
 
 ### ⚠ Behavior changes — read before upgrading CI

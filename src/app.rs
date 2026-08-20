@@ -2197,6 +2197,10 @@ impl App {
     /// believable content. Synchronous — no AWS calls, no disk I/O
     /// (state.load is skipped via the for_tests path).
     pub fn new_demo(config: Config) -> Self {
+        // Demo's stub client fails every call by design — downgrade
+        // those log lines from ERROR to debug so a demo session doesn't
+        // fill the log with expected failures.
+        DEMO_QUIET_AWS_ERRORS.store(true, std::sync::atomic::Ordering::Relaxed);
         let mut app = Self::for_tests(crate::aws::AwsClient::stub(), config);
         app.demo_mode = true;
         crate::demo_fixture::install(&mut app);
@@ -13295,8 +13299,19 @@ fn extract_quoted_after(msg: &str, needle: &str) -> Option<String> {
     Some(body[..end].to_string())
 }
 
+/// Set once at `--demo` app construction: the fail-loudly stub client
+/// errors on every call BY DESIGN, so logging each at ERROR just
+/// spams the log during demos/screenshots. Real mode keeps the loud
+/// contract (a genuine AWS failure IS an error worth seeing).
+pub(crate) static DEMO_QUIET_AWS_ERRORS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 fn flatten_err(op: &str, e: color_eyre::eyre::Report) -> String {
-    tracing::error!(target: "ebman::aws", op = op, error = ?e, "aws call failed");
+    if DEMO_QUIET_AWS_ERRORS.load(std::sync::atomic::Ordering::Relaxed) {
+        tracing::debug!(target: "ebman::aws", op = op, error = ?e, "aws call failed (demo stub)");
+    } else {
+        tracing::error!(target: "ebman::aws", op = op, error = ?e, "aws call failed");
+    }
     flatten_err_to_string(&e)
 }
 
