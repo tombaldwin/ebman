@@ -40,10 +40,38 @@ fn parse_drift_args(args: &[String]) -> Result<DriftArgs, String> {
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "--env" => env_name = iter.next().cloned(),
-            "--regions" => regions_csv = iter.next().cloned(),
-            "--tfstate" => tfstate_path = iter.next().map(std::path::PathBuf::from),
-            "--tfdir" => tfdir = iter.next().map(std::path::PathBuf::from),
+            "--env" => {
+                env_name = Some(crate::cli::take_value(
+                    &mut iter,
+                    "ebman drift",
+                    "--env",
+                    "an env name",
+                )?)
+            }
+            "--regions" => {
+                regions_csv = Some(crate::cli::take_value(
+                    &mut iter,
+                    "ebman drift",
+                    "--regions",
+                    "a region list",
+                )?)
+            }
+            "--tfstate" => {
+                tfstate_path = Some(std::path::PathBuf::from(crate::cli::take_value(
+                    &mut iter,
+                    "ebman drift",
+                    "--tfstate",
+                    "a file path",
+                )?))
+            }
+            "--tfdir" => {
+                tfdir = Some(std::path::PathBuf::from(crate::cli::take_value(
+                    &mut iter,
+                    "ebman drift",
+                    "--tfdir",
+                    "a directory path",
+                )?))
+            }
             "--json" => json = true,
             "--quiet" => quiet = true,
             other => return Err(format!("ebman drift: unknown flag '{other}'")),
@@ -340,12 +368,18 @@ mod tests {
     }
 
     #[test]
-    fn regions_as_trailing_token_falls_back_to_default_region() {
-        // `--regions` with no following value: iter.next() is None, so
-        // regions_csv stays None and we get the default-region case
-        // (vec![None]) — NOT the empty-CSV usage error. Pinning this so
-        // a future "require a value" tightening is a deliberate change.
-        let p = parse_drift_args(&argv(&["drift", "--regions"])).unwrap();
-        assert_eq!(p.regions, vec![None]);
+    fn value_flags_reject_missing_or_flag_values() {
+        // The 0.27 tightening the old test said would be "a deliberate
+        // change" — this is it. A trailing `--regions` used to silently
+        // fall back to the default region (scope change, not error).
+        assert!(parse_drift_args(&argv(&["drift", "--regions"]))
+            .unwrap_err()
+            .contains("--regions expects"));
+        assert!(parse_drift_args(&argv(&["drift", "--env", "--json"]))
+            .unwrap_err()
+            .contains("got flag"));
+        assert!(parse_drift_args(&argv(&["drift", "--tfstate"]))
+            .unwrap_err()
+            .contains("--tfstate expects"));
     }
 }

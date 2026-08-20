@@ -111,10 +111,36 @@ pub fn config_path(project_root: &Path) -> PathBuf {
 
 /// Pure: parse a `.ebman/ebman.toml` body into a `ProjectConfig`.
 /// Returns `None` on TOML syntax / schema errors so the caller can
-/// fall back to defaults silently — a corrupt file shouldn't refuse
-/// to launch ebman.
+/// fall back to defaults — a corrupt file shouldn't refuse to launch
+/// ebman. NOT silent though: a type mismatch on one key (e.g.
+/// `lint.disable = "EBL001"` instead of a list) discards the WHOLE
+/// file, including committed profile/region pins — the operator must
+/// hear about that (tracing in the TUI, stderr in CLI runs that
+/// installed no subscriber wouldn't see it, so both).
 pub fn parse(text: &str) -> Option<ProjectConfig> {
-    toml::from_str(text).ok()
+    match toml::from_str(text) {
+        Ok(cfg) => Some(cfg),
+        Err(e) => {
+            tracing::warn!(error = %e, "project config (.ebman/ebman.toml) failed to parse — IGNORING the whole file");
+            // CLI runs install no tracing subscriber, so the warning
+            // would be invisible exactly where it matters (a dropped
+            // profile/region pin changes which account a command hits).
+            // The TUI must NOT eprintln (alternate screen), so this is
+            // opt-in from main's subcommand dispatch.
+            if WARN_TO_STDERR.load(std::sync::atomic::Ordering::Relaxed) {
+                eprintln!("warning: .ebman/ebman.toml ignored — parse error: {e}");
+            }
+            None
+        }
+    }
+}
+
+/// See [`parse`]: CLI subcommand dispatch flips this so project-config
+/// parse failures reach stderr. Never set from TUI code.
+static WARN_TO_STDERR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn warnings_to_stderr() {
+    WARN_TO_STDERR.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Discover and load the project config starting from the current

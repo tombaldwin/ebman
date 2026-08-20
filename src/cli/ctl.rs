@@ -48,6 +48,11 @@ fn parse_ctl_args(args: &[String], default_socket: std::path::PathBuf) -> Result
     }
     let head = rest[0].to_ascii_uppercase();
     let body = rest[1..].join(" ");
+    // The wire protocol is one request per line — an embedded newline
+    // would silently truncate the request at the server's read_line.
+    if head.contains('\n') || body.contains('\n') {
+        return Err("ebman ctl: arguments must not contain newlines".into());
+    }
     let request = if body.is_empty() {
         head
     } else {

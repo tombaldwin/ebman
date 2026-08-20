@@ -385,29 +385,38 @@ fn parse_lint_args(args: &[String]) -> Result<LintArgs, String> {
     // `--env` value on `--fix --yes` widened scope to the whole
     // fleet, and `--rules --json` filtered every issue out (exit 0)
     // while eating the JSON flag.
-    let take_value = |iter: &mut std::iter::Skip<std::slice::Iter<String>>,
-                      flag: &str,
-                      what: &str|
-     -> Result<String, String> {
-        let Some(v) = iter.next() else {
-            return Err(format!("ebman lint: {flag} expects {what}"));
-        };
-        if v.starts_with("--") {
-            return Err(format!("ebman lint: {flag} expects {what}, got flag '{v}'"));
-        }
-        Ok(v.clone())
-    };
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "--env" => env_name = Some(take_value(&mut iter, "--env", "an env name")?),
-            "--regions" => regions_csv = Some(take_value(&mut iter, "--regions", "a region list")?),
+            "--env" => {
+                env_name = Some(crate::cli::take_value(
+                    &mut iter,
+                    "ebman lint",
+                    "--env",
+                    "an env name",
+                )?)
+            }
+            "--regions" => {
+                regions_csv = Some(crate::cli::take_value(
+                    &mut iter,
+                    "ebman lint",
+                    "--regions",
+                    "a region list",
+                )?)
+            }
             "--json" => json = true,
             "--quiet" => quiet = true,
             "--fix" => fix = true,
             "--dry-run" => dry_run = true,
             "--yes" => yes = true,
             "--watch" => watch = true,
-            "--interval" => interval_str = Some(take_value(&mut iter, "--interval", "a duration")?),
+            "--interval" => {
+                interval_str = Some(crate::cli::take_value(
+                    &mut iter,
+                    "ebman lint",
+                    "--interval",
+                    "a duration",
+                )?)
+            }
             "--probe-live" => probe_live = true,
             "--webhook" => {
                 let Some(u) = iter.next() else {
@@ -456,7 +465,12 @@ fn parse_lint_args(args: &[String]) -> Result<LintArgs, String> {
                 severity_filter = Some(sev);
             }
             "--rules" => {
-                let v = take_value(&mut iter, "--rules", "a comma-separated rule id list")?;
+                let v = crate::cli::take_value(
+                    &mut iter,
+                    "ebman lint",
+                    "--rules",
+                    "a comma-separated rule id list",
+                )?;
                 rule_filter = v
                     .split(',')
                     .map(|s| s.trim().to_string())
@@ -1111,7 +1125,16 @@ pub async fn run(args: &[String]) -> Result<()> {
                 }
                 break;
             }
-            _ = tokio::time::sleep(std::time::Duration::from_secs(interval_secs)) => {}
+            _ = tokio::time::sleep(
+                // Interval is start-to-start: subtract the cycle's own
+                // duration so `--interval 60s` fires every ~60s, not
+                // 60s + however long the fleet scan took.
+                std::time::Duration::from_secs(interval_secs).saturating_sub(
+                    (chrono::Utc::now() - cycle_started)
+                        .to_std()
+                        .unwrap_or_default(),
+                ),
+            ) => {}
         }
     }
 

@@ -83,16 +83,18 @@ pub async fn run(args: &[String]) -> Result<()> {
         let entries: Vec<String> = versions
             .iter()
             .map(|v| {
-                let created_iso = v
+                // `created` is null when EB reported no date — an
+                // empty string confused date-parsing consumers.
+                let created_json = v
                     .created
-                    .map(|d| d.to_rfc3339())
-                    .unwrap_or_default();
+                    .map(|d| format!("\"{}\"", cli_esc(&d.to_rfc3339())))
+                    .unwrap_or_else(|| "null".into());
                 let deployed = v.label == deployed_label;
                 format!(
-                    "{{\"label\":\"{}\",\"deployed\":{},\"created\":\"{}\",\"description\":\"{}\"}}",
+                    "{{\"label\":\"{}\",\"deployed\":{},\"created\":{},\"description\":\"{}\"}}",
                     cli_esc(&v.label),
                     deployed,
-                    cli_esc(&created_iso),
+                    created_json,
                     cli_esc(&v.description),
                 )
             })

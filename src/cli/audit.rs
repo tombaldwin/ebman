@@ -43,10 +43,38 @@ fn parse_audit_args(args: &[String]) -> Result<AuditArgs, String> {
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--tail" => tail = true,
-            "--since" => since_str = iter.next().cloned(),
-            "--env" => env_filter = iter.next().cloned(),
-            "--rule" => rule_filter = iter.next().cloned(),
-            "--action" => action_filter = iter.next().cloned(),
+            "--since" => {
+                since_str = Some(crate::cli::take_value(
+                    &mut iter,
+                    "ebman audit",
+                    "--since",
+                    "a window like 5m / 1h / 2d",
+                )?)
+            }
+            "--env" => {
+                env_filter = Some(crate::cli::take_value(
+                    &mut iter,
+                    "ebman audit",
+                    "--env",
+                    "an env name",
+                )?)
+            }
+            "--rule" => {
+                rule_filter = Some(crate::cli::take_value(
+                    &mut iter,
+                    "ebman audit",
+                    "--rule",
+                    "a rule id",
+                )?)
+            }
+            "--action" => {
+                action_filter = Some(crate::cli::take_value(
+                    &mut iter,
+                    "ebman audit",
+                    "--action",
+                    "an action name",
+                )?)
+            }
             "--json" => json = true,
             other => return Err(format!("ebman audit: unknown flag '{other}'")),
         }
@@ -156,7 +184,18 @@ pub async fn run(args: &[String]) -> Result<()> {
             if f.read_to_end(&mut buf).is_err() {
                 continue;
             }
-            offset = len;
+            // A torn trailing line (writer mid-append at read time)
+            // must be re-read next tick, not consumed-and-dropped:
+            // only advance the offset past the last COMPLETE line.
+            let complete_up_to = match buf.iter().rposition(|&b| b == b'\n') {
+                Some(nl) => nl + 1,
+                None => 0,
+            };
+            if complete_up_to == 0 {
+                continue;
+            }
+            offset += complete_up_to as u64;
+            buf.truncate(complete_up_to);
             let chunk = String::from_utf8_lossy(&buf);
             let new_entries: Vec<audit_log::AuditEntry> = chunk
                 .lines()

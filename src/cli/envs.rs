@@ -30,7 +30,18 @@ pub(crate) fn render_envs_json(envs: &[aws::Environment]) -> String {
 }
 
 pub async fn run(args: &[String]) -> Result<()> {
-    let json = args.iter().any(|a| a == "--json");
+    let mut json = false;
+    // Reject unknown flags like every other subcommand — `--jsn`
+    // used to silently print the text table, exit 0.
+    for arg in args.iter().skip(1) {
+        match arg.as_str() {
+            "--json" => json = true,
+            other => {
+                eprintln!("ebman envs: unknown flag '{other}' (usage: ebman envs [--json])");
+                std::process::exit(2);
+            }
+        }
+    }
     let aws = aws::AwsClient::with(None, None).await?;
     let envs = aws
         .list_environments()
