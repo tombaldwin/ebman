@@ -340,7 +340,7 @@ async fn run_deploy(
             Ok(envs) => envs,
             Err(e) => {
                 eprintln!("err: list_environments during poll: {e}");
-                std::process::exit(1);
+                crate::cli::exit_after_drain(1).await;
             }
         };
         let (status, health) = envs

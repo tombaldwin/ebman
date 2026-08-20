@@ -45,7 +45,14 @@ fn parse_explain_args(args: &[String]) -> Result<ExplainArgs, String> {
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "--env" => env_name = iter.next().cloned(),
+            "--env" => {
+                env_name = Some(crate::cli::take_value(
+                    &mut iter,
+                    "ebman explain",
+                    "--env",
+                    "an env name",
+                )?)
+            }
             "--json" => json = true,
             "--dry-run" => dry_run = true,
             "--no-cache" => no_cache = true,

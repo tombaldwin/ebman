@@ -959,15 +959,30 @@ pub async fn run(args: &[String]) -> Result<()> {
     // the bad line loudly; bail after a run of consecutive errors so a
     // permanently-broken stream can't spin.
     let mut consecutive_read_errors: u32 = 0;
+    // FramedRead sets an internal errored flag on any decode error and
+    // the NEXT poll returns None — then resets, so the stream is
+    // resumable. A None right after an Err is therefore NOT EOF: treat
+    // it as part of the error recovery and poll again (without this,
+    // one oversized/invalid line killed the whole session as a silent
+    // exit 0 — verified live before the fix).
+    let mut last_was_error = false;
     loop {
         let line = match lines.next().await {
             Some(Ok(line)) => {
                 consecutive_read_errors = 0;
+                last_was_error = false;
                 line
             }
-            None => break,
+            None => {
+                if last_was_error {
+                    last_was_error = false;
+                    continue;
+                }
+                break;
+            }
             Some(Err(e)) => {
                 consecutive_read_errors += 1;
+                last_was_error = true;
                 eprintln!("ebman mcp: stdin read error (skipping line): {e}");
                 if consecutive_read_errors >= 5 {
                     eprintln!(

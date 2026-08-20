@@ -41,7 +41,14 @@ fn parse_versions_args(args: &[String]) -> Result<VersionsArgs, String> {
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "--env" => env_name = iter.next().cloned(),
+            "--env" => {
+                env_name = Some(crate::cli::take_value(
+                    &mut iter,
+                    "ebman versions",
+                    "--env",
+                    "an env name",
+                )?)
+            }
             "--json" => json = true,
             other => return Err(format!("ebman versions: unknown arg '{other}'")),
         }
@@ -153,10 +160,13 @@ mod tests {
     }
 
     #[test]
-    fn env_as_trailing_token_consumes_nothing_and_is_usage_error() {
-        // `--env` with no following value: iter.next() yields None, so
-        // env_name stays unset → usage error (matches pre-refactor behaviour).
+    fn env_value_flag_guards() {
+        // 0.27 take_value class: a trailing `--env` (or one eating a
+        // following flag) is a specific usage error, not the generic
+        // usage line the pre-refactor behaviour produced.
         let err = parse_versions_args(&argv(&["versions", "--env"])).unwrap_err();
-        assert!(err.contains("usage:"), "got: {err}");
+        assert!(err.contains("--env expects"), "got: {err}");
+        let err = parse_versions_args(&argv(&["versions", "--env", "--json"])).unwrap_err();
+        assert!(err.contains("got flag"), "got: {err}");
     }
 }

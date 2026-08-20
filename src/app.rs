@@ -2767,7 +2767,9 @@ impl App {
         let path = std::env::temp_dir().join(format!("ebman-env-{safe}-{now_ns}.env"));
 
         let body = build_env_edit_body(env_name, original);
-        std::fs::write(&path, body.as_bytes()).wrap_err("writing env-edit temp file")?;
+        // 0600: the body is the env's variables — secrets — sitting in
+        // the shared temp dir for the whole $EDITOR session.
+        crate::util::write_secure(&path, body.as_bytes()).wrap_err("writing env-edit temp file")?;
 
         // Leave the TUI for the editor.
         disable_raw_mode()?;
@@ -2816,6 +2818,9 @@ impl App {
                     "couldn't re-read temp file at {} — no changes dispatched ({e})",
                     path.display()
                 ));
+                // Every other branch removes the (secrets-bearing)
+                // temp file — this one must too.
+                let _ = std::fs::remove_file(&path);
                 return Ok(());
             }
         };
@@ -13848,6 +13853,7 @@ pub fn format_app_versions(
     versions: &[crate::aws::AppVersion],
     deployed_label: Option<&str>,
     limit: usize,
+    ascii: bool,
 ) -> String {
     let mut out = String::new();
     let total = versions.len();
@@ -13865,15 +13871,18 @@ pub fn format_app_versions(
             .description
             .strip_prefix("Application version created from ")
             .unwrap_or(&v.description);
-        let marker = if deployed_label == Some(v.label.as_str()) {
-            "▶ "
-        } else {
-            "  "
+        let deployed = deployed_label == Some(v.label.as_str());
+        // Ascii icon-mode fallbacks — this is a pure text builder, so
+        // the icons setting arrives as a bool from the caller.
+        let marker = match (deployed, ascii) {
+            (true, false) => "▶ ",
+            (true, true) => "> ",
+            (false, _) => "  ",
         };
-        let suffix = if deployed_label == Some(v.label.as_str()) {
-            "  ◀ deployed"
-        } else {
-            ""
+        let suffix = match (deployed, ascii) {
+            (true, false) => "  ◀ deployed",
+            (true, true) => "  < deployed",
+            (false, _) => "",
         };
         if desc.is_empty() {
             out.push_str(&format!("{marker}{}{}\n", v.label, suffix));
@@ -17299,7 +17308,7 @@ mod tests {
         // build-5 is outside the top 20 (which is build-30 down to build-11
         // after the rev). Lets us check the truncation banner without the
         // deployed marker showing up.
-        let out = super::format_app_versions(&versions, Some("build-5"), 20);
+        let out = super::format_app_versions(&versions, Some("build-5"), 20, false);
         assert!(out.contains("showing 20 of 30"));
         assert!(!out.contains("◀ deployed"));
         // Description prefix stripped.
@@ -17322,7 +17331,7 @@ mod tests {
                 created: None,
             },
         ];
-        let out = super::format_app_versions(&versions, Some("build-2"), 20);
+        let out = super::format_app_versions(&versions, Some("build-2"), 20, false);
         assert!(out.contains("◀ deployed"));
         // No truncation banner when total <= limit.
         assert!(!out.contains("showing "));

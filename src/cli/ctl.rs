@@ -34,10 +34,14 @@ fn parse_ctl_args(args: &[String], default_socket: std::path::PathBuf) -> Result
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
         if arg == "--socket" {
-            if let Some(p) = iter.next() {
-                socket_path = std::path::PathBuf::from(p);
-            } else {
-                return Err("ebman ctl: --socket requires a path".into());
+            match iter.next() {
+                Some(p) if !p.starts_with("--") => socket_path = std::path::PathBuf::from(p),
+                Some(p) => {
+                    return Err(format!(
+                        "ebman ctl: --socket expects a path, got flag '{p}'"
+                    ))
+                }
+                None => return Err("ebman ctl: --socket requires a path".into()),
             }
         } else {
             rest.push(arg.as_str());

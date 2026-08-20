@@ -896,12 +896,11 @@ fn draw_form(f: &mut Frame, area: Rect, app: &mut App) {
             chunks[2].height as usize,
             lines.len(),
         );
-        f.render_widget(
-            Paragraph::new(lines)
-                .wrap(Wrap { trim: false })
-                .scroll((form.scroll, 0)),
-            chunks[2],
-        );
+        // No .wrap: cursor-follow counts LOGICAL lines, and wrapped
+        // rows above the cursor would make the follow undershoot
+        // (long help text on a narrow popup put the focused field
+        // below the fold again). Truncation matches the events panel.
+        f.render_widget(Paragraph::new(lines).scroll((form.scroll, 0)), chunks[2]);
     }
     let footer = match form.state {
         FormState::Loading => " esc to cancel",
@@ -3077,7 +3076,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                     // side mutations.
                     Span::styled(
                         if app.tf_managed_envs.contains(&e.name) {
-                            "ⓣ "
+                            glyph(app.theme.icons, "ⓣ ", "t ")
                         } else {
                             ""
                         },
@@ -3932,7 +3931,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         let theme = &app.theme;
         let line = Line::from(vec![
             Span::styled(
-                "  ★ ",
+                glyph(theme.icons, "  ★ ", "  * "),
                 Style::default()
                     .fg(theme.accent)
                     .add_modifier(Modifier::BOLD),
@@ -4952,17 +4951,17 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                         Style::default().fg(theme.muted),
                     )));
                     for issue in to_show {
-                        let glyph = match issue.severity {
-                            Severity::Error => "✗",
-                            Severity::Warn => "⚠",
-                            Severity::Info => "·",
+                        let sev_glyph = match issue.severity {
+                            Severity::Error => glyph(theme.icons, "✗", "x"),
+                            Severity::Warn => glyph(theme.icons, "⚠", "!"),
+                            Severity::Info => glyph(theme.icons, "·", "-"),
                         };
                         let color = match issue.severity {
                             Severity::Error => theme.health_red,
                             _ => theme.health_yellow,
                         };
                         lines.push(Line::from(Span::styled(
-                            format!("    {glyph} [{}] {}", issue.rule_id, issue.title),
+                            format!("    {sev_glyph} [{}] {}", issue.rule_id, issue.title),
                             Style::default().fg(color).add_modifier(Modifier::BOLD),
                         )));
                         if let Some(suggestion) = &issue.suggestion {
@@ -5193,19 +5192,27 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                 // in the Span.
                 let (status_text, status_color): (String, _) =
                     match (&row.outcome, row.env_found, &row.preflight_error) {
-                        (Some(Ok(())), _, _) => ("✓ deployed".to_string(), theme.health_green),
+                        (Some(Ok(())), _, _) => (
+                            format!("{} deployed", glyph(theme.icons, "✓", "+")),
+                            theme.health_green,
+                        ),
                         (Some(Err(_)), _, _) => {
                             // Short label only; the full error
                             // surfaces as an indented "↳" line below
                             // the row.
-                            ("✗ failed".to_string(), theme.health_red)
+                            (
+                                format!("{} failed", glyph(theme.icons, "✗", "x")),
+                                theme.health_red,
+                            )
                         }
-                        (None, Some(false), Some(_)) => {
-                            ("✗ pre-flight fail".to_string(), theme.health_red)
-                        }
-                        (None, Some(false), None) => {
-                            ("✗ env not found".to_string(), theme.health_red)
-                        }
+                        (None, Some(false), Some(_)) => (
+                            format!("{} pre-flight fail", glyph(theme.icons, "✗", "x")),
+                            theme.health_red,
+                        ),
+                        (None, Some(false), None) => (
+                            format!("{} env not found", glyph(theme.icons, "✗", "x")),
+                            theme.health_red,
+                        ),
                         (None, Some(true), _) => {
                             if matches!(
                                 flow.state,
@@ -5213,7 +5220,10 @@ fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                             ) {
                                 ("pending".to_string(), theme.muted)
                             } else {
-                                ("✓ pre-flight ok".to_string(), theme.health_green)
+                                (
+                                    format!("{} pre-flight ok", glyph(theme.icons, "✓", "+")),
+                                    theme.health_green,
+                                )
                             }
                         }
                         (None, None, _) => ("planning…".to_string(), theme.muted),
@@ -6646,7 +6656,7 @@ fn draw_detail_queue(
     let queue_row = |selected: bool, label: &str, value: String| -> Line<'static> {
         let (marker, marker_style) = if selected {
             (
-                "▶ ",
+                glyph(theme.icons, "▶ ", "> "),
                 Style::default()
                     .fg(theme.title_alt)
                     .add_modifier(Modifier::BOLD),

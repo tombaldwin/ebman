@@ -898,14 +898,13 @@ impl AwsClient {
                 .await
             {
                 Err(e) => {
-                    // Both discovery paths failed → the caller must
-                    // see an error, never an empty "no queues".
-                    if discovery_err.is_some() && main_url.is_none() {
-                        return Err(eyre!(
-                            "{} + DescribeConfigurationSettings: {e}",
-                            discovery_err.unwrap_or_default()
-                        ));
-                    }
+                    // Record the fallback failure too — resolution
+                    // below decides whether it matters.
+                    let msg = format!("DescribeConfigurationSettings: {e}");
+                    discovery_err = Some(match discovery_err.take() {
+                        Some(prior) => format!("{prior} + {msg}"),
+                        None => msg,
+                    });
                 }
                 Ok(resp) => {
                     for setting in resp.configuration_settings.unwrap_or_default() {
@@ -936,20 +935,58 @@ impl AwsClient {
             }
         }
 
+        // A discovery error with nothing found must surface as an
+        // error: "no queues" is only trustworthy when at least one
+        // discovery call succeeded AND we found nothing — a failed
+        // primary may have hidden real EB-created queues (0.27
+        // re-review: the first cut only errored when BOTH calls
+        // failed, so AccessDenied-on-primary + empty-fallback — the
+        // common autocreated-queue case — still read as "no queues"
+        // and silently cleared DLQ alerting).
+        if main_url.is_none() {
+            if let Some(err) = discovery_err {
+                return Err(eyre!(err));
+            }
+        }
+
         // If we still have a main queue but no DLQ URL, derive one by SQS naming convention.
         if let (Some(main), None) = (&main_url, &dlq_url) {
             dlq_url = derive_dlq_url(main);
         }
 
-        let main_stats = if let Some(u) = &main_url {
-            self.queue_stats(u).await.ok()
-        } else {
-            None
+        // Stats failures must stay distinguishable from "queue empty"
+        // / "no DLQ": SQS permissions are separate from EB's, and an
+        // AccessDenied here previously produced dlq_stats=None → the
+        // depth cache treated it as "no DLQ" and cleared the alert.
+        // NonExistentQueue on the DERIVED DLQ url is the one genuine
+        // "no DLQ" error (the naming-convention guess missed).
+        let main_stats = match &main_url {
+            Some(u) => match self.queue_stats(u).await {
+                Ok(st) => Some(st),
+                Err(e) => {
+                    let text = format!("{e:#}");
+                    if text.contains("NonExistentQueue") {
+                        None
+                    } else {
+                        return Err(eyre!("main queue stats: {text}"));
+                    }
+                }
+            },
+            None => None,
         };
-        let dlq_stats = if let Some(u) = &dlq_url {
-            self.queue_stats(u).await.ok()
-        } else {
-            None
+        let dlq_stats = match &dlq_url {
+            Some(u) => match self.queue_stats(u).await {
+                Ok(st) => Some(st),
+                Err(e) => {
+                    let text = format!("{e:#}");
+                    if text.contains("NonExistentQueue") {
+                        None
+                    } else {
+                        return Err(eyre!("dlq stats: {text}"));
+                    }
+                }
+            },
+            None => None,
         };
 
         Ok(WorkerQueues {
@@ -4852,6 +4889,37 @@ mod tests {
     // queue" for the most common worker-tier shape. The fix queries
     // `DescribeEnvironmentResources` first and only falls back to option
     // settings when explicit overrides exist.
+
+    #[tokio::test]
+    async fn worker_queues_primary_error_with_empty_fallback_is_an_error() {
+        // 0.27 re-review C-class: AccessDenied on the primary
+        // discovery call + an Ok-but-empty fallback (the COMMON
+        // autocreated-queue case — sqsd option settings are empty)
+        // used to read as Ok("no queues") and silently clear DLQ
+        // alerting. It must surface as Err.
+        use aws_sdk_elasticbeanstalk::operation::describe_configuration_settings::DescribeConfigurationSettingsOutput;
+        use aws_sdk_elasticbeanstalk::operation::describe_environment_resources::DescribeEnvironmentResourcesError;
+
+        let der = mock!(Client::describe_environment_resources).then_error(|| {
+            DescribeEnvironmentResourcesError::generic(
+                aws_smithy_types::error::ErrorMetadata::builder()
+                    .code("AccessDenied")
+                    .message("not authorized")
+                    .build(),
+            )
+        });
+        let dcs = mock!(Client::describe_configuration_settings)
+            .then_output(|| DescribeConfigurationSettingsOutput::builder().build());
+        let eb = mock_client!(aws_sdk_elasticbeanstalk, [&der, &dcs]);
+        let client = client_with_eb(eb);
+        let result = client.describe_worker_queues("app", "wk-env").await;
+        assert!(
+            result.is_err(),
+            "primary error + empty fallback must be Err, got {result:?}"
+        );
+        assert_eq!(der.num_calls(), 1);
+        assert_eq!(dcs.num_calls(), 1);
+    }
 
     #[tokio::test]
     async fn worker_queues_resolves_via_describe_environment_resources_when_autocreated() {
