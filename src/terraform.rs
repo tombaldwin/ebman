@@ -145,6 +145,25 @@ fn file_is_backend_pointer(path: &Path) -> bool {
     }
 }
 
+/// Apply the shared option-redaction policy to drift fields in
+/// place: tf configs routinely pin env-var secrets, and a drifted
+/// secret would otherwise print both its tf and live values. The
+/// drifted/not-drifted signal survives. Used by the MCP drift tool,
+/// `ebman drift` (opt out via `--no-redact`), and the TUI `:drift`
+/// overlay (always on — the TUI has richer, deliberately-gated paths
+/// for reading real values).
+pub fn redact_drift_fields(fields: &mut [DriftField]) {
+    for f in fields.iter_mut() {
+        if f.kind != "option_setting" {
+            continue;
+        }
+        let ns = f.namespace.as_deref().unwrap_or("");
+        let name = f.name.as_deref().unwrap_or("");
+        f.tf_value = crate::util::redact_option_value(ns, name, &f.tf_value, true);
+        f.live_value = crate::util::redact_option_value(ns, name, &f.live_value, true);
+    }
+}
+
 /// Since Terraform 0.9, `.terraform/terraform.tfstate` for a REMOTE
 /// backend holds backend *configuration* (`{"backend": ...}`), not
 /// resource state. `RawTfState`'s `#[serde(default)] resources` made

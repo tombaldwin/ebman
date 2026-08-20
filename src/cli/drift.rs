@@ -23,6 +23,7 @@ struct DriftArgs {
     tfdir: Option<std::path::PathBuf>,
     json: bool,
     quiet: bool,
+    no_redact: bool,
 }
 
 /// Pure arg parser for `ebman drift`. Separated from [`run`] so the
@@ -37,6 +38,7 @@ fn parse_drift_args(args: &[String]) -> Result<DriftArgs, String> {
     let mut tfdir: Option<std::path::PathBuf> = None;
     let mut json = false;
     let mut quiet = false;
+    let mut no_redact = false;
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -74,6 +76,7 @@ fn parse_drift_args(args: &[String]) -> Result<DriftArgs, String> {
             }
             "--json" => json = true,
             "--quiet" => quiet = true,
+            "--no-redact" => no_redact = true,
             other => return Err(format!("ebman drift: unknown flag '{other}'")),
         }
     }
@@ -100,6 +103,7 @@ fn parse_drift_args(args: &[String]) -> Result<DriftArgs, String> {
         tfdir,
         json,
         quiet,
+        no_redact,
     })
 }
 
@@ -111,6 +115,7 @@ pub async fn run(args: &[String]) -> Result<()> {
         tfdir,
         json,
         quiet,
+        no_redact,
     } = match parse_drift_args(args) {
         Ok(parsed) => parsed,
         Err(msg) => {
@@ -218,7 +223,16 @@ pub async fn run(args: &[String]) -> Result<()> {
                     .fetch_env_option_settings(&env.application, &env.name)
                     .await
                 {
-                    Ok(opts) => terraform::compute_drift(tf, env, &opts),
+                    Ok(opts) => {
+                        let mut fields = terraform::compute_drift(tf, env, &opts);
+                        // Same redaction contract as get_option_settings
+                        // / the MCP drift tool — a drifted env-var secret
+                        // otherwise lands in CI logs verbatim.
+                        if !no_redact {
+                            terraform::redact_drift_fields(&mut fields);
+                        }
+                        fields
+                    }
                     Err(e) => {
                         if !quiet {
                             eprintln!(

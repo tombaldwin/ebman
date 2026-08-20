@@ -95,15 +95,7 @@ fn jsonl_to_array(jsonl: &str) -> String {
 /// through the `drift` tool. The drifted/not-drifted signal survives.
 fn redact_drift_reports(reports: &mut [DriftReport]) {
     for (_, _, fields) in reports.iter_mut() {
-        for f in fields.iter_mut() {
-            if f.kind != "option_setting" {
-                continue;
-            }
-            let ns = f.namespace.as_deref().unwrap_or("");
-            let name = f.name.as_deref().unwrap_or("");
-            f.tf_value = redact_option_value(ns, name, &f.tf_value, true);
-            f.live_value = redact_option_value(ns, name, &f.live_value, true);
-        }
+        terraform::redact_drift_fields(fields);
     }
 }
 
@@ -142,27 +134,7 @@ fn append_skipped_envs(mut body: String, skipped: &[String]) -> String {
     body
 }
 
-/// Redaction rule for `get_option_settings`: env-var VALUES are
-/// secrets (`aws:elasticbeanstalk:application:environment` carries DB
-/// URLs, API keys); keys stay visible so config shape is inspectable.
-/// `DBPassword` matches the `:rds` precedent. Everything else passes
-/// through.
-pub(crate) fn redact_option_value(
-    namespace: &str,
-    name: &str,
-    value: &str,
-    redact: bool,
-) -> String {
-    if !redact {
-        return value.to_string();
-    }
-    if namespace == "aws:elasticbeanstalk:application:environment"
-        || name.eq_ignore_ascii_case("DBPassword")
-    {
-        return "(redacted)".to_string();
-    }
-    value.to_string()
-}
+pub(crate) use crate::util::redact_option_value;
 
 /// The static tool table. Descriptions carry the coverage caveats —
 /// an agent treats "no findings" as authoritative, so a wiring gap
@@ -312,10 +284,15 @@ impl Server {
     pub(crate) async fn handle_request(&self, req: &Value) -> Option<Value> {
         let id = req.get("id").cloned();
         let method = req.get("method").and_then(Value::as_str).unwrap_or("");
-        // Frames without an id are notifications per JSON-RPC 2.0 —
-        // never answered, whatever the method (an id-less tools/call
-        // must not produce an `"id": null` response).
-        id.as_ref()?;
+        // Frames without an id — or with `"id": null` — are
+        // notifications per JSON-RPC 2.0: never answered, whatever the
+        // method (an id-less tools/call must not produce an
+        // `"id": null` response, and answering an explicit null id
+        // collides with the -32700 parse-error convention).
+        match id {
+            None | Some(Value::Null) => return None,
+            Some(_) => {}
+        }
         match method {
             "initialize" => {
                 // Echo-negotiate: accept the client's revision when it
@@ -950,21 +927,29 @@ pub async fn run(args: &[String]) -> Result<()> {
         }
     });
 
-    use tokio::io::AsyncBufReadExt;
-    let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+    use futures::StreamExt;
+    use tokio_util::codec::{FramedRead, LinesCodec};
+    // LinesCodec with a max length: a frame streamed without a newline
+    // used to accumulate in the read buffer without bound. 16MB is far
+    // beyond any real MCP frame.
+    const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
+    let mut lines = FramedRead::new(
+        tokio::io::stdin(),
+        LinesCodec::new_with_max_length(MAX_LINE_BYTES),
+    );
     // Read errors (e.g. one invalid-UTF-8 byte → InvalidData) must not
     // masquerade as EOF: previously the server exited 0 silently. Skip
     // the bad line loudly; bail after a run of consecutive errors so a
     // permanently-broken stream can't spin.
     let mut consecutive_read_errors: u32 = 0;
     loop {
-        let line = match lines.next_line().await {
-            Ok(Some(line)) => {
+        let line = match lines.next().await {
+            Some(Ok(line)) => {
                 consecutive_read_errors = 0;
                 line
             }
-            Ok(None) => break,
-            Err(e) => {
+            None => break,
+            Some(Err(e)) => {
                 consecutive_read_errors += 1;
                 eprintln!("ebman mcp: stdin read error (skipping line): {e}");
                 if consecutive_read_errors >= 5 {
@@ -996,6 +981,24 @@ pub async fn run(args: &[String]) -> Result<()> {
                 continue;
             }
         };
+        // Non-object frames (batch arrays, bare scalars) are invalid
+        // requests per JSON-RPC 2.0 — answer -32600 rather than
+        // silently dropping them (a strict client would wait out its
+        // timeout). MCP 2025-06-18 removed batching, so arrays are
+        // not-supported by spec.
+        if !req.is_object() {
+            let _ = out_tx
+                .send(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": null,
+                        "error": {"code": -32600, "message": "invalid request: expected a single JSON-RPC object"}
+                    })
+                    .to_string(),
+                )
+                .await;
+            continue;
+        }
         // tools/call may hit AWS for many seconds — spawn it so the
         // loop stays responsive to ping / further calls. Everything
         // else is answered inline (cheap + ordering-sensitive).
@@ -1321,6 +1324,11 @@ mod tests {
         assert!(server.handle_request(&req).await.is_none());
         let ping: Value = serde_json::from_str(r#"{"jsonrpc":"2.0","method":"ping"}"#).unwrap();
         assert!(server.handle_request(&ping).await.is_none());
+        // Explicit null id = notification too — answering it would
+        // collide with the -32700 parse-error convention.
+        let null_id: Value =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":null,"method":"ping"}"#).unwrap();
+        assert!(server.handle_request(&null_id).await.is_none());
     }
 
     #[test]

@@ -10,6 +10,7 @@
 - **Session-scoped fleet freeze**: `:freeze-deploys [REASON]` (or `:incident START "headline"`, which sets the same lock plus a header banner and audit lines) makes every destructive op refuse until `:thaw-deploys` / `:incident END` or exit. Not persisted — an in-session gesture, not durable policy.
 - **`ebman audit replay`** re-dispatches a previously-audited action and is itself audit-logged (`replay_of=`-tagged dispatched/completed lines); destructive verbs still require `--yes`.
 - **`ebman mcp serve` is reads-only** (v1): no tool can dispatch a write. Redaction-by-default covers every tool that can carry option values — `get_option_settings`, `drift` (tf + live values of drifted secrets), and `audit_log` (`value=` extras from `:set-option` / `lint --fix` lines) — so an MCP client sees config *keys*, not secrets, with `--no-redact` as the explicit opt-out.
+- **Drift redaction everywhere** (0.27+): the same contract covers `ebman drift` (`--no-redact` opts out — piped CI logs shouldn't collect drifted secrets by default) and the TUI `:drift` overlay (always on; the deliberate paths for reading real values are the Config tab / `:env-vars`).
 
 ## What's stored locally
 

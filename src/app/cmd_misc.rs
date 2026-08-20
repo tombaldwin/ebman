@@ -554,7 +554,11 @@ impl App {
                 None => crate::terraform::render_drift_text(&env_name, false, &[]),
                 Some(tf_env) => match aws.fetch_env_option_settings(&app_name, &env_name).await {
                     Ok(opts) => {
-                        let drift = crate::terraform::compute_drift(&tf_env, &env, &opts);
+                        let mut drift = crate::terraform::compute_drift(&tf_env, &env, &opts);
+                        // Overlay redacts drifted secret values — the
+                        // deliberate paths for reading real values are
+                        // the Config tab / :env-vars, not a drift diff.
+                        crate::terraform::redact_drift_fields(&mut drift);
                         crate::terraform::render_drift_text(&env_name, true, &drift)
                     }
                     Err(e) => format!(
