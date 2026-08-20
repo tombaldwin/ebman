@@ -251,6 +251,11 @@ impl App {
             reason: reason_for_store.clone(),
             frozen_at: chrono::Utc::now(),
         });
+        // Persist the cross-process marker so MCP writes + the CLI
+        // write paths honour the freeze. Demo freeze is play-acting.
+        if !self.demo_mode {
+            crate::freeze::write_marker(&reason_for_store, false);
+        }
         let audit_reason = if reason_for_store.is_empty() {
             "no-reason".to_string()
         } else {
@@ -277,6 +282,9 @@ impl App {
     /// way so the audit stream captures the lifecycle.
     pub(crate) fn cmd_thaw_deploys(&mut self) {
         let was_frozen = self.deploy_freeze.take().is_some();
+        if !self.demo_mode {
+            crate::freeze::clear_marker_if_own();
+        }
         let was_frozen_str = was_frozen.to_string();
         crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
@@ -334,6 +342,15 @@ impl App {
                     },
                     frozen_at,
                 });
+                if !self.demo_mode {
+                    crate::freeze::write_marker(
+                        self.deploy_freeze
+                            .as_ref()
+                            .map(|f| f.reason.as_str())
+                            .unwrap_or("incident"),
+                        true,
+                    );
+                }
                 let audit_headline = if headline.is_empty() {
                     "no-headline".to_string()
                 } else {
@@ -368,6 +385,9 @@ impl App {
                 // hotfix" escape hatch) may have already lifted it —
                 // the summary reflects which happened.
                 let was_frozen = self.deploy_freeze.take().is_some();
+                if !self.demo_mode {
+                    crate::freeze::clear_marker_if_own();
+                }
                 let elapsed = (chrono::Utc::now() - incident.started_at)
                     .to_std()
                     .unwrap_or_default();

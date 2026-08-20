@@ -258,6 +258,7 @@ pub(crate) async fn run_replay(args: &[String]) -> Result<()> {
         .profile
         .clone()
         .or_else(|| std::env::var("AWS_PROFILE").ok());
+    crate::cli::refuse_if_frozen("ebman audit replay");
     if let Some(pin) = cfg.pin_reason(&plan.env, pin_profile.as_deref()) {
         eprintln!(
             "ebman audit replay: refusing {} on {} — pinned by {pin}",

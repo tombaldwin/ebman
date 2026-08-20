@@ -192,6 +192,11 @@ async fn main() -> Result<()> {
     // POST (same class as the CLI exits; the TUI path was the last
     // bypass). Runs before terminal restore is fine: nothing prints.
     ebman::audit::drain_webhooks(std::time::Duration::from_secs(5)).await;
+    // A clean exit lifts this session's cross-process freeze marker
+    // (pid-scoped: another session's marker is left alone; a CRASHED
+    // session's marker dies with its pid via the readers' liveness
+    // check).
+    ebman::freeze::clear_marker_if_own();
     // Belt-and-braces: persist state regardless of how `run()` exited.
     // The internal call at the end of `run()` only fires on the Ok path,
     // so a `terminal.draw()?` error mid-shutdown (which can happen when
@@ -325,13 +330,18 @@ SUBCOMMANDS:
                                                   polls 1s for new entries (until Ctrl-C). --since
                                                   filters to entries within a duration (5m/1h/2d).
                                                   Exit codes: 0 ok, 1 io err, 2 usage.
-    mcp serve [--demo] [--no-redact]             Stdio MCP server exposing the read surface
+    mcp serve [--demo] [--no-redact] [--allow-writes]
+                                                  Stdio MCP server exposing the read surface
                                                   (envs / lint / option settings / drift / audit /
                                                   events / versions / cost) as agent tools for
-                                                  Claude Code etc. Reads-only; get_option_settings
-                                                  redacts env-var values + DBPassword by default
-                                                  (--no-redact opts out). --demo serves the
-                                                  synthetic fleet with zero AWS calls.
+                                                  Claude Code etc. Reads-only by default;
+                                                  get_option_settings redacts env-var values +
+                                                  DBPassword by default (--no-redact opts out).
+                                                  --allow-writes adds two-phase deploy / restart /
+                                                  rebuild / terminate / set_option (plan then
+                                                  confirm_action; pins + freeze + read-only
+                                                  enforced). --demo serves the synthetic fleet
+                                                  with zero AWS calls.
                                                   Register: claude mcp add ebman -- ebman mcp serve
     audit replay LINE_ID [--yes]                 Re-dispatch a previously-audited action. LINE_ID
                                                   is a prefix of the line's RFC3339 timestamp (the

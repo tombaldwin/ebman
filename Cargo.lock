@@ -1524,6 +1524,7 @@ dependencies = [
  "color-eyre",
  "crossterm",
  "futures",
+ "libc",
  "portable-pty",
  "ratatui",
  "regex",

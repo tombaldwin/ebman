@@ -49,6 +49,28 @@ pub(crate) use crate::deploy_poll::{decide_poll, PollDecision};
 /// crate (lib + bin).
 pub(crate) use crate::util::{json_escape as cli_esc, json_string};
 
+/// Cross-process freeze gate for CLI write paths (0.28): refuse when
+/// a live TUI session holds `:freeze-deploys` / `:incident START`
+/// (pid-scoped marker — see `crate::freeze`). Exit 3, same class as
+/// the pin refusal. These paths had the same blind spot the MCP
+/// write tools would have had: a fleet frozen mid-incident could
+/// still be written from a second terminal.
+pub(crate) fn refuse_if_frozen(prog: &str) {
+    if let Some(m) = crate::freeze::read_active() {
+        let reason = if m.reason.is_empty() {
+            "no reason given"
+        } else {
+            m.reason.as_str()
+        };
+        eprintln!(
+            "{prog}: refusing — fleet freeze active ({reason}) — lift with `{}` in the owning TUI (pid {})",
+            m.remedy(),
+            m.pid
+        );
+        std::process::exit(3);
+    }
+}
+
 /// Shared value-flag guard: reject a missing value or a following
 /// flag consumed as one. Class fix from the 0.26 max-review — a
 /// swallowed value silently changed semantics (`lint --fix --yes

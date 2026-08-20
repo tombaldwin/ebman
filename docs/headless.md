@@ -63,7 +63,7 @@ your shell exports one, pin the region at registration:
 claude mcp add ebman --env AWS_REGION=us-west-1 -- ebman mcp serve
 ```
 
-v1 is **reads-only** — no tool can dispatch a write. Tools (all take optional `profile` / `region`):
+v1 is **reads-only** by default — no tool dispatches a write unless the server is started with `--allow-writes` (see Writes below). Tools (all take optional `profile` / `region`):
 
 | Tool | Returns | Notes |
 |---|---|---|
@@ -77,3 +77,26 @@ v1 is **reads-only** — no tool can dispatch a write. Tools (all take optional 
 | `fleet_cost` | cached $/month per env | cache-only; never calls Cost Explorer |
 
 Tool calls run concurrently with a 30s bound; expired-credential errors surface as the `aws sso login --profile X` hint so the agent can relay it. Failures come back as `isError` tool results, not protocol errors.
+
+### Writes (`--allow-writes`, 0.28+)
+
+Start the server with `--allow-writes` (flag only — never a config key, so write capability is visible in the process table and `.mcp.json`) and five write tools plus `confirm_action` appear in `tools/list`. Without the flag they're absent entirely.
+
+```bash
+claude mcp add ebman -- ebman mcp serve --allow-writes
+```
+
+**Every write is two-phase.** The verb tool (`deploy` / `restart` / `rebuild` / `terminate` / `set_option`) validates and returns a plan — it dispatches nothing:
+
+```json
+{"pending":true,"confirm_token":"…","expires_in_secs":60,
+ "plan":{"action":"Deploy","env":"prod","current_version":"2026-31.0","target_version":"2026-32.0","health":"Green","recent_events":[…]},
+ "next":"call confirm_action with the confirm_token to dispatch"}
+```
+
+The agent surfaces the plan (that's the point — a human reading the transcript sees what's about to happen), then calls `confirm_action` with the token to dispatch. Tokens are single-use with a 60s TTL; expired/reused/unknown → `isError` "re-plan required".
+
+- **`terminate`** additionally requires `confirm_name` equal to the env name on `confirm_action` (the MCP strict-typed confirm; one retry per token).
+- **`set_option`** caps at 10 settings, refuses namespaces not already in the env's config, and its plan shows old→new (old env-var values redacted).
+- **Safety**: pins (`safety.envs.*` / `safety.accounts.*`), a live TUI session's `:freeze-deploys` / `:incident` (via the cross-process marker), read-only — all refuse before a plan is issued. Writes are serialized server-wide (one in flight). **Dispatch-only**: no wait-for-green; poll `list_environments` / `recent_events` for progress. Every dispatch writes audit lines tagged `via=mcp client=<name>` and fires the configured webhook.
+- **Excluded by design**: rollout (compose from `deploy` per region + read polling — more inspectable in a transcript). Demo mode plans and "dispatches" synthetically — no AWS, no audit, no webhook.
