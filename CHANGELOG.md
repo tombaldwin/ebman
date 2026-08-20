@@ -33,6 +33,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `ui.rs`: the two tail renderers share `draw_tail_overlay_chrome` (popup, windowing, filter/error/hints footer, titled paragraph); each keeps only its line formatting and title.
 - Net: ~240 duplicated lines retired; behaviour pinned by the existing reap/session regression tests, which pass unchanged.
 
+### Pre-tag review (2 agents: architecture, bugs) — 1 Critical + 3 Important + 6 Minor, all addressed
+
+- **Critical: the MCP `drift` tool leaked the secrets `get_option_settings` redacts** — tf configs routinely pin env-var values, and a drifted secret shipped both its tf and live values to the MCP client despite the server's redaction default. Drift reports now pass through the same redaction contract (the drifted signal survives; `--no-redact` disables); regression test proves no secret reaches the payload.
+- **MCP `lint` no longer all-or-nothing**: env input-fetch failures skip that env and surface in a `skipped_envs` array (the CLI's degraded-cycle tolerance, in tool-result shape) instead of discarding every successful env; the tool description tells the agent to check it. Fan-outs (lint + the previously-serial `drift`) are now bounded at 4 concurrent fetches so a large fleet can't provoke AWS throttling.
+- **EBL015 assembly extracted** to a shared `fetch_stale_platform_issues` (was duplicated across CLI and MCP with drift-prone gate conditions); `EnvLintInputs::bare` retires the three all-`None` literals.
+- Minors: demo fleet-wide `recent_events` globally sorted newest-first before the cap; `audit_log` tool returns a JSON array (was JSON Lines, uniquely among the tools) and floors `limit: 0`; `list_versions` gains a cap (200); id-less JSON-RPC frames are treated as notifications and never answered (no more `"id": null` responses); a doc-comment fusion in cli/lint.rs untangled.
+- Deferred to 0.27 with reasons (architecture agent's queue): relocating `rewrite_credential_error` + probe helpers out of app.rs (~30 min, mechanical), the ui.rs submodule split (next UI-heavy cycle), MCP tool-registry unification (gated on v2 `--allow-writes`), per-tool client-construction dedup (config resolution is network-free — milliseconds).
+
 ### Refactored — 0.25 review queue (3 of 5)
 
 - **`Config::pin_reason`** — the safety-pin check's three copies (audit replay, lint `--fix`, and the spec'd MCP v2) collapsed into one tested home in config.rs. TUI keeps its richer session-gate composite by design.

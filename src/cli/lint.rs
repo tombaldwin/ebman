@@ -90,11 +90,6 @@ struct LintArgs {
     webhook: Option<String>,
 }
 
-/// Pure parser + validator for `ebman lint`. Returns `Err(msg)` for
-/// every usage error (all exit-2 here, so the code is left implicit).
-/// Ordering note: validation runs here, before [`run`] loads config —
-/// a usage error now exits before the (silent) config read rather than
-/// after. No observable change; strictly less wasted work.
 /// EBL020 input probe: when the env has `XRayEnabled=true`, resolve
 /// its instance-profile role and IAM-simulate `xray:PutTraceSegments`
 /// against it. `Some(true)` = denied (the rule's firing signal),
@@ -177,6 +172,23 @@ pub(crate) struct EnvLintInputs {
     pub waf_missing: Option<bool>,
 }
 
+impl EnvLintInputs {
+    /// Inputs over just option settings, every probe unset (demo
+    /// mode, tests). New probe fields default here so adding one
+    /// doesn't mean editing every all-`None` literal.
+    pub(crate) fn bare(options: Vec<(String, String, String)>) -> Self {
+        Self {
+            options,
+            env_tag_keys: Vec::new(),
+            healthy_count: None,
+            xray_denied: None,
+            probe_failure: None,
+            newer_stack: None,
+            waf_missing: None,
+        }
+    }
+}
+
 /// Fetch one env's lint inputs: parallel option-settings + tags +
 /// instance-counts (matching the TUI's `spawn_confirm_lint`
 /// plumbing), then the two gated probes (EBL020 IAM sim when X-Ray
@@ -240,6 +252,42 @@ pub(crate) async fn fetch_env_lint_inputs(
         newer_stack,
         waf_missing,
     })
+}
+
+/// EBL015 account-level assembly, shared by `run` and the MCP `lint`
+/// tool: list custom platforms, resolve each branch's newest version
+/// date via `latest_platform_version_date`, and run the pure
+/// staleness pass. Returns the issues plus per-branch warnings for
+/// branches whose date fetch failed (the CLI prints them unless
+/// `--quiet`; MCP drops them — a tool result shouldn't fail over an
+/// Info-severity side pass). `Err` carries the ListPlatformVersions
+/// failure. Callers gate on scope (`--env` skips) + `lint.disable`.
+pub(crate) async fn fetch_stale_platform_issues(
+    aws: &aws::AwsClient,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<(Vec<lint::Issue>, Vec<String>), String> {
+    let platforms = aws
+        .list_custom_platforms()
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut by_branch: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for p in platforms {
+        by_branch.entry(p.branch.clone()).or_default().push(p.arn);
+    }
+    let mut dated: Vec<(String, chrono::DateTime<chrono::Utc>)> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    for (branch, arns) in by_branch {
+        match aws.latest_platform_version_date(&arns).await {
+            Ok(Some(latest)) => dated.push((branch, latest)),
+            // No version reported a date: skip, never false-fire.
+            Ok(None) => {}
+            Err(e) => warnings.push(format!(
+                "EBL015 skipped for '{branch}' — DescribePlatformVersion: {e}"
+            )),
+        }
+    }
+    Ok((lint::stale_custom_platform_issues(&dated, now), warnings))
 }
 
 /// Pure: assemble a borrowing `LintContext` over fetched inputs.
@@ -310,6 +358,11 @@ fn webhook_summary(issues: &[lint::Issue]) -> String {
     format!("lint: {} issue(s) — {}", issues.len(), parts.join("; "))
 }
 
+/// Pure parser + validator for `ebman lint`. Returns `Err(msg)` for
+/// every usage error (all exit-2 here, so the code is left implicit).
+/// Ordering note: validation runs here, before [`run`] loads config —
+/// a usage error now exits before the (silent) config read rather than
+/// after. No observable change; strictly less wasted work.
 fn parse_lint_args(args: &[String]) -> Result<LintArgs, String> {
     let mut env_name: Option<String> = None;
     let mut regions_csv: Option<String> = None;
@@ -792,38 +845,20 @@ pub async fn run(args: &[String]) -> Result<()> {
                 all_issues.extend(issues);
             }
 
-            // EBL015 — account-level pass (stale custom platforms).
-            // Outside the per-env registry, so `lint.disable` is
-            // honoured here; skipped when linting a single --env (the
-            // operator scoped the run) and in the common zero-custom-
-            // platform account the extra cost is one empty list call.
+            // EBL015 — account-level pass (stale custom platforms) via
+            // the assembly shared with the MCP lint tool. Outside the
+            // per-env registry, so `lint.disable` is honoured here;
+            // skipped when linting a single --env (the operator scoped
+            // the run) and in the common zero-custom-platform account
+            // the extra cost is one empty list call.
             if env_name.is_none() && !disabled.iter().any(|d| d == "EBL015") {
-                match aws.list_custom_platforms().await {
-                    Ok(platforms) if !platforms.is_empty() => {
-                        let mut by_branch: std::collections::BTreeMap<String, Vec<String>> =
-                            std::collections::BTreeMap::new();
-                        for p in platforms {
-                            by_branch.entry(p.branch.clone()).or_default().push(p.arn);
-                        }
-                        let mut dated: Vec<(String, chrono::DateTime<chrono::Utc>)> = Vec::new();
-                        for (branch, arns) in by_branch {
-                            match aws.latest_platform_version_date(&arns).await {
-                                Ok(Some(latest)) => dated.push((branch, latest)),
-                                // No date reported / describe failed:
-                                // skip the platform, never false-fire.
-                                Ok(None) => {}
-                                Err(e) => {
-                                    if !quiet {
-                                        eprintln!(
-                                            "warning: EBL015 skipped for '{branch}' — \
-                                             DescribePlatformVersion: {e}"
-                                        );
-                                    }
-                                }
+                match fetch_stale_platform_issues(&aws, chrono::Utc::now()).await {
+                    Ok((mut issues, warnings)) => {
+                        if !quiet {
+                            for w in warnings {
+                                eprintln!("warning: {w}");
                             }
                         }
-                        let mut issues =
-                            lint::stale_custom_platform_issues(&dated, chrono::Utc::now());
                         if let Some(min) = severity_filter {
                             issues.retain(|i| i.severity >= min);
                         }
@@ -837,7 +872,6 @@ pub async fn run(args: &[String]) -> Result<()> {
                         }
                         all_issues.extend(issues);
                     }
-                    Ok(_) => {}
                     Err(e) => {
                         if !quiet {
                             eprintln!("warning: EBL015 skipped — ListPlatformVersions: {e}");
@@ -1229,15 +1263,7 @@ mod tests {
             region: None,
         };
         let rules = lint::default_rules(&[]);
-        let bare = EnvLintInputs {
-            options: vec![],
-            env_tag_keys: vec![],
-            healthy_count: None,
-            xray_denied: None,
-            probe_failure: None,
-            newer_stack: None,
-            waf_missing: None,
-        };
+        let bare = EnvLintInputs::bare(vec![]);
         let issues = run_rules_for_env(&rules, &env, &bare, &[]);
         assert!(issues.iter().any(|i| i.rule_id == "EBL017"));
         // Probe inputs reach EBL016 / EBL018 through the same path
@@ -1245,11 +1271,7 @@ mod tests {
         let probed = EnvLintInputs {
             probe_failure: Some("HTTP 503".into()),
             waf_missing: Some(true),
-            options: vec![],
-            env_tag_keys: vec![],
-            healthy_count: None,
-            xray_denied: None,
-            newer_stack: None,
+            ..EnvLintInputs::bare(vec![])
         };
         let issues = run_rules_for_env(&rules, &env, &probed, &[]);
         assert!(issues.iter().any(|i| i.rule_id == "EBL016"));

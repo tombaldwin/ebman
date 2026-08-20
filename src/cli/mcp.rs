@@ -25,7 +25,9 @@ use std::sync::Arc;
 use color_eyre::eyre::Result;
 use serde_json::{json, Value};
 
-use crate::cli::lint::{fetch_env_lint_inputs, run_rules_for_env, EnvLintInputs};
+use crate::cli::lint::{
+    fetch_env_lint_inputs, fetch_stale_platform_issues, run_rules_for_env, EnvLintInputs,
+};
 use crate::{audit as audit_log, aws, cost_cache, demo_fixture, lint, terraform, util};
 
 /// The MCP protocol revision this server claims. Clients offering a
@@ -44,6 +46,12 @@ const AUDIT_LOG_MAX_LIMIT: usize = 500;
 const EVENTS_DEFAULT_MAX: i32 = 50;
 const EVENTS_MAX_MAX: i32 = 200;
 const VERSIONS_DEFAULT_LIMIT: usize = 50;
+const VERSIONS_MAX_LIMIT: usize = 200;
+
+/// Bound on concurrent per-env AWS fetches inside one tool call
+/// (lint / drift fan-outs). Unbounded `join_all` over a large fleet
+/// is exactly how you provoke `Throttling: Rate exceeded`.
+const FETCH_CONCURRENCY: usize = 4;
 
 #[derive(Debug, PartialEq, Eq)]
 struct McpArgs {
@@ -68,6 +76,48 @@ fn parse_mcp_args(args: &[String]) -> Result<McpArgs, String> {
         }
     }
     Ok(McpArgs { demo, no_redact })
+}
+
+/// One env's drift entry: (env name, tf-matched, drifted fields).
+type DriftReport = (String, bool, Vec<terraform::DriftField>);
+
+/// The CLI audit renderer emits JSON Lines (one object per line);
+/// every MCP tool returns a single JSON document, so the audit tool
+/// wraps the lines into an array (`[]` for an empty log).
+fn jsonl_to_array(jsonl: &str) -> String {
+    let items: Vec<&str> = jsonl.lines().filter(|l| !l.trim().is_empty()).collect();
+    format!("[{}]", items.join(","))
+}
+
+/// Apply the `get_option_settings` redaction contract to drift
+/// reports in place: tf configs routinely pin env-var secrets, and a
+/// drifted secret would otherwise leak both its tf and live values
+/// through the `drift` tool. The drifted/not-drifted signal survives.
+fn redact_drift_reports(reports: &mut [DriftReport]) {
+    for (_, _, fields) in reports.iter_mut() {
+        for f in fields.iter_mut() {
+            if f.kind != "option_setting" {
+                continue;
+            }
+            let ns = f.namespace.as_deref().unwrap_or("");
+            let name = f.name.as_deref().unwrap_or("");
+            f.tf_value = redact_option_value(ns, name, &f.tf_value, true);
+            f.live_value = redact_option_value(ns, name, &f.live_value, true);
+        }
+    }
+}
+
+/// Splice a degraded-coverage note into the standard lint
+/// `{"issues":[...]}` document. No-op for an empty skip list, so the
+/// common-case schema is byte-identical to the CLI's.
+fn append_skipped_envs(mut body: String, skipped: &[String]) -> String {
+    if skipped.is_empty() {
+        return body;
+    }
+    let items: Vec<String> = skipped.iter().map(|s| util::json_string(s)).collect();
+    body.truncate(body.len() - 1);
+    body.push_str(&format!(",\"skipped_envs\":[{}]}}", items.join(",")));
+    body
 }
 
 /// Redaction rule for `get_option_settings`: env-var VALUES are
@@ -110,7 +160,7 @@ fn tool_table() -> Value {
         },
         {
             "name": "lint",
-            "description": "Run ebman's diagnostic rule engine over the fleet (or one env). CAVEATS: EBL011 (worker DLQ) never fires here (queue depths aren't polled outside the TUI); EBL016 (live health probe) does not run in this tool. A clean result does NOT clear those rules. EBL015 (stale custom platforms, account-level) runs only when not scoped to a single env.",
+            "description": "Run ebman's diagnostic rule engine over the fleet (or one env). CAVEATS: EBL011 (worker DLQ) never fires here (queue depths aren't polled outside the TUI); EBL016 (live health probe) does not run in this tool. A clean result does NOT clear those rules. EBL015 (stale custom platforms, account-level) runs only when not scoped to a single env. Envs whose input fetch fails are skipped, not fatal — a `skipped_envs` array in the result lists them, so check it before treating the run as full coverage.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -137,7 +187,7 @@ fn tool_table() -> Value {
         },
         {
             "name": "drift",
-            "description": "Terraform drift report: live env config vs the tfstate's recorded settings. tfstate discovery walks up from the SERVER's working directory (correct for project-scoped .mcp.json which launches in the repo; pass tfstate_path otherwise).",
+            "description": "Terraform drift report: live env config vs the tfstate's recorded settings. tfstate discovery walks up from the SERVER's working directory (correct for project-scoped .mcp.json which launches in the repo; pass tfstate_path otherwise). Drifted env-var values and DBPassword are redacted like get_option_settings (the drifted signal survives; --no-redact disables).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -150,7 +200,7 @@ fn tool_table() -> Value {
         },
         {
             "name": "audit_log",
-            "description": "Read ebman's local audit log (~/.cache/ebman/audit.log): every dispatched action + outcome. Local to this machine — actions dispatched elsewhere are not recorded.",
+            "description": "Read ebman's local audit log (~/.cache/ebman/audit.log): every dispatched action + outcome, as a JSON array of entries. Local to this machine — actions dispatched elsewhere are not recorded.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -240,6 +290,10 @@ impl Server {
     pub(crate) async fn handle_request(&self, req: &Value) -> Option<Value> {
         let id = req.get("id").cloned();
         let method = req.get("method").and_then(Value::as_str).unwrap_or("");
+        // Frames without an id are notifications per JSON-RPC 2.0 —
+        // never answered, whatever the method (an id-less tools/call
+        // must not produce an `"id": null` response).
+        id.as_ref()?;
         match method {
             "initialize" => {
                 // Echo-negotiate: accept the client's revision when it
@@ -264,7 +318,8 @@ impl Server {
                     }
                 }))
             }
-            "notifications/initialized" | "notifications/cancelled" => None,
+            // notifications/initialized + notifications/cancelled land
+            // in the id-less early-return above, like all notifications.
             "ping" => Some(json!({"jsonrpc": "2.0", "id": id, "result": {}})),
             "tools/list" => Some(json!({
                 "jsonrpc": "2.0",
@@ -315,13 +370,13 @@ impl Server {
                     }
                 }))
             }
-            _ if id.is_some() => Some(json!({
+            // Unknown request (id present — notifications returned
+            // above): method-not-found per JSON-RPC.
+            _ => Some(json!({
                 "jsonrpc": "2.0",
                 "id": id,
                 "error": {"code": -32601, "message": format!("method '{method}' not found")}
             })),
-            // Unknown notification: ignore per JSON-RPC.
-            _ => None,
         }
     }
 
@@ -363,6 +418,10 @@ impl Server {
             "recent_events" => self.tool_recent_events(args).await,
             "list_versions" => self.tool_list_versions(args).await,
             "fleet_cost" => self.tool_fleet_cost(args).await,
+            // Belt-and-braces: the RPC layer already 32602s names not
+            // in tool_table(), so this is unreachable unless the table
+            // and this match drift — in which case failing loud here
+            // beats a silent gap.
             other => Err(format!("unknown tool '{other}'")),
         }
     }
@@ -410,18 +469,15 @@ impl Server {
             None => envs.iter().collect(),
         };
         let mut all_issues: Vec<lint::Issue> = Vec::new();
+        // Envs whose input fetch failed — reported in the result as
+        // `skipped_envs` so the agent knows coverage shrank (the CLI's
+        // `cycle_degraded` tolerance, in tool-result shape). One
+        // terminating env must not turn fleet lint into an error.
+        let mut skipped: Vec<String> = Vec::new();
         match self.backend {
             Backend::Demo => {
                 for env in targets {
-                    let inputs = EnvLintInputs {
-                        options: demo_fixture::option_settings_for(&env.name),
-                        env_tag_keys: Vec::new(),
-                        healthy_count: None,
-                        xray_denied: None,
-                        probe_failure: None,
-                        newer_stack: None,
-                        waf_missing: None,
-                    };
+                    let inputs = EnvLintInputs::bare(demo_fixture::option_settings_for(&env.name));
                     all_issues.extend(run_rules_for_env(&rules, env, &inputs, &required_tags));
                 }
             }
@@ -434,43 +490,47 @@ impl Server {
                     // as the CLI path.
                     Err(_) => std::collections::HashMap::new(),
                 };
-                // Fan out per-env input fetches concurrently — serial cost
-                // is ~2s/env, which brushes the 30s tool timeout on large
-                // fleets. Order is preserved (join_all keeps input order),
-                // so output stays deterministic.
-                let fetches = targets
-                    .iter()
-                    .map(|env| fetch_env_lint_inputs(&client, env, &latest_stacks, false));
-                let fetched = futures::future::join_all(fetches).await;
-                for (env, inputs) in targets.iter().zip(fetched) {
-                    let inputs = inputs
-                        .map_err(|e| tool_error(&profile, "fetch_env_option_settings", &e))?;
-                    all_issues.extend(run_rules_for_env(&rules, env, &inputs, &required_tags));
+                // Bounded concurrent fan-out — serial cost is ~2s/env,
+                // which brushes the 30s tool timeout on large fleets;
+                // unbounded join_all provokes throttling. Order is
+                // preserved, so output stays deterministic.
+                use futures::StreamExt;
+                // Eagerly-built future list — the lazy closure-map
+                // form trips rustc's HRTB inference (same as drift).
+                let mut fetches = Vec::with_capacity(targets.len());
+                for env in targets.iter().copied() {
+                    fetches.push(fetch_env_lint_inputs(&client, env, &latest_stacks, false));
                 }
-                // EBL015 — account-level pass, mirroring the CLI:
-                // skipped when the caller scoped to one env or disabled
-                // the rule; platform-date fetch failures skip silently
-                // (never false-fire, and a tool result shouldn't fail
-                // over an Info-severity side pass).
+                let fetched: Vec<Result<EnvLintInputs, String>> = futures::stream::iter(fetches)
+                    .buffered(FETCH_CONCURRENCY)
+                    .collect()
+                    .await;
+                for (env, inputs) in targets.iter().zip(fetched) {
+                    match inputs {
+                        Ok(inputs) => all_issues.extend(run_rules_for_env(
+                            &rules,
+                            env,
+                            &inputs,
+                            &required_tags,
+                        )),
+                        // Route through the credential rewrite so an
+                        // expired-SSO skip still carries the fix hint.
+                        Err(e) => skipped.push(format!(
+                            "{}: {}",
+                            env.name,
+                            tool_error(&profile, "fetch_env_lint_inputs", &e)
+                        )),
+                    }
+                }
+                // EBL015 — account-level pass via the assembly shared
+                // with the CLI: skipped when scoped to one env or
+                // disabled; failures skip silently (a tool result
+                // shouldn't fail over an Info-severity side pass).
                 if env_filter.is_none() && !disabled.iter().any(|d| d == "EBL015") {
-                    if let Ok(platforms) = client.list_custom_platforms().await {
-                        let mut by_branch: std::collections::BTreeMap<String, Vec<String>> =
-                            std::collections::BTreeMap::new();
-                        for p in platforms {
-                            by_branch.entry(p.branch.clone()).or_default().push(p.arn);
-                        }
-                        let mut dated: Vec<(String, chrono::DateTime<chrono::Utc>)> = Vec::new();
-                        for (branch, arns) in by_branch {
-                            if let Ok(Some(latest)) =
-                                client.latest_platform_version_date(&arns).await
-                            {
-                                dated.push((branch, latest));
-                            }
-                        }
-                        all_issues.extend(lint::stale_custom_platform_issues(
-                            &dated,
-                            chrono::Utc::now(),
-                        ));
+                    if let Ok((issues, _warnings)) =
+                        fetch_stale_platform_issues(&client, chrono::Utc::now()).await
+                    {
+                        all_issues.extend(issues);
                     }
                 }
             }
@@ -481,7 +541,10 @@ impl Server {
         if !rule_filter.is_empty() {
             all_issues.retain(|i| rule_filter.contains(&i.rule_id));
         }
-        Ok(lint::render_issues_json(&all_issues))
+        Ok(append_skipped_envs(
+            lint::render_issues_json(&all_issues),
+            &skipped,
+        ))
     }
 
     async fn tool_option_settings(&self, args: &Value) -> Result<String, String> {
@@ -560,26 +623,47 @@ impl Server {
             .await
             .map_err(|e| tool_error(&profile, "list_environments", &e.to_string()))?;
         let env_filter = arg_str(args, "env");
-        let mut reports: Vec<(String, bool, Vec<terraform::DriftField>)> = Vec::new();
-        for env in &envs {
-            if let Some(only) = env_filter.as_deref() {
-                if env.name != only {
-                    continue;
-                }
-            }
-            let Some(tf) = state.env_by_name(&env.name) else {
-                reports.push((env.name.clone(), false, Vec::new()));
-                continue;
-            };
-            let opts = client
-                .fetch_env_option_settings(&env.application, &env.name)
-                .await
-                .map_err(|e| tool_error(&profile, "fetch_env_option_settings", &e.to_string()))?;
-            reports.push((
-                env.name.clone(),
-                true,
-                terraform::compute_drift(tf, env, &opts),
-            ));
+        // Bounded concurrent fetch for tf-matched envs — same 30s
+        // tool-timeout math as the lint tool's fan-out; capped so a
+        // large fleet can't provoke AWS throttling.
+        let targets: Vec<&aws::Environment> = envs
+            .iter()
+            .filter(|env| env_filter.as_deref().is_none_or(|only| env.name == only))
+            .collect();
+        use futures::StreamExt;
+        let (client_ref, state_ref, profile_ref) = (&client, &state, &profile);
+        // Eagerly-built future list (not a lazy closure map) so the
+        // per-env borrows get one concrete lifetime — the inline
+        // async-move-closure form trips rustc's HRTB inference here.
+        let mut fetches = Vec::with_capacity(targets.len());
+        for env in targets.iter().copied() {
+            fetches.push(async move {
+                let Some(tf) = state_ref.env_by_name(&env.name) else {
+                    return Ok((env.name.clone(), false, Vec::new()));
+                };
+                let opts = client_ref
+                    .fetch_env_option_settings(&env.application, &env.name)
+                    .await
+                    .map_err(|e| {
+                        tool_error(profile_ref, "fetch_env_option_settings", &e.to_string())
+                    })?;
+                Ok((
+                    env.name.clone(),
+                    true,
+                    terraform::compute_drift(tf, env, &opts),
+                ))
+            });
+        }
+        let fetched: Vec<Result<DriftReport, String>> = futures::stream::iter(fetches)
+            .buffered(FETCH_CONCURRENCY)
+            .collect()
+            .await;
+        let mut reports: Vec<DriftReport> = Vec::new();
+        for r in fetched {
+            reports.push(r?);
+        }
+        if self.redact {
+            redact_drift_reports(&mut reports);
         }
         Ok(terraform::render_drift_json(used_path.as_deref(), &reports))
     }
@@ -588,10 +672,10 @@ impl Server {
         // Hermetic in demo mode: the real local log is operator data,
         // not fixture data.
         if matches!(self.backend, Backend::Demo) {
-            return Ok(audit_log::render_audit_entries_json(&[]));
+            return Ok(jsonl_to_array(&audit_log::render_audit_entries_json(&[])));
         }
         let limit = arg_u64(args, "limit")
-            .map(|l| (l as usize).min(AUDIT_LOG_MAX_LIMIT))
+            .map(|l| (l as usize).clamp(1, AUDIT_LOG_MAX_LIMIT))
             .unwrap_or(AUDIT_LOG_DEFAULT_LIMIT);
         let since_dt = match arg_str(args, "since") {
             None => None,
@@ -618,7 +702,9 @@ impl Server {
             .collect();
         // Newest kept: the file is append-ordered, so take the tail.
         let start = entries.len().saturating_sub(limit);
-        Ok(audit_log::render_audit_entries_json(&entries[start..]))
+        Ok(jsonl_to_array(&audit_log::render_audit_entries_json(
+            &entries[start..],
+        )))
     }
 
     async fn tool_recent_events(&self, args: &Value) -> Result<String, String> {
@@ -629,13 +715,16 @@ impl Server {
         let env = arg_str(args, "env");
         let events: Vec<aws::Event> = match self.backend {
             Backend::Demo => {
-                let all = match env.as_deref() {
+                let mut all: Vec<aws::Event> = match env.as_deref() {
                     Some(name) => demo_fixture::events_for_env(name),
                     None => demo_fixture::envs()
                         .iter()
                         .flat_map(|e| demo_fixture::events_for_env(&e.name))
                         .collect(),
                 };
+                // The fleet-wide concat is grouped by env; sort so the
+                // cap keeps the globally newest (the promised order).
+                all.sort_by_key(|e| std::cmp::Reverse(e.at));
                 all.into_iter().take(max as usize).collect()
             }
             Backend::Aws => {
@@ -667,9 +756,8 @@ impl Server {
     async fn tool_list_versions(&self, args: &Value) -> Result<String, String> {
         let env_name = arg_str(args, "env").ok_or("'env' is required")?;
         let limit = arg_u64(args, "limit")
-            .map(|l| l as usize)
-            .unwrap_or(VERSIONS_DEFAULT_LIMIT)
-            .max(1);
+            .map(|l| (l as usize).clamp(1, VERSIONS_MAX_LIMIT))
+            .unwrap_or(VERSIONS_DEFAULT_LIMIT);
         let versions: Vec<aws::AppVersion> = match self.backend {
             Backend::Demo => {
                 let envs = demo_fixture::envs();
@@ -1064,6 +1152,84 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(resp["result"]["isError"], true);
+    }
+
+    #[test]
+    fn drift_reports_redact_env_var_secrets() {
+        // C1 (0.26 pre-tag review): the drift tool leaked the exact
+        // values get_option_settings redacts.
+        let mut reports = vec![(
+            "prod".to_string(),
+            true,
+            vec![
+                terraform::DriftField {
+                    kind: "option_setting".into(),
+                    namespace: Some("aws:elasticbeanstalk:application:environment".into()),
+                    name: Some("DATABASE_URL".into()),
+                    tf_value: "postgres://u:hunter2@old".into(),
+                    live_value: "postgres://u:hunter2@new".into(),
+                },
+                terraform::DriftField {
+                    kind: "option_setting".into(),
+                    namespace: Some("aws:autoscaling:asg".into()),
+                    name: Some("MaxSize".into()),
+                    tf_value: "4".into(),
+                    live_value: "6".into(),
+                },
+                terraform::DriftField {
+                    kind: "version_label".into(),
+                    namespace: None,
+                    name: None,
+                    tf_value: "v1".into(),
+                    live_value: "v2".into(),
+                },
+            ],
+        )];
+        redact_drift_reports(&mut reports);
+        let fields = &reports[0].2;
+        assert_eq!(fields[0].tf_value, "(redacted)");
+        assert_eq!(fields[0].live_value, "(redacted)");
+        assert_eq!(fields[1].live_value, "6", "non-secret options untouched");
+        assert_eq!(fields[2].tf_value, "v1", "non-option kinds untouched");
+        let rendered = terraform::render_drift_json(None, &reports);
+        assert!(!rendered.contains("hunter2"), "no secret in the payload");
+    }
+
+    #[test]
+    fn skipped_envs_spliced_only_when_present() {
+        let clean = append_skipped_envs("{\"issues\":[]}".to_string(), &[]);
+        assert_eq!(clean, "{\"issues\":[]}", "common case byte-identical");
+        let degraded = append_skipped_envs(
+            "{\"issues\":[]}".to_string(),
+            &["prod: fetch failed".to_string()],
+        );
+        assert_eq!(
+            degraded,
+            "{\"issues\":[],\"skipped_envs\":[\"prod: fetch failed\"]}"
+        );
+        serde_json::from_str::<Value>(&degraded).expect("valid JSON");
+    }
+
+    #[test]
+    fn audit_jsonl_wraps_into_an_array() {
+        assert_eq!(jsonl_to_array(""), "[]");
+        assert_eq!(
+            jsonl_to_array("{\"a\":1}\n{\"b\":2}\n"),
+            "[{\"a\":1},{\"b\":2}]"
+        );
+        serde_json::from_str::<Value>(&jsonl_to_array("{\"a\":1}")).expect("valid JSON");
+    }
+
+    #[tokio::test]
+    async fn id_less_requests_are_notifications_and_get_no_response() {
+        let server = Server::new(true, false);
+        let req: Value = serde_json::from_str(
+            r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"nope"}}"#,
+        )
+        .unwrap();
+        assert!(server.handle_request(&req).await.is_none());
+        let ping: Value = serde_json::from_str(r#"{"jsonrpc":"2.0","method":"ping"}"#).unwrap();
+        assert!(server.handle_request(&ping).await.is_none());
     }
 
     #[test]
