@@ -29,8 +29,12 @@ async fn main() -> Result<()> {
         // (envs, ctl) skip it too — they emit no audit lines.
         // CLI subcommands surface project-config parse failures on
         // stderr (the TUI routes them to tracing instead — alternate
-        // screen). Set before dispatch so every subcommand benefits.
-        ebman::project::warnings_to_stderr();
+        // screen). Only for real subcommands: a flag first-arg
+        // (`--read-only` etc.) falls through to the TUI, where an
+        // eprintln would tear the alternate screen.
+        if !first.starts_with('-') {
+            ebman::project::warnings_to_stderr();
+        }
         match first.as_str() {
             "envs" => return ebman::cli::envs::run(&args).await,
             "action" => {
@@ -78,11 +82,29 @@ async fn main() -> Result<()> {
             "--read-only" => read_only = true,
             "--demo" => demo = true,
             "--control-socket" => {
-                control_socket = iter.next().map(std::path::PathBuf::from);
-                if control_socket.is_none() {
-                    eprintln!("ebman: --control-socket requires a path argument");
+                let path = match iter.next() {
+                    Some(p) if !p.starts_with("--") => std::path::PathBuf::from(p),
+                    Some(p) => {
+                        eprintln!("ebman: --control-socket expects a path, got flag '{p}'");
+                        std::process::exit(2);
+                    }
+                    None => {
+                        eprintln!("ebman: --control-socket requires a path argument");
+                        std::process::exit(2);
+                    }
+                };
+                // Unix sockets cap sun_path at ~104 bytes on macOS
+                // (108 Linux). Binding a longer path fails INSIDE the
+                // TUI where the error is tracing-only — validate here
+                // where it can be said out loud.
+                if path.as_os_str().len() > 100 {
+                    eprintln!(
+                        "ebman: --control-socket path is too long for a unix socket                          ({} bytes; the OS caps at ~104) — pick a shorter path",
+                        path.as_os_str().len()
+                    );
                     std::process::exit(2);
                 }
+                control_socket = Some(path);
             }
             other if other.starts_with('-') => {
                 eprintln!("ebman: unknown flag {other}\n");

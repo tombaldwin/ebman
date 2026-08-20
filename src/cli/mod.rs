@@ -49,11 +49,6 @@ pub(crate) use crate::deploy_poll::{decide_poll, PollDecision};
 /// crate (lib + bin).
 pub(crate) use crate::util::{json_escape as cli_esc, json_string};
 
-/// Exit a CLI command after draining in-flight audit-webhook POSTs —
-/// `std::process::exit` (and returning from `#[tokio::main]`) cancels
-/// spawned tasks, so a fire-and-forget outcome POST written just
-/// before exit usually never left the machine. No-op when nothing is
-/// in flight; bounded at slightly over the POST timeout.
 /// Shared value-flag guard: reject a missing value or a following
 /// flag consumed as one. Class fix from the 0.26 max-review — a
 /// swallowed value silently changed semantics (`lint --fix --yes
@@ -74,6 +69,11 @@ pub(crate) fn take_value<'a, I: Iterator<Item = &'a String>>(
     Ok(v.clone())
 }
 
+/// Exit a CLI command after draining in-flight audit-webhook POSTs —
+/// `std::process::exit` (and returning from `#[tokio::main]`) cancels
+/// spawned tasks, so a fire-and-forget outcome POST written just
+/// before exit usually never left the machine. No-op when nothing is
+/// in flight; bounded at slightly over the POST timeout.
 pub(crate) async fn exit_after_drain(code: i32) -> ! {
     crate::audit::drain_webhooks(std::time::Duration::from_secs(12)).await;
     std::process::exit(code);

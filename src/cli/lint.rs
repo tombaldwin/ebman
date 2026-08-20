@@ -712,7 +712,7 @@ pub async fn run(args: &[String]) -> Result<()> {
                             );
                         } else if !multi_region {
                             eprintln!("ebman lint: env '{name}' not found in current context");
-                            std::process::exit(2);
+                            crate::cli::exit_after_drain(2).await;
                         }
                         continue;
                     }

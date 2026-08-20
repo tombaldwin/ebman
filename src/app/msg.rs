@@ -554,7 +554,12 @@ impl App {
             Ok(versions) => {
                 self.current_overlay = Some(Overlay::TextDump {
                     title: format!("application versions — {application}"),
-                    body: format_app_versions(&versions, deployed_label.as_deref(), 20),
+                    body: format_app_versions(
+                        &versions,
+                        deployed_label.as_deref(),
+                        20,
+                        matches!(self.theme.icons, crate::theme::IconStyle::Ascii),
+                    ),
                 });
             }
             Err(msg) => self.error_message = Some(msg),
@@ -1646,6 +1651,10 @@ impl App {
         match result {
             Ok(messages) => {
                 dlq.messages = messages;
+                // An armed delete-confirm indexes the OLD list — a
+                // refresh landing mid-confirm could retarget the `y`
+                // onto whatever now sits at that index. Disarm.
+                dlq.confirm_delete_idx = None;
                 if dlq.messages.is_empty() {
                     dlq.list_state.select(None);
                 } else {

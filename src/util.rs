@@ -107,7 +107,16 @@ pub fn open_append_secure(path: &std::path::Path) -> std::io::Result<std::fs::Fi
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o600);
     }
-    opts.open(path)
+    let f = opts.open(path)?;
+    // `mode()` applies only on CREATE — a pre-0.27 install's existing
+    // 0644 file would stay world-readable forever without this
+    // migration chmod (verified live on this machine's ebman.log).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(f)
 }
 
 /// `std::fs::write` with 0600 perms on create (see
@@ -121,7 +130,13 @@ pub fn write_secure(path: &std::path::Path, contents: &[u8]) -> std::io::Result<
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o600);
     }
-    opts.open(path)?.write_all(contents)
+    let mut f = opts.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    f.write_all(contents)
 }
 
 #[cfg(test)]
