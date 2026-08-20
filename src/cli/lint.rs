@@ -380,17 +380,34 @@ fn parse_lint_args(args: &[String]) -> Result<LintArgs, String> {
     let mut probe_live = false;
     let mut webhook: Option<String> = None;
     let mut iter = args.iter().skip(1);
+    // Every value-taking flag rejects a missing value or a following
+    // flag. Silently swallowing either was dangerous: a forgotten
+    // `--env` value on `--fix --yes` widened scope to the whole
+    // fleet, and `--rules --json` filtered every issue out (exit 0)
+    // while eating the JSON flag.
+    let take_value = |iter: &mut std::iter::Skip<std::slice::Iter<String>>,
+                      flag: &str,
+                      what: &str|
+     -> Result<String, String> {
+        let Some(v) = iter.next() else {
+            return Err(format!("ebman lint: {flag} expects {what}"));
+        };
+        if v.starts_with("--") {
+            return Err(format!("ebman lint: {flag} expects {what}, got flag '{v}'"));
+        }
+        Ok(v.clone())
+    };
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "--env" => env_name = iter.next().cloned(),
-            "--regions" => regions_csv = iter.next().cloned(),
+            "--env" => env_name = Some(take_value(&mut iter, "--env", "an env name")?),
+            "--regions" => regions_csv = Some(take_value(&mut iter, "--regions", "a region list")?),
             "--json" => json = true,
             "--quiet" => quiet = true,
             "--fix" => fix = true,
             "--dry-run" => dry_run = true,
             "--yes" => yes = true,
             "--watch" => watch = true,
-            "--interval" => interval_str = iter.next().cloned(),
+            "--interval" => interval_str = Some(take_value(&mut iter, "--interval", "a duration")?),
             "--probe-live" => probe_live = true,
             "--webhook" => {
                 let Some(u) = iter.next() else {
@@ -439,14 +456,15 @@ fn parse_lint_args(args: &[String]) -> Result<LintArgs, String> {
                 severity_filter = Some(sev);
             }
             "--rules" => {
-                let Some(v) = iter.next() else {
-                    return Err("ebman lint: --rules expects a comma-separated rule id list".into());
-                };
+                let v = take_value(&mut iter, "--rules", "a comma-separated rule id list")?;
                 rule_filter = v
                     .split(',')
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
                     .collect();
+                if rule_filter.is_empty() {
+                    return Err(format!("ebman lint: --rules got '{v}' — no rule ids in it"));
+                }
             }
             other => {
                 return Err(format!("ebman lint: unknown flag '{other}'"));
@@ -595,10 +613,22 @@ pub async fn run(args: &[String]) -> Result<()> {
     // iteration always sets it — but the initial value keeps the
     // borrow checker honest and documents the invariant).
     let mut last_cycle_clean;
+    // Tracks whether the most-recent cycle skipped any region/env on
+    // a fetch failure. A degraded "clean" run must exit 1 (the
+    // documented AWS-error code), not 0 — expired credentials in a
+    // CI gate previously produced a silent green pass.
+    let mut last_cycle_degraded;
     // `--webhook` change-guard: identity set of the last cycle POSTed.
     // `None` until the first cycle, so the first findings (or first
     // clean state) always fire once.
     let mut last_webhook_identities: Option<std::collections::BTreeSet<String>> = None;
+    // One ctrl_c future for the whole watch loop: creating a fresh
+    // stream each iteration loses a SIGINT delivered mid-cycle (the
+    // first ctrl_c() call overrides SIGINT's default disposition for
+    // the process lifetime, and no listener is live while a cycle's
+    // AWS fetches run — the keypress was silently swallowed).
+    let ctrl_c = tokio::signal::ctrl_c();
+    tokio::pin!(ctrl_c);
     loop {
         let cycle_started = chrono::Utc::now();
         if watch && !quiet && !json {
@@ -717,7 +747,12 @@ pub async fn run(args: &[String]) -> Result<()> {
                                 env.name
                             );
                         }
-                        FIX_DISPATCH_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
+                        // Only a real (--yes) run treats the refusal as
+                        // a dispatch failure — a --dry-run preview
+                        // dispatched nothing and must not exit 1.
+                        if yes {
+                            FIX_DISPATCH_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
                         all_issues.extend(issues);
                         continue;
                     }
@@ -730,7 +765,7 @@ pub async fn run(args: &[String]) -> Result<()> {
                     let mut planned_set_indices: Vec<usize> = Vec::new();
                     for issue in &issues {
                         if fix_disabled.contains(&issue.rule_id) {
-                            if !quiet {
+                            if !quiet && !json {
                                 println!(
                                     "skip {} ({}): in lint.fix_disable",
                                     issue.rule_id, env.name
@@ -742,7 +777,7 @@ pub async fn run(args: &[String]) -> Result<()> {
                             continue;
                         };
                         let Some(action) = rule.fix(&ctx) else {
-                            if !quiet {
+                            if !quiet && !json {
                                 println!(
                                     "no-fix {} ({}): rule has no auto-remediation",
                                     issue.rule_id, env.name
@@ -762,16 +797,21 @@ pub async fn run(args: &[String]) -> Result<()> {
                         }
                         planned.push((issue.rule_id.clone(), action));
                     }
-                    for (rule_id, action) in &planned {
-                        match action {
-                            lint::FixAction::SetOption { description, .. } => {
-                                println!("fix {rule_id} ({}): {description}", env.name);
-                            }
-                            lint::FixAction::Manual { instructions } => {
-                                println!(
-                                "fix {rule_id} ({}) MANUAL — operator action required:\n  {instructions}",
-                                env.name
-                            );
+                    // Plan lines respect --quiet and stay off stdout
+                    // under --json (prose interleaved with the JSON
+                    // document broke every piped consumer).
+                    if !quiet && !json {
+                        for (rule_id, action) in &planned {
+                            match action {
+                                lint::FixAction::SetOption { description, .. } => {
+                                    println!("fix {rule_id} ({}): {description}", env.name);
+                                }
+                                lint::FixAction::Manual { instructions } => {
+                                    println!(
+                                    "fix {rule_id} ({}) MANUAL — operator action required:\n  {instructions}",
+                                    env.name
+                                );
+                                }
                             }
                         }
                     }
@@ -801,7 +841,7 @@ pub async fn run(args: &[String]) -> Result<()> {
                                         );
                                     }
                                 }
-                                if !quiet {
+                                if !quiet && !json {
                                     println!(
                                         "ok ({}): applied {} fix(es)",
                                         env.name,
@@ -961,6 +1001,18 @@ pub async fn run(args: &[String]) -> Result<()> {
         // fleet with existing warnings — grandfathers them so
         // subsequent runs only flag NEW issues.
         if let Some(path) = baseline_write.as_deref() {
+            // A degraded run (skipped regions/envs) has an incomplete
+            // issue set — snapshotting it would silently grandfather
+            // whatever the outage hid, and the next --against-baseline
+            // run would report the reappeared issues as NEW (or worse,
+            // a fully-failed run writes an empty baseline).
+            if cycle_degraded {
+                eprintln!(
+                    "ebman lint --baseline: refusing to snapshot a degraded run \
+                     (fetch failures above) — fix access and re-run"
+                );
+                std::process::exit(1);
+            }
             let body = lint::render_issues_json(&all_issues);
             if let Err(e) = std::fs::write(path, &body) {
                 eprintln!("ebman lint --baseline: write {path}: {e}");
@@ -1043,6 +1095,7 @@ pub async fn run(args: &[String]) -> Result<()> {
         } else {
             last_cycle_clean = all_issues.is_empty();
         }
+        last_cycle_degraded = cycle_degraded;
 
         if !watch {
             break;
@@ -1052,7 +1105,7 @@ pub async fn run(args: &[String]) -> Result<()> {
         // outside a Tokio runtime, but `run` is `#[tokio::main]`-
         // driven so we're always inside one here.
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
+            _ = &mut ctrl_c => {
                 if !quiet && !json {
                     eprintln!("(watch interrupted)");
                 }
@@ -1063,14 +1116,21 @@ pub async fn run(args: &[String]) -> Result<()> {
     }
 
     if fix {
-        if FIX_DISPATCH_FAILED.load(std::sync::atomic::Ordering::Relaxed) {
+        if FIX_DISPATCH_FAILED.load(std::sync::atomic::Ordering::Relaxed) || last_cycle_degraded {
             std::process::exit(1);
         }
         Ok(())
-    } else if last_cycle_clean {
-        Ok(())
-    } else {
+    } else if !last_cycle_clean {
+        // Issues found wins over degraded — exit 3 is actionable.
         std::process::exit(3);
+    } else if last_cycle_degraded {
+        // "Clean" but incomplete: some region/env was skipped on a
+        // fetch failure, so clean is unproven. The documented
+        // AWS-error exit code — a CI gate must not pass green on
+        // expired credentials.
+        std::process::exit(1);
+    } else {
+        Ok(())
     }
 }
 
@@ -1157,6 +1217,39 @@ mod tests {
         assert!(parse_lint_args(&argv(&["lint", "--interval", "soon"]))
             .unwrap_err()
             .contains("expects seconds"));
+        // The docs' own example form — rejected until the 0.26
+        // max-review added the seconds unit to parse_window_ms.
+        assert_eq!(
+            parse_lint_args(&argv(&["lint", "--interval", "60s"]))
+                .unwrap()
+                .interval_secs,
+            60
+        );
+    }
+
+    #[test]
+    fn value_flags_reject_missing_or_flag_values() {
+        // A trailing --env on `--fix --yes` used to silently widen
+        // scope to the whole fleet; --rules eating --json used to
+        // filter every issue out and exit 0.
+        assert!(parse_lint_args(&argv(&["lint", "--fix", "--yes", "--env"]))
+            .unwrap_err()
+            .contains("--env expects"));
+        assert!(parse_lint_args(&argv(&["lint", "--env", "--json"]))
+            .unwrap_err()
+            .contains("got flag"));
+        assert!(parse_lint_args(&argv(&["lint", "--rules", "--json"]))
+            .unwrap_err()
+            .contains("got flag"));
+        assert!(parse_lint_args(&argv(&["lint", "--rules", " , "]))
+            .unwrap_err()
+            .contains("no rule ids"));
+        assert!(parse_lint_args(&argv(&["lint", "--regions"]))
+            .unwrap_err()
+            .contains("--regions expects"));
+        assert!(parse_lint_args(&argv(&["lint", "--interval", "--watch"]))
+            .unwrap_err()
+            .contains("got flag"));
     }
 
     #[test]

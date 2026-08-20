@@ -44,6 +44,15 @@ impl App {
     /// even though our visibility timeout window is short — SQS treats the
     /// receipt handle as the canonical authorisation token for delete.
     pub(super) fn spawn_dlq_delete_one(&mut self, idx: usize) {
+        let env_for_guard = match self.dlq.as_ref() {
+            Some(d) => d.env_name.clone(),
+            None => return,
+        };
+        // Same write gate as every sibling DLQ op (resend/purge/replay)
+        // — a delete is just as destructive as a purge of one.
+        if self.deny_write(&env_for_guard, "delete") {
+            return;
+        }
         let Some(dlq) = self.dlq.as_mut() else { return };
         let Some(msg) = dlq.messages.get(idx).cloned() else {
             return;
@@ -77,10 +86,7 @@ impl App {
             let result = aws
                 .delete_message(&queue_url, &msg.receipt_handle)
                 .await
-                .map(|_| DlqOp::Resent {
-                    // Reuse the existing "Resent" variant — the handler
-                    // already drops the message by id, which is exactly what
-                    // delete should do.
+                .map(|_| DlqOp::Deleted {
                     message_id: msg.id.clone(),
                 })
                 .map_err(|e| flatten_err("delete_message", e));

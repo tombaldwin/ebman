@@ -29,6 +29,9 @@ pub fn latest_session_expiry() -> Option<DateTime<Utc>> {
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
+        if !is_access_token_blob(&text) {
+            continue;
+        }
         let Some(at) = extract_expires_at(&text) else {
             continue;
         };
@@ -40,6 +43,16 @@ pub fn latest_session_expiry() -> Option<DateTime<Utc>> {
         }
     }
     best
+}
+
+/// The cache dir holds two blob kinds: access tokens (~8h lifetime,
+/// has `"accessToken"`) and client registrations (~90 days, has
+/// `"clientId"`/`"clientSecret"` — written by AWS CLI v2 into the
+/// same dir). Only access tokens carry session expiry; a
+/// registration blob's 90-day `expiresAt` would otherwise always win
+/// the max and the expiry warning would never fire.
+fn is_access_token_blob(text: &str) -> bool {
+    text.contains("\"accessToken\"")
 }
 
 /// Minimal JSON-string extractor for `"expiresAt": "<RFC3339>"`. Avoids pulling
@@ -61,7 +74,20 @@ fn extract_expires_at(text: &str) -> Option<DateTime<Utc>> {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_expires_at;
+    use super::{extract_expires_at, is_access_token_blob};
+
+    #[test]
+    fn registration_blobs_are_not_session_expiry() {
+        // AWS CLI v2 writes ~90-day client-registration blobs into the
+        // same cache dir; counting their expiresAt as session expiry
+        // means the expiry warning never fires.
+        let registration =
+            r#"{"clientId":"abc","clientSecret":"xyz","expiresAt":"2030-06-01T00:00:00Z"}"#;
+        assert!(!is_access_token_blob(registration));
+        let token =
+            r#"{"startUrl":"https://x","accessToken":"abc","expiresAt":"2030-01-02T03:04:05Z"}"#;
+        assert!(is_access_token_blob(token));
+    }
 
     #[test]
     fn extracts_iso_string() {

@@ -107,6 +107,28 @@ fn redact_drift_reports(reports: &mut [DriftReport]) {
     }
 }
 
+/// Apply the redaction contract to audit entries before serving them
+/// through the MCP tool: `:set-option` / `lint --fix` audit lines
+/// carry namespace+name+value extras, and env-var values / DBPassword
+/// must not be readable here when `get_option_settings` withholds
+/// them (0.26 max-review C1 — third instance of the leak class).
+/// Keys stay visible; both extra-key spellings (`ns` from the TUI,
+/// `namespace` from lint --fix) are honoured.
+fn redact_audit_entries(entries: &mut [audit_log::AuditEntry]) {
+    for e in entries.iter_mut() {
+        let ns = e
+            .extras
+            .get("ns")
+            .or_else(|| e.extras.get("namespace"))
+            .cloned()
+            .unwrap_or_default();
+        let name = e.extras.get("name").cloned().unwrap_or_default();
+        if let Some(v) = e.extras.get_mut("value") {
+            *v = redact_option_value(&ns, &name, v, true);
+        }
+    }
+}
+
 /// Splice a degraded-coverage note into the standard lint
 /// `{"issues":[...]}` document. No-op for an empty skip list, so the
 /// common-case schema is byte-identical to the CLI's.
@@ -658,14 +680,25 @@ impl Server {
             .buffered(FETCH_CONCURRENCY)
             .collect()
             .await;
+        // Same degradation contract as the lint tool: one env's fetch
+        // failure (terminating env, throttle) skips that env and is
+        // reported in `skipped_envs`, instead of erroring the whole
+        // fleet report.
         let mut reports: Vec<DriftReport> = Vec::new();
-        for r in fetched {
-            reports.push(r?);
+        let mut skipped: Vec<String> = Vec::new();
+        for (env, r) in targets.iter().zip(fetched) {
+            match r {
+                Ok(rep) => reports.push(rep),
+                Err(e) => skipped.push(format!("{}: {e}", env.name)),
+            }
         }
         if self.redact {
             redact_drift_reports(&mut reports);
         }
-        Ok(terraform::render_drift_json(used_path.as_deref(), &reports))
+        Ok(append_skipped_envs(
+            terraform::render_drift_json(used_path.as_deref(), &reports),
+            &skipped,
+        ))
     }
 
     fn tool_audit_log(&self, args: &Value) -> Result<String, String> {
@@ -682,7 +715,14 @@ impl Server {
             Some(s) => {
                 let ms = aws::parse_window_ms(&s)
                     .ok_or_else(|| format!("bad 'since' window '{s}' (use 5m / 1h / 2d)"))?;
-                Some(chrono::Utc::now() - chrono::Duration::milliseconds(ms))
+                // checked_sub: parse_window_ms bounds the window, but a
+                // panic here would leave the request unanswered forever
+                // — never trust a subtraction on client input.
+                Some(
+                    chrono::Utc::now()
+                        .checked_sub_signed(chrono::Duration::milliseconds(ms))
+                        .ok_or_else(|| format!("'since' window '{s}' is out of range"))?,
+                )
             }
         };
         let env = arg_str(args, "env");
@@ -695,11 +735,14 @@ impl Server {
         };
         let path = util::cache_dir().join("audit.log");
         let text = std::fs::read_to_string(&path).unwrap_or_default();
-        let entries: Vec<audit_log::AuditEntry> = text
+        let mut entries: Vec<audit_log::AuditEntry> = text
             .lines()
             .filter_map(audit_log::parse_audit_line)
             .filter(|e| filter.matches(e))
             .collect();
+        if self.redact {
+            redact_audit_entries(&mut entries);
+        }
         // Newest kept: the file is append-ordered, so take the tail.
         let start = entries.len().saturating_sub(limit);
         Ok(jsonl_to_array(&audit_log::render_audit_entries_json(
@@ -708,8 +751,10 @@ impl Server {
     }
 
     async fn tool_recent_events(&self, args: &Value) -> Result<String, String> {
+        // Clamp in u64 first — an `as i32` cast bit-truncates, so
+        // max=2^32+5 used to mean 5, not the cap.
         let max = arg_u64(args, "max")
-            .map(|m| (m as i32).min(EVENTS_MAX_MAX))
+            .map(|m| i32::try_from(m.min(EVENTS_MAX_MAX as u64)).expect("clamped to i32 range"))
             .unwrap_or(EVENTS_DEFAULT_MAX)
             .max(1);
         let env = arg_str(args, "env");
@@ -878,23 +923,59 @@ pub async fn run(args: &[String]) -> Result<()> {
         }
     };
     let server = Arc::new(Server::new(demo, no_redact));
+    // Frame-level tools/call concurrency cap (see the spawn site).
+    let tool_slots = Arc::new(tokio::sync::Semaphore::new(16));
 
     // Single writer task: concurrent tool tasks send completed frames
-    // through the channel so stdout writes can't interleave.
-    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    // through the channel so stdout writes can't interleave. Bounded:
+    // a client that writes requests but stops reading stdout must
+    // apply backpressure (senders park at `send().await`), not grow
+    // an unbounded queue of completed frames.
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<String>(256);
     let writer = tokio::spawn(async move {
         use tokio::io::AsyncWriteExt;
         let mut stdout = tokio::io::stdout();
         while let Some(line) = out_rx.recv().await {
-            let _ = stdout.write_all(line.as_bytes()).await;
-            let _ = stdout.write_all(b"\n").await;
-            let _ = stdout.flush().await;
+            // A write error means the client closed its read end —
+            // keep-running would execute AWS-hitting tool calls whose
+            // results nobody can ever receive. Stop draining; senders
+            // then error out and the tasks unwind.
+            if stdout.write_all(line.as_bytes()).await.is_err()
+                || stdout.write_all(b"\n").await.is_err()
+                || stdout.flush().await.is_err()
+            {
+                eprintln!("ebman mcp: stdout closed — dropping remaining frames");
+                break;
+            }
         }
     });
 
     use tokio::io::AsyncBufReadExt;
     let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
+    // Read errors (e.g. one invalid-UTF-8 byte → InvalidData) must not
+    // masquerade as EOF: previously the server exited 0 silently. Skip
+    // the bad line loudly; bail after a run of consecutive errors so a
+    // permanently-broken stream can't spin.
+    let mut consecutive_read_errors: u32 = 0;
+    loop {
+        let line = match lines.next_line().await {
+            Ok(Some(line)) => {
+                consecutive_read_errors = 0;
+                line
+            }
+            Ok(None) => break,
+            Err(e) => {
+                consecutive_read_errors += 1;
+                eprintln!("ebman mcp: stdin read error (skipping line): {e}");
+                if consecutive_read_errors >= 5 {
+                    eprintln!(
+                        "ebman mcp: {consecutive_read_errors} consecutive read errors — exiting"
+                    );
+                    break;
+                }
+                continue;
+            }
+        };
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -902,33 +983,43 @@ pub async fn run(args: &[String]) -> Result<()> {
         let req: Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(_) => {
-                let _ = out_tx.send(
-                    json!({
-                        "jsonrpc": "2.0",
-                        "id": null,
-                        "error": {"code": -32700, "message": "parse error"}
-                    })
-                    .to_string(),
-                );
+                let _ = out_tx
+                    .send(
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": null,
+                            "error": {"code": -32700, "message": "parse error"}
+                        })
+                        .to_string(),
+                    )
+                    .await;
                 continue;
             }
         };
         // tools/call may hit AWS for many seconds — spawn it so the
         // loop stays responsive to ping / further calls. Everything
         // else is answered inline (cheap + ordering-sensitive).
+        // The semaphore caps frame-level concurrency: a flood of
+        // one-line tools/call frames must not spawn unlimited tasks
+        // each building an AwsClient (in-CALL fan-out is separately
+        // bounded at FETCH_CONCURRENCY).
         if req.get("method").and_then(Value::as_str) == Some("tools/call") {
+            let permit = Arc::clone(&tool_slots).acquire_owned().await;
             let server = Arc::clone(&server);
             let out_tx = out_tx.clone();
             tokio::spawn(async move {
+                let _permit = permit;
                 if let Some(resp) = server.handle_request(&req).await {
-                    let _ = out_tx.send(resp.to_string());
+                    let _ = out_tx.send(resp.to_string()).await;
                 }
             });
         } else if let Some(resp) = server.handle_request(&req).await {
-            let _ = out_tx.send(resp.to_string());
+            let _ = out_tx.send(resp.to_string()).await;
         }
     }
-    // stdin closed: drop the sender so the writer drains and exits.
+    // stdin closed: drop the sender. The writer keeps draining until
+    // in-flight tool tasks (which hold out_tx clones) finish — bounded
+    // by the per-call timeout — then exits.
     drop(out_tx);
     let _ = writer.await;
     Ok(())

@@ -6,10 +6,10 @@
 - **Strict-typed confirm** for irreversible actions: typing the env name is required to Terminate; typing the literal string to Purge.
 - **Pre-flight checks** in the confirm modal: `DescribeInstancesHealth` impact count, last 3 events, traffic warnings for env-in-deploy / recently-changed / currently-Red.
 - **Audit log** records dispatch + outcome of every action.
-- **Per-env / per-account safety pins** in `config.toml` (`safety.envs.NAME.read_only = true` / `safety.accounts.NAME.read_only = true`) refuse destructive actions even when the global `--read-only` toggle is off. Enforced CLI-side too: `ebman audit replay` and `ebman lint --fix` refuse pinned targets before dispatch.
+- **Per-env / per-account safety pins** in `config.toml` (`safety.envs.NAME.read_only = true` / `safety.accounts.NAME.read_only = true`) refuse destructive actions even when the global `--read-only` toggle is off. Enforced CLI-side too: `ebman action` (rebuild / restart / terminate / deploy / rollout), `ebman audit replay`, and `ebman lint --fix` all refuse pinned targets before dispatch (exit 3).
 - **Session-scoped fleet freeze**: `:freeze-deploys [REASON]` (or `:incident START "headline"`, which sets the same lock plus a header banner and audit lines) makes every destructive op refuse until `:thaw-deploys` / `:incident END` or exit. Not persisted — an in-session gesture, not durable policy.
 - **`ebman audit replay`** re-dispatches a previously-audited action and is itself audit-logged (`replay_of=`-tagged dispatched/completed lines); destructive verbs still require `--yes`.
-- **`ebman mcp serve` is reads-only** (v1): no tool can dispatch a write. Its `get_option_settings` tool redacts env-var values and `DBPassword` by default — an MCP client sees config *keys*, not secrets — with `--no-redact` as the explicit opt-out.
+- **`ebman mcp serve` is reads-only** (v1): no tool can dispatch a write. Redaction-by-default covers every tool that can carry option values — `get_option_settings`, `drift` (tf + live values of drifted secrets), and `audit_log` (`value=` extras from `:set-option` / `lint --fix` lines) — so an MCP client sees config *keys*, not secrets, with `--no-redact` as the explicit opt-out.
 
 ## What's stored locally
 
@@ -24,7 +24,7 @@
 
 ## Privacy / telemetry
 
-Ebman does not phone home. There is no usage telemetry, no anonymous identifier, no crash auto-reporting, no third-party analytics endpoint. The only outbound HTTP from ebman itself is to AWS (the SDK calls you'd expect) and a single version-check ping to crates.io (`update_check.rs`), which crates.io logs as "client IP requested ebman version metadata" and nothing more.
+Ebman does not phone home. There is no usage telemetry, no anonymous identifier, no crash auto-reporting, no third-party analytics endpoint. Outbound HTTP from ebman itself is limited to: AWS (the SDK calls you'd expect); a single version-check ping to crates.io (`update_check.rs`), which crates.io logs as "client IP requested ebman version metadata" and nothing more; and three **operator-configured** integrations that are off until you wire them — `notify_webhook` (POSTs every audit line, including `cmd="…"` strings from `:ssm-run`, to your URL), `ebman lint --watch --webhook URL` (lint findings to your URL), and `:explain` / `ebman explain` (lint-issue titles, details, and env names to Anthropic or your Ollama endpoint; consent-gated via `explain.enabled`).
 
 **Bug reports** are operator-driven via `:report-bug`. Ebman builds a scrubbed payload locally — version / OS / icons / theme / refresh interval / last 30 log lines / last 10 on-screen messages / latest panic backtrace — and runs it through a redactor that strips account IDs (any 12-digit ASCII number), ARNs (`arn:aws:*`), every env name + application name + CNAME currently in the in-memory table, and the active profile name. The result lands in an overlay where you see the exact bytes before they leave the machine. Two delivery paths, both initiated by you:
 

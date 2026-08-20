@@ -632,32 +632,40 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.mode == Mode::Action {
         draw_action(f, f.area(), app);
     }
-    if let Some(overlay) = app.current_overlay.clone() {
+    // WhyRed drawn separately (its renderer needs `&mut App`); every
+    // other overlay matches by REFERENCE — the previous per-frame
+    // `.clone()` deep-copied the whole overlay each draw, including up
+    // to 2000 tail events, in exactly the busy-fleet hot path the tail
+    // overlays exist for.
+    if matches!(app.current_overlay, Some(Overlay::WhyRed { .. })) {
+        draw_why_red_overlay(f, f.area(), app);
+    } else if let Some(overlay) = app.current_overlay.as_ref() {
         match overlay {
-            Overlay::Describe(text) => draw_describe(f, f.area(), app, &text),
-            Overlay::Whatsnew(text) => draw_whatsnew(f, f.area(), app, &text),
-            Overlay::History(text) => draw_history_overlay(f, f.area(), app, &text),
-            Overlay::Alarms { body, .. } => draw_alarms_overlay(f, f.area(), app, &body),
-            Overlay::Diff(text) => draw_diff_overlay(f, f.area(), app, &text),
-            Overlay::SavedConfigs(text) => draw_saved_configs_overlay(f, f.area(), app, &text),
+            Overlay::Describe(text) => draw_describe(f, f.area(), app, text),
+            Overlay::Whatsnew(text) => draw_whatsnew(f, f.area(), app, text),
+            Overlay::History(text) => draw_history_overlay(f, f.area(), app, text),
+            Overlay::Alarms { body, .. } => draw_alarms_overlay(f, f.area(), app, body),
+            Overlay::Diff(text) => draw_diff_overlay(f, f.area(), app, text),
+            Overlay::SavedConfigs(text) => draw_saved_configs_overlay(f, f.area(), app, text),
             Overlay::SavedConfigsInteractive {
                 items,
                 cursor,
                 confirm_delete,
-            } => draw_saved_configs_interactive(f, f.area(), app, &items, cursor, confirm_delete),
+            } => draw_saved_configs_interactive(f, f.area(), app, items, *cursor, *confirm_delete),
             Overlay::TextDump { title, body } => {
-                draw_text_dump_overlay(f, f.area(), app, &title, &body)
+                draw_text_dump_overlay(f, f.area(), app, title, body)
             }
             Overlay::LogTail { .. } => draw_log_tail_overlay(f, f.area(), app),
             Overlay::EventTail { .. } => draw_event_tail_overlay(f, f.area(), app),
-            Overlay::WhyRed { .. } => draw_why_red_overlay(f, f.area(), app),
+            // Handled above — the renderer needs &mut App.
+            Overlay::WhyRed { .. } => {}
             Overlay::AppsActionMenu {
                 app_name,
                 env_names,
                 cursor,
-            } => draw_apps_action_menu(f, f.area(), app, &app_name, &env_names, cursor),
-            Overlay::ReportBug { body } => draw_report_bug_overlay(f, f.area(), app, &body),
-            Overlay::About(opened) => draw_about(f, f.area(), app, opened),
+            } => draw_apps_action_menu(f, f.area(), app, app_name, env_names, *cursor),
+            Overlay::ReportBug { body } => draw_report_bug_overlay(f, f.area(), app, body),
+            Overlay::About(opened) => draw_about(f, f.area(), app, *opened),
         }
     }
     if app.mode == Mode::Palette {
@@ -4390,12 +4398,10 @@ fn draw_dlq(f: &mut Frame, area: Rect, app: &mut App) {
                     .sent_at
                     .map(|t| humanize_age(now.signed_duration_since(t)))
                     .unwrap_or_else(|| "—".into());
-                let preview = m.body.lines().next().unwrap_or("").to_string();
-                let preview = if preview.len() > 80 {
-                    format!("{}…", &preview[..80])
-                } else {
-                    preview
-                };
+                // Char-safe truncation: the body is arbitrary producer
+                // data, and a byte slice at 80 panics mid-draw when a
+                // multi-byte char straddles the boundary.
+                let preview = truncate_for_display(m.body.lines().next().unwrap_or(""), 80);
                 ListItem::new(Line::from(vec![
                     Span::styled(
                         format!(" {:<20} ", m.id),
@@ -6062,9 +6068,12 @@ fn draw_detail_events(
             let when = format_event_time(e.at, time_format, now);
             let matches = re.is_some_and(|r| r.is_match(&e.message));
             let msg_style = if matches {
+                // Theme-derived highlight — the pill fix's pattern
+                // (hardcoded Black-on-Yellow breaks the moment a
+                // theme's palette shifts, e.g. Solarized-light).
                 Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Yellow)
+                    .fg(theme.contrast_text(theme.health_yellow))
+                    .bg(theme.health_yellow)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()

@@ -877,6 +877,30 @@ ebman mcp serve                        → server mode (future: MCP for Claude C
 
 **Future-proofing test passed:** LLM explainer (`ebman explain`), MCP server (`ebman mcp serve`), cron-driven monitoring (`ebman lint --watch`), git pre-commit hooks (`ebman drift`), GitHub Actions integration (`ebman action deploy`), audit-stream consumption (`ebman audit --tail --json | jq`) all fit without restructuring.
 
+### 0.27 queue — 0.26 max-depth review remainders (2026-08-20)
+
+Six-lens full-codebase review post-0.26.0. All 8 Critical-class + the quick Important findings were fixed same-day (see CHANGELOG Unreleased). Remaining, each deferred with a reason:
+
+#### Important (need live verification or a design pass)
+- [ ] **Cost Explorer pagination** — `fetch_env_costs` drops `NextPageToken`; partial map cached 24h. Needs a paged account to verify against. (aws.rs ~1104)
+- [ ] **logs-tail `next_token` follow** — `fetch_recent_log_events` truncates at 1000/1MB and advances the watermark past unreturned events; silent line drops during spikes. Fix = follow token N pages/poll; needs care re same-ms dedupe. (aws.rs ~1956)
+- [ ] **worker-queue error conflation** — `describe_worker_queues` is infallible-by-construction; AccessDenied renders as "no worker queues" and silently blinds DLQ red-alerting. Needs the error arm plumbed through the Detail + alert paths. (aws.rs ~848)
+- [ ] **webhook drain before CLI exit** — `fire_webhook` is fire-and-forget; one-shot CLI paths race `process::exit`, dropping the outcome POST. Design fork: sync send vs drain registry. (audit.rs ~705)
+- [ ] **rebuild-epoch ordering** — two rapid context switches can settle on the FIRST choice (Rebuild carries no ordering token). Fix = monotonic epoch stamped at spawn. (app.rs spawn_rebuild)
+- [ ] **events-panel cursor follow** — `event_panel.scroll` is dead state pinned at 0; cursor walks below the fold. (ui.rs ~3770, app.rs ~3805)
+- [ ] **form scrolling** — 9-field forms on 80×24 leave fields below the fold while Tab focuses them blind. Reuse `config_scroll_follow`. (ui.rs draw_form)
+
+#### Minor (batchable)
+- [ ] control.sock chmod-after-bind race (bind under a 0700 dir or set umask)
+- [ ] 0600 perms on audit.log / ebman.log / crash logs / explain cache
+- [ ] audit-line `target=`/`version=` through `escape_value` (injection is currently only accidentally impossible)
+- [ ] report_bug scrubber mojibakes multibyte chars (`c as char` on bytes)
+- [ ] ascii icon-mode stragglers (table markers ★✓▲◆ⓣ, header ●▼▲, form ▶◀✗, cursors)
+- [ ] `ebman drift --json` + TUI `:drift` print secret values in cleartext (redaction is MCP-only; posture inconsistency, operator-local)
+- [ ] Detail Logs tab scroll unclamped upward; saved-configs window over-budget with many group headers; DLQ viewer opens with no row selected + `p` purge armable from Main view + DlqMessages doesn't carry queue identity; watchdog rollback against vanished env; MCP `fleet_cost` NaN from corrupted cache; `versions --json` empty-string created date; `ebman envs` ignores unknown flags; typo'd subcommand launches the TUI; audit --tail two text formats; rollout --regions dedupe; project.rs type mismatch drops whole file silently; watch interval drifts by cycle duration; help-restore ghost states (M5a) + dead pre_overlay tail routing (M5b); EBL010 tag-fetch failure silently disables the rule; run_shell_command >50 instance chunking; derive_dlq_url guess; unicode display-width column math; MCP id:null answered + non-object frames silently dropped; `:explain` YAML parser on responses (serde_yml alias expansion).
+
+Also queued from the 0.26 pre-tag architecture review: rewrite_credential_error + probe helpers out of app.rs; ui.rs submodule split; MCP registry unification (gate on v2 writes); EBL015 warnings surface in MCP; per-tool client dedup.
+
 ### 0.26 candidates (2026-08-03)
 
 #### MCP server (`ebman mcp serve`) — HEADLINE — SHIPPED 2026-08-03 (same-day as the spec; see CHANGELOG Unreleased)

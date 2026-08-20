@@ -304,6 +304,13 @@ impl App {
             self.error_message = Some("rollout: not available in --demo mode".into());
             return;
         }
+        // A rollout is a deploy fan-out — the full write gate
+        // (read-only / :freeze-deploys / incident / safety pins)
+        // applies before we even start planning. Re-checked at every
+        // per-region dispatch in `spawn_rollout_dispatch`.
+        if self.deny_write(&env_name, "rollout") {
+            return;
+        }
 
         // Build the initial RolloutFlow in Planning state with
         // one row per region (all placeholders) so the overlay

@@ -19,7 +19,7 @@
 //!
 //! ## Consent gate
 //!
-//! Opt-in via `[explain] enabled = true` in `config.toml`. Off by
+//! Opt-in via `explain.enabled = true` in `config.toml`. Off by
 //! default. Presence of `ANTHROPIC_API_KEY` is *not* implicit
 //! consent — security-conscious orgs that export API keys for
 //! other tools shouldn't have ebman silently start making outbound
@@ -48,7 +48,7 @@ use crate::lint::Issue;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
     /// Master switch. Operators must explicitly opt in via
-    /// `[explain] enabled = true` — presence of an API key in
+    /// `explain.enabled = true` — presence of an API key in
     /// the env var alone is not sufficient. Defaults to false.
     pub enabled: bool,
     /// Provider key — `"anthropic"` or `"ollama"`. Other values
@@ -269,7 +269,7 @@ pub async fn dispatch(settings: &Settings, prompt: &str) -> Result<String> {
             _ => format!("ensure `{}` is exported", settings.api_key_env),
         };
         return Err(eyre!(
-            "ebman explain: feature is disabled. Set `[explain] enabled = true` in {} and {next_step}. See docs/configuration.md.",
+            "ebman explain: feature is disabled. Set `explain.enabled = true` in {} and {next_step}. See docs/configuration.md.",
             crate::util::config_file("config.toml").display(),
         ));
     }

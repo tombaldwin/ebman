@@ -132,6 +132,10 @@ pub async fn run(args: &[String]) -> Result<()> {
     let multi_region = regions.len() > 1;
     let mut reports: Vec<(Option<String>, String, bool, Vec<terraform::DriftField>)> = Vec::new();
     let mut any_drift = false;
+    // Any skipped region/env means the report is incomplete — the run
+    // must exit 1 (the documented AWS-error code), not report a clean
+    // 0 built from whatever survived the outage.
+    let mut degraded = false;
     for region_opt in &regions {
         let aws = match aws::AwsClient::with(None, region_opt.clone()).await {
             Ok(c) => c,
@@ -140,6 +144,7 @@ pub async fn run(args: &[String]) -> Result<()> {
                     let region_label = region_opt.as_deref().unwrap_or("default");
                     eprintln!("warning: skipping region '{region_label}' — AwsClient::with: {e}");
                 }
+                degraded = true;
                 continue;
             }
         };
@@ -150,6 +155,7 @@ pub async fn run(args: &[String]) -> Result<()> {
                     let region_label = region_opt.as_deref().unwrap_or("default");
                     eprintln!("warning: skipping region '{region_label}' — list_environments: {e}");
                 }
+                degraded = true;
                 continue;
             }
         };
@@ -192,6 +198,7 @@ pub async fn run(args: &[String]) -> Result<()> {
                                 env.name
                             );
                         }
+                        degraded = true;
                         Vec::new()
                     }
                 }
@@ -256,7 +263,12 @@ pub async fn run(args: &[String]) -> Result<()> {
     }
 
     if any_drift {
+        // Drift found wins over degraded — exit 3 is actionable.
         std::process::exit(3);
+    }
+    if degraded {
+        // "No drift" but incomplete coverage: clean is unproven.
+        std::process::exit(1);
     }
     Ok(())
 }
