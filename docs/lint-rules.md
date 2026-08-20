@@ -236,7 +236,7 @@ Why it matters: the daemon runs, the config says tracing is on, and every segmen
 
 Fix: attach `AWSXRayDaemonWriteAccess` (or an equivalent `xray:PutTraceSegments` grant) to the instance-profile role.
 
-Live: 0.25+. IAM probe call shape is SDK-compiled but unverified against a live account (same status the ACM listener fetch shipped with).
+Live: 0.25+. IAM probe call shape verified live 2026-08-20 (simulate_principal_policy against a real instance-profile role returns the EvalDecision shape the rule parses).
 
 ---
 
@@ -250,7 +250,7 @@ Why it matters: an internet-facing prod ALB with no WAF passes every scanner swe
 
 Fix: associate a WAFv2 WebACL — `AWSManagedRulesCommonRuleSet` blocks commodity probe traffic.
 
-Live: 0.26+. WAFv2 probe call shape is SDK-compiled but unverified against an ALB-fronted env (the dogfood fleet is classic-ELB).
+Live: 0.26+. WAFv2 probe call shape verified live 2026-08-20 against a throwaway ALB — GetWebACLForResource returns an empty response for a WAF-less ALB, which is the Ok(None) the rule fires on.
 
 ---
 
@@ -264,7 +264,7 @@ Why it matters: long-idle custom platforms usually mean the operator forgot they
 
 Fix: publish a rebuilt version, migrate its envs to a managed platform, or delete it (`:custom-platform-delete`).
 
-Live: 0.26+. `DescribePlatformVersion` call shape is SDK-compiled but unverified live (the dogfood account has no custom platforms).
+Live: 0.26+. DescribePlatformVersion call shape verified live 2026-08-20 (returns DateCreated as a real timestamp; managed-platform ARN used, identical date contract to custom).
 
 ---
 

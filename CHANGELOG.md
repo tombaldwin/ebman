@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Cross-process fleet freeze** — the TUI persists `:freeze-deploys` / `:incident START` to a pid-scoped marker (`~/.cache/ebman/freeze.json`, 0600); the MCP write tools AND all three CLI write paths (`ebman action`, `audit replay`, `lint --fix`) now refuse while a live TUI session holds a freeze (fix-the-class — they had the same blind spot). A crashed TUI's marker is ignored and cleaned by the next reader, so it can't phantom-freeze.
 - **Registry-unification refactor**: `cli/mcp.rs` split to `cli/mcp/{mod,tools,writes}.rs` (the enabling move the 0.26 architecture review gated on v2 writes).
 - Smaller: demo-mode AWS error spam downgraded to debug (`--demo` stub fails by design); Cost Explorer pagination capped at 20 pages. `:custom-platform-create` dropped from the backlog (three-cycle slip, no demand).
+- **Live-verification sweep** — the three SDK-compiled-but-unverified lint probes are now confirmed against real AWS resources (us-west-1): EBL020's `simulate_principal_policy` (against a real instance-profile role), EBL015's `describe_platform_version` date read (real timestamp), and EBL018's `web_acl_for_resource` (against a throwaway bare ALB — empty response → `Ok(None)` → rule fires; ALB + security group torn down clean). No lint code changed; the call shapes held.
 
 
 ## [0.27.0] — 2026-08-20 — the hardening release: two max-depth reviews, live-tested, panel-approved
