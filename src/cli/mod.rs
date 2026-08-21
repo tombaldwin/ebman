@@ -37,6 +37,26 @@ pub mod lint;
 pub mod mcp;
 pub mod versions;
 
+/// The canonical list of top-level `ebman <subcommand>` names — the
+/// single source of truth for the CLI-subcommand *name* axis. `main.rs`
+/// dispatches these (and lists them on an unknown-subcommand error);
+/// `cli::completions` renders them, and a test pins its `SUBS` to this
+/// list so the shell-completion subcommand set can't drift from the real
+/// CLI. Per-subcommand flags / sub-verbs aren't mechanically derivable
+/// and stay hand-maintained in `completions::SUBS`.
+pub const SUBCOMMANDS: &[&str] = &[
+    "envs",
+    "action",
+    "ctl",
+    "lint",
+    "drift",
+    "audit",
+    "mcp",
+    "explain",
+    "versions",
+    "completions",
+];
+
 /// Re-exports from the shared deploy-poll module. CLI subcommand
 /// modules import via `crate::cli::{decide_poll, PollDecision}`;
 /// the actual implementations live in `src/deploy_poll.rs` and are

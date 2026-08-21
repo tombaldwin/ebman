@@ -97,6 +97,11 @@ pub struct CommandSpec {
     pub category: Category,
     /// Palette behaviour on Enter.
     pub kind: CommandKind,
+    /// Whether the command's first positional argument is an existing
+    /// environment name — drives command-bar Tab completion of env
+    /// names (see `app::command_takes_env_arg`). Set via
+    /// [`cmd_env_arg`]; every other constructor defaults it false.
+    pub env_arg: bool,
 }
 
 /// Static helper for declaring entries without the per-line ceremony.
@@ -112,6 +117,7 @@ const fn cmd(
         help,
         category,
         kind,
+        env_arg: false,
     }
 }
 
@@ -128,6 +134,27 @@ const fn cmd_with_aliases(
         help,
         category,
         kind,
+        env_arg: false,
+    }
+}
+
+/// Like [`cmd`], but flags the command as taking an existing
+/// environment name as its first positional argument (`env_arg = true`).
+/// Used by `:diff` / `:config-diff` / `:rds-detach` so the command bar
+/// can Tab-complete env names for them.
+const fn cmd_env_arg(
+    name: &'static str,
+    help: &'static str,
+    category: Category,
+    kind: CommandKind,
+) -> CommandSpec {
+    CommandSpec {
+        name,
+        aliases: &[],
+        help,
+        category,
+        kind,
+        env_arg: true,
     }
 }
 
@@ -194,7 +221,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         Category::Inspection,
         CommandKind::ZeroArg,
     ),
-    cmd(
+    cmd_env_arg(
         "diff",
         ":diff NAME — side-by-side env comparison vs selected env;  :diff ENV-A ENV-B names both explicitly;  --ignore-keys \"version,updated\" hides those rows",
         Category::Inspection,
@@ -269,7 +296,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         Category::Lifecycle,
         CommandKind::ZeroArg,
     ),
-    cmd(
+    cmd_env_arg(
         "rds-detach",
         ":rds-detach ENV — safe-ify the coupled RDS: sets DBDeletionPolicy=Snapshot so the DB survives env termination. Repeat the env name to confirm. Does not decouple the DB (EB has no detach op).",
         Category::Lifecycle,
@@ -281,7 +308,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         Category::Inspection,
         CommandKind::Prefill("options "),
     ),
-    cmd(
+    cmd_env_arg(
         "config-diff",
         ":config-diff ENV — compare the selected env's option-settings against ENV's; shows every setting that differs",
         Category::Inspection,
@@ -994,6 +1021,19 @@ mod tests {
                 c.name
             );
         }
+    }
+
+    #[test]
+    fn env_arg_flag_is_exactly_the_env_first_commands() {
+        // Pins the `env_arg` metadata that drives command-bar env-name
+        // completion (app::command_takes_env_arg). If a new env-first
+        // command is added, flag it here and this test keeps the set honest.
+        let flagged: Vec<&str> = COMMANDS
+            .iter()
+            .filter(|c| c.env_arg)
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(flagged, vec!["diff", "rds-detach", "config-diff"]);
     }
 
     #[test]

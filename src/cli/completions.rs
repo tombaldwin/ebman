@@ -11,8 +11,10 @@
 //! environment names in the shell — that would need a live
 //! `ebman envs` (an AWS round-trip, credentials, latency) on every Tab.
 //! Env-name completion lives in the TUI command bar instead, where the
-//! fleet is already loaded. Keep [`SUBS`] in sync with `main.rs`'s
-//! subcommand dispatch and `print_help`.
+//! fleet is already loaded. The subcommand *names* in [`SUBS`] are
+//! pinned to [`crate::cli::SUBCOMMANDS`] by a test, so they can't drift
+//! from the real CLI; the per-subcommand flags / verbs still track
+//! `main.rs`'s dispatch and `print_help` by hand.
 
 use color_eyre::eyre::Result;
 
@@ -282,6 +284,21 @@ pub async fn run(args: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subs_names_match_the_canonical_cli_subcommand_list() {
+        // Pins the completion subcommand set to the single source of
+        // truth (cli::SUBCOMMANDS) that main.rs dispatches — so a
+        // subcommand added to the CLI but not to SUBS (or vice versa)
+        // fails here instead of silently shipping incomplete completion.
+        use std::collections::BTreeSet;
+        let subs: BTreeSet<&str> = SUBS.iter().map(|c| c.name).collect();
+        let canonical: BTreeSet<&str> = crate::cli::SUBCOMMANDS.iter().copied().collect();
+        assert_eq!(
+            subs, canonical,
+            "completions SUBS drifted from cli::SUBCOMMANDS"
+        );
+    }
 
     #[test]
     fn every_shell_lists_all_subcommands() {
