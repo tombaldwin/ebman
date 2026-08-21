@@ -1050,7 +1050,7 @@ mod tests {
 
     /// Drift detector — the whole point of the registry is that the
     /// help screen + palette + dispatch arms can't go stale. Parse
-    /// `app.rs`'s `fn execute_command` body and check every
+    /// `app/dispatch.rs`'s `fn execute_command` body and check every
     /// `"name" =>` arm name exists in [`COMMANDS`] (as either a
     /// canonical name or an alias).
     ///
@@ -1060,14 +1060,14 @@ mod tests {
     ///   - A typo in a registry name that doesn't match a real arm.
     #[test]
     fn registry_covers_every_dispatch_arm() {
-        let src = include_str!("app.rs");
+        let src = include_str!("app/dispatch.rs");
         // Locate `fn execute_command`'s body. The match starts at
         // `match cmd {` and ends at the `other =>` fallthrough — we
         // bound the scan there so we don't pick up arms from any
         // other matches further down the file.
         let fn_start = src
             .find("fn execute_command")
-            .expect("execute_command not found in app.rs");
+            .expect("execute_command not found in app/dispatch.rs");
         let body = &src[fn_start..];
         let match_start = body
             .find("match cmd {")
@@ -1126,10 +1126,10 @@ mod tests {
     /// command` branch when the operator selected them.
     #[test]
     fn every_registry_name_has_a_dispatch_arm() {
-        let src = include_str!("app.rs");
+        let src = include_str!("app/dispatch.rs");
         let fn_start = src
             .find("fn execute_command")
-            .expect("execute_command not found in app.rs");
+            .expect("execute_command not found in app/dispatch.rs");
         let body = &src[fn_start..];
         let match_start = body
             .find("match cmd {")
