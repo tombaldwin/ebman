@@ -24,16 +24,13 @@
 
 use std::collections::{BTreeSet, HashMap};
 
+use crossterm::event::KeyEvent;
 use ratatui::style::Color;
 use tui_common::TextInput;
 
 use super::{DisplayRow, SortKey, ViewMode};
 
 pub struct ViewState {
-    /// Sort column for the environments table.
-    pub sort_key: SortKey,
-    /// Descending when set. Toggled by pressing the same sort key twice.
-    pub sort_desc: bool,
     /// Row density (`:compact`).
     pub mode: ViewMode,
     /// Columns hidden via `:cols`.
@@ -44,6 +41,11 @@ pub struct ViewState {
     // ---- cache inputs (private: mutating one invalidates the cache) ----
     filter: TextInput,
     grouped: bool,
+    /// Sort column, and descending when set. Private because they have to
+    /// stay in step with the order of `App::environments` — see
+    /// [`Self::set_sort`].
+    sort_key: SortKey,
+    sort_desc: bool,
 
     // ---- derived (private: reading one asserts the cache is fresh) ----
     filtered: Vec<usize>,
@@ -51,6 +53,10 @@ pub struct ViewState {
     app_colors: HashMap<String, Color>,
     stale_platforms: HashMap<String, String>,
     stale: bool,
+    /// Whether the current stale episode has already been logged. `Cell`
+    /// because `assert_fresh` runs from `&self` accessors on the render
+    /// path.
+    logged_stale: std::cell::Cell<bool>,
 }
 
 impl ViewState {
@@ -63,13 +69,13 @@ impl ViewState {
         hidden_cols: BTreeSet<String>,
     ) -> Self {
         Self {
-            sort_key,
-            sort_desc,
             mode: ViewMode::Default,
             hidden_cols,
             redact,
             filter,
             grouped,
+            sort_key,
+            sort_desc,
             filtered: Vec::new(),
             display: Vec::new(),
             app_colors: HashMap::new(),
@@ -77,6 +83,7 @@ impl ViewState {
             // Empty caches over an empty `environments` are correct, not
             // stale — the first refresh rebuilds them anyway.
             stale: false,
+            logged_stale: std::cell::Cell::new(false),
         }
     }
 
@@ -94,6 +101,38 @@ impl ViewState {
     pub fn filter_mut(&mut self) -> &mut TextInput {
         self.stale = true;
         &mut self.filter
+    }
+
+    pub fn sort_key(&self) -> SortKey {
+        self.sort_key
+    }
+
+    pub fn sort_desc(&self) -> bool {
+        self.sort_desc
+    }
+
+    /// Record a new sort. `pub(super)` on purpose: these fields describe the
+    /// order `App::environments` is *already* in, so setting them without
+    /// re-sorting leaves the header arrow disagreeing with the rows. The
+    /// only caller is `App::set_sort`, which does both.
+    pub(super) fn set_sort(&mut self, key: SortKey, desc: bool) {
+        self.sort_key = key;
+        self.sort_desc = desc;
+        self.stale = true;
+    }
+
+    /// Offer a key to the filter buffer. Returns whether it was consumed,
+    /// and marks the cache stale only if it was.
+    ///
+    /// This exists so callers don't have to reach for [`Self::filter_mut`]
+    /// just to *ask* — `TextInput::handle_key` returns false for every key
+    /// it doesn't handle (`Down`, `PageUp`, most Ctrl chords), and taking
+    /// `&mut` to find that out would mark the cache stale with nothing
+    /// changed and no rebuild to follow.
+    pub fn filter_handle_key(&mut self, key: KeyEvent) -> bool {
+        let consumed = self.filter.handle_key(key);
+        self.stale |= consumed;
+        consumed
     }
 
     /// Replace the filter buffer wholesale (`:filter`, saved views,
@@ -168,15 +207,23 @@ impl ViewState {
         self.app_colors = app_colors;
         self.stale_platforms = stale_platforms;
         self.stale = false;
+        self.logged_stale.set(false);
     }
 
-    /// Panics in debug builds, logs in release.
+    /// Panics in debug builds, logs once in release.
     ///
-    /// A stale read is a real bug — the operator is looking at rows that do
-    /// not match what they filtered for — but panicking inside the alternate
-    /// screen would take the whole TUI down and scribble over the terminal,
-    /// which is worse than one wrong frame. Tests run in debug, so this
-    /// fails loudly where it can be fixed.
+    /// A stale read is a real bug: the operator is looking at rows that
+    /// don't match what they filtered for. Debug builds — `cargo test` and
+    /// `cargo run` / `--demo` — panic, because that's where it can still be
+    /// fixed and a developer needs to see it. Shipped release builds don't:
+    /// a panic inside the alternate screen takes the TUI down and scribbles
+    /// over the operator's terminal, which is worse than one wrong frame.
+    ///
+    /// The log fires once per stale episode, not once per read. All four
+    /// accessors funnel through here and `draw_table` hits several of them
+    /// per row per frame, so an unguarded `error!` would write thousands of
+    /// lines to `~/.cache/ebman/ebman.log` for as long as the flag is set.
+    /// [`Self::store`] re-arms it.
     fn assert_fresh(&self) {
         if self.stale {
             debug_assert!(
@@ -184,7 +231,12 @@ impl ViewState {
                 "read a stale view cache: an input changed without a following \
                  App::rebuild_view()"
             );
-            tracing::error!("stale view cache read — rows may not match the filter");
+            if !self.logged_stale.replace(true) {
+                tracing::error!(
+                    "stale view cache read — the table may not match the active \
+                     filter until the next rebuild"
+                );
+            }
         }
     }
 }

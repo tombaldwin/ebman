@@ -62,17 +62,25 @@ every call is a spawned task that reports back as an `AppMsg`.
 
 ## The four rules
 
-None of these are enforced by the compiler. Three of them have bitten.
+The compiler won't catch you breaking these. Rule 1 is the exception — the
+type system now does most of the work there, and the story of how that came
+about is in `src/app/view_state.rs`. Three of the four have bitten.
 
 **1. Mutating view state means rebuilding the view.**
 The table `ui` draws is a filtered, optionally grouped projection of
 `environments`, plus two per-row lookup maps. It's cached, and
 [`ViewState`](src/app/view_state.rs) is what keeps the cache honest: the
 derived slices are private, changing `filter` or `grouped` marks them stale
-automatically, and reading a stale one trips a `debug_assert`. The inputs
-`ViewState` doesn't own — `environments`, `aliases`, `latest_stacks`, the
-theme palette — still need an explicit `view.invalidate()` before
-`rebuild_view()`.
+automatically, and reading a stale one trips a `debug_assert` (and logs once
+in release). Sort is private too: `App::set_sort` is the only way to change
+it and it always re-sorts, so the header arrow can't disagree with the rows.
+The inputs `ViewState` doesn't own — `environments`, `aliases`,
+`latest_stacks`, the theme palette — still need an explicit
+`view.invalidate()` before `rebuild_view()`.
+
+One trap worth naming: `filter_mut()` marks the cache stale on the *borrow*,
+not on an actual edit. If you only want to offer a key to the buffer, use
+`filter_handle_key`, which marks it stale only when the key was consumed.
 
 **2. Async results check `generation`.**
 Every spawned task captures the `generation` it launched at. If the operator

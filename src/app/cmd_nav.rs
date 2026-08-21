@@ -126,13 +126,11 @@ impl App {
         };
         match SortKey::parse(key) {
             Some(k) => {
-                self.view.sort_key = k;
-                self.view.sort_desc = matches!(rest.get(1), Some(&"desc"));
-                self.resort_envs();
+                self.set_sort(k, matches!(rest.get(1), Some(&"desc")));
                 self.status_message = Some(format!(
                     "sort: {} ({})",
-                    self.view.sort_key.label(),
-                    if self.view.sort_desc { "desc" } else { "asc" }
+                    self.view.sort_key().label(),
+                    if self.view.sort_desc() { "desc" } else { "asc" }
                 ));
             }
             None => self.error_message = Some(format!("unknown sort key: {key}")),

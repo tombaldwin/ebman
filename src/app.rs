@@ -1997,8 +1997,8 @@ impl App {
             },
             sort: Some(format!(
                 "{}:{}",
-                self.view.sort_key.label(),
-                if self.view.sort_desc { "desc" } else { "asc" }
+                self.view.sort_key().label(),
+                if self.view.sort_desc() { "desc" } else { "asc" }
             )),
             grouped: Some(self.view.grouped()),
             redact: Some(self.view.redact),

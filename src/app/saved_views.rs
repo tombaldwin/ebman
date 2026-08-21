@@ -11,8 +11,8 @@ pub(crate) fn encode_view(app: &App) -> String {
     }
     parts.push(format!(
         "sort={}:{}",
-        app.view.sort_key.label(),
-        if app.view.sort_desc { "desc" } else { "asc" }
+        app.view.sort_key().label(),
+        if app.view.sort_desc() { "desc" } else { "asc" }
     ));
     parts.push(format!("grouped={}", app.view.grouped()));
     let scope = match app.scope {
@@ -72,8 +72,7 @@ pub(crate) fn apply_view(app: &mut App, snap: &str) {
             "filter" => new_filter = v.trim().to_string(),
             "sort" => {
                 let (key, desc) = parse_sort(Some(v.trim()));
-                app.view.sort_key = key;
-                app.view.sort_desc = desc;
+                app.set_sort(key, desc);
             }
             "grouped" => app.view.set_grouped(v.trim().eq_ignore_ascii_case("true")),
             "scope" => {
