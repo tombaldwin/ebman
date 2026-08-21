@@ -245,7 +245,7 @@ impl App {
                             let detail = if dropped_locally > 0 {
                                 format!(
                                     " ({dropped_locally} more fetched but beyond the \
-                                     overlay's {} -event buffer)",
+                                     overlay's {}-event buffer)",
                                     crate::app::EVENT_TAIL_MAX_EVENTS
                                 )
                             } else {

@@ -1180,4 +1180,46 @@ mod tests {
              Either remove them from the registry or add the matching `\"name\" => ...` arm."
         );
     }
+    #[test]
+    fn command_names_cited_in_prose_actually_exist() {
+        // CI pins the registry to the dispatch arms but not to prose,
+        // so `:alarm-add` — which does not exist; the command is
+        // `:alarm-create` — was written into the config docs and four
+        // source comments and nothing noticed. An operator whose alarms
+        // are invisible reads that doc, types the name, and gets an
+        // unknown-command error.
+        let sources = [
+            include_str!("config.rs"),
+            include_str!("../docs/configuration.md"),
+            include_str!("../docs/commands.md"),
+        ];
+        let known: std::collections::HashSet<&str> = all_names().into_iter().collect();
+        let mut bad: Vec<String> = Vec::new();
+        for src in sources {
+            for cap in src.split('`') {
+                let Some(name) = cap.strip_prefix(':') else {
+                    continue;
+                };
+                // Only bare `:name` mentions — not `:name ARG` usage
+                // lines, which carry their own formatting.
+                let name = name.trim();
+                if name.is_empty()
+                    || !name
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+                {
+                    continue;
+                }
+                if !known.contains(name) {
+                    bad.push(format!(":{name}"));
+                }
+            }
+        }
+        bad.sort();
+        bad.dedup();
+        assert!(
+            bad.is_empty(),
+            "prose cites commands that don't exist: {bad:?}"
+        );
+    }
 }

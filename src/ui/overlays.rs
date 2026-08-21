@@ -716,11 +716,7 @@ pub(super) fn draw_event_tail_overlay(f: &mut Frame, area: Rect, app: &App) {
             .at
             .map(|at| at.format("%H:%M:%S").to_string())
             .unwrap_or_else(|| "--:--:--".into());
-        let sev_style = match ev.severity.as_str() {
-            "ERROR" | "FATAL" => Style::default().fg(theme.health_red),
-            "WARN" => Style::default().fg(theme.health_yellow),
-            _ => Style::default().fg(theme.muted),
-        };
+        let sev_style = crate::ui::event_severity_style(&ev.severity, theme);
         lines.push(Line::from(vec![
             Span::styled(format!("{ts}  "), Style::default().fg(theme.muted)),
             Span::styled(format!("{:<5} ", ev.severity), sev_style),
@@ -1237,11 +1233,7 @@ pub(super) fn draw_why_red_overlay(f: &mut Frame, area: Rect, app: &mut App) {
                     let when =
                         e.at.map(|t| t.with_timezone(&chrono::Local).format("%H:%M").to_string())
                             .unwrap_or_else(|| "??:??".into());
-                    let sev_style = match e.severity.to_uppercase().as_str() {
-                        "ERROR" => Style::default().fg(theme.health_red),
-                        "WARN" => Style::default().fg(theme.health_yellow),
-                        _ => Style::default().fg(theme.muted),
-                    };
+                    let sev_style = crate::ui::event_severity_style(&e.severity, theme);
                     items.push((
                         crate::app::WhyItem::Describe(format_why_event(e)),
                         lines.len(),
