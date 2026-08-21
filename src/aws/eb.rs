@@ -167,7 +167,7 @@ pub struct ConfigOption {
     pub max_length: Option<i32>,
 }
 
-fn map_env(e: aws_sdk_elasticbeanstalk::types::EnvironmentDescription) -> Environment {
+pub(super) fn map_env(e: aws_sdk_elasticbeanstalk::types::EnvironmentDescription) -> Environment {
     let solution_stack = e.solution_stack_name.clone().unwrap_or_default();
     let raw_platform = e
         .solution_stack_name
@@ -241,7 +241,7 @@ pub(crate) fn platform_branch_from(stack_or_arn: &str) -> String {
 /// Compare two dotted version strings semver-ish. Numeric tokens compared
 /// numerically; non-numeric tails fall back to string comparison. Returns
 /// `Ordering` so this can drive `sort_by`.
-fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+pub(super) fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     let parse = |s: &str| {
         s.split('.')
@@ -422,6 +422,30 @@ pub(crate) fn normalize_tier(name: &str) -> String {
         "Worker" => "Worker".into(),
         other => other.to_string(),
     }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct WorkerQueues {
+    pub main_url: Option<String>,
+    pub dlq_url: Option<String>,
+    pub main_stats: Option<QueueStats>,
+    pub dlq_stats: Option<QueueStats>,
+}
+
+/// Result of `fetch_env_vpc_context` — the env's VPC plus the option-
+/// settings selections the `:subnets` / `:elb-subnets` / `:security-groups`
+/// pickers need for their pre-fill. Each field is `None` / empty when the
+/// env doesn't override that option (EB uses its account-default in that
+/// case).
+#[derive(Clone, Debug, Default)]
+pub struct EnvVpcContext {
+    pub vpc_id: Option<String>,
+    pub subnets: Vec<String>,
+    /// ELB subnets (`aws:ec2:vpc.ELBSubnets`). Web-tier envs typically
+    /// attach the ELB to a separate subnet set than the instance subnets;
+    /// worker envs leave this empty.
+    pub elb_subnets: Vec<String>,
+    pub security_groups: Vec<String>,
 }
 
 impl AwsClient {
@@ -836,6 +860,26 @@ impl AwsClient {
         Ok(out)
     }
 
+    /// Fetch every settable EB option for an env — namespace, name,
+    /// current value (when set), default, type, constraints.
+    ///
+    /// Two SDK calls correlated by (namespace, name):
+    ///
+    ///   - `describe_configuration_options` is the canonical
+    ///     "what's the full config vocabulary for this env's
+    ///     platform?" API. Returns ~hundreds of option metadata
+    ///     rows (default value, value type, change severity,
+    ///     constraints) — but no current values.
+    ///   - `describe_configuration_settings` returns the current
+    ///     values for *every* option, including ones still at
+    ///     their default.
+    ///
+    /// Merged on namespace+name so each row carries both the
+    /// metadata and the live value. This is what closes the
+    /// operator's "how do I know what I can set?" question.
+    /// Caller should treat as on-demand (run via `:options`), not
+    /// part of the background refresh — both calls are slow for
+    /// platforms with deep option trees.
     pub async fn fetch_env_configuration_options(
         &self,
         application_name: &str,

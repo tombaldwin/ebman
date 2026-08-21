@@ -81,12 +81,26 @@ pub fn parse_replay_spec(input: &str) -> Option<ReplaySpec> {
     if num <= 0 {
         return None;
     }
+    // `Duration::minutes/hours/days` panic on overflow, and this input
+    // comes straight off an operator prompt — "999999999999d" would take
+    // the TUI down inside the alternate screen. `try_*` rejects instead.
+    //
+    // The MAX_WINDOW bound is the second half: a window that builds a
+    // valid Duration can still panic later, when `select_replay_indices`
+    // evaluates `now - window` past chrono's ±262,000-year DateTime
+    // range. 100 years is far beyond any real DLQ window.
+    //
+    // Same grammar and the same two guards as `aws::parse_window_ms`.
+    const MAX_WINDOW_DAYS: i64 = 100 * 365;
     let window = match unit {
-        'm' => Duration::minutes(num),
-        'h' => Duration::hours(num),
-        'd' => Duration::days(num),
+        'm' => Duration::try_minutes(num),
+        'h' => Duration::try_hours(num),
+        'd' => Duration::try_days(num),
         _ => return None,
-    };
+    }?;
+    if window > Duration::try_days(MAX_WINDOW_DAYS)? {
+        return None;
+    }
     Some(ReplaySpec::Within(window))
 }
 
@@ -148,6 +162,21 @@ mod tests {
         assert_eq!(parse_replay_spec("12y"), None); // unknown unit
         assert_eq!(parse_replay_spec("abc"), None);
         assert_eq!(parse_replay_spec("h"), None); // no number
+    }
+
+    #[test]
+    fn parse_replay_spec_rejects_windows_that_would_panic_chrono() {
+        // `Duration::days` panics past its bounds, and this input comes
+        // off an operator prompt — a panic here kills the TUI with the
+        // terminal still in the alternate screen.
+        assert_eq!(parse_replay_spec("999999999999d"), None);
+        assert_eq!(parse_replay_spec("999999999999h"), None);
+        assert_eq!(parse_replay_spec("999999999999m"), None);
+        // Builds a valid Duration, but `now - window` would overflow.
+        assert_eq!(parse_replay_spec("100000000d"), None);
+        // And the bound doesn't reject anything an operator would type.
+        assert!(parse_replay_spec("90d").is_some());
+        assert!(parse_replay_spec("36500d").is_some());
     }
 
     fn msg(id: &str, mins_ago: Option<i64>, now: DateTime<Utc>) -> QueueMessage {

@@ -37,15 +37,16 @@ pub struct MetricSeries {
 /// alias keeps call-sites tidy.
 pub type CustomMetricQuery = (String, String, String, String, Vec<(String, String)>);
 
-/// Convention-based DLQ derivation for EB-managed worker queues. EB names the
-/// main queue `awseb-<env-id>-<random>` and the DLQ `awseb-<env-id>-<random>-dlq`.
-/// If the main queue URL doesn't match the pattern, returns None and the caller
-/// just shows no DLQ.
-fn to_smithy(d: DateTime<Utc>) -> aws_sdk_cloudwatch::primitives::DateTime {
+/// `chrono` → the CloudWatch SDK's own timestamp type. Second
+/// granularity is all the metric APIs accept.
+pub(super) fn to_smithy(d: DateTime<Utc>) -> aws_sdk_cloudwatch::primitives::DateTime {
     aws_sdk_cloudwatch::primitives::DateTime::from_secs(d.timestamp())
 }
 
 impl AwsClient {
+    /// Describe metric alarms whose first dimension references the given env.
+    /// CloudWatch doesn't expose a server-side filter by dimension, so we pull
+    /// alarms in the AWS/ElasticBeanstalk namespace and filter client-side.
     pub async fn list_alarms_for_env(&self, env_name: &str) -> Result<Vec<CwAlarm>> {
         let mut out = Vec::new();
         let mut next_token: Option<String> = None;

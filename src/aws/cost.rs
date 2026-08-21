@@ -1,6 +1,9 @@
-//! Cost Explorer: per-environment spend. Global service, pinned to
-//! us-east-1, and lazily initialised so operators who never run
-//! `:cost on` don't pay for it.
+//! Cost Explorer: per-environment spend.
+//!
+//! Global service — [`cost_explorer_client`] pins it to `us-east-1`,
+//! which is the only place it endpoints. The client is built eagerly
+//! in every `AwsClient` constructor, so `:cost on` costs nothing extra
+//! at query time but every session pays the construction.
 
 use super::*;
 
@@ -10,7 +13,7 @@ use super::*;
 /// any other region returns an empty result with no error, which is
 /// exactly the silent failure the operator never debugs. Override
 /// region here so the dep can't drift.
-pub(crate) fn cost_explorer_client(base: &SdkConfig) -> CostExplorerClient {
+pub(super) fn cost_explorer_client(base: &SdkConfig) -> CostExplorerClient {
     let cfg = base.to_builder().region(Region::new("us-east-1")).build();
     CostExplorerClient::new(&cfg)
 }
@@ -27,9 +30,6 @@ pub struct EnvCost {
 }
 
 impl AwsClient {
-    /// Describe metric alarms whose first dimension references the given env.
-    /// CloudWatch doesn't expose a server-side filter by dimension, so we pull
-    /// alarms in the AWS/ElasticBeanstalk namespace and filter client-side.
     /// Per-env monthly cost from AWS Cost Explorer. One round trip;
     /// returns a row per env tag value the Cost Explorer API saw in
     /// the trailing-30-day window.

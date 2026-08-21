@@ -3,22 +3,6 @@
 
 use super::*;
 
-/// Result of `fetch_env_vpc_context` — the env's VPC plus the option-
-/// settings selections the `:subnets` / `:elb-subnets` / `:security-groups`
-/// pickers need for their pre-fill. Each field is `None` / empty when the
-/// env doesn't override that option (EB uses its account-default in that
-/// case).
-#[derive(Clone, Debug, Default)]
-pub struct EnvVpcContext {
-    pub vpc_id: Option<String>,
-    pub subnets: Vec<String>,
-    /// ELB subnets (`aws:ec2:vpc.ELBSubnets`). Web-tier envs typically
-    /// attach the ELB to a separate subnet set than the instance subnets;
-    /// worker envs leave this empty.
-    pub elb_subnets: Vec<String>,
-    pub security_groups: Vec<String>,
-}
-
 /// One subnet in a VPC. Used by `:subnets` to populate the picker.
 #[derive(Clone, Debug)]
 pub struct SubnetInfo {

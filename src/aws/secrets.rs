@@ -18,42 +18,6 @@ pub struct SecretSummary {
 }
 
 impl AwsClient {
-    /// Fetch every settable EB option for an env — namespace, name,
-    /// current value (when set), default, type, constraints.
-    ///
-    /// Two SDK calls correlated by (namespace, name):
-    ///
-    ///   - `describe_configuration_options` is the canonical
-    ///     "what's the full config vocabulary for this env's
-    ///     platform?" API. Returns ~hundreds of option metadata
-    ///     rows (default value, value type, change severity,
-    ///     constraints) — but no current values.
-    ///   - `describe_configuration_settings` returns the current
-    ///     values for *every* option, including ones still at
-    ///     their default.
-    ///
-    /// Merged on namespace+name so each row carries both the
-    /// metadata and the live value. This is what closes the
-    /// operator's "how do I know what I can set?" question.
-    /// Caller should treat as on-demand (run via `:options`), not
-    /// part of the background refresh — both calls are slow for
-    /// platforms with deep option trees.
-    /// Call `iam:SimulatePrincipalPolicy` for a role + action list.
-    /// Returns the per-action decision (allowed / explicitDeny /
-    /// implicitDeny), matched statements, and SCP / permission-
-    /// boundary blocker flags. Powers `:explain`.
-    ///
-    /// `resource_arns` defaults to `["*"]` when empty — most EB
-    /// AccessDenied errors don't carry a resource ARN that would
-    /// affect the decision, and the unscoped check still surfaces
-    /// "the role doesn't have this action at all" cases which is
-    /// what the operator usually wants. Pass real ARNs when you
-    /// want to evaluate resource-scoped policies.
-    ///
-    /// Errors out of the SimulatePrincipalPolicy itself usually
-    /// mean the caller lacks `iam:SimulatePrincipalPolicy` on the
-    /// target role — common with assumed-role sessions that don't
-    /// have IAM perms. The renderer surfaces that as a clear hint.
     /// List Secrets Manager secrets in the active region.
     /// `name_filter` is an optional substring match against the
     /// secret name (case-sensitive — Secrets Manager's

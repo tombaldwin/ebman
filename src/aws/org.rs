@@ -1,5 +1,9 @@
 //! AWS Organizations: enumerating member accounts for the
-//! multi-account overlays. Global service, pinned to us-east-1.
+//! multi-account overlays.
+//!
+//! The service is global, but the client is built from the operator's
+//! own `SdkConfig` — unlike IAM and Cost Explorer, nothing here pins a
+//! region; the SDK's endpoint rules route it.
 
 use super::*;
 

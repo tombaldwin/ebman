@@ -4,14 +4,6 @@
 use super::*;
 
 #[derive(Clone, Debug, Default)]
-pub struct WorkerQueues {
-    pub main_url: Option<String>,
-    pub dlq_url: Option<String>,
-    pub main_stats: Option<QueueStats>,
-    pub dlq_stats: Option<QueueStats>,
-}
-
-#[derive(Clone, Debug, Default)]
 pub struct QueueStats {
     pub visible: i64,
     pub in_flight: i64,
@@ -27,6 +19,10 @@ pub struct QueueMessage {
     pub sent_at: Option<DateTime<Utc>>,
 }
 
+/// Convention-based DLQ derivation for EB-managed worker queues. EB names the
+/// main queue `awseb-<env-id>-<random>` and the DLQ `awseb-<env-id>-<random>-dlq`.
+/// If the main queue URL doesn't match the pattern, returns None and the caller
+/// just shows no DLQ.
 pub(crate) fn derive_dlq_url(main: &str) -> Option<String> {
     let trimmed = main.trim_end_matches('/');
     if trimmed.ends_with("-dlq") {
