@@ -100,7 +100,9 @@ ebman is k9s-for-EB: keyboard-driven, drill-down-first, focused on operators who
 - [Fonts](docs/fonts.md) — installing a Nerd Font for the Powerline glyph set.
 - [Headless interface](docs/headless.md) — `--control-socket` + `ebman ctl` for scripts / CI; the CLI subcommands; shell completion (`ebman completions`); and the **`ebman mcp serve`** MCP server (read tools + opt-in two-phase writes) for Claude Code and other agents — run `ebman mcp setup` for the exact registration commands.
 - [Safety, privacy, what's stored locally](docs/safety-and-privacy.md) — read-only mode, audit log, bug-report scrubbing.
+- [Architecture](ARCHITECTURE.md) — module map, how a keystroke becomes an AWS call, and the invariants the compiler doesn't enforce.
 - [Development](docs/development.md) — build / test / clippy + distribution notes.
+- [Contributing](CONTRIBUTING.md) — setup, the pre-PR checklist, and what makes a change easy to accept.
 
 ## License
 
