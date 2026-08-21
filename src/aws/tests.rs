@@ -2036,3 +2036,248 @@ async fn run_shell_command_synthesises_local_timeout_when_deadline_passes() {
     );
     assert_eq!(results[0].exit_code, -1);
 }
+
+// ── compare_versions: semver pre-release precedence ────────────────
+
+#[test]
+fn compare_versions_ranks_a_prerelease_below_its_release() {
+    use std::cmp::Ordering;
+    // The bug: cores tie, so the old code fell through to `a.cmp(b)`,
+    // and lexicographically "1.0.0-rc1" > "1.0.0" because it's a prefix
+    // extension. `:upgrade-platform` then offered an rc as the newest.
+    assert_eq!(compare_versions("1.0.0-rc1", "1.0.0"), Ordering::Less);
+    assert_eq!(compare_versions("1.0.0", "1.0.0-rc1"), Ordering::Greater);
+}
+
+#[test]
+fn compare_versions_orders_prereleases_among_themselves() {
+    use std::cmp::Ordering;
+    assert_eq!(compare_versions("1.0.0-rc1", "1.0.0-rc2"), Ordering::Less);
+    assert_eq!(
+        compare_versions("1.0.0-alpha", "1.0.0-beta"),
+        Ordering::Less
+    );
+    // Dot-separated identifiers compare left to right, numerically
+    // where both are numeric.
+    assert_eq!(
+        compare_versions("1.0.0-rc.2", "1.0.0-rc.10"),
+        Ordering::Less,
+        "numeric identifiers compare as numbers, not strings"
+    );
+    // Numeric ranks below alphanumeric.
+    assert_eq!(compare_versions("1.0.0-1", "1.0.0-alpha"), Ordering::Less);
+    // Fewer identifiers ranks below more, all else equal.
+    assert_eq!(compare_versions("1.0.0-rc", "1.0.0-rc.1"), Ordering::Less);
+    assert_eq!(compare_versions("1.0.0-rc1", "1.0.0-rc1"), Ordering::Equal);
+}
+
+#[test]
+fn compare_versions_still_orders_release_cores() {
+    use std::cmp::Ordering;
+    // Regression guard: the pre-release work must not disturb the
+    // ordering solution stacks rely on.
+    assert_eq!(compare_versions("1.0.1", "1.0.0"), Ordering::Greater);
+    assert_eq!(compare_versions("2.0.0", "1.9.9"), Ordering::Greater);
+    assert_eq!(compare_versions("1.10.0", "1.9.0"), Ordering::Greater);
+    assert_eq!(compare_versions("1.0", "1.0.0"), Ordering::Less);
+    assert_eq!(compare_versions("4.0.1", "4.0.1"), Ordering::Equal);
+}
+
+#[test]
+fn platform_picker_sorts_the_release_above_its_rc() {
+    // The end-to-end shape: `list_compatible_platforms` sorts
+    // descending with `compare_versions(&b.version, &a.version)`.
+    let mut versions = vec!["1.0.0", "1.0.0-rc1", "1.0.1", "1.0.0-rc2"];
+    versions.sort_by(|a, b| compare_versions(b, a));
+    assert_eq!(versions, vec!["1.0.1", "1.0.0", "1.0.0-rc2", "1.0.0-rc1"]);
+}
+
+// ── format_insights_results: column set and width measurement ──────
+
+fn insights_row(fields: &[(&str, &str)]) -> InsightsRow {
+    InsightsRow {
+        fields: fields
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect(),
+    }
+}
+
+#[test]
+fn insights_columns_are_the_union_across_rows_not_just_row_zero() {
+    // Insights omits an absent field from a record rather than
+    // returning it empty. Taking headers from row 0 alone dropped the
+    // `level` column for EVERY row whenever the first matching record
+    // happened to be an unstructured line — silently discarding data
+    // the operator asked for by name in `fields`.
+    let results = InsightsResults {
+        rows: vec![
+            insights_row(&[("@timestamp", "T1"), ("@message", "plain line")]),
+            insights_row(&[
+                ("@timestamp", "T2"),
+                ("@message", "structured"),
+                ("level", "ERROR"),
+            ]),
+        ],
+        records_scanned: 2,
+        records_matched: 2,
+    };
+    let out = format_insights_results(&results, "fields @timestamp, @message, level", &[]);
+    assert!(out.contains("level"), "level column must appear:\n{out}");
+    assert!(out.contains("ERROR"), "its value must render:\n{out}");
+    // The row that lacks the field renders blank, not omitted.
+    let body: Vec<&str> = out.lines().filter(|l| l.starts_with('T')).collect();
+    assert_eq!(body.len(), 2, "both rows render:\n{out}");
+    assert!(body[0].contains("plain line"));
+}
+
+#[test]
+fn insights_drops_the_synthetic_ptr_field_from_every_row() {
+    let results = InsightsResults {
+        rows: vec![
+            insights_row(&[("@ptr", "abc"), ("@message", "one")]),
+            insights_row(&[("@ptr", "def"), ("@message", "two")]),
+        ],
+        records_scanned: 2,
+        records_matched: 2,
+    };
+    let out = format_insights_results(&results, "q", &[]);
+    assert!(
+        !out.contains("@ptr"),
+        "@ptr must not reach the overlay:\n{out}"
+    );
+    assert!(!out.contains("abc"));
+}
+
+#[test]
+fn insights_column_widths_are_measured_in_chars_not_bytes() {
+    // A non-ASCII header measured with `len()` over-reserves (three
+    // bytes per `é`) while the padding and the separator count chars,
+    // so the rule under the header ran short and the columns stepped.
+    let results = InsightsResults {
+        rows: vec![insights_row(&[("réqüest", "x")])],
+        records_scanned: 1,
+        records_matched: 1,
+    };
+    let out = format_insights_results(&results, "q", &[]);
+    let lines: Vec<&str> = out.lines().collect();
+    let hdr = lines
+        .iter()
+        .position(|l| l.contains("réqüest"))
+        .expect("header row");
+    let header_cells = lines[hdr].trim_end().chars().count();
+    let sep_cells = lines[hdr + 1].chars().count();
+    assert_eq!(
+        header_cells,
+        sep_cells,
+        "separator must be exactly as wide as the header it underlines\nheader: {:?}\nsep:    {:?}",
+        lines[hdr],
+        lines[hdr + 1]
+    );
+}
+
+// ── STS expiry conversion ──────────────────────────────────────────
+
+#[test]
+fn sts_expiry_converts_a_normal_timestamp() {
+    let t = super::sts_expiry_to_system_time(1_700_000_000).expect("representable");
+    assert_eq!(
+        t.duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+        1_700_000_000
+    );
+}
+
+#[test]
+fn sts_expiry_refuses_values_it_cannot_represent() {
+    // The old `secs() as u64` wrapped these to ~1.8e19, which made
+    // `checked_add` return None, which `Credentials::new` reads as
+    // "never expires" — so a skewed clock silently produced a session
+    // that was never refreshed and failed every call after an hour.
+    for bad in [-1_i64, -1_700_000_000, i64::MIN] {
+        let err = super::sts_expiry_to_system_time(bad)
+            .expect_err("a negative expiry must be refused, not treated as never-expiring");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("unusable credential expiry"),
+            "error should say what happened: {msg}"
+        );
+    }
+    // Zero is the epoch — representable, but an hour-long STS session
+    // is never dated 1970, so it means the same thing. It converts
+    // rather than erroring; the SDK sees it as long expired and the
+    // refresh tick re-assumes, which is the safe direction.
+    assert!(super::sts_expiry_to_system_time(0).is_ok());
+}
+
+#[test]
+fn sts_expiry_never_wraps_a_large_value_into_the_past() {
+    // `SystemTime`'s range is platform-dependent and wide enough here
+    // that even `i64::MAX` seconds converts. That's fine — the failure
+    // this guards is the other direction, where `as u64` turned a
+    // NEGATIVE expiry into a huge one. Whatever the platform does with
+    // the top of the range, the result must never land before now.
+    if let Ok(t) = super::sts_expiry_to_system_time(i64::MAX) {
+        assert!(
+            t > std::time::SystemTime::now(),
+            "a far-future expiry must not wrap into the past"
+        );
+    }
+    // And the signature itself is the real guarantee: this returns
+    // `Result`, so there is no longer any input that yields a silent
+    // `None` expiry meaning "never expires".
+}
+
+// ── global-service endpoint partition ──────────────────────────────
+
+#[test]
+fn global_services_stay_inside_the_operators_partition() {
+    use super::global_service_region as g;
+    // Commercial — unchanged behaviour.
+    assert_eq!(g("us-east-1"), "us-east-1");
+    assert_eq!(g("eu-west-2"), "us-east-1");
+    assert_eq!(g("ap-southeast-2"), "us-east-1");
+    // GovCloud and China: hardcoding us-east-1 here was a
+    // cross-partition endpoint, so `:explain` and `:cost on` could
+    // never have worked for those operators.
+    assert_eq!(g("us-gov-west-1"), "us-gov-west-1");
+    assert_eq!(g("us-gov-east-1"), "us-gov-west-1");
+    assert_eq!(g("cn-north-1"), "cn-north-1");
+    assert_eq!(g("cn-northwest-1"), "cn-north-1");
+    // A region we've never heard of falls back to commercial rather
+    // than failing — same as before, and the common case.
+    assert_eq!(g(""), "us-east-1");
+    assert_eq!(g("mars-central-1"), "us-east-1");
+}
+
+#[test]
+fn global_service_region_never_crosses_a_partition() {
+    use super::global_service_region as g;
+    // The invariant, stated as a property rather than a table: the
+    // chosen endpoint must share the operator region's partition.
+    let partition = |r: &str| {
+        if r.starts_with("us-gov-") {
+            "aws-us-gov"
+        } else if r.starts_with("cn-") {
+            "aws-cn"
+        } else {
+            "aws"
+        }
+    };
+    for r in [
+        "us-east-1",
+        "eu-central-1",
+        "sa-east-1",
+        "us-gov-west-1",
+        "us-gov-east-1",
+        "cn-north-1",
+        "cn-northwest-1",
+    ] {
+        assert_eq!(
+            partition(g(r)),
+            partition(r),
+            "global endpoint for {r} left its partition"
+        );
+    }
+}

@@ -9,7 +9,13 @@ use super::*;
 /// here matches the Cost Explorer / Organizations pattern and
 /// makes the `:explain` code path's expectations explicit.
 pub(super) fn iam_client(base: &SdkConfig) -> IamClient {
-    let cfg = base.to_builder().region(Region::new("us-east-1")).build();
+    // Global service: endpoint in the operator's own partition, not
+    // unconditionally us-east-1. See `super::global_service_region`.
+    let region = base.region().map(|r| r.to_string()).unwrap_or_default();
+    let cfg = base
+        .to_builder()
+        .region(Region::new(super::global_service_region(&region)))
+        .build();
     IamClient::new(&cfg)
 }
 

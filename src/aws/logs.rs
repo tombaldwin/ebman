@@ -100,19 +100,31 @@ pub fn format_insights_results(
         out.push_str("(no rows matched the query)\n");
         return out;
     }
-    // Skip the synthetic `@ptr` Insights field — it's a record locator
-    // for the API to drill back to individual events, not useful in the
-    // operator-facing overlay. Drop it from every row consistently.
-    let headers: Vec<String> = results.rows[0]
-        .fields
-        .iter()
-        .map(|(k, _)| k.clone())
-        .filter(|k| k != "@ptr")
-        .collect();
+    // Column set is the UNION of every row's fields, in first-seen
+    // order. Insights omits an absent field from a record rather than
+    // returning it empty, so taking the columns from row 0 alone drops
+    // any field the first matching record happens not to carry — for
+    // every row, including the ones that do carry it. A row missing a
+    // field renders blank below, which is the honest presentation.
+    //
+    // Skip the synthetic `@ptr` field — a record locator for the API to
+    // drill back to individual events, not useful in the overlay.
+    let mut headers: Vec<String> = Vec::new();
+    for row in &results.rows {
+        for (k, _) in &row.fields {
+            if k != "@ptr" && !headers.iter().any(|h| h == k) {
+                headers.push(k.clone());
+            }
+        }
+    }
     // Per-column max-width pass — bounded at 60 cells so a single huge
     // message field doesn't push every other column off-screen.
+    //
+    // `chars().count()`, not `len()`: the values below are measured in
+    // chars and `{:<w$}` pads in chars, so a byte length here would
+    // over-reserve for a non-ASCII header and desync the separator.
     const COL_MAX: usize = 60;
-    let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
+    let mut widths: Vec<usize> = headers.iter().map(|h| h.chars().count()).collect();
     for row in &results.rows {
         for (i, h) in headers.iter().enumerate() {
             if let Some((_, v)) = row.fields.iter().find(|(k, _)| k == h) {

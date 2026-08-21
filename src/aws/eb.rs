@@ -243,13 +243,26 @@ pub(crate) fn platform_branch_from(stack_or_arn: &str) -> String {
 /// `Ordering` so this can drive `sort_by`.
 pub(super) fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     use std::cmp::Ordering;
+    // Split off any pre-release suffix at the first `-`. Solution-stack
+    // versions never have one (`stack_family_version` only accepts
+    // all-digit dot parts), so this only matters for operator-authored
+    // custom platform versions.
+    fn split(s: &str) -> (&str, Option<&str>) {
+        match s.split_once('-') {
+            Some((core, pre)) => (core, Some(pre)),
+            None => (s, None),
+        }
+    }
+    let (a_core, a_pre) = split(a);
+    let (b_core, b_pre) = split(b);
+
     let parse = |s: &str| {
         s.split('.')
-            .map(|p| p.split('-').next().unwrap_or(p).parse::<u64>().ok())
+            .map(|p| p.parse::<u64>().ok())
             .collect::<Vec<_>>()
     };
-    let av = parse(a);
-    let bv = parse(b);
+    let av = parse(a_core);
+    let bv = parse(b_core);
     for i in 0..av.len().max(bv.len()) {
         let aa = av.get(i).and_then(|x| *x);
         let bb = bv.get(i).and_then(|x| *x);
@@ -263,7 +276,52 @@ pub(super) fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
             (None, None) => break,
         }
     }
-    a.cmp(b)
+    // Cores tie. Semver: a pre-release ranks BELOW the release it
+    // precedes, so `1.0.0-rc1` must not be offered as newer than
+    // `1.0.0` in the platform-upgrade picker. The old code fell
+    // straight through to `a.cmp(b)` here, and lexicographically
+    // "1.0.0-rc1" > "1.0.0" because it's a prefix extension.
+    match compare_prerelease(a_pre, b_pre) {
+        Ordering::Equal => a.cmp(b),
+        o => o,
+    }
+}
+
+/// Semver pre-release precedence, for two versions whose cores are equal.
+///
+/// Absent beats present (a release outranks its own pre-release), then
+/// dot-separated identifiers compare left to right: numeric ones
+/// numerically, numeric below alphanumeric, alphanumeric ASCII-wise, and
+/// a shorter identifier list below a longer one when all else ties.
+fn compare_prerelease(a: Option<&str>, b: Option<&str>) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let (a, b) = match (a, b) {
+        (None, None) => return Ordering::Equal,
+        (None, Some(_)) => return Ordering::Greater,
+        (Some(_), None) => return Ordering::Less,
+        (Some(a), Some(b)) => (a, b),
+    };
+    let mut ai = a.split('.');
+    let mut bi = b.split('.');
+    loop {
+        match (ai.next(), bi.next()) {
+            (None, None) => return Ordering::Equal,
+            // Fewer identifiers ranks below more, all else equal.
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(x), Some(y)) => {
+                let o = match (x.parse::<u64>(), y.parse::<u64>()) {
+                    (Ok(nx), Ok(ny)) => nx.cmp(&ny),
+                    (Ok(_), Err(_)) => Ordering::Less,
+                    (Err(_), Ok(_)) => Ordering::Greater,
+                    (Err(_), Err(_)) => x.cmp(y),
+                };
+                if o != Ordering::Equal {
+                    return o;
+                }
+            }
+        }
+    }
 }
 
 /// Pure: roll up EB's per-bucket `InstanceHealthSummary` into the
