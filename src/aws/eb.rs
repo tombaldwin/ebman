@@ -167,6 +167,13 @@ pub struct ConfigOption {
     pub max_length: Option<i32>,
 }
 
+/// How many `DescribeEvents` pages one watermarked `:event-tail` poll
+/// will follow. At `EVENT_TAIL_POLL_BATCH` (300) per page that is 1500
+/// events per 5-second poll — far past any real fleet, so the cap is a
+/// runaway guard rather than a limit anyone should hit. Reaching it
+/// logs a warning.
+const EVENT_TAIL_MAX_PAGES: usize = 5;
+
 pub(super) fn map_env(e: aws_sdk_elasticbeanstalk::types::EnvironmentDescription) -> Environment {
     let solution_stack = e.solution_stack_name.clone().unwrap_or_default();
     let raw_platform = e
@@ -508,11 +515,11 @@ pub struct EnvVpcContext {
 
 impl AwsClient {
     pub async fn list_events(&self, max: i32) -> Result<Vec<Event>> {
-        self.list_events_inner(None, None, max).await
+        self.list_events_inner(None, None, max, 1).await
     }
 
     pub async fn list_events_for_env(&self, env_name: &str, max: i32) -> Result<Vec<Event>> {
-        self.list_events_inner(Some(env_name.to_string()), None, max)
+        self.list_events_inner(Some(env_name.to_string()), None, max, 1)
             .await
     }
 
@@ -521,28 +528,67 @@ impl AwsClient {
     /// batch small so a busy fleet doesn't re-ship its whole history
     /// every cycle.
     pub async fn list_events_since(&self, since_ms: i64, max: i32) -> Result<Vec<Event>> {
-        self.list_events_inner(None, Some(since_ms), max).await
+        self.list_events_inner(None, Some(since_ms), max, EVENT_TAIL_MAX_PAGES)
+            .await
     }
 
+    /// Shared body for the three `list_events*` entry points.
+    ///
+    /// `max_pages` is what separates them. `DescribeEvents` returns
+    /// newest-first, so a single page is exactly right for the two
+    /// display callers — they want "the newest N", and following tokens
+    /// would just cost API calls for events nobody renders.
+    ///
+    /// The watermarked caller is different: `:event-tail` advances
+    /// `start_time` past the newest event it received, so anything left
+    /// behind a dropped `next_token` is never returned by any later
+    /// poll. During a rolling deploy that exceeds one batch, the lines
+    /// the operator opened the tail to watch were the ones lost, with
+    /// no error and no gap marker. It follows pages instead.
     async fn list_events_inner(
         &self,
         env_name: Option<String>,
         since_ms: Option<i64>,
         max: i32,
+        max_pages: usize,
     ) -> Result<Vec<Event>> {
-        let mut req = self.client.describe_events().max_records(max);
-        if let Some(n) = env_name {
-            req = req.environment_name(n);
+        let mut raw = Vec::new();
+        let mut next_token: Option<String> = None;
+        let mut pages = 0usize;
+        loop {
+            let mut req = self.client.describe_events().max_records(max);
+            if let Some(n) = env_name.clone() {
+                req = req.environment_name(n);
+            }
+            if let Some(ms) = since_ms {
+                req = req.start_time(aws_sdk_elasticbeanstalk::primitives::DateTime::from_millis(
+                    ms,
+                ));
+            }
+            if let Some(t) = next_token.take() {
+                req = req.next_token(t);
+            }
+            let resp = req.send().await?;
+            raw.extend(resp.events.unwrap_or_default());
+            pages += 1;
+            match resp.next_token {
+                Some(t) if !t.is_empty() && pages < max_pages => next_token = Some(t),
+                Some(t) if !t.is_empty() => {
+                    // Cap hit with more behind it. Say so rather than
+                    // letting the caller's watermark stride over them.
+                    tracing::warn!(
+                        target: "ebman::aws",
+                        pages,
+                        collected = raw.len(),
+                        "DescribeEvents page cap reached with more pages available —                          older events in this window were not fetched"
+                    );
+                    let _ = t;
+                    break;
+                }
+                _ => break,
+            }
         }
-        if let Some(ms) = since_ms {
-            req = req.start_time(aws_sdk_elasticbeanstalk::primitives::DateTime::from_millis(
-                ms,
-            ));
-        }
-        let resp = req.send().await?;
-        let events = resp
-            .events
-            .unwrap_or_default()
+        let events = raw
             .into_iter()
             .map(|e| Event {
                 at: e

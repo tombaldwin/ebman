@@ -102,22 +102,54 @@ impl AwsClient {
         } else {
             resource_arns.to_vec()
         };
-        let mut req = self
-            .iam
-            .simulate_principal_policy()
-            .policy_source_arn(principal_arn);
-        for a in action_names {
-            req = req.action_names(a);
+        // Follow `marker` while `is_truncated`. IAM can truncate below
+        // MaxItems, and `:explain` is a surface where an action's
+        // *absence* from the table reads as "not the problem" — so a
+        // silently dropped page turns a denied action into a
+        // non-finding. The cap is a runaway guard; hitting it warns.
+        const MAX_PAGES: usize = 10;
+        let mut raw = Vec::new();
+        let mut marker: Option<String> = None;
+        let mut pages = 0usize;
+        loop {
+            let mut req = self
+                .iam
+                .simulate_principal_policy()
+                .policy_source_arn(principal_arn);
+            for a in action_names {
+                req = req.action_names(a);
+            }
+            for r in &resources {
+                req = req.resource_arns(r);
+            }
+            if let Some(m) = marker.take() {
+                req = req.marker(m);
+            }
+            let resp = req
+                .send()
+                .await
+                .wrap_err("SimulatePrincipalPolicy failed")?;
+            raw.extend(resp.evaluation_results.unwrap_or_default());
+            pages += 1;
+            match resp.marker {
+                Some(m) if resp.is_truncated && !m.is_empty() && pages < MAX_PAGES => {
+                    marker = Some(m);
+                }
+                Some(m) if resp.is_truncated && !m.is_empty() => {
+                    tracing::warn!(
+                        target: "ebman::aws",
+                        pages,
+                        collected = raw.len(),
+                        "SimulatePrincipalPolicy page cap reached — some action \
+                         decisions were not fetched"
+                    );
+                    break;
+                }
+                _ => break,
+            }
         }
-        for r in &resources {
-            req = req.resource_arns(r);
-        }
-        let resp = req
-            .send()
-            .await
-            .wrap_err("SimulatePrincipalPolicy failed")?;
         let mut out: Vec<IamSimResult> = Vec::new();
-        for r in resp.evaluation_results.unwrap_or_default() {
+        for r in raw {
             let action = r.eval_action_name;
             let resource = r.eval_resource_name.unwrap_or_default();
             let decision = r.eval_decision.as_str().to_string();
