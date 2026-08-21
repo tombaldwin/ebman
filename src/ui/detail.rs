@@ -1701,9 +1701,8 @@ pub(super) fn config_editable_row(
 
     // Value cell — the in-place editor when this row's *value* is
     // being edited, otherwise the plain value.
-    let value_span = match editing.map(|e| e.mode) {
-        Some(crate::app::ConfigEditMode::Value) => {
-            let e = editing.expect("editing is Some in this arm");
+    let value_span = match editing {
+        Some(e) if e.mode == crate::app::ConfigEditMode::Value => {
             let (before, after) = e.split_at_caret();
             Span::styled(
                 format!("{before}{}{after}", caret_glyph(theme)),

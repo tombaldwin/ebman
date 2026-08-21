@@ -931,51 +931,57 @@ impl App {
             let halt = result.is_err();
             let n = flow.regions.len();
             let next_eligible = (next_start..n).find(|&i| flow.regions[i].env_found == Some(true));
-            let done = halt || next_eligible.is_none();
-            if done {
-                flow.state = crate::mode_action::RolloutState::Done;
-                let n_ok = flow
-                    .regions
-                    .iter()
-                    .filter(|r| matches!(r.outcome, Some(Ok(()))))
-                    .count();
-                let n_err = flow
-                    .regions
-                    .iter()
-                    .filter(|r| matches!(r.outcome, Some(Err(_))))
-                    .count();
-                let n_skipped = flow.regions.iter().filter(|r| r.outcome.is_none()).count();
-                if halt {
-                    self.error_message = Some(format!(
-                        "rollout {}: halted ({n_ok} ok, {n_err} failed, {n_skipped} skipped)",
-                        flow.rollout_id
-                    ));
-                } else {
-                    self.status_message = Some(format!(
-                        "rollout {}: complete ({n_ok}/{n} regions ok)",
-                        flow.rollout_id
-                    ));
+            // Halting, or running out of eligible regions, ends the
+            // rollout; otherwise `next` is the region to dispatch. Both
+            // facts come from the same `Option`, so neither branch has
+            // to re-derive the other's precondition.
+            let next_up = if halt { None } else { next_eligible };
+            match next_up {
+                Some(next) => {
+                    flow.state = crate::mode_action::RolloutState::Dispatching { next_index: next };
+                    let next_region = flow.regions[next].region.clone();
+                    (
+                        true,
+                        Some(next_region),
+                        flow.env_name.clone(),
+                        flow.version_label.clone(),
+                        flow.wait_for_green_secs,
+                        flow.rollout_id.clone(),
+                    )
                 }
-                (
-                    false,
-                    None,
-                    String::new(),
-                    String::new(),
-                    None,
-                    String::new(),
-                )
-            } else {
-                let next = next_eligible.expect("checked by done");
-                flow.state = crate::mode_action::RolloutState::Dispatching { next_index: next };
-                let next_region = flow.regions[next].region.clone();
-                (
-                    true,
-                    Some(next_region),
-                    flow.env_name.clone(),
-                    flow.version_label.clone(),
-                    flow.wait_for_green_secs,
-                    flow.rollout_id.clone(),
-                )
+                None => {
+                    flow.state = crate::mode_action::RolloutState::Done;
+                    let n_ok = flow
+                        .regions
+                        .iter()
+                        .filter(|r| matches!(r.outcome, Some(Ok(()))))
+                        .count();
+                    let n_err = flow
+                        .regions
+                        .iter()
+                        .filter(|r| matches!(r.outcome, Some(Err(_))))
+                        .count();
+                    let n_skipped = flow.regions.iter().filter(|r| r.outcome.is_none()).count();
+                    if halt {
+                        self.error_message = Some(format!(
+                            "rollout {}: halted ({n_ok} ok, {n_err} failed, {n_skipped} skipped)",
+                            flow.rollout_id
+                        ));
+                    } else {
+                        self.status_message = Some(format!(
+                            "rollout {}: complete ({n_ok}/{n} regions ok)",
+                            flow.rollout_id
+                        ));
+                    }
+                    (
+                        false,
+                        None,
+                        String::new(),
+                        String::new(),
+                        None,
+                        String::new(),
+                    )
+                }
             }
         };
         if should_continue {

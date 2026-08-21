@@ -475,7 +475,10 @@ impl App {
                         ));
                         return;
                     }
-                    1 => configs.into_iter().next().unwrap(),
+                    1 => match configs.into_iter().next() {
+                        Some(one) => one,
+                        None => return,
+                    },
                     _ => {
                         let names: Vec<String> = configs
                             .iter()
