@@ -114,36 +114,38 @@ pub struct AwsClient {
     ec2: Ec2Client,
     /// Organizations client. The service is global, but this is built
     /// from the operator's own `SdkConfig` — the SDK's endpoint rules
-    /// route it, nothing here pins a region.
+    /// route it, nothing here pins a region. Built on first use by
+    /// [`AwsClient::org`].
     org: std::sync::OnceLock<OrgClient>,
-    /// Cost Explorer client, pinned to `us-east-1` by
-    /// [`cost_explorer_client`] — Cost Explorer is global and only
-    /// endpoints there.
+    /// Cost Explorer client. Global service — [`cost_explorer_client`]
+    /// endpoints it in the operator's own partition (see
+    /// [`global_service_region`]).
     ///
-    /// Built eagerly in every constructor, despite what an earlier
-    /// comment here claimed: operators who never run `:cost on` still
-    /// pay for it, and it is the most expensive client to construct.
-    /// Making it genuinely lazy is tracked in `BACKLOG.md`.
+    /// Built on first use by [`AwsClient::cost`]: only `:cost on`
+    /// reaches it, and `list_environments_in_region` builds a whole
+    /// `AwsClient` per region per refresh tick.
     cost: std::sync::OnceLock<CostExplorerClient>,
     /// IAM client used by `:explain` to call
-    /// `iam:SimulatePrincipalPolicy`. IAM is global, and
-    /// [`iam_client`] pins it to `us-east-1`.
+    /// `iam:SimulatePrincipalPolicy`. Global service — [`iam_client`]
+    /// endpoints it in the operator's own partition. Built on first
+    /// use by [`AwsClient::iam`].
     iam: std::sync::OnceLock<IamClient>,
     /// Secrets Manager client. Region-scoped (unlike IAM and Cost
-    /// Explorer, which this crate pins to `us-east-1`) — operators
-    /// read secrets from the same region as the env they're
-    /// configuring.
+    /// Explorer, which are endpointed per partition) — operators read
+    /// secrets from the same region as the env they're configuring.
+    /// Built on first use by [`AwsClient::secrets`].
     secrets: std::sync::OnceLock<SecretsClient>,
     /// ACM client. Region-scoped — `:listener-edit` lists the region's
-    /// certificates for the SSL-cert picker.
+    /// certificates for the SSL-cert picker. Built on first use by
+    /// [`AwsClient::acm`].
     acm: std::sync::OnceLock<AcmClient>,
     /// SSM client. Region-scoped — `:ssm-run` sends a shell command to
     /// the env's instances and aggregates the per-instance results.
+    /// Built on first use by [`AwsClient::ssm`].
     ///
-    /// Private like the rest: the mock-AWS tests that overwrite this
-    /// post-construction live in `aws::tests`, a descendant of this
-    /// module, so they reach it without `pub(crate)`. (It was
-    /// `pub(crate)` on the assumption they needed it; they don't.)
+    /// Private like the rest: the mock-AWS tests that seed this cell
+    /// live in `aws::tests`, a descendant of this module, so they
+    /// reach it without `pub(crate)`.
     ssm: std::sync::OnceLock<SsmClient>,
     config: SdkConfig,
     pub context: AwsContext,
@@ -384,9 +386,11 @@ impl AwsClient {
         s3: S3Client,
         ec2: Ec2Client,
     ) -> Self {
-        // A bare config is fine here — every sub-client is owned by the
-        // caller, so the only consumer of `self.config` is the lazy STS
-        // client in `verify_identity`, which our tests don't call.
+        // A bare config is fine here: the six positional sub-clients are
+        // owned by the caller, and the six lazy ones only read
+        // `self.config` if a test actually touches them without seeding
+        // the cell first — at which point it would fail at the network,
+        // which is the signal we want.
         let config = aws_config::SdkConfig::builder()
             .region(Region::new("us-east-1"))
             .behavior_version(aws_config::BehaviorVersion::latest())
@@ -473,6 +477,51 @@ impl AwsClient {
     }
 }
 
+/// The outcome of a paginated walk: what was collected, and whether the
+/// runaway cap cut it short.
+///
+/// `truncated` is not decoration. Some callers filter client-side —
+/// `list_alarms_for_env` and `list_secrets` scan the whole account and
+/// match afterwards — and for those a cut-short scan is
+/// indistinguishable from "nothing matched", which during triage reads
+/// as a finding. Those call [`Paged::complete`]; the rest take
+/// [`Paged::items`] and accept a shorter list.
+#[derive(Debug)]
+pub(crate) struct Paged<T> {
+    pub(crate) items: Vec<T>,
+    pub(crate) truncated: bool,
+}
+
+impl<T> Paged<T> {
+    /// The items, accepting that the walk may have been cut short.
+    pub(crate) fn items(self) -> Vec<T> {
+        self.items
+    }
+
+    /// The items, or an error if the walk was cut short.
+    ///
+    /// For listings that filter after collecting: returning a subset
+    /// there doesn't produce a shorter answer, it produces a wrong one.
+    /// An operator told "the scan was too large" can act on that; one
+    /// shown "no alarms" concludes alarms aren't the problem.
+    pub(crate) fn complete(self, what: &str) -> Result<Vec<T>> {
+        if self.truncated {
+            return Err(eyre!(
+                "{what}: more than {} pages to scan — refusing to report a \
+                 partial result, because this listing is filtered after \
+                 collection and a partial scan looks identical to no match",
+                MAX_PAGES
+            ));
+        }
+        Ok(self.items)
+    }
+}
+
+/// Far above any real result set — a runaway guard, not a limit.
+/// Listings that legitimately need bounding (the log and event tails,
+/// Cost Explorer) carry their own, tighter cap.
+const MAX_PAGES: usize = 100;
+
 /// Drive a token-paginated AWS listing to completion.
 ///
 /// Eleven listings across `aws/` hand-rolled the same loop — build the
@@ -487,15 +536,11 @@ impl AwsClient {
 /// copy — shared references are `Copy`, so the returned future borrows
 /// from them rather than from the closure, which is what lets a single
 /// `Fut` type work here without async closures.
-pub(crate) async fn paginate<T, F, Fut>(what: &'static str, mut page: F) -> Result<Vec<T>>
+pub(crate) async fn paginate<T, F, Fut>(what: &'static str, mut page: F) -> Result<Paged<T>>
 where
     F: FnMut(Option<String>) -> Fut,
     Fut: std::future::Future<Output = Result<(Vec<T>, Option<String>)>>,
 {
-    /// Far above any real result set — this is a runaway guard, not a
-    /// limit. Listings that legitimately need bounding (the log and
-    /// event tails, Cost Explorer) carry their own, tighter cap.
-    const MAX_PAGES: usize = 100;
     let mut items = Vec::new();
     let mut token: Option<String> = None;
     for _ in 0..MAX_PAGES {
@@ -503,7 +548,12 @@ where
         items.extend(batch);
         match next {
             Some(t) if !t.is_empty() => token = Some(t),
-            _ => return Ok(items),
+            _ => {
+                return Ok(Paged {
+                    items,
+                    truncated: false,
+                })
+            }
         }
     }
     tracing::warn!(
@@ -513,7 +563,10 @@ where
         collected = items.len(),
         "pagination cap reached — result may be incomplete"
     );
-    Ok(items)
+    Ok(Paged {
+        items,
+        truncated: true,
+    })
 }
 
 /// The region to endpoint a *global* AWS service in, given the region the
@@ -522,20 +575,31 @@ where
 /// IAM and Cost Explorer are global: they have one endpoint per partition,
 /// not per region. Both clients used to hardcode `us-east-1`, which is
 /// correct for the commercial partition and simply cannot work anywhere
-/// else — a GovCloud or China operator got a cross-partition endpoint, so
-/// `:explain` and `:cost on` failed outright.
+/// else — a GovCloud, China or ISO operator got a cross-partition
+/// endpoint, so `:explain` and `:cost on` failed outright.
 ///
-/// The property that matters here is staying inside the operator's
-/// partition. Within the right partition a wrong region still resolves;
-/// across partitions nothing does.
+/// The property that matters is staying inside the operator's partition.
+/// Within the right partition a wrong region still resolves; across
+/// partitions nothing does.
+///
+/// Prefix order matters: `us-isob-` and `us-isof-` both start with
+/// `us-iso`, so the longer prefixes are tested first.
 fn global_service_region(operator_region: &str) -> &'static str {
-    if operator_region.starts_with("us-gov-") {
-        "us-gov-west-1"
-    } else if operator_region.starts_with("cn-") {
-        "cn-north-1"
-    } else {
-        "us-east-1"
+    // (region prefix, that partition's global endpoint region)
+    const PARTITIONS: &[(&str, &str)] = &[
+        ("us-gov-", "us-gov-west-1"),
+        ("cn-", "cn-north-1"),
+        ("us-isob-", "us-isob-east-1"),
+        ("us-isof-", "us-isof-south-1"),
+        ("us-iso-", "us-iso-east-1"),
+        ("eu-isoe-", "eu-isoe-west-1"),
+    ];
+    for (prefix, global) in PARTITIONS {
+        if operator_region.starts_with(prefix) {
+            return global;
+        }
     }
+    "us-east-1"
 }
 
 /// Convert an STS credential expiry (seconds since the epoch, `i64`) into a
@@ -553,6 +617,13 @@ fn global_service_region(operator_region: &str) -> &'static str {
 /// Of the two readings of an expiry we can't parse, "never expires" is the
 /// dangerous one; failing the assume-role outright is recoverable and says
 /// what happened.
+///
+/// Note what "recoverable" means here, because an earlier version of this
+/// doc overstated it: nothing re-assumes automatically. `assume_role` has
+/// exactly one caller, `spawn_assume_role_switch`, reached only from an
+/// explicit `:account <name>`. The refresh tick reuses the existing
+/// client. So after the 1-hour STS cap every call fails with ExpiredToken
+/// until the operator re-runs `:account` — see `BACKLOG.md`.
 fn sts_expiry_to_system_time(secs: i64) -> Result<std::time::SystemTime> {
     u64::try_from(secs)
         .ok()

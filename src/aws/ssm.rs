@@ -91,7 +91,7 @@ impl AwsClient {
             // command still running fine. Bounded so a big fleet
             // doesn't hammer SSM's rate limit.
             const POLL_CONCURRENCY: usize = 10;
-            let responses: Vec<(String, _)> = futures::stream::iter(cycle.into_iter().map(|id| {
+            let mut responses = futures::stream::iter(cycle.into_iter().map(|id| {
                 let command_id = command_id.clone();
                 async move {
                     let resp = self
@@ -104,10 +104,26 @@ impl AwsClient {
                     (id, resp)
                 }
             }))
-            .buffer_unordered(POLL_CONCURRENCY)
-            .collect()
-            .await;
-            for (id, resp) in responses {
+            .buffer_unordered(POLL_CONCURRENCY);
+            // Consume responses as they land, under the deadline. Both
+            // halves matter: taking them one at a time keeps everything
+            // that did complete, and `timeout_at` bounds the cycle
+            // rather than just checking the clock once it has finished.
+            // Concurrency alone only shrank the overrun — 200 instances
+            // at 10 at a time is still 20 waves, and SDK retry backoff
+            // under SSM throttling can stretch a wave by seconds, so a
+            // cycle could still outlast the operator's wall clock and
+            // write every pending instance off as `TimedOut(local)`
+            // while the command ran fine.
+            loop {
+                let (id, resp) = match tokio::time::timeout_at(deadline, responses.next()).await {
+                    Ok(Some(pair)) => pair,
+                    // Cycle finished within the deadline.
+                    Ok(None) => break,
+                    // Deadline hit mid-cycle. Keep what landed; the
+                    // outer loop's check ends the run.
+                    Err(_) => break,
+                };
                 let invocation = match resp {
                     Ok(o) => o,
                     Err(e) => {

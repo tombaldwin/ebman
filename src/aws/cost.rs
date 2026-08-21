@@ -1,21 +1,20 @@
 //! Cost Explorer: per-environment spend.
 //!
-//! Global service — [`cost_explorer_client`] pins it to `us-east-1`,
-//! which is the only place it endpoints. The client is built eagerly
-//! in every `AwsClient` constructor, so `:cost on` costs nothing extra
-//! at query time but every session pays the construction.
+//! Global service — it has one endpoint per partition, not per region,
+//! and [`cost_explorer_client`] resolves the operator's own via
+//! [`super::global_service_region`]. The client is built on first use,
+//! because only `:cost on` reaches it.
 
 use super::*;
 
-/// Build a Cost Explorer client pinned to `us-east-1`. Cost Explorer
-/// is a global service that only endpoints in `us-east-1` regardless
-/// of which region the caller's `SdkConfig` carries; calling it from
-/// any other region returns an empty result with no error, which is
-/// exactly the silent failure the operator never debugs. Override
-/// region here so the dep can't drift.
+/// Build a Cost Explorer client endpointed in the operator's partition.
+///
+/// Cost Explorer is global: one endpoint per partition. Called from the
+/// wrong region it returns an empty result with no error — exactly the
+/// silent failure an operator never debugs — so the region is set here
+/// rather than inherited. It was hardcoded to `us-east-1`, which is the
+/// right answer for the commercial partition and unusable in any other.
 pub(super) fn cost_explorer_client(base: &SdkConfig) -> CostExplorerClient {
-    // Global service: endpoint in the operator's own partition, not
-    // unconditionally us-east-1. See `super::global_service_region`.
     let region = base.region().map(|r| r.to_string()).unwrap_or_default();
     let cfg = base
         .to_builder()
@@ -24,10 +23,6 @@ pub(super) fn cost_explorer_client(base: &SdkConfig) -> CostExplorerClient {
     CostExplorerClient::new(&cfg)
 }
 
-/// One row of cost data returned by [`AwsClient::fetch_env_costs`] —
-/// an EB env name and its monthly cost in USD across the trailing
-/// window. `cost` is in whole + fractional dollars; the SDK returns
-/// strings and we parse at the boundary.
 /// The result of a cost fetch: the per-env rows, plus whether the page
 /// cap cut the walk short.
 ///
@@ -43,6 +38,9 @@ pub struct EnvCosts {
     pub truncated: bool,
 }
 
+/// One row of cost data — an EB env name and its monthly cost in USD
+/// across the trailing window. Whole + fractional dollars; the SDK
+/// returns strings and we parse at the boundary.
 #[derive(Clone, Debug)]
 pub struct EnvCost {
     pub env_name: String,

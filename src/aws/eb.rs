@@ -174,6 +174,24 @@ pub struct ConfigOption {
 /// logs a warning.
 const EVENT_TAIL_MAX_PAGES: usize = 5;
 
+/// `ListPlatformVersions` summary → our `CustomPlatform` row.
+///
+/// Both platform listings — every custom platform, and the
+/// upgrade-compatible ones for a given env — return the same shape and
+/// mapped it identically.
+fn map_platform(p: aws_sdk_elasticbeanstalk::types::PlatformSummary) -> CustomPlatform {
+    CustomPlatform {
+        arn: p.platform_arn.unwrap_or_default(),
+        branch: p.platform_branch_name.unwrap_or_default(),
+        version: p.platform_version.unwrap_or_default(),
+        status: p
+            .platform_status
+            .map(|s| s.as_str().to_string())
+            .unwrap_or_default(),
+        lifecycle: p.platform_lifecycle_state.unwrap_or_default(),
+    }
+}
+
 pub(super) fn map_env(e: aws_sdk_elasticbeanstalk::types::EnvironmentDescription) -> Environment {
     let solution_stack = e.solution_stack_name.clone().unwrap_or_default();
     let raw_platform = e
@@ -245,92 +263,6 @@ pub(crate) fn platform_branch_from(stack_or_arn: &str) -> String {
     String::new()
 }
 
-/// Compare two dotted version strings semver-ish. Numeric tokens compared
-/// numerically; non-numeric tails fall back to string comparison. Returns
-/// `Ordering` so this can drive `sort_by`.
-pub(super) fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-    // Split off any pre-release suffix at the first `-`. Solution-stack
-    // versions never have one (`stack_family_version` only accepts
-    // all-digit dot parts), so this only matters for operator-authored
-    // custom platform versions.
-    fn split(s: &str) -> (&str, Option<&str>) {
-        match s.split_once('-') {
-            Some((core, pre)) => (core, Some(pre)),
-            None => (s, None),
-        }
-    }
-    let (a_core, a_pre) = split(a);
-    let (b_core, b_pre) = split(b);
-
-    let parse = |s: &str| {
-        s.split('.')
-            .map(|p| p.parse::<u64>().ok())
-            .collect::<Vec<_>>()
-    };
-    let av = parse(a_core);
-    let bv = parse(b_core);
-    for i in 0..av.len().max(bv.len()) {
-        let aa = av.get(i).and_then(|x| *x);
-        let bb = bv.get(i).and_then(|x| *x);
-        match (aa, bb) {
-            (Some(x), Some(y)) => match x.cmp(&y) {
-                Ordering::Equal => continue,
-                o => return o,
-            },
-            (Some(_), None) => return Ordering::Greater,
-            (None, Some(_)) => return Ordering::Less,
-            (None, None) => break,
-        }
-    }
-    // Cores tie. Semver: a pre-release ranks BELOW the release it
-    // precedes, so `1.0.0-rc1` must not be offered as newer than
-    // `1.0.0` in the platform-upgrade picker. The old code fell
-    // straight through to `a.cmp(b)` here, and lexicographically
-    // "1.0.0-rc1" > "1.0.0" because it's a prefix extension.
-    match compare_prerelease(a_pre, b_pre) {
-        Ordering::Equal => a.cmp(b),
-        o => o,
-    }
-}
-
-/// Semver pre-release precedence, for two versions whose cores are equal.
-///
-/// Absent beats present (a release outranks its own pre-release), then
-/// dot-separated identifiers compare left to right: numeric ones
-/// numerically, numeric below alphanumeric, alphanumeric ASCII-wise, and
-/// a shorter identifier list below a longer one when all else ties.
-fn compare_prerelease(a: Option<&str>, b: Option<&str>) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-    let (a, b) = match (a, b) {
-        (None, None) => return Ordering::Equal,
-        (None, Some(_)) => return Ordering::Greater,
-        (Some(_), None) => return Ordering::Less,
-        (Some(a), Some(b)) => (a, b),
-    };
-    let mut ai = a.split('.');
-    let mut bi = b.split('.');
-    loop {
-        match (ai.next(), bi.next()) {
-            (None, None) => return Ordering::Equal,
-            // Fewer identifiers ranks below more, all else equal.
-            (None, Some(_)) => return Ordering::Less,
-            (Some(_), None) => return Ordering::Greater,
-            (Some(x), Some(y)) => {
-                let o = match (x.parse::<u64>(), y.parse::<u64>()) {
-                    (Ok(nx), Ok(ny)) => nx.cmp(&ny),
-                    (Ok(_), Err(_)) => Ordering::Less,
-                    (Err(_), Ok(_)) => Ordering::Greater,
-                    (Err(_), Err(_)) => x.cmp(y),
-                };
-                if o != Ordering::Equal {
-                    return o;
-                }
-            }
-        }
-    }
-}
-
 /// Pure: roll up EB's per-bucket `InstanceHealthSummary` into the
 /// `(healthy, total)` shape the INST column wants. `healthy` is `ok +
 /// info` (both Green per EB's docs — Info just means an operation is in
@@ -395,7 +327,8 @@ pub fn latest_stack_versions(stacks: &[String]) -> std::collections::HashMap<Str
     for s in stacks {
         if let Some((key, ver)) = stack_family_version(s) {
             match out.get(&key) {
-                Some(cur) if compare_versions(&ver, cur) != std::cmp::Ordering::Greater => {}
+                Some(cur)
+                    if crate::util::compare_versions(&ver, cur) != std::cmp::Ordering::Greater => {}
                 _ => {
                     out.insert(key, ver);
                 }
@@ -414,7 +347,7 @@ pub fn newer_stack_version(
 ) -> Option<String> {
     let (key, ver) = stack_family_version(env_stack)?;
     let newest = latest.get(&key)?;
-    if compare_versions(newest, &ver) == std::cmp::Ordering::Greater {
+    if crate::util::compare_versions(newest, &ver) == std::cmp::Ordering::Greater {
         Some(newest.clone())
     } else {
         None
@@ -588,17 +521,37 @@ impl AwsClient {
             raw.extend(resp.events.unwrap_or_default());
             pages += 1;
             match resp.next_token {
-                Some(t) if !t.is_empty() && pages < max_pages => next_token = Some(t),
                 Some(t) if !t.is_empty() => {
-                    // Cap hit with more behind it. Say so rather than
-                    // letting the caller's watermark stride over them.
-                    tracing::warn!(
-                        target: "ebman::aws",
-                        pages,
-                        collected = raw.len(),
-                        "DescribeEvents page cap reached with more pages available —                          older events in this window were not fetched"
-                    );
-                    let _ = t;
+                    if pages < max_pages {
+                        next_token = Some(t);
+                        continue;
+                    }
+                    // Stopped with more behind the token. For the
+                    // display callers (`max_pages == 1`) that is the
+                    // whole point — they asked for the newest N and a
+                    // token is present on essentially every real
+                    // account — so only the completeness-seeking caller
+                    // is worth a word.
+                    //
+                    // Worth being straight about what this does and
+                    // doesn't buy: it is a log line, not a signal to the
+                    // caller. `:event-tail` still advances its watermark
+                    // past the newest event received, and because
+                    // DescribeEvents returns newest-first, the events
+                    // behind the token are OLDER — so no later poll's
+                    // `start_time` can reach them. Surfacing that gap in
+                    // the overlay is tracked in BACKLOG.md; at 1500
+                    // events per 5-second poll it is a long way from
+                    // any real fleet.
+                    if max_pages > 1 {
+                        tracing::warn!(
+                            target: "ebman::aws",
+                            pages,
+                            collected = raw.len(),
+                            "DescribeEvents page cap reached with more pages available — \
+                             older events in this window were not fetched"
+                        );
+                    }
                     break;
                 }
                 _ => break,
@@ -1382,22 +1335,11 @@ impl AwsClient {
                 resp.next_token,
             ))
         })
-        .await?;
-        let mut out: Vec<CustomPlatform> = Vec::new();
-        for p in raw {
-            out.push(CustomPlatform {
-                arn: p.platform_arn.unwrap_or_default(),
-                branch: p.platform_branch_name.unwrap_or_default(),
-                version: p.platform_version.unwrap_or_default(),
-                status: p
-                    .platform_status
-                    .map(|s| s.as_str().to_string())
-                    .unwrap_or_default(),
-                lifecycle: p.platform_lifecycle_state.unwrap_or_default(),
-            });
-        }
+        .await?
+        .items();
+        let mut out: Vec<CustomPlatform> = raw.into_iter().map(map_platform).collect();
         // Sort newest-first by semver-ish version.
-        out.sort_by(|a, b| compare_versions(&b.version, &a.version));
+        out.sort_by(|a, b| crate::util::compare_versions(&b.version, &a.version));
         Ok(out)
     }
 
@@ -1539,20 +1481,9 @@ impl AwsClient {
                 resp.next_token,
             ))
         })
-        .await?;
-        let mut out: Vec<CustomPlatform> = Vec::new();
-        for p in raw {
-            out.push(CustomPlatform {
-                arn: p.platform_arn.unwrap_or_default(),
-                branch: p.platform_branch_name.unwrap_or_default(),
-                version: p.platform_version.unwrap_or_default(),
-                status: p
-                    .platform_status
-                    .map(|s| s.as_str().to_string())
-                    .unwrap_or_default(),
-                lifecycle: p.platform_lifecycle_state.unwrap_or_default(),
-            });
-        }
+        .await?
+        .items();
+        let out: Vec<CustomPlatform> = raw.into_iter().map(map_platform).collect();
         Ok(out)
     }
 
@@ -1627,7 +1558,8 @@ impl AwsClient {
                 resp.next_token,
             ))
         })
-        .await?;
+        .await?
+        .items();
         let mut out: Vec<AppVersion> = Vec::new();
         for v in raw {
             out.push(AppVersion {
@@ -1843,16 +1775,29 @@ impl AwsClient {
     }
 
     pub async fn list_instances(&self, env_name: &str) -> Result<Vec<Instance>> {
-        let resp = self
-            .client
-            .describe_instances_health()
-            .environment_name(env_name)
-            .attribute_names(aws_sdk_elasticbeanstalk::types::InstancesHealthAttribute::All)
-            .send()
-            .await?;
-        let instances = resp
-            .instance_health_list
-            .unwrap_or_default()
+        // Paginated: this list is `:ssm-run`'s target set and
+        // `spawn_dry_run`'s blast-radius count, so a truncated one means
+        // the shell command silently never reaches the missing
+        // instances while the overlay reports N/N success.
+        let (this, env) = (self, env_name);
+        let raw = super::paginate("DescribeInstancesHealth", move |token| async move {
+            let mut req = this
+                .client
+                .describe_instances_health()
+                .environment_name(env)
+                .attribute_names(aws_sdk_elasticbeanstalk::types::InstancesHealthAttribute::All);
+            if let Some(t) = token {
+                req = req.next_token(t);
+            }
+            let resp = req.send().await?;
+            Ok((
+                resp.instance_health_list.unwrap_or_default(),
+                resp.next_token,
+            ))
+        })
+        .await?
+        .items();
+        let instances = raw
             .into_iter()
             .map(|i| Instance {
                 id: i.instance_id.unwrap_or_default(),
@@ -1904,7 +1849,8 @@ impl AwsClient {
             let resp = req.send().await.wrap_err("DescribeEnvironments failed")?;
             Ok((resp.environments.unwrap_or_default(), resp.next_token))
         })
-        .await?;
+        .await?
+        .items();
         Ok(raw.into_iter().map(map_env).collect())
     }
 

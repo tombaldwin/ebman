@@ -90,7 +90,9 @@ pub fn parse_replay_spec(input: &str) -> Option<ReplaySpec> {
     // evaluates `now - window` past chrono's ±262,000-year DateTime
     // range. 100 years is far beyond any real DLQ window.
     //
-    // Same grammar and the same two guards as `aws::parse_window_ms`.
+    // The same two guards as `aws::parse_window_ms`. Not the same
+    // grammar: that one also accepts `s` (seconds), which is useful for
+    // a log window and meaningless for a DLQ replay.
     const MAX_WINDOW_DAYS: i64 = 100 * 365;
     let window = match unit {
         'm' => Duration::try_minutes(num),

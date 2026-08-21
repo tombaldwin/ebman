@@ -1293,28 +1293,45 @@ impl App {
         match result {
             Ok(costs) => {
                 let now = chrono::Utc::now();
+                let n = costs.rows.len();
+                if costs.truncated {
+                    // A truncated walk is a failed refresh, not a
+                    // smaller one. Replacing a good map with a partial
+                    // one flips every env past the cap from a real
+                    // number to `—`, which renders identically to
+                    // "untagged" — so `:cost` and `:fleet-cost` would
+                    // quietly under-report against numbers the operator
+                    // was reading a moment ago. Keep what we have.
+                    tracing::warn!(
+                        target: "ebman::cost",
+                        envs = n,
+                        had_previous = !self.costs.is_empty(),
+                        "Cost Explorer walk truncated"
+                    );
+                    if self.costs.is_empty() {
+                        // Nothing to preserve — partial beats blank,
+                        // but say so and don't cache it or stamp a
+                        // fetch time that would suppress a retry.
+                        for row in &costs.rows {
+                            self.costs.insert(row.env_name.clone(), row.cost_usd);
+                        }
+                        self.error_message = Some(format!(
+                            "cost: INCOMPLETE — Cost Explorer returned more pages than                              ebman will walk. Showing {n} env(s); not cached."
+                        ));
+                    } else {
+                        self.error_message = Some(format!(
+                            "cost: refresh INCOMPLETE (Cost Explorer page cap) — keeping                              the previous {} env(s) rather than replacing them with {n}.",
+                            self.costs.len()
+                        ));
+                    }
+                    return;
+                }
                 self.costs.clear();
                 for row in &costs.rows {
                     self.costs.insert(row.env_name.clone(), row.cost_usd);
                 }
                 self.costs_fetched_at = Some(now);
-                let n = costs.rows.len();
-                if costs.truncated {
-                    // Deliberately NOT cached. The cache has a 24-hour
-                    // TTL, so persisting a partial map would leave every
-                    // env past the page cap rendering as unknown cost —
-                    // indistinguishable from an untagged one — for a
-                    // day, and the next session would reuse it rather
-                    // than retrying.
-                    self.status_message = Some(format!(
-                        "cost: {n} env(s) — INCOMPLETE (Cost Explorer page cap); not cached"
-                    ));
-                    tracing::warn!(
-                        target: "ebman::cost",
-                        envs = n,
-                        "incomplete cost result not written to cache"
-                    );
-                } else {
+                {
                     // Persist to ~/.cache/ebman/cost-{account}-{region}.toml
                     // so subsequent sessions render immediately.
                     let account_key = account.unwrap_or_else(|| "unknown".into());

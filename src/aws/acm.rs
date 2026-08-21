@@ -30,7 +30,8 @@ impl AwsClient {
                 resp.next_token,
             ))
         })
-        .await?;
+        .await?
+        .items();
         let mut out: Vec<AcmCert> = raw
             .into_iter()
             .filter_map(|c| {

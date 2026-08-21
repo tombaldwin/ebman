@@ -6999,3 +6999,99 @@ async fn config_tab_renders_the_in_place_value_editor() {
         "the value being edited renders:\n{out}"
     );
 }
+
+// --- cost refresh truncation ------------------------------------------
+
+#[tokio::test]
+async fn a_truncated_cost_refresh_keeps_the_previous_map() {
+    // The truncation flag protected the 24-hour disk cache but the
+    // handler still cleared and replaced the live map first — so 25 of
+    // 40 envs would flip from real numbers to `—`, which renders
+    // identically to "untagged", while `:fleet-cost` under-reported.
+    let mut app = test_app();
+    app.costs.insert("api-prod".into(), 100.0);
+    app.costs.insert("web-prod".into(), 200.0);
+    app.costs.insert("worker-prod".into(), 50.0);
+    let before = app.costs.clone();
+
+    app.handle_msg(AppMsg::CostsFetched {
+        gen: app.generation,
+        account: Some("123456789012".into()),
+        region: "us-east-1".into(),
+        result: Ok(crate::aws::EnvCosts {
+            rows: vec![crate::aws::EnvCost {
+                env_name: "api-prod".into(),
+                cost_usd: 111.0,
+            }],
+            truncated: true,
+        }),
+    });
+
+    assert_eq!(
+        app.costs, before,
+        "a partial walk must not replace a good map"
+    );
+    assert!(
+        app.error_message
+            .as_deref()
+            .is_some_and(|m| m.contains("INCOMPLETE")),
+        "and must say so: {:?}",
+        app.error_message
+    );
+}
+
+#[tokio::test]
+async fn a_truncated_cost_refresh_with_nothing_cached_shows_what_it_has() {
+    // With no previous map there is nothing to preserve, so partial
+    // beats blank — but it must be labelled and must not stamp a fetch
+    // time that would suppress the retry.
+    let mut app = test_app();
+    assert!(app.costs.is_empty());
+
+    app.handle_msg(AppMsg::CostsFetched {
+        gen: app.generation,
+        account: None,
+        region: "us-east-1".into(),
+        result: Ok(crate::aws::EnvCosts {
+            rows: vec![crate::aws::EnvCost {
+                env_name: "api-prod".into(),
+                cost_usd: 111.0,
+            }],
+            truncated: true,
+        }),
+    });
+
+    assert_eq!(app.costs.len(), 1, "partial data still renders");
+    assert!(
+        app.costs_fetched_at.is_none(),
+        "an incomplete walk must not stamp a fetch time"
+    );
+    assert!(app
+        .error_message
+        .as_deref()
+        .is_some_and(|m| m.contains("INCOMPLETE")));
+}
+
+#[tokio::test]
+async fn a_complete_cost_refresh_replaces_the_map() {
+    let mut app = test_app();
+    app.costs.insert("stale".into(), 999.0);
+
+    app.handle_msg(AppMsg::CostsFetched {
+        gen: app.generation,
+        account: None,
+        region: "us-east-1".into(),
+        result: Ok(crate::aws::EnvCosts {
+            rows: vec![crate::aws::EnvCost {
+                env_name: "api-prod".into(),
+                cost_usd: 111.0,
+            }],
+            truncated: false,
+        }),
+    });
+
+    assert_eq!(app.costs.len(), 1);
+    assert!(app.costs.contains_key("api-prod"));
+    assert!(!app.costs.contains_key("stale"), "a complete walk replaces");
+    assert!(app.costs_fetched_at.is_some());
+}

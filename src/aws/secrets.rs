@@ -36,7 +36,8 @@ impl AwsClient {
             let resp = req.send().await.wrap_err("ListSecrets failed")?;
             Ok((resp.secret_list.unwrap_or_default(), resp.next_token))
         })
-        .await?;
+        .await?
+        .complete("ListSecrets")?;
         let mut out: Vec<SecretSummary> = raw
             .into_iter()
             .filter_map(|s| {

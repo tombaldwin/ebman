@@ -44,7 +44,8 @@ impl AwsClient {
                 .wrap_err("organizations:ListAccounts failed")?;
             Ok((resp.accounts.unwrap_or_default(), resp.next_token))
         })
-        .await?;
+        .await?
+        .items();
         let mut out: Vec<OrgAccount> = raw
             .into_iter()
             .map(|a| OrgAccount {
