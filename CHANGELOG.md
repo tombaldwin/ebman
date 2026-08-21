@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Shell completion** — `ebman completions <bash|zsh|fish>` prints a completion script (subcommands, global flags, per-subcommand flags/verbs), generated from a single CLI-surface source of truth. Static by design: no live env names in the shell (that'd need an AWS round-trip per Tab).
+- **`ebman mcp setup`** — prints the MCP registration commands (`claude mcp add` + a `.mcp.json` snippet + the `AWS_REGION` pin) from the installed binary. The secure way to hand setup to an agent — no remote file to fetch, tamper with, or auto-execute. `--allow-writes` shows the write-enabled form; print-only, never edits a client's config.
+- **Command-bar env-name completion** — `Tab` after `:diff` / `:config-diff` / `:rds-detach` now completes the environment name from the loaded fleet (`:diff ENV-A ENV-B` completes the second slot too).
+
+### Fixed
+
+- Command-bar `Tab` completion now lands on the *first* match on the first press (it used to skip to the second candidate).
+
 ## [0.28.0] — 2026-08-20 — agents that can act: MCP v2 writes + cross-process freeze
 
 ### ⚠ Behavior changes — read before upgrading

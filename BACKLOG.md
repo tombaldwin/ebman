@@ -73,6 +73,7 @@ Living list of done / pending / dropped work. New entries get added at the botto
 ### Command bar
 - `:` enters command mode
 - Commands: `:q / :quit`, `:region X`, `:profile X`, `:sort KEY [desc]`, `:group [on|off]`, `:redact [on|off]`, `:events [on|off]`, `:save NAME`, `:f NAME`, `:filter NAME`, `:filters`, `:drop NAME`, `:export`, `:refresh`, `:help`
+- `Tab` / `Shift-Tab` completion: command names (first Tab lands on the first match, then cycles), and env-name arguments for `:diff` / `:config-diff` / `:rds-detach` (drawn from the loaded fleet; the trailing token completes, so `:diff ENV-A ENV-B` fills the second slot too)
 
 ### Filters, sorting, persistence
 - Named filters: `:save NAME` / `:f NAME` / `:filters` / `:drop NAME` — persisted across runs
@@ -113,6 +114,8 @@ Living list of done / pending / dropped work. New entries get added at the botto
 - Generation/epoch invariants for refresh, identity, detail, DLQ message handlers
 
 ### CLI & distribution
+- `ebman completions <bash|zsh|fish>` — shell completion scripts generated from a single CLI-surface source of truth (subcommands + global flags + per-subcommand flags/verbs; static, no live env names)
+- `ebman mcp setup [--allow-writes]` — prints MCP registration commands (`claude mcp add` + `.mcp.json` snippet + `AWS_REGION` pin) from the trusted local binary; the secure alternative to "point your agent at a remote file and run it". Print-only.
 - `--version` / `-V` and `--help` / `-h` flags (exit before TUI)
 - MSRV declared (`rust-version = "1.82"`)
 - README with feature summary, keymap, config, and "what's stored locally" section
@@ -765,6 +768,10 @@ Tier definitions:
 - **Tier 6** — power-user, scripting, and extensibility.
 - **Tier 7** — polish and quality of life.
 - **Tier 8** — maybe / unprioritised; not committed to scope.
+
+### MCP discovery & setup follow-ups (Tier 6)
+- `ebman mcp setup --client <claude|cursor|vscode|windsurf>` — detect the client and *write* its MCP config (currently print-only). Print-by-default, write only on the explicit `--client` flag, since it mutates the user's config. Confirm/merge rather than clobber an existing `ebman` entry.
+- Publish a `server.json` to the official MCP Registry for passive discovery (name, run command, install instructions). Separate from the binary; needs a publish flow/account. Lets agents/directories find ebman without any "go fetch this" instruction.
 
 Items list `Depends on:` only when another backlog or done item is a real prerequisite.
 

@@ -28,6 +28,7 @@
 pub mod action;
 pub mod audit;
 pub mod audit_replay;
+pub mod completions;
 pub mod ctl;
 pub mod drift;
 pub mod envs;

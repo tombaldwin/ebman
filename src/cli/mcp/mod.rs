@@ -33,6 +33,7 @@ use crate::{audit as audit_log, aws, cost_cache, demo_fixture, lint, terraform, 
 /// The MCP protocol revision this server claims. Clients offering a
 /// different revision get this one back (echo-negotiate); the golden
 /// frame test pins it so a bump is a conscious act.
+mod setup;
 mod tools;
 mod writes;
 use tools::*;
@@ -50,7 +51,8 @@ struct McpArgs {
     allow_writes: bool,
 }
 
-const MCP_USAGE: &str = "usage: ebman mcp serve [--demo] [--no-redact] [--allow-writes]";
+const MCP_USAGE: &str =
+    "usage: ebman mcp <serve [--demo] [--no-redact] [--allow-writes] | setup [--allow-writes]>";
 
 fn parse_mcp_args(args: &[String]) -> Result<McpArgs, String> {
     // args[0] = "mcp"; the only sub-verb is "serve".
@@ -266,6 +268,17 @@ impl Server {
 }
 
 pub async fn run(args: &[String]) -> Result<()> {
+    // Sub-verbs: `serve` (the stdio server) and `setup` (print the local
+    // registration instructions — no network, no remote fetch). Anything
+    // else is a usage error naming both.
+    match args.get(1).map(String::as_str) {
+        Some("setup") => return setup::run(args),
+        Some("serve") => {}
+        _ => {
+            eprintln!("{MCP_USAGE}");
+            std::process::exit(2);
+        }
+    }
     let McpArgs {
         demo,
         no_redact,
