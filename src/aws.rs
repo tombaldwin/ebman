@@ -255,10 +255,7 @@ impl AwsClient {
             access_key,
             secret_key,
             Some(session_token),
-            // Expiry: aws_smithy_types::DateTime → SystemTime via secs.
-            std::time::SystemTime::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(
-                creds.expiration.secs() as u64,
-            )),
+            Some(sts_expiry_to_system_time(creds.expiration.secs())?),
             "ebman-assume-role",
         );
 
@@ -441,6 +438,58 @@ impl AwsClient {
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
+}
+
+/// The region to endpoint a *global* AWS service in, given the region the
+/// operator is working in.
+///
+/// IAM and Cost Explorer are global: they have one endpoint per partition,
+/// not per region. Both clients used to hardcode `us-east-1`, which is
+/// correct for the commercial partition and simply cannot work anywhere
+/// else — a GovCloud or China operator got a cross-partition endpoint, so
+/// `:explain` and `:cost on` failed outright.
+///
+/// The property that matters here is staying inside the operator's
+/// partition. Within the right partition a wrong region still resolves;
+/// across partitions nothing does.
+fn global_service_region(operator_region: &str) -> &'static str {
+    if operator_region.starts_with("us-gov-") {
+        "us-gov-west-1"
+    } else if operator_region.starts_with("cn-") {
+        "cn-north-1"
+    } else {
+        "us-east-1"
+    }
+}
+
+/// Convert an STS credential expiry (seconds since the epoch, `i64`) into a
+/// `SystemTime`, refusing anything that can't be represented.
+///
+/// The refusal is the point. This used to be `secs() as u64` fed straight
+/// into `SystemTime::checked_add`, and the failure mode was silent and
+/// backwards: a non-positive `secs` — clock skew, a malformed response, a
+/// mocked endpoint — wraps under `as` to ~1.8e19, `checked_add` overflows and
+/// returns `None`, and `Credentials::new(..., None, ...)` means *never
+/// expires*. The session was then treated as permanently valid, so the
+/// refresh tick never re-assumed the role and every later call failed with
+/// ExpiredToken until the operator restarted.
+///
+/// Of the two readings of an expiry we can't parse, "never expires" is the
+/// dangerous one; failing the assume-role outright is recoverable and says
+/// what happened.
+fn sts_expiry_to_system_time(secs: i64) -> Result<std::time::SystemTime> {
+    u64::try_from(secs)
+        .ok()
+        .and_then(|s| {
+            std::time::SystemTime::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(s))
+        })
+        .ok_or_else(|| {
+            eyre!(
+                "sts:AssumeRole returned an unusable credential expiry \
+                 ({secs}s since the epoch) — refusing rather than treating \
+                 the session as never-expiring"
+            )
+        })
 }
 
 /// Pure: split a comma-separated EB option-setting value into a clean
