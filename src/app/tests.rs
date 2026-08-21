@@ -3306,7 +3306,7 @@ async fn apply_refresh_keeps_watching_when_status_is_updating_even_if_health_is_
     );
     let mut env = mk_env("prod", "shop", "Web", "Green");
     env.status = "Updating".into();
-    app.apply_refresh(Ok(vec![env]));
+    app.apply_refresh(Ok(vec![env]), Vec::new());
     assert!(
         app.watching_deploys.contains_key("prod"),
         "Updating+Green is mid-deploy — watcher must remain armed"
@@ -3345,7 +3345,7 @@ async fn apply_refresh_keeps_armed_watchdog_when_status_is_updating_even_if_heal
     );
     let mut env = mk_env("prod", "shop", "Web", "Green");
     env.status = "Updating".into();
-    app.apply_refresh(Ok(vec![env]));
+    app.apply_refresh(Ok(vec![env]), Vec::new());
     assert!(
         app.armed_watchdogs.contains_key("prod"),
         "Updating+Green is mid-deploy — watchdog must remain armed"
@@ -4124,7 +4124,7 @@ async fn apply_refresh_drains_watching_deploy_on_green() {
             deadline_at: now + chrono::Duration::seconds(300),
         },
     );
-    app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Green")]));
+    app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Green")]), Vec::new());
     assert!(
         app.watching_deploys.is_empty(),
         "Green should drain the watcher"
@@ -4156,7 +4156,7 @@ async fn apply_refresh_drains_watching_deploy_on_timeout() {
             deadline_at: now - chrono::Duration::seconds(60),
         },
     );
-    app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Red")]));
+    app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Red")]), Vec::new());
     assert!(
         app.watching_deploys.is_empty(),
         "expired watcher should drain on timeout"
@@ -4867,7 +4867,7 @@ async fn refresh_early_disarms_armed_watchdog_when_env_goes_green() {
         },
     );
     // Refresh delivers a Green prod env.
-    app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Green")]));
+    app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Green")]), Vec::new());
     assert!(
         app.armed_watchdogs.is_empty(),
         "Green refresh should clear the armed watchdog"
@@ -4894,7 +4894,7 @@ async fn refresh_leaves_watchdog_armed_when_env_still_non_green() {
             deadline_at: now + chrono::Duration::seconds(300),
         },
     );
-    app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Red")]));
+    app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Red")]), Vec::new());
     assert!(
         app.armed_watchdogs.contains_key("prod"),
         "Red refresh must leave watchdog armed"
@@ -4957,7 +4957,7 @@ async fn apply_refresh_disarms_armed_watchdog_when_env_reaches_green() {
             deadline_at: now + chrono::Duration::seconds(300),
         },
     );
-    app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Green")]));
+    app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Green")]), Vec::new());
     assert!(
         app.armed_watchdogs.is_empty(),
         "Green refresh should disarm"
@@ -4991,7 +4991,7 @@ async fn apply_refresh_dispatches_rollback_when_deadline_passed_and_env_non_gree
         },
     );
     let pending_before = app.pending_actions.len();
-    app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Red")]));
+    app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Red")]), Vec::new());
     assert!(
         app.armed_watchdogs.is_empty(),
         "dispatch should drain the watchdog"
@@ -5037,7 +5037,10 @@ async fn apply_refresh_keeps_watchdog_armed_before_deadline_even_when_non_green(
         },
     );
     let pending_before = app.pending_actions.len();
-    app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Yellow")]));
+    app.apply_refresh(
+        Ok(vec![mk_env("prod", "shop", "Web", "Yellow")]),
+        Vec::new(),
+    );
     assert!(
         app.armed_watchdogs.contains_key("prod"),
         "Yellow + pre-deadline must keep watchdog armed"
@@ -5066,7 +5069,7 @@ async fn apply_refresh_errors_when_deadline_passed_but_no_snapshot() {
         },
     );
     // deploy_snapshots intentionally empty.
-    app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Red")]));
+    app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Red")]), Vec::new());
     let err = app.error_message.as_deref().unwrap_or("");
     assert!(
         err.contains("no pre-deploy snapshot"),
@@ -7046,8 +7049,9 @@ async fn a_truncated_cost_refresh_keeps_the_previous_map() {
 #[track_caller]
 fn assert_no_run_on_spaces(msg: &str) {
     assert!(
-        !msg.contains("   "),
-        "message contains a run of spaces (missing a `\\` continuation?): {msg:?}"
+        !msg.contains("  "),
+        "message contains a double space (missing a `\\` continuation, or a \
+         stray space before a `{{}}` placeholder?): {msg:?}"
     );
 }
 
@@ -7587,4 +7591,54 @@ async fn dlq_destructive_operations_honour_a_per_env_pin() {
     app.spawn_dlq_purge("api-prod".into(), "https://sqs/q-dlq".into());
     let err = app.error_message.as_deref().unwrap_or_default();
     assert!(err.contains("safety.envs"), "got {err:?}");
+}
+
+#[tokio::test]
+async fn a_region_that_fails_the_fan_out_is_reported_not_dropped() {
+    // The fan-out only reported an error when EVERY region failed, so
+    // one region throttling or exceeding its page budget removed all
+    // of its environments from the table with nothing on screen. That
+    // was survivable while a truncated walk returned a short list;
+    // once `list_environments` started refusing partial results it
+    // meant a whole region could vanish silently.
+    let mut app = test_app();
+    app.apply_refresh(
+        Ok(vec![mk_env("api-prod", "uflexi", "Web", "Green")]),
+        vec!["eu-west-2: DescribeEnvironments failed".to_string()],
+    );
+    let err = app.error_message.as_deref().unwrap_or_default();
+    assert!(
+        err.contains("eu-west-2") && err.contains("NOT shown"),
+        "a partially-failed fan-out must say which region is missing: {err:?}"
+    );
+    assert_eq!(
+        app.environments.len(),
+        1,
+        "the rows that arrived still render"
+    );
+}
+
+#[tokio::test]
+async fn a_clean_fan_out_reports_nothing() {
+    let mut app = test_app();
+    app.apply_refresh(
+        Ok(vec![mk_env("api-prod", "uflexi", "Web", "Green")]),
+        Vec::new(),
+    );
+    assert!(app.error_message.is_none());
+}
+
+#[test]
+fn the_gap_marker_is_not_rendered_in_the_dimmest_colour() {
+    // Changing the sentinel severity from "WARN" to "GAP" demoted the
+    // marker's colour: the renderer matches ERROR/FATAL → red, WARN →
+    // yellow, and everything else → muted. So the change that made the
+    // marker survive the filter also made it the least visible line on
+    // screen — strictly worse than the yellow row it replaced.
+    let theme = crate::theme::Theme::default();
+    assert_ne!(
+        crate::ui::event_severity_style(super::EVENT_TAIL_GAP_SEVERITY, &theme),
+        crate::ui::event_severity_style("INFO", &theme),
+        "the gap marker must not render identically to routine chatter"
+    );
 }

@@ -90,7 +90,11 @@ impl App {
             }
         }
         match msg {
-            AppMsg::Refresh { result, .. } => self.apply_refresh(result),
+            AppMsg::Refresh {
+                result,
+                partial_errors,
+                ..
+            } => self.apply_refresh(result, partial_errors),
             AppMsg::Rebuild { epoch, result } => self.apply_rebuild(epoch, result),
             AppMsg::Identity { result, .. } => self.handle_identity(result),
             AppMsg::Applications { result, .. } => self.handle_applications(result),
@@ -1787,6 +1791,7 @@ mod tests {
             AppMsg::Refresh {
                 gen: 7,
                 result: Ok(Vec::new()),
+                partial_errors: Vec::new(),
             }
             .generation(),
             Some(7)

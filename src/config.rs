@@ -20,7 +20,7 @@ pub struct Config {
     /// environment, for matching alarms to it (`alarm_dimensions`).
     ///
     /// Always contains `EnvironmentName` — that is what EB itself and
-    /// `:alarm-add` write, so it can't be configured away without
+    /// `:alarm-create` write, so it can't be configured away without
     /// hiding ebman's own alarms. The config key *adds* spellings for
     /// operators whose alarms use a different dimension name.
     ///
@@ -270,7 +270,7 @@ pub fn parse(text: &str) -> Config {
                 cfg.required_tags = crate::util::split_csv(&value);
             }
             "alarm_dimensions" => {
-                // ADDITIONAL names, not a replacement. `:alarm-add`
+                // ADDITIONAL names, not a replacement. `:alarm-create`
                 // always writes `EnvironmentName` (aws/cloudwatch.rs),
                 // so dropping it from the match would make the alarms
                 // ebman itself creates invisible to ebman — and hide
@@ -510,6 +510,16 @@ pub fn serialize(cfg: &Config) -> String {
             let Some(spec) = cfg.accounts.get(name) else {
                 continue;
             };
+            // `parse` materialises an entry before it matches the field
+            // name, so a typo (`accounts.prod.rolearn`) or a key a newer
+            // release adds leaves a phantom spec with an empty ARN. It
+            // must not be written back: emitting `role_arn = ""` would
+            // replace the operator's real line with a plausible-looking
+            // empty one, and `:account prod` would then fail with an STS
+            // error rather than "no such account".
+            if spec.role_arn.trim().is_empty() {
+                continue;
+            }
             out.push_str(&format!(
                 "accounts.{name}.role_arn = \"{}\"\n",
                 spec.role_arn
@@ -895,7 +905,7 @@ explain.max_tokens = 512
 
     #[test]
     fn alarm_dimensions_cannot_configure_away_the_canonical_name() {
-        // `:alarm-add` always writes `EnvironmentName`. If the config
+        // `:alarm-create` always writes `EnvironmentName`. If the config
         // could replace the match set, ebman's own alarms — and every
         // EB-native one — would become invisible to it, which during
         // triage reads as "no alarms configured".
@@ -975,5 +985,50 @@ explain.max_tokens = 512
         }
 
         assert!(lost.is_empty(), "a :settings save destroys: {lost:?}");
+    }
+    #[test]
+    fn a_typod_account_field_is_not_written_back_as_an_empty_arn() {
+        // `parse` materialises an account entry before matching the
+        // field name, so a typo creates a phantom spec with an empty
+        // ARN. Writing that back replaces the operator's real line with
+        // a plausible-looking empty one, and `:account prod` then fails
+        // with an STS error rather than "no such account".
+        let cfg = parse(concat!(
+            "accounts.prod.rolearn = \"arn:aws:iam::123456789012:role/EbAdmin\"\n",
+            "accounts.real.role_arn = \"arn:aws:iam::999:role/Ok\"\n",
+        ));
+        let out = serialize(&cfg);
+        assert!(
+            !out.contains("accounts.prod"),
+            "a spec with no ARN must not be emitted:\n{out}"
+        );
+        assert!(out.contains("accounts.real.role_arn = \"arn:aws:iam::999:role/Ok\""));
+    }
+
+    #[test]
+    #[ignore = "config values containing a quote can't round-trip: `parse` uses \
+                trim_matches('\"') with no escape handling. Pinning the limit \
+                rather than inventing an escape the parser can't decode."]
+    fn account_values_containing_quotes_do_not_round_trip() {
+        // `:settings` rewrites the WHOLE file, so a value that breaks
+        // TOML quoting doesn't just corrupt its own line.
+        let mut cfg = Config::default();
+        cfg.accounts.insert(
+            "odd".into(),
+            AccountSpec {
+                role_arn: "arn:aws:iam::1:role/He said \"hi\"".into(),
+                source_profile: Some("back\\slash".into()),
+                external_id: None,
+                region: None,
+            },
+        );
+        let out = serialize(&cfg);
+        // The round trip is the real assertion: it must survive.
+        let back = parse(&out);
+        assert_eq!(
+            back.accounts.get("odd").map(|a| a.role_arn.as_str()),
+            Some("arn:aws:iam::1:role/He said \"hi\""),
+            "serialized:\n{out}"
+        );
     }
 }

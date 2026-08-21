@@ -23,12 +23,30 @@ pub fn config_dir() -> PathBuf {
 /// Used for the application log, audit log, crash reports, and the
 /// cost-explorer cache. Same fallback shape as `config_dir`.
 pub fn cache_dir() -> PathBuf {
-    if let Some(home) = std::env::var_os("HOME") {
-        let mut p = PathBuf::from(home);
-        p.push(".cache/ebman");
-        return p;
+    // Tests must never touch the developer's real cache. This is not
+    // hypothetical: a test that exercised the cost handler's persist
+    // branch wrote a fabricated $1.00 row for a non-existent env into
+    // `~/.cache/ebman/cost-unknown-us-east-1.toml` with a fresh
+    // timestamp — and because the cache is only stale after 24 hours,
+    // the next real session would have rendered that fiction and
+    // skipped the fetch that would have corrected it.
+    #[cfg(test)]
+    {
+        let mut p = std::env::temp_dir();
+        p.push(format!("ebman-test-cache-{}", std::process::id()));
+        p
     }
-    PathBuf::from(".")
+    #[cfg(not(test))]
+    {
+        match std::env::var_os("HOME") {
+            Some(home) => {
+                let mut p = PathBuf::from(home);
+                p.push(".cache/ebman");
+                p
+            }
+            None => PathBuf::from("."),
+        }
+    }
 }
 
 /// Convenience: `config_dir().join(name)`.

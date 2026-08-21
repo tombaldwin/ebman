@@ -500,6 +500,17 @@ pub(crate) enum AppMsg {
     Refresh {
         gen: u64,
         result: Result<Vec<Environment>, String>,
+        /// Per-region failures from a multi-region fan-out that still
+        /// returned rows from other regions.
+        ///
+        /// Without this the fan-out dropped them: it only reported an
+        /// error when EVERY region failed, so one region timing out,
+        /// throttling or exceeding its page budget removed all of its
+        /// environments from the table with nothing on screen. That was
+        /// survivable while a truncated walk still returned a short
+        /// list; once `list_environments` started refusing partial
+        /// results it meant a whole region could vanish silently.
+        partial_errors: Vec<String>,
     },
     Applications {
         gen: u64,

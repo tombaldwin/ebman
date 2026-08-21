@@ -573,6 +573,24 @@ const SPARKLINE_WIDTH: usize = 10;
 /// value ≥ max column width works.
 const DIVIDER_FILL_WIDTH: usize = 200;
 
+/// Colour for an event's severity, shared by every surface that renders
+/// an EB event list.
+///
+/// One function because the map was inlined in three places and they
+/// had already drifted: adding the `:event-tail` gap sentinel to one of
+/// them left the others rendering it in `muted`, the dimmest colour in
+/// the palette and indistinguishable from routine INFO chatter.
+pub fn event_severity_style(severity: &str, theme: &Theme) -> Style {
+    match severity.to_uppercase().as_str() {
+        "ERROR" | "FATAL" => Style::default().fg(theme.health_red),
+        "WARN" => Style::default().fg(theme.health_yellow),
+        s if s == crate::app::EVENT_TAIL_GAP_SEVERITY => Style::default()
+            .fg(theme.health_yellow)
+            .add_modifier(Modifier::BOLD),
+        _ => Style::default().fg(theme.muted),
+    }
+}
+
 pub fn draw(f: &mut Frame, app: &mut App) {
     // Shell mode takes the whole screen; nothing else draws.
     if app.mode == Mode::Shell && app.current_shell.is_some() {

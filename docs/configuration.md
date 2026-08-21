@@ -39,7 +39,7 @@ required_tags = "Owner,Project"
 # for matching alarms to it.
 #
 # `EnvironmentName` is always matched — that's what Elastic Beanstalk
-# itself and `:alarm-add` write, so it can't be configured away. This
+# itself and `:alarm-create` write, so it can't be configured away. This
 # key adds spellings on top, for operators whose own alarms use a
 # different dimension name.
 #

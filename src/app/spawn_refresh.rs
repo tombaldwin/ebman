@@ -202,7 +202,11 @@ impl App {
                     .list_environments()
                     .await
                     .map_err(|e| flatten_err("list_environments", e));
-                let _ = tx.send(AppMsg::Refresh { gen, result });
+                let _ = tx.send(AppMsg::Refresh {
+                    gen,
+                    result,
+                    partial_errors: Vec::new(),
+                });
             });
         } else {
             let regions = self.multi_regions.clone();
@@ -225,12 +229,20 @@ impl App {
                         Err(e) => errs.push(format!("{e}")),
                     }
                 }
-                let result = if envs.is_empty() && !errs.is_empty() {
-                    Err(errs.join("; "))
+                // Every region failing is a hard error; some failing
+                // while others returned rows is a PARTIAL result, and
+                // has to be said out loud rather than silently dropping
+                // those regions' environments from the table.
+                let (result, partial_errors) = if envs.is_empty() && !errs.is_empty() {
+                    (Err(errs.join("; ")), Vec::new())
                 } else {
-                    Ok(envs)
+                    (Ok(envs), errs)
                 };
-                let _ = tx.send(AppMsg::Refresh { gen, result });
+                let _ = tx.send(AppMsg::Refresh {
+                    gen,
+                    result,
+                    partial_errors,
+                });
             });
         }
         if self.event_panel.visible {
@@ -633,7 +645,11 @@ impl App {
         }
     }
 
-    pub(crate) fn apply_refresh(&mut self, result: Result<Vec<Environment>, String>) {
+    pub(crate) fn apply_refresh(
+        &mut self,
+        result: Result<Vec<Environment>, String>,
+        partial_errors: Vec<String>,
+    ) {
         match result {
             Ok(envs) => {
                 // Track newly-Red transitions for the anomaly highlight.
@@ -855,6 +871,16 @@ impl App {
                 } else if !self.status_message_pinned {
                     self.status_message = None;
                     self.error_message = None;
+                }
+                // AFTER the auto-clear above, not before it: a
+                // successful refresh wipes `error_message`, so a
+                // partial-failure notice set at the top of this
+                // function is erased by the very refresh it describes.
+                if !partial_errors.is_empty() {
+                    self.error_message = Some(format!(
+                        "some regions failed and their environments are NOT shown: {}",
+                        partial_errors.join("; ")
+                    ));
                 }
                 // Pin lasts one refresh cycle. After that the message
                 // survives in the slot but the next ephemeral write (e.g.
