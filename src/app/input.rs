@@ -766,21 +766,19 @@ impl App {
                         self.event_panel.height = self.event_panel.height.saturating_sub(1).max(4);
                     }
                     KeyCode::Char('s') => {
-                        self.view.sort_key = self.view.sort_key.next();
-                        self.resort_envs();
+                        self.set_sort(self.view.sort_key().next(), self.view.sort_desc());
                         self.status_message = Some(format!(
                             "sort: {} ({})",
-                            self.view.sort_key.label(),
-                            if self.view.sort_desc { "desc" } else { "asc" }
+                            self.view.sort_key().label(),
+                            if self.view.sort_desc() { "desc" } else { "asc" }
                         ));
                     }
                     KeyCode::Char('S') => {
-                        self.view.sort_desc = !self.view.sort_desc;
-                        self.resort_envs();
+                        self.set_sort(self.view.sort_key(), !self.view.sort_desc());
                         self.status_message = Some(format!(
                             "sort: {} ({})",
-                            self.view.sort_key.label(),
-                            if self.view.sort_desc { "desc" } else { "asc" }
+                            self.view.sort_key().label(),
+                            if self.view.sort_desc() { "desc" } else { "asc" }
                         ));
                     }
                     KeyCode::Char('T') => {
@@ -1036,7 +1034,7 @@ impl App {
                     esc(&selected),
                     esc(self.view.filter().text()),
                     load,
-                    self.view.sort_key.label(),
+                    self.view.sort_key().label(),
                     self.view.grouped(),
                     self.view.redact,
                     self.focus,

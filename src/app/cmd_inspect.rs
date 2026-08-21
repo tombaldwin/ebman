@@ -467,20 +467,20 @@ impl App {
                         return;
                     }
                 };
-                match configs.len() {
-                    0 => {
+                // Slice patterns rather than `match configs.len()`: the
+                // one-config arm binds the config, so there's no arm that
+                // knows an element exists without holding it.
+                match configs.as_slice() {
+                    [] => {
                         self.error_message = Some(format!(
                             "no .elasticbeanstalk/saved_configs/*.cfg.yml under {}",
                             cwd.display()
                         ));
                         return;
                     }
-                    1 => match configs.into_iter().next() {
-                        Some(one) => one,
-                        None => return,
-                    },
-                    _ => {
-                        let names: Vec<String> = configs
+                    [only] => only.clone(),
+                    many => {
+                        let names: Vec<String> = many
                             .iter()
                             .map(|p| crate::saved_config::saved_config_name(p))
                             .collect();

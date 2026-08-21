@@ -6799,19 +6799,203 @@ async fn alias_command_rebuilds_the_view() {
 }
 
 #[tokio::test]
-async fn resort_envs_leaves_the_view_cache_fresh() {
-    // Sorting renumbers every index the view cache holds, so
-    // `resort_envs` invalidates and rebuilds in one step — callers do
-    // not have to remember to follow it with `rebuild_view()`.
+async fn set_sort_reorders_and_leaves_the_view_cache_fresh() {
+    // Sorting renumbers every index the view cache holds. `set_sort` is
+    // the only way to change the sort — `ViewState` keeps the fields
+    // private — and it re-sorts and rebuilds in one step, so the header
+    // arrow can't end up disagreeing with the rows.
     let mut app = test_app();
     app.environments = vec![
         fake_env_with("b", "Ready", "Green", None),
         fake_env_with("a", "Ready", "Green", None),
     ];
     app.rebuild_view();
-    app.view.sort_key = SortKey::Name;
-    app.resort_envs();
+    app.set_sort(SortKey::Name, false);
     assert!(!app.view.is_stale());
+    assert_eq!(app.view.sort_key(), SortKey::Name);
     assert_eq!(app.environments[0].name, "a");
     assert_eq!(app.view.filtered(), &[0, 1]);
+
+    app.set_sort(SortKey::Name, true);
+    assert!(app.view.sort_desc());
+    assert_eq!(app.environments[0].name, "b", "desc must actually reorder");
+}
+
+#[tokio::test]
+async fn unconsumed_key_in_filter_mode_leaves_the_view_fresh() {
+    // `TextInput::handle_key` returns false for keys it doesn't consume
+    // (Down, PageUp, most Ctrl chords). Taking the filter mutably to ask
+    // marked the cache stale whether or not the key was consumed, and the
+    // no-op arm didn't rebuild — so the next frame read a stale cache.
+    let mut app = test_app();
+    app.environments = vec![
+        fake_env_with("api-prod", "Ready", "Green", None),
+        fake_env_with("web-prod", "Ready", "Green", None),
+    ];
+    app.rebuild_view();
+    press(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    assert_eq!(app.mode, Mode::Filter);
+
+    press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    assert!(
+        !app.view.is_stale(),
+        "a key the filter buffer ignores must not leave the cache stale"
+    );
+    // The frame after must not trip the freshness assertion.
+    let _ = render(&mut app, 120, 30);
+}
+
+// --- coverage for the panic-site totalisations ------------------------
+
+#[tokio::test]
+async fn tab_completes_an_env_name_after_an_env_taking_command() {
+    // Exercises `command_completion_step`'s env-mode branch — the one
+    // that splits the input at the last whitespace. Previously that
+    // `rfind` was an `expect` resting on the earlier `find`.
+    let mut app = test_app();
+    app.environments = vec![
+        fake_env_with("api-prod", "Ready", "Green", None),
+        fake_env_with("web-prod", "Ready", "Green", None),
+    ];
+    app.rebuild_view();
+    app.mode = Mode::Command;
+    app.command_input = "config-diff api".into();
+    press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(
+        app.command_input.text(),
+        "config-diff api-prod",
+        "the command prefix is preserved and the env name completed"
+    );
+}
+
+#[tokio::test]
+async fn tab_completes_an_env_name_across_a_multibyte_space() {
+    // U+00A0 is whitespace and three bytes wide; `rfind` returns its
+    // first byte, so the split has to step over the whole char.
+    let mut app = test_app();
+    app.environments = vec![fake_env_with("api-prod", "Ready", "Green", None)];
+    app.rebuild_view();
+    app.mode = Mode::Command;
+    app.command_input = "config-diff\u{00A0}api".into();
+    press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    assert!(
+        app.command_input.text().ends_with("api-prod"),
+        "got {:?}",
+        app.command_input.text()
+    );
+}
+
+#[tokio::test]
+async fn rollout_advances_to_the_next_eligible_region() {
+    // The dispatch-advance branch used to re-derive "not done" with
+    // `next_eligible.expect("checked by done")`. Region 1 failed
+    // pre-flight, so the advance must skip it and land on region 2.
+    use crate::mode_action::{ActionFlow, RolloutFlow, RolloutRegion, RolloutState};
+    let region = |name: &str, found: bool| RolloutRegion {
+        region: name.into(),
+        current_version: Some("v1".into()),
+        env_found: Some(found),
+        preflight_error: None,
+        outcome: None,
+    };
+    let mut app = test_app();
+    app.action_flow = Some(ActionFlow::Rollout(RolloutFlow {
+        rollout_id: "rollout-test".into(),
+        env_name: "api-prod".into(),
+        version_label: "v2".into(),
+        regions: vec![
+            region("eu-west-1", true),
+            region("eu-west-2", false), // failed pre-flight — must be skipped
+            region("us-east-1", true),
+        ],
+        state: RolloutState::Dispatching { next_index: 0 },
+        wait_for_green_secs: None,
+    }));
+
+    app.handle_msg(AppMsg::RolloutDispatched {
+        gen: app.generation,
+        region: "eu-west-1".into(),
+        result: Ok(()),
+    });
+
+    let Some(ActionFlow::Rollout(flow)) = app.action_flow.as_ref() else {
+        panic!("rollout flow should still be active");
+    };
+    assert_eq!(
+        flow.state,
+        RolloutState::Dispatching { next_index: 2 },
+        "must skip the region that failed pre-flight"
+    );
+    assert!(flow.regions[0].outcome.is_some());
+    assert!(flow.regions[1].outcome.is_none(), "skipped, not dispatched");
+}
+
+#[tokio::test]
+async fn rollout_halts_on_a_failed_region() {
+    // The complement branch: an Err outcome ends the rollout even
+    // though an eligible region remains.
+    use crate::mode_action::{ActionFlow, RolloutFlow, RolloutRegion, RolloutState};
+    let region = |name: &str| RolloutRegion {
+        region: name.into(),
+        current_version: Some("v1".into()),
+        env_found: Some(true),
+        preflight_error: None,
+        outcome: None,
+    };
+    let mut app = test_app();
+    app.action_flow = Some(ActionFlow::Rollout(RolloutFlow {
+        rollout_id: "rollout-test".into(),
+        env_name: "api-prod".into(),
+        version_label: "v2".into(),
+        regions: vec![region("eu-west-1"), region("us-east-1")],
+        state: RolloutState::Dispatching { next_index: 0 },
+        wait_for_green_secs: None,
+    }));
+
+    app.handle_msg(AppMsg::RolloutDispatched {
+        gen: app.generation,
+        region: "eu-west-1".into(),
+        result: Err("UpdateEnvironment refused".into()),
+    });
+
+    let Some(ActionFlow::Rollout(flow)) = app.action_flow.as_ref() else {
+        panic!("rollout flow should still be active");
+    };
+    assert_eq!(flow.state, RolloutState::Done, "halt on first failure");
+    assert!(flow.regions[1].outcome.is_none(), "never dispatched");
+}
+
+#[tokio::test]
+async fn config_tab_renders_the_in_place_value_editor() {
+    // `draw_detail_config` matched on `editing.map(|e| e.mode)` and then
+    // unwrapped `editing` inside the arm. Nothing drew this row, so the
+    // rewrite to a match-on-Option was unverified. Render it.
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+    let detail = app.detail.as_mut().expect("detail opened");
+    detail.tags = vec![("Owner".into(), "platform".into())];
+    detail.config_cursor = 0;
+    detail.tab_idx = detail
+        .tabs
+        .iter()
+        .position(|t| *t == DetailTab::Config)
+        .expect("Config tab present");
+
+    app.start_config_edit();
+    let edit = app
+        .detail
+        .as_ref()
+        .and_then(|d| d.config_edit.as_ref())
+        .expect("editor open");
+    assert_eq!(edit.mode, crate::app::ConfigEditMode::Value);
+
+    let out = render(&mut app, 140, 40);
+    assert!(out.contains("Owner"), "key cell still renders:\n{out}");
+    assert!(
+        out.contains("platform"),
+        "the value being edited renders:\n{out}"
+    );
 }

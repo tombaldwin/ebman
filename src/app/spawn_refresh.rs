@@ -455,6 +455,8 @@ impl App {
                 self.aws = Arc::new(*client);
                 self.maybe_apply_profile_theme();
                 self.environments.clear();
+                // Covers every view-cache input this block clears —
+                // `environments` here and `latest_stacks` below.
                 self.view.invalidate();
                 self.event_panel.events.clear();
                 self.event_panel.scroll = 0;
@@ -462,7 +464,6 @@ impl App {
                 // Solution-stack catalogue is region-specific; drop it so the
                 // new context's `spawn_refresh` rebuilds it.
                 self.latest_stacks.clear();
-                self.view.invalidate();
                 // Overlays show data from the previous context (describe dump,
                 // alarms list, …); close them so the user doesn't act on stale info.
                 self.current_overlay = None;

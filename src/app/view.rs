@@ -138,12 +138,22 @@ impl App {
         self.mode = Mode::Picker;
     }
 
+    /// Change the sort and re-apply it in one step.
+    ///
+    /// The single entry point for `sort_key` / `sort_desc`: `ViewState`
+    /// keeps them private so they can't be set without the re-sort that
+    /// makes them true of `environments`.
+    pub(crate) fn set_sort(&mut self, key: SortKey, desc: bool) {
+        self.view.set_sort(key, desc);
+        self.resort_envs();
+    }
+
     pub(crate) fn resort_envs(&mut self) {
         // Reordering `environments` renumbers every index the view cache
         // holds, so the caller must rebuild after this.
         self.view.invalidate();
-        let key = self.view.sort_key;
-        let desc = self.view.sort_desc;
+        let key = self.view.sort_key();
+        let desc = self.view.sort_desc();
         let pinned = self.pinned.clone();
         self.environments.sort_by(|a, b| {
             // Pinned envs always sort to the top regardless of key/direction.

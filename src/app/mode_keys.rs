@@ -27,8 +27,11 @@ impl App {
             KeyCode::Enter => self.mode = Mode::Normal,
             // TextInput consumes editing keys (cursor move / Ctrl-W);
             // rebuild the view on any accepted edit so the table tracks
-            // the filter live.
-            _ if self.view.filter_mut().handle_key(key) => self.rebuild_view(),
+            // the filter live. `filter_handle_key` only marks the cache
+            // stale when the key was actually consumed — asking with
+            // `filter_mut()` would dirty it even for keys that fall
+            // through to the no-op arm below, which never rebuilds.
+            _ if self.view.filter_handle_key(key) => self.rebuild_view(),
             _ => {}
         }
     }

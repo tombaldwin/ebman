@@ -455,8 +455,8 @@ fn header_dimensions(
 fn estimated_info_row_width(app: &App) -> usize {
     const STATUS_SLOT: usize = 10;
     let sep_w = 5; // both "  •  " and "  ❘  " render at 5 cols
-    let sort_dir = if app.view.sort_desc { "↓" } else { "↑" };
-    let sort_label = format!("{}{}", app.view.sort_key.label(), sort_dir);
+    let sort_dir = if app.view.sort_desc() { "↓" } else { "↑" };
+    let sort_label = format!("{}{}", app.view.sort_key().label(), sort_dir);
     let env_count = app.environments.len().to_string();
     let caller = redact(
         &app.context
@@ -809,8 +809,8 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: bool) {
     // operator needs ALWAYS visible (Sort, Status) goes first. Caller +
     // Last get pushed right so they're the first to clip on narrow
     // terminals — we'd rather lose "20s ago" than lose "↑app".
-    let sort_dir = if app.view.sort_desc { "↓" } else { "↑" };
-    let sort_label = format!("{}{}", app.view.sort_key.label(), sort_dir);
+    let sort_dir = if app.view.sort_desc() { "↓" } else { "↑" };
+    let sort_label = format!("{}{}", app.view.sort_key().label(), sort_dir);
     let mut line2 = kv("Sort", &sort_label, theme);
     line2.push(sep(theme));
     line2.push(Span::raw("Status: "));
@@ -1180,7 +1180,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
             !app.view.hidden_cols.contains(*label)
         })
         .collect();
-    let sort_marker = if app.view.sort_desc { " ▼" } else { " ▲" };
+    let sort_marker = if app.view.sort_desc() { " ▼" } else { " ▲" };
     // TREND header advertises the window length (HISTORY_CAP samples × refresh
     // interval) so operators reading the column don't have to guess. Computed
     // once outside the per-column map.
@@ -1201,7 +1201,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
             };
             let mut text = display.into_owned();
             let primary_match = matches!(
-                (key, app.view.sort_key),
+                (key, app.view.sort_key()),
                 (SortKey::Name, SortKey::Name)
                     | (SortKey::App, SortKey::App)
                     | (SortKey::Status, SortKey::Status)
@@ -1224,7 +1224,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
 
     // Per-application palette colour map is precomputed by App::rebuild_view
     // and stored on the app — rebuilding it here per frame is unnecessary.
-    let app_colors = &app.view.app_colors();
+    let app_colors = app.view.app_colors();
 
     // Hover only applies while the user is interacting with the table itself.
     let hover = if app.mode == Mode::Normal {
