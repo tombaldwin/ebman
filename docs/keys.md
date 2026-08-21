@@ -43,6 +43,8 @@ Press `?` in-app for a per-context keymap — Detail, DLQ, Action menu, and the 
 
 Any single-line prompt — the `/` filter, the `:` command line, `^K` palette, `'` name-jump, pickers, Detail/Logs search, and type-to-confirm fields — shares a cursor-aware editor: type to insert, `Backspace` / `Delete`, `←` / `→` to move, `Home` / `End` (or `^A` / `^E`) to jump, `^W` to delete the previous word. `Enter` accepts, `Esc` cancels.
 
+In the `:` command line, `Tab` / `Shift-Tab` completes: the command name while you're still typing it (first `Tab` lands on the first match, then cycles), and — for the env-name commands `:diff`, `:config-diff` and `:rds-detach` — the environment name once you've typed the command and a space (`:diff prod<Tab>` cycles matching envs; `:diff ENV-A ENV-B` completes the trailing name). For shell (zsh/bash/fish) tab-completion of the `ebman` binary itself, see `ebman completions` in [headless.md](headless.md).
+
 ## Detail view
 
 Tabs cycle with `Tab` / `Shift-Tab` (or `l` / `h`). `^R` re-fetches the active tab; `R` toggles per-tab auto-refresh; `a` opens the env actions menu; `b` opens the env in the AWS console.

@@ -40,9 +40,23 @@ ebman audit  [--tail] [--since DUR] [--env NAME] [--action NAME] [--json]  # sur
 ebman audit replay LINE_ID [--yes]                                          # re-dispatch an audited action (timestamp-prefix ID)
 ebman explain EBL### [--env NAME] [--json] [--dry-run] [--no-cache]        # LLM-backed explanation of a lint issue (opt-in)
 ebman versions --env NAME [--json]                                          # application versions for env's app, newest-first
+ebman completions <bash|zsh|fish>                                           # print a shell completion script to stdout (no AWS)
 ```
 
 Exit-code convention (CI scripts can branch on these): `0` clean, `1` AWS-layer error, `2` usage error, `3` issues / drift found.
+
+### Shell completion (`ebman completions`)
+
+`ebman completions <bash|zsh|fish>` prints a completion script to stdout — subcommands, global flags, and each subcommand's flags / verbs. It's static (no AWS round-trip), so it does **not** complete live environment names; that lives in the TUI command bar (`Tab` after `:diff` / `:config-diff` / `:rds-detach`). Install:
+
+```bash
+# zsh — drop it on $fpath, then restart the shell
+ebman completions zsh  > "${fpath[1]}/_ebman"
+# bash
+ebman completions bash > ~/.local/share/bash-completion/completions/ebman
+# fish
+ebman completions fish > ~/.config/fish/completions/ebman.fish
+```
 
 ## MCP server (`ebman mcp serve`)
 
@@ -52,6 +66,15 @@ A stdio MCP server exposing ebman's read surface as tools, so Claude Code (or an
 claude mcp add ebman -- ebman mcp serve          # register with Claude Code
 ebman mcp serve --demo                            # synthetic fleet, zero AWS — try the protocol
 ebman mcp serve --no-redact                       # disable get_option_settings env-var redaction
+```
+
+### Wiring it up (`ebman mcp setup`)
+
+Not sure how to register it? Run `ebman mcp setup` — it prints the exact commands (the `claude mcp add` line, a `.mcp.json` snippet for other clients, and the `AWS_REGION` pin) from the installed binary. It's the secure way to hand setup to an agent: the instructions come from the signed binary you already installed, so there's no remote file to fetch, tamper with, or auto-execute. `--allow-writes` prints the write-enabled form. It's print-only — it never edits a client's config.
+
+```bash
+ebman mcp setup                    # reads-only registration instructions
+ebman mcp setup --allow-writes     # the write-enabled form
 ```
 
 The server resolves profile/region through the standard AWS chain (env vars beat

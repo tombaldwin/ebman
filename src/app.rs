@@ -4420,47 +4420,106 @@ impl App {
     /// through matches without losing the original prefix (so
     /// they can pop out by typing).
     ///
-    /// Args after the first whitespace pass through untouched —
-    /// only the command-name fragment gets matched. Means `:set-
-    /// option aws` still completes `set-option` if the operator
-    /// goes back and Tabs at the start.
+    /// What gets completed depends on where the cursor is:
+    /// - **No whitespace yet** → the command name (the whole input
+    ///   is the name fragment).
+    /// - **Whitespace, and the first token is an env-arg command**
+    ///   (`:diff` / `:config-diff` / `:rds-detach`, see
+    ///   [`command_takes_env_arg`]) → the *trailing* token as an
+    ///   environment name, drawn from the loaded fleet. `:diff
+    ///   ENV-A ENV-B` completes whichever env name is last.
+    /// - **Whitespace, any other command** → the command-name
+    ///   fragment is re-completed and args after the first space
+    ///   pass through untouched. Means `:set-option aws` still
+    ///   completes `set-option` if the operator Tabs at the start.
     fn command_completion_step(&mut self, delta: i32) {
-        // First Tab: snapshot what the operator had typed so a
-        // subsequent reverse-Tab (or text input) can restore.
-        if self.completion.origin.is_none() {
+        // First Tab of a cycle: snapshot what the operator had typed
+        // so a subsequent reverse-Tab (or text input) can restore.
+        // `first_step` also anchors the landing spot below so the very
+        // first Tab lands on the *first* candidate (forward) / last
+        // (backward), rather than immediately stepping past it.
+        let first_step = self.completion.origin.is_none();
+        if first_step {
             self.completion.origin = Some(self.command_input.text().to_string());
             self.completion.index = 0;
         }
         let origin = self.completion.origin.clone().unwrap_or_default();
-        // Split origin into (name_fragment, rest). Only the
-        // pre-whitespace fragment is completed; anything after
-        // (args) is preserved as-is. Take ownership of the
-        // fragments so we can move `origin` if we hit the
-        // empty-candidates restore path below.
-        let (prefix, rest): (String, String) = match origin.find(char::is_whitespace) {
-            Some(i) => (origin[..i].to_string(), origin[i..].to_string()),
-            None => (origin.clone(), String::new()),
+        let ws = origin.find(char::is_whitespace);
+        // Env-arg mode: a whitespace-bearing input whose first token
+        // is one of the env-name-taking commands. Then we complete
+        // the trailing token against the loaded env names instead of
+        // the command list.
+        let env_mode = ws
+            .map(|i| command_takes_env_arg(&origin[..i]))
+            .unwrap_or(false);
+        // `head` is preserved verbatim before the candidate; `tail`
+        // is appended after it. Command-name completion keeps the
+        // arg tail (`rest`); env completion folds the whole prefix
+        // (command + earlier args + the separating space) into
+        // `head` and has no tail.
+        let (head, candidates, tail): (String, Vec<String>, String) = match ws {
+            None => (String::new(), completion_candidates(&origin), String::new()),
+            Some(_) if env_mode => {
+                let last_ws = origin
+                    .rfind(char::is_whitespace)
+                    .expect("origin has whitespace in this arm");
+                let head = origin[..=last_ws].to_string();
+                let frag = origin[last_ws + 1..].to_string();
+                (head, self.env_name_candidates(&frag), String::new())
+            }
+            Some(i) => (
+                String::new(),
+                completion_candidates(&origin[..i]),
+                origin[i..].to_string(),
+            ),
         };
-        let candidates = completion_candidates(&prefix);
         if candidates.is_empty() {
             // Restore the operator's typed prefix and surface a
             // hint so the silent-no-op doesn't feel broken.
-            self.command_input = origin.into();
-            self.status_message = Some(format!(
-                "no command matches '{prefix}' (Tab cycles command names)"
-            ));
+            self.command_input = origin.clone().into();
+            self.status_message = Some(if env_mode {
+                "no environment matches (Tab cycles env names)".to_string()
+            } else {
+                let prefix = ws.map(|i| &origin[..i]).unwrap_or(&origin[..]);
+                format!("no command matches '{prefix}' (Tab cycles command names)")
+            });
             return;
         }
         let n = candidates.len() as i32;
-        let cur = self.completion.index as i32;
-        let next = (cur + delta).rem_euclid(n) as usize;
+        let next = if first_step {
+            // Land on the first (forward) / last (backward) match.
+            if delta >= 0 {
+                0
+            } else {
+                (n - 1) as usize
+            }
+        } else {
+            let cur = self.completion.index as i32;
+            (cur + delta).rem_euclid(n) as usize
+        };
         self.completion.index = next;
-        self.command_input = format!("{}{rest}", candidates[next]).into();
+        self.command_input = format!("{head}{}{tail}", candidates[next]).into();
         self.status_message = Some(format!(
             "completion {}/{} — Tab cycles, Esc cancels",
             next + 1,
             n
         ));
+    }
+
+    /// Environment names from the loaded fleet that start with
+    /// `prefix`, sorted + deduped — the candidate list for
+    /// command-bar argument completion (see
+    /// [`Self::command_completion_step`]).
+    fn env_name_candidates(&self, prefix: &str) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .environments
+            .iter()
+            .map(|e| e.name.clone())
+            .filter(|n| n.starts_with(prefix))
+            .collect();
+        names.sort();
+        names.dedup();
+        names
     }
 
     /// `:secrets [FILTER]` — list Secrets Manager secrets in the
@@ -15245,6 +15304,19 @@ pub(crate) fn completion_candidates(prefix: &str) -> Vec<String> {
     names
 }
 
+/// Command names whose first positional argument is an existing
+/// environment name — the unambiguous cases where Tab-completing an
+/// env name in the command bar makes sense. `:diff` also takes a
+/// second env name (`ENV-A ENV-B`); completing the trailing token
+/// covers both slots. Every other command either operates on the
+/// *selected* env (no name arg) or takes a non-env `NAME` (region /
+/// profile / secret / alarm / saved-view), so it's deliberately
+/// excluded. None of these three carry aliases (all `cmd(...)` in the
+/// registry), so a raw name match is exact — revisit if that changes.
+pub(crate) fn command_takes_env_arg(cmd: &str) -> bool {
+    matches!(cmd, "diff" | "config-diff" | "rds-detach")
+}
+
 /// Pure render of the `:options` overlay body. Groups `rows` by
 /// namespace; within each group, operator-set rows come first
 /// (marked `▸`), defaults follow (marked `•`). Optional
@@ -16860,6 +16932,125 @@ mod tests {
             app.command_input, forward,
             "Tab Tab BackTab should land on the first match"
         );
+    }
+
+    #[tokio::test]
+    async fn first_tab_lands_on_the_first_candidate() {
+        // Regression: first Tab used to skip to candidates[1].
+        let mut app = test_app();
+        app.mode = Mode::Command;
+        app.command_input = "ba".into();
+        let expected = super::completion_candidates("ba");
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(
+            app.command_input.text(),
+            expected[0],
+            "first Tab should land on the first match, not skip it"
+        );
+    }
+
+    #[test]
+    fn command_takes_env_arg_only_for_env_first_commands() {
+        for c in ["diff", "config-diff", "rds-detach"] {
+            assert!(
+                super::command_takes_env_arg(c),
+                "{c} takes an env name as its first arg"
+            );
+        }
+        // Selected-env commands and non-env NAME commands are excluded.
+        for c in [
+            "why", "deploy", "rebuild", "region", "profile", "view", "save",
+        ] {
+            assert!(
+                !super::command_takes_env_arg(c),
+                "{c} must not offer env-name completion"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn env_name_candidates_filter_by_prefix_and_sort() {
+        let mut app = test_app();
+        app.environments = vec![
+            mk_env("staging-api", "shop", "Web", "Green"),
+            mk_env("prod-api", "shop", "Web", "Green"),
+            mk_env("prod-worker", "shop", "Worker", "Green"),
+        ];
+        let all = app.env_name_candidates("");
+        assert_eq!(
+            all,
+            vec!["prod-api", "prod-worker", "staging-api"],
+            "empty prefix returns every env, sorted"
+        );
+        let pro = app.env_name_candidates("prod");
+        assert_eq!(pro, vec!["prod-api", "prod-worker"]);
+        assert!(app.env_name_candidates("zzz").is_empty());
+    }
+
+    #[tokio::test]
+    async fn tab_completes_env_name_for_diff() {
+        let mut app = test_app();
+        app.environments = vec![
+            mk_env("prod-api", "shop", "Web", "Red"),
+            mk_env("prod-worker", "shop", "Worker", "Green"),
+        ];
+        app.mode = Mode::Command;
+        app.command_input = "diff prod".into();
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        // Completes the trailing token, preserving the command + space.
+        assert_eq!(app.command_input.text(), "diff prod-api");
+        // Second Tab cycles to the next matching env.
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.command_input.text(), "diff prod-worker");
+    }
+
+    #[tokio::test]
+    async fn tab_completes_second_env_name_for_diff() {
+        // `:diff ENV-A ENV-B` — the trailing (second) token completes.
+        let mut app = test_app();
+        app.environments = vec![
+            mk_env("prod-api", "shop", "Web", "Red"),
+            mk_env("staging-api", "shop", "Web", "Green"),
+        ];
+        app.mode = Mode::Command;
+        app.command_input = "diff prod-api sta".into();
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.command_input.text(), "diff prod-api staging-api");
+    }
+
+    #[tokio::test]
+    async fn tab_on_non_env_command_preserves_arg_tail() {
+        // A non-env command still re-completes only the verb; the arg
+        // after the first space passes through untouched (legacy
+        // `:set-option aws` behaviour).
+        let mut app = test_app();
+        app.environments = vec![mk_env("prod-api", "shop", "Web", "Green")];
+        app.mode = Mode::Command;
+        app.command_input = "set-option aws".into();
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        let out = app.command_input.text().to_string();
+        assert!(
+            out.starts_with("set-option") && out.ends_with(" aws"),
+            "verb re-completed, arg tail preserved; got {out:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn tab_env_arg_with_no_match_restores_and_hints() {
+        let mut app = test_app();
+        app.environments = vec![mk_env("prod-api", "shop", "Web", "Green")];
+        app.mode = Mode::Command;
+        app.command_input = "diff zzz".into();
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(
+            app.command_input.text(),
+            "diff zzz",
+            "no env match restores the typed input"
+        );
+        assert!(app
+            .status_message
+            .as_deref()
+            .is_some_and(|m| m.contains("no environment matches")));
     }
 
     #[tokio::test]

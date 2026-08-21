@@ -53,6 +53,8 @@ async fn main() -> Result<()> {
             "mcp" => return ebman::cli::mcp::run(&args).await,
             "explain" => return ebman::cli::explain::run(&args).await,
             "versions" => return ebman::cli::versions::run(&args).await,
+            // Pure printer: no AWS, no audit, no config read.
+            "completions" => return ebman::cli::completions::run(&args).await,
             // A bare non-flag word that isn't a known subcommand is a
             // typo (`ebman lnit`) — erroring beats silently opening
             // the alternate screen (which, in CI, is a confusing
@@ -343,6 +345,10 @@ SUBCOMMANDS:
                                                   enforced). --demo serves the synthetic fleet
                                                   with zero AWS calls.
                                                   Register: claude mcp add ebman -- ebman mcp serve
+    mcp setup [--allow-writes]                   Print the MCP registration commands (claude mcp add
+                                                  + a .mcp.json snippet for other clients) from the
+                                                  installed binary — no network, no remote fetch.
+                                                  --allow-writes shows the write-enabled form.
     audit replay LINE_ID [--yes]                 Re-dispatch a previously-audited action. LINE_ID
                                                   is a prefix of the line's RFC3339 timestamp (the
                                                   first `ebman audit` column); ambiguous prefixes
@@ -376,6 +382,11 @@ SUBCOMMANDS:
                                                   description}}. Default text mode marks the
                                                   currently-deployed label with `*`. Exit codes:
                                                   0 ok, 1 aws err, 2 usage.
+    completions <bash|zsh|fish>                  Emit a shell completion script to stdout. Static:
+                                                  subcommands + flags, not live env names. Install:
+                                                  zsh  -> ebman completions zsh  > \"${{fpath[1]}}/_ebman\"
+                                                  bash -> ebman completions bash > ~/.local/share/bash-completion/completions/ebman
+                                                  fish -> ebman completions fish > ~/.config/fish/completions/ebman.fish
 
 CONFIG:
     ~/.config/ebman/config.toml   user configuration (see README)
