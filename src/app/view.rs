@@ -95,13 +95,13 @@ impl App {
         // BTreeMap iteration is sorted by key, so the cycle order
         // matches the chip-bar render order. Keep them in sync.
         let names: Vec<String> = self.saved_views.keys().cloned().collect();
-        let cur_idx = if self.filter.is_empty() {
+        let cur_idx = if self.view.filter().is_empty() {
             None
         } else {
             names.iter().position(|n| {
                 self.saved_views
                     .get(n)
-                    .map(|encoded| view_filter_value(encoded) == self.filter.text())
+                    .map(|encoded| view_filter_value(encoded) == self.view.filter().text())
                     .unwrap_or(false)
             })
         };
@@ -137,8 +137,11 @@ impl App {
     }
 
     pub(crate) fn resort_envs(&mut self) {
-        let key = self.sort_key;
-        let desc = self.sort_desc;
+        // Reordering `environments` renumbers every index the view cache
+        // holds, so the caller must rebuild after this.
+        self.view.invalidate();
+        let key = self.view.sort_key;
+        let desc = self.view.sort_desc;
         let pinned = self.pinned.clone();
         self.environments.sort_by(|a, b| {
             // Pinned envs always sort to the top regardless of key/direction.
@@ -294,7 +297,7 @@ impl App {
         let Some(name) = self.applications.get(idx).map(|a| a.name.clone()) else {
             return;
         };
-        self.filter = name.clone().into();
+        self.view.set_filter(name.clone());
         self.set_scope(Scope::Envs);
         self.rebuild_view();
         self.status_message = Some(format!("filtered envs to application '{name}'"));
@@ -337,22 +340,28 @@ impl App {
     }
 
     pub fn display_rows(&self) -> &[DisplayRow] {
-        &self.cached_display
+        self.view.display()
     }
 
     pub fn filtered_indexes(&self) -> &[usize] {
-        &self.cached_filtered
+        self.view.filtered()
     }
 
     /// Recompute the cached filtered/display slices. Call after any change to
     /// filter, sort, grouping, or the env list.
+    /// Recompute everything `ui` draws from `environments`.
+    ///
+    /// The only caller of [`ViewState::store`], and so the only thing that
+    /// can clear the stale flag. Call it after changing any input: the
+    /// filter, the grouping, `environments` itself, `aliases`,
+    /// `latest_stacks`, or the theme palette.
     pub fn rebuild_view(&mut self) {
         // Filtered indexes.
-        self.cached_filtered.clear();
-        if self.filter.is_empty() {
-            self.cached_filtered.extend(0..self.environments.len());
+        let mut filtered: Vec<usize> = Vec::new();
+        if self.view.filter().is_empty() {
+            filtered.extend(0..self.environments.len());
         } else {
-            let needle = self.filter.text().to_lowercase();
+            let needle = self.view.filter().text().to_lowercase();
             for (i, e) in self.environments.iter().enumerate() {
                 let alias_hit = self
                     .aliases
@@ -365,62 +374,67 @@ impl App {
                     || e.health.to_lowercase().contains(&needle)
                     || e.status.to_lowercase().contains(&needle)
                 {
-                    self.cached_filtered.push(i);
+                    filtered.push(i);
                 }
             }
         }
 
         // Display rows (with optional group separators).
-        self.cached_display.clear();
+        let mut display: Vec<DisplayRow> = Vec::new();
         let mut prev_app: Option<&str> = None;
-        for i in &self.cached_filtered {
+        for i in &filtered {
             let e = &self.environments[*i];
-            if self.grouped && prev_app.is_some() && prev_app != Some(e.application.as_str()) {
-                self.cached_display.push(DisplayRow::Separator);
+            if self.view.grouped() && prev_app.is_some() && prev_app != Some(e.application.as_str())
+            {
+                display.push(DisplayRow::Separator);
             }
-            self.cached_display.push(DisplayRow::Env(*i));
+            display.push(DisplayRow::Env(*i));
             prev_app = Some(e.application.as_str());
         }
 
-        // Per-application palette colour cache. Assigned by order of first
-        // appearance in the filtered view; rebuilt here so the render path
+        // Per-application palette colour. Assigned by order of first
+        // appearance in the filtered view; cached here so the render path
         // can do an O(1) lookup instead of building this map per frame.
-        self.cached_app_colors = assign_app_colors(
-            self.cached_filtered
+        let app_colors = assign_app_colors(
+            filtered
                 .iter()
                 .map(|i| self.environments[*i].application.as_str()),
             &self.theme.app_palette,
         );
 
-        // Stale-platform cache: parse each env's solution stack against the
+        // Stale-platform lookup: parse each env's solution stack against the
         // available-versions catalogue once here, so the render path looks
         // up `env_name → newer version` instead of re-parsing per row per
         // frame. Empty while `latest_stacks` hasn't loaded yet.
-        self.cached_stale_platforms.clear();
+        let mut stale_platforms: HashMap<String, String> = HashMap::new();
         if !self.latest_stacks.is_empty() {
             for e in &self.environments {
                 if let Some(newer) =
                     crate::aws::newer_stack_version(&e.solution_stack, &self.latest_stacks)
                 {
-                    self.cached_stale_platforms.insert(e.name.clone(), newer);
+                    stale_platforms.insert(e.name.clone(), newer);
                 }
             }
         }
+
+        self.view
+            .store(filtered, display, app_colors, stale_platforms);
     }
 
     pub(crate) fn restore_or_clamp_selection(&mut self) {
-        if self.cached_display.is_empty() {
+        if self.view.display().is_empty() {
             self.table_state.select(None);
             return;
         }
         let first_env_idx = self
-            .cached_display
+            .view
+            .display()
             .iter()
             .position(|r| matches!(r, DisplayRow::Env(_)))
             .unwrap_or(0);
         let pending = self.pending_select.take();
         if let Some(name) = pending {
-            let pos = self.cached_display.iter().position(|r| match r {
+            let pos = self.view.display().iter().position(|r| match r {
                 DisplayRow::Env(i) => self.environments[*i].name == name,
                 DisplayRow::Separator => false,
             });
@@ -432,7 +446,7 @@ impl App {
         let valid = self
             .table_state
             .selected()
-            .is_some_and(|s| matches!(self.cached_display.get(s), Some(DisplayRow::Env(_))));
+            .is_some_and(|s| matches!(self.view.display().get(s), Some(DisplayRow::Env(_))));
         if !valid {
             self.table_state.select(Some(first_env_idx));
         }

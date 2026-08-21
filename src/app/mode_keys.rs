@@ -14,13 +14,13 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use super::{App, Mode};
 
 impl App {
-    /// `Mode::Filter` — typing builds up `self.filter` and re-runs
+    /// `Mode::Filter` — typing builds up `self.view.filter()` and re-runs
     /// `rebuild_view` so the table reflects the search live; Esc
     /// clears + exits; Enter commits and exits.
     pub(super) fn handle_filter_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => {
-                self.filter.clear();
+                self.view.filter_mut().clear();
                 self.mode = Mode::Normal;
                 self.rebuild_view();
             }
@@ -28,7 +28,7 @@ impl App {
             // TextInput consumes editing keys (cursor move / Ctrl-W);
             // rebuild the view on any accepted edit so the table tracks
             // the filter live.
-            _ if self.filter.handle_key(key) => self.rebuild_view(),
+            _ if self.view.filter_mut().handle_key(key) => self.rebuild_view(),
             _ => {}
         }
     }

@@ -35,7 +35,7 @@ The final message must explicitly list **skipped items** alongside what shipped,
 ## House conventions (don't re-discover by breaking)
 
 - **Match-arm order matters.** Guarded `KeyCode::Char(...) if Ctrl` arms must come before the unguarded `KeyCode::Char(...)` arm for the same character. Compiler does not warn on shadowing here.
-- **State mutations that affect the view (`filter`, `sort_key`, `sort_desc`, `grouped`, `environments`) must call `App::rebuild_view()`.** The cached `cached_filtered` / `cached_display` slices are stale otherwise.
+- **State mutations that affect the view must call `App::rebuild_view()`.** `App::view` is a `ViewState` (`src/app/view_state.rs`): the derived slices are private, mutating `filter` / `grouped` through it marks them stale automatically, and reading a stale one trips a `debug_assert`. The inputs `ViewState` does *not* own — `environments`, `aliases`, `latest_stacks`, `theme` — still need an explicit `self.view.invalidate()` before `rebuild_view()`.
 - **Async-result handlers check `generation`.** Every spawned task carries the generation it was launched at; if the App's `generation` has advanced (context switch) the result is dropped. New `AppMsg` variants must follow this pattern.
 - **No hardcoded colours.** Use `app.theme.*`. Hardcoded `Color::Cyan` / `Color::Gray` is a regression.
 - **No hardcoded paths.** Use `util::config_dir()` / `util::cache_dir()` / `util::config_file(...)`.

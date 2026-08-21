@@ -318,17 +318,17 @@ fn build_chain_pills(app: &App) -> Vec<(String, Color, Color)> {
         };
         chain.push((label, fg(bg), bg));
     }
-    if app.redact {
+    if app.view.redact {
         chain.push((
             "REDACT".into(),
             fg(theme.health_yellow),
             theme.health_yellow,
         ));
     }
-    if app.grouped {
+    if app.view.grouped() {
         chain.push(("GROUPED".into(), fg(theme.title_alt), theme.title_alt));
     }
-    match app.view_mode {
+    match app.view.mode {
         ViewMode::Compact => {
             chain.push(("COMPACT".into(), fg(theme.accent), theme.accent));
         }
@@ -455,8 +455,8 @@ fn header_dimensions(
 fn estimated_info_row_width(app: &App) -> usize {
     const STATUS_SLOT: usize = 10;
     let sep_w = 5; // both "  •  " and "  ❘  " render at 5 cols
-    let sort_dir = if app.sort_desc { "↓" } else { "↑" };
-    let sort_label = format!("{}{}", app.sort_key.label(), sort_dir);
+    let sort_dir = if app.view.sort_desc { "↓" } else { "↑" };
+    let sort_label = format!("{}{}", app.view.sort_key.label(), sort_dir);
     let env_count = app.environments.len().to_string();
     let caller = redact(
         &app.context
@@ -464,7 +464,7 @@ fn estimated_info_row_width(app: &App) -> usize {
             .as_deref()
             .map(short_caller)
             .unwrap_or_else(|| "—".into()),
-        app.redact,
+        app.view.redact,
     );
     let last = format_refresh_label(app.last_refresh, chrono::Utc::now(), app.refresh_interval);
 
@@ -480,8 +480,8 @@ fn estimated_info_row_width(app: &App) -> usize {
     }
     w += sep_w + "Last: ".chars().count() + last.chars().count();
     w += sep_w + "Caller: ".chars().count() + caller.chars().count();
-    if !app.filter.is_empty() {
-        w += sep_w + "Filter: ".chars().count() + app.filter.text().chars().count();
+    if !app.view.filter().is_empty() {
+        w += sep_w + "Filter: ".chars().count() + app.view.filter().text().chars().count();
     }
     w
 }
@@ -788,7 +788,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: bool) {
     let env_count = app.environments.len().to_string();
     let account = redact(
         &app.context.account_id.clone().unwrap_or_else(|| "—".into()),
-        app.redact,
+        app.view.redact,
     );
     let caller = redact(
         &app.context
@@ -796,7 +796,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: bool) {
             .as_deref()
             .map(short_caller)
             .unwrap_or_else(|| "—".into()),
-        app.redact,
+        app.view.redact,
     );
 
     let mut line1 = kv("Account", &account, theme);
@@ -809,8 +809,8 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: bool) {
     // operator needs ALWAYS visible (Sort, Status) goes first. Caller +
     // Last get pushed right so they're the first to clip on narrow
     // terminals — we'd rather lose "20s ago" than lose "↑app".
-    let sort_dir = if app.sort_desc { "↓" } else { "↑" };
-    let sort_label = format!("{}{}", app.sort_key.label(), sort_dir);
+    let sort_dir = if app.view.sort_desc { "↓" } else { "↑" };
+    let sort_label = format!("{}{}", app.view.sort_key.label(), sort_dir);
     let mut line2 = kv("Sort", &sort_label, theme);
     line2.push(sep(theme));
     line2.push(Span::raw("Status: "));
@@ -841,9 +841,9 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: bool) {
     line2.extend(kv("Last", &last, theme));
     line2.push(sep(theme));
     line2.extend(kv("Caller", &caller, theme));
-    if !app.filter.is_empty() {
+    if !app.view.filter().is_empty() {
         line2.push(sep(theme));
-        let filter_text = app.filter.text().to_string();
+        let filter_text = app.view.filter().text().to_string();
         line2.push(Span::styled("Filter: ", Style::default().fg(theme.muted)));
         line2.push(Span::styled(
             filter_text,
@@ -902,8 +902,8 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: bool) {
                 .saved_views
                 .iter()
                 .map(|(name, encoded)| {
-                    let active = !app.filter.is_empty()
-                        && crate::app::view_filter_value(encoded) == app.filter.text();
+                    let active = !app.view.filter().is_empty()
+                        && crate::app::view_filter_value(encoded) == app.view.filter().text();
                     let (fg, bg) = if active {
                         (theme.contrast_text(theme.title_alt), theme.title_alt)
                     } else {
@@ -915,8 +915,8 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: bool) {
             chips.extend(pill_chain(&pills, theme));
         } else {
             for (name, encoded) in app.saved_views.iter() {
-                let active = !app.filter.is_empty()
-                    && crate::app::view_filter_value(encoded) == app.filter.text();
+                let active = !app.view.filter().is_empty()
+                    && crate::app::view_filter_value(encoded) == app.view.filter().text();
                 chips.push(Span::styled(
                     format!(" {name} "),
                     if active {
@@ -1129,8 +1129,8 @@ fn draw_apps_table(f: &mut Frame, area: Rect, app: &mut App) {
 fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
     app.table_area = area;
     let theme = app.theme.clone();
-    let compact = app.view_mode == ViewMode::Compact;
-    let spacious = app.view_mode == ViewMode::Spacious;
+    let compact = app.view.mode == ViewMode::Compact;
+    let spacious = app.view.mode == ViewMode::Spacious;
     let row_height: u16 = if spacious { 2 } else { 1 };
     let block_padding: u16 = if spacious { 2 } else { 1 };
     let indexes = app.filtered_indexes();
@@ -1177,10 +1177,10 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
             if *label == "NAME" {
                 return true;
             }
-            !app.hidden_cols.contains(*label)
+            !app.view.hidden_cols.contains(*label)
         })
         .collect();
-    let sort_marker = if app.sort_desc { " ▼" } else { " ▲" };
+    let sort_marker = if app.view.sort_desc { " ▼" } else { " ▲" };
     // TREND header advertises the window length (HISTORY_CAP samples × refresh
     // interval) so operators reading the column don't have to guess. Computed
     // once outside the per-column map.
@@ -1201,7 +1201,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
             };
             let mut text = display.into_owned();
             let primary_match = matches!(
-                (key, app.sort_key),
+                (key, app.view.sort_key),
                 (SortKey::Name, SortKey::Name)
                     | (SortKey::App, SortKey::App)
                     | (SortKey::Status, SortKey::Status)
@@ -1224,7 +1224,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
 
     // Per-application palette colour map is precomputed by App::rebuild_view
     // and stored on the app — rebuilding it here per frame is unnecessary.
-    let app_colors = &app.cached_app_colors;
+    let app_colors = &app.view.app_colors();
 
     // Hover only applies while the user is interacting with the table itself.
     let hover = if app.mode == Mode::Normal {
@@ -1439,7 +1439,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                             // available" nag without leaving the table.
                             // Staleness is precomputed in `rebuild_view` —
                             // this is an O(1) lookup, not a per-frame parse.
-                            let stale = app.cached_stale_platforms.get(&e.name);
+                            let stale = app.view.stale_platforms().get(&e.name);
                             let name_colour = if stale.is_some() {
                                 theme.health_yellow
                             } else {
@@ -1466,7 +1466,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                         }
                         "VERSION" => Cell::from(Span::raw(e.version_label.as_str()))
                             .style(Style::default().fg(theme.app_palette[0])),
-                        "CNAME" => Cell::from(redact(&e.cname, app.redact))
+                        "CNAME" => Cell::from(redact(&e.cname, app.view.redact))
                             .style(Style::default().fg(theme.muted)),
                         // `age` is built freshly per row inside this scope
                         // and so can't be borrowed into the returned Cell.
@@ -1744,7 +1744,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                 e.status,
                 e.health,
                 e.platform,
-                redact(&e.cname, app.redact),
+                redact(&e.cname, app.view.redact),
             );
             let row = Rect {
                 x: area.x,
@@ -1772,12 +1772,12 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
             heading = "no envs in this account / region".to_string();
             hint = "try a different region (r) or profile (p), or check the AWS console (b)"
                 .to_string();
-        } else if app.filter.is_empty() {
+        } else if app.view.filter().is_empty() {
             heading = "no envs match the active view".to_string();
             hint = "type `:views` to switch back to default, or `:filters` to drop a saved one"
                 .to_string();
         } else {
-            heading = format!("no envs match  `{}`", app.filter.text());
+            heading = format!("no envs match  `{}`", app.view.filter().text());
             hint = "press / to edit, or Esc in filter mode to clear".to_string();
         }
         let block_height: u16 = 4;
@@ -2244,8 +2244,8 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
             ));
             top.push(Span::raw(" "));
             top.extend(input_caret_spans(
-                app.filter.text(),
-                app.filter.cursor_col(),
+                app.view.filter().text(),
+                app.view.filter().cursor_col(),
                 Style::default().fg(theme.text),
                 Style::default()
                     .fg(theme.health_yellow)
@@ -2311,9 +2311,9 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
                     format!(" {msg}"),
                     Style::default().fg(theme.health_yellow),
                 ));
-            } else if !app.filter.is_empty() {
+            } else if !app.view.filter().is_empty() {
                 top.push(Span::styled(
-                    format!(" filter: {}", app.filter.text()),
+                    format!(" filter: {}", app.view.filter().text()),
                     Style::default().fg(theme.health_yellow),
                 ));
             } else if let Some(hint) = context_hint(app) {

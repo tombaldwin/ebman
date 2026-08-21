@@ -32,11 +32,11 @@ impl App {
     }
 
     pub(crate) fn export_json(&mut self) {
-        let count = self.cached_filtered.len();
+        let count = self.view.filtered().len();
         let mut out = String::from("[\n");
-        for (idx, &i) in self.cached_filtered.iter().enumerate() {
+        for (idx, &i) in self.view.filtered().iter().enumerate() {
             let e = &self.environments[i];
-            let cname = if self.redact {
+            let cname = if self.view.redact {
                 redact_block(&e.cname)
             } else {
                 e.cname.clone()
@@ -72,13 +72,13 @@ impl App {
     }
 
     pub(crate) fn export_markdown(&mut self) {
-        let count = self.cached_filtered.len();
+        let count = self.view.filtered().len();
         let mut out = String::new();
         out.push_str("| NAME | APPLICATION | TIER | STATUS | HEALTH | PLATFORM | VERSION | CNAME | UPDATED |\n");
         out.push_str("| ---- | ----------- | ---- | ------ | ------ | -------- | ------- | ----- | ------- |\n");
-        for &i in &self.cached_filtered {
+        for &i in self.view.filtered() {
             let e = &self.environments[i];
-            let cname = if self.redact {
+            let cname = if self.view.redact {
                 redact_block(&e.cname)
             } else {
                 e.cname.clone()
@@ -219,14 +219,14 @@ impl App {
     }
 
     pub(crate) fn export_tsv(&mut self) {
-        let count = self.cached_filtered.len();
+        let count = self.view.filtered().len();
         let mut out = String::new();
         out.push_str(
             "NAME\tAPPLICATION\tTIER\tSTATUS\tHEALTH\tPLATFORM\tVERSION\tCNAME\tUPDATED\n",
         );
-        for &i in &self.cached_filtered {
+        for &i in self.view.filtered() {
             let e = &self.environments[i];
-            let cname = if self.redact {
+            let cname = if self.view.redact {
                 redact_block(&e.cname)
             } else {
                 e.cname.clone()

@@ -54,9 +54,9 @@ pub(super) fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
         ));
     }
 
-    let cname_text = redact(&env.cname, app.redact);
+    let cname_text = redact(&env.cname, app.view.redact);
     let mut h2 = kv("Platform", &env.platform, theme);
-    if let Some(newer) = app.cached_stale_platforms.get(&env.name) {
+    if let Some(newer) = app.view.stale_platforms().get(&env.name) {
         h2.push(Span::styled(
             format!("  {}v{newer} available", stale_glyph(theme.icons)),
             Style::default()
@@ -97,7 +97,7 @@ pub(super) fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
         }
         DetailTab::Instances => draw_detail_instances(f, body_area, detail, &app.theme),
         DetailTab::Metrics => draw_detail_metrics(f, body_area, detail, &app.theme),
-        DetailTab::Queue => draw_detail_queue(f, body_area, detail, app.redact, &app.theme),
+        DetailTab::Queue => draw_detail_queue(f, body_area, detail, app.view.redact, &app.theme),
         DetailTab::Logs => draw_detail_logs(f, body_area, detail, &app.theme),
         DetailTab::Config => {
             config_scroll = Some(draw_detail_config(
@@ -105,7 +105,7 @@ pub(super) fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
                 body_area,
                 env,
                 detail,
-                app.redact,
+                app.view.redact,
                 &app.cfg.required_tags,
                 &app.theme,
             ));

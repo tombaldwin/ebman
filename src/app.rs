@@ -9,9 +9,12 @@
 //! Three invariants hold across every module listed below, and none of them
 //! are enforced by the compiler:
 //!
-//! 1. **Mutating view state means rebuilding the view.** Touching `filter`,
-//!    `sort_key`, `sort_desc`, `grouped` or `environments` without calling
-//!    [`App::rebuild_view`] leaves `cached_filtered` / `cached_display` stale.
+//! 1. **Mutating view state means rebuilding the view.** [`ViewState`] now
+//!    enforces most of this: its derived slices are private, changing
+//!    `filter` or `grouped` marks them stale, and reading a stale one is a
+//!    debug assertion. The inputs it does not own — `environments`,
+//!    `aliases`, `latest_stacks`, the theme palette — still need an explicit
+//!    `view.invalidate()` followed by [`App::rebuild_view`].
 //! 2. **Async results check `generation`.** A spawned task captures the
 //!    generation it launched at; if `App` has since switched region, profile
 //!    or account, the handler drops the result instead of applying it to the
@@ -108,6 +111,7 @@ mod mode_dlq_handlers; // dead-letter-queue browser
 mod open_overlay; // read-only informational overlays
 mod shell_session; // suspending the TUI for `:shell` / `$EDITOR`
 mod view; // filter / sort / group / pin / cursor movement
+mod view_state; // the view cache, and the invariant that keeps it fresh
 
 // Async work. Every `spawn_*` carries the `generation` it launched at; its
 // handler drops the result if `App` has since switched context.
@@ -140,6 +144,7 @@ pub use render::*;
 pub use saved_views::*;
 pub use text::*;
 pub use types::*;
+pub use view_state::ViewState;
 
 pub use crate::mode_dlq::{DlqState, QueueView};
 pub(crate) use tail::tail_window_start;
@@ -165,7 +170,11 @@ pub struct App {
     pub table_state: TableState,
     pub table_area: Rect,
     pub mode: Mode,
-    pub filter: TextInput,
+    /// Filter / sort / grouping and the cached projection of
+    /// `environments` that `ui` actually draws. See [`ViewState`] — its
+    /// derived slices are private precisely so they cannot go stale
+    /// unnoticed.
+    pub view: ViewState,
     pub load_state: LoadState,
     pub loading_since: Option<Instant>,
     pub refresh_interval: Duration,
@@ -184,10 +193,6 @@ pub struct App {
     pub override_profile: Option<String>,
     pub override_region: Option<String>,
     pub history: HashMap<String, VecDeque<String>>,
-    pub redact: bool,
-    pub grouped: bool,
-    pub sort_key: SortKey,
-    pub sort_desc: bool,
     pub command_input: TextInput,
     pub completion: CompletionState,
     pub quickjump_input: TextInput,
@@ -211,7 +216,6 @@ pub struct App {
     pub action_flow: Option<ActionFlow>,
     pub dlq: Option<DlqState>,
     pub theme: Arc<Theme>,
-    pub view_mode: ViewMode,
     pub help: HelpState,
     pub hover_row: Option<usize>,
     pub alerts: usize, // count of envs currently in Red, recomputed each refresh
@@ -367,7 +371,6 @@ pub struct App {
     pub pinned_apps: BTreeSet<String>,
     pub aliases: BTreeMap<String, String>,
     pub saved_views: BTreeMap<String, String>,
-    pub hidden_cols: BTreeSet<String>,
     /// User-defined extra metric charts for the Metrics tab. Keyed by the
     /// operator-chosen display label so re-adding the same label updates
     /// in place. Persisted in `state.toml` under `metric.LABEL`.
@@ -476,19 +479,6 @@ pub struct App {
     prev_alerts: usize,
     prev_health: HashMap<String, String>,
     prev_status: HashMap<String, String>,
-    cached_filtered: Vec<usize>,
-    cached_display: Vec<DisplayRow>,
-    /// Per-application palette colour, assigned by order of first appearance
-    /// in the *filtered* view. Rebuilt in [`App::rebuild_view`] so that the
-    /// render hot path can look up `app → Color` without allocating a fresh
-    /// HashMap per frame (previously `draw_table` did this on every draw).
-    pub cached_app_colors: HashMap<String, ratatui::style::Color>,
-    /// `env_name → newest available platform version` for envs running a
-    /// superseded solution stack. Rebuilt in [`App::rebuild_view`] so the
-    /// render hot path does an O(1) lookup instead of re-parsing every
-    /// env's stack string per row per frame. Empty until `latest_stacks`
-    /// has been fetched.
-    pub cached_stale_platforms: HashMap<String, String>,
     pending_select: Option<String>,
     aws: Arc<AwsClient>,
     generation: u64,
@@ -1116,7 +1106,14 @@ impl App {
             table_state,
             table_area: Rect::default(),
             mode: Mode::Normal,
-            filter: persisted.filter.unwrap_or_default().into(),
+            view: ViewState::new(
+                persisted.filter.unwrap_or_default().into(),
+                grouped,
+                sort_key,
+                sort_desc,
+                redact,
+                persisted.hidden_cols,
+            ),
             load_state: LoadState::Idle,
             loading_since: None,
             refresh_interval,
@@ -1128,10 +1125,6 @@ impl App {
             override_profile,
             override_region,
             history: HashMap::new(),
-            redact,
-            grouped,
-            sort_key,
-            sort_desc,
             command_input: TextInput::new(),
             completion: CompletionState::default(),
             quickjump_input: TextInput::new(),
@@ -1166,7 +1159,6 @@ impl App {
                 }
                 Arc::new(t)
             },
-            view_mode: ViewMode::Default,
             help: HelpState {
                 scroll: 0,
                 max_scroll: 0,
@@ -1241,7 +1233,6 @@ impl App {
             pinned_apps: persisted.pinned_apps,
             aliases: persisted.aliases,
             saved_views: persisted.saved_views,
-            hidden_cols: persisted.hidden_cols,
             custom_metrics: persisted.custom_metrics,
             log_reload: None,
             log_directive: std::env::var("RUST_LOG")
@@ -1290,10 +1281,6 @@ impl App {
             prev_alerts: 0,
             prev_health: HashMap::new(),
             prev_status: HashMap::new(),
-            cached_filtered: Vec::new(),
-            cached_display: Vec::new(),
-            cached_app_colors: HashMap::new(),
-            cached_stale_platforms: HashMap::new(),
             pending_select: persisted.selected_env,
             aws,
             generation: 0,
@@ -1329,12 +1316,12 @@ impl App {
         // repo is the more-specific source.
         if let Some(proj) = project {
             if let Some(filter) = proj.filter {
-                app.filter = filter.into();
+                app.view.set_filter(filter);
             } else if let Some(app_name) = proj.application {
                 // Treat `application` as a filter prefill when no
                 // explicit `filter` was set — pre-scopes the table to
                 // a single-app repo's envs without a hard pin.
-                app.filter = app_name.into();
+                app.view.set_filter(app_name);
             }
             app.cfg.runbooks.extend(proj.runbooks);
         }
@@ -1342,14 +1329,14 @@ impl App {
         // `.ebman/` hasn't already set one. Same "soft scope" intent
         // as the project-config path. `.ebman/` always wins because
         // it's the more explicit, ebman-native source.
-        if app.filter.is_empty() {
+        if app.view.filter().is_empty() {
             if let Some(eb) = eb_cli {
                 if let Some(app_name) = eb.application {
-                    app.filter = app_name.into();
+                    app.view.set_filter(app_name);
                 }
             }
         }
-        // The project / EB-CLI blocks above mutate `app.filter` after the
+        // The project / EB-CLI blocks above mutate `app.view.filter()` after the
         // initial `rebuild_view()`, so the cached view is stale w.r.t. the
         // configured filter — rebuild once more so the first frame honours
         // it (house rule: filter mutations call rebuild_view).
@@ -1409,7 +1396,14 @@ impl App {
             table_state,
             table_area: Rect::default(),
             mode: Mode::Normal,
-            filter: TextInput::new(),
+            view: ViewState::new(
+                TextInput::new(),
+                config.grouped_default.unwrap_or(false),
+                SortKey::App,
+                false,
+                config.redact_default.unwrap_or(false),
+                BTreeSet::new(),
+            ),
             load_state: LoadState::Idle,
             loading_since: None,
             refresh_interval: config.refresh_interval,
@@ -1421,10 +1415,6 @@ impl App {
             override_profile: None,
             override_region: None,
             history: HashMap::new(),
-            redact: config.redact_default.unwrap_or(false),
-            grouped: config.grouped_default.unwrap_or(false),
-            sort_key: SortKey::App,
-            sort_desc: false,
             command_input: TextInput::new(),
             completion: CompletionState::default(),
             quickjump_input: TextInput::new(),
@@ -1456,7 +1446,6 @@ impl App {
                 }
                 Arc::new(t)
             },
-            view_mode: ViewMode::Default,
             help: HelpState {
                 scroll: 0,
                 max_scroll: 0,
@@ -1505,7 +1494,6 @@ impl App {
             pinned_apps: BTreeSet::new(),
             aliases: std::collections::BTreeMap::new(),
             saved_views: std::collections::BTreeMap::new(),
-            hidden_cols: BTreeSet::new(),
             custom_metrics: std::collections::BTreeMap::new(),
             log_reload: None,
             log_directive: "info".to_string(),
@@ -1553,10 +1541,6 @@ impl App {
             prev_alerts: 0,
             prev_health: HashMap::new(),
             prev_status: HashMap::new(),
-            cached_filtered: Vec::new(),
-            cached_display: Vec::new(),
-            cached_app_colors: HashMap::new(),
-            cached_stale_platforms: HashMap::new(),
             pending_select: None,
             aws,
             generation: 0,
@@ -1858,7 +1842,7 @@ impl App {
             .context
             .account_id
             .as_deref()
-            .map(|a| redact_for_log(a, self.redact))
+            .map(|a| redact_for_log(a, self.view.redact))
             .unwrap_or_else(|| "—".into());
         let profile = self.context.profile.as_deref().unwrap_or("default");
         out.push_str(&format!(
@@ -1910,8 +1894,9 @@ impl App {
         t.icons = self.theme.icons;
         self.theme = Arc::new(t);
         // Theme swap invalidates the cached per-app colour assignments —
-        // same reason as `apply_config_live`.
-        self.cached_app_colors.clear();
+        // they store final `Color` values, not palette indices. Both
+        // callers rebuild immediately afterwards.
+        self.view.invalidate();
     }
 
     /// Apply a saved [`Config`] to the running App. Mirrors the assignments
@@ -2005,18 +1990,18 @@ impl App {
         state::save(&PersistedState {
             profile,
             region,
-            filter: if self.filter.is_empty() {
+            filter: if self.view.filter().is_empty() {
                 None
             } else {
-                Some(self.filter.text().to_string())
+                Some(self.view.filter().text().to_string())
             },
             sort: Some(format!(
                 "{}:{}",
-                self.sort_key.label(),
-                if self.sort_desc { "desc" } else { "asc" }
+                self.view.sort_key.label(),
+                if self.view.sort_desc { "desc" } else { "asc" }
             )),
-            grouped: Some(self.grouped),
-            redact: Some(self.redact),
+            grouped: Some(self.view.grouped()),
+            redact: Some(self.view.redact),
             events_visible: Some(self.event_panel.visible),
             event_time_format: Some(self.event_panel.time_format),
             selected_env: selected,
@@ -2030,7 +2015,7 @@ impl App {
                 .iter()
                 .map(|(env, snap)| (env.clone(), snap.to_persisted()))
                 .collect(),
-            hidden_cols: self.hidden_cols.clone(),
+            hidden_cols: self.view.hidden_cols.clone(),
             custom_metrics: self.custom_metrics.clone(),
         });
     }

@@ -537,6 +537,7 @@ pub fn option_settings_for(_env_name: &str) -> Vec<(String, String, String)> {
 
 pub fn install(app: &mut App) {
     app.environments = envs();
+    app.view.invalidate();
     app.event_panel.events = events();
     app.worker_dlq_depths = worker_dlq_depths();
     app.env_instance_counts = instance_counts();

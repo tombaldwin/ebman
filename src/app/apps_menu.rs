@@ -175,7 +175,7 @@ impl App {
         };
         match item {
             AppsActionItem::Drill => {
-                self.filter = app_name.clone().into();
+                self.view.set_filter(app_name.clone());
                 self.set_scope(Scope::Envs);
                 self.rebuild_view();
                 self.status_message = Some(format!("filtered envs to application '{app_name}'"));
