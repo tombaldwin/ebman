@@ -117,7 +117,7 @@ const SUBS: &[Sub] = &[
     Sub {
         name: "mcp",
         desc: "Stdio MCP server exposing the fleet to coding agents",
-        args: &["serve", "--demo", "--no-redact", "--allow-writes"],
+        args: &["serve", "setup", "--demo", "--no-redact", "--allow-writes"],
     },
     Sub {
         name: "explain",
