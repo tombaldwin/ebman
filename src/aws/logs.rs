@@ -303,11 +303,36 @@ impl AwsClient {
         } else {
             since_ms
         };
-        // Only the truncated path re-fetches the boundary ms; the
-        // clean path advanced past it, so no ids need carrying.
-        let carry = if truncated {
+        // The carry set must hold every id already delivered at exactly
+        // `next_since`, because that is the millisecond the next poll
+        // re-fetches (FilterLogEvents' `start_time` is inclusive).
+        //
+        // Keying this off `truncated` alone was wrong in the case where
+        // the watermark doesn't move. A truncated poll stalls it at
+        // `max_ts` and carries that ms's ids; if the group then goes
+        // quiet, the next poll skips those ids correctly, delivers
+        // nothing, and is NOT truncated — so it dropped the carry while
+        // leaving the watermark where it was. The poll after that
+        // re-fetched the same events with an empty skip set and showed
+        // them again, and so did every poll after it: `:logs-tail`
+        // re-printed the same lines every 2 s until a newer event
+        // arrived. Keying off "did the watermark move" instead ties the
+        // suppression to the thing that actually causes the re-fetch.
+        let carry = if next_since == since_ms {
+            // Stalled. Everything ever delivered at this millisecond
+            // has to stay suppressed: the ids we were given plus any
+            // we added this time round.
+            let mut c = skip_at_since.clone();
+            c.extend(boundary_ids);
+            c
+        } else if truncated {
+            // Advanced to `max_ts` but not past it. That is a
+            // millisecond we only reached this poll, so nothing was
+            // delivered at it before now.
             boundary_ids
         } else {
+            // Advanced past everything returned; nothing gets
+            // re-fetched, so nothing needs carrying.
             std::collections::HashSet::new()
         };
         Ok((out, next_since, carry))

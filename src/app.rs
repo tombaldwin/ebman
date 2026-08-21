@@ -601,7 +601,7 @@ pub(crate) enum AppMsg {
         gen: u64,
         account: Option<String>,
         region: String,
-        result: Result<Vec<crate::aws::EnvCost>, String>,
+        result: Result<crate::aws::EnvCosts, String>,
     },
     /// Flat `ListAvailableSolutionStacks` result. The handler folds it into
     /// `App.latest_stacks` (family → newest version) so the envs table can

@@ -1288,32 +1288,49 @@ impl App {
         &mut self,
         account: Option<String>,
         region: String,
-        result: Result<Vec<crate::aws::EnvCost>, String>,
+        result: Result<crate::aws::EnvCosts, String>,
     ) {
         match result {
-            Ok(rows) => {
+            Ok(costs) => {
                 let now = chrono::Utc::now();
                 self.costs.clear();
-                for row in &rows {
+                for row in &costs.rows {
                     self.costs.insert(row.env_name.clone(), row.cost_usd);
                 }
                 self.costs_fetched_at = Some(now);
-                // Persist to ~/.cache/ebman/cost-{account}-{region}.toml so
-                // subsequent sessions render immediately.
-                let account_key = account.unwrap_or_else(|| "unknown".into());
-                let cache = crate::cost_cache::CostCache {
-                    fetched_at: Some(now),
-                    costs: self.costs.clone(),
-                };
-                if let Err(e) = crate::cost_cache::save(&account_key, &region, &cache) {
+                let n = costs.rows.len();
+                if costs.truncated {
+                    // Deliberately NOT cached. The cache has a 24-hour
+                    // TTL, so persisting a partial map would leave every
+                    // env past the page cap rendering as unknown cost —
+                    // indistinguishable from an untagged one — for a
+                    // day, and the next session would reuse it rather
+                    // than retrying.
+                    self.status_message = Some(format!(
+                        "cost: {n} env(s) — INCOMPLETE (Cost Explorer page cap); not cached"
+                    ));
                     tracing::warn!(
                         target: "ebman::cost",
-                        error = %e,
-                        "cost cache write failed (non-fatal)"
+                        envs = n,
+                        "incomplete cost result not written to cache"
                     );
+                } else {
+                    // Persist to ~/.cache/ebman/cost-{account}-{region}.toml
+                    // so subsequent sessions render immediately.
+                    let account_key = account.unwrap_or_else(|| "unknown".into());
+                    let cache = crate::cost_cache::CostCache {
+                        fetched_at: Some(now),
+                        costs: self.costs.clone(),
+                    };
+                    if let Err(e) = crate::cost_cache::save(&account_key, &region, &cache) {
+                        tracing::warn!(
+                            target: "ebman::cost",
+                            error = %e,
+                            "cost cache write failed (non-fatal)"
+                        );
+                    }
+                    self.status_message = Some(format!("cost: refreshed {n} env(s)"));
                 }
-                let n = rows.len();
-                self.status_message = Some(format!("cost: refreshed {n} env(s)"));
             }
             Err(msg) => {
                 self.error_message = Some(format!("cost fetch: {msg}"));

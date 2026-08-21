@@ -43,10 +43,28 @@ pub(super) fn to_smithy(d: DateTime<Utc>) -> aws_sdk_cloudwatch::primitives::Dat
     aws_sdk_cloudwatch::primitives::DateTime::from_secs(d.timestamp())
 }
 
+/// The CloudWatch dimension that names an Elastic Beanstalk environment.
+/// Both halves of the alarm story use it: `put_env_metric_alarm` writes
+/// it, `list_alarms_for_env` matches on it.
+const ENV_DIMENSION: &str = "EnvironmentName";
+
 impl AwsClient {
-    /// Describe metric alarms whose first dimension references the given env.
-    /// CloudWatch doesn't expose a server-side filter by dimension, so we pull
-    /// alarms in the AWS/ElasticBeanstalk namespace and filter client-side.
+    /// Every metric alarm dimensioned `EnvironmentName=<env>`.
+    ///
+    /// CloudWatch has no server-side filter by dimension, so this pages
+    /// through `DescribeAlarms` and matches client-side. The match is on
+    /// the dimension's *name and value*, not the value alone: an RDS
+    /// alarm carrying `DBInstanceIdentifier=payments`, an SQS alarm with
+    /// `QueueName=payments` or an ECS alarm with `ServiceName=payments`
+    /// are all unrelated to an EB environment called `payments`, and
+    /// attributing them to it sent operators chasing an RDS threshold
+    /// while diagnosing a Beanstalk env.
+    ///
+    /// Namespace is deliberately *not* part of the match. Our own alarms
+    /// live in `AWS/ElasticBeanstalk` (see
+    /// [`AwsClient::put_env_metric_alarm`]), but an operator-authored
+    /// alarm in a custom namespace dimensioned by `EnvironmentName` is
+    /// genuinely about this environment and should still show up.
     pub async fn list_alarms_for_env(&self, env_name: &str) -> Result<Vec<CwAlarm>> {
         let mut out = Vec::new();
         let mut next_token: Option<String> = None;
@@ -58,7 +76,9 @@ impl AwsClient {
             let resp = req.send().await.wrap_err("DescribeAlarms failed")?;
             for a in resp.metric_alarms.unwrap_or_default() {
                 let dims = a.dimensions.clone().unwrap_or_default();
-                let touches = dims.iter().any(|d| d.value.as_deref() == Some(env_name));
+                let touches = dims.iter().any(|d| {
+                    d.name.as_deref() == Some(ENV_DIMENSION) && d.value.as_deref() == Some(env_name)
+                });
                 if !touches {
                     continue;
                 }
@@ -120,7 +140,7 @@ impl AwsClient {
             ));
         }
         let dim = Dimension::builder()
-            .name("EnvironmentName")
+            .name(ENV_DIMENSION)
             .value(env_name)
             .build();
         self.cw

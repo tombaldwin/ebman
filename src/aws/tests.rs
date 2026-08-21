@@ -830,10 +830,11 @@ async fn fetch_env_costs_extracts_env_name_from_tag_group_key() {
     let client = client_with_sub!(cost = cost);
 
     let costs = client.fetch_env_costs().await.expect("ok");
-    assert_eq!(costs.len(), 1);
-    assert_eq!(costs[0].env_name, "uflexi-prod");
+    assert_eq!(costs.rows.len(), 1);
+    assert_eq!(costs.rows[0].env_name, "uflexi-prod");
+    assert!(!costs.truncated, "a single complete page is not truncated");
     assert!(
-        (costs[0].cost_usd - 150.25).abs() < f64::EPSILON,
+        (costs.rows[0].cost_usd - 150.25).abs() < f64::EPSILON,
         "amount parsed from string"
     );
 }
@@ -2562,4 +2563,462 @@ async fn simulate_principal_policy_stops_when_not_truncated() {
         .unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(page1.num_calls(), 1, "must not loop on a stale marker");
+}
+
+// ── log-tail boundary dedupe survives a stalled watermark ──────────
+
+#[tokio::test]
+async fn log_tail_does_not_re_emit_after_a_truncated_poll_goes_quiet() {
+    // The loop: a truncated poll stalls the watermark at `max_ts` and
+    // carries that millisecond's ids. The group then goes quiet, so the
+    // next poll skips them correctly, delivers nothing — and, not being
+    // truncated itself, used to drop the carry while leaving the
+    // watermark where it was. Every poll after that re-fetched the same
+    // events with an empty skip set and re-printed them.
+    use aws_sdk_cloudwatchlogs::operation::filter_log_events::FilterLogEventsOutput;
+    use aws_sdk_cloudwatchlogs::types::FilteredLogEvent;
+    use std::collections::HashSet;
+
+    fn event() -> FilteredLogEvent {
+        FilteredLogEvent::builder()
+            .event_id("EV-1")
+            .timestamp(1_000)
+            .log_stream_name("i-abc")
+            .message("boundary line")
+            .build()
+    }
+    // First poll: page 1 returns the event and a token; every following
+    // page keeps handing back a token, so the page cap is reached and
+    // the poll ends truncated with the watermark stalled at 1000.
+    let first = mock!(aws_sdk_cloudwatchlogs::Client::filter_log_events)
+        .match_requests(|req| req.start_time() == Some(500) && req.next_token().is_none())
+        .then_output(|| {
+            FilterLogEventsOutput::builder()
+                .events(event())
+                .next_token("MORE")
+                .build()
+        });
+    let more = mock!(aws_sdk_cloudwatchlogs::Client::filter_log_events)
+        .match_requests(|req| req.next_token() == Some("MORE"))
+        .then_output(|| FilterLogEventsOutput::builder().next_token("MORE").build());
+    // Later polls start at the stalled watermark and see only the same
+    // event again — the group has gone quiet.
+    let quiet = mock!(aws_sdk_cloudwatchlogs::Client::filter_log_events)
+        .match_requests(|req| req.start_time() == Some(1_000) && req.next_token().is_none())
+        .then_output(|| FilterLogEventsOutput::builder().events(event()).build());
+
+    // MatchAny, not the default Sequential: these rules describe
+    // request *shapes* that recur across polls, not a fixed call order.
+    let cw_logs = mock_client!(
+        aws_sdk_cloudwatchlogs,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&first, &more, &quiet]
+    );
+    let client = client_with_cw_logs(cw_logs);
+
+    // Poll 1 — truncated, stalls at 1000, carries EV-1.
+    let (events, next_since, carry) = client
+        .fetch_recent_log_events("/aws/eb/api-prod", 500, 1000, &HashSet::new())
+        .await
+        .unwrap();
+    assert!(!events.is_empty(), "poll 1 delivers the line");
+    assert_eq!(next_since, 1_000, "truncated poll must not skip the ms");
+    assert!(carry.contains("EV-1"));
+
+    // Poll 2 — quiet. Skips the known id, delivers nothing, watermark
+    // still stalled, so the carry must survive.
+    let (events, next_since, carry) = client
+        .fetch_recent_log_events("/aws/eb/api-prod", next_since, 1000, &carry)
+        .await
+        .unwrap();
+    assert!(events.is_empty(), "already-delivered line must be skipped");
+    assert_eq!(next_since, 1_000);
+    assert!(
+        carry.contains("EV-1"),
+        "the watermark did not move, so the skip set must be kept"
+    );
+
+    // Poll 3 — this is where the loop used to start.
+    let (events, _, _) = client
+        .fetch_recent_log_events("/aws/eb/api-prod", next_since, 1000, &carry)
+        .await
+        .unwrap();
+    assert!(
+        events.is_empty(),
+        "the same line must not be re-emitted on every subsequent poll"
+    );
+}
+
+#[tokio::test]
+async fn log_tail_clean_poll_advances_past_the_boundary_and_carries_nothing() {
+    // The complement: when the watermark does advance past everything
+    // returned, nothing gets re-fetched, so nothing needs carrying.
+    use aws_sdk_cloudwatchlogs::operation::filter_log_events::FilterLogEventsOutput;
+    use aws_sdk_cloudwatchlogs::types::FilteredLogEvent;
+    use std::collections::HashSet;
+
+    let page = mock!(aws_sdk_cloudwatchlogs::Client::filter_log_events).then_output(|| {
+        FilterLogEventsOutput::builder()
+            .events(
+                FilteredLogEvent::builder()
+                    .event_id("EV-9")
+                    .timestamp(2_000)
+                    .log_stream_name("i-abc")
+                    .message("line")
+                    .build(),
+            )
+            .build()
+    });
+    let cw_logs = mock_client!(aws_sdk_cloudwatchlogs, [&page]);
+    let client = client_with_cw_logs(cw_logs);
+
+    let (events, next_since, carry) = client
+        .fetch_recent_log_events("/aws/eb/api-prod", 500, 1000, &HashSet::new())
+        .await
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(next_since, 2_001, "clean poll advances past the newest ms");
+    assert!(
+        carry.is_empty(),
+        "nothing is re-fetched, so nothing carries"
+    );
+}
+
+// ── multipart abort on the missing-ETag path ───────────────────────
+
+#[tokio::test]
+async fn upload_bundle_aborts_multipart_when_a_part_returns_no_etag() {
+    // Every failure path after CreateMultipartUpload must abort, or S3
+    // keeps the already-uploaded parts — billed, with no object in the
+    // listing. This path bare-`?`d out instead, so a >64 MiB bundle
+    // could leave gigabytes orphaned.
+    use aws_sdk_s3::operation::abort_multipart_upload::AbortMultipartUploadOutput;
+    use aws_sdk_s3::operation::create_multipart_upload::CreateMultipartUploadOutput;
+    use aws_sdk_s3::operation::upload_part::UploadPartOutput;
+
+    let cmu = mock!(aws_sdk_s3::Client::create_multipart_upload).then_output(|| {
+        CreateMultipartUploadOutput::builder()
+            .upload_id("UP-1")
+            .build()
+    });
+    // Succeeds at the HTTP level but carries no ETag.
+    let up_no_etag =
+        mock!(aws_sdk_s3::Client::upload_part).then_output(|| UploadPartOutput::builder().build());
+    let abort = mock!(aws_sdk_s3::Client::abort_multipart_upload)
+        .then_output(|| AbortMultipartUploadOutput::builder().build());
+    let s3 = mock_client!(
+        aws_sdk_s3,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&cmu, &up_no_etag, &abort]
+    );
+
+    // Same tempfile convention as the sibling multipart tests.
+    let path = std::env::temp_dir().join(format!("ebman-test-no-etag-{}.bin", std::process::id()));
+    std::fs::write(&path, vec![0u8; 12]).expect("write tempfile");
+
+    let cfg = aws_config::SdkConfig::builder()
+        .region(Region::new("us-east-1"))
+        .behavior_version(aws_config::BehaviorVersion::latest())
+        .build();
+    let client = AwsClient::for_tests(
+        Client::new(&cfg),
+        SqsClient::new(&cfg),
+        CwClient::new(&cfg),
+        CwLogsClient::new(&cfg),
+        s3,
+        Ec2Client::new(&cfg),
+    );
+
+    // Threshold 1 byte / part size 8 bytes forces two parts.
+    let err = client
+        .upload_bundle_with("bucket", "key.zip", &path, 1, 8)
+        .await
+        .expect_err("a part with no ETag must fail the upload");
+    let _ = std::fs::remove_file(&path);
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("no ETag"),
+        "error should name the cause: {msg}"
+    );
+    assert_eq!(
+        abort.num_calls(),
+        1,
+        "AbortMultipartUpload must fire so the uploaded parts aren't orphaned"
+    );
+}
+
+// ── alarm attribution ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn list_alarms_for_env_ignores_a_same_named_resource_in_another_service() {
+    // Matching on the dimension VALUE alone attributed any alarm whose
+    // dimension happened to equal the env name — so an RDS instance,
+    // SQS queue or ECS service called `payments` showed up in the EB
+    // env `payments`'s Detail pane and in `:why`.
+    use aws_sdk_cloudwatch::operation::describe_alarms::DescribeAlarmsOutput;
+    use aws_sdk_cloudwatch::types::{Dimension, MetricAlarm};
+
+    fn alarm(name: &str, ns: &str, dim_name: &str, dim_value: &str) -> MetricAlarm {
+        MetricAlarm::builder()
+            .alarm_name(name)
+            .namespace(ns)
+            .metric_name("m")
+            .dimensions(Dimension::builder().name(dim_name).value(dim_value).build())
+            .build()
+    }
+    let rule = mock!(aws_sdk_cloudwatch::Client::describe_alarms).then_output(|| {
+        DescribeAlarmsOutput::builder()
+            .metric_alarms(alarm(
+                "eb-health",
+                "AWS/ElasticBeanstalk",
+                "EnvironmentName",
+                "payments",
+            ))
+            .metric_alarms(alarm(
+                "rds-cpu",
+                "AWS/RDS",
+                "DBInstanceIdentifier",
+                "payments",
+            ))
+            .metric_alarms(alarm("sqs-depth", "AWS/SQS", "QueueName", "payments"))
+            // An operator-authored alarm in a custom namespace, but
+            // genuinely dimensioned by the environment — must be kept.
+            .metric_alarms(alarm(
+                "custom-slo",
+                "Acme/Platform",
+                "EnvironmentName",
+                "payments",
+            ))
+            .build()
+    });
+    let cw = mock_client!(aws_sdk_cloudwatch, [&rule]);
+    let client = client_with_cw(cw);
+
+    let alarms = client.list_alarms_for_env("payments").await.unwrap();
+    let names: Vec<&str> = alarms.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["eb-health", "custom-slo"],
+        "only EnvironmentName-dimensioned alarms belong to an EB env"
+    );
+}
+
+#[tokio::test]
+async fn list_alarms_for_env_matches_when_env_is_not_the_first_dimension() {
+    use aws_sdk_cloudwatch::operation::describe_alarms::DescribeAlarmsOutput;
+    use aws_sdk_cloudwatch::types::{Dimension, MetricAlarm};
+
+    let rule = mock!(aws_sdk_cloudwatch::Client::describe_alarms).then_output(|| {
+        DescribeAlarmsOutput::builder()
+            .metric_alarms(
+                MetricAlarm::builder()
+                    .alarm_name("multi-dim")
+                    .namespace("AWS/ElasticBeanstalk")
+                    .metric_name("m")
+                    .dimensions(
+                        Dimension::builder()
+                            .name("InstanceId")
+                            .value("i-123")
+                            .build(),
+                    )
+                    .dimensions(
+                        Dimension::builder()
+                            .name("EnvironmentName")
+                            .value("payments")
+                            .build(),
+                    )
+                    .build(),
+            )
+            .build()
+    });
+    let cw = mock_client!(aws_sdk_cloudwatch, [&rule]);
+    let client = client_with_cw(cw);
+
+    let alarms = client.list_alarms_for_env("payments").await.unwrap();
+    assert_eq!(alarms.len(), 1, "dimension order must not matter");
+}
+
+// ── Cost Explorer page cap is not silent ───────────────────────────
+
+#[tokio::test]
+async fn fetch_env_costs_flags_a_truncated_walk() {
+    // Falling out of the page cap used to return the partial map with
+    // no signal, and the caller cached it for 24 hours — so every env
+    // past the cap read as unknown cost, indistinguishable from an
+    // untagged one, until the cache expired.
+    use aws_sdk_costexplorer::operation::get_cost_and_usage::GetCostAndUsageOutput;
+    use aws_sdk_costexplorer::types::{Group, MetricValue, ResultByTime};
+    use std::collections::HashMap;
+
+    // Every page hands back another token, so the walk can only end by
+    // hitting the cap.
+    let endless = mock!(aws_sdk_costexplorer::Client::get_cost_and_usage).then_output(|| {
+        let mut metrics = HashMap::new();
+        metrics.insert(
+            "UnblendedCost".to_string(),
+            MetricValue::builder().amount("1.00").unit("USD").build(),
+        );
+        GetCostAndUsageOutput::builder()
+            .results_by_time(
+                ResultByTime::builder()
+                    .groups(
+                        Group::builder()
+                            .keys("elasticbeanstalk:environment-name$api-prod")
+                            .set_metrics(Some(metrics))
+                            .build(),
+                    )
+                    .build(),
+            )
+            .next_page_token("MORE")
+            .build()
+    });
+    let cost = mock_client!(
+        aws_sdk_costexplorer,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&endless]
+    );
+    let cfg = aws_config::SdkConfig::builder()
+        .region(Region::new("us-east-1"))
+        .behavior_version(aws_config::BehaviorVersion::latest())
+        .build();
+    let mut client = AwsClient::for_tests(
+        Client::new(&cfg),
+        SqsClient::new(&cfg),
+        CwClient::new(&cfg),
+        CwLogsClient::new(&cfg),
+        S3Client::new(&cfg),
+        Ec2Client::new(&cfg),
+    );
+    client.cost = cost;
+
+    let costs = client
+        .fetch_env_costs()
+        .await
+        .expect("partial data still returned");
+    assert!(
+        costs.truncated,
+        "a walk cut short by the page cap must say so"
+    );
+    assert!(
+        !costs.rows.is_empty(),
+        "partial data is still worth rendering — it just must not be cached"
+    );
+}
+
+// ── multi-region row labelling ─────────────────────────────────────
+
+#[test]
+fn stamp_region_labels_every_row_with_the_resolved_region() {
+    // Both multi-region entry points share this step. They diverged
+    // once — one stamping the REQUESTED region, the other the resolved
+    // one — and the difference only showed when a region string failed
+    // to bind and the SDK fell back to its chain, at which point the
+    // fan-out queried one region and labelled the rows with another.
+    fn env(name: &str, region: Option<&str>) -> crate::aws::Environment {
+        crate::aws::Environment {
+            name: name.into(),
+            application: "app".into(),
+            status: "Ready".into(),
+            health: "Green".into(),
+            platform: String::new(),
+            solution_stack: String::new(),
+            tier: "WebServer".into(),
+            cname: String::new(),
+            version_label: String::new(),
+            arn: None,
+            updated: None,
+            id: None,
+            region: region.map(str::to_string),
+        }
+    }
+    let mut envs = vec![
+        env("api-prod", None),
+        // A stale label from a previous pass must be overwritten, not
+        // preserved.
+        env("web-prod", Some("eu-west-1")),
+    ];
+    super::eb::stamp_region(&mut envs, "us-east-1");
+    assert!(envs
+        .iter()
+        .all(|e| e.region.as_deref() == Some("us-east-1")));
+}
+
+// ── concurrent SSM polling keeps results attributed correctly ──────
+
+#[tokio::test(start_paused = true)]
+async fn run_shell_command_polls_instances_concurrently_without_mixing_results() {
+    // The cycle now polls instances concurrently, because doing it
+    // sequentially cost one round trip per instance with the deadline
+    // checked only afterwards — so a large env could burn its whole
+    // wall clock on one cycle and write every instance off as
+    // `TimedOut(local)` while the command was running fine.
+    //
+    // The risk a concurrent cycle introduces is pairing the wrong
+    // response to the wrong instance, so that is what this pins.
+    use aws_sdk_ssm::operation::get_command_invocation::GetCommandInvocationOutput;
+    use aws_sdk_ssm::operation::send_command::SendCommandOutput;
+    use aws_sdk_ssm::types::{Command, CommandInvocationStatus};
+
+    const CMD_ID: &str = "cmd-concurrent";
+    let send_rule = mock!(aws_sdk_ssm::Client::send_command).then_output(|| {
+        SendCommandOutput::builder()
+            .command(Command::builder().command_id(CMD_ID).build())
+            .build()
+    });
+    // One rule per instance, each returning that instance's own output.
+    let mk = |id: &'static str, out: &'static str| {
+        mock!(aws_sdk_ssm::Client::get_command_invocation)
+            .match_requests(move |req| req.instance_id() == Some(id))
+            .then_output(move || {
+                GetCommandInvocationOutput::builder()
+                    .command_id(CMD_ID)
+                    .instance_id(id)
+                    .status(CommandInvocationStatus::Success)
+                    .response_code(0)
+                    .standard_output_content(out)
+                    .build()
+            })
+    };
+    let a = mk("i-aaa", "host-a");
+    let b = mk("i-bbb", "host-b");
+    let c = mk("i-ccc", "host-c");
+    let ssm = mock_client!(
+        aws_sdk_ssm,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&send_rule, &a, &b, &c]
+    );
+    let client = client_with_ssm(ssm);
+
+    let handle = tokio::spawn(async move {
+        client
+            .run_shell_command(
+                &[
+                    "i-aaa".to_string(),
+                    "i-bbb".to_string(),
+                    "i-ccc".to_string(),
+                ],
+                "hostname",
+                60,
+            )
+            .await
+    });
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    let results = handle.await.unwrap().expect("ok");
+
+    assert_eq!(results.len(), 3, "every instance resolves in one cycle");
+    // Results are sorted by instance id, so this also pins the pairing.
+    let pairs: Vec<(&str, &str)> = results
+        .iter()
+        .map(|r| (r.instance_id.as_str(), r.stdout.as_str()))
+        .collect();
+    assert_eq!(
+        pairs,
+        vec![
+            ("i-aaa", "host-a"),
+            ("i-bbb", "host-b"),
+            ("i-ccc", "host-c")
+        ],
+        "each instance must carry its own output"
+    );
+    assert!(results.iter().all(|r| r.status == "Success"));
 }
