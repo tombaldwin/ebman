@@ -1316,11 +1316,13 @@ impl App {
                             self.costs.insert(row.env_name.clone(), row.cost_usd);
                         }
                         self.error_message = Some(format!(
-                            "cost: INCOMPLETE — Cost Explorer returned more pages than                              ebman will walk. Showing {n} env(s); not cached."
+                            "cost: INCOMPLETE — Cost Explorer returned more pages than ebman \
+                             will walk. Showing {n} env(s); not cached."
                         ));
                     } else {
                         self.error_message = Some(format!(
-                            "cost: refresh INCOMPLETE (Cost Explorer page cap) — keeping                              the previous {} env(s) rather than replacing them with {n}.",
+                            "cost: refresh INCOMPLETE (Cost Explorer page cap) — keeping the \
+                             previous {} env(s) rather than replacing them with {n}.",
                             self.costs.len()
                         ));
                     }

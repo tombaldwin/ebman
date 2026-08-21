@@ -2193,6 +2193,7 @@ fn global_services_stay_inside_the_operators_partition() {
     assert_eq!(g("us-isob-east-1"), "us-isob-east-1");
     assert_eq!(g("us-isof-south-1"), "us-isof-south-1");
     assert_eq!(g("eu-isoe-west-1"), "eu-isoe-west-1");
+    assert_eq!(g("eusc-de-east-1"), "eusc-de-east-1");
     // A region we've never heard of falls back to commercial rather
     // than failing — same as before, and the common case.
     assert_eq!(g(""), "us-east-1");
@@ -2224,6 +2225,7 @@ fn global_service_region_never_crosses_a_partition() {
         ("us-isob-east-1", "aws-iso-b"),
         ("us-isof-south-1", "aws-iso-f"),
         ("eu-isoe-west-1", "aws-iso-e"),
+        ("eusc-de-east-1", "aws-eusc"),
     ];
     let lookup = |r: &str| {
         REGION_PARTITION
@@ -3385,4 +3387,15 @@ async fn alarm_dimension_names_are_configurable() {
         .map(|a| a.name)
         .collect();
     assert_eq!(names, vec!["canonical", "operator-spelling"]);
+}
+
+#[test]
+fn aws_client_is_send_and_sync() {
+    // The cache stores `Arc<AwsClient>` in a `static`, which requires
+    // both. Asserted rather than assumed: a future field with interior
+    // mutability (a `Cell`, an `Rc`) would break the cache at a
+    // distance, and the error would point at the static, not the field.
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<AwsClient>();
+    assert_send_sync::<std::sync::Arc<AwsClient>>();
 }

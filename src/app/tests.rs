@@ -7032,12 +7032,22 @@ async fn a_truncated_cost_refresh_keeps_the_previous_map() {
         app.costs, before,
         "a partial walk must not replace a good map"
     );
+    let msg = app.error_message.as_deref().expect("must say so");
+    assert!(msg.contains("INCOMPLETE"), "{msg}");
+    assert_no_run_on_spaces(msg);
+}
+
+/// A wrapped string literal without a `\` continuation embeds the
+/// newline *and* the next line's indentation, so the message reaches
+/// the operator with a long run of spaces in the middle of a sentence —
+/// and the TUI's error bar is one line, so a narrow terminal pushes the
+/// actionable half off-screen. This has now happened twice; assert on
+/// the rendered text rather than trusting the literal.
+#[track_caller]
+fn assert_no_run_on_spaces(msg: &str) {
     assert!(
-        app.error_message
-            .as_deref()
-            .is_some_and(|m| m.contains("INCOMPLETE")),
-        "and must say so: {:?}",
-        app.error_message
+        !msg.contains("   "),
+        "message contains a run of spaces (missing a `\\` continuation?): {msg:?}"
     );
 }
 
@@ -7067,10 +7077,9 @@ async fn a_truncated_cost_refresh_with_nothing_cached_shows_what_it_has() {
         app.costs_fetched_at.is_none(),
         "an incomplete walk must not stamp a fetch time"
     );
-    assert!(app
-        .error_message
-        .as_deref()
-        .is_some_and(|m| m.contains("INCOMPLETE")));
+    let msg = app.error_message.as_deref().expect("must say so");
+    assert!(msg.contains("INCOMPLETE"), "{msg}");
+    assert_no_run_on_spaces(msg);
 }
 
 #[tokio::test]
@@ -7147,4 +7156,77 @@ fn console_url_follows_the_partition() {
     assert!(cn.contains("cn-north-1.console.amazonaws.cn"), "got {cn}");
     // No guessed hostname for the ISO partitions.
     assert!(console_url("us-iso-east-1", "myapp", "myenv").is_none());
+}
+
+#[test]
+fn parse_access_denied_keeps_a_non_assumed_role_sts_principal() {
+    // Making the rewrite partition-generic moved the `?` operators into
+    // an arm that now fires for EVERY partition, so an STS ARN that
+    // isn't an assumed-role — a federated user, say — propagates None
+    // out of the whole function. Before, the branch simply didn't match
+    // and the principal was returned unchanged.
+    let msg = "User: arn:aws-us-gov:sts::123456789012:federated-user/ci-bot \
+               is not authorized to perform: elasticbeanstalk:UpdateEnvironment";
+    let (principal, action) = super::parse_access_denied(msg)
+        .expect("a federated-user denial must still parse, not vanish");
+    assert_eq!(
+        principal,
+        "arn:aws-us-gov:sts::123456789012:federated-user/ci-bot"
+    );
+    assert_eq!(action, "elasticbeanstalk:UpdateEnvironment");
+}
+
+#[tokio::test]
+async fn explain_accepts_an_arn_from_any_partition() {
+    // The guard matched the literal `arn:aws:`, so `:explain` refused
+    // its own documented argument form for every operator outside the
+    // commercial partition — one level above the rewrite that was
+    // fixed for exactly the same reason.
+    for arn in [
+        "arn:aws:iam::123456789012:role/EbAdmin",
+        "arn:aws-us-gov:iam::123456789012:role/EbAdmin",
+        "arn:aws-cn:iam::123456789012:role/EbAdmin",
+        "arn:aws-iso-b:iam::123456789012:role/EbAdmin",
+    ] {
+        let mut app = test_app();
+        app.execute_command(&format!("explain {arn} elasticbeanstalk:UpdateEnvironment"));
+        assert!(
+            !app.error_message
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("usage:"),
+            "{arn} was rejected as malformed: {:?}",
+            app.error_message
+        );
+    }
+}
+
+#[tokio::test]
+async fn console_link_uses_the_rows_own_region_not_the_home_region() {
+    // Under a multi-region fan-out the selected row can be in a
+    // different region from `context.region`. Opening the home
+    // region's console lands the operator on an empty dashboard
+    // mid-incident — and the partition guard was evaluated against the
+    // home region too, so it could never fire for the fan-out row it
+    // exists for.
+    let mut app = test_app();
+    let mut env = mk_env("api-prod", "uflexi", "Web", "Green");
+    env.region = Some("eu-west-2".into());
+    app.environments = vec![env];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    assert_eq!(app.context.region, "us-east-1", "home region differs");
+
+    let selected = app.selected_env().cloned().expect("row selected");
+    let region = selected
+        .region
+        .clone()
+        .unwrap_or_else(|| app.context.region.clone());
+    assert_eq!(region, "eu-west-2");
+    let url =
+        console_url(&region, &selected.application, &selected.name).expect("commercial partition");
+    assert!(
+        url.contains("eu-west-2.console.aws.amazon.com") && url.contains("region=eu-west-2"),
+        "link must point at the row's region: {url}"
+    );
 }

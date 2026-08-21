@@ -2896,21 +2896,38 @@ pub const APPS_ACTION_ITEMS: &[AppsActionItem] = &[
     AppsActionItem::OpenInConsole,
 ];
 
+/// `arn:PARTITION:sts::ACCOUNT:assumed-role/ROLE/SESSION` →
+/// `arn:PARTITION:iam::ACCOUNT:role/ROLE`, or `None` if it isn't that
+/// shape.
+///
+/// Partition-generic: this matched the literal `arn:aws:sts::` and
+/// rebuilt `arn:aws:iam::`, so in GovCloud, China or an ISO partition
+/// the rewrite never happened and IAM received a session ARN it
+/// refuses.
+fn rewrite_assumed_role_arn(arn: &str) -> Option<String> {
+    let partition = crate::util::arn_partition(arn)?;
+    let rest = arn.strip_prefix(&format!("arn:{partition}:sts::"))?;
+    let (account, role_part) = rest.split_once(':')?;
+    let role_name = role_part.strip_prefix("assumed-role/")?.split('/').next()?;
+    Some(format!("arn:{partition}:iam::{account}:role/{role_name}"))
+}
+
 /// Pure: parse an AWS `AccessDenied` error message into
 /// `(principal_arn, action)`. Returns `None` when the message
 /// doesn't match a recognised shape.
 ///
 /// Recognised shapes:
-///   - `User: arn:aws:sts::ACCOUNT:assumed-role/ROLE/SESSION is
+///   - `User: arn:PARTITION:sts::ACCOUNT:assumed-role/ROLE/SESSION is
 ///     not authorized to perform: SERVICE:ACTION ...`
-///   - `User: arn:aws:iam::ACCOUNT:{user,role}/NAME is not
+///   - `User: arn:PARTITION:iam::ACCOUNT:{user,role}/NAME is not
 ///     authorized to perform: SERVICE:ACTION ...`
 ///
-/// Assumed-role ARNs are rewritten to the underlying role ARN
-/// (`arn:aws:iam::ACCOUNT:role/ROLE`) because that's what
-/// `iam:SimulatePrincipalPolicy` wants as the policy source —
-/// the session credentials themselves aren't a policy attachment
-/// point.
+/// Assumed-role ARNs are rewritten to the underlying role ARN by
+/// [`rewrite_assumed_role_arn`], because that's what
+/// `iam:SimulatePrincipalPolicy` wants as the policy source — the
+/// session credentials themselves aren't a policy attachment point.
+/// Any other principal is returned unchanged: a rewrite that doesn't
+/// apply must not fail the parse.
 pub(crate) fn parse_access_denied(msg: &str) -> Option<(String, String)> {
     let user_prefix = "User: ";
     let action_prefix = "is not authorized to perform:";
@@ -2929,25 +2946,12 @@ pub(crate) fn parse_access_denied(msg: &str) -> Option<(String, String)> {
     // from: session credentials aren't a policy attachment point, so
     // `iam:SimulatePrincipalPolicy` rejects them.
     //
-    // Partition-aware. This used to match the literal `arn:aws:sts::`
-    // and rebuild `arn:aws:iam::`, so in GovCloud, China or an ISO
-    // partition the branch simply never fired and the raw session ARN
-    // went to IAM, which refused it — `:explain` reached the right
-    // endpoint and then failed on its argument.
-    let principal = match crate::util::arn_partition(principal_raw) {
-        Some(partition) if principal_raw.starts_with(&format!("arn:{partition}:sts::")) => {
-            let rest = principal_raw
-                .strip_prefix(&format!("arn:{partition}:sts::"))
-                .unwrap_or_default();
-            // `arn:PARTITION:sts::ACCOUNT:assumed-role/ROLE/SESSION`
-            let parts: Vec<&str> = rest.splitn(2, ':').collect();
-            let account = parts.first()?;
-            let role_part = parts.get(1)?;
-            let role_name = role_part.strip_prefix("assumed-role/")?.split('/').next()?;
-            format!("arn:{partition}:iam::{account}:role/{role_name}")
-        }
-        _ => principal_raw.to_string(),
-    };
+    // A failed rewrite must leave the principal alone, not fail the
+    // whole parse — an STS ARN that isn't an assumed-role (a federated
+    // user, say) is still worth reporting to the operator. The `?`s
+    // live in the helper so they can't propagate out of here.
+    let principal =
+        rewrite_assumed_role_arn(principal_raw).unwrap_or_else(|| principal_raw.to_string());
     Some((principal, action))
 }
 

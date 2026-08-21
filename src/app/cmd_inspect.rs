@@ -206,8 +206,11 @@ impl App {
             }
         }
         let (principal, actions): (String, Vec<String>) = match rest.first().copied() {
-            // Args form: ARN + 1..N action names.
-            Some(arn) if arn.starts_with("arn:aws:") && rest.len() >= 2 => {
+            // Args form: ARN + 1..N action names. Any partition — this
+            // matched the literal `arn:aws:`, so a GovCloud or China
+            // operator's own ARN fell through to the usage error and
+            // `:explain ARN ACTION` refused its documented argument.
+            Some(arn) if crate::util::arn_partition(arn).is_some() && rest.len() >= 2 => {
                 let actions: Vec<String> = rest[1..].iter().map(|s| s.to_string()).collect();
                 (arn.to_string(), actions)
             }

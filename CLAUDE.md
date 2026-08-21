@@ -39,6 +39,7 @@ The final message must explicitly list **skipped items** alongside what shipped,
 - **Async-result handlers check `generation`.** Every spawned task carries the generation it was launched at; if the App's `generation` has advanced (context switch) the result is dropped. New `AppMsg` variants must follow this pattern.
 - **No hardcoded colours.** Use `app.theme.*`. Hardcoded `Color::Cyan` / `Color::Gray` is a regression.
 - **No hardcoded paths.** Use `util::config_dir()` / `util::cache_dir()` / `util::config_file(...)`.
+- **Wrapped string literals need a `\` continuation.** A literal split across lines without one embeds the newline *and* the next line's indentation, so the operator sees a 30-space hole mid-sentence — and the TUI's status/error bar is one line, so a narrow terminal pushes the rest off-screen. This has shipped twice. Assert on the *rendered* message in a test, not on the literal.
 - **No `println!` / `eprintln!` in the running app** — the alternate screen swallows them and they corrupt the TUI. Use `tracing::*` macros; output goes to `~/.cache/ebman/ebman.log`.
 - **The animation ticker is gated on `loading_since.is_some()`.** Don't move work into it that needs to run while idle — add a separate ticker.
 - **`State` and `Config` parsing is in pure `parse(&str)` functions.** Keep the I/O wrappers thin so the parsers stay unit-testable.

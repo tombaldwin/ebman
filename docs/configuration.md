@@ -35,17 +35,19 @@ notify_bell = false
 # Tag policy — flag envs missing any of these tags in the Config tab.
 required_tags = "Owner,Project"
 
-# CloudWatch dimension names that identify an environment, for matching
-# alarms to it. Defaults to "EnvironmentName", which is what Elastic
-# Beanstalk itself and `:alarm-add` use.
+# ADDITIONAL CloudWatch dimension names that identify an environment,
+# for matching alarms to it.
 #
-# Alarms are matched on the dimension's NAME and VALUE together — an
-# alarm is yours if it carries `EnvironmentName=<your-env>`. Matching on
-# the value alone used to attribute an unrelated RDS alarm with
+# `EnvironmentName` is always matched — that's what Elastic Beanstalk
+# itself and `:alarm-add` write, so it can't be configured away. This
+# key adds spellings on top, for operators whose own alarms use a
+# different dimension name.
+#
+# Alarms match on the dimension's NAME and VALUE together — an alarm is
+# yours if it carries `EnvironmentName=<your-env>`. Matching on the
+# value alone used to attribute an unrelated RDS alarm with
 # `DBInstanceIdentifier=payments` to an environment called `payments`.
-# If your own alarms spell the dimension differently, list the spellings
-# here rather than losing them:
-# alarm_dimensions = "EnvironmentName,Environment"
+# alarm_dimensions = "Environment"
 
 # Red-transition notifications — ebman emits a `tracing::warn!` and writes
 # a `stage=event kind=red_transition env=…` line to the audit log at

@@ -4,6 +4,24 @@
 
 use super::*;
 
+/// Message for a region whose partition has no console host we can name.
+///
+/// Built from `util::PARTITIONS` rather than restating which partitions
+/// have one — the hardcoded prose was copied into three handlers and
+/// would start lying the moment an ISO console host is filled in.
+fn no_console_host(region: &str) -> String {
+    let known: Vec<&str> = crate::util::PARTITIONS
+        .iter()
+        .filter(|p| p.console_host.is_some())
+        .map(|p| p.arn)
+        .collect();
+    format!(
+        "no console host known for the {} partition — ebman can build links for: {}",
+        crate::util::partition_for_region(region).arn,
+        known.join(", ")
+    )
+}
+
 impl App {
     pub(crate) fn yank_cli(&mut self) {
         let env_opt = if let Some(d) = self.detail.as_ref() {
@@ -131,13 +149,18 @@ impl App {
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
-        let region = self.context.region.clone();
+        // The row's OWN region, not the home region. Under a
+        // multi-region fan-out these differ, and using `context.region`
+        // opened the home region's EB console — where that environment
+        // doesn't exist — and evaluated the partition guard against the
+        // wrong region too, so it could never fire for the fan-out row
+        // it was added for.
+        let region = env
+            .region
+            .clone()
+            .unwrap_or_else(|| self.context.region.clone());
         let Some(url) = console_url(&region, &env.application, &env.name) else {
-            self.error_message = Some(format!(
-                "no console host known for the {} partition — ebman can build \
-                 links for the commercial, GovCloud and China partitions only",
-                crate::util::partition_for_region(&region).arn
-            ));
+            self.error_message = Some(no_console_host(&region));
             return;
         };
         match open_url(&url) {
@@ -159,30 +182,25 @@ impl App {
         let Some(inst) = d.instances.get(d.instances_cursor) else {
             return;
         };
-        let region = self.context.region.clone();
+        // The env's own region, for the same reason as the env console
+        // link above.
+        let region = self
+            .detail
+            .as_ref()
+            .and_then(|d| d.env_snapshot.region.clone())
+            .unwrap_or_else(|| self.context.region.clone());
         let id = inst.id.clone();
         let Some(base) = crate::util::console_base_url(&region) else {
-            self.error_message = Some(format!(
-                "no console host known for the {} partition — ebman can build \
-                 links for the commercial, GovCloud and China partitions only",
-                crate::util::partition_for_region(&region).arn
-            ));
+            self.error_message = Some(no_console_host(&region));
             return;
         };
         let url = format!("{base}/ec2/home?region={region}#InstanceDetails:instanceId={id}");
-        let display = id.clone();
-        let result = std::process::Command::new(if cfg!(target_os = "macos") {
-            "open"
-        } else {
-            "xdg-open"
-        })
-        .arg(&url)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-        match result {
-            Ok(_) => {
-                self.status_message = Some(format!("opened {display} in EC2 console"));
+        // `open_url`, not a hand-rolled launcher: this one picked
+        // between `open` and `xdg-open` and so had no Windows arm,
+        // while its two siblings in this file did.
+        match open_url(&url) {
+            Ok(()) => {
+                self.status_message = Some(format!("opened {id} in EC2 console"));
             }
             Err(e) => {
                 self.error_message = Some(format!("could not open browser: {e}"));
@@ -283,11 +301,7 @@ impl App {
         let region = self.context.region.clone();
         let app_enc = urlencode(&name);
         let Some(base) = crate::util::console_base_url(&region) else {
-            self.error_message = Some(format!(
-                "no console host known for the {} partition — ebman can build \
-                 links for the commercial, GovCloud and China partitions only",
-                crate::util::partition_for_region(&region).arn
-            ));
+            self.error_message = Some(no_console_host(&region));
             return;
         };
         let url = format!(
