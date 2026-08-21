@@ -28,16 +28,26 @@ impl AwsClient {
     /// secret *values* are fetched here — see [`AwsClient::fetch_secret_value`].
     pub async fn list_secrets(&self, name_filter: Option<&str>) -> Result<Vec<SecretSummary>> {
         let this = self;
-        let raw = super::paginate("ListSecrets", move |token| async move {
-            let mut req = this.secrets().list_secrets();
-            if let Some(t) = token {
-                req = req.next_token(t);
-            }
-            let resp = req.send().await.wrap_err("ListSecrets failed")?;
-            Ok((resp.secret_list.unwrap_or_default(), resp.next_token))
-        })
-        .await?
-        .complete("ListSecrets")?;
+        let page =
+            super::paginate_capped("ListSecrets", super::SCAN_PAGES, move |token| async move {
+                let mut req = this.secrets().list_secrets().max_results(100);
+                if let Some(t) = token {
+                    req = req.next_token(t);
+                }
+                let resp = req.send().await.wrap_err("ListSecrets failed")?;
+                Ok((resp.secret_list.unwrap_or_default(), resp.next_token))
+            })
+            .await?;
+        // Completeness is only load-bearing when the caller asked about
+        // a *specific* secret: then a cut-short scan reads as "it
+        // doesn't exist". An unfiltered browse is served fine by a
+        // partial list, and refusing it outright would be worse than
+        // showing the first several thousand.
+        let raw = if name_filter.is_some() {
+            page.complete("ListSecrets")?
+        } else {
+            page.items()
+        };
         let mut out: Vec<SecretSummary> = raw
             .into_iter()
             .filter_map(|s| {

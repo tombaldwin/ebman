@@ -111,7 +111,9 @@ impl AwsClient {
         // *absence* from the table reads as "not the problem" — so a
         // silently dropped page turns a denied action into a
         // non-finding. The cap is a runaway guard; hitting it warns.
-        const MAX_PAGES: usize = 10;
+        // Named distinctly: `aws::MAX_PAGES` is the shared runaway
+        // guard, and a same-named local silently shadowed it here.
+        const SIMULATE_MAX_PAGES: usize = 10;
         let mut raw = Vec::new();
         let mut marker: Option<String> = None;
         let mut pages = 0usize;
@@ -136,7 +138,7 @@ impl AwsClient {
             raw.extend(resp.evaluation_results.unwrap_or_default());
             pages += 1;
             match resp.marker {
-                Some(m) if resp.is_truncated && !m.is_empty() && pages < MAX_PAGES => {
+                Some(m) if resp.is_truncated && !m.is_empty() && pages < SIMULATE_MAX_PAGES => {
                     marker = Some(m);
                 }
                 Some(m) if resp.is_truncated && !m.is_empty() => {

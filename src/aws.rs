@@ -487,8 +487,15 @@ impl AwsClient {
 /// as a finding. Those call [`Paged::complete`]; the rest take
 /// [`Paged::items`] and accept a shorter list.
 #[derive(Debug)]
+#[must_use = "a paginated walk reports whether it was cut short — take \
+              `.items()` to accept a possibly-short list, or `.complete()` \
+              to refuse one"]
 pub(crate) struct Paged<T> {
-    pub(crate) items: Vec<T>,
+    /// Private: reaching past the accessors is how a caller ends up
+    /// silently discarding `truncated`, which is the whole point of
+    /// this type. `items()` and `complete()` are the two honest
+    /// choices.
+    items: Vec<T>,
     pub(crate) truncated: bool,
 }
 
@@ -507,10 +514,9 @@ impl<T> Paged<T> {
     pub(crate) fn complete(self, what: &str) -> Result<Vec<T>> {
         if self.truncated {
             return Err(eyre!(
-                "{what}: more than {} pages to scan — refusing to report a \
+                "{what}: the scan hit its page budget — refusing to report a \
                  partial result, because this listing is filtered after \
-                 collection and a partial scan looks identical to no match",
-                MAX_PAGES
+                 collection and a partial scan looks identical to no match"
             ));
         }
         Ok(self.items)
@@ -521,6 +527,17 @@ impl<T> Paged<T> {
 /// Listings that legitimately need bounding (the log and event tails,
 /// Cost Explorer) carry their own, tighter cap.
 const MAX_PAGES: usize = 100;
+
+/// Page budget for listings that filter *after* collecting.
+///
+/// `list_alarms_for_env` and `list_secrets` scan an account and match
+/// client-side, so their walk is bounded by the size of the account,
+/// not by the size of the answer. At 100 records per page this covers
+/// 50,000 alarms or secrets — well past CloudWatch's default 5,000
+/// alarms-per-region quota even when raised. The point is that
+/// [`Paged::complete`] should be a genuine impossibility rather than a
+/// wall a large account hits during an outage.
+const SCAN_PAGES: usize = 500;
 
 /// Drive a token-paginated AWS listing to completion.
 ///
@@ -536,14 +553,28 @@ const MAX_PAGES: usize = 100;
 /// copy — shared references are `Copy`, so the returned future borrows
 /// from them rather than from the closure, which is what lets a single
 /// `Fut` type work here without async closures.
-pub(crate) async fn paginate<T, F, Fut>(what: &'static str, mut page: F) -> Result<Paged<T>>
+pub(crate) async fn paginate<T, F, Fut>(what: &'static str, page: F) -> Result<Paged<T>>
+where
+    F: FnMut(Option<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<(Vec<T>, Option<String>)>>,
+{
+    paginate_capped(what, MAX_PAGES, page).await
+}
+
+/// [`paginate`] with an explicit page budget — for the scan-then-filter
+/// listings, which need [`SCAN_PAGES`] rather than the runaway guard.
+pub(crate) async fn paginate_capped<T, F, Fut>(
+    what: &'static str,
+    max_pages: usize,
+    mut page: F,
+) -> Result<Paged<T>>
 where
     F: FnMut(Option<String>) -> Fut,
     Fut: std::future::Future<Output = Result<(Vec<T>, Option<String>)>>,
 {
     let mut items = Vec::new();
     let mut token: Option<String> = None;
-    for _ in 0..MAX_PAGES {
+    for _ in 0..max_pages {
         let (batch, next) = page(token.take()).await?;
         items.extend(batch);
         match next {
@@ -559,7 +590,7 @@ where
     tracing::warn!(
         target: "ebman::aws",
         operation = what,
-        pages = MAX_PAGES,
+        pages = max_pages,
         collected = items.len(),
         "pagination cap reached — result may be incomplete"
     );
@@ -588,48 +619,88 @@ where
 ///
 /// Only the profile path is cached. `assume_role` clients carry a
 /// session with a hard 1-hour cap and must not be reused past it.
-/// `(profile, region)` → the client built for it.
+/// `(profile, region)` → when it was built, and the client.
 type ClientCache = std::sync::Mutex<
-    std::collections::HashMap<(Option<String>, String), std::sync::Arc<AwsClient>>,
+    std::collections::HashMap<
+        (Option<String>, String),
+        (std::time::Instant, std::sync::Arc<AwsClient>),
+    >,
 >;
 
 static CLIENT_CACHE: std::sync::OnceLock<ClientCache> = std::sync::OnceLock::new();
+
+/// Bumped by [`clear_client_cache`]. A build that started before a
+/// clear must not install its result afterwards.
+static CACHE_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How long a cached client is reused before being rebuilt.
+///
+/// Not arbitrary: the memoisation removed the only thing that re-read
+/// `~/.aws` during a session. The SDK's *own* caching refreshes SSO and
+/// `credential_process` credentials, but static profile credentials —
+/// the ones an operator pastes from the Identity Center panel, or that
+/// aws-vault writes — carry no expiry, so the provider never
+/// re-resolves them. Without a TTL, pasting fresh credentials into
+/// `~/.aws/credentials` did nothing until an explicit context switch or
+/// a restart, with nothing on screen to suggest either.
+///
+/// Five minutes: short enough that a paste self-heals without the
+/// operator knowing why it was broken, long enough that the 15-second
+/// refresh tick still gets ~20 free reuses per region.
+const CLIENT_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 
 fn client_cache() -> &'static ClientCache {
     CLIENT_CACHE.get_or_init(Default::default)
 }
 
-/// A client for this profile+region, built once and reused.
+/// A client for this profile+region, built once and reused for
+/// `CLIENT_CACHE_TTL`.
 ///
 /// Two callers racing on a cold key both build one; the loser's is
-/// dropped. That is cheaper and simpler than holding a lock across the
-/// `await`, and both clients work.
+/// dropped. That is cheaper than holding the lock across the `await`,
+/// and both clients work.
 pub async fn cached_client(
     profile: Option<String>,
     region: String,
 ) -> Result<std::sync::Arc<AwsClient>> {
+    use std::sync::atomic::Ordering;
     let key = (profile.clone(), region.clone());
-    if let Some(found) = client_cache()
-        .lock()
-        .ok()
-        .and_then(|c| c.get(&key).cloned())
-    {
+    let fresh = client_cache().lock().ok().and_then(|c| {
+        c.get(&key)
+            .filter(|(built, _)| built.elapsed() < CLIENT_CACHE_TTL)
+            .map(|(_, client)| client.clone())
+    });
+    if let Some(found) = fresh {
         return Ok(found);
     }
+    // Capture the epoch BEFORE the await. A `clear_client_cache` landing
+    // while this builds means the operator changed something on disk;
+    // installing a client resolved before that would quietly undo the
+    // clear. The generation guard on `AppMsg` protects results, not
+    // cache writes, so this needs its own.
+    let epoch = CACHE_EPOCH.load(Ordering::SeqCst);
     let built = std::sync::Arc::new(AwsClient::with(profile, Some(region)).await?);
-    if let Ok(mut cache) = client_cache().lock() {
-        cache.insert(key, built.clone());
+    if CACHE_EPOCH.load(Ordering::SeqCst) == epoch {
+        if let Ok(mut cache) = client_cache().lock() {
+            cache.insert(key, (std::time::Instant::now(), built.clone()));
+        }
     }
     Ok(built)
+}
+
+/// The cache epoch, for tests that need to observe a clear.
+#[cfg(test)]
+pub(crate) fn cache_epoch_for_tests() -> u64 {
+    CACHE_EPOCH.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 /// Drop every cached client.
 ///
 /// Called when the operator signals that the world changed — a profile
 /// or account switch — since that is also when they may have re-run
-/// `aws sso login` or edited `~/.aws/config`. Cheap: the next fan-out
-/// rebuilds what it needs.
+/// `aws sso login` or edited `~/.aws/config`.
 pub fn clear_client_cache() {
+    CACHE_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     if let Ok(mut cache) = client_cache().lock() {
         cache.clear();
     }

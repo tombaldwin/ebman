@@ -1308,13 +1308,19 @@ impl App {
                         had_previous = !self.costs.is_empty(),
                         "Cost Explorer walk truncated"
                     );
-                    if self.costs.is_empty() {
+                    // Replace only when what we hold is no better: an
+                    // empty map, or one that was itself partial. A
+                    // COMPLETE map is worth more than fresher partial
+                    // data, and must survive.
+                    if self.costs.is_empty() || !self.costs_complete {
                         // Nothing to preserve — partial beats blank,
                         // but say so and don't cache it or stamp a
                         // fetch time that would suppress a retry.
+                        self.costs.clear();
                         for row in &costs.rows {
                             self.costs.insert(row.env_name.clone(), row.cost_usd);
                         }
+                        self.costs_complete = false;
                         self.error_message = Some(format!(
                             "cost: INCOMPLETE — Cost Explorer returned more pages than ebman \
                              will walk. Showing {n} env(s); not cached."
@@ -1333,6 +1339,7 @@ impl App {
                     self.costs.insert(row.env_name.clone(), row.cost_usd);
                 }
                 self.costs_fetched_at = Some(now);
+                self.costs_complete = true;
                 {
                     // Persist to ~/.cache/ebman/cost-{account}-{region}.toml
                     // so subsequent sessions render immediately.

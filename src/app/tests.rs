@@ -7230,3 +7230,142 @@ async fn console_link_uses_the_rows_own_region_not_the_home_region() {
         "link must point at the row's region: {url}"
     );
 }
+
+// --- event-tail gap marker survives its own batch and the filter -------
+
+#[test]
+fn event_tail_gap_marker_survives_an_active_filter() {
+    // The marker carries no env or application, so `/payments-prod`
+    // dropped it — a filtered tail that silently omits "events are
+    // missing" is the unbroken chronology the marker exists to prevent.
+    let pattern = regex::Regex::new("payments-prod").expect("regex");
+    let marker = crate::aws::Event {
+        at: None,
+        env: String::new(),
+        application: String::new(),
+        message: "… older events in this window were not fetched".into(),
+        severity: super::EVENT_TAIL_GAP_SEVERITY.into(),
+        version_label: None,
+    };
+    assert!(
+        super::event_tail_matches(&pattern, &marker),
+        "the gap marker must never be filtered out"
+    );
+
+    // A real event that doesn't match is still filtered.
+    let other = crate::aws::Event {
+        at: Some(chrono::Utc::now()),
+        env: "api-prod".into(),
+        application: "uflexi".into(),
+        message: "deployed".into(),
+        severity: "INFO".into(),
+        version_label: None,
+    };
+    assert!(!super::event_tail_matches(&pattern, &other));
+}
+
+#[test]
+fn a_real_event_is_not_mistaken_for_the_gap_marker() {
+    // The sentinel is severity + no timestamp together, so an EB event
+    // that happens to lack a date can't impersonate it.
+    let undated = crate::aws::Event {
+        at: None,
+        env: "api-prod".into(),
+        application: "uflexi".into(),
+        message: "something".into(),
+        severity: "INFO".into(),
+        version_label: None,
+    };
+    assert!(!super::is_event_tail_gap(&undated));
+}
+
+#[test]
+fn a_truncated_batch_is_trimmed_so_the_marker_is_not_evicted() {
+    // The overlay's ring holds EVENT_TAIL_MAX_EVENTS. A truncated poll
+    // can carry more than that (5 pages x 300), so the marker —
+    // inserted first, as the oldest — was evicted by its own batch at
+    // push #1001 and never rendered.
+    let cap = super::EVENT_TAIL_MAX_EVENTS;
+    let fetched = 5 * super::EVENT_TAIL_POLL_BATCH as usize;
+    assert!(
+        fetched > cap,
+        "a truncated poll can out-fill the ring ({fetched} > {cap}) — that's the bug"
+    );
+    // The trim keeps cap-1 events, leaving exactly one slot for the
+    // marker, so the rendered batch is exactly the ring size.
+    let kept = cap.saturating_sub(1);
+    assert_eq!(kept + 1, cap);
+}
+
+#[tokio::test]
+async fn a_partial_cost_map_does_not_become_permanent() {
+    // The "do we already have costs?" test made partial data sticky:
+    // the first truncated walk populated the map, and every later one
+    // then saw a non-empty map and kept it — so the first failure's
+    // data survived the session while each retry paid for twenty
+    // metered Cost Explorer pages and threw them away.
+    let mut app = test_app();
+    assert!(app.costs.is_empty());
+
+    let truncated = |env: &str, usd: f64| crate::aws::EnvCosts {
+        rows: vec![crate::aws::EnvCost {
+            env_name: env.into(),
+            cost_usd: usd,
+        }],
+        truncated: true,
+    };
+
+    // First truncated walk: nothing to preserve, take it, mark partial.
+    app.handle_msg(AppMsg::CostsFetched {
+        gen: app.generation,
+        account: None,
+        region: "us-east-1".into(),
+        result: Ok(truncated("api-prod", 100.0)),
+    });
+    assert!(!app.costs_complete, "a truncated walk is not complete");
+    assert_eq!(app.costs.get("api-prod"), Some(&100.0));
+
+    // Second truncated walk: what we hold is itself partial, so the
+    // fresher partial data must replace it rather than be discarded.
+    app.handle_msg(AppMsg::CostsFetched {
+        gen: app.generation,
+        account: None,
+        region: "us-east-1".into(),
+        result: Ok(truncated("web-prod", 55.0)),
+    });
+    assert!(!app.costs_complete);
+    assert_eq!(app.costs.get("web-prod"), Some(&55.0));
+    assert!(
+        !app.costs.contains_key("api-prod"),
+        "the stale partial map must not accumulate"
+    );
+
+    // A complete walk clears the partial flag and wins outright.
+    app.handle_msg(AppMsg::CostsFetched {
+        gen: app.generation,
+        account: None,
+        region: "us-east-1".into(),
+        result: Ok(crate::aws::EnvCosts {
+            rows: vec![crate::aws::EnvCost {
+                env_name: "full".into(),
+                cost_usd: 1.0,
+            }],
+            truncated: false,
+        }),
+    });
+    assert!(app.costs_complete);
+    assert_eq!(app.costs.len(), 1);
+
+    // And now a truncated walk must NOT replace the complete map.
+    app.handle_msg(AppMsg::CostsFetched {
+        gen: app.generation,
+        account: None,
+        region: "us-east-1".into(),
+        result: Ok(truncated("partial", 9.0)),
+    });
+    assert!(
+        app.costs_complete,
+        "a complete map survives a truncated walk"
+    );
+    assert_eq!(app.costs.get("full"), Some(&1.0));
+}

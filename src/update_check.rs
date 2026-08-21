@@ -61,9 +61,14 @@ fn extract_max_stable_version(body: &str) -> Option<String> {
     Some(rest[..q2].to_string())
 }
 
-/// Semver-style ordering on dotted decimal versions. "0.2.0" > "0.1.5".
-/// Non-numeric tails (e.g. `-rc1`) are sorted lexicographically as a fallback;
-/// we don't ship pre-releases ourselves so this isn't load-bearing.
+/// Is `candidate` a newer release than `current`?
+///
+/// Delegates to [`crate::util::compare_versions`], so pre-releases obey
+/// semver precedence: `0.30.0` IS newer than `0.30.0-rc1`, and
+/// `0.30.0-rc1` is not newer than `0.30.0`. This had its own copy that
+/// stripped the pre-release segment and compared only the numeric core,
+/// so the two tied and a binary running an rc was never told the real
+/// release had shipped.
 pub fn is_newer(candidate: &str, current: &str) -> bool {
     // Shared with the EB platform-version picker. This used to have its
     // own copy that stripped the pre-release segment and compared only

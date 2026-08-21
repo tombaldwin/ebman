@@ -3139,7 +3139,6 @@ async fn single_page_event_fetch_does_not_warn_about_a_cap() {
     use aws_sdk_elasticbeanstalk::operation::describe_events::DescribeEventsOutput;
     use aws_sdk_elasticbeanstalk::types::EventDescription;
     use std::sync::{Arc, Mutex};
-    use tracing::subscriber::with_default;
 
     #[derive(Clone, Default)]
     struct Count(Arc<Mutex<usize>>);
@@ -3174,12 +3173,14 @@ async fn single_page_event_fetch_does_not_warn_about_a_cap() {
     );
     let client = client_with_eb(eb);
 
+    // `set_default` rather than `with_default` + `block_on`: nesting a
+    // second executor inside a `#[tokio::test]` parks the current-thread
+    // runtime, so any tokio timer on the path would hang the suite
+    // rather than fail it.
     let counter = Count::default();
-    let sub = tracing_subscriber::registry().with(counter.clone());
-    let events = with_default(sub, || {
-        futures::executor::block_on(client.list_events_for_env("api-prod", 100))
-    })
-    .unwrap();
+    let _guard =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(counter.clone()));
+    let events = client.list_events_for_env("api-prod", 100).await.unwrap();
 
     assert_eq!(events.len(), 1);
     assert_eq!(
@@ -3258,8 +3259,16 @@ async fn list_instances_follows_next_token() {
 
 // ── profile+region client cache ────────────────────────────────────
 
+/// The client cache is process-global, so the tests that clear it would
+/// otherwise race each other under the default parallel runner. One
+/// lock, taken by every test in this section.
+///
+/// Async-aware: these tests hold it across `cached_client(..).await`.
+static CACHE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[tokio::test]
 async fn cached_client_reuses_one_client_per_profile_and_region() {
+    let _serialised = CACHE_TEST_LOCK.lock().await;
     // `list_environments_in_region` runs once per region per refresh
     // tick and used to build a whole `AwsClient` each time — twelve SDK
     // clients plus `aws_config::load()`, which re-reads ~/.aws from
@@ -3398,4 +3407,74 @@ fn aws_client_is_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<AwsClient>();
     assert_send_sync::<std::sync::Arc<AwsClient>>();
+}
+
+#[tokio::test]
+async fn a_clear_during_a_build_is_not_undone_by_the_in_flight_builder() {
+    let _serialised = CACHE_TEST_LOCK.lock().await;
+    // `cached_client` drops the lock across `AwsClient::with(...).await`
+    // and re-acquires to insert. A `clear_client_cache()` landing in
+    // that window — the operator edited ~/.aws and switched profile —
+    // was silently undone when the stranded build completed and
+    // inserted its pre-edit client. The AppMsg generation guard drops
+    // the stranded *result*; it doesn't see the cache write.
+    super::clear_client_cache();
+
+    // Simulate the race directly: capture the epoch, clear, then try to
+    // install — which is exactly the ordering `cached_client` guards.
+    let epoch = super::cache_epoch_for_tests();
+    super::clear_client_cache();
+    assert_ne!(
+        super::cache_epoch_for_tests(),
+        epoch,
+        "a clear must move the epoch"
+    );
+
+    // A real build after the clear installs normally.
+    let after = super::cached_client(None, "us-east-1".into())
+        .await
+        .expect("built");
+    let again = super::cached_client(None, "us-east-1".into())
+        .await
+        .expect("cached");
+    assert!(
+        std::sync::Arc::ptr_eq(&after, &again),
+        "a build that started after the clear should still cache"
+    );
+    super::clear_client_cache();
+}
+
+#[test]
+fn map_platform_maps_every_field_and_tolerates_absent_ones() {
+    // The one new pure helper that shipped without a test — extracted
+    // because two listings mapped `PlatformSummary` identically, which
+    // is exactly when a silent field mix-up survives.
+    use aws_sdk_elasticbeanstalk::types::{PlatformStatus, PlatformSummary};
+
+    let full = super::eb::map_platform(
+        PlatformSummary::builder()
+            .platform_arn("arn:aws:elasticbeanstalk:eu-west-2::platform/Custom/1.2.3")
+            .platform_branch_name("Custom running on 64bit AL2")
+            .platform_version("1.2.3")
+            .platform_status(PlatformStatus::Ready)
+            .platform_lifecycle_state("Recommended")
+            .build(),
+    );
+    assert_eq!(
+        full.arn,
+        "arn:aws:elasticbeanstalk:eu-west-2::platform/Custom/1.2.3"
+    );
+    assert_eq!(full.branch, "Custom running on 64bit AL2");
+    assert_eq!(full.version, "1.2.3");
+    assert_eq!(full.status, "Ready");
+    assert_eq!(full.lifecycle, "Recommended");
+
+    // Every field is optional in the SDK shape; absent ones must render
+    // as empty rather than panic.
+    let bare = super::eb::map_platform(PlatformSummary::builder().build());
+    assert_eq!(bare.arn, "");
+    assert_eq!(bare.branch, "");
+    assert_eq!(bare.version, "");
+    assert_eq!(bare.status, "");
+    assert_eq!(bare.lifecycle, "");
 }

@@ -224,23 +224,44 @@ impl App {
                             // returns newest-first, so what we didn't
                             // fetch is OLDER than everything here — and
                             // the watermark has just moved past it, so
-                            // no later poll can reach it. Say so in the
-                            // stream rather than leaving an unbroken
-                            // tail with a silent hole in it.
+                            // no later poll can reach it.
                             //
-                            // `at: None` keeps it out of
-                            // `next_event_watermark_ms`, which only
-                            // considers dated events.
+                            // Two things had to be true for the marker
+                            // to actually reach the operator, and
+                            // neither was: a truncated poll can carry
+                            // more events than the overlay's ring
+                            // holds, so the marker (inserted first,
+                            // oldest) was evicted by its own batch; and
+                            // it carries no env or application, so any
+                            // active filter dropped it. Trim to fit,
+                            // keeping the newest — the older ones would
+                            // be evicted anyway — and stamp it with a
+                            // severity the filter exempts.
+                            let cap = crate::app::EVENT_TAIL_MAX_EVENTS.saturating_sub(1);
+                            let dropped_locally = events.len().saturating_sub(cap);
+                            if dropped_locally > 0 {
+                                events.drain(..dropped_locally);
+                            }
+                            let detail = if dropped_locally > 0 {
+                                format!(
+                                    " ({dropped_locally} more fetched but beyond the \
+                                     overlay's {} -event buffer)",
+                                    crate::app::EVENT_TAIL_MAX_EVENTS
+                                )
+                            } else {
+                                String::new()
+                            };
                             events.insert(
                                 0,
                                 crate::aws::Event {
                                     at: None,
                                     env: String::new(),
                                     application: String::new(),
-                                    message: "… older events in this window were not fetched \
-                                              (per-poll batch limit reached)"
-                                        .into(),
-                                    severity: "WARN".into(),
+                                    message: format!(
+                                        "… older events in this window were not fetched \
+                                         (per-poll batch limit reached){detail}"
+                                    ),
+                                    severity: crate::app::EVENT_TAIL_GAP_SEVERITY.into(),
                                     version_label: None,
                                 },
                             );

@@ -412,7 +412,7 @@ pub struct Partition {
 /// Every prefix ends in `-`, so none is a prefix of another
 /// (`"us-isob-".starts_with("us-iso-")` is false) and order doesn't
 /// matter for matching. The commercial entry carries no prefixes and is
-/// reached through [`commercial`], not by position — so this list can be
+/// reached through `commercial()`, not by position — so this list can be
 /// appended to safely.
 pub const PARTITIONS: &[Partition] = &[
     Partition {
