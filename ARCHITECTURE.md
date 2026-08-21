@@ -18,7 +18,9 @@ src/main.rs      argv, logging, panic hook, alt-screen lifecycle
 src/lib.rs       module list + the `Tui` / `LogReloadHandle` aliases
 ├── app/         the TUI: state, event loop, everything it can do
 ├── ui/          rendering only — takes &App, returns nothing
-├── aws.rs       every AWS SDK call, behind plain Rust types
+├── aws/         every AWS SDK call, behind plain Rust types — one
+│                module per service, so `aws/eb.rs` (the domain) is
+│                separable from the thirteen generic ones
 ├── cli/         headless subcommands (`ebman envs`, `action`, `ctl`, `mcp`)
 ├── lint.rs      the environment lint rules (see docs/lint-rules.md)
 └── ...          config, state, audit, themes, plugins, LLM explain, ...
@@ -39,7 +41,9 @@ without constructing an `App`.
 4. **[`src/commands.rs`](src/commands.rs)** — the command registry. Adding a
    `:command` means one entry here plus one arm in `dispatch.rs`; a test pins
    the two together so help, palette and dispatch can't drift.
-5. **[`src/aws.rs`](src/aws.rs)** — the AWS boundary.
+5. **[`src/aws.rs`](src/aws.rs)** — the AWS boundary. Its module doc maps
+   the per-service split; `aws/eb.rs` is the Elastic Beanstalk domain and
+   the other twelve are generic AWS surface.
 
 ## How a keystroke becomes an AWS call
 
