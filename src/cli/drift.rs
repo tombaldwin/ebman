@@ -83,11 +83,7 @@ fn parse_drift_args(args: &[String]) -> Result<DriftArgs, String> {
 
     let regions: Vec<Option<String>> = match regions_csv {
         Some(csv) => {
-            let parsed: Vec<String> = csv
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
+            let parsed: Vec<String> = crate::util::split_csv(&csv);
             if parsed.is_empty() {
                 return Err("ebman drift: --regions list is empty".into());
             }

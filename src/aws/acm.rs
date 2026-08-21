@@ -15,30 +15,31 @@ impl AwsClient {
     /// `(arn, primary domain)`. Drives the `:listener-edit` cert picker.
     pub async fn list_certificates(&self) -> Result<Vec<AcmCert>> {
         use aws_sdk_acm::types::CertificateStatus;
-        let mut out: Vec<AcmCert> = Vec::new();
-        let mut next_token: Option<String> = None;
-        loop {
-            let mut req = self
-                .acm
+        let this = self;
+        let raw = super::paginate("ListCertificates", move |token| async move {
+            let mut req = this
+                .acm()
                 .list_certificates()
                 .certificate_statuses(CertificateStatus::Issued);
-            if let Some(t) = next_token.take() {
+            if let Some(t) = token {
                 req = req.next_token(t);
             }
             let resp = req.send().await.wrap_err("ListCertificates failed")?;
-            for c in resp.certificate_summary_list.unwrap_or_default() {
-                if let Some(arn) = c.certificate_arn {
-                    out.push(AcmCert {
-                        arn,
-                        domain: c.domain_name.unwrap_or_default(),
-                    });
-                }
-            }
-            match resp.next_token {
-                Some(t) if !t.is_empty() => next_token = Some(t),
-                _ => break,
-            }
-        }
+            Ok((
+                resp.certificate_summary_list.unwrap_or_default(),
+                resp.next_token,
+            ))
+        })
+        .await?;
+        let mut out: Vec<AcmCert> = raw
+            .into_iter()
+            .filter_map(|c| {
+                Some(AcmCert {
+                    arn: c.certificate_arn?,
+                    domain: c.domain_name.unwrap_or_default(),
+                })
+            })
+            .collect();
         out.sort_by(|a, b| a.domain.cmp(&b.domain));
         Ok(out)
     }

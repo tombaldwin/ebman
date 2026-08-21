@@ -170,18 +170,10 @@ pub fn parse(text: &str) -> PersistedState {
                 }
             }
             "pinned" => {
-                state.pinned = value
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
+                state.pinned = crate::util::split_csv(&value).into_iter().collect();
             }
             "pinned_apps" => {
-                state.pinned_apps = value
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
+                state.pinned_apps = crate::util::split_csv(&value).into_iter().collect();
             }
             "cost_enabled" => state.cost_enabled = parse_bool(&value),
             _ if k.starts_with("alias.") => {

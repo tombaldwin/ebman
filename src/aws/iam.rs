@@ -60,7 +60,7 @@ impl AwsClient {
         // the full ARN (`arn:aws:iam::123:instance-profile/name`).
         let name = profile.rsplit('/').next().unwrap_or(profile);
         let resp = self
-            .iam
+            .iam()
             .get_instance_profile()
             .instance_profile_name(name)
             .send()
@@ -113,7 +113,7 @@ impl AwsClient {
         let mut pages = 0usize;
         loop {
             let mut req = self
-                .iam
+                .iam()
                 .simulate_principal_policy()
                 .policy_source_arn(principal_arn);
             for a in action_names {

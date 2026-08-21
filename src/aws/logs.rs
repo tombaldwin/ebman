@@ -190,27 +190,20 @@ impl AwsClient {
     /// empty if `:logs-stream on` hasn't been issued for the env.
     pub async fn discover_env_log_groups(&self, env_name: &str) -> Result<Vec<String>> {
         let prefix = format!("/aws/elasticbeanstalk/{env_name}/");
-        let mut out: Vec<String> = Vec::new();
-        let mut next_token: Option<String> = None;
-        loop {
-            let mut req = self
+        let (this, pfx) = (self, prefix.as_str());
+        let raw = super::paginate("DescribeLogGroups", move |token| async move {
+            let mut req = this
                 .cw_logs
                 .describe_log_groups()
-                .log_group_name_prefix(&prefix);
-            if let Some(t) = next_token.take() {
+                .log_group_name_prefix(pfx);
+            if let Some(t) = token {
                 req = req.next_token(t);
             }
             let resp = req.send().await.wrap_err("DescribeLogGroups failed")?;
-            for g in resp.log_groups.unwrap_or_default() {
-                if let Some(name) = g.log_group_name {
-                    out.push(name);
-                }
-            }
-            match resp.next_token {
-                Some(t) if !t.is_empty() => next_token = Some(t),
-                _ => break,
-            }
-        }
+            Ok((resp.log_groups.unwrap_or_default(), resp.next_token))
+        })
+        .await?;
+        let mut out: Vec<String> = raw.into_iter().filter_map(|g| g.log_group_name).collect();
         out.sort();
         Ok(out)
     }

@@ -183,3 +183,48 @@ mod tests {
         }
     }
 }
+
+/// Split a comma-separated value into a clean `Vec<String>`: trim each
+/// entry, drop the empties.
+///
+/// This shape was written out by hand in seventeen places — config
+/// parsing, saved state, CLI flags, form input, EB option settings —
+/// with identical semantics every time. One implementation means one
+/// place to be sure about what happens to `"a,,b"` and `" a , b "`.
+pub fn split_csv(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+#[cfg(test)]
+mod split_csv_tests {
+    use super::split_csv;
+
+    #[test]
+    fn trims_entries_and_drops_empties() {
+        assert_eq!(
+            split_csv("subnet-a,subnet-b, subnet-c, ,subnet-d"),
+            vec!["subnet-a", "subnet-b", "subnet-c", "subnet-d"]
+        );
+    }
+
+    #[test]
+    fn empty_and_separator_only_input_yields_nothing() {
+        assert!(split_csv("").is_empty());
+        assert!(split_csv(",,,").is_empty());
+        assert!(split_csv("  ,  ").is_empty());
+    }
+
+    #[test]
+    fn a_single_entry_needs_no_separator() {
+        assert_eq!(split_csv(" solo "), vec!["solo"]);
+    }
+
+    #[test]
+    fn interior_whitespace_is_preserved() {
+        assert_eq!(split_csv("a b, c d"), vec!["a b", "c d"]);
+    }
+}
