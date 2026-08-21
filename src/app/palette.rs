@@ -50,10 +50,11 @@ impl App {
         // `head` and has no tail.
         let (head, candidates, tail): (String, Vec<String>, String) = match ws {
             None => (String::new(), completion_candidates(&origin), String::new()),
-            Some(_) if env_mode => {
-                let last_ws = origin
-                    .rfind(char::is_whitespace)
-                    .expect("origin has whitespace in this arm");
+            Some(first_ws) if env_mode => {
+                // `first_ws` is a whitespace index, so `rfind` cannot miss;
+                // falling back to it keeps this total rather than resting on
+                // that argument.
+                let last_ws = origin.rfind(char::is_whitespace).unwrap_or(first_ws);
                 // `rfind` gives the *first byte* of the last whitespace
                 // char; step over the whole char so the split lands on a
                 // char boundary (a multi-byte space like U+00A0 NBSP

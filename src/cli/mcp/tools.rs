@@ -593,7 +593,7 @@ impl Server {
         // Clamp in u64 first — an `as i32` cast bit-truncates, so
         // max=2^32+5 used to mean 5, not the cap.
         let max = arg_u64(args, "max")
-            .map(|m| i32::try_from(m.min(EVENTS_MAX_MAX as u64)).expect("clamped to i32 range"))
+            .map(|m| i32::try_from(m.min(EVENTS_MAX_MAX as u64)).unwrap_or(EVENTS_MAX_MAX))
             .unwrap_or(EVENTS_DEFAULT_MAX)
             .max(1);
         let env = arg_str(args, "env");

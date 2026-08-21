@@ -741,7 +741,9 @@ async fn run_rollout(args: &[String]) -> Result<()> {
             per_region.into_iter().collect();
         // Seed initial batch.
         for _ in 0..cap.min(queue.len()) {
-            let (region, client) = queue.pop_front().unwrap();
+            let Some((region, client)) = queue.pop_front() else {
+                break;
+            };
             let env_for = env.clone();
             let version_for = version.clone();
             let rollout_id_for = rollout_id.clone();

@@ -61,20 +61,16 @@ pub(crate) struct LineageRow {
 /// `version_label` are dropped — `:lineage` is the deploy-only cut
 /// of the event history.
 pub(crate) fn build_lineage(events: &[EbEvent]) -> Vec<LineageRow> {
-    let mut oldest_first: Vec<&EbEvent> = events
+    let mut oldest_first: Vec<(&EbEvent, String)> = events
         .iter()
-        .filter(|e| {
-            e.version_label
-                .as_deref()
-                .map(|v| !v.is_empty())
-                .unwrap_or(false)
+        .filter_map(|e| {
+            let label = e.version_label.as_deref().filter(|v| !v.is_empty())?;
+            Some((e, label.to_string()))
         })
         .collect();
     oldest_first.reverse();
     let mut rows: Vec<LineageRow> = Vec::new();
-    for e in oldest_first {
-        // Safe to unwrap: the filter above guarantees a non-empty label.
-        let label = e.version_label.clone().unwrap();
+    for (e, label) in oldest_first {
         match rows.last_mut() {
             Some(last) if last.label == label => {
                 if let Some(t) = e.at {
