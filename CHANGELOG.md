@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.29.1] — 2026-08-21 — internal: completion single-source-of-truth
+
+Pure hardening follow-up to 0.29.0's pre-tag review; no feature or behaviour change.
+
+### Changed
+
+- `ebman <unknown-subcommand>` now lists the available subcommands in the error.
+
+### Internal
+
+- Command-bar env-name completion is sourced from the command registry (`CommandSpec::env_arg`) instead of a hardcoded allowlist, and resolves aliases.
+- CLI subcommand names are pinned to a single `cli::SUBCOMMANDS` source of truth, with a test that fails if shell-completion drifts from the real CLI (the drift class behind the 0.29.0 `mcp setup` completion miss).
+
 ## [0.29.0] — 2026-08-21 — completion & secure agent setup
 
 ### Added
