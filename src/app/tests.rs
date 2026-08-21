@@ -7369,3 +7369,222 @@ async fn a_partial_cost_map_does_not_become_permanent() {
     );
     assert_eq!(app.costs.get("full"), Some(&1.0));
 }
+
+// ── every write command refuses under read-only ────────────────────
+//
+// The safety gate itself is well covered; what wasn't covered is that
+// each write command actually reaches it. Several whole modules of
+// setters (`cmd_option`, `cmd_settings`) contain no `deny_write` call
+// at all — they're safe only because every one of them routes through
+// `spawn_option_settings_update` or `spawn_tag_update`, which gate.
+// That is a convention, and this is what turns it into a checked one:
+// a new setter that dispatches directly fails here.
+
+/// Write commands, with arguments plausible enough to get past their
+/// own usage validation and reach the gate.
+const WRITE_COMMANDS: &[&str] = &[
+    // option-setting setters (cmd_option.rs — no deny_write of its own)
+    "deployment-policy Rolling",
+    "rolling-update on",
+    "health-check-url /healthz",
+    "keypair my-key",
+    "service-role arn:aws:iam::1:role/svc",
+    "instance-profile arn:aws:iam::1:instance-profile/eb",
+    "public-ip on",
+    "elb-scheme internal",
+    "set-option aws:autoscaling:asg MinSize 2",
+    // per-env settings (cmd_settings.rs — likewise)
+    "tag Owner platform",
+    "untag Owner",
+    "logs-stream on",
+    "notify ops@example.com",
+    "rds-detach api-prod",
+    // alarms and templates (these gate directly)
+    "alarm-create my-alarm 5xx 20",
+    "alarm-delete ebman-api-prod-5xx",
+    "config-save my-template",
+    "config-apply my-template",
+];
+
+/// Writes that aren't scoped to one environment — a saved-configuration
+/// template belongs to an *application*. These gate with an empty env
+/// name, so they honour the global toggle but deliberately can't match
+/// a per-env pin. Listed separately so that distinction is stated
+/// rather than silently absent from the table above.
+const APPLICATION_SCOPED_WRITES: &[&str] = &["config-delete uflexi my-template"];
+
+fn read_only_app_with_env() -> App {
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.read_only = true;
+    app
+}
+
+#[tokio::test]
+async fn every_write_command_is_refused_in_read_only_mode() {
+    for cmd in WRITE_COMMANDS.iter().chain(APPLICATION_SCOPED_WRITES) {
+        let mut app = read_only_app_with_env();
+        app.execute_command(cmd);
+        let err = app.error_message.as_deref().unwrap_or_default();
+        assert!(
+            err.contains("read-only mode"),
+            ":{cmd} was not refused by the safety gate — got {err:?}\n\
+             (a write that doesn't reach `deny_write` ignores --deny-write \
+             and safety.envs.*.read_only)"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_application_scoped_write_still_honours_the_global_toggle() {
+    // It can't match a per-env pin — there's no single env — so the
+    // global toggle is the only thing standing in front of it.
+    for cmd in APPLICATION_SCOPED_WRITES {
+        let mut app = read_only_app_with_env();
+        app.execute_command(cmd);
+        let err = app.error_message.as_deref().unwrap_or_default();
+        assert!(err.contains("read-only mode"), ":{cmd} — got {err:?}");
+    }
+}
+
+#[tokio::test]
+async fn every_write_command_is_refused_by_a_per_env_safety_pin() {
+    // The global toggle and the per-env pin are separate paths through
+    // `is_read_only_for`; a command could honour one and not the other.
+    for cmd in WRITE_COMMANDS {
+        let mut app = read_only_app_with_env();
+        app.read_only = false;
+        app.cfg.safety_envs.insert("api-prod".into(), true);
+        app.execute_command(cmd);
+        let err = app.error_message.as_deref().unwrap_or_default();
+        assert!(
+            err.contains("safety.envs"),
+            ":{cmd} ignored the per-env safety pin — got {err:?}"
+        );
+    }
+}
+
+/// Bulk writes. These gate through `deny_write_batch` rather than
+/// `deny_write` — a separate code path that a per-command test of the
+/// single-env surface wouldn't exercise at all.
+const BATCH_WRITE_COMMANDS: &[&str] = &[
+    "batch-rebuild",
+    "batch-restart",
+    "batch-deploy build-900",
+    "batch-tag Owner platform",
+    "batch-untag Owner",
+    "batch-set-option aws:autoscaling:asg MinSize 2",
+];
+
+#[tokio::test]
+async fn every_batch_write_is_refused_in_read_only_mode() {
+    for cmd in BATCH_WRITE_COMMANDS {
+        let mut app = read_only_app_with_env();
+        // Bulk ops act on the space-multi-selected set.
+        app.multi_selected = ["api-prod".to_string()].into_iter().collect();
+        app.execute_command(cmd);
+        let err = app.error_message.as_deref().unwrap_or_default();
+        assert!(
+            err.contains("read-only"),
+            ":{cmd} was not refused by the batch safety gate — got {err:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn every_batch_write_is_refused_when_one_member_is_pinned() {
+    // The point of `deny_write_batch`: a batch is refused if ANY member
+    // is pinned, not just if all of them are. A batch that skipped the
+    // pinned env and wrote to the rest would be worse than refusing.
+    for cmd in BATCH_WRITE_COMMANDS {
+        let mut app = read_only_app_with_env();
+        app.environments = vec![
+            mk_env("api-prod", "uflexi", "Web", "Green"),
+            mk_env("api-staging", "uflexi", "Web", "Green"),
+        ];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        app.read_only = false;
+        // Only ONE of the two is pinned.
+        app.cfg.safety_envs.insert("api-prod".into(), true);
+        app.multi_selected = ["api-prod".to_string(), "api-staging".to_string()]
+            .into_iter()
+            .collect();
+        app.execute_command(cmd);
+        let err = app.error_message.as_deref().unwrap_or_default();
+        assert!(
+            err.contains("safety.envs"),
+            ":{cmd} wrote to a batch containing a pinned env — got {err:?}"
+        );
+    }
+}
+
+// ── DLQ destructive operations gate too ────────────────────────────
+
+/// A DLQ viewer open on `env`, with one message selected — enough for
+/// the destructive handlers to get as far as the safety gate.
+fn open_dlq_state(env: &str) -> crate::app::DlqState {
+    let mut list_state = ratatui::widgets::ListState::default();
+    list_state.select(Some(0));
+    crate::app::DlqState {
+        env_name: env.into(),
+        main_queue_url: "https://sqs/q".into(),
+        dlq_url: "https://sqs/q-dlq".into(),
+        messages: vec![crate::aws::QueueMessage {
+            id: "m-1".into(),
+            receipt_handle: "rh-1".into(),
+            body: "{}".into(),
+            receive_count: 1,
+            sent_at: None,
+        }],
+        list_state,
+        loading: false,
+        error: None,
+        confirm_purge: false,
+        purge_typed: Default::default(),
+        viewing: crate::app::QueueView::Dlq,
+        confirm_delete_id: None,
+        replay_input: None,
+    }
+}
+
+#[tokio::test]
+async fn dlq_destructive_operations_are_refused_in_read_only_mode() {
+    // Purge and replay are irreversible and driven from the DLQ
+    // viewer's keymap rather than a `:command`, so the command-level
+    // property tests above never reach them.
+    /// One destructive DLQ handler, driven from the viewer's keymap.
+    type DlqOp = fn(&mut App);
+    let cases: Vec<(&str, DlqOp)> = vec![
+        ("purge", |app: &mut App| {
+            app.spawn_dlq_purge("api-prod".into(), "https://sqs/q-dlq".into())
+        }),
+        ("replay", |app: &mut App| app.spawn_dlq_replay_batch(vec![])),
+        ("resend", |app: &mut App| app.spawn_dlq_resend_selected()),
+        ("delete", |app: &mut App| app.spawn_dlq_delete_one("m-1")),
+    ];
+    for (name, op) in cases {
+        let mut app = read_only_app_with_env();
+        // `replay`/`resend`/`delete` read the env from DLQ state and
+        // return early without it, so they'd never reach the gate.
+        app.dlq = Some(open_dlq_state("api-prod"));
+        op(&mut app);
+        let err = app.error_message.as_deref().unwrap_or_default();
+        assert!(
+            err.contains("read-only mode"),
+            "DLQ {name} was not refused — got {err:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn dlq_destructive_operations_honour_a_per_env_pin() {
+    let mut app = read_only_app_with_env();
+    app.read_only = false;
+    app.cfg.safety_envs.insert("api-prod".into(), true);
+    app.spawn_dlq_purge("api-prod".into(), "https://sqs/q-dlq".into());
+    let err = app.error_message.as_deref().unwrap_or_default();
+    assert!(err.contains("safety.envs"), "got {err:?}");
+}
