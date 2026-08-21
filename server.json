@@ -1,0 +1,38 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.tombaldwin/ebman",
+  "title": "ebman",
+  "description": "MCP server for AWS Elastic Beanstalk: read the fleet; --allow-writes adds two-phase writes.",
+  "version": "0.29.1",
+  "websiteUrl": "https://www.poly.io/products/ebman/",
+  "repository": {
+    "url": "https://github.com/tombaldwin/ebman",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "cargo",
+      "identifier": "ebman",
+      "version": "0.29.1",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        { "type": "positional", "value": "mcp" },
+        { "type": "positional", "value": "serve" }
+      ],
+      "environmentVariables": [
+        {
+          "name": "AWS_REGION",
+          "description": "AWS region to target. Falls back to the standard AWS config chain if unset.",
+          "isRequired": false
+        },
+        {
+          "name": "AWS_PROFILE",
+          "description": "AWS credential profile to use (standard AWS credential chain).",
+          "isRequired": false
+        }
+      ]
+    }
+  ]
+}

@@ -771,7 +771,7 @@ Tier definitions:
 
 ### MCP discovery & setup follow-ups (Tier 6)
 - `ebman mcp setup --client <claude|cursor|vscode|windsurf>` — detect the client and *write* its MCP config (currently print-only). Print-by-default, write only on the explicit `--client` flag, since it mutates the user's config. Confirm/merge rather than clobber an existing `ebman` entry.
-- Publish a `server.json` to the official MCP Registry for passive discovery (name, run command, install instructions). Separate from the binary; needs a publish flow/account. Lets agents/directories find ebman without any "go fetch this" instruction.
+- ~~Publish a `server.json` to the official MCP Registry for passive discovery.~~ **Wired (0.29.x):** `server.json` (cargo package, `io.github.tombaldwin/ebman`, validated with `mcp-publisher`), a visible `mcp-name:` ownership marker in `README.md`, and a `mcp_registry` job in `release.yml` (GitHub OIDC, `needs: crates_io`) that auto-publishes on release. First registry entry lands on the next release whose crate README carries the marker.
 
 Items list `Depends on:` only when another backlog or done item is a real prerequisite.
 

@@ -170,3 +170,50 @@ jobs:
           # workflow that built clean from Cargo.lock publishes the same
           # resolved dependency graph.
           cargo publish --locked
+
+  mcp_registry:
+    # Publish server.json to the official MCP Registry (preview) so agents
+    # and directories can discover ebman. Runs after crates_io because the
+    # registry verifies package ownership by fetching the crate's README
+    # from crates.io — the visible `mcp-name:` marker in README.md — so the
+    # crate carrying that marker must be live first. GitHub OIDC proves the
+    # io.github.tombaldwin namespace, so no secret is needed. Isolated from
+    # the build/publish jobs: a registry hiccup (it's preview) can't affect
+    # the already-shipped GitHub Release or crates.io publish.
+    name: publish to MCP Registry
+    needs: crates_io
+    if: (github.event_name == 'release' || github.event_name == 'workflow_dispatch') && !github.event.repository.fork
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # GitHub OIDC → registry namespace auth
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+      - name: Sync server.json version to the release tag
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          VERSION="${TAG#v}"
+          jq --arg v "$VERSION" '.version = $v | .packages[0].version = $v' server.json > server.tmp
+          mv server.tmp server.json
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+      - name: Authenticate (GitHub OIDC)
+        run: ./mcp-publisher login github-oidc
+      - name: Publish server.json
+        # crates.io's rendered README — which the registry reads to verify
+        # the mcp-name marker — can lag a cargo publish by up to a minute,
+        # so retry rather than fail a fresh release on propagation timing.
+        run: |
+          set -eu
+          for attempt in 1 2 3 4 5; do
+            if ./mcp-publisher publish; then
+              echo "published to MCP Registry"; exit 0
+            fi
+            echo "attempt $attempt failed (crate README may still be propagating) — waiting 30s"
+            sleep 30
+          done
+          echo "MCP Registry publish failed after retries"; exit 1

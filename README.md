@@ -110,3 +110,5 @@ Dual-licensed under MIT or Apache-2.0. See `LICENSE-MIT` and `LICENSE-APACHE`.
 
 Built and open-sourced by [Polymorphism](https://www.poly.io) — enterprise software,
 cloud & AI. More on the [ebman product page](https://www.poly.io/products/ebman/).
+
+MCP Registry name: `mcp-name: io.github.tombaldwin/ebman`
