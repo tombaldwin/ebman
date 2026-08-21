@@ -1,16 +1,20 @@
 //! IAM: `SimulatePrincipalPolicy` for `:explain`, and resolving an
-//! environment's instance-profile role. Global service — pinned to
-//! us-east-1 regardless of the operator's active region.
+//! environment's instance-profile role.
+//!
+//! Global service — one endpoint per partition, resolved by
+//! [`super::global_service_region`]. Built on first use, because only
+//! `:explain` reaches it.
 
 use super::*;
 
-/// Build an IAM client. IAM is a global service; the region the
-/// caller's `SdkConfig` carries doesn't affect routing but pinning
-/// here matches the Cost Explorer / Organizations pattern and
-/// makes the `:explain` code path's expectations explicit.
+/// Build an IAM client endpointed in the operator's partition.
+///
+/// IAM is global: one endpoint per partition. This was hardcoded to
+/// `us-east-1`, which is correct for the commercial partition and
+/// cannot resolve in GovCloud, China or the ISO partitions.
+/// (Organizations is *not* pinned — it is built from the operator's own
+/// config and routed by the SDK's endpoint rules.)
 pub(super) fn iam_client(base: &SdkConfig) -> IamClient {
-    // Global service: endpoint in the operator's own partition, not
-    // unconditionally us-east-1. See `super::global_service_region`.
     let region = base.region().map(|r| r.to_string()).unwrap_or_default();
     let cfg = base
         .to_builder()

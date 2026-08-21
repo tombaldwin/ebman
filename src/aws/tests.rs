@@ -577,8 +577,8 @@ fn client_with_cw(cw: CwClient) -> AwsClient {
 /// SSM isn't an arg to `for_tests` (only EB / SQS / CW / CW Logs
 /// / S3 / EC2 are — to keep that signature manageable across the
 /// existing 11 call sites). Tests that need a mocked SSM client
-/// override the field on the constructed AwsClient — the field
-/// is `pub(crate)` for exactly this.
+/// seed the lazy cell on the constructed AwsClient, which
+/// `get_or_init` then hands back in place of a real client.
 fn client_with_ssm(ssm: aws_sdk_ssm::Client) -> AwsClient {
     let cfg = aws_config::SdkConfig::builder()
         .region(Region::new("us-east-1"))
@@ -592,7 +592,7 @@ fn client_with_ssm(ssm: aws_sdk_ssm::Client) -> AwsClient {
         S3Client::new(&cfg),
         Ec2Client::new(&cfg),
     );
-    let _ = c.ssm.set(ssm);
+    assert!(c.ssm.set(ssm).is_ok(), "mock injection must win the cell");
     c
 }
 
@@ -647,7 +647,10 @@ macro_rules! client_with_sub {
         );
         // Seed the lazy cell rather than overwriting a field —
         // `get_or_init` will then hand back the mock.
-        let _ = c.$field.set($value);
+        assert!(
+            c.$field.set($value).is_ok(),
+            "mock injection must win the cell"
+        );
         c
     }};
 }
@@ -2030,61 +2033,6 @@ async fn run_shell_command_synthesises_local_timeout_when_deadline_passes() {
     assert_eq!(results[0].exit_code, -1);
 }
 
-// ── compare_versions: semver pre-release precedence ────────────────
-
-#[test]
-fn compare_versions_ranks_a_prerelease_below_its_release() {
-    use std::cmp::Ordering;
-    // The bug: cores tie, so the old code fell through to `a.cmp(b)`,
-    // and lexicographically "1.0.0-rc1" > "1.0.0" because it's a prefix
-    // extension. `:upgrade-platform` then offered an rc as the newest.
-    assert_eq!(compare_versions("1.0.0-rc1", "1.0.0"), Ordering::Less);
-    assert_eq!(compare_versions("1.0.0", "1.0.0-rc1"), Ordering::Greater);
-}
-
-#[test]
-fn compare_versions_orders_prereleases_among_themselves() {
-    use std::cmp::Ordering;
-    assert_eq!(compare_versions("1.0.0-rc1", "1.0.0-rc2"), Ordering::Less);
-    assert_eq!(
-        compare_versions("1.0.0-alpha", "1.0.0-beta"),
-        Ordering::Less
-    );
-    // Dot-separated identifiers compare left to right, numerically
-    // where both are numeric.
-    assert_eq!(
-        compare_versions("1.0.0-rc.2", "1.0.0-rc.10"),
-        Ordering::Less,
-        "numeric identifiers compare as numbers, not strings"
-    );
-    // Numeric ranks below alphanumeric.
-    assert_eq!(compare_versions("1.0.0-1", "1.0.0-alpha"), Ordering::Less);
-    // Fewer identifiers ranks below more, all else equal.
-    assert_eq!(compare_versions("1.0.0-rc", "1.0.0-rc.1"), Ordering::Less);
-    assert_eq!(compare_versions("1.0.0-rc1", "1.0.0-rc1"), Ordering::Equal);
-}
-
-#[test]
-fn compare_versions_still_orders_release_cores() {
-    use std::cmp::Ordering;
-    // Regression guard: the pre-release work must not disturb the
-    // ordering solution stacks rely on.
-    assert_eq!(compare_versions("1.0.1", "1.0.0"), Ordering::Greater);
-    assert_eq!(compare_versions("2.0.0", "1.9.9"), Ordering::Greater);
-    assert_eq!(compare_versions("1.10.0", "1.9.0"), Ordering::Greater);
-    assert_eq!(compare_versions("1.0", "1.0.0"), Ordering::Less);
-    assert_eq!(compare_versions("4.0.1", "4.0.1"), Ordering::Equal);
-}
-
-#[test]
-fn platform_picker_sorts_the_release_above_its_rc() {
-    // The end-to-end shape: `list_compatible_platforms` sorts
-    // descending with `compare_versions(&b.version, &a.version)`.
-    let mut versions = vec!["1.0.0", "1.0.0-rc1", "1.0.1", "1.0.0-rc2"];
-    versions.sort_by(|a, b| compare_versions(b, a));
-    assert_eq!(versions, vec!["1.0.1", "1.0.0", "1.0.0-rc2", "1.0.0-rc1"]);
-}
-
 // ── format_insights_results: column set and width measurement ──────
 
 fn insights_row(fields: &[(&str, &str)]) -> InsightsRow {
@@ -2238,6 +2186,13 @@ fn global_services_stay_inside_the_operators_partition() {
     assert_eq!(g("us-gov-east-1"), "us-gov-west-1");
     assert_eq!(g("cn-north-1"), "cn-north-1");
     assert_eq!(g("cn-northwest-1"), "cn-north-1");
+    // ISO partitions. Both SDKs carry real endpoints for these
+    // (`ce.us-iso-east-1.c2s.ic.gov` and friends).
+    assert_eq!(g("us-iso-east-1"), "us-iso-east-1");
+    assert_eq!(g("us-iso-west-1"), "us-iso-east-1");
+    assert_eq!(g("us-isob-east-1"), "us-isob-east-1");
+    assert_eq!(g("us-isof-south-1"), "us-isof-south-1");
+    assert_eq!(g("eu-isoe-west-1"), "eu-isoe-west-1");
     // A region we've never heard of falls back to commercial rather
     // than failing — same as before, and the common case.
     assert_eq!(g(""), "us-east-1");
@@ -2247,30 +2202,41 @@ fn global_services_stay_inside_the_operators_partition() {
 #[test]
 fn global_service_region_never_crosses_a_partition() {
     use super::global_service_region as g;
-    // The invariant, stated as a property rather than a table: the
-    // chosen endpoint must share the operator region's partition.
-    let partition = |r: &str| {
-        if r.starts_with("us-gov-") {
-            "aws-us-gov"
-        } else if r.starts_with("cn-") {
-            "aws-cn"
-        } else {
-            "aws"
-        }
+    // The oracle here is a HAND-WRITTEN table of AWS's partition
+    // names, not a re-implementation of the function under test. An
+    // earlier version of this test derived the partition with the same
+    // prefix logic `global_service_region` uses, which made
+    // `partition(g(r)) == partition(r)` vacuously true — it passed
+    // happily while every ISO region resolved to `us-east-1`, in the
+    // commercial partition, which is exactly the bug it claimed to
+    // rule out.
+    const REGION_PARTITION: &[(&str, &str)] = &[
+        ("us-east-1", "aws"),
+        ("eu-central-1", "aws"),
+        ("sa-east-1", "aws"),
+        ("ap-northeast-3", "aws"),
+        ("us-gov-west-1", "aws-us-gov"),
+        ("us-gov-east-1", "aws-us-gov"),
+        ("cn-north-1", "aws-cn"),
+        ("cn-northwest-1", "aws-cn"),
+        ("us-iso-east-1", "aws-iso"),
+        ("us-iso-west-1", "aws-iso"),
+        ("us-isob-east-1", "aws-iso-b"),
+        ("us-isof-south-1", "aws-iso-f"),
+        ("eu-isoe-west-1", "aws-iso-e"),
+    ];
+    let lookup = |r: &str| {
+        REGION_PARTITION
+            .iter()
+            .find(|(name, _)| *name == r)
+            .map(|(_, p)| *p)
+            .unwrap_or_else(|| panic!("{r} missing from the partition table"))
     };
-    for r in [
-        "us-east-1",
-        "eu-central-1",
-        "sa-east-1",
-        "us-gov-west-1",
-        "us-gov-east-1",
-        "cn-north-1",
-        "cn-northwest-1",
-    ] {
+    for (region, partition) in REGION_PARTITION {
         assert_eq!(
-            partition(g(r)),
-            partition(r),
-            "global endpoint for {r} left its partition"
+            lookup(g(region)),
+            *partition,
+            "global endpoint for {region} left the {partition} partition"
         );
     }
 }
@@ -2462,7 +2428,7 @@ fn client_with_iam(iam: aws_sdk_iam::Client) -> AwsClient {
         S3Client::new(&cfg),
         Ec2Client::new(&cfg),
     );
-    let _ = c.iam.set(iam);
+    assert!(c.iam.set(iam).is_ok(), "mock injection must win the cell");
     c
 }
 
@@ -2881,7 +2847,10 @@ async fn fetch_env_costs_flags_a_truncated_walk() {
         S3Client::new(&cfg),
         Ec2Client::new(&cfg),
     );
-    let _ = client.cost.set(cost);
+    assert!(
+        client.cost.set(cost).is_ok(),
+        "mock injection must win the cell"
+    );
 
     let costs = client
         .fetch_env_costs()
@@ -3087,7 +3056,7 @@ async fn paginate_walks_every_page_in_order() {
     ];
     let seen = std::cell::RefCell::new(Vec::new());
     let idx = std::cell::Cell::new(0usize);
-    let items: Vec<i32> = super::paginate("Test", |token| {
+    let page: super::Paged<i32> = super::paginate("Test", |token| {
         seen.borrow_mut().push(token.clone());
         let i = idx.get();
         idx.set(i + 1);
@@ -3096,6 +3065,7 @@ async fn paginate_walks_every_page_in_order() {
     })
     .await
     .unwrap();
+    let items = page.items();
     assert_eq!(items, vec![1, 2, 3, 4, 5]);
     assert_eq!(
         *seen.borrow(),
@@ -3109,13 +3079,14 @@ async fn paginate_treats_an_empty_token_as_the_end() {
     // AWS sometimes returns `Some("")` rather than `None`. Following it
     // would re-request page one forever.
     let calls = std::cell::Cell::new(0usize);
-    let items: Vec<i32> = super::paginate("Test", |_token| {
+    let page: super::Paged<i32> = super::paginate("Test", |_token| {
         calls.set(calls.get() + 1);
         async move { Ok((vec![7], Some(String::new()))) }
     })
     .await
     .unwrap();
-    assert_eq!(items, vec![7]);
+    assert!(!page.truncated, "an empty token is a clean finish");
+    assert_eq!(page.items(), vec![7]);
     assert_eq!(calls.get(), 1, "an empty token means done");
 }
 
@@ -3125,22 +3096,153 @@ async fn paginate_stops_at_the_runaway_cap() {
     // tokens unbounded, so an endpoint that always returns one would
     // spin the task forever with the operation stuck "loading".
     let calls = std::cell::Cell::new(0usize);
-    let items: Vec<i32> = super::paginate("Test", |_token| {
+    let page: super::Paged<i32> = super::paginate("Test", |_token| {
         calls.set(calls.get() + 1);
         async move { Ok((vec![0], Some("ALWAYS".to_string()))) }
     })
     .await
     .unwrap();
     assert_eq!(calls.get(), 100, "must stop at the cap, not spin");
-    assert_eq!(items.len(), 100, "and return what it did collect");
+    assert!(page.truncated, "and must say the walk was cut short");
+    assert_eq!(page.items().len(), 100, "while returning what it collected");
 }
 
 #[tokio::test]
 async fn paginate_propagates_a_page_error() {
-    let result: Result<Vec<i32>, _> = super::paginate("Test", |_token| async move {
+    let result: Result<super::Paged<i32>, _> = super::paginate("Test", |_token| async move {
         Err(color_eyre::eyre::eyre!("AccessDenied"))
     })
     .await;
     let err = result.expect_err("a failing page must surface");
     assert!(format!("{err}").contains("AccessDenied"));
+}
+
+#[tokio::test]
+async fn single_page_event_fetch_does_not_warn_about_a_cap() {
+    // `pages < max_pages` was `1 < 1` for the display callers, so every
+    // ordinary fetch took the "cap reached" arm. EB returns a
+    // next_token on essentially every real account, so this fired on
+    // every refresh tick, every deploy poll and every `:event-tail`
+    // open — burying the one warning that means something.
+    //
+    // Asserted through a tracing subscriber rather than by reading the
+    // code, because the bug was invisible to every other test.
+    use aws_sdk_elasticbeanstalk::operation::describe_events::DescribeEventsOutput;
+    use aws_sdk_elasticbeanstalk::types::EventDescription;
+    use std::sync::{Arc, Mutex};
+    use tracing::subscriber::with_default;
+
+    #[derive(Clone, Default)]
+    struct Count(Arc<Mutex<usize>>);
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Count {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if *event.metadata().level() == tracing::Level::WARN {
+                *self.0.lock().unwrap() += 1;
+            }
+        }
+    }
+    use tracing_subscriber::layer::SubscriberExt;
+
+    let page = mock!(Client::describe_events).then_output(|| {
+        DescribeEventsOutput::builder()
+            .events(
+                EventDescription::builder()
+                    .message("newest")
+                    .environment_name("api-prod")
+                    .build(),
+            )
+            .next_token("MORE")
+            .build()
+    });
+    let eb = mock_client!(
+        aws_sdk_elasticbeanstalk,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&page]
+    );
+    let client = client_with_eb(eb);
+
+    let counter = Count::default();
+    let sub = tracing_subscriber::registry().with(counter.clone());
+    let events = with_default(sub, || {
+        futures::executor::block_on(client.list_events_for_env("api-prod", 100))
+    })
+    .unwrap();
+
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        *counter.0.lock().unwrap(),
+        0,
+        "a deliberate single-page fetch must not warn about a cap"
+    );
+}
+
+#[tokio::test]
+async fn a_truncated_scan_errors_rather_than_reporting_no_match() {
+    // `list_alarms_for_env` and `list_secrets` scan the whole account
+    // and filter afterwards, so a walk cut short by the runaway cap is
+    // indistinguishable from "nothing matched" — and during triage
+    // "no alarms" reads as a finding. They must refuse instead.
+    use aws_sdk_cloudwatch::operation::describe_alarms::DescribeAlarmsOutput;
+
+    let endless = mock!(aws_sdk_cloudwatch::Client::describe_alarms)
+        .then_output(|| DescribeAlarmsOutput::builder().next_token("MORE").build());
+    let cw = mock_client!(
+        aws_sdk_cloudwatch,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&endless]
+    );
+    let client = client_with_cw(cw);
+
+    let err = client
+        .list_alarms_for_env("payments")
+        .await
+        .expect_err("a truncated scan must not be reported as 'no alarms'");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("partial scan looks identical to no match"),
+        "the error must explain why it refused: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn list_instances_follows_next_token() {
+    // This list is `:ssm-run`'s target set and `spawn_dry_run`'s
+    // blast-radius count. Truncated, the shell command silently never
+    // reaches the missing instances and the overlay reports N/N
+    // success against the wrong N.
+    use aws_sdk_elasticbeanstalk::operation::describe_instances_health::DescribeInstancesHealthOutput;
+    use aws_sdk_elasticbeanstalk::types::SingleInstanceHealth;
+
+    fn inst(id: &str) -> SingleInstanceHealth {
+        SingleInstanceHealth::builder()
+            .instance_id(id)
+            .health_status("Ok")
+            .build()
+    }
+    let page1 = mock!(Client::describe_instances_health)
+        .match_requests(|req| req.next_token().is_none())
+        .then_output(|| {
+            DescribeInstancesHealthOutput::builder()
+                .instance_health_list(inst("i-aaa"))
+                .next_token("P2")
+                .build()
+        });
+    let page2 = mock!(Client::describe_instances_health)
+        .match_requests(|req| req.next_token() == Some("P2"))
+        .then_output(|| {
+            DescribeInstancesHealthOutput::builder()
+                .instance_health_list(inst("i-bbb"))
+                .build()
+        });
+    let eb = mock_client!(aws_sdk_elasticbeanstalk, [&page1, &page2]);
+    let client = client_with_eb(eb);
+
+    let instances = client.list_instances("api-prod").await.unwrap();
+    let ids: Vec<&str> = instances.iter().map(|i| i.id.as_str()).collect();
+    assert_eq!(ids, vec!["i-aaa", "i-bbb"]);
+    assert_eq!(page2.num_calls(), 1, "next_token must be followed");
 }

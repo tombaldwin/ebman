@@ -65,24 +65,11 @@ fn extract_max_stable_version(body: &str) -> Option<String> {
 /// Non-numeric tails (e.g. `-rc1`) are sorted lexicographically as a fallback;
 /// we don't ship pre-releases ourselves so this isn't load-bearing.
 pub fn is_newer(candidate: &str, current: &str) -> bool {
-    let parse = |s: &str| {
-        s.split('.')
-            .map(|p| p.split('-').next().unwrap_or(p).parse::<u64>().unwrap_or(0))
-            .collect::<Vec<_>>()
-    };
-    let a = parse(candidate);
-    let b = parse(current);
-    for i in 0..a.len().max(b.len()) {
-        let ai = *a.get(i).unwrap_or(&0);
-        let bi = *b.get(i).unwrap_or(&0);
-        if ai > bi {
-            return true;
-        }
-        if ai < bi {
-            return false;
-        }
-    }
-    false
+    // Shared with the EB platform-version picker. This used to have its
+    // own copy that stripped the pre-release segment and compared only
+    // the numeric core, so a binary running `0.30.0-rc1` was never told
+    // that `0.30.0` had shipped — the two versions tied.
+    crate::util::compare_versions(candidate, current) == std::cmp::Ordering::Greater
 }
 
 /// Channel the running binary was installed through, inferred from its path
@@ -156,9 +143,22 @@ mod tests {
 
     #[test]
     fn is_newer_handles_prerelease_tails() {
-        // Pre-release tails on the candidate are stripped; we compare numeric only.
+        // A pre-release with a higher core still beats a lower release.
         assert!(is_newer("0.2.0-rc1", "0.1.0"));
+        // And a pre-release never beats its own release.
         assert!(!is_newer("0.1.0-rc1", "0.1.0"));
+    }
+
+    #[test]
+    fn is_newer_tells_a_prerelease_build_that_the_release_shipped() {
+        // The bug the shared comparator fixed: the old copy stripped
+        // the pre-release segment, so `0.30.0` and `0.30.0-rc1` tied on
+        // the numeric core and `is_newer` returned false — an operator
+        // running an rc was never told the real release existed.
+        assert!(is_newer("0.30.0", "0.30.0-rc1"));
+        assert!(is_newer("0.30.0-rc2", "0.30.0-rc1"));
+        assert!(!is_newer("0.30.0-rc1", "0.30.0-rc2"));
+        assert!(!is_newer("0.30.0", "0.30.0"));
     }
 
     #[test]

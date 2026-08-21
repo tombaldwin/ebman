@@ -37,9 +37,12 @@ pub struct InsightsResults {
 /// Returns the window length in *milliseconds* so callers can subtract
 /// from `Utc::now().timestamp_millis()` directly. Returns `None` for
 /// malformed input or non-positive values so the caller surfaces a
-/// usage error instead of silently substituting a wrong window. Same
-/// grammar as `parse_replay_spec` in `mode_dlq.rs` — kept consistent
-/// so operators only have to learn one time-window vocabulary.
+/// usage error instead of silently substituting a wrong window.
+///
+/// Deliberately a superset of `parse_replay_spec` in `mode_dlq.rs`:
+/// same `m` / `h` / `d` units and the same overflow guards, plus `s`
+/// (seconds), which makes sense for a log window and not for a DLQ
+/// replay.
 pub fn parse_window_ms(input: &str) -> Option<i64> {
     let s = input.trim().to_lowercase();
     if s.is_empty() {
@@ -72,12 +75,20 @@ pub fn parse_window_ms(input: &str) -> Option<i64> {
 }
 
 /// Pure: render an `InsightsResults` payload to a multi-line string
-/// suitable for a TextOverlay body. Columns are field names from the
-/// first row (Insights guarantees every row has the same field set in
-/// the same order), each cell width-padded against the column max so
-/// the result reads like a table. Long values are truncated to keep
-/// the overlay readable. Empty input renders as a "no rows matched"
-/// stub plus the scan stats — same shape so the overlay never collapses.
+/// suitable for a TextOverlay body.
+///
+/// Columns are the union of every row's field names, in first-seen
+/// order — *not* row 0's. Insights omits an absent field from a record
+/// rather than returning it empty, so taking the header from the first
+/// row drops any field that record happens to lack, for every row. An
+/// earlier version of this doc asserted the opposite guarantee; see
+/// `insights_columns_are_the_union_across_rows_not_just_row_zero`.
+///
+/// Each cell is width-padded against the column max (measured in
+/// chars, since that is what the padding counts) so the result reads
+/// like a table. Long values are truncated to keep the overlay
+/// readable. Empty input renders as a "no rows matched" stub plus the
+/// scan stats — same shape so the overlay never collapses.
 pub fn format_insights_results(
     results: &InsightsResults,
     query: &str,
@@ -202,7 +213,8 @@ impl AwsClient {
             let resp = req.send().await.wrap_err("DescribeLogGroups failed")?;
             Ok((resp.log_groups.unwrap_or_default(), resp.next_token))
         })
-        .await?;
+        .await?
+        .items();
         let mut out: Vec<String> = raw.into_iter().filter_map(|g| g.log_group_name).collect();
         out.sort();
         Ok(out)

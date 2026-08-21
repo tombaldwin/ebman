@@ -75,7 +75,8 @@ impl AwsClient {
             let resp = req.send().await.wrap_err("DescribeAlarms failed")?;
             Ok((resp.metric_alarms.unwrap_or_default(), resp.next_token))
         })
-        .await?;
+        .await?
+        .complete("DescribeAlarms")?;
         let out: Vec<CwAlarm> = raw
             .into_iter()
             .filter(|a| {

@@ -45,7 +45,8 @@ impl AwsClient {
             let resp = req.send().await.wrap_err("DescribeSubnets failed")?;
             Ok((resp.subnets.unwrap_or_default(), resp.next_token))
         })
-        .await?;
+        .await?
+        .items();
         let mut out: Vec<SubnetInfo> = raw
             .into_iter()
             .map(|s| {
@@ -94,7 +95,8 @@ impl AwsClient {
             let resp = req.send().await.wrap_err("DescribeSecurityGroups failed")?;
             Ok((resp.security_groups.unwrap_or_default(), resp.next_token))
         })
-        .await?;
+        .await?
+        .items();
         let mut out: Vec<SecurityGroupInfo> = raw
             .into_iter()
             .map(|g| SecurityGroupInfo {
