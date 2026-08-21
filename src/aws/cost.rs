@@ -28,6 +28,21 @@ pub(super) fn cost_explorer_client(base: &SdkConfig) -> CostExplorerClient {
 /// an EB env name and its monthly cost in USD across the trailing
 /// window. `cost` is in whole + fractional dollars; the SDK returns
 /// strings and we parse at the boundary.
+/// The result of a cost fetch: the per-env rows, plus whether the page
+/// cap cut the walk short.
+///
+/// `truncated` exists so a partial map can't be mistaken for a complete
+/// one. It used to be invisible: the loop fell out of `MAX_COST_PAGES`
+/// with a token still in hand, returned what it had, and the caller
+/// persisted it to the 24-hour cache — so every env past the cap
+/// rendered as unknown cost, indistinguishable from an untagged one,
+/// for a day.
+#[derive(Clone, Debug, Default)]
+pub struct EnvCosts {
+    pub rows: Vec<EnvCost>,
+    pub truncated: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct EnvCost {
     pub env_name: String,
@@ -53,7 +68,7 @@ impl AwsClient {
     /// AWS adds to every env-owned resource by default). Envs whose
     /// resources have been re-tagged or never carried the tag won't
     /// show up — surface as zero / unknown rather than guessing.
-    pub async fn fetch_env_costs(&self) -> Result<Vec<EnvCost>> {
+    pub async fn fetch_env_costs(&self) -> Result<EnvCosts> {
         use aws_sdk_costexplorer::types::{DateInterval, GroupDefinition, GroupDefinitionType};
 
         // Trailing window — end is "today" (exclusive in Cost Explorer)
@@ -130,8 +145,25 @@ impl AwsClient {
             }
             match resp.next_page_token {
                 Some(t) if !t.is_empty() => next_page = Some(t),
-                _ => break,
+                _ => {
+                    // Walked the whole result. Clear the token so the
+                    // check below can't see a stale one from the
+                    // previous iteration.
+                    next_page = None;
+                    break;
+                }
             }
+        }
+        // A token still in hand means the cap cut us short.
+        let truncated = next_page.is_some();
+        if truncated {
+            tracing::warn!(
+                target: "ebman::aws",
+                max_pages = MAX_COST_PAGES,
+                envs = totals.len(),
+                "Cost Explorer page cap reached with more pages available — \
+                 costs are incomplete and will not be cached"
+            );
         }
         let mut out: Vec<EnvCost> = totals
             .into_iter()
@@ -144,6 +176,9 @@ impl AwsClient {
                 .partial_cmp(&a.cost_usd)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        Ok(out)
+        Ok(EnvCosts {
+            rows: out,
+            truncated,
+        })
     }
 }

@@ -44,6 +44,36 @@ pub fn plan_part_lengths(total_size: u64, part_size: u64) -> Vec<u64> {
 }
 
 impl AwsClient {
+    /// Best-effort `AbortMultipartUpload`.
+    ///
+    /// Every failure path after `CreateMultipartUpload` must call this:
+    /// S3 keeps the parts already uploaded until the multipart upload is
+    /// aborted or completed, and they are billed the whole time with no
+    /// object visible in the bucket listing. A >64 MiB bundle can leave
+    /// gigabytes behind.
+    ///
+    /// The abort itself is best-effort — the caller is already returning
+    /// the real error — but a failed abort means orphaned parts, so it
+    /// warns rather than discarding the result silently.
+    async fn abort_multipart(&self, bucket: &str, key: &str, upload_id: &str) {
+        if let Err(e) = self
+            .s3
+            .abort_multipart_upload()
+            .bucket(bucket)
+            .key(key)
+            .upload_id(upload_id)
+            .send()
+            .await
+        {
+            tracing::warn!(
+                target: "ebman::aws",
+                bucket, key, upload_id,
+                error = %e,
+                "AbortMultipartUpload failed — uploaded parts may be left billed"
+            );
+        }
+    }
+
     /// Upload an application bundle from disk to S3. Bundles below
     /// [`MULTIPART_THRESHOLD`] use a single streaming `PutObject` so RAM
     /// stays flat regardless of file size; larger bundles use multipart
@@ -121,14 +151,7 @@ impl AwsClient {
             Ok(f) => f,
             Err(e) => {
                 // Best-effort abort — propagate the original open error.
-                let _ = self
-                    .s3
-                    .abort_multipart_upload()
-                    .bucket(bucket)
-                    .key(key)
-                    .upload_id(&upload_id)
-                    .send()
-                    .await;
+                self.abort_multipart(bucket, key, &upload_id).await;
                 return Err(eyre!("open {} for multipart upload: {e}", path.display()));
             }
         };
@@ -136,14 +159,7 @@ impl AwsClient {
             let part_number = (idx + 1) as i32;
             let mut buf = vec![0u8; *part_len as usize];
             if let Err(e) = file.read_exact(&mut buf).await {
-                let _ = self
-                    .s3
-                    .abort_multipart_upload()
-                    .bucket(bucket)
-                    .key(key)
-                    .upload_id(&upload_id)
-                    .send()
-                    .await;
+                self.abort_multipart(bucket, key, &upload_id).await;
                 return Err(eyre!(
                     "read part {part_number} from {}: {e}",
                     path.display()
@@ -162,23 +178,26 @@ impl AwsClient {
             {
                 Ok(r) => r,
                 Err(e) => {
-                    let _ = self
-                        .s3
-                        .abort_multipart_upload()
-                        .bucket(bucket)
-                        .key(key)
-                        .upload_id(&upload_id)
-                        .send()
-                        .await;
+                    self.abort_multipart(bucket, key, &upload_id).await;
                     return Err(e).wrap_err_with(|| {
                         format!("S3 UploadPart {part_number} of {bucket}/{key} failed")
                     });
                 }
             };
-            let e_tag = resp
-                .e_tag()
-                .ok_or_else(|| eyre!("UploadPart {part_number} returned no ETag"))?
-                .to_string();
+            // S3 omits the ETag in some configurations (SSE-C header
+            // mismatch), and mocked or proxied endpoints do it too. This
+            // path used to bare-`?` out, skipping the abort that every
+            // other failure arm performs and leaving the uploaded parts
+            // billed indefinitely.
+            let e_tag = match resp.e_tag() {
+                Some(t) => t.to_string(),
+                None => {
+                    self.abort_multipart(bucket, key, &upload_id).await;
+                    return Err(eyre!(
+                        "S3 UploadPart {part_number} of {bucket}/{key} returned no ETag"
+                    ));
+                }
+            };
             completed_parts.push(
                 aws_sdk_s3::types::CompletedPart::builder()
                     .part_number(part_number)
@@ -200,14 +219,7 @@ impl AwsClient {
             .send()
             .await
         {
-            let _ = self
-                .s3
-                .abort_multipart_upload()
-                .bucket(bucket)
-                .key(key)
-                .upload_id(&upload_id)
-                .send()
-                .await;
+            self.abort_multipart(bucket, key, &upload_id).await;
             return Err(e)
                 .wrap_err_with(|| format!("S3 CompleteMultipartUpload {bucket}/{key} failed"));
         }

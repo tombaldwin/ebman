@@ -1,6 +1,8 @@
 //! SSM Run Command: fan a shell command across an environment's
 //! instances and aggregate the per-instance results.
 
+use futures::StreamExt;
+
 use super::*;
 
 /// One per-instance result returned by [`AwsClient::run_shell_command`].
@@ -78,16 +80,34 @@ impl AwsClient {
             tokio::time::Instant::now() + std::time::Duration::from_secs(wall_clock_secs);
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            // Snapshot so we can mutate `pending` inside the loop.
+            // Snapshot so we can mutate `pending` while walking results.
             let cycle: Vec<String> = pending.iter().cloned().collect();
-            for id in cycle {
-                let resp = self
-                    .ssm
-                    .get_command_invocation()
-                    .command_id(&command_id)
-                    .instance_id(&id)
-                    .send()
-                    .await;
+            // Poll the cycle concurrently. Sequentially, one cycle cost
+            // one round trip PER INSTANCE and the deadline was only
+            // checked after all of them — so on a large env a single
+            // cycle could outlast the operator's wall clock, and every
+            // instance that hadn't happened to be polled late in that
+            // cycle was written off as `TimedOut(local)` despite the
+            // command still running fine. Bounded so a big fleet
+            // doesn't hammer SSM's rate limit.
+            const POLL_CONCURRENCY: usize = 10;
+            let responses: Vec<(String, _)> = futures::stream::iter(cycle.into_iter().map(|id| {
+                let command_id = command_id.clone();
+                async move {
+                    let resp = self
+                        .ssm
+                        .get_command_invocation()
+                        .command_id(&command_id)
+                        .instance_id(&id)
+                        .send()
+                        .await;
+                    (id, resp)
+                }
+            }))
+            .buffer_unordered(POLL_CONCURRENCY)
+            .collect()
+            .await;
+            for (id, resp) in responses {
                 let invocation = match resp {
                     Ok(o) => o,
                     Err(e) => {

@@ -426,11 +426,29 @@ pub async fn list_environments_in_region(
     region: String,
 ) -> Result<Vec<Environment>> {
     let client = AwsClient::with(profile, Some(region.clone())).await?;
+    // Label with the region the client RESOLVED to, not the one asked
+    // for. `AwsClient::with` detects and logs the case where the SDK
+    // ignores an explicit region (an empty or whitespace value leaves
+    // the env/profile chain to pick), and when that happens the
+    // fan-out queries region B while labelling every row region A —
+    // so the REGION column, `:find-env` results and any region-scoped
+    // follow-up action all point at the wrong place.
+    let resolved_region = client.context.region.clone();
     let mut envs = client.list_environments().await?;
-    for e in &mut envs {
-        e.region = Some(region.clone());
-    }
+    stamp_region(&mut envs, &resolved_region);
     Ok(envs)
+}
+
+/// Stamp every row with the region its client actually resolved to.
+///
+/// Shared by both multi-region entry points on purpose: they diverged
+/// once, one using the requested region and the other the resolved one,
+/// and the difference was invisible until a region string failed to
+/// bind. One function means they can't drift again.
+pub(super) fn stamp_region(envs: &mut [Environment], resolved_region: &str) {
+    for e in envs {
+        e.region = Some(resolved_region.to_string());
+    }
 }
 
 /// Sibling of `list_environments_in_region` for the AssumeRole path:
@@ -450,9 +468,7 @@ pub async fn list_environments_for_account(
     let client = AwsClient::assume_role(name, &spec).await?;
     let resolved_region = client.context.region.clone();
     let mut envs = client.list_environments().await?;
-    for e in &mut envs {
-        e.region = Some(resolved_region.clone());
-    }
+    stamp_region(&mut envs, &resolved_region);
     Ok(envs)
 }
 

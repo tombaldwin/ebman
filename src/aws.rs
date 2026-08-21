@@ -139,10 +139,12 @@ pub struct AwsClient {
     acm: AcmClient,
     /// SSM client. Region-scoped — `:ssm-run` sends a shell command to
     /// the env's instances and aggregates the per-instance results.
-    /// `pub(crate)` so mock-AWS tests can override the field
-    /// post-construction (avoids threading SSM through every
-    /// `for_tests` call site).
-    pub(crate) ssm: SsmClient,
+    ///
+    /// Private like the rest: the mock-AWS tests that overwrite this
+    /// post-construction live in `aws::tests`, a descendant of this
+    /// module, so they reach it without `pub(crate)`. (It was
+    /// `pub(crate)` on the assumption they needed it; they don't.)
+    ssm: SsmClient,
     config: SdkConfig,
     pub context: AwsContext,
 }
