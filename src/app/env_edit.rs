@@ -93,10 +93,10 @@ pub(crate) fn parse_env_edit_body(text: &str) -> std::collections::BTreeMap<Stri
 /// `(namespace, key, value)` triples — the shape EB's option-settings
 /// update API expects for "set these". Aliased so [`diff_env_vars`]'s
 /// signature isn't tripping the complex-type clippy lint.
-pub(crate) type OptionSet = Vec<(String, String, String)>;
+type OptionSet = Vec<(String, String, String)>;
 
 /// `(namespace, key)` pairs — "remove these" shape.
-pub(crate) type OptionRemove = Vec<(String, String)>;
+type OptionRemove = Vec<(String, String)>;
 
 pub(crate) fn diff_env_vars(
     namespace: &str,

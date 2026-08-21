@@ -111,7 +111,7 @@ impl App {
         }
     }
 
-    pub(crate) fn update_hover(&mut self, row: u16) {
+    fn update_hover(&mut self, row: u16) {
         let area = self.table_area;
         if area.width == 0 || area.height == 0 {
             self.hover_row = None;
@@ -128,7 +128,7 @@ impl App {
         self.hover_row = Some(target);
     }
 
-    pub(crate) fn select_row_at(&mut self, _col: u16, row: u16) {
+    fn select_row_at(&mut self, _col: u16, row: u16) {
         let area = self.table_area;
         if area.width == 0 || area.height == 0 {
             return;

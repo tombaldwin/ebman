@@ -213,7 +213,7 @@ pub(crate) fn soonest_watching_deploy(
 /// Cell truncator local to `format_armed_rollbacks`. Trailing `…`
 /// keeps the column alignment stable on long env names / version
 /// labels.
-pub(crate) fn truncate_armed_cell(s: &str, n: usize) -> String {
+fn truncate_armed_cell(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         return s.to_string();
     }

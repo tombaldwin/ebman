@@ -21,7 +21,7 @@
 //! caller is the passive `stage=event kind=red_transition` health-log
 //! line, which is genuinely an event, not an action.
 //!
-//! All paths funnel into the same private [`write_audit_line`]
+//! All paths funnel into the same private `write_audit_line`
 //! helper (or its `_raw` sibling) so file rotation + webhook
 //! fan-out apply uniformly to every line type.
 //!

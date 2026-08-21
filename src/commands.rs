@@ -100,7 +100,7 @@ pub struct CommandSpec {
     /// Whether the command's first positional argument is an existing
     /// environment name — drives command-bar Tab completion of env
     /// names (see `app::command_takes_env_arg`). Set via
-    /// [`cmd_env_arg`]; every other constructor defaults it false.
+    /// `cmd_env_arg`; every other constructor defaults it false.
     pub env_arg: bool,
 }
 

@@ -156,7 +156,7 @@ impl App {
         }
     }
 
-    pub(crate) fn dispatch_apps_action_menu(&mut self) {
+    fn dispatch_apps_action_menu(&mut self) {
         let Some(Overlay::AppsActionMenu {
             app_name,
             env_names,

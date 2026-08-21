@@ -59,7 +59,7 @@ use crate::{
 };
 
 // Re-export action-cluster types so existing consumers (ui.rs, tests,
-// the `App` impl below) keep their `crate::app::Action` etc. paths
+// the sub-modules below) keep their `crate::app::Action` etc. paths
 // working after the move into `crate::mode_action`.
 pub use crate::mode_action::{
     Action, ActionFlow, ConfirmKind, ConfirmModal, DryRunInfo, ParameterisedAction, ACTIONS,
@@ -2808,7 +2808,7 @@ pub struct PendingDispatch {
 
 /// The actual work `tick_pending_dispatch` dispatches when the
 /// cancel window elapses. Mirrors the existing dispatch paths:
-/// `Single` re-uses [`App::spawn_action`]; the batch variants
+/// `Single` re-uses `App::spawn_action`; the batch variants
 /// re-use the per-env `spawn_batch_*` helpers in a loop.
 // See the matching allow on `ActionFlow` — same trade-off.
 #[allow(clippy::large_enum_variant)]

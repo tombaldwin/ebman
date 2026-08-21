@@ -99,7 +99,7 @@ impl App {
     /// buffer and sets the new row; `RenameKey` sets the new key +
     /// removes the old in one call, carrying the row's value across.
     /// Clears the editor either way.
-    pub(crate) fn commit_config_edit(&mut self) {
+    fn commit_config_edit(&mut self) {
         let Some(edit) = self.detail.as_mut().and_then(|d| d.config_edit.take()) else {
             return;
         };

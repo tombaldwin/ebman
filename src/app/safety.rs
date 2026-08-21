@@ -51,7 +51,7 @@ impl App {
 
     /// Enforce the read-only gate for a destructive action against
     /// `env_name`. Returns `true` (and sets `self.error_message` to a
-    /// "<reason> — <verb> disabled" toast) when the env is locked;
+    /// `"<reason> — <verb> disabled"` toast) when the env is locked;
     /// `false` (no side effects) otherwise. Designed to be the single
     /// guard at the top of every `spawn_*`-style destructive helper:
     ///
@@ -94,7 +94,7 @@ impl App {
 
     /// Read-only gate for a *batch* destructive op over `env_names`.
     /// Returns `true` (and sets `self.error_message`) when the op must
-    /// be refused. Unlike single-env [`deny_write`], a batch is gated
+    /// be refused. Unlike single-env [`App::deny_write`], a batch is gated
     /// per-env: if ANY selected env is locked the whole batch is
     /// refused (refuse-all, not skip-some — a safety pin shouldn't be
     /// silently routed around for the unpinned remainder), with the
@@ -104,7 +104,7 @@ impl App {
     /// `:freeze-deploys`) first via a representative `is_read_only_for`
     /// probe so those produce their normal whole-fleet message, then
     /// scans for per-env / per-account pins. Mirrors the precedence in
-    /// [`is_read_only_for`]. `verb` names the op for the toast.
+    /// [`App::is_read_only_for`]. `verb` names the op for the toast.
     pub fn deny_write_batch(&mut self, env_names: &[String], verb: &str) -> bool {
         // Demo mode + global/freeze gates are env-independent: probe
         // with the first env (or "") so the existing single-env path

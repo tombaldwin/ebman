@@ -8,7 +8,7 @@
 //!   call the underlying seams (`run_rules`, `parse_audit_line`,
 //!   `aws::*`), never the `println!`-ing CLI `run()` wrappers.
 //! - **Concurrent `tools/call`, responsive loop.** Every tool call is
-//!   spawned and bounded at [`TOOL_TIMEOUT_SECS`]; `ping` never waits
+//!   spawned and bounded at `TOOL_TIMEOUT_SECS`; `ping` never waits
 //!   behind a slow AWS fan-out. `notifications/cancelled` is ignored
 //!   in v1 (documented limitation).
 //!

@@ -166,7 +166,7 @@ impl App {
     /// [`LOADING_INDICATOR_LINGER`] after the load completes. Call this
     /// *before* clearing `loading_since` and flipping `load_state` back to
     /// Idle/Error in the AppMsg handler.
-    pub(crate) fn arm_loading_linger(&mut self) {
+    fn arm_loading_linger(&mut self) {
         let now = Instant::now();
         if let Some(until) = compute_loading_linger_target(
             self.loading_since,
@@ -255,7 +255,7 @@ impl App {
         );
     }
 
-    pub(crate) fn spawn_applications(&self) {
+    fn spawn_applications(&self) {
         self.spawn_aws(
             "list_applications",
             move |aws| async move { aws.list_applications().await },
@@ -304,7 +304,7 @@ impl App {
     /// `list_environments` lands. Skips Web envs (no DLQ). Each env's
     /// fetch is independent — a failure on one drops that entry from
     /// the result rather than failing the batch.
-    pub(crate) fn spawn_worker_queue_check(&self) {
+    fn spawn_worker_queue_check(&self) {
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;

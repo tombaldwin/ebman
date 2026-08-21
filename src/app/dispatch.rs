@@ -397,7 +397,7 @@ impl App {
         }
     }
 
-    pub(crate) fn run_plugin_command(&mut self, name: &str, plugin: &crate::plugins::Plugin) {
+    fn run_plugin_command(&mut self, name: &str, plugin: &crate::plugins::Plugin) {
         let env_opt = if let Some(d) = self.detail.as_ref() {
             Some(d.env_snapshot.clone())
         } else {

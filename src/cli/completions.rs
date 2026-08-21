@@ -2,7 +2,7 @@
 //!
 //! ebman's CLI is hand-rolled (no `clap`), so there's no derive to hang
 //! `clap_complete` off. Instead the command surface is described once as
-//! data ([`SUBS`] + [`GLOBALS`]) and rendered to each shell's script
+//! data (`SUBS` + `GLOBALS`) and rendered to each shell's script
 //! format. One source of truth means the three scripts can't drift from
 //! each other, and the unit tests pin every rendered script to that list.
 //!
@@ -11,7 +11,7 @@
 //! environment names in the shell — that would need a live
 //! `ebman envs` (an AWS round-trip, credentials, latency) on every Tab.
 //! Env-name completion lives in the TUI command bar instead, where the
-//! fleet is already loaded. The subcommand *names* in [`SUBS`] are
+//! fleet is already loaded. The subcommand *names* in `SUBS` are
 //! pinned to [`crate::cli::SUBCOMMANDS`] by a test, so they can't drift
 //! from the real CLI; the per-subcommand flags / verbs still track
 //! `main.rs`'s dispatch and `print_help` by hand.

@@ -4,7 +4,7 @@
 //!
 //! Each glyph in a frame is a palette key, not a literal. The
 //! renderer ([`splash_scene_lines`]) paints every non-`.` key as a
-//! **two-cell** `██` block coloured via [`splash_pixel`] — two cells
+//! **two-cell** `██` block coloured via `splash_pixel` — two cells
 //! wide so each logical pixel is roughly square (terminal cells are
 //! ~1:2). The `.` key is transparent (rendered as two blank cells).
 //!

@@ -308,7 +308,7 @@ pub fn parse_new_config_row(input: &str) -> Option<(String, String)> {
 }
 
 /// Pure: build the flat list of editable Config-tab rows in the
-/// exact order [`crate::ui::draw_detail_config`] renders them —
+/// exact order `ui::draw_detail_config` renders them —
 /// tags first (sorted case-insensitively by key, matching the
 /// render), then env vars (natural order). The Config-tab cursor
 /// indexes into this list, so render + navigation agree by
