@@ -32,30 +32,28 @@ impl AwsClient {
     /// overlay can render a "no org access" hint rather than an opaque
     /// stack trace.
     pub async fn list_org_accounts(&self) -> Result<Vec<OrgAccount>> {
-        let mut out: Vec<OrgAccount> = Vec::new();
-        let mut next_token: Option<String> = None;
-        loop {
-            let mut req = self.org.list_accounts();
-            if let Some(t) = next_token.take() {
+        let this = self;
+        let raw = super::paginate("organizations:ListAccounts", move |token| async move {
+            let mut req = this.org().list_accounts();
+            if let Some(t) = token {
                 req = req.next_token(t);
             }
             let resp = req
                 .send()
                 .await
                 .wrap_err("organizations:ListAccounts failed")?;
-            for a in resp.accounts.unwrap_or_default() {
-                out.push(OrgAccount {
-                    id: a.id.unwrap_or_default(),
-                    name: a.name.unwrap_or_default(),
-                    email: a.email,
-                    status: a.status.map(|s| s.as_str().to_string()).unwrap_or_default(),
-                });
-            }
-            match resp.next_token {
-                Some(t) if !t.is_empty() => next_token = Some(t),
-                _ => break,
-            }
-        }
+            Ok((resp.accounts.unwrap_or_default(), resp.next_token))
+        })
+        .await?;
+        let mut out: Vec<OrgAccount> = raw
+            .into_iter()
+            .map(|a| OrgAccount {
+                id: a.id.unwrap_or_default(),
+                name: a.name.unwrap_or_default(),
+                email: a.email,
+                status: a.status.map(|s| s.as_str().to_string()).unwrap_or_default(),
+            })
+            .collect();
         // Stable display order: status (Active first), then name.
         out.sort_by(|a, b| {
             let sa = (a.status != "ACTIVE", a.name.to_lowercase());

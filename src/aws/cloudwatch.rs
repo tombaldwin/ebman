@@ -66,38 +66,34 @@ impl AwsClient {
     /// alarm in a custom namespace dimensioned by `EnvironmentName` is
     /// genuinely about this environment and should still show up.
     pub async fn list_alarms_for_env(&self, env_name: &str) -> Result<Vec<CwAlarm>> {
-        let mut out = Vec::new();
-        let mut next_token: Option<String> = None;
-        loop {
-            let mut req = self.cw.describe_alarms();
-            if let Some(t) = next_token.take() {
+        let this = self;
+        let raw = super::paginate("DescribeAlarms", move |token| async move {
+            let mut req = this.cw.describe_alarms();
+            if let Some(t) = token {
                 req = req.next_token(t);
             }
             let resp = req.send().await.wrap_err("DescribeAlarms failed")?;
-            for a in resp.metric_alarms.unwrap_or_default() {
-                let dims = a.dimensions.clone().unwrap_or_default();
-                let touches = dims.iter().any(|d| {
+            Ok((resp.metric_alarms.unwrap_or_default(), resp.next_token))
+        })
+        .await?;
+        let out: Vec<CwAlarm> = raw
+            .into_iter()
+            .filter(|a| {
+                a.dimensions.as_deref().unwrap_or_default().iter().any(|d| {
                     d.name.as_deref() == Some(ENV_DIMENSION) && d.value.as_deref() == Some(env_name)
-                });
-                if !touches {
-                    continue;
-                }
-                out.push(CwAlarm {
-                    name: a.alarm_name.unwrap_or_default(),
-                    state: a
-                        .state_value
-                        .map(|s| s.as_str().to_string())
-                        .unwrap_or_default(),
-                    state_reason: a.state_reason.unwrap_or_default(),
-                    metric_name: a.metric_name.unwrap_or_default(),
-                    namespace: a.namespace.unwrap_or_default(),
-                });
-            }
-            match resp.next_token {
-                Some(t) if !t.is_empty() => next_token = Some(t),
-                _ => break,
-            }
-        }
+                })
+            })
+            .map(|a| CwAlarm {
+                name: a.alarm_name.unwrap_or_default(),
+                state: a
+                    .state_value
+                    .map(|s| s.as_str().to_string())
+                    .unwrap_or_default(),
+                state_reason: a.state_reason.unwrap_or_default(),
+                metric_name: a.metric_name.unwrap_or_default(),
+                namespace: a.namespace.unwrap_or_default(),
+            })
+            .collect();
         Ok(out)
     }
 

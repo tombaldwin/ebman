@@ -27,25 +27,26 @@ impl AwsClient {
     /// Paginates internally. Returns the metadata rows; no
     /// secret *values* are fetched here — see [`AwsClient::fetch_secret_value`].
     pub async fn list_secrets(&self, name_filter: Option<&str>) -> Result<Vec<SecretSummary>> {
-        let mut out: Vec<SecretSummary> = Vec::new();
-        let mut next: Option<String> = None;
-        loop {
-            let mut req = self.secrets.list_secrets();
-            if let Some(t) = next.take() {
+        let this = self;
+        let raw = super::paginate("ListSecrets", move |token| async move {
+            let mut req = this.secrets().list_secrets();
+            if let Some(t) = token {
                 req = req.next_token(t);
             }
             let resp = req.send().await.wrap_err("ListSecrets failed")?;
-            for s in resp.secret_list.unwrap_or_default() {
-                let name = match s.name {
-                    Some(n) if !n.is_empty() => n,
-                    _ => continue,
-                };
+            Ok((resp.secret_list.unwrap_or_default(), resp.next_token))
+        })
+        .await?;
+        let mut out: Vec<SecretSummary> = raw
+            .into_iter()
+            .filter_map(|s| {
+                let name = s.name.filter(|n| !n.is_empty())?;
                 if let Some(needle) = name_filter {
                     if !name.contains(needle) {
-                        continue;
+                        return None;
                     }
                 }
-                out.push(SecretSummary {
+                Some(SecretSummary {
                     name,
                     arn: s.arn.unwrap_or_default(),
                     description: s.description.filter(|d| !d.is_empty()),
@@ -56,13 +57,9 @@ impl AwsClient {
                         .last_rotated_date
                         .and_then(|d| DateTime::from_timestamp(d.secs(), d.subsec_nanos())),
                     kms_key_id: s.kms_key_id.filter(|k| !k.is_empty()),
-                });
-            }
-            match resp.next_token {
-                Some(t) if !t.is_empty() => next = Some(t),
-                _ => break,
-            }
-        }
+                })
+            })
+            .collect();
         // Stable order — most-recently-changed first so freshly
         // rotated secrets float to the top of the picker.
         out.sort_by_key(|r| std::cmp::Reverse(r.last_changed));
@@ -76,7 +73,7 @@ impl AwsClient {
     /// line via the caller path.
     pub async fn fetch_secret_value(&self, secret_id: &str) -> Result<String> {
         let resp = self
-            .secrets
+            .secrets()
             .get_secret_value()
             .secret_id(secret_id)
             .send()

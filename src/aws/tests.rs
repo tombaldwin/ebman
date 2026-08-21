@@ -584,7 +584,7 @@ fn client_with_ssm(ssm: aws_sdk_ssm::Client) -> AwsClient {
         .region(Region::new("us-east-1"))
         .behavior_version(aws_config::BehaviorVersion::latest())
         .build();
-    let mut c = AwsClient::for_tests(
+    let c = AwsClient::for_tests(
         Client::new(&cfg),
         SqsClient::new(&cfg),
         CwClient::new(&cfg),
@@ -592,7 +592,7 @@ fn client_with_ssm(ssm: aws_sdk_ssm::Client) -> AwsClient {
         S3Client::new(&cfg),
         Ec2Client::new(&cfg),
     );
-    c.ssm = ssm;
+    let _ = c.ssm.set(ssm);
     c
 }
 
@@ -637,7 +637,7 @@ macro_rules! client_with_sub {
             .region(Region::new("us-east-1"))
             .behavior_version(aws_config::BehaviorVersion::latest())
             .build();
-        let mut c = AwsClient::for_tests(
+        let c = AwsClient::for_tests(
             Client::new(&cfg),
             SqsClient::new(&cfg),
             CwClient::new(&cfg),
@@ -645,7 +645,9 @@ macro_rules! client_with_sub {
             S3Client::new(&cfg),
             Ec2Client::new(&cfg),
         );
-        c.$field = $value;
+        // Seed the lazy cell rather than overwriting a field —
+        // `get_or_init` will then hand back the mock.
+        let _ = c.$field.set($value);
         c
     }};
 }
@@ -1214,16 +1216,6 @@ async fn log_tail_fetch_follows_next_token_without_skipping_events() {
 // need to round-trip cleanly: VPC discovery via option settings,
 // EC2 inventory listing filtered by VPC, and the comma-split
 // helper that converts EB's CSV format to a clean Vec<String>.
-
-#[test]
-fn split_csv_trims_and_drops_empties() {
-    assert_eq!(
-        split_csv("subnet-a,subnet-b, subnet-c, ,subnet-d"),
-        vec!["subnet-a", "subnet-b", "subnet-c", "subnet-d"]
-    );
-    assert!(split_csv("").is_empty());
-    assert!(split_csv(",,,").is_empty());
-}
 
 #[tokio::test]
 async fn fetch_env_vpc_context_pulls_vpc_id_subnets_and_sgs() {
@@ -2462,7 +2454,7 @@ fn client_with_iam(iam: aws_sdk_iam::Client) -> AwsClient {
         .region(Region::new("us-east-1"))
         .behavior_version(aws_config::BehaviorVersion::latest())
         .build();
-    let mut c = AwsClient::for_tests(
+    let c = AwsClient::for_tests(
         Client::new(&cfg),
         SqsClient::new(&cfg),
         CwClient::new(&cfg),
@@ -2470,7 +2462,7 @@ fn client_with_iam(iam: aws_sdk_iam::Client) -> AwsClient {
         S3Client::new(&cfg),
         Ec2Client::new(&cfg),
     );
-    c.iam = iam;
+    let _ = c.iam.set(iam);
     c
 }
 
@@ -2881,7 +2873,7 @@ async fn fetch_env_costs_flags_a_truncated_walk() {
         .region(Region::new("us-east-1"))
         .behavior_version(aws_config::BehaviorVersion::latest())
         .build();
-    let mut client = AwsClient::for_tests(
+    let client = AwsClient::for_tests(
         Client::new(&cfg),
         SqsClient::new(&cfg),
         CwClient::new(&cfg),
@@ -2889,7 +2881,7 @@ async fn fetch_env_costs_flags_a_truncated_walk() {
         S3Client::new(&cfg),
         Ec2Client::new(&cfg),
     );
-    client.cost = cost;
+    let _ = client.cost.set(cost);
 
     let costs = client
         .fetch_env_costs()
@@ -3021,4 +3013,134 @@ async fn run_shell_command_polls_instances_concurrently_without_mixing_results()
         "each instance must carry its own output"
     );
     assert!(results.iter().all(|r| r.status == "Success"));
+}
+
+// ── on-demand clients are built on demand ──────────────────────────
+
+#[test]
+fn on_demand_clients_are_not_built_until_used() {
+    // `list_environments_in_region` constructs a whole `AwsClient` per
+    // region on every refresh tick, so anything built eagerly is paid
+    // for per region per tick. These six are only reachable from an
+    // explicit operator action, so they must stay unbuilt until one
+    // happens.
+    let cfg = aws_config::SdkConfig::builder()
+        .region(Region::new("us-east-1"))
+        .behavior_version(aws_config::BehaviorVersion::latest())
+        .build();
+    let client = AwsClient::for_tests(
+        Client::new(&cfg),
+        SqsClient::new(&cfg),
+        CwClient::new(&cfg),
+        CwLogsClient::new(&cfg),
+        S3Client::new(&cfg),
+        Ec2Client::new(&cfg),
+    );
+    assert!(client.cost.get().is_none(), "Cost Explorer built eagerly");
+    assert!(client.iam.get().is_none(), "IAM built eagerly");
+    assert!(client.org.get().is_none(), "Organizations built eagerly");
+    assert!(client.secrets.get().is_none(), "Secrets built eagerly");
+    assert!(client.acm.get().is_none(), "ACM built eagerly");
+    assert!(client.ssm.get().is_none(), "SSM built eagerly");
+
+    // Touching one builds exactly that one.
+    let _ = client.iam();
+    assert!(client.iam.get().is_some(), "accessor must build it");
+    assert!(
+        client.cost.get().is_none(),
+        "and must not build its neighbours"
+    );
+}
+
+#[test]
+fn seeding_a_lazy_client_wins_over_get_or_init() {
+    // How the mock-AWS tests inject: seed the cell, and `get_or_init`
+    // hands back the mock rather than constructing a real client.
+    let cfg = aws_config::SdkConfig::builder()
+        .region(Region::new("us-east-1"))
+        .behavior_version(aws_config::BehaviorVersion::latest())
+        .build();
+    let client = AwsClient::for_tests(
+        Client::new(&cfg),
+        SqsClient::new(&cfg),
+        CwClient::new(&cfg),
+        CwLogsClient::new(&cfg),
+        S3Client::new(&cfg),
+        Ec2Client::new(&cfg),
+    );
+    let seeded = aws_sdk_iam::Client::new(&cfg);
+    assert!(client.iam.set(seeded).is_ok());
+    // Accessor returns the seeded instance, not a fresh one.
+    let got = client.iam() as *const _;
+    let stored = client.iam.get().unwrap() as *const _;
+    assert_eq!(got, stored);
+}
+
+// ── the shared paginator ───────────────────────────────────────────
+
+#[tokio::test]
+async fn paginate_walks_every_page_in_order() {
+    let pages = [
+        (vec![1, 2], Some("A".to_string())),
+        (vec![3], Some("B".to_string())),
+        (vec![4, 5], None),
+    ];
+    let seen = std::cell::RefCell::new(Vec::new());
+    let idx = std::cell::Cell::new(0usize);
+    let items: Vec<i32> = super::paginate("Test", |token| {
+        seen.borrow_mut().push(token.clone());
+        let i = idx.get();
+        idx.set(i + 1);
+        let page = pages[i].clone();
+        async move { Ok(page) }
+    })
+    .await
+    .unwrap();
+    assert_eq!(items, vec![1, 2, 3, 4, 5]);
+    assert_eq!(
+        *seen.borrow(),
+        vec![None, Some("A".to_string()), Some("B".to_string())],
+        "each page must be asked for with the previous page's token"
+    );
+}
+
+#[tokio::test]
+async fn paginate_treats_an_empty_token_as_the_end() {
+    // AWS sometimes returns `Some("")` rather than `None`. Following it
+    // would re-request page one forever.
+    let calls = std::cell::Cell::new(0usize);
+    let items: Vec<i32> = super::paginate("Test", |_token| {
+        calls.set(calls.get() + 1);
+        async move { Ok((vec![7], Some(String::new()))) }
+    })
+    .await
+    .unwrap();
+    assert_eq!(items, vec![7]);
+    assert_eq!(calls.get(), 1, "an empty token means done");
+}
+
+#[tokio::test]
+async fn paginate_stops_at_the_runaway_cap() {
+    // The reason this helper exists: eleven hand-rolled loops followed
+    // tokens unbounded, so an endpoint that always returns one would
+    // spin the task forever with the operation stuck "loading".
+    let calls = std::cell::Cell::new(0usize);
+    let items: Vec<i32> = super::paginate("Test", |_token| {
+        calls.set(calls.get() + 1);
+        async move { Ok((vec![0], Some("ALWAYS".to_string()))) }
+    })
+    .await
+    .unwrap();
+    assert_eq!(calls.get(), 100, "must stop at the cap, not spin");
+    assert_eq!(items.len(), 100, "and return what it did collect");
+}
+
+#[tokio::test]
+async fn paginate_propagates_a_page_error() {
+    let result: Result<Vec<i32>, _> = super::paginate("Test", |_token| async move {
+        Err(color_eyre::eyre::eyre!("AccessDenied"))
+    })
+    .await;
+    let err = result.expect_err("a failing page must surface");
+    assert!(format!("{err}").contains("AccessDenied"));
 }

@@ -31,25 +31,21 @@ impl AwsClient {
         // shared VPC's subnet list, and a picker that silently shows a
         // subset is worse than a slow one — the operator concludes the
         // subnet doesn't exist.
-        let mut raw = Vec::new();
-        let mut next_token: Option<String> = None;
-        loop {
-            let mut req = self.ec2.describe_subnets().filters(
+        let (this, vpc) = (self, vpc_id);
+        let raw = super::paginate("DescribeSubnets", move |token| async move {
+            let mut req = this.ec2.describe_subnets().filters(
                 Filter::builder()
                     .name("vpc-id")
-                    .values(vpc_id.to_string())
+                    .values(vpc.to_string())
                     .build(),
             );
-            if let Some(t) = next_token.take() {
+            if let Some(t) = token {
                 req = req.next_token(t);
             }
             let resp = req.send().await.wrap_err("DescribeSubnets failed")?;
-            raw.extend(resp.subnets.unwrap_or_default());
-            match resp.next_token {
-                Some(t) if !t.is_empty() => next_token = Some(t),
-                _ => break,
-            }
-        }
+            Ok((resp.subnets.unwrap_or_default(), resp.next_token))
+        })
+        .await?;
         let mut out: Vec<SubnetInfo> = raw
             .into_iter()
             .map(|s| {
@@ -84,25 +80,21 @@ impl AwsClient {
         // Paginate: DescribeSecurityGroups defaults to 1000 per page and
         // a shared VPC can exceed that. Same reasoning as the subnet
         // listing above — a truncated picker reads as "not there".
-        let mut raw = Vec::new();
-        let mut next_token: Option<String> = None;
-        loop {
-            let mut req = self.ec2.describe_security_groups().filters(
+        let (this, vpc) = (self, vpc_id);
+        let raw = super::paginate("DescribeSecurityGroups", move |token| async move {
+            let mut req = this.ec2.describe_security_groups().filters(
                 Filter::builder()
                     .name("vpc-id")
-                    .values(vpc_id.to_string())
+                    .values(vpc.to_string())
                     .build(),
             );
-            if let Some(t) = next_token.take() {
+            if let Some(t) = token {
                 req = req.next_token(t);
             }
             let resp = req.send().await.wrap_err("DescribeSecurityGroups failed")?;
-            raw.extend(resp.security_groups.unwrap_or_default());
-            match resp.next_token {
-                Some(t) if !t.is_empty() => next_token = Some(t),
-                _ => break,
-            }
-        }
+            Ok((resp.security_groups.unwrap_or_default(), resp.next_token))
+        })
+        .await?;
         let mut out: Vec<SecurityGroupInfo> = raw
             .into_iter()
             .map(|g| SecurityGroupInfo {

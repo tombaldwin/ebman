@@ -291,12 +291,7 @@ impl Server {
             ),
         };
         let rule_filter: Vec<String> = arg_str(args, "rules")
-            .map(|v| {
-                v.split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect()
-            })
+            .map(|v| crate::util::split_csv(&v))
             .unwrap_or_default();
         // Hermetic in demo mode: no config-driven disables.
         let disabled = match self.backend {

@@ -51,7 +51,7 @@ impl AwsClient {
         // under it avoids surprising server-side rejections).
         let ssm_timeout = wall_clock_secs.min(600) as i32;
         let mut send = self
-            .ssm
+            .ssm()
             .send_command()
             .document_name("AWS-RunShellScript")
             .timeout_seconds(ssm_timeout)
@@ -95,7 +95,7 @@ impl AwsClient {
                 let command_id = command_id.clone();
                 async move {
                     let resp = self
-                        .ssm
+                        .ssm()
                         .get_command_invocation()
                         .command_id(&command_id)
                         .instance_id(&id)

@@ -214,11 +214,7 @@ pub fn parse(text: &str) -> Config {
                 }
             }
             "extra_regions" => {
-                cfg.extra_regions = value
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
+                cfg.extra_regions = crate::util::split_csv(&value);
             }
             "redact_default" => cfg.redact_default = parse_bool(&value),
             "grouped_default" => cfg.grouped_default = parse_bool(&value),
@@ -230,18 +226,10 @@ pub fn parse(text: &str) -> Config {
                 }
             }
             "lint.disable" => {
-                cfg.lint_disable = value
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
+                cfg.lint_disable = crate::util::split_csv(&value);
             }
             "lint.fix_disable" => {
-                cfg.lint_fix_disable = value
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
+                cfg.lint_fix_disable = crate::util::split_csv(&value);
             }
             "explain.enabled" => {
                 if let Some(b) = parse_bool(&value) {
@@ -264,11 +252,7 @@ pub fn parse(text: &str) -> Config {
                 cfg.notify_webhook = if value.is_empty() { None } else { Some(value) };
             }
             "required_tags" => {
-                cfg.required_tags = value
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
+                cfg.required_tags = crate::util::split_csv(&value);
             }
             "profile_themes" => {
                 // Format: `prod:high-contrast,staging:dark,default:light`.

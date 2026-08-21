@@ -471,11 +471,7 @@ fn parse_lint_args(args: &[String]) -> Result<LintArgs, String> {
                     "--rules",
                     "a comma-separated rule id list",
                 )?;
-                rule_filter = v
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
+                rule_filter = crate::util::split_csv(&v);
                 if rule_filter.is_empty() {
                     return Err(format!("ebman lint: --rules got '{v}' — no rule ids in it"));
                 }
@@ -539,11 +535,7 @@ fn parse_lint_args(args: &[String]) -> Result<LintArgs, String> {
 
     let regions: Vec<Option<String>> = match regions_csv {
         Some(csv) => {
-            let parsed: Vec<String> = csv
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
+            let parsed: Vec<String> = crate::util::split_csv(&csv);
             if parsed.is_empty() {
                 return Err("ebman lint: --regions list is empty".into());
             }

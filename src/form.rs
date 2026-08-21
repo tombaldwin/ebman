@@ -269,18 +269,10 @@ impl Form {
                     cfg.notify_bell = matches!(value, "true");
                 }
                 "required_tags" => {
-                    cfg.required_tags = value
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect();
+                    cfg.required_tags = crate::util::split_csv(value);
                 }
                 "extra_regions" => {
-                    cfg.extra_regions = value
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect();
+                    cfg.extra_regions = crate::util::split_csv(value);
                 }
                 _ => {}
             }
@@ -417,11 +409,7 @@ impl FormField {
 /// Pure: parse a comma-separated multi-select value into a vec of
 /// trimmed, non-empty option strings. Round-trip with `join(",")`.
 pub fn parse_multi_value(value: &str) -> Vec<String> {
-    value
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
+    crate::util::split_csv(value)
 }
 
 /// Pure: toggle `opt` in a comma-separated multi-select value. Returns

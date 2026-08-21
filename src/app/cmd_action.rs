@@ -261,11 +261,7 @@ impl App {
                 return;
             }
         };
-        let regions: Vec<String> = regions_csv
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
+        let regions: Vec<String> = crate::util::split_csv(&regions_csv);
         if regions.is_empty() {
             self.error_message = Some("rollout: --regions list is empty".into());
             return;

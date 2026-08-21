@@ -2448,12 +2448,7 @@ async fn load_listener_certs(
     let initial: Vec<String> = listeners
         .iter()
         .find(|(p, opt, _)| p == port && opt == "SSLCertificateArns")
-        .map(|(_, _, v)| {
-            v.split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        })
+        .map(|(_, _, v)| crate::util::split_csv(v))
         .unwrap_or_default();
     let mut options = Vec::with_capacity(certs.len());
     let mut annotations = Vec::with_capacity(certs.len());

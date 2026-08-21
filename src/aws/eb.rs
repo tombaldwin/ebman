@@ -920,15 +920,15 @@ impl AwsClient {
                         ctx.vpc_id = Some(value);
                     }
                     ("aws:ec2:vpc", "Subnets") if !value.is_empty() => {
-                        ctx.subnets = split_csv(&value);
+                        ctx.subnets = crate::util::split_csv(&value);
                     }
                     ("aws:ec2:vpc", "ELBSubnets") if !value.is_empty() => {
-                        ctx.elb_subnets = split_csv(&value);
+                        ctx.elb_subnets = crate::util::split_csv(&value);
                     }
                     ("aws:autoscaling:launchconfiguration", "SecurityGroups")
                         if !value.is_empty() =>
                     {
-                        ctx.security_groups = split_csv(&value);
+                        ctx.security_groups = crate::util::split_csv(&value);
                     }
                     _ => {}
                 }
@@ -1367,33 +1367,34 @@ impl AwsClient {
                     .build(),
             );
         }
-        let mut next_token: Option<String> = None;
-        let mut out: Vec<CustomPlatform> = Vec::new();
-        loop {
-            let mut req = self.client.list_platform_versions();
-            for f in &filters {
+        let (this, fs) = (self, &filters);
+        let raw = super::paginate("ListPlatformVersions", move |token| async move {
+            let mut req = this.client.list_platform_versions();
+            for f in fs {
                 req = req.filters(f.clone());
             }
-            if let Some(t) = next_token.clone() {
+            if let Some(t) = token {
                 req = req.next_token(t);
             }
             let resp = req.send().await.wrap_err("ListPlatformVersions failed")?;
-            for p in resp.platform_summary_list.unwrap_or_default() {
-                out.push(CustomPlatform {
-                    arn: p.platform_arn.unwrap_or_default(),
-                    branch: p.platform_branch_name.unwrap_or_default(),
-                    version: p.platform_version.unwrap_or_default(),
-                    status: p
-                        .platform_status
-                        .map(|s| s.as_str().to_string())
-                        .unwrap_or_default(),
-                    lifecycle: p.platform_lifecycle_state.unwrap_or_default(),
-                });
-            }
-            match resp.next_token {
-                Some(t) if !t.is_empty() => next_token = Some(t),
-                _ => break,
-            }
+            Ok((
+                resp.platform_summary_list.unwrap_or_default(),
+                resp.next_token,
+            ))
+        })
+        .await?;
+        let mut out: Vec<CustomPlatform> = Vec::new();
+        for p in raw {
+            out.push(CustomPlatform {
+                arn: p.platform_arn.unwrap_or_default(),
+                branch: p.platform_branch_name.unwrap_or_default(),
+                version: p.platform_version.unwrap_or_default(),
+                status: p
+                    .platform_status
+                    .map(|s| s.as_str().to_string())
+                    .unwrap_or_default(),
+                lifecycle: p.platform_lifecycle_state.unwrap_or_default(),
+            });
         }
         // Sort newest-first by semver-ish version.
         out.sort_by(|a, b| compare_versions(&b.version, &a.version));
@@ -1526,30 +1527,31 @@ impl AwsClient {
             .operator("=")
             .values("self")
             .build();
-        let mut next_token: Option<String> = None;
-        let mut out: Vec<CustomPlatform> = Vec::new();
-        loop {
-            let mut req = self.client.list_platform_versions().filters(filter.clone());
-            if let Some(t) = next_token.clone() {
+        let (this, f) = (self, &filter);
+        let raw = super::paginate("ListPlatformVersions", move |token| async move {
+            let mut req = this.client.list_platform_versions().filters(f.clone());
+            if let Some(t) = token {
                 req = req.next_token(t);
             }
             let resp = req.send().await.wrap_err("ListPlatformVersions failed")?;
-            for p in resp.platform_summary_list.unwrap_or_default() {
-                out.push(CustomPlatform {
-                    arn: p.platform_arn.unwrap_or_default(),
-                    branch: p.platform_branch_name.unwrap_or_default(),
-                    version: p.platform_version.unwrap_or_default(),
-                    status: p
-                        .platform_status
-                        .map(|s| s.as_str().to_string())
-                        .unwrap_or_default(),
-                    lifecycle: p.platform_lifecycle_state.unwrap_or_default(),
-                });
-            }
-            match resp.next_token {
-                Some(t) if !t.is_empty() => next_token = Some(t),
-                _ => break,
-            }
+            Ok((
+                resp.platform_summary_list.unwrap_or_default(),
+                resp.next_token,
+            ))
+        })
+        .await?;
+        let mut out: Vec<CustomPlatform> = Vec::new();
+        for p in raw {
+            out.push(CustomPlatform {
+                arn: p.platform_arn.unwrap_or_default(),
+                branch: p.platform_branch_name.unwrap_or_default(),
+                version: p.platform_version.unwrap_or_default(),
+                status: p
+                    .platform_status
+                    .map(|s| s.as_str().to_string())
+                    .unwrap_or_default(),
+                lifecycle: p.platform_lifecycle_state.unwrap_or_default(),
+            });
         }
         Ok(out)
     }
@@ -1607,33 +1609,34 @@ impl AwsClient {
         &self,
         application_name: &str,
     ) -> Result<Vec<AppVersion>> {
-        let mut out: Vec<AppVersion> = Vec::new();
-        let mut next_token: Option<String> = None;
-        loop {
-            let mut req = self
+        let (this, app) = (self, application_name);
+        let raw = super::paginate("DescribeApplicationVersions", move |token| async move {
+            let mut req = this
                 .client
                 .describe_application_versions()
-                .application_name(application_name);
-            if let Some(t) = next_token.take() {
+                .application_name(app);
+            if let Some(t) = token {
                 req = req.next_token(t);
             }
             let resp = req
                 .send()
                 .await
                 .wrap_err("DescribeApplicationVersions failed")?;
-            for v in resp.application_versions.unwrap_or_default() {
-                out.push(AppVersion {
-                    label: v.version_label.unwrap_or_default(),
-                    description: v.description.unwrap_or_default(),
-                    created: v
-                        .date_created
-                        .and_then(|d| DateTime::from_timestamp(d.secs(), d.subsec_nanos())),
-                });
-            }
-            match resp.next_token {
-                Some(t) if !t.is_empty() => next_token = Some(t),
-                _ => break,
-            }
+            Ok((
+                resp.application_versions.unwrap_or_default(),
+                resp.next_token,
+            ))
+        })
+        .await?;
+        let mut out: Vec<AppVersion> = Vec::new();
+        for v in raw {
+            out.push(AppVersion {
+                label: v.version_label.unwrap_or_default(),
+                description: v.description.unwrap_or_default(),
+                created: v
+                    .date_created
+                    .and_then(|d| DateTime::from_timestamp(d.secs(), d.subsec_nanos())),
+            });
         }
         out.sort_by_key(|v| std::cmp::Reverse(v.created));
         Ok(out)
@@ -1892,23 +1895,17 @@ impl AwsClient {
     }
 
     pub async fn list_environments(&self) -> Result<Vec<Environment>> {
-        let mut all = Vec::new();
-        let mut next_token: Option<String> = None;
-        loop {
-            let mut req = self.client.describe_environments().include_deleted(false);
-            if let Some(t) = next_token.take() {
+        let this = self;
+        let raw = super::paginate("DescribeEnvironments", move |token| async move {
+            let mut req = this.client.describe_environments().include_deleted(false);
+            if let Some(t) = token {
                 req = req.next_token(t);
             }
             let resp = req.send().await.wrap_err("DescribeEnvironments failed")?;
-            if let Some(envs) = resp.environments {
-                all.extend(envs.into_iter().map(map_env));
-            }
-            match resp.next_token {
-                Some(t) if !t.is_empty() => next_token = Some(t),
-                _ => break,
-            }
-        }
-        Ok(all)
+            Ok((resp.environments.unwrap_or_default(), resp.next_token))
+        })
+        .await?;
+        Ok(raw.into_iter().map(map_env).collect())
     }
 
     /// Flat list of every solution-stack name available in this region

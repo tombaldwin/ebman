@@ -591,11 +591,7 @@ async fn run_rollout(args: &[String]) -> Result<()> {
         );
         std::process::exit(2);
     };
-    let mut regions: Vec<String> = regions_csv
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
+    let mut regions: Vec<String> = crate::util::split_csv(&regions_csv);
     // Dedupe preserving order — `r1,r1` used to dispatch twice, the
     // second racing the first ("already updating") and marking the
     // rollout partial for a self-inflicted reason.

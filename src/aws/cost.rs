@@ -105,7 +105,7 @@ impl AwsClient {
         const MAX_COST_PAGES: usize = 20;
         for _page in 0..MAX_COST_PAGES {
             let mut req = self
-                .cost
+                .cost()
                 .get_cost_and_usage()
                 .time_period(time_period.clone())
                 .granularity(aws_sdk_costexplorer::types::Granularity::Monthly)

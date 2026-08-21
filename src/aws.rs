@@ -115,7 +115,7 @@ pub struct AwsClient {
     /// Organizations client. The service is global, but this is built
     /// from the operator's own `SdkConfig` — the SDK's endpoint rules
     /// route it, nothing here pins a region.
-    org: OrgClient,
+    org: std::sync::OnceLock<OrgClient>,
     /// Cost Explorer client, pinned to `us-east-1` by
     /// [`cost_explorer_client`] — Cost Explorer is global and only
     /// endpoints there.
@@ -124,19 +124,19 @@ pub struct AwsClient {
     /// comment here claimed: operators who never run `:cost on` still
     /// pay for it, and it is the most expensive client to construct.
     /// Making it genuinely lazy is tracked in `BACKLOG.md`.
-    cost: CostExplorerClient,
+    cost: std::sync::OnceLock<CostExplorerClient>,
     /// IAM client used by `:explain` to call
     /// `iam:SimulatePrincipalPolicy`. IAM is global, and
     /// [`iam_client`] pins it to `us-east-1`.
-    iam: IamClient,
+    iam: std::sync::OnceLock<IamClient>,
     /// Secrets Manager client. Region-scoped (unlike IAM and Cost
     /// Explorer, which this crate pins to `us-east-1`) — operators
     /// read secrets from the same region as the env they're
     /// configuring.
-    secrets: SecretsClient,
+    secrets: std::sync::OnceLock<SecretsClient>,
     /// ACM client. Region-scoped — `:listener-edit` lists the region's
     /// certificates for the SSL-cert picker.
-    acm: AcmClient,
+    acm: std::sync::OnceLock<AcmClient>,
     /// SSM client. Region-scoped — `:ssm-run` sends a shell command to
     /// the env's instances and aggregates the per-instance results.
     ///
@@ -144,12 +144,55 @@ pub struct AwsClient {
     /// post-construction live in `aws::tests`, a descendant of this
     /// module, so they reach it without `pub(crate)`. (It was
     /// `pub(crate)` on the assumption they needed it; they don't.)
-    ssm: SsmClient,
+    ssm: std::sync::OnceLock<SsmClient>,
     config: SdkConfig,
     pub context: AwsContext,
 }
 
 impl AwsClient {
+    // ---- lazily-built clients ----------------------------------------
+    //
+    // Six of the twelve sub-clients are only reachable from an explicit
+    // operator action — `:cost on`, `:explain`, the accounts overlay,
+    // `:secrets`, `:listener-edit`, `:ssm-run`. Building them eagerly
+    // cost every session, and `list_environments_in_region` constructs a
+    // whole `AwsClient` per region on every refresh tick, so a
+    // multi-region fan-out paid for all six per region per tick.
+    //
+    // Measured on this machine: each SDK client costs ~0.6 ms to
+    // construct, near-identically across services, so all twelve came to
+    // ~7.3 ms. Deferring these six roughly halves that. (An earlier note
+    // in this file claimed Cost Explorer alone dominated; it doesn't —
+    // the cost is uniform, there are just twelve of them.)
+    //
+    // `OnceLock` rather than a plain `Option`: `AwsClient` is shared as
+    // `Arc<AwsClient>` across spawned tasks, so it has to stay `Sync`,
+    // and the accessors take `&self`.
+
+    fn cost(&self) -> &CostExplorerClient {
+        self.cost.get_or_init(|| cost_explorer_client(&self.config))
+    }
+
+    fn iam(&self) -> &IamClient {
+        self.iam.get_or_init(|| iam_client(&self.config))
+    }
+
+    fn org(&self) -> &OrgClient {
+        self.org.get_or_init(|| OrgClient::new(&self.config))
+    }
+
+    fn secrets(&self) -> &SecretsClient {
+        self.secrets
+            .get_or_init(|| SecretsClient::new(&self.config))
+    }
+
+    fn acm(&self) -> &AcmClient {
+        self.acm.get_or_init(|| AcmClient::new(&self.config))
+    }
+
+    fn ssm(&self) -> &SsmClient {
+        self.ssm.get_or_init(|| SsmClient::new(&self.config))
+    }
     /// Build the SDK client without making any network calls.
     pub async fn with(profile: Option<String>, region: Option<String>) -> Result<Self> {
         let mut builder = aws_config::defaults(aws_config::BehaviorVersion::latest());
@@ -187,10 +230,6 @@ impl AwsClient {
         let cw_logs = CwLogsClient::new(&config);
         let s3 = S3Client::new(&config);
         let ec2 = Ec2Client::new(&config);
-        let org = OrgClient::new(&config);
-        let cost = cost_explorer_client(&config);
-        let iam = iam_client(&config);
-        let secrets = SecretsClient::new(&config);
 
         Ok(Self {
             client,
@@ -199,12 +238,12 @@ impl AwsClient {
             cw_logs,
             s3,
             ec2,
-            org,
-            cost,
-            iam,
-            secrets,
-            acm: AcmClient::new(&config),
-            ssm: SsmClient::new(&config),
+            org: std::sync::OnceLock::new(),
+            cost: std::sync::OnceLock::new(),
+            iam: std::sync::OnceLock::new(),
+            secrets: std::sync::OnceLock::new(),
+            acm: std::sync::OnceLock::new(),
+            ssm: std::sync::OnceLock::new(),
             config,
             context: AwsContext {
                 region,
@@ -277,10 +316,6 @@ impl AwsClient {
             .region()
             .map(|r| r.as_ref().to_string())
             .unwrap_or_else(|| "unknown".to_string());
-
-        let cost = cost_explorer_client(&config);
-        let iam = iam_client(&config);
-        let secrets = SecretsClient::new(&config);
         Ok(Self {
             client: Client::new(&config),
             sqs: SqsClient::new(&config),
@@ -288,12 +323,12 @@ impl AwsClient {
             cw_logs: CwLogsClient::new(&config),
             s3: S3Client::new(&config),
             ec2: Ec2Client::new(&config),
-            org: OrgClient::new(&config),
-            cost,
-            iam,
-            secrets,
-            acm: AcmClient::new(&config),
-            ssm: SsmClient::new(&config),
+            org: std::sync::OnceLock::new(),
+            cost: std::sync::OnceLock::new(),
+            iam: std::sync::OnceLock::new(),
+            secrets: std::sync::OnceLock::new(),
+            acm: std::sync::OnceLock::new(),
+            ssm: std::sync::OnceLock::new(),
             config,
             context: AwsContext {
                 region,
@@ -359,10 +394,6 @@ impl AwsClient {
         // Org + Cost Explorer clients use default config because no
         // existing test exercises them; mocked variants can use a
         // dedicated helper if added.
-        let org = OrgClient::new(&config);
-        let cost = cost_explorer_client(&config);
-        let iam = iam_client(&config);
-        let secrets = SecretsClient::new(&config);
         Self {
             client,
             sqs,
@@ -370,12 +401,12 @@ impl AwsClient {
             cw_logs,
             s3,
             ec2,
-            org,
-            cost,
-            iam,
-            secrets,
-            acm: AcmClient::new(&config),
-            ssm: SsmClient::new(&config),
+            org: std::sync::OnceLock::new(),
+            cost: std::sync::OnceLock::new(),
+            iam: std::sync::OnceLock::new(),
+            secrets: std::sync::OnceLock::new(),
+            acm: std::sync::OnceLock::new(),
+            ssm: std::sync::OnceLock::new(),
             config,
             context: AwsContext {
                 region: "us-east-1".to_string(),
@@ -442,6 +473,49 @@ impl AwsClient {
     }
 }
 
+/// Drive a token-paginated AWS listing to completion.
+///
+/// Eleven listings across `aws/` hand-rolled the same loop — build the
+/// request, attach the token if there is one, send, extend, look for the
+/// next token — and none of them bounded it. A server that keeps handing
+/// back a token (a bug, a proxy, a hostile endpoint) would spin that task
+/// forever, leaving the operation permanently "loading" with no error.
+///
+/// `page` is called once per page with the token from the previous one
+/// (`None` first) and returns that page's items plus the next token.
+/// Capture `&self` and any borrowed arguments into the async block by
+/// copy — shared references are `Copy`, so the returned future borrows
+/// from them rather than from the closure, which is what lets a single
+/// `Fut` type work here without async closures.
+pub(crate) async fn paginate<T, F, Fut>(what: &'static str, mut page: F) -> Result<Vec<T>>
+where
+    F: FnMut(Option<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<(Vec<T>, Option<String>)>>,
+{
+    /// Far above any real result set — this is a runaway guard, not a
+    /// limit. Listings that legitimately need bounding (the log and
+    /// event tails, Cost Explorer) carry their own, tighter cap.
+    const MAX_PAGES: usize = 100;
+    let mut items = Vec::new();
+    let mut token: Option<String> = None;
+    for _ in 0..MAX_PAGES {
+        let (batch, next) = page(token.take()).await?;
+        items.extend(batch);
+        match next {
+            Some(t) if !t.is_empty() => token = Some(t),
+            _ => return Ok(items),
+        }
+    }
+    tracing::warn!(
+        target: "ebman::aws",
+        operation = what,
+        pages = MAX_PAGES,
+        collected = items.len(),
+        "pagination cap reached — result may be incomplete"
+    );
+    Ok(items)
+}
+
 /// The region to endpoint a *global* AWS service in, given the region the
 /// operator is working in.
 ///
@@ -492,16 +566,6 @@ fn sts_expiry_to_system_time(secs: i64) -> Result<std::time::SystemTime> {
                  the session as never-expiring"
             )
         })
-}
-
-/// Pure: split a comma-separated EB option-setting value into a clean
-/// `Vec<String>`. Trims each entry and drops empties.
-fn split_csv(value: &str) -> Vec<String> {
-    value
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
 }
 
 /// The two actionable rewrites of [`rewrite_credential_error`],
