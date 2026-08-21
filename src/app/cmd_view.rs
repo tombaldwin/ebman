@@ -32,7 +32,7 @@ impl App {
                 let listing: Vec<String> = KNOWN
                     .iter()
                     .map(|c| {
-                        if self.hidden_cols.contains(*c) {
+                        if self.view.hidden_cols.contains(*c) {
                             format!("{c} (hidden)")
                         } else {
                             c.to_string()
@@ -49,7 +49,7 @@ impl App {
                     } else if !KNOWN.contains(&upper.as_str()) {
                         self.error_message = Some(format!("unknown column '{name}'"));
                     } else {
-                        self.hidden_cols.insert(upper.clone());
+                        self.view.hidden_cols.insert(upper.clone());
                         self.persist_state();
                         self.status_message = Some(format!("hid column {upper}"));
                     }
@@ -59,7 +59,7 @@ impl App {
             Some("show") => match rest.get(1) {
                 Some(name) => {
                     let upper = name.to_uppercase();
-                    if self.hidden_cols.remove(&upper) {
+                    if self.view.hidden_cols.remove(&upper) {
                         self.persist_state();
                         self.status_message = Some(format!("showed column {upper}"));
                     } else {
@@ -69,7 +69,7 @@ impl App {
                 None => self.error_message = Some("usage: :cols show <name>".into()),
             },
             Some("reset") => {
-                self.hidden_cols.clear();
+                self.view.hidden_cols.clear();
                 self.persist_state();
                 self.status_message = Some("all columns visible".into());
             }
@@ -146,15 +146,17 @@ impl App {
     pub(crate) fn cmd_filter_load(&mut self, rest: &[&str]) {
         match rest.first() {
             None => {
-                self.filter.clear();
+                self.view.filter_mut().clear();
                 self.rebuild_view();
                 self.status_message = Some("filter cleared".into());
             }
             Some(name) if self.saved_views.contains_key(*name) => {
                 if let Some(snap) = self.saved_views.get(*name).cloned() {
                     super::apply_view(self, &snap);
-                    self.status_message =
-                        Some(format!("filter: {name} → \"{}\"", self.filter.text()));
+                    self.status_message = Some(format!(
+                        "filter: {name} → \"{}\"",
+                        self.view.filter().text()
+                    ));
                 }
             }
             Some(name) => {
@@ -174,14 +176,14 @@ impl App {
     pub(crate) fn cmd_save_filter(&mut self, rest: &[&str]) {
         match rest.first() {
             Some(name) => {
-                if self.filter.is_empty() {
+                if self.view.filter().is_empty() {
                     self.error_message = Some("nothing to save — set a filter with / first".into());
                 } else {
-                    let encoded = super::encode_filter_only_view(self.filter.text());
+                    let encoded = super::encode_filter_only_view(self.view.filter().text());
                     self.saved_views.insert((*name).to_string(), encoded);
                     self.status_message = Some(format!(
                         "saved filter '{name}' = \"{}\"",
-                        self.filter.text()
+                        self.view.filter().text()
                     ));
                     self.persist_state();
                 }

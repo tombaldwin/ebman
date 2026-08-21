@@ -118,6 +118,10 @@ impl App {
                         );
                     } else {
                         self.aliases.insert(name.to_string(), label.clone());
+                        // Aliases are matched by the filter, so the visible
+                        // rows may have just changed.
+                        self.view.invalidate();
+                        self.rebuild_view();
                         self.status_message = Some(format!("alias '{name}' → \"{label}\""));
                         self.persist_state();
                     }
@@ -138,6 +142,8 @@ impl App {
             "alias-drop" | "alias-rm" => match rest.first() {
                 Some(name) => {
                     if self.aliases.remove(*name).is_some() {
+                        self.view.invalidate();
+                        self.rebuild_view();
                         self.status_message = Some(format!("alias '{name}' removed"));
                         self.persist_state();
                     } else {

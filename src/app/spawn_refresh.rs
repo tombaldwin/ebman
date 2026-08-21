@@ -455,12 +455,14 @@ impl App {
                 self.aws = Arc::new(*client);
                 self.maybe_apply_profile_theme();
                 self.environments.clear();
+                self.view.invalidate();
                 self.event_panel.events.clear();
                 self.event_panel.scroll = 0;
                 self.history.clear();
                 // Solution-stack catalogue is region-specific; drop it so the
                 // new context's `spawn_refresh` rebuilds it.
                 self.latest_stacks.clear();
+                self.view.invalidate();
                 // Overlays show data from the previous context (describe dump,
                 // alarms list, …); close them so the user doesn't act on stale info.
                 self.current_overlay = None;
@@ -699,6 +701,7 @@ impl App {
                 self.alerts = new_alerts;
 
                 self.environments = envs;
+                self.view.invalidate();
                 self.resort_envs();
 
                 // Watchdog decision pass — single source of truth for

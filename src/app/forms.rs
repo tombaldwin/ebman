@@ -588,8 +588,8 @@ impl App {
         let mut snapshot = Config {
             refresh_interval: self.refresh_interval,
             extra_regions: self.extra_regions.clone(),
-            redact_default: Some(self.redact),
-            grouped_default: Some(self.grouped),
+            redact_default: Some(self.view.redact),
+            grouped_default: Some(self.view.grouped()),
             // Snapshot the BASE theme name, not the currently-applied one;
             // otherwise a profile-overridden theme would persist as the
             // new default and erase the operator's per-profile mapping.

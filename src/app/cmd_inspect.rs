@@ -48,7 +48,7 @@ impl App {
     /// error, not a "dump every secret"). Audit-logs the read so
     /// the operator's CloudTrail-equivalent has a record.
     ///
-    /// Output respects `app.redact` — when redact mode is on, the
+    /// Output respects `app.view.redact` — when redact mode is on, the
     /// value is hashed instead of shown. The operator can flip
     /// `:redact off` first if they need to see it.
     pub(crate) fn cmd_secret_view(&mut self, rest: &[&str]) {
@@ -60,7 +60,7 @@ impl App {
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
-        let redact = self.redact;
+        let redact = self.view.redact;
         crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
@@ -614,7 +614,7 @@ impl App {
                 self.current_overlay = Some(Overlay::Diff(diff_envs(
                     &left,
                     &right,
-                    self.redact,
+                    self.view.redact,
                     &ignore_keys,
                 )));
             }
@@ -652,7 +652,7 @@ impl App {
                         self.current_overlay = Some(Overlay::Diff(diff_envs(
                             &left,
                             &right,
-                            self.redact,
+                            self.view.redact,
                             &ignore_keys,
                         )));
                     }

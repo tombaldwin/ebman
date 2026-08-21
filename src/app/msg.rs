@@ -342,6 +342,7 @@ impl App {
         match result {
             Ok(stacks) => {
                 self.latest_stacks = crate::aws::latest_stack_versions(&stacks);
+                self.view.invalidate();
                 // Refresh the derived stale-platform cache now that the
                 // catalogue is available — the env list itself is unchanged.
                 self.rebuild_view();

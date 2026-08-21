@@ -6,15 +6,15 @@ use super::*;
 
 pub(crate) fn encode_view(app: &App) -> String {
     let mut parts: Vec<String> = Vec::new();
-    if !app.filter.is_empty() {
-        parts.push(format!("filter={}", app.filter.text()));
+    if !app.view.filter().is_empty() {
+        parts.push(format!("filter={}", app.view.filter().text()));
     }
     parts.push(format!(
         "sort={}:{}",
-        app.sort_key.label(),
-        if app.sort_desc { "desc" } else { "asc" }
+        app.view.sort_key.label(),
+        if app.view.sort_desc { "desc" } else { "asc" }
     ));
-    parts.push(format!("grouped={}", app.grouped));
+    parts.push(format!("grouped={}", app.view.grouped()));
     let scope = match app.scope {
         Scope::Envs => "envs",
         Scope::Apps => "apps",
@@ -28,7 +28,7 @@ pub(crate) fn encode_view(app: &App) -> String {
 /// the view doesn't perturb those — `apply_view` only touches a
 /// field when its `KEY=` part is present in the snapshot (sort /
 /// grouped / scope are no-op when absent). `filter=` is the
-/// exception: `apply_view` always sets `app.filter` (snapshot
+/// exception: `apply_view` always sets `app.view.filter()` (snapshot
 /// semantics — restore the filter that was active at save time,
 /// including empty). A filter-only view from this encoder always
 /// has `filter=` present, so the asymmetry doesn't bite here; the
@@ -72,10 +72,10 @@ pub(crate) fn apply_view(app: &mut App, snap: &str) {
             "filter" => new_filter = v.trim().to_string(),
             "sort" => {
                 let (key, desc) = parse_sort(Some(v.trim()));
-                app.sort_key = key;
-                app.sort_desc = desc;
+                app.view.sort_key = key;
+                app.view.sort_desc = desc;
             }
-            "grouped" => app.grouped = v.trim().eq_ignore_ascii_case("true"),
+            "grouped" => app.view.set_grouped(v.trim().eq_ignore_ascii_case("true")),
             "scope" => {
                 app.scope = match v.trim() {
                     "apps" => Scope::Apps,
@@ -85,6 +85,6 @@ pub(crate) fn apply_view(app: &mut App, snap: &str) {
             _ => {}
         }
     }
-    app.filter = new_filter.into();
+    app.view.set_filter(new_filter);
     app.resort_envs(); // also rebuilds the view.
 }

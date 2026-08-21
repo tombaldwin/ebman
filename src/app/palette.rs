@@ -177,7 +177,7 @@ impl App {
                 self.mode = Mode::Command;
             }
             PaletteAction::JumpEnv(name) => {
-                if let Some(pos) = self.cached_display.iter().position(|r| match r {
+                if let Some(pos) = self.view.display().iter().position(|r| match r {
                     DisplayRow::Env(i) => self.environments[*i].name == name,
                     DisplayRow::Separator => false,
                 }) {
@@ -196,7 +196,7 @@ impl App {
             return;
         }
         let needle = self.quickjump_input.text().to_lowercase();
-        for (pos, row) in self.cached_display.iter().enumerate() {
+        for (pos, row) in self.view.display().iter().enumerate() {
             if let DisplayRow::Env(i) = row {
                 let e = &self.environments[*i];
                 let alias = self
@@ -215,7 +215,8 @@ impl App {
     pub(crate) fn quick_jump(&mut self, n: usize) {
         // 1..=9 maps to position n-1 in the visible env rows.
         let Some(target_env) = self
-            .cached_display
+            .view
+            .display()
             .iter()
             .filter(|r| matches!(r, DisplayRow::Env(_)))
             .nth(n.saturating_sub(1))
@@ -223,7 +224,8 @@ impl App {
             return;
         };
         if let Some(pos) = self
-            .cached_display
+            .view
+            .display()
             .iter()
             .position(|r| std::ptr::eq(r, target_env))
         {

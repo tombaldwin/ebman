@@ -126,13 +126,13 @@ impl App {
         };
         match SortKey::parse(key) {
             Some(k) => {
-                self.sort_key = k;
-                self.sort_desc = matches!(rest.get(1), Some(&"desc"));
+                self.view.sort_key = k;
+                self.view.sort_desc = matches!(rest.get(1), Some(&"desc"));
                 self.resort_envs();
                 self.status_message = Some(format!(
                     "sort: {} ({})",
-                    self.sort_key.label(),
-                    if self.sort_desc { "desc" } else { "asc" }
+                    self.view.sort_key.label(),
+                    if self.view.sort_desc { "desc" } else { "asc" }
                 ));
             }
             None => self.error_message = Some(format!("unknown sort key: {key}")),
@@ -140,9 +140,10 @@ impl App {
     }
 
     pub(crate) fn cmd_group(&mut self, rest: &[&str]) {
-        self.grouped = parse_toggle(rest.first().copied(), self.grouped);
+        self.view
+            .set_grouped(parse_toggle(rest.first().copied(), self.view.grouped()));
         self.rebuild_view();
-        self.status_message = Some(if self.grouped {
+        self.status_message = Some(if self.view.grouped() {
             "grouped by application".into()
         } else {
             "ungrouped".into()
@@ -150,8 +151,8 @@ impl App {
     }
 
     pub(crate) fn cmd_redact(&mut self, rest: &[&str]) {
-        self.redact = parse_toggle(rest.first().copied(), self.redact);
-        self.status_message = Some(if self.redact {
+        self.view.redact = parse_toggle(rest.first().copied(), self.view.redact);
+        self.status_message = Some(if self.view.redact {
             "redact mode ON".into()
         } else {
             "redact mode off".into()

@@ -723,17 +723,17 @@ impl App {
                         self.manual_refresh();
                     }
                     KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        self.redact = !self.redact;
-                        self.status_message = Some(if self.redact {
+                        self.view.redact = !self.view.redact;
+                        self.status_message = Some(if self.view.redact {
                             "redact mode ON".into()
                         } else {
                             "redact mode off".into()
                         });
                     }
                     KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        self.grouped = !self.grouped;
+                        self.view.set_grouped(!self.view.grouped());
                         self.rebuild_view();
-                        self.status_message = Some(if self.grouped {
+                        self.status_message = Some(if self.view.grouped() {
                             "grouped by application".into()
                         } else {
                             "ungrouped".into()
@@ -750,8 +750,8 @@ impl App {
                         }
                     }
                     KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        self.view_mode = self.view_mode.next();
-                        self.status_message = Some(format!("view: {}", self.view_mode.label()));
+                        self.view.mode = self.view.mode.next();
+                        self.status_message = Some(format!("view: {}", self.view.mode.label()));
                     }
                     KeyCode::Up
                         if key.modifiers.contains(KeyModifiers::CONTROL)
@@ -766,21 +766,21 @@ impl App {
                         self.event_panel.height = self.event_panel.height.saturating_sub(1).max(4);
                     }
                     KeyCode::Char('s') => {
-                        self.sort_key = self.sort_key.next();
+                        self.view.sort_key = self.view.sort_key.next();
                         self.resort_envs();
                         self.status_message = Some(format!(
                             "sort: {} ({})",
-                            self.sort_key.label(),
-                            if self.sort_desc { "desc" } else { "asc" }
+                            self.view.sort_key.label(),
+                            if self.view.sort_desc { "desc" } else { "asc" }
                         ));
                     }
                     KeyCode::Char('S') => {
-                        self.sort_desc = !self.sort_desc;
+                        self.view.sort_desc = !self.view.sort_desc;
                         self.resort_envs();
                         self.status_message = Some(format!(
                             "sort: {} ({})",
-                            self.sort_key.label(),
-                            if self.sort_desc { "desc" } else { "asc" }
+                            self.view.sort_key.label(),
+                            if self.view.sort_desc { "desc" } else { "asc" }
                         ));
                     }
                     KeyCode::Char('T') => {
@@ -955,7 +955,7 @@ impl App {
                         // opening filter mode while a filter is already
                         // active leaves the old filtered subset on
                         // screen (stale) until the first keystroke.
-                        self.filter.clear();
+                        self.view.filter_mut().clear();
                         self.mode = Mode::Filter;
                         self.rebuild_view();
                     }
@@ -1034,11 +1034,11 @@ impl App {
                     esc(self.context.account_id.as_deref().unwrap_or("")),
                     env_count,
                     esc(&selected),
-                    esc(self.filter.text()),
+                    esc(self.view.filter().text()),
                     load,
-                    self.sort_key.label(),
-                    self.grouped,
-                    self.redact,
+                    self.view.sort_key.label(),
+                    self.view.grouped(),
+                    self.view.redact,
                     self.focus,
                 );
                 let _ = reply.send(json);

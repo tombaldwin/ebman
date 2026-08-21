@@ -2921,14 +2921,14 @@ async fn cycle_saved_view_wraps_forward_through_saved_views() {
         super::encode_filter_only_view("tag:env=staging"),
     );
     // Start on "dev".
-    app.filter = "tag:env=dev".into();
+    app.view.set_filter("tag:env=dev");
     app.cycle_saved_view(1);
-    assert_eq!(app.filter.text(), "tag:env=prod");
+    assert_eq!(app.view.filter().text(), "tag:env=prod");
     app.cycle_saved_view(1);
-    assert_eq!(app.filter.text(), "tag:env=staging");
+    assert_eq!(app.view.filter().text(), "tag:env=staging");
     // Wraps back to first.
     app.cycle_saved_view(1);
-    assert_eq!(app.filter.text(), "tag:env=dev");
+    assert_eq!(app.view.filter().text(), "tag:env=dev");
 }
 
 #[tokio::test]
@@ -2941,22 +2941,22 @@ async fn cycle_saved_view_wraps_backward_and_handles_no_active() {
         "staging".into(),
         super::encode_filter_only_view("tag:env=staging"),
     );
-    app.filter = "tag:env=dev".into();
+    app.view.set_filter("tag:env=dev");
     app.cycle_saved_view(-1);
-    assert_eq!(app.filter.text(), "tag:env=staging");
+    assert_eq!(app.view.filter().text(), "tag:env=staging");
     // No active filter (freeform or empty) → forward goes to first,
     // backward goes to last.
-    app.filter = "some-random-text".into();
+    app.view.set_filter("some-random-text");
     app.cycle_saved_view(1);
     assert_eq!(
-        app.filter.text(),
+        app.view.filter().text(),
         "tag:env=dev",
         "forward-with-no-active → first"
     );
-    app.filter = "some-random-text".into();
+    app.view.set_filter("some-random-text");
     app.cycle_saved_view(-1);
     assert_eq!(
-        app.filter.text(),
+        app.view.filter().text(),
         "tag:env=staging",
         "backward-with-no-active → last"
     );
@@ -2968,9 +2968,9 @@ async fn cycle_saved_view_noop_with_empty_views() {
     // mutate state. The keybind guard already short-circuits, but
     // the method itself is the actual safety net.
     let mut app = test_app();
-    app.filter = "keep-me".into();
+    app.view.set_filter("keep-me");
     app.cycle_saved_view(1);
-    assert_eq!(app.filter.text(), "keep-me");
+    assert_eq!(app.view.filter().text(), "keep-me");
 }
 
 #[tokio::test]
@@ -2988,12 +2988,12 @@ async fn cycle_saved_view_with_full_view_applies_sort_and_group_too() {
         "by-app".into(),
         "filter=tag:env=prod;sort=app:asc;grouped=true;scope=envs".into(),
     );
-    app.filter = "tag:env=dev".into();
-    app.grouped = false;
+    app.view.set_filter("tag:env=dev");
+    app.view.set_grouped(false);
     app.cycle_saved_view(1); // dev → by-app
-    assert_eq!(app.filter.text(), "tag:env=prod");
+    assert_eq!(app.view.filter().text(), "tag:env=prod");
     assert!(
-        app.grouped,
+        app.view.grouped(),
         "full view must apply its grouped=true alongside the filter"
     );
 }
@@ -3711,7 +3711,7 @@ async fn cmd_undo_uses_display_row_index_not_envs_vec_index() {
     // Filter to only the "prod-" envs — display_rows now has
     // 2 entries (env-vec indices 0 and 2), so the envs-vec
     // index 2 (prod-web) maps to display-row index 1.
-    app.filter = "prod-".into();
+    app.view.set_filter("prod-");
     app.rebuild_view();
     // Captured undo targets prod-web (envs-vec idx 2).
     app.undo_history.push_back(super::UndoEntry {
@@ -3755,7 +3755,7 @@ async fn cmd_undo_refuses_with_hint_when_env_filtered_out() {
         mk_env("prod-api", "shop", "Web", "Green"),
         mk_env("staging-api", "shop", "Web", "Green"),
     ];
-    app.filter = "staging-".into();
+    app.view.set_filter("staging-");
     app.rebuild_view();
     app.undo_history.push_back(super::UndoEntry {
         env_name: "prod-api".into(),
@@ -5708,11 +5708,11 @@ async fn slash_enters_filter_mode_and_text_lands() {
     for c in "prod".chars() {
         press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
     }
-    assert_eq!(app.filter.text(), "prod");
+    assert_eq!(app.view.filter().text(), "prod");
     // Esc clears the filter and returns to Normal.
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
     assert_eq!(app.mode, Mode::Normal);
-    assert!(app.filter.is_empty());
+    assert!(app.view.filter().is_empty());
 }
 
 #[tokio::test]
@@ -5889,11 +5889,11 @@ async fn cmd_batch_action_refuses_pinned_env_and_keeps_selection() {
 #[tokio::test]
 async fn ctrl_x_toggles_redact() {
     let mut app = test_app();
-    assert!(!app.redact);
+    assert!(!app.view.redact);
     press(&mut app, KeyCode::Char('x'), KeyModifiers::CONTROL);
-    assert!(app.redact);
+    assert!(app.view.redact);
     press(&mut app, KeyCode::Char('x'), KeyModifiers::CONTROL);
-    assert!(!app.redact);
+    assert!(!app.view.redact);
 }
 
 #[tokio::test]
@@ -5935,16 +5935,16 @@ async fn filter_mode_text_input_and_backspace_round_trips() {
     for c in "prod".chars() {
         press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
     }
-    assert_eq!(app.filter.text(), "prod");
+    assert_eq!(app.view.filter().text(), "prod");
     // Backspace removes the last char.
     press(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
-    assert_eq!(app.filter.text(), "pro");
+    assert_eq!(app.view.filter().text(), "pro");
     // Enter commits the filter and returns to Normal — the filter
     // string SURVIVES (it's how `:filter` works as a stateful
     // search).
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(app.mode, Mode::Normal);
-    assert_eq!(app.filter.text(), "pro");
+    assert_eq!(app.view.filter().text(), "pro");
 }
 
 #[tokio::test]
@@ -5958,10 +5958,10 @@ async fn filter_input_is_cursor_aware_via_shared_textinput() {
     for c in "prod".chars() {
         press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
     }
-    assert_eq!(app.filter.text(), "prod");
+    assert_eq!(app.view.filter().text(), "prod");
     press(&mut app, KeyCode::Left, KeyModifiers::NONE);
     press(&mut app, KeyCode::Char('X'), KeyModifiers::NONE);
-    assert_eq!(app.filter.text(), "proXd");
+    assert_eq!(app.view.filter().text(), "proXd");
 }
 
 #[tokio::test]
@@ -6135,10 +6135,10 @@ async fn render_redact_masks_the_cname() {
     app.environments = vec![mk_env("svc", "uflexi", "Web", "Green")];
     app.rebuild_view();
     app.table_state.select(None);
-    app.redact = false;
+    app.view.redact = false;
     let shown = render(&mut app, 160, 30);
     assert!(shown.contains("svc.example.com"), "cname visible when off");
-    app.redact = true;
+    app.view.redact = true;
     let hidden = render(&mut app, 160, 30);
     assert!(
         !hidden.contains("svc.example.com"),
@@ -6156,11 +6156,11 @@ async fn esc_in_filter_mode_clears_the_filter() {
     for c in "x".chars() {
         press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
     }
-    assert_eq!(app.filter.text(), "x");
+    assert_eq!(app.view.filter().text(), "x");
     // Esc abandons the filter — both the text AND the mode revert.
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
     assert_eq!(app.mode, Mode::Normal);
-    assert!(app.filter.is_empty());
+    assert!(app.view.filter().is_empty());
 }
 
 #[tokio::test]
@@ -6184,14 +6184,14 @@ async fn slash_with_active_filter_rebuilds_to_full_fleet() {
     }
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(app.mode, Mode::Normal);
-    assert_eq!(app.cached_filtered.len(), 1, "filter should hide one env");
+    assert_eq!(app.view.filtered().len(), 1, "filter should hide one env");
     // `/` re-opens filter mode: filter empties and the view must
     // rebuild to show all envs right away.
     press(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
     assert_eq!(app.mode, Mode::Filter);
-    assert!(app.filter.is_empty());
+    assert!(app.view.filter().is_empty());
     assert_eq!(
-        app.cached_filtered.len(),
+        app.view.filtered().len(),
         2,
         "full fleet should be visible the moment filter mode opens"
     );
@@ -6763,4 +6763,55 @@ async fn event_tail_error_row_renders_red() {
         !row_has_fg(&buf, info_row, theme.health_red),
         "INFO row carries no red"
     );
+}
+
+// --- view-cache invariant ---------------------------------------------
+
+#[tokio::test]
+async fn alias_command_rebuilds_the_view() {
+    // `rebuild_view` matches the filter against an env's alias as well as
+    // its name, so adding an alias while a filter is active can change
+    // which rows should be visible. Before ViewState made the cache
+    // private, `:alias` mutated the map and left the table stale.
+    let mut app = test_app();
+    app.environments = vec![
+        fake_env_with("api-prod", "Ready", "Green", None),
+        fake_env_with("web-prod", "Ready", "Green", None),
+    ];
+    app.view.set_filter("checkout");
+    app.rebuild_view();
+    assert!(
+        app.view.display().is_empty(),
+        "nothing matches 'checkout' yet"
+    );
+
+    app.execute_command("alias api-prod checkout-service");
+    assert!(!app.view.is_stale(), ":alias must rebuild the view");
+    assert_eq!(
+        app.view.filtered(),
+        &[0],
+        "the aliased env should now match the active filter"
+    );
+
+    app.execute_command("alias-drop api-prod");
+    assert!(!app.view.is_stale(), ":alias-drop must rebuild the view");
+    assert!(app.view.display().is_empty());
+}
+
+#[tokio::test]
+async fn resort_envs_leaves_the_view_cache_fresh() {
+    // Sorting renumbers every index the view cache holds, so
+    // `resort_envs` invalidates and rebuilds in one step — callers do
+    // not have to remember to follow it with `rebuild_view()`.
+    let mut app = test_app();
+    app.environments = vec![
+        fake_env_with("b", "Ready", "Green", None),
+        fake_env_with("a", "Ready", "Green", None),
+    ];
+    app.rebuild_view();
+    app.view.sort_key = SortKey::Name;
+    app.resort_envs();
+    assert!(!app.view.is_stale());
+    assert_eq!(app.environments[0].name, "a");
+    assert_eq!(app.view.filtered(), &[0, 1]);
 }
