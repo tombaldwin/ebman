@@ -4463,8 +4463,14 @@ impl App {
                 let last_ws = origin
                     .rfind(char::is_whitespace)
                     .expect("origin has whitespace in this arm");
-                let head = origin[..=last_ws].to_string();
-                let frag = origin[last_ws + 1..].to_string();
+                // `rfind` gives the *first byte* of the last whitespace
+                // char; step over the whole char so the split lands on a
+                // char boundary (a multi-byte space like U+00A0 NBSP
+                // otherwise slices mid-char and panics).
+                let frag_start =
+                    last_ws + origin[last_ws..].chars().next().map_or(1, char::len_utf8);
+                let head = origin[..frag_start].to_string();
+                let frag = origin[frag_start..].to_string();
                 (head, self.env_name_candidates(&frag), String::new())
             }
             Some(i) => (
@@ -17051,6 +17057,19 @@ mod tests {
             .status_message
             .as_deref()
             .is_some_and(|m| m.contains("no environment matches")));
+    }
+
+    #[tokio::test]
+    async fn tab_env_arg_survives_multibyte_whitespace() {
+        // Regression: rfind gives the first byte of the last whitespace
+        // char; a multi-byte space (U+00A0 NBSP) used to slice mid-char
+        // and panic the TUI. It must complete cleanly, not crash.
+        let mut app = test_app();
+        app.environments = vec![mk_env("prod-api", "shop", "Web", "Green")];
+        app.mode = Mode::Command;
+        app.command_input = "diff prod\u{00A0}".into();
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.command_input.text(), "diff prod\u{00A0}prod-api");
     }
 
     #[tokio::test]

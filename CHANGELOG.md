@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.29.0] — 2026-08-21 — completion & secure agent setup
+
 ### Added
 
 - **Shell completion** — `ebman completions <bash|zsh|fish>` prints a completion script (subcommands, global flags, per-subcommand flags/verbs), generated from a single CLI-surface source of truth. Static by design: no live env names in the shell (that'd need an AWS round-trip per Tab).
