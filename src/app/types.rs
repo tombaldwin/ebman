@@ -250,11 +250,29 @@ pub(crate) fn next_event_watermark_ms(events: &[crate::aws::Event], prev_ms: i64
         .max(prev_ms)
 }
 
+/// Severity stamped on the synthetic row `:event-tail` inserts when a
+/// poll couldn't fetch the whole window. Not an EB severity — it exists
+/// so the filter and the renderer can recognise the row.
+pub(crate) const EVENT_TAIL_GAP_SEVERITY: &str = "GAP";
+
+/// Is this the synthetic "events were dropped" row rather than a real
+/// EB event?
+pub(crate) fn is_event_tail_gap(ev: &crate::aws::Event) -> bool {
+    ev.severity == EVENT_TAIL_GAP_SEVERITY && ev.at.is_none()
+}
+
 /// Filter predicate for the `:event-tail` overlay — the regex runs
 /// over env name, application, severity and message so `/prod`,
 /// `/error` and free text all narrow the stream.
+///
+/// The gap marker is exempt. It carries no env or application, so any
+/// filter narrowing to a specific environment would drop it — and a
+/// filtered tail that silently omits "some events are missing" is
+/// exactly the unbroken-looking chronology the marker exists to
+/// prevent.
 pub(crate) fn event_tail_matches(pattern: &regex::Regex, ev: &crate::aws::Event) -> bool {
-    pattern.is_match(&ev.env)
+    is_event_tail_gap(ev)
+        || pattern.is_match(&ev.env)
         || pattern.is_match(&ev.application)
         || pattern.is_match(&ev.severity)
         || pattern.is_match(&ev.message)

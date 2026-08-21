@@ -179,7 +179,7 @@ const EVENT_TAIL_MAX_PAGES: usize = 5;
 /// Both platform listings — every custom platform, and the
 /// upgrade-compatible ones for a given env — return the same shape and
 /// mapped it identically.
-fn map_platform(p: aws_sdk_elasticbeanstalk::types::PlatformSummary) -> CustomPlatform {
+pub(super) fn map_platform(p: aws_sdk_elasticbeanstalk::types::PlatformSummary) -> CustomPlatform {
     CustomPlatform {
         arn: p.platform_arn.unwrap_or_default(),
         branch: p.platform_branch_name.unwrap_or_default(),
@@ -536,16 +536,15 @@ impl AwsClient {
                     // account — so only the completeness-seeking caller
                     // is worth a word.
                     //
-                    // Worth being straight about what this does and
-                    // doesn't buy: it is a log line, not a signal to the
-                    // caller. `:event-tail` still advances its watermark
-                    // past the newest event received, and because
-                    // DescribeEvents returns newest-first, the events
-                    // behind the token are OLDER — so no later poll's
-                    // `start_time` can reach them. Surfacing that gap in
-                    // the overlay is tracked in BACKLOG.md; at 1500
-                    // events per 5-second poll it is a long way from
-                    // any real fleet.
+                    // The caller is told too: `list_events_since`
+                    // returns this flag and `:event-tail` renders a gap
+                    // marker from it. That matters because the tail
+                    // advances its watermark past the newest event
+                    // received, and DescribeEvents returns
+                    // newest-first, so the events behind the token are
+                    // OLDER — no later poll's `start_time` can reach
+                    // them, and without the marker the tail would look
+                    // like unbroken chronology with a hole in it.
                     truncated = true;
                     if max_pages > 1 {
                         tracing::warn!(
@@ -1563,7 +1562,9 @@ impl AwsClient {
             ))
         })
         .await?
-        .items();
+        // The MCP `deploy` write gates on `.any(|v| v.label == label)`
+        // and otherwise tells the caller the version doesn't exist.
+        .complete("DescribeApplicationVersions")?;
         let mut out: Vec<AppVersion> = Vec::new();
         for v in raw {
             out.push(AppVersion {
@@ -1793,14 +1794,20 @@ impl AwsClient {
             if let Some(t) = token {
                 req = req.next_token(t);
             }
-            let resp = req.send().await?;
+            let resp = req
+                .send()
+                .await
+                .wrap_err("DescribeInstancesHealth failed")?;
             Ok((
                 resp.instance_health_list.unwrap_or_default(),
                 resp.next_token,
             ))
         })
         .await?
-        .items();
+        // This function's own comment says a truncated list means
+        // `:ssm-run` silently misses instances while reporting N/N
+        // success — so it must not hand one back.
+        .complete("DescribeInstancesHealth")?;
         let instances = raw
             .into_iter()
             .map(|i| Instance {
@@ -1854,7 +1861,11 @@ impl AwsClient {
             Ok((resp.environments.unwrap_or_default(), resp.next_token))
         })
         .await?
-        .items();
+        // Callers `.find()` by name and turn a miss into "env not found
+        // in region X" — `spawn_rollout_preflight` halts a rollout on
+        // it, the MCP tools refuse a write on it. A short list there is
+        // a wrong answer, not a shorter one.
+        .complete("DescribeEnvironments")?;
         Ok(raw.into_iter().map(map_env).collect())
     }
 

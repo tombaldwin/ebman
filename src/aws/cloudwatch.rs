@@ -76,14 +76,20 @@ impl AwsClient {
         dimension_names: &[String],
     ) -> Result<Vec<CwAlarm>> {
         let this = self;
-        let raw = super::paginate("DescribeAlarms", move |token| async move {
-            let mut req = this.cw.describe_alarms();
-            if let Some(t) = token {
-                req = req.next_token(t);
-            }
-            let resp = req.send().await.wrap_err("DescribeAlarms failed")?;
-            Ok((resp.metric_alarms.unwrap_or_default(), resp.next_token))
-        })
+        let raw = super::paginate_capped(
+            "DescribeAlarms",
+            super::SCAN_PAGES,
+            move |token| async move {
+                // 100 is the API maximum and the request set none, so
+                // the scan ceiling was a fraction of what it should be.
+                let mut req = this.cw.describe_alarms().max_records(100);
+                if let Some(t) = token {
+                    req = req.next_token(t);
+                }
+                let resp = req.send().await.wrap_err("DescribeAlarms failed")?;
+                Ok((resp.metric_alarms.unwrap_or_default(), resp.next_token))
+            },
+        )
         .await?
         .complete("DescribeAlarms")?;
         let out: Vec<CwAlarm> = raw

@@ -339,6 +339,15 @@ pub struct App {
     /// stale numbers.
     pub costs: std::collections::HashMap<String, f64>,
     pub costs_fetched_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Whether what's in `costs` came from a walk that finished.
+    ///
+    /// Without this, "do we already have costs?" was the only test
+    /// available, and it made a partial map permanent: the first
+    /// truncated walk populated `costs`, and every later truncated walk
+    /// then saw a non-empty map and kept it — so the partial data from
+    /// the first failure survived the whole session while each retry
+    /// paid for twenty metered Cost Explorer pages and discarded them.
+    pub costs_complete: bool,
     /// `family_key → newest available version` from `ListAvailableSolutionStacks`,
     /// built by `spawn_solution_stacks`. Drives the envs-table stale-platform
     /// tint. Empty until the first fetch lands; cleared on context switch so a
@@ -1217,6 +1226,7 @@ impl App {
             env_instance_counts: std::collections::HashMap::new(),
             cost_enabled: persisted.cost_enabled.unwrap_or(false),
             costs: std::collections::HashMap::new(),
+            costs_complete: true,
             costs_fetched_at: None,
             latest_stacks: std::collections::HashMap::new(),
             frozen: false,
@@ -1479,6 +1489,7 @@ impl App {
             env_instance_counts: std::collections::HashMap::new(),
             cost_enabled: false,
             costs: std::collections::HashMap::new(),
+            costs_complete: true,
             costs_fetched_at: None,
             latest_stacks: std::collections::HashMap::new(),
             frozen: false,

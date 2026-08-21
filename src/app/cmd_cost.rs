@@ -59,6 +59,9 @@ impl App {
             let stale = cache.is_stale(now);
             self.costs = cache.costs;
             self.costs_fetched_at = cache.fetched_at;
+            // Only complete walks are ever persisted, so anything the
+            // cache hands back is complete by construction.
+            self.costs_complete = true;
             if stale {
                 // Cache stale (>24h) or absent. Fetch in background;
                 // operator sees stale numbers (or "—") immediately
