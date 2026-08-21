@@ -236,6 +236,7 @@ fn view_mode_labels() {
 #[test]
 fn console_url_includes_region_app_env() {
     let url = console_url("us-east-1", "myapp", "myenv");
+    let url = url.expect("commercial partition has a console host");
     assert!(url.contains("us-east-1.console.aws.amazon.com"));
     assert!(url.contains("region=us-east-1"));
     assert!(url.contains("applicationName=myapp"));
@@ -245,7 +246,7 @@ fn console_url_includes_region_app_env() {
 #[test]
 fn console_url_encodes_special_chars() {
     // Reserved or non-alnum chars get %XX'd so the URL stays valid.
-    let url = console_url("us-east-1", "my app", "env/with?slash");
+    let url = console_url("us-east-1", "my app", "env/with?slash").expect("commercial");
     assert!(url.contains("applicationName=my%20app"));
     assert!(url.contains("environmentName=env%2Fwith%3Fslash"));
 }
@@ -7094,4 +7095,56 @@ async fn a_complete_cost_refresh_replaces_the_map() {
     assert!(app.costs.contains_key("api-prod"));
     assert!(!app.costs.contains_key("stale"), "a complete walk replaces");
     assert!(app.costs_fetched_at.is_some());
+}
+
+// --- partition-aware :explain and console links -----------------------
+
+#[test]
+fn parse_access_denied_rewrites_a_govcloud_session_arn() {
+    // The rewrite matched the literal `arn:aws:sts::`, so in GovCloud,
+    // China or an ISO partition the branch never fired and the raw
+    // session ARN went to `iam:SimulatePrincipalPolicy`, which rejects
+    // it — session credentials aren't a policy attachment point. The
+    // endpoint fix got `:explain` to the right IAM endpoint; this is
+    // what it failed on once it got there.
+    let msg = "User: arn:aws-us-gov:sts::123456789012:assumed-role/EbAdmin/session \
+               is not authorized to perform: elasticbeanstalk:UpdateEnvironment";
+    let (principal, action) = super::parse_access_denied(msg).expect("parsed");
+    assert_eq!(principal, "arn:aws-us-gov:iam::123456789012:role/EbAdmin");
+    assert_eq!(action, "elasticbeanstalk:UpdateEnvironment");
+}
+
+#[test]
+fn parse_access_denied_handles_every_partition() {
+    for partition in ["aws", "aws-us-gov", "aws-cn", "aws-iso", "aws-iso-b"] {
+        let msg = format!(
+            "User: arn:{partition}:sts::1:assumed-role/R/S is not authorized to perform: s3:GetObject"
+        );
+        let (principal, _) = super::parse_access_denied(&msg).expect("parsed");
+        assert_eq!(
+            principal,
+            format!("arn:{partition}:iam::1:role/R"),
+            "the rebuilt role ARN must stay in its own partition"
+        );
+    }
+}
+
+#[test]
+fn parse_access_denied_leaves_a_plain_user_arn_alone() {
+    let msg = "User: arn:aws:iam::1:user/alice is not authorized to perform: s3:GetObject";
+    let (principal, _) = super::parse_access_denied(msg).expect("parsed");
+    assert_eq!(principal, "arn:aws:iam::1:user/alice");
+}
+
+#[test]
+fn console_url_follows_the_partition() {
+    let gov = console_url("us-gov-west-1", "myapp", "myenv").expect("govcloud has a console");
+    assert!(
+        gov.contains("us-gov-west-1.console.amazonaws-us-gov.com"),
+        "got {gov}"
+    );
+    let cn = console_url("cn-north-1", "myapp", "myenv").expect("china has a console");
+    assert!(cn.contains("cn-north-1.console.amazonaws.cn"), "got {cn}");
+    // No guessed hostname for the ISO partitions.
+    assert!(console_url("us-iso-east-1", "myapp", "myenv").is_none());
 }

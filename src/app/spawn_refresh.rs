@@ -71,9 +71,10 @@ impl App {
             body: format!("fetching alarms for {env_name}…"),
         });
         let name_for_msg = env_name.clone();
+        let dims = self.cfg.alarm_dimensions.clone();
         self.spawn_aws(
             "list_alarms_for_env",
-            move |aws| async move { aws.list_alarms_for_env(&env_name).await },
+            move |aws| async move { aws.list_alarms_for_env(&env_name, &dims).await },
             move |gen, result| AppMsg::Alarms {
                 gen,
                 env_name: name_for_msg,
@@ -451,6 +452,12 @@ impl App {
         match result {
             Ok(client) => {
                 self.generation = self.generation.wrapping_add(1);
+                // The operator just switched context, which is also
+                // when they may have re-run `aws sso login` or edited
+                // `~/.aws/config`. Drop the cached profile+region
+                // clients so the next multi-region fan-out rebuilds
+                // against whatever is on disk now.
+                crate::aws::clear_client_cache();
                 self.context = client.context.clone();
                 self.aws = Arc::new(*client);
                 self.maybe_apply_profile_theme();

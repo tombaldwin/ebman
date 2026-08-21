@@ -380,3 +380,168 @@ mod compare_versions_tests {
         assert_eq!(versions, vec!["1.0.1", "1.0.0", "1.0.0-rc2", "1.0.0-rc1"]);
     }
 }
+
+// ── AWS partitions ─────────────────────────────────────────────────
+//
+// Partition knowledge was scattered: `aws.rs` mapped region prefixes to
+// global-service endpoints, `report_bug.rs` listed ARN prefixes to
+// scrub, `parse_access_denied` string-matched `arn:aws:sts::` and so
+// silently failed everywhere else, and three console URLs hardcoded the
+// commercial host. One table now, so adding a partition is one edit and
+// the pieces can't disagree.
+
+/// One AWS partition: how its regions are named, how its ARNs are
+/// prefixed, where its global services endpoint, and where its console
+/// lives (if we can name it).
+pub struct Partition {
+    /// The `arn:PARTITION:...` segment.
+    pub arn: &'static str,
+    /// Region-name prefixes belonging to this partition. Empty for the
+    /// commercial partition, which is the fallback.
+    prefixes: &'static [&'static str],
+    /// Where global services (IAM, Cost Explorer) endpoint. They have
+    /// one endpoint per partition, not per region.
+    pub global_region: &'static str,
+    /// Console hostname template, `{region}` substituted. `None` where
+    /// we can't name it — the ISO partitions have consoles, but on
+    /// networks whose hostnames aren't ours to guess, and a link that
+    /// definitely doesn't resolve is worse than an honest refusal.
+    pub console_host: Option<&'static str>,
+}
+
+/// Longest region prefixes first: `us-isob-` and `us-isof-` both start
+/// with `us-iso`. The commercial partition is last and matches nothing,
+/// so it acts as the fallback.
+pub const PARTITIONS: &[Partition] = &[
+    Partition {
+        arn: "aws-us-gov",
+        prefixes: &["us-gov-"],
+        global_region: "us-gov-west-1",
+        console_host: Some("{region}.console.amazonaws-us-gov.com"),
+    },
+    Partition {
+        arn: "aws-cn",
+        prefixes: &["cn-"],
+        global_region: "cn-north-1",
+        console_host: Some("{region}.console.amazonaws.cn"),
+    },
+    Partition {
+        arn: "aws-iso-b",
+        prefixes: &["us-isob-"],
+        global_region: "us-isob-east-1",
+        console_host: None,
+    },
+    Partition {
+        arn: "aws-iso-f",
+        prefixes: &["us-isof-"],
+        global_region: "us-isof-south-1",
+        console_host: None,
+    },
+    Partition {
+        arn: "aws-iso-e",
+        prefixes: &["eu-isoe-"],
+        global_region: "eu-isoe-west-1",
+        console_host: None,
+    },
+    Partition {
+        arn: "aws-iso",
+        prefixes: &["us-iso-"],
+        global_region: "us-iso-east-1",
+        console_host: None,
+    },
+    Partition {
+        arn: "aws",
+        prefixes: &[],
+        global_region: "us-east-1",
+        console_host: Some("{region}.console.aws.amazon.com"),
+    },
+];
+
+/// The partition a region belongs to. Unknown regions fall back to the
+/// commercial partition, which is both the common case and the least
+/// surprising guess.
+pub fn partition_for_region(region: &str) -> &'static Partition {
+    PARTITIONS
+        .iter()
+        .find(|p| p.prefixes.iter().any(|pre| region.starts_with(pre)))
+        .unwrap_or_else(|| PARTITIONS.last().expect("commercial partition present"))
+}
+
+/// The partition segment of an ARN — `aws` from `arn:aws:iam::…`.
+pub fn arn_partition(arn: &str) -> Option<&str> {
+    let rest = arn.strip_prefix("arn:")?;
+    let seg = rest.split(':').next()?;
+    (!seg.is_empty()).then_some(seg)
+}
+
+/// Every `arn:PARTITION:` prefix, for scrubbing ARNs out of text.
+pub fn arn_prefixes() -> impl Iterator<Item = String> {
+    PARTITIONS.iter().map(|p| format!("arn:{}:", p.arn))
+}
+
+/// The AWS console URL for a region, or `None` when the partition's
+/// console host isn't one we can name.
+pub fn console_base_url(region: &str) -> Option<String> {
+    let host = partition_for_region(region).console_host?;
+    Some(format!("https://{}", host.replace("{region}", region)))
+}
+
+#[cfg(test)]
+mod partition_tests {
+    use super::*;
+
+    #[test]
+    fn regions_map_to_their_partition() {
+        assert_eq!(partition_for_region("eu-west-2").arn, "aws");
+        assert_eq!(partition_for_region("us-gov-east-1").arn, "aws-us-gov");
+        assert_eq!(partition_for_region("cn-northwest-1").arn, "aws-cn");
+        // The `us-iso*` prefixes overlap; the longest must win.
+        assert_eq!(partition_for_region("us-iso-east-1").arn, "aws-iso");
+        assert_eq!(partition_for_region("us-isob-east-1").arn, "aws-iso-b");
+        assert_eq!(partition_for_region("us-isof-south-1").arn, "aws-iso-f");
+        assert_eq!(partition_for_region("eu-isoe-west-1").arn, "aws-iso-e");
+        // Unknown regions fall back to commercial rather than failing.
+        assert_eq!(partition_for_region("mars-central-1").arn, "aws");
+        assert_eq!(partition_for_region("").arn, "aws");
+    }
+
+    #[test]
+    fn arn_partition_reads_the_segment() {
+        assert_eq!(arn_partition("arn:aws:iam::1:role/r"), Some("aws"));
+        assert_eq!(
+            arn_partition("arn:aws-us-gov:sts::1:assumed-role/R/S"),
+            Some("aws-us-gov")
+        );
+        assert_eq!(arn_partition("arn:aws-cn:s3:::bucket"), Some("aws-cn"));
+        assert_eq!(arn_partition("not-an-arn"), None);
+        assert_eq!(arn_partition("arn:"), None);
+    }
+
+    #[test]
+    fn console_urls_follow_the_partition() {
+        assert_eq!(
+            console_base_url("eu-west-2").as_deref(),
+            Some("https://eu-west-2.console.aws.amazon.com")
+        );
+        assert_eq!(
+            console_base_url("us-gov-west-1").as_deref(),
+            Some("https://us-gov-west-1.console.amazonaws-us-gov.com")
+        );
+        assert_eq!(
+            console_base_url("cn-north-1").as_deref(),
+            Some("https://cn-north-1.console.amazonaws.cn")
+        );
+        // ISO consoles exist, but not on hostnames we can assert — a
+        // link that definitely doesn't resolve is worse than saying so.
+        assert!(console_base_url("us-iso-east-1").is_none());
+    }
+
+    #[test]
+    fn arn_prefixes_covers_every_partition() {
+        let prefixes: Vec<String> = arn_prefixes().collect();
+        assert_eq!(prefixes.len(), PARTITIONS.len());
+        assert!(prefixes.contains(&"arn:aws:".to_string()));
+        assert!(prefixes.contains(&"arn:aws-us-gov:".to_string()));
+        assert!(prefixes.contains(&"arn:aws-iso-b:".to_string()));
+    }
+}

@@ -152,9 +152,11 @@ pub fn scrub(text: &str, ctx: &ScrubContext) -> String {
     // 1. ARNs — `arn:aws:<service>:<region>:<account>:<resource>`.
     // Catch-all regex would be cleaner but adding a regex pass for
     // one shape is overkill; iterate char-by-char.
-    out = scrub_pattern(&out, "arn:aws:", "[arn]");
-    out = scrub_pattern(&out, "arn:aws-us-gov:", "[arn]");
-    out = scrub_pattern(&out, "arn:aws-cn:", "[arn]");
+    // Every partition's ARN prefix, from the shared table — this used
+    // to be a hand-kept list of three and silently missed ISO ARNs.
+    for prefix in crate::util::arn_prefixes() {
+        out = scrub_pattern(&out, &prefix, "[arn]");
+    }
 
     // 2. Specific env names from the live list. Reverse-length-sort
     // so `prod-api-canary` doesn't get half-replaced by a shorter

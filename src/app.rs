@@ -1266,6 +1266,7 @@ impl App {
                 lint_disable: config.lint_disable.clone(),
                 explain_settings,
                 required_tags: config.required_tags,
+                alarm_dimensions: config.alarm_dimensions,
                 cfg_icons_raw: config.icons.clone(),
                 profile_themes: config.profile_themes.clone(),
                 runbooks: config.runbooks.clone(),
@@ -1526,6 +1527,7 @@ impl App {
                 lint_disable: config.lint_disable.clone(),
                 explain_settings,
                 required_tags: config.required_tags.clone(),
+                alarm_dimensions: config.alarm_dimensions.clone(),
                 cfg_icons_raw: config.icons.clone(),
                 profile_themes: config.profile_themes.clone(),
                 runbooks: config.runbooks.clone(),
@@ -1940,6 +1942,7 @@ impl App {
         self.extra_regions = cfg.extra_regions.clone();
         self.notify_bell = cfg.notify_bell;
         self.cfg.required_tags = cfg.required_tags.clone();
+        self.cfg.alarm_dimensions = cfg.alarm_dimensions.clone();
         // Theme swap invalidates the cached per-app colour assignments —
         // those store final `Color` values, not palette indices, so they'd
         // otherwise carry the old palette into the new theme's rendering.
@@ -2922,25 +2925,43 @@ pub(crate) fn parse_access_denied(msg: &str) -> Option<(String, String)> {
         .find(|c: char| c.is_whitespace() || c == ',')
         .unwrap_or(action_rest.len());
     let action = action_rest[..action_end].to_string();
-    let principal = if let Some(rest) = principal_raw.strip_prefix("arn:aws:sts::") {
-        // `arn:aws:sts::ACCOUNT:assumed-role/ROLE/SESSION`
-        let parts: Vec<&str> = rest.splitn(2, ':').collect();
-        let account = parts.first()?;
-        let role_part = parts.get(1)?;
-        let role_name = role_part.strip_prefix("assumed-role/")?.split('/').next()?;
-        format!("arn:aws:iam::{account}:role/{role_name}")
-    } else {
-        principal_raw.to_string()
+    // Rewrite an assumed-role session ARN into the role ARN it came
+    // from: session credentials aren't a policy attachment point, so
+    // `iam:SimulatePrincipalPolicy` rejects them.
+    //
+    // Partition-aware. This used to match the literal `arn:aws:sts::`
+    // and rebuild `arn:aws:iam::`, so in GovCloud, China or an ISO
+    // partition the branch simply never fired and the raw session ARN
+    // went to IAM, which refused it — `:explain` reached the right
+    // endpoint and then failed on its argument.
+    let principal = match crate::util::arn_partition(principal_raw) {
+        Some(partition) if principal_raw.starts_with(&format!("arn:{partition}:sts::")) => {
+            let rest = principal_raw
+                .strip_prefix(&format!("arn:{partition}:sts::"))
+                .unwrap_or_default();
+            // `arn:PARTITION:sts::ACCOUNT:assumed-role/ROLE/SESSION`
+            let parts: Vec<&str> = rest.splitn(2, ':').collect();
+            let account = parts.first()?;
+            let role_part = parts.get(1)?;
+            let role_name = role_part.strip_prefix("assumed-role/")?.split('/').next()?;
+            format!("arn:{partition}:iam::{account}:role/{role_name}")
+        }
+        _ => principal_raw.to_string(),
     };
     Some((principal, action))
 }
 
-fn console_url(region: &str, app_name: &str, env_name: &str) -> String {
+/// Console deep link for an environment, or `None` when the region's
+/// partition has no console host we can name (the ISO partitions). The
+/// host used to be hardcoded to the commercial one, which produced a
+/// link that couldn't resolve for a GovCloud or China operator.
+fn console_url(region: &str, app_name: &str, env_name: &str) -> Option<String> {
+    let base = crate::util::console_base_url(region)?;
     let app = urlencode(app_name);
     let env = urlencode(env_name);
-    format!(
-        "https://{region}.console.aws.amazon.com/elasticbeanstalk/home?region={region}#/environment/dashboard?applicationName={app}&environmentName={env}"
-    )
+    Some(format!(
+        "{base}/elasticbeanstalk/home?region={region}#/environment/dashboard?applicationName={app}&environmentName={env}"
+    ))
 }
 
 fn open_url(url: &str) -> std::result::Result<(), String> {

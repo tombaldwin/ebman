@@ -16,6 +16,17 @@ pub struct Config {
     pub icons: String,
     pub notify_bell: bool,
     pub required_tags: Vec<String>,
+    /// CloudWatch dimension names that identify an Elastic Beanstalk
+    /// environment, for matching alarms to it (`alarm_dimensions`).
+    ///
+    /// Defaults to just `EnvironmentName`, which is what EB itself and
+    /// `:alarm-add` use. It is configurable because the match used to
+    /// be on the dimension *value* alone — which wrongly claimed an RDS
+    /// alarm named after the env — and tightening it to the canonical
+    /// name silently dropped operator-authored alarms that spell the
+    /// dimension differently (`Environment`, `EnvName`). This is the
+    /// way back, without reinstating the false positive.
+    pub alarm_dimensions: Vec<String>,
     /// Per-profile theme override. Key = AWS profile name, value = theme
     /// name (matches the same names `theme = …` accepts). Lets the
     /// operator pin a high-contrast / dark / light theme to a specific
@@ -152,6 +163,7 @@ impl Default for Config {
             icons: "unicode".into(),
             notify_bell: false,
             required_tags: Vec::new(),
+            alarm_dimensions: vec![crate::aws::ENV_DIMENSION.to_string()],
             profile_themes: std::collections::HashMap::new(),
             accounts: std::collections::HashMap::new(),
             runbooks: std::collections::HashMap::new(),
@@ -253,6 +265,12 @@ pub fn parse(text: &str) -> Config {
             }
             "required_tags" => {
                 cfg.required_tags = crate::util::split_csv(&value);
+            }
+            "alarm_dimensions" => {
+                let names = crate::util::split_csv(&value);
+                if !names.is_empty() {
+                    cfg.alarm_dimensions = names;
+                }
             }
             "profile_themes" => {
                 // Format: `prod:high-contrast,staging:dark,default:light`.
@@ -667,6 +685,7 @@ accounts.staging.external_id = "abc-xyz"
             icons: "powerline".into(),
             notify_bell: true,
             required_tags: vec!["Owner".into(), "Env".into()],
+            alarm_dimensions: vec![crate::aws::ENV_DIMENSION.to_string()],
             profile_themes,
             accounts: std::collections::HashMap::new(),
             runbooks: std::collections::HashMap::new(),
@@ -819,5 +838,26 @@ explain.max_tokens = 512
         assert_eq!(cfg.pin_reason("unpinned-false", None), None);
         assert_eq!(cfg.pin_reason("other", Some("dev")), None);
         assert_eq!(cfg.pin_reason("other", None), None);
+    }
+    #[test]
+    fn documented_alarm_dimensions_example_parses() {
+        let cfg = parse("alarm_dimensions = \"EnvironmentName,Environment\"\n");
+        assert_eq!(
+            cfg.alarm_dimensions,
+            vec!["EnvironmentName".to_string(), "Environment".to_string()]
+        );
+    }
+
+    #[test]
+    fn alarm_dimensions_defaults_to_the_canonical_name() {
+        let cfg = parse("");
+        assert_eq!(cfg.alarm_dimensions, vec!["EnvironmentName".to_string()]);
+    }
+
+    #[test]
+    fn an_empty_alarm_dimensions_keeps_the_default() {
+        // Blanking the key must not silently match nothing.
+        let cfg = parse("alarm_dimensions = \"\"\n");
+        assert_eq!(cfg.alarm_dimensions, vec!["EnvironmentName".to_string()]);
     }
 }
