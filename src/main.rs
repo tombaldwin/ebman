@@ -60,7 +60,10 @@ async fn main() -> Result<()> {
             // the alternate screen (which, in CI, is a confusing
             // raw-mode failure instead of a usage error).
             other if !other.starts_with('-') => {
-                eprintln!("ebman: unknown subcommand '{other}'\n");
+                eprintln!(
+                    "ebman: unknown subcommand '{other}' — available: {}\n",
+                    ebman::cli::SUBCOMMANDS.join(", ")
+                );
                 print_help();
                 std::process::exit(2);
             }

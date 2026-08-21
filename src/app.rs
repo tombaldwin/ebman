@@ -15310,17 +15310,18 @@ pub(crate) fn completion_candidates(prefix: &str) -> Vec<String> {
     names
 }
 
-/// Command names whose first positional argument is an existing
-/// environment name — the unambiguous cases where Tab-completing an
-/// env name in the command bar makes sense. `:diff` also takes a
-/// second env name (`ENV-A ENV-B`); completing the trailing token
-/// covers both slots. Every other command either operates on the
-/// *selected* env (no name arg) or takes a non-env `NAME` (region /
-/// profile / secret / alarm / saved-view), so it's deliberately
-/// excluded. None of these three carry aliases (all `cmd(...)` in the
-/// registry), so a raw name match is exact — revisit if that changes.
+/// Whether `cmd` (a command name or alias) takes an existing
+/// environment name as its first positional argument — the
+/// unambiguous cases where Tab-completing an env name in the command
+/// bar makes sense (`:diff`, `:config-diff`, `:rds-detach`; `:diff`
+/// also takes a second env name, and completing the trailing token
+/// covers both slots). Sourced from the command registry
+/// (`CommandSpec::env_arg`, set via `commands::cmd_env_arg`) so it
+/// can't drift from the command definitions, and resolves aliases.
 pub(crate) fn command_takes_env_arg(cmd: &str) -> bool {
-    matches!(cmd, "diff" | "config-diff" | "rds-detach")
+    crate::commands::COMMANDS
+        .iter()
+        .any(|c| c.env_arg && (c.name == cmd || c.aliases.contains(&cmd)))
 }
 
 /// Pure render of the `:options` overlay body. Groups `rows` by
