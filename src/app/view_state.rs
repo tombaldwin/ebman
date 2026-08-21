@@ -111,10 +111,15 @@ impl ViewState {
         self.sort_desc
     }
 
-    /// Record a new sort. `pub(super)` on purpose: these fields describe the
-    /// order `App::environments` is *already* in, so setting them without
-    /// re-sorting leaves the header arrow disagreeing with the rows. The
-    /// only caller is `App::set_sort`, which does both.
+    /// Record a new sort. These fields describe the order
+    /// `App::environments` is *already* in, so setting them without
+    /// re-sorting leaves the header arrow disagreeing with the rows —
+    /// call `App::set_sort`, which does both, and is the only caller.
+    ///
+    /// `pub(super)` narrows that but doesn't guarantee it: `App`'s impl is
+    /// spread across the sibling modules under `app/`, and every one of
+    /// them is a descendant that can reach this. It's no longer a bare
+    /// `pub` field assignable from `ui.rs`; the last step is convention.
     pub(super) fn set_sort(&mut self, key: SortKey, desc: bool) {
         self.sort_key = key;
         self.sort_desc = desc;
@@ -195,6 +200,10 @@ impl ViewState {
 
     /// Install a freshly computed view. The only way to clear the stale
     /// flag, and called from exactly one place: `App::rebuild_view`.
+    ///
+    /// Same caveat as [`Self::set_sort`] — `pub(super)` reaches every
+    /// module under `app/`, so "one place" is a fact about the code, not
+    /// something the visibility enforces.
     pub(super) fn store(
         &mut self,
         filtered: Vec<usize>,
@@ -244,6 +253,7 @@ impl ViewState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::{KeyCode, KeyModifiers};
 
     fn view() -> ViewState {
         ViewState::new(
@@ -321,6 +331,70 @@ mod tests {
         assert!(!v.is_stale());
         assert_eq!(v.filtered(), &[0, 2]);
         assert_eq!(v.display().len(), 2);
+    }
+
+    fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: mods,
+            kind: crossterm::event::KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        }
+    }
+
+    #[test]
+    fn textinput_never_mutates_on_a_key_it_reports_as_unconsumed() {
+        // `filter_handle_key` marks the cache stale iff `handle_key`
+        // returns true, which is only sound because a `false` return
+        // means the buffer is untouched. That contract lives in
+        // `tb-tui-common` and isn't stated in its docs, and the
+        // dependency is a caret range — so pin it here. If a future
+        // 0.1.x adds a handler that mutates and returns false, this
+        // fails instead of silently resurrecting the stale-cache bug.
+        let unconsumed = [
+            key(KeyCode::Down, KeyModifiers::NONE),
+            key(KeyCode::Up, KeyModifiers::NONE),
+            key(KeyCode::PageUp, KeyModifiers::NONE),
+            key(KeyCode::PageDown, KeyModifiers::NONE),
+            key(KeyCode::Tab, KeyModifiers::NONE),
+            key(KeyCode::BackTab, KeyModifiers::SHIFT),
+            key(KeyCode::Enter, KeyModifiers::NONE),
+            key(KeyCode::Esc, KeyModifiers::NONE),
+            key(KeyCode::F(1), KeyModifiers::NONE),
+            key(KeyCode::Insert, KeyModifiers::NONE),
+            key(KeyCode::Null, KeyModifiers::NONE),
+            key(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            key(KeyCode::Char('g'), KeyModifiers::CONTROL),
+            key(KeyCode::Char('x'), KeyModifiers::ALT),
+            key(KeyCode::Char('p'), KeyModifiers::SUPER),
+        ];
+        for k in unconsumed {
+            let mut v = view();
+            v.set_filter("prod");
+            v.store(Vec::new(), Vec::new(), HashMap::new(), HashMap::new());
+            let before = v.filter().text().to_string();
+            let before_col = v.filter().cursor_col();
+            let consumed = v.filter_handle_key(k);
+            assert!(
+                !consumed,
+                "{k:?} should not be consumed by the filter buffer"
+            );
+            assert_eq!(v.filter().text(), before, "{k:?} mutated the text");
+            assert_eq!(v.filter().cursor_col(), before_col, "{k:?} moved the caret");
+            assert!(
+                !v.is_stale(),
+                "{k:?} was not consumed, so it must not dirty the cache"
+            );
+        }
+    }
+
+    #[test]
+    fn a_consumed_key_does_dirty_the_cache() {
+        let mut v = view();
+        v.store(Vec::new(), Vec::new(), HashMap::new(), HashMap::new());
+        assert!(v.filter_handle_key(key(KeyCode::Char('p'), KeyModifiers::NONE)));
+        assert!(v.is_stale());
+        assert_eq!(v.filter().text(), "p");
     }
 
     #[test]
