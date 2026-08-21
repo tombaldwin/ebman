@@ -77,6 +77,10 @@ ebman mcp setup                    # reads-only registration instructions
 ebman mcp setup --allow-writes     # the write-enabled form
 ```
 
+### Discovery (MCP Registry)
+
+ebman is published to the official [MCP Registry](https://registry.modelcontextprotocol.io) as `io.github.tombaldwin/ebman`, so MCP clients and directories can discover it. The manifest is [`server.json`](../server.json) (a `cargo` package pointing at the crate); the `release.yml` `mcp_registry` job auto-publishes it on each release via GitHub OIDC, after the crate is live on crates.io (the registry verifies ownership via the `mcp-name:` marker in the crate README). Discovery is passive — nothing tells an agent to fetch and run anything.
+
 The server resolves profile/region through the standard AWS chain (env vars beat
 profile config) and deliberately does **not** read ebman's own `state.toml` — so a
 shell-exported `AWS_REGION` pointing at another project's region silently wins. If

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **MCP Registry discovery** — ebman now publishes a `server.json` to the official MCP Registry as `io.github.tombaldwin/ebman` (a `cargo` package), so MCP clients and directories can discover it. Auto-published by CI on release via GitHub OIDC; ownership verified by an `mcp-name:` marker in the crate README. Passive discovery — no "fetch and run" instruction anywhere.
+
 ## [0.29.1] — 2026-08-21 — internal: completion single-source-of-truth
 
 Pure hardening follow-up to 0.29.0's pre-tag review; no feature or behaviour change.
