@@ -2281,3 +2281,285 @@ fn global_service_region_never_crosses_a_partition() {
         );
     }
 }
+
+// ── DescribeEvents pagination ──────────────────────────────────────
+
+#[tokio::test]
+async fn list_events_since_follows_next_token() {
+    // `:event-tail` advances its watermark past the newest event it
+    // received. Dropping `next_token` meant that during a burst larger
+    // than one batch, the older events behind the token were never
+    // returned by any later poll — silently, with no gap marker.
+    use aws_sdk_elasticbeanstalk::operation::describe_events::DescribeEventsOutput;
+    use aws_sdk_elasticbeanstalk::types::EventDescription;
+
+    fn ev(msg: &str, secs: i64) -> EventDescription {
+        EventDescription::builder()
+            .message(msg)
+            .environment_name("api-prod")
+            .event_date(aws_sdk_elasticbeanstalk::primitives::DateTime::from_secs(
+                secs,
+            ))
+            .build()
+    }
+    let page1 = mock!(Client::describe_events)
+        .match_requests(|req| req.next_token().is_none())
+        .then_output(|| {
+            DescribeEventsOutput::builder()
+                .events(ev("newest", 3_000))
+                .next_token("PAGE_2")
+                .build()
+        });
+    let page2 = mock!(Client::describe_events)
+        .match_requests(|req| req.next_token() == Some("PAGE_2"))
+        .then_output(|| {
+            DescribeEventsOutput::builder()
+                .events(ev("older — behind the token", 2_000))
+                .build()
+        });
+    let eb = mock_client!(aws_sdk_elasticbeanstalk, [&page1, &page2]);
+    let client = client_with_eb(eb);
+
+    let events = client.list_events_since(1_000_000, 300).await.unwrap();
+    let msgs: Vec<&str> = events.iter().map(|e| e.message.as_str()).collect();
+    assert_eq!(
+        msgs,
+        vec!["newest", "older — behind the token"],
+        "both pages must be returned before the watermark advances"
+    );
+    assert_eq!(page1.num_calls(), 1);
+    assert_eq!(page2.num_calls(), 1, "next_token must be followed");
+}
+
+#[tokio::test]
+async fn list_events_display_calls_do_not_paginate() {
+    // The two non-watermarked callers want "the newest N" for a panel.
+    // Following tokens there would just cost API calls for events
+    // nobody renders, so they stay single-page.
+    use aws_sdk_elasticbeanstalk::operation::describe_events::DescribeEventsOutput;
+    use aws_sdk_elasticbeanstalk::types::EventDescription;
+
+    let page1 = mock!(Client::describe_events).then_output(|| {
+        DescribeEventsOutput::builder()
+            .events(
+                EventDescription::builder()
+                    .message("newest")
+                    .environment_name("api-prod")
+                    .build(),
+            )
+            .next_token("PAGE_2")
+            .build()
+    });
+    let eb = mock_client!(aws_sdk_elasticbeanstalk, [&page1]);
+    let client = client_with_eb(eb);
+
+    let events = client.list_events_for_env("api-prod", 100).await.unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        page1.num_calls(),
+        1,
+        "a display fetch must not chase next_token"
+    );
+}
+
+// ── EC2 listings paginate ──────────────────────────────────────────
+
+fn client_with_ec2(ec2: Ec2Client) -> AwsClient {
+    let cfg = aws_config::SdkConfig::builder()
+        .region(Region::new("us-east-1"))
+        .behavior_version(aws_config::BehaviorVersion::latest())
+        .build();
+    AwsClient::for_tests(
+        Client::new(&cfg),
+        SqsClient::new(&cfg),
+        CwClient::new(&cfg),
+        CwLogsClient::new(&cfg),
+        S3Client::new(&cfg),
+        ec2,
+    )
+}
+
+#[tokio::test]
+async fn list_security_groups_in_vpc_follows_next_token() {
+    // A shared VPC can hold more security groups than one page, and a
+    // picker that silently shows a subset makes the operator conclude
+    // the group doesn't exist and create a duplicate.
+    use aws_sdk_ec2::operation::describe_security_groups::DescribeSecurityGroupsOutput;
+    use aws_sdk_ec2::types::SecurityGroup;
+
+    fn sg(id: &str, name: &str) -> SecurityGroup {
+        SecurityGroup::builder()
+            .group_id(id)
+            .group_name(name)
+            .description("d")
+            .build()
+    }
+    let page1 = mock!(aws_sdk_ec2::Client::describe_security_groups)
+        .match_requests(|req| req.next_token().is_none())
+        .then_output(|| {
+            DescribeSecurityGroupsOutput::builder()
+                .security_groups(sg("sg-1", "alpha"))
+                .next_token("P2")
+                .build()
+        });
+    let page2 = mock!(aws_sdk_ec2::Client::describe_security_groups)
+        .match_requests(|req| req.next_token() == Some("P2"))
+        .then_output(|| {
+            DescribeSecurityGroupsOutput::builder()
+                .security_groups(sg("sg-2", "zulu"))
+                .build()
+        });
+    let ec2 = mock_client!(aws_sdk_ec2, [&page1, &page2]);
+    let client = client_with_ec2(ec2);
+
+    let groups = client.list_security_groups_in_vpc("vpc-123").await.unwrap();
+    let names: Vec<&str> = groups.iter().map(|g| g.group_name.as_str()).collect();
+    assert_eq!(names, vec!["alpha", "zulu"], "both pages must appear");
+    assert_eq!(page2.num_calls(), 1, "next_token must be followed");
+}
+
+#[tokio::test]
+async fn list_subnets_in_vpc_follows_next_token() {
+    use aws_sdk_ec2::operation::describe_subnets::DescribeSubnetsOutput;
+    use aws_sdk_ec2::types::Subnet;
+
+    fn sn(id: &str, az: &str, cidr: &str) -> Subnet {
+        Subnet::builder()
+            .subnet_id(id)
+            .availability_zone(az)
+            .cidr_block(cidr)
+            .build()
+    }
+    let page1 = mock!(aws_sdk_ec2::Client::describe_subnets)
+        .match_requests(|req| req.next_token().is_none())
+        .then_output(|| {
+            DescribeSubnetsOutput::builder()
+                .subnets(sn("subnet-1", "us-east-1a", "10.0.1.0/24"))
+                .next_token("P2")
+                .build()
+        });
+    let page2 = mock!(aws_sdk_ec2::Client::describe_subnets)
+        .match_requests(|req| req.next_token() == Some("P2"))
+        .then_output(|| {
+            DescribeSubnetsOutput::builder()
+                .subnets(sn("subnet-2", "us-east-1b", "10.0.2.0/24"))
+                .build()
+        });
+    let ec2 = mock_client!(aws_sdk_ec2, [&page1, &page2]);
+    let client = client_with_ec2(ec2);
+
+    let subnets = client.list_subnets_in_vpc("vpc-123").await.unwrap();
+    let ids: Vec<&str> = subnets.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(ids, vec!["subnet-1", "subnet-2"]);
+    assert_eq!(page2.num_calls(), 1, "next_token must be followed");
+}
+
+// ── IAM simulate pagination ────────────────────────────────────────
+
+fn client_with_iam(iam: aws_sdk_iam::Client) -> AwsClient {
+    let cfg = aws_config::SdkConfig::builder()
+        .region(Region::new("us-east-1"))
+        .behavior_version(aws_config::BehaviorVersion::latest())
+        .build();
+    let mut c = AwsClient::for_tests(
+        Client::new(&cfg),
+        SqsClient::new(&cfg),
+        CwClient::new(&cfg),
+        CwLogsClient::new(&cfg),
+        S3Client::new(&cfg),
+        Ec2Client::new(&cfg),
+    );
+    c.iam = iam;
+    c
+}
+
+#[tokio::test]
+async fn simulate_principal_policy_follows_the_truncation_marker() {
+    // `:explain` renders a decision table. A dropped page doesn't look
+    // like an error — the denied action simply isn't listed, and the
+    // operator reads "not in the table" as "not the problem".
+    use aws_sdk_iam::operation::simulate_principal_policy::SimulatePrincipalPolicyOutput;
+    use aws_sdk_iam::types::{EvaluationResult, PolicyEvaluationDecisionType};
+
+    fn res(action: &str, decision: PolicyEvaluationDecisionType) -> EvaluationResult {
+        EvaluationResult::builder()
+            .eval_action_name(action)
+            .eval_decision(decision)
+            .build()
+            .unwrap()
+    }
+    let page1 = mock!(aws_sdk_iam::Client::simulate_principal_policy)
+        .match_requests(|req| req.marker().is_none())
+        .then_output(|| {
+            SimulatePrincipalPolicyOutput::builder()
+                .evaluation_results(res(
+                    "elasticbeanstalk:DescribeEnvironments",
+                    PolicyEvaluationDecisionType::Allowed,
+                ))
+                .is_truncated(true)
+                .marker("M2")
+                .build()
+        });
+    let page2 = mock!(aws_sdk_iam::Client::simulate_principal_policy)
+        .match_requests(|req| req.marker() == Some("M2"))
+        .then_output(|| {
+            SimulatePrincipalPolicyOutput::builder()
+                .evaluation_results(res(
+                    "elasticbeanstalk:UpdateEnvironment",
+                    PolicyEvaluationDecisionType::ExplicitDeny,
+                ))
+                .is_truncated(false)
+                .build()
+        });
+    let iam = mock_client!(aws_sdk_iam, [&page1, &page2]);
+    let client = client_with_iam(iam);
+
+    let rows = client
+        .simulate_principal_policy(
+            "arn:aws:iam::123456789012:role/eb-ec2",
+            &[
+                "elasticbeanstalk:DescribeEnvironments".to_string(),
+                "elasticbeanstalk:UpdateEnvironment".to_string(),
+            ],
+            &[],
+        )
+        .await
+        .unwrap();
+    let actions: Vec<&str> = rows.iter().map(|r| r.action.as_str()).collect();
+    assert!(
+        actions.contains(&"elasticbeanstalk:UpdateEnvironment"),
+        "the denied action behind the marker must reach the overlay: {actions:?}"
+    );
+    assert_eq!(rows.len(), 2);
+    assert_eq!(page2.num_calls(), 1, "marker must be followed");
+}
+
+#[tokio::test]
+async fn simulate_principal_policy_stops_when_not_truncated() {
+    // A marker present without `is_truncated` must not start a loop.
+    use aws_sdk_iam::operation::simulate_principal_policy::SimulatePrincipalPolicyOutput;
+    use aws_sdk_iam::types::{EvaluationResult, PolicyEvaluationDecisionType};
+
+    let page1 = mock!(aws_sdk_iam::Client::simulate_principal_policy).then_output(|| {
+        SimulatePrincipalPolicyOutput::builder()
+            .evaluation_results(
+                EvaluationResult::builder()
+                    .eval_action_name("s3:GetObject")
+                    .eval_decision(PolicyEvaluationDecisionType::Allowed)
+                    .build()
+                    .unwrap(),
+            )
+            .is_truncated(false)
+            .marker("STALE")
+            .build()
+    });
+    let iam = mock_client!(aws_sdk_iam, [&page1]);
+    let client = client_with_iam(iam);
+
+    let rows = client
+        .simulate_principal_policy("arn:aws:iam::1:role/r", &["s3:GetObject".to_string()], &[])
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(page1.num_calls(), 1, "must not loop on a stale marker");
+}

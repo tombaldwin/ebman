@@ -27,21 +27,30 @@ impl AwsClient {
     /// + CIDR + Name tag) so callers don't need a second round-trip.
     pub async fn list_subnets_in_vpc(&self, vpc_id: &str) -> Result<Vec<SubnetInfo>> {
         use aws_sdk_ec2::types::Filter;
-        let resp = self
-            .ec2
-            .describe_subnets()
-            .filters(
+        // Paginate: DescribeSubnets caps a page well below the size of a
+        // shared VPC's subnet list, and a picker that silently shows a
+        // subset is worse than a slow one — the operator concludes the
+        // subnet doesn't exist.
+        let mut raw = Vec::new();
+        let mut next_token: Option<String> = None;
+        loop {
+            let mut req = self.ec2.describe_subnets().filters(
                 Filter::builder()
                     .name("vpc-id")
                     .values(vpc_id.to_string())
                     .build(),
-            )
-            .send()
-            .await
-            .wrap_err("DescribeSubnets failed")?;
-        let mut out: Vec<SubnetInfo> = resp
-            .subnets
-            .unwrap_or_default()
+            );
+            if let Some(t) = next_token.take() {
+                req = req.next_token(t);
+            }
+            let resp = req.send().await.wrap_err("DescribeSubnets failed")?;
+            raw.extend(resp.subnets.unwrap_or_default());
+            match resp.next_token {
+                Some(t) if !t.is_empty() => next_token = Some(t),
+                _ => break,
+            }
+        }
+        let mut out: Vec<SubnetInfo> = raw
             .into_iter()
             .map(|s| {
                 let name_tag = s.tags.as_ref().and_then(|tags| {
@@ -72,21 +81,29 @@ impl AwsClient {
         vpc_id: &str,
     ) -> Result<Vec<SecurityGroupInfo>> {
         use aws_sdk_ec2::types::Filter;
-        let resp = self
-            .ec2
-            .describe_security_groups()
-            .filters(
+        // Paginate: DescribeSecurityGroups defaults to 1000 per page and
+        // a shared VPC can exceed that. Same reasoning as the subnet
+        // listing above — a truncated picker reads as "not there".
+        let mut raw = Vec::new();
+        let mut next_token: Option<String> = None;
+        loop {
+            let mut req = self.ec2.describe_security_groups().filters(
                 Filter::builder()
                     .name("vpc-id")
                     .values(vpc_id.to_string())
                     .build(),
-            )
-            .send()
-            .await
-            .wrap_err("DescribeSecurityGroups failed")?;
-        let mut out: Vec<SecurityGroupInfo> = resp
-            .security_groups
-            .unwrap_or_default()
+            );
+            if let Some(t) = next_token.take() {
+                req = req.next_token(t);
+            }
+            let resp = req.send().await.wrap_err("DescribeSecurityGroups failed")?;
+            raw.extend(resp.security_groups.unwrap_or_default());
+            match resp.next_token {
+                Some(t) if !t.is_empty() => next_token = Some(t),
+                _ => break,
+            }
+        }
+        let mut out: Vec<SecurityGroupInfo> = raw
             .into_iter()
             .map(|g| SecurityGroupInfo {
                 id: g.group_id.unwrap_or_default(),
