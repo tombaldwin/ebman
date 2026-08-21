@@ -1,8 +1,15 @@
 //! Unit tests for the `aws` module.
 //!
-//! Split out of `src/aws.rs`; `use super::*` still resolves to
-//! `crate::aws`, which glob-re-exports every per-service sub-module,
-//! so each test sees exactly what it did when it lived inline.
+//! Split out of `src/aws.rs`. `use super::*` still resolves to
+//! `crate::aws`, which glob-re-exports every per-service sub-module.
+//!
+//! One thing did change: this module is now a *sibling* of `aws::eb`,
+//! `aws::cloudwatch` and the rest, not a child of the module that owns
+//! their internals. A helper that is private to its sub-module is
+//! unreachable from here. The ones tests need — `map_env`,
+//! `compare_versions`, `to_smithy` — are `pub(super)`, which reaches
+//! all of `aws`, including this module. Anything narrower needs its own
+//! `#[cfg(test)]` block next to the code.
 
 use super::*;
 

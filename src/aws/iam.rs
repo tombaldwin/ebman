@@ -8,7 +8,7 @@ use super::*;
 /// caller's `SdkConfig` carries doesn't affect routing but pinning
 /// here matches the Cost Explorer / Organizations pattern and
 /// makes the `:explain` code path's expectations explicit.
-pub(crate) fn iam_client(base: &SdkConfig) -> IamClient {
+pub(super) fn iam_client(base: &SdkConfig) -> IamClient {
     let cfg = base.to_builder().region(Region::new("us-east-1")).build();
     IamClient::new(&cfg)
 }
@@ -66,6 +66,22 @@ impl AwsClient {
             .map(|r| r.arn))
     }
 
+    /// Call `iam:SimulatePrincipalPolicy` for a role + action list.
+    /// Returns the per-action decision (allowed / explicitDeny /
+    /// implicitDeny), matched statements, and SCP / permission-
+    /// boundary blocker flags. Powers `:explain`.
+    ///
+    /// `resource_arns` defaults to `["*"]` when empty — most EB
+    /// AccessDenied errors don't carry a resource ARN that would
+    /// affect the decision, and the unscoped check still surfaces
+    /// "the role doesn't have this action at all" cases which is
+    /// what the operator usually wants. Pass real ARNs when you
+    /// want to evaluate resource-scoped policies.
+    ///
+    /// Errors out of the SimulatePrincipalPolicy itself usually
+    /// mean the caller lacks `iam:SimulatePrincipalPolicy` on the
+    /// target role — common with assumed-role sessions that don't
+    /// have IAM perms. The renderer surfaces that as a clear hint.
     pub async fn simulate_principal_policy(
         &self,
         principal_arn: &str,

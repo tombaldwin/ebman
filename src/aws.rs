@@ -25,6 +25,12 @@
 //! is glob-re-exported here, so `crate::aws::Environment` and
 //! `crate::aws::QueueMessage` resolve the same as when this was one file.
 //!
+//! The split is by *SDK client*, which is not always the same as by subject:
+//! `describe_worker_queues` lives in `eb` because that's whose client it
+//! calls, even though what it returns is a queue depth, and it reaches SQS
+//! through `sqs::queue_stats`. Where a type's producer and its subject
+//! disagree, the type follows the producer.
+//!
 //! # Conventions
 //!
 //! Errors use `wrap_err` rather than `eyre!("...: {e}")` so the SDK error
@@ -106,20 +112,27 @@ pub struct AwsClient {
     cw_logs: CwLogsClient,
     s3: S3Client,
     ec2: Ec2Client,
+    /// Organizations client. The service is global, but this is built
+    /// from the operator's own `SdkConfig` — the SDK's endpoint rules
+    /// route it, nothing here pins a region.
     org: OrgClient,
-    /// Cost Explorer client. Cost Explorer is a global service —
-    /// always endpoints in `us-east-1` regardless of the operator's
-    /// active region. Lazy-initialised on first `:cost on` so
-    /// operators who never opt in don't carry the dep weight.
+    /// Cost Explorer client, pinned to `us-east-1` by
+    /// [`cost_explorer_client`] — Cost Explorer is global and only
+    /// endpoints there.
+    ///
+    /// Built eagerly in every constructor, despite what an earlier
+    /// comment here claimed: operators who never run `:cost on` still
+    /// pay for it, and it is the most expensive client to construct.
+    /// Making it genuinely lazy is tracked in `BACKLOG.md`.
     cost: CostExplorerClient,
     /// IAM client used by `:explain` to call
-    /// `iam:SimulatePrincipalPolicy`. IAM is a global service —
-    /// pinned to `us-east-1` regardless of operator region (same
-    /// as Cost Explorer and Organizations).
+    /// `iam:SimulatePrincipalPolicy`. IAM is global, and
+    /// [`iam_client`] pins it to `us-east-1`.
     iam: IamClient,
-    /// Secrets Manager client. Region-scoped (unlike IAM / Cost
-    /// Explorer / Organizations) — operators read secrets from
-    /// the same region as the env they're configuring.
+    /// Secrets Manager client. Region-scoped (unlike IAM and Cost
+    /// Explorer, which this crate pins to `us-east-1`) — operators
+    /// read secrets from the same region as the env they're
+    /// configuring.
     secrets: SecretsClient,
     /// ACM client. Region-scoped — `:listener-edit` lists the region's
     /// certificates for the SSL-cert picker.
@@ -200,12 +213,6 @@ impl AwsClient {
         })
     }
 
-    /// Build a fully-mocked `AwsClient` for unit tests. The caller supplies
-    /// pre-built (typically `mock_client!`-backed) sub-clients; any client
-    /// not exercised by the test can stay as a plain SDK-default instance.
-    /// Tests should not assume any of the sub-clients can talk to a real
-    /// endpoint — the default ones will fail if a non-mocked code path is
-    /// reached, which is exactly the signal we want.
     /// Build an `AwsClient` by `sts:AssumeRole`-ing into a target role
     /// using `source_profile`'s creds as the base identity. Pinned to
     /// `target_region` when supplied (falls back to the source profile's
@@ -329,6 +336,12 @@ impl AwsClient {
         )
     }
 
+    /// Build a fully-mocked `AwsClient` for unit tests. The caller supplies
+    /// pre-built (typically `mock_client!`-backed) sub-clients; any client
+    /// not exercised by the test can stay as a plain SDK-default instance.
+    /// Tests should not assume any of the sub-clients can talk to a real
+    /// endpoint — the default ones will fail if a non-mocked code path is
+    /// reached, which is exactly the signal we want.
     pub(crate) fn for_tests(
         client: Client,
         sqs: SqsClient,
@@ -391,6 +404,16 @@ impl AwsClient {
     /// Fetch the body of a pre-signed S3 URL. Shells out to `curl` so we don't
     /// pull in an HTTP-client dep; pre-signed URLs are plain HTTPS GETs with
     /// no auth headers, which curl handles trivially. 15 s cap per fetch.
+    ///
+    /// `url` is `EnvironmentInfoDescription.message` passed through verbatim,
+    /// so it is only as trustworthy as the account's EB API responses. Two
+    /// guards, because curl is generous about what it accepts:
+    ///
+    /// - `--` stops option parsing, so a value beginning with `-` is treated
+    ///   as a URL rather than as a flag. Without it, `-o/tmp/x` would make
+    ///   curl write to a local file and return an empty body.
+    /// - `--proto =https` restricts the transfer to HTTPS, so a `file://` or
+    ///   `ftp://` value can't be fetched and rendered into the log overlay.
     pub async fn fetch_url_text(url: &str) -> Result<String> {
         use tokio::process::Command;
         let out = Command::new("curl")
@@ -398,9 +421,12 @@ impl AwsClient {
                 "-s",
                 "-S",
                 "--fail-with-body",
+                "--proto",
+                "=https",
                 "--max-time",
                 "15",
                 "--no-buffer",
+                "--",
             ])
             .arg(url)
             .output()

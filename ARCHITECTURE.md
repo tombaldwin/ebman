@@ -20,7 +20,7 @@ src/lib.rs       module list + the `Tui` / `LogReloadHandle` aliases
 ├── ui/          rendering only — takes &App, returns nothing
 ├── aws/         every AWS SDK call, behind plain Rust types — one
 │                module per service, so `aws/eb.rs` (the domain) is
-│                separable from the thirteen generic ones
+│                separable from the twelve generic ones
 ├── cli/         headless subcommands (`ebman envs`, `action`, `ctl`, `mcp`)
 ├── lint.rs      the environment lint rules (see docs/lint-rules.md)
 └── ...          config, state, audit, themes, plugins, LLM explain, ...
