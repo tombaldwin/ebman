@@ -284,7 +284,7 @@ impl App {
     /// Opt-in via `[explain] enabled = true` in `config.toml` plus
     /// the env-var holding the provider API key. Without consent
     /// the overlay just says so with a config-file pointer.
-    pub(crate) fn cmd_explain_issue(&mut self, issue_id: &str) {
+    fn cmd_explain_issue(&mut self, issue_id: &str) {
         let Some(env) = self.selected_env().cloned() else {
             self.error_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());

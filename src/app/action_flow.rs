@@ -78,7 +78,7 @@ impl App {
         });
     }
 
-    pub(crate) fn target_env_for_action(&self) -> Option<Environment> {
+    fn target_env_for_action(&self) -> Option<Environment> {
         // Detail view targets the env it was opened on; Normal view targets selection.
         if let Some(d) = self.detail.as_ref() {
             return Some(d.env_snapshot.clone());

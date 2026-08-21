@@ -1,9 +1,11 @@
 //! The view layer over `App::environments` / `App::applications`:
 //! filtering, sorting, grouping, pinning and cursor movement.
 //!
-//! House rule: any mutation of `filter` / `sort_key` / `sort_desc` /
-//! `grouped` / `environments` must be followed by `rebuild_view()`,
-//! or the `cached_filtered` / `cached_display` slices go stale.
+//! [`App::rebuild_view`] lives here — the one thing that can install a
+//! fresh view cache. Changing `environments` (or any other input
+//! [`super::ViewState`] doesn't own) means `view.invalidate()` then
+//! `rebuild_view()`; changing `filter` or `grouped` through `ViewState`
+//! marks the cache stale on its own.
 
 use super::*;
 
@@ -303,14 +305,14 @@ impl App {
         self.status_message = Some(format!("filtered envs to application '{name}'"));
     }
 
-    pub(crate) fn select_first(&mut self) {
+    fn select_first(&mut self) {
         let rows = self.display_rows();
         if let Some(pos) = rows.iter().position(|r| matches!(r, DisplayRow::Env(_))) {
             self.table_state.select(Some(pos));
         }
     }
 
-    pub(crate) fn select_last(&mut self) {
+    fn select_last(&mut self) {
         let rows = self.display_rows();
         if let Some(pos) = rows.iter().rposition(|r| matches!(r, DisplayRow::Env(_))) {
             self.table_state.select(Some(pos));
@@ -351,7 +353,7 @@ impl App {
     /// filter, sort, grouping, or the env list.
     /// Recompute everything `ui` draws from `environments`.
     ///
-    /// The only caller of [`ViewState::store`], and so the only thing that
+    /// The only caller of `ViewState::store`, and so the only thing that
     /// can clear the stale flag. Call it after changing any input: the
     /// filter, the grouping, `environments` itself, `aliases`,
     /// `latest_stacks`, or the theme palette.

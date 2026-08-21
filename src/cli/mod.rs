@@ -7,7 +7,7 @@
 //!
 //! Each verb now lives in its own file under `src/cli/`, exposing
 //! `pub async fn run(args: &[String]) -> Result<()>`. `main.rs`
-//! dispatches by argv[1] and calls the matching `cli::<verb>::run`.
+//! dispatches by `argv[1]` and calls the matching `cli::<verb>::run`.
 //! Shared CLI-only helpers (the `decide_poll` state machine, the
 //! `--fix` dispatch-failure flag, the JSON-string escaper, the
 //! cli-arg escaper) live here in `mod.rs`.

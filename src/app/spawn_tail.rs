@@ -43,7 +43,7 @@ impl App {
     /// can switch the tailed group from inside the streaming overlay.
     /// Pre-selects the currently-tailed group; no-op (with a status hint) if
     /// no groups have been discovered for this env.
-    pub(crate) fn open_log_group_picker(&mut self) {
+    fn open_log_group_picker(&mut self) {
         let Some(Overlay::LogTail { log_group, .. }) = self.current_overlay.as_ref() else {
             return;
         };

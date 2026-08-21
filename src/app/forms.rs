@@ -201,7 +201,7 @@ impl App {
     /// Validate the form; if good, dispatch via the existing option-settings
     /// helper and switch to Submitting. Failures keep the form open with
     /// per-field error messages.
-    pub(crate) fn submit_form(&mut self) {
+    fn submit_form(&mut self) {
         let Some(form) = self.form.as_mut() else {
             return;
         };
@@ -325,7 +325,7 @@ impl App {
     /// redact, grouped, extra_regions) are updated in place but
     /// only take effect on the next refresh / restart depending on what
     /// reads them — see the field docs.
-    pub(crate) fn submit_local_config(&mut self) {
+    fn submit_local_config(&mut self) {
         let Some(form) = self.form.as_ref() else {
             return;
         };

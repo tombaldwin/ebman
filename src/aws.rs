@@ -1572,7 +1572,7 @@ impl AwsClient {
     /// post-filter for substring instead).
     ///
     /// Paginates internally. Returns the metadata rows; no
-    /// secret *values* are fetched here — see [`fetch_secret_value`].
+    /// secret *values* are fetched here — see [`AwsClient::fetch_secret_value`].
     pub async fn list_secrets(&self, name_filter: Option<&str>) -> Result<Vec<SecretSummary>> {
         let mut out: Vec<SecretSummary> = Vec::new();
         let mut next: Option<String> = None;
@@ -3090,7 +3090,7 @@ impl AwsClient {
             .await
     }
 
-    /// Same as [`upload_bundle`] but lets the caller pin the threshold
+    /// Same as [`AwsClient::upload_bundle`] but lets the caller pin the threshold
     /// and part size. Intended for tests; production code calls
     /// `upload_bundle` which fixes both at module-level constants.
     pub async fn upload_bundle_with(

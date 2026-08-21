@@ -10,7 +10,7 @@
 //! value)` triples and dispatches via the shared
 //! `spawn_option_settings_update` helper.
 
-/// One modal-form session. Owned by the [`App`] while [`crate::app::Mode::Form`]
+/// One modal-form session. Owned by the `App` while [`crate::app::Mode::Form`]
 /// is active; replaced wholesale on a new `:command` that opens a form.
 #[derive(Debug, Clone)]
 pub struct Form {
