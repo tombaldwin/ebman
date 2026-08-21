@@ -409,9 +409,11 @@ pub struct Partition {
     pub console_host: Option<&'static str>,
 }
 
-/// Longest region prefixes first: `us-isob-` and `us-isof-` both start
-/// with `us-iso`. The commercial partition is last and matches nothing,
-/// so it acts as the fallback.
+/// Every prefix ends in `-`, so none is a prefix of another
+/// (`"us-isob-".starts_with("us-iso-")` is false) and order doesn't
+/// matter for matching. The commercial entry carries no prefixes and is
+/// reached through [`commercial`], not by position — so this list can be
+/// appended to safely.
 pub const PARTITIONS: &[Partition] = &[
     Partition {
         arn: "aws-us-gov",
@@ -450,6 +452,17 @@ pub const PARTITIONS: &[Partition] = &[
         console_host: None,
     },
     Partition {
+        arn: "aws-eusc",
+        prefixes: &["eusc-"],
+        // The only region the pinned SDK's partition data lists for
+        // this partition; staying inside it is the property that
+        // matters. Console host deliberately unset — the European
+        // Sovereign Cloud has one, but not on a hostname worth
+        // guessing at.
+        global_region: "eusc-de-east-1",
+        console_host: None,
+    },
+    Partition {
         arn: "aws",
         prefixes: &[],
         global_region: "us-east-1",
@@ -457,14 +470,28 @@ pub const PARTITIONS: &[Partition] = &[
     },
 ];
 
+/// The commercial partition — the fallback for regions we don't
+/// recognise, and the only entry with no prefixes of its own.
+fn commercial() -> &'static Partition {
+    PARTITIONS
+        .iter()
+        .find(|p| p.arn == "aws")
+        .expect("commercial partition present in PARTITIONS")
+}
+
 /// The partition a region belongs to. Unknown regions fall back to the
 /// commercial partition, which is both the common case and the least
 /// surprising guess.
 pub fn partition_for_region(region: &str) -> &'static Partition {
+    // Resolved by identity, not by position. This used to fall back to
+    // `PARTITIONS.last()`, so appending a new partition — the "one
+    // edit" the table's own header advertises — would silently redirect
+    // every unrecognised region into it, breaking `:explain`, `:cost on`
+    // and every console link for ordinary commercial operators.
     PARTITIONS
         .iter()
         .find(|p| p.prefixes.iter().any(|pre| region.starts_with(pre)))
-        .unwrap_or_else(|| PARTITIONS.last().expect("commercial partition present"))
+        .unwrap_or_else(commercial)
 }
 
 /// The partition segment of an ARN — `aws` from `arn:aws:iam::…`.
@@ -495,11 +522,13 @@ mod partition_tests {
         assert_eq!(partition_for_region("eu-west-2").arn, "aws");
         assert_eq!(partition_for_region("us-gov-east-1").arn, "aws-us-gov");
         assert_eq!(partition_for_region("cn-northwest-1").arn, "aws-cn");
-        // The `us-iso*` prefixes overlap; the longest must win.
         assert_eq!(partition_for_region("us-iso-east-1").arn, "aws-iso");
         assert_eq!(partition_for_region("us-isob-east-1").arn, "aws-iso-b");
         assert_eq!(partition_for_region("us-isof-south-1").arn, "aws-iso-f");
         assert_eq!(partition_for_region("eu-isoe-west-1").arn, "aws-iso-e");
+        // European Sovereign Cloud — carried by the pinned SDK's own
+        // partition data, and missed by the first version of this table.
+        assert_eq!(partition_for_region("eusc-de-east-1").arn, "aws-eusc");
         // Unknown regions fall back to commercial rather than failing.
         assert_eq!(partition_for_region("mars-central-1").arn, "aws");
         assert_eq!(partition_for_region("").arn, "aws");
@@ -543,5 +572,10 @@ mod partition_tests {
         assert!(prefixes.contains(&"arn:aws:".to_string()));
         assert!(prefixes.contains(&"arn:aws-us-gov:".to_string()));
         assert!(prefixes.contains(&"arn:aws-iso-b:".to_string()));
+        assert!(
+            prefixes.contains(&"arn:aws-eusc:".to_string()),
+            "report_bug scrubs ARNs from this list — a missing partition \
+             leaks account IDs into a public issue"
+        );
     }
 }

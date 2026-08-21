@@ -19,13 +19,16 @@ pub struct Config {
     /// CloudWatch dimension names that identify an Elastic Beanstalk
     /// environment, for matching alarms to it (`alarm_dimensions`).
     ///
-    /// Defaults to just `EnvironmentName`, which is what EB itself and
-    /// `:alarm-add` use. It is configurable because the match used to
-    /// be on the dimension *value* alone — which wrongly claimed an RDS
-    /// alarm named after the env — and tightening it to the canonical
-    /// name silently dropped operator-authored alarms that spell the
-    /// dimension differently (`Environment`, `EnvName`). This is the
-    /// way back, without reinstating the false positive.
+    /// Always contains `EnvironmentName` — that is what EB itself and
+    /// `:alarm-add` write, so it can't be configured away without
+    /// hiding ebman's own alarms. The config key *adds* spellings for
+    /// operators whose alarms use a different dimension name.
+    ///
+    /// It exists because the match used to be on the dimension *value*
+    /// alone, which wrongly claimed an RDS alarm named after the env;
+    /// tightening it to the canonical name silently dropped
+    /// operator-authored alarms spelled differently. This is the way
+    /// back without reinstating the false positive.
     pub alarm_dimensions: Vec<String>,
     /// Per-profile theme override. Key = AWS profile name, value = theme
     /// name (matches the same names `theme = …` accepts). Lets the
@@ -267,9 +270,16 @@ pub fn parse(text: &str) -> Config {
                 cfg.required_tags = crate::util::split_csv(&value);
             }
             "alarm_dimensions" => {
-                let names = crate::util::split_csv(&value);
-                if !names.is_empty() {
-                    cfg.alarm_dimensions = names;
+                // ADDITIONAL names, not a replacement. `:alarm-add`
+                // always writes `EnvironmentName` (aws/cloudwatch.rs),
+                // so dropping it from the match would make the alarms
+                // ebman itself creates invisible to ebman — and hide
+                // every EB-native alarm at the same time, which during
+                // triage reads as "no alarms configured".
+                for name in crate::util::split_csv(&value) {
+                    if !cfg.alarm_dimensions.contains(&name) {
+                        cfg.alarm_dimensions.push(name);
+                    }
                 }
             }
             "profile_themes" => {
@@ -479,6 +489,40 @@ pub fn serialize(cfg: &Config) -> String {
         pairs.sort_by(|a, b| a.0.cmp(b.0));
         for (acct, ro) in pairs {
             out.push_str(&format!("safety.accounts.{acct}.read_only = {ro}\n"));
+        }
+    }
+    // Only emitted when it differs from the default, so an operator who
+    // never set it doesn't find the key appear in their file.
+    if cfg.alarm_dimensions != vec![crate::aws::ENV_DIMENSION.to_string()] {
+        out.push_str(&format!(
+            "alarm_dimensions = \"{}\"\n",
+            cfg.alarm_dimensions.join(",")
+        ));
+    }
+    // AssumeRole account definitions. These were parsed but never
+    // written, so a `:settings` save — which rewrites the whole file
+    // from this function — deleted every one of them and broke
+    // `:account <name>` with nothing on screen to say why.
+    if !cfg.accounts.is_empty() {
+        let mut names: Vec<&String> = cfg.accounts.keys().collect();
+        names.sort();
+        for name in names {
+            let Some(spec) = cfg.accounts.get(name) else {
+                continue;
+            };
+            out.push_str(&format!(
+                "accounts.{name}.role_arn = \"{}\"\n",
+                spec.role_arn
+            ));
+            if let Some(v) = &spec.source_profile {
+                out.push_str(&format!("accounts.{name}.source_profile = \"{v}\"\n"));
+            }
+            if let Some(v) = &spec.external_id {
+                out.push_str(&format!("accounts.{name}.external_id = \"{v}\"\n"));
+            }
+            if let Some(v) = &spec.region {
+                out.push_str(&format!("accounts.{name}.region = \"{v}\"\n"));
+            }
         }
     }
     out
@@ -841,11 +885,27 @@ explain.max_tokens = 512
     }
     #[test]
     fn documented_alarm_dimensions_example_parses() {
-        let cfg = parse("alarm_dimensions = \"EnvironmentName,Environment\"\n");
+        let cfg = parse("alarm_dimensions = \"Environment\"\n");
         assert_eq!(
             cfg.alarm_dimensions,
-            vec!["EnvironmentName".to_string(), "Environment".to_string()]
+            vec!["EnvironmentName".to_string(), "Environment".to_string()],
+            "the key ADDS spellings; the canonical one is always matched"
         );
+    }
+
+    #[test]
+    fn alarm_dimensions_cannot_configure_away_the_canonical_name() {
+        // `:alarm-add` always writes `EnvironmentName`. If the config
+        // could replace the match set, ebman's own alarms — and every
+        // EB-native one — would become invisible to it, which during
+        // triage reads as "no alarms configured".
+        let cfg = parse("alarm_dimensions = \"Environment,EnvName\"\n");
+        assert!(cfg
+            .alarm_dimensions
+            .contains(&crate::aws::ENV_DIMENSION.to_string()));
+        // And listing it explicitly doesn't duplicate it.
+        let cfg = parse("alarm_dimensions = \"EnvironmentName,EnvironmentName\"\n");
+        assert_eq!(cfg.alarm_dimensions, vec!["EnvironmentName".to_string()]);
     }
 
     #[test]
@@ -859,5 +919,61 @@ explain.max_tokens = 512
         // Blanking the key must not silently match nothing.
         let cfg = parse("alarm_dimensions = \"\"\n");
         assert_eq!(cfg.alarm_dimensions, vec!["EnvironmentName".to_string()]);
+    }
+
+    #[test]
+    fn settings_save_must_not_drop_hand_written_config() {
+        // `:settings` save rewrites the WHOLE file from `serialize`, so any
+        // key `parse` accepts but `serialize` omits is destroyed.
+        let original = concat!(
+            "required_tags = \"Owner,Project\"\n",
+            "alarm_dimensions = \"EnvironmentName,Environment\"\n",
+            "lint.disable = \"EBL001,EBL007\"\n",
+            "lint.fix_disable = \"EBL003\"\n",
+            "explain.provider = \"ollama\"\n",
+            "explain.enabled = true\n",
+            "explain.ollama_url = \"http://localhost:11434\"\n",
+            "explain.api_key_env = \"MY_KEY\"\n",
+            "explain.max_tokens = 2048\n",
+            "accounts.prod.role_arn = \"arn:aws:iam::123456789012:role/EbAdmin\"\n",
+            "accounts.prod.source_profile = \"default\"\n",
+            "accounts.prod.external_id = \"xyz\"\n",
+        );
+        let before = parse(original);
+        let after = parse(&serialize(&before));
+
+        let mut lost: Vec<&str> = Vec::new();
+        if after.required_tags != before.required_tags {
+            lost.push("required_tags");
+        }
+        if after.alarm_dimensions != before.alarm_dimensions {
+            lost.push("alarm_dimensions");
+        }
+        if after.lint_disable != before.lint_disable {
+            lost.push("lint.disable");
+        }
+        if after.lint_fix_disable != before.lint_fix_disable {
+            lost.push("lint.fix_disable");
+        }
+        if after.explain_provider != before.explain_provider {
+            lost.push("explain.provider");
+        }
+        if after.explain_enabled != before.explain_enabled {
+            lost.push("explain.enabled");
+        }
+        if after.explain_ollama_url != before.explain_ollama_url {
+            lost.push("explain.ollama_url");
+        }
+        if after.explain_api_key_env != before.explain_api_key_env {
+            lost.push("explain.api_key_env");
+        }
+        if after.explain_max_tokens != before.explain_max_tokens {
+            lost.push("explain.max_tokens");
+        }
+        if after.accounts != before.accounts {
+            lost.push("accounts.*");
+        }
+
+        assert!(lost.is_empty(), "a :settings save destroys: {lost:?}");
     }
 }
