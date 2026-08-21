@@ -896,6 +896,10 @@ pub struct ResolvedConfig {
     pub explain_settings: crate::llm::Settings,
     /// Tag keys every env must carry (`required_tags`).
     pub required_tags: Vec<String>,
+    /// CloudWatch dimension names that identify an env, for matching
+    /// alarms to it (`alarm_dimensions`). Normally just
+    /// `EnvironmentName`.
+    pub alarm_dimensions: Vec<String>,
     /// Raw `icons = …` string before resolution to `IconStyle` (so
     /// `:settings` round-trips `"auto"` without flattening it).
     pub cfg_icons_raw: String,

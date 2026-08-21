@@ -2279,7 +2279,8 @@ async fn list_events_since_follows_next_token() {
     let eb = mock_client!(aws_sdk_elasticbeanstalk, [&page1, &page2]);
     let client = client_with_eb(eb);
 
-    let events = client.list_events_since(1_000_000, 300).await.unwrap();
+    let (events, truncated) = client.list_events_since(1_000_000, 300).await.unwrap();
+    assert!(!truncated, "two pages and a clean finish is not truncated");
     let msgs: Vec<&str> = events.iter().map(|e| e.message.as_str()).collect();
     assert_eq!(
         msgs,
@@ -2752,7 +2753,10 @@ async fn list_alarms_for_env_ignores_a_same_named_resource_in_another_service() 
     let cw = mock_client!(aws_sdk_cloudwatch, [&rule]);
     let client = client_with_cw(cw);
 
-    let alarms = client.list_alarms_for_env("payments").await.unwrap();
+    let alarms = client
+        .list_alarms_for_env("payments", &[super::ENV_DIMENSION.to_string()])
+        .await
+        .unwrap();
     let names: Vec<&str> = alarms.iter().map(|a| a.name.as_str()).collect();
     assert_eq!(
         names,
@@ -2792,7 +2796,10 @@ async fn list_alarms_for_env_matches_when_env_is_not_the_first_dimension() {
     let cw = mock_client!(aws_sdk_cloudwatch, [&rule]);
     let client = client_with_cw(cw);
 
-    let alarms = client.list_alarms_for_env("payments").await.unwrap();
+    let alarms = client
+        .list_alarms_for_env("payments", &[super::ENV_DIMENSION.to_string()])
+        .await
+        .unwrap();
     assert_eq!(alarms.len(), 1, "dimension order must not matter");
 }
 
@@ -3198,7 +3205,7 @@ async fn a_truncated_scan_errors_rather_than_reporting_no_match() {
     let client = client_with_cw(cw);
 
     let err = client
-        .list_alarms_for_env("payments")
+        .list_alarms_for_env("payments", &[super::ENV_DIMENSION.to_string()])
         .await
         .expect_err("a truncated scan must not be reported as 'no alarms'");
     let msg = format!("{err}");
@@ -3245,4 +3252,137 @@ async fn list_instances_follows_next_token() {
     let ids: Vec<&str> = instances.iter().map(|i| i.id.as_str()).collect();
     assert_eq!(ids, vec!["i-aaa", "i-bbb"]);
     assert_eq!(page2.num_calls(), 1, "next_token must be followed");
+}
+
+// ── profile+region client cache ────────────────────────────────────
+
+#[tokio::test]
+async fn cached_client_reuses_one_client_per_profile_and_region() {
+    // `list_environments_in_region` runs once per region per refresh
+    // tick and used to build a whole `AwsClient` each time — twelve SDK
+    // clients plus `aws_config::load()`, which re-reads ~/.aws from
+    // disk. Reuse is also what the SDK expects: its credential
+    // providers cache and refresh internally.
+    super::clear_client_cache();
+    let first = super::cached_client(None, "us-east-1".into())
+        .await
+        .expect("built");
+    let second = super::cached_client(None, "us-east-1".into())
+        .await
+        .expect("cached");
+    assert!(
+        std::sync::Arc::ptr_eq(&first, &second),
+        "the same profile+region must hand back the same client"
+    );
+
+    // A different region is a different client.
+    let other = super::cached_client(None, "eu-west-2".into())
+        .await
+        .expect("built");
+    assert!(!std::sync::Arc::ptr_eq(&first, &other));
+
+    // Clearing forces a rebuild — this is what a context switch does,
+    // since that is also when credentials on disk may have changed.
+    super::clear_client_cache();
+    let rebuilt = super::cached_client(None, "us-east-1".into())
+        .await
+        .expect("rebuilt");
+    assert!(!std::sync::Arc::ptr_eq(&first, &rebuilt));
+    super::clear_client_cache();
+}
+
+#[tokio::test]
+async fn list_events_since_reports_a_truncated_window() {
+    // The page cap used to be a log line only. The caller's watermark
+    // advances past the newest event received, and DescribeEvents
+    // returns newest-first — so what's behind the token is older and
+    // unreachable by any later poll. The tail needs to know.
+    use aws_sdk_elasticbeanstalk::operation::describe_events::DescribeEventsOutput;
+    use aws_sdk_elasticbeanstalk::types::EventDescription;
+
+    let endless = mock!(Client::describe_events).then_output(|| {
+        DescribeEventsOutput::builder()
+            .events(
+                EventDescription::builder()
+                    .message("busy")
+                    .environment_name("api-prod")
+                    .build(),
+            )
+            .next_token("MORE")
+            .build()
+    });
+    let eb = mock_client!(
+        aws_sdk_elasticbeanstalk,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&endless]
+    );
+    let client = client_with_eb(eb);
+
+    let (events, truncated) = client.list_events_since(1, 300).await.unwrap();
+    assert!(truncated, "a capped window must be reported to the caller");
+    assert_eq!(events.len(), 5, "one event per page, up to the cap");
+}
+
+#[tokio::test]
+async fn alarm_dimension_names_are_configurable() {
+    // Tightening the match to `EnvironmentName` fixed a real false
+    // positive (an RDS alarm named after the env) but silently dropped
+    // operator-authored alarms that spell the dimension differently.
+    // `alarm_dimensions` is the way back, without reinstating the
+    // false positive: the VALUE still has to be the env name, and an
+    // RDS `DBInstanceIdentifier` still won't match unless the operator
+    // explicitly asks for it.
+    use aws_sdk_cloudwatch::operation::describe_alarms::DescribeAlarmsOutput;
+    use aws_sdk_cloudwatch::types::{Dimension, MetricAlarm};
+
+    fn alarm(name: &str, dim_name: &str) -> MetricAlarm {
+        MetricAlarm::builder()
+            .alarm_name(name)
+            .namespace("Acme/Platform")
+            .metric_name("m")
+            .dimensions(
+                Dimension::builder()
+                    .name(dim_name)
+                    .value("payments")
+                    .build(),
+            )
+            .build()
+    }
+    let make = || {
+        mock!(aws_sdk_cloudwatch::Client::describe_alarms).then_output(|| {
+            DescribeAlarmsOutput::builder()
+                .metric_alarms(alarm("canonical", "EnvironmentName"))
+                .metric_alarms(alarm("operator-spelling", "Environment"))
+                .metric_alarms(alarm("rds", "DBInstanceIdentifier"))
+                .build()
+        })
+    };
+
+    // Default: only the canonical dimension.
+    let rule = make();
+    let client = client_with_cw(mock_client!(aws_sdk_cloudwatch, [&rule]));
+    let names: Vec<String> = client
+        .list_alarms_for_env("payments", &[super::ENV_DIMENSION.to_string()])
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|a| a.name)
+        .collect();
+    assert_eq!(names, vec!["canonical"]);
+
+    // Widened: the operator's own spelling is included, the unrelated
+    // RDS alarm still isn't.
+    let rule = make();
+    let client = client_with_cw(mock_client!(aws_sdk_cloudwatch, [&rule]));
+    let names: Vec<String> = client
+        .list_alarms_for_env(
+            "payments",
+            &["EnvironmentName".to_string(), "Environment".to_string()],
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|a| a.name)
+        .collect();
+    assert_eq!(names, vec!["canonical", "operator-spelling"]);
 }

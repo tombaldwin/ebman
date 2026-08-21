@@ -358,7 +358,7 @@ pub async fn list_environments_in_region(
     profile: Option<String>,
     region: String,
 ) -> Result<Vec<Environment>> {
-    let client = AwsClient::with(profile, Some(region.clone())).await?;
+    let client = super::cached_client(profile, region.clone()).await?;
     // Label with the region the client RESOLVED to, not the one asked
     // for. `AwsClient::with` detects and logs the case where the SDK
     // ignores an explicit region (an empty or whitespace value leaves
@@ -464,19 +464,21 @@ pub struct EnvVpcContext {
 
 impl AwsClient {
     pub async fn list_events(&self, max: i32) -> Result<Vec<Event>> {
-        self.list_events_inner(None, None, max, 1).await
+        Ok(self.list_events_inner(None, None, max, 1).await?.0)
     }
 
     pub async fn list_events_for_env(&self, env_name: &str, max: i32) -> Result<Vec<Event>> {
-        self.list_events_inner(Some(env_name.to_string()), None, max, 1)
-            .await
+        Ok(self
+            .list_events_inner(Some(env_name.to_string()), None, max, 1)
+            .await?
+            .0)
     }
 
     /// Fleet-wide events newer than `since_ms` (epoch millis) — the
     /// `:event-tail` polling primitive. `start_time` keeps each poll's
     /// batch small so a busy fleet doesn't re-ship its whole history
     /// every cycle.
-    pub async fn list_events_since(&self, since_ms: i64, max: i32) -> Result<Vec<Event>> {
+    pub async fn list_events_since(&self, since_ms: i64, max: i32) -> Result<(Vec<Event>, bool)> {
         self.list_events_inner(None, Some(since_ms), max, EVENT_TAIL_MAX_PAGES)
             .await
     }
@@ -500,10 +502,11 @@ impl AwsClient {
         since_ms: Option<i64>,
         max: i32,
         max_pages: usize,
-    ) -> Result<Vec<Event>> {
+    ) -> Result<(Vec<Event>, bool)> {
         let mut raw = Vec::new();
         let mut next_token: Option<String> = None;
         let mut pages = 0usize;
+        let mut truncated = false;
         loop {
             let mut req = self.client.describe_events().max_records(max);
             if let Some(n) = env_name.clone() {
@@ -543,6 +546,7 @@ impl AwsClient {
                     // the overlay is tracked in BACKLOG.md; at 1500
                     // events per 5-second poll it is a long way from
                     // any real fleet.
+                    truncated = true;
                     if max_pages > 1 {
                         tracing::warn!(
                             target: "ebman::aws",
@@ -573,7 +577,7 @@ impl AwsClient {
                 version_label: e.version_label.filter(|v| !v.is_empty()),
             })
             .collect();
-        Ok(events)
+        Ok((events, truncated))
     }
 
     /// Full `DescribeEnvironmentResources` dump for an env, formatted as a

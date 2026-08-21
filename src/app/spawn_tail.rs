@@ -215,9 +215,36 @@ impl App {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 match aws.list_events_since(since_ms, EVENT_TAIL_POLL_BATCH).await {
-                    Ok(mut events) => {
+                    Ok((mut events, truncated)) => {
                         since_ms = next_event_watermark_ms(&events, since_ms);
                         events.reverse();
+                        if truncated {
+                            // The poll filled its page budget with a
+                            // token still in hand. DescribeEvents
+                            // returns newest-first, so what we didn't
+                            // fetch is OLDER than everything here — and
+                            // the watermark has just moved past it, so
+                            // no later poll can reach it. Say so in the
+                            // stream rather than leaving an unbroken
+                            // tail with a silent hole in it.
+                            //
+                            // `at: None` keeps it out of
+                            // `next_event_watermark_ms`, which only
+                            // considers dated events.
+                            events.insert(
+                                0,
+                                crate::aws::Event {
+                                    at: None,
+                                    env: String::new(),
+                                    application: String::new(),
+                                    message: "… older events in this window were not fetched \
+                                              (per-poll batch limit reached)"
+                                        .into(),
+                                    severity: "WARN".into(),
+                                    version_label: None,
+                                },
+                            );
+                        }
                         let _ = tx.send(AppMsg::EventTailEvents {
                             gen,
                             session_id,

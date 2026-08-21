@@ -131,7 +131,15 @@ impl App {
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
-        let url = console_url(&self.context.region, &env.application, &env.name);
+        let region = self.context.region.clone();
+        let Some(url) = console_url(&region, &env.application, &env.name) else {
+            self.error_message = Some(format!(
+                "no console host known for the {} partition — ebman can build \
+                 links for the commercial, GovCloud and China partitions only",
+                crate::util::partition_for_region(&region).arn
+            ));
+            return;
+        };
         match open_url(&url) {
             Ok(()) => {
                 self.status_message = Some(format!("opened {} in browser", env.name));
@@ -153,9 +161,15 @@ impl App {
         };
         let region = self.context.region.clone();
         let id = inst.id.clone();
-        let url = format!(
-            "https://{region}.console.aws.amazon.com/ec2/home?region={region}#InstanceDetails:instanceId={id}"
-        );
+        let Some(base) = crate::util::console_base_url(&region) else {
+            self.error_message = Some(format!(
+                "no console host known for the {} partition — ebman can build \
+                 links for the commercial, GovCloud and China partitions only",
+                crate::util::partition_for_region(&region).arn
+            ));
+            return;
+        };
+        let url = format!("{base}/ec2/home?region={region}#InstanceDetails:instanceId={id}");
         let display = id.clone();
         let result = std::process::Command::new(if cfg!(target_os = "macos") {
             "open"
@@ -266,10 +280,18 @@ impl App {
         let Some(name) = self.applications.get(idx).map(|a| a.name.clone()) else {
             return;
         };
-        let region = &self.context.region;
+        let region = self.context.region.clone();
         let app_enc = urlencode(&name);
+        let Some(base) = crate::util::console_base_url(&region) else {
+            self.error_message = Some(format!(
+                "no console host known for the {} partition — ebman can build \
+                 links for the commercial, GovCloud and China partitions only",
+                crate::util::partition_for_region(&region).arn
+            ));
+            return;
+        };
         let url = format!(
-            "https://{region}.console.aws.amazon.com/elasticbeanstalk/home?region={region}#/application/overview?applicationName={app_enc}"
+            "{base}/elasticbeanstalk/home?region={region}#/application/overview?applicationName={app_enc}"
         );
         match open_url(&url) {
             Ok(()) => {

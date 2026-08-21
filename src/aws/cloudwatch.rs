@@ -46,7 +46,7 @@ pub(super) fn to_smithy(d: DateTime<Utc>) -> aws_sdk_cloudwatch::primitives::Dat
 /// The CloudWatch dimension that names an Elastic Beanstalk environment.
 /// Both halves of the alarm story use it: `put_env_metric_alarm` writes
 /// it, `list_alarms_for_env` matches on it.
-const ENV_DIMENSION: &str = "EnvironmentName";
+pub const ENV_DIMENSION: &str = "EnvironmentName";
 
 impl AwsClient {
     /// Every metric alarm dimensioned `EnvironmentName=<env>`.
@@ -65,7 +65,16 @@ impl AwsClient {
     /// [`AwsClient::put_env_metric_alarm`]), but an operator-authored
     /// alarm in a custom namespace dimensioned by `EnvironmentName` is
     /// genuinely about this environment and should still show up.
-    pub async fn list_alarms_for_env(&self, env_name: &str) -> Result<Vec<CwAlarm>> {
+    ///
+    /// `dimension_names` is the set of dimension names that identify an
+    /// environment — normally just `EnvironmentName`, widened via the
+    /// `alarm_dimensions` config key for operators whose own alarms
+    /// spell it differently.
+    pub async fn list_alarms_for_env(
+        &self,
+        env_name: &str,
+        dimension_names: &[String],
+    ) -> Result<Vec<CwAlarm>> {
         let this = self;
         let raw = super::paginate("DescribeAlarms", move |token| async move {
             let mut req = this.cw.describe_alarms();
@@ -81,7 +90,10 @@ impl AwsClient {
             .into_iter()
             .filter(|a| {
                 a.dimensions.as_deref().unwrap_or_default().iter().any(|d| {
-                    d.name.as_deref() == Some(ENV_DIMENSION) && d.value.as_deref() == Some(env_name)
+                    d.value.as_deref() == Some(env_name)
+                        && d.name
+                            .as_deref()
+                            .is_some_and(|n| dimension_names.iter().any(|w| w == n))
                 })
             })
             .map(|a| CwAlarm {

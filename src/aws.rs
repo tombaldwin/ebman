@@ -168,7 +168,7 @@ impl AwsClient {
     // the cost is uniform, there are just twelve of them.)
     //
     // `OnceLock` rather than a plain `Option`: `AwsClient` is shared as
-    // `Arc<AwsClient>` across spawned tasks, so it has to stay `Sync`,
+    // `std::sync::Arc<AwsClient>` across spawned tasks, so it has to stay `Sync`,
     // and the accessors take `&self`.
 
     fn cost(&self) -> &CostExplorerClient {
@@ -569,6 +569,72 @@ where
     })
 }
 
+/// Process-wide cache of profile+region clients.
+///
+/// `list_environments_in_region` is called once per region on every
+/// refresh tick, and each call used to build a whole `AwsClient` —
+/// twelve SDK clients *and* `aws_config::load()`, which re-reads
+/// `~/.aws/config` and `~/.aws/credentials` from disk and rebuilds the
+/// credential-provider chain. With four extra regions that is four disk
+/// round-trips and forty-eight client constructions every tick, forever.
+/// Making six of the twelve lazy (see [`AwsClient::cost`] and friends)
+/// only addressed the CPU-bound half, and none of those deferred cells
+/// ever survived to a second use on this path.
+///
+/// Caching the client is also what the SDK expects: its credential
+/// providers cache and refresh internally, so a long-lived client picks
+/// up a renewed SSO token on its own — building a fresh one per call
+/// throws that away too.
+///
+/// Only the profile path is cached. `assume_role` clients carry a
+/// session with a hard 1-hour cap and must not be reused past it.
+/// `(profile, region)` → the client built for it.
+type ClientCache = std::sync::Mutex<
+    std::collections::HashMap<(Option<String>, String), std::sync::Arc<AwsClient>>,
+>;
+
+static CLIENT_CACHE: std::sync::OnceLock<ClientCache> = std::sync::OnceLock::new();
+
+fn client_cache() -> &'static ClientCache {
+    CLIENT_CACHE.get_or_init(Default::default)
+}
+
+/// A client for this profile+region, built once and reused.
+///
+/// Two callers racing on a cold key both build one; the loser's is
+/// dropped. That is cheaper and simpler than holding a lock across the
+/// `await`, and both clients work.
+pub async fn cached_client(
+    profile: Option<String>,
+    region: String,
+) -> Result<std::sync::Arc<AwsClient>> {
+    let key = (profile.clone(), region.clone());
+    if let Some(found) = client_cache()
+        .lock()
+        .ok()
+        .and_then(|c| c.get(&key).cloned())
+    {
+        return Ok(found);
+    }
+    let built = std::sync::Arc::new(AwsClient::with(profile, Some(region)).await?);
+    if let Ok(mut cache) = client_cache().lock() {
+        cache.insert(key, built.clone());
+    }
+    Ok(built)
+}
+
+/// Drop every cached client.
+///
+/// Called when the operator signals that the world changed — a profile
+/// or account switch — since that is also when they may have re-run
+/// `aws sso login` or edited `~/.aws/config`. Cheap: the next fan-out
+/// rebuilds what it needs.
+pub fn clear_client_cache() {
+    if let Ok(mut cache) = client_cache().lock() {
+        cache.clear();
+    }
+}
+
 /// The region to endpoint a *global* AWS service in, given the region the
 /// operator is working in.
 ///
@@ -580,26 +646,10 @@ where
 ///
 /// The property that matters is staying inside the operator's partition.
 /// Within the right partition a wrong region still resolves; across
-/// partitions nothing does.
-///
-/// Prefix order matters: `us-isob-` and `us-isof-` both start with
-/// `us-iso`, so the longer prefixes are tested first.
+/// partitions nothing does. The table lives in [`crate::util`], shared
+/// with ARN parsing and console URLs.
 fn global_service_region(operator_region: &str) -> &'static str {
-    // (region prefix, that partition's global endpoint region)
-    const PARTITIONS: &[(&str, &str)] = &[
-        ("us-gov-", "us-gov-west-1"),
-        ("cn-", "cn-north-1"),
-        ("us-isob-", "us-isob-east-1"),
-        ("us-isof-", "us-isof-south-1"),
-        ("us-iso-", "us-iso-east-1"),
-        ("eu-isoe-", "eu-isoe-west-1"),
-    ];
-    for (prefix, global) in PARTITIONS {
-        if operator_region.starts_with(prefix) {
-            return global;
-        }
-    }
-    "us-east-1"
+    crate::util::partition_for_region(operator_region).global_region
 }
 
 /// Convert an STS credential expiry (seconds since the epoch, `i64`) into a
