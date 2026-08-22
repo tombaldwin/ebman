@@ -1178,6 +1178,17 @@ A unified table would therefore be four shared rows, ten TUI-only rows, and a se
 
 The lesson repeats: the plan was built on an unverified reading of the backlog, and checking the actual enumerations before designing killed it in ten minutes.
 
+#### Max review of the post-0.30.2 lineup — 2026-08-22
+
+Twelve commits reviewed. No functional defects found in them — the one thing the review changed is a release constraint, and it matters.
+
+- **The next release carrying this lineup must be 0.31.0, not 0.30.3.** `series_anomaly_label` is public API (`pub mod ui` + `pub use detail::{…}`) and gained an `IconStyle` parameter. Under Cargo's 0.x rules the MINOR position is the breaking position, so a patch bump would ship a breaking signature change on a crates.io library. Nobody realistically depends on that function, but the version number is a claim and it would be a false one.
+- [x] **The ascii render test didn't cover the anomaly badge.** Both existing tests stayed green when the glyph was hardcoded *inside* `series_anomaly_label` — the fleet-view frame never renders the Metrics tab, and the unit test passes its own `IconStyle`. So the CALL SITE was unpinned: hardcoding `IconStyle::Unicode` there would have passed everything. Added a test that renders the Metrics tab with a spiked series; verified by that exact mutation. This is the session's recurring failure mode found in my own work, one commit after writing the house rule about it.
+
+Checked and sound: the pin/freeze order is now uniform across all four CLI write paths, not just the two in `action.rs` (`audit replay` and `lint --fix` already did freeze-then-pin with their own inline checks — no gap, and the docs' claim that both refuse pinned targets holds); both refusal paths exit 3, so reordering changed the message and not the exit code; `retired` holds only superseded tokens that no path will accept, so remembering them is diagnostic rather than an auth surface; the MCP source scan reads one flat match with no nested string arms, and its `arms.len() >= 10` floor catches a formatting change that would silently shrink it.
+
+Recorded, not fixed (pre-existing, outside this lineup): `ebman action <unknown-verb>` builds an AWS client and runs the safety gates before reporting the usage error, so with no credentials it reports a credential failure rather than "unknown action". Moving the parse above the client construction is three lines but changes the exit code for an unknown verb on a frozen fleet from 3 to 2 — defensible, but a behaviour change that wants its own decision rather than a drive-by in a review.
+
 #### Important (need live verification or a design pass)
 - [x] **Cost Explorer pagination** — Shipped. `fetch_env_costs` follows `NextPageToken` (`aws/cost.rs`). The `MAX_COST_PAGES = 20` cap now warns, returns `EnvCosts { truncated }`, and a truncated walk is neither cached nor allowed to replace a complete in-memory map; `:cost status` and `:fleet-cost` both say when what's on screen is partial.
 - [x] **logs-tail `next_token` follow** — Shipped. `fetch_recent_log_events` follows `next_token` up to `MAX_PAGES_PER_POLL = 5` with boundary-millisecond dedupe (`aws/logs.rs`). The carry is keyed on whether the watermark moved rather than on `truncated`, so a stalled watermark keeps its skip set and the same lines aren't re-emitted every poll.
