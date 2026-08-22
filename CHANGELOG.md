@@ -6,6 +6,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.30.1] — 2026-08-22 — the region fixes, actually applied
+
+Same-day patch. Two post-release review rounds found that one of
+0.30.0's fixes never took effect, and that another was only half a fix.
+
+### Fixed
+
+- **The assumed-role client cache was never read.** 0.30.0 added it and
+  reported the fix as shipped, but the edit routing `RegionClient`
+  through it silently failed and the accompanying test only asserted
+  the cache gets *cleared* — which stayed true of a cache nothing read.
+  So per-env work under `:account` still re-assumed a role on every
+  call. Now routed through it, with a test that pins the read path.
+
+- **`list_environments_for_account` re-assumed per call** — one
+  `sts:AssumeRole` per region on every 15-second tick under `:account`
+  plus `:region all`, and one per account in `:org-health` /
+  `:find-env`. Sessions are the STS one-hour default and the cache TTL
+  is five minutes, so a cached client can never outlive its
+  credentials.
+
+- **A write could still retarget the home region.** The confirm modal
+  carries only a target name, and there is an undo window between the
+  operator confirming and the dispatch firing. A refresh landing in
+  that window — a terminated environment, or a region whose fetch
+  failed under a fan-out — dropped the row, and the dispatch fell back
+  to the session's region. Silently, which is the class 0.30.0 is named
+  after. ebman now remembers where each environment was last seen; the
+  live table still wins, and a context switch clears it.
+
+- **`:alarm-create` / `:alarm-delete` resolved their client from the
+  environment on screen while operating on the selected row.** Those
+  agree until a refresh reorders the table, after which the alarm went
+  to one region and the audit line named another.
+
+- **A refreshed session client is now checked, not assumed, to have
+  resolved the same region.** One pointing elsewhere while the header
+  disagreed would hand out the session client for the wrong region.
+
+### Performance
+
+- **The per-tick fan-outs went quadratic.** The instance-count column
+  and the worker-queue DLQ check iterate the fleet and then looked each
+  environment up *by name*, scanning the whole fleet again — every 15
+  seconds. They already hold the row.
+
 ## [0.30.0] — 2026-08-22 — the region a row actually lives in
 
 Two things: a correctness class that had been wrong since multi-region
