@@ -32,7 +32,63 @@ use super::*;
 #[derive(Default)]
 pub(super) struct WriteState {
     pub pending: Option<PendingWrite>,
+    /// Tokens minted for plans this session that are no longer live,
+    /// newest last.
+    ///
+    /// Confirming one of these used to return "unknown confirm_token",
+    /// which is what a TYPO returns — so an agent that re-planned and
+    /// then confirmed the older token was told its token was garbage
+    /// rather than superseded, and had no way to tell the two apart.
+    /// The distinction changes what the agent should do next: re-read
+    /// the newer plan, versus re-send the token it already has.
+    ///
+    /// Bounded, because it is only a diagnostic: past the cap the
+    /// oldest are dropped and confirming one of those falls back to
+    /// the unknown-token message, which is honest — we genuinely no
+    /// longer know.
+    pub retired: std::collections::VecDeque<String>,
 }
+
+impl WriteState {
+    /// Install a freshly minted plan, retiring whatever it replaces.
+    ///
+    /// The retirement lives here rather than at the call site because
+    /// the call site needs a running server to reach — so a test could
+    /// pin the message branch but not the fact that anything ever
+    /// reaches `retired`. That is the same shape as an earlier cache
+    /// whose read path was tested while nothing wrote to it.
+    pub fn install(&mut self, plan: PendingWrite) {
+        if let Some(old) = self.pending.take() {
+            if self.retired.len() >= RETIRED_TOKEN_MEMORY {
+                self.retired.pop_front();
+            }
+            self.retired.push_back(old.token);
+        }
+        self.pending = Some(plan);
+    }
+}
+
+/// What to tell an agent whose `confirm_token` doesn't match the
+/// pending plan.
+///
+/// Split out so the distinction is testable: `confirm` needs a live
+/// server, and the branch — not the plumbing — is what was wrong.
+fn mismatched_token_message(retired: &std::collections::VecDeque<String>, token: &str) -> String {
+    if retired.iter().any(|t| t == token) {
+        // The agent re-planned and then confirmed the older token.
+        // Saying "unknown" here is what a TYPO gets, and the two want
+        // different next moves: re-read the newer plan, versus re-send
+        // the token you already hold.
+        "confirm_token superseded by a newer plan — confirm that one, or re-plan".to_string()
+    } else {
+        "unknown confirm_token — re-plan required".to_string()
+    }
+}
+
+/// How many retired tokens to remember. An agent re-planning more than
+/// a handful of times inside one 60-second TTL is not a case worth
+/// spending memory on.
+const RETIRED_TOKEN_MEMORY: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum WriteVerb {
@@ -413,7 +469,9 @@ impl Server {
             }
             // A new plan replaces any pending one: the agent
             // re-planned, and two live tokens would be ambiguous.
-            st.pending = Some(PendingWrite {
+            // `install` remembers the token it retires so confirming
+            // the old one can say what happened.
+            st.install(PendingWrite {
                 token: token.clone(),
                 verb,
                 env: env.name.clone(),
@@ -465,7 +523,7 @@ impl Server {
                 return Err("no pending write — call a write tool first".into());
             };
             if p.token != token {
-                return Err("unknown confirm_token — re-plan required".into());
+                return Err(mismatched_token_message(&st.retired, &token));
             }
             if tokio::time::Instant::now() >= p.expires_at {
                 st.pending = None;
@@ -630,5 +688,58 @@ mod tests {
         pinned.safety_envs.insert("prod".into(), true);
         let msg2 = write_gate(&pinned, "prod", &None, None).expect("pin refused");
         assert!(msg2.contains("pinned by"));
+    }
+
+    #[test]
+    fn a_superseded_token_says_so_rather_than_unknown() {
+        // Confirming a token that a newer plan replaced used to return
+        // "unknown confirm_token" — the same answer a TYPO gets. The
+        // two want different next moves from the agent: re-read the
+        // newer plan, versus re-send the token it already holds.
+        let mut retired = std::collections::VecDeque::new();
+        retired.push_back("tok-old".to_string());
+
+        let msg = mismatched_token_message(&retired, "tok-old");
+        assert!(msg.contains("superseded"), "{msg}");
+        assert!(
+            msg.contains("confirm that one"),
+            "and says what to do instead: {msg}"
+        );
+
+        let msg = mismatched_token_message(&retired, "tok-typo");
+        assert!(msg.contains("unknown"), "a token we never minted: {msg}");
+        assert!(!msg.contains("superseded"), "{msg}");
+
+        // The wiring, not just the branch: installing a second plan
+        // must be what puts the first token into `retired`. Pinning
+        // only the message left "nothing ever retires anything" green.
+        let mut st = WriteState::default();
+        let plan = |tok: &str| PendingWrite {
+            token: tok.to_string(),
+            verb: WriteVerb::Restart,
+            env: "api-prod".into(),
+            version: None,
+            settings: Vec::new(),
+            profile: None,
+            region: None,
+            expires_at: tokio::time::Instant::now() + std::time::Duration::from_secs(60),
+            name_retry_used: false,
+        };
+        st.install(plan("tok-a"));
+        assert!(st.retired.is_empty(), "the first plan replaces nothing");
+        st.install(plan("tok-b"));
+        assert!(
+            mismatched_token_message(&st.retired, "tok-a").contains("superseded"),
+            "installing a second plan retires the first"
+        );
+        assert_eq!(st.pending.as_ref().map(|p| p.token.as_str()), Some("tok-b"));
+
+        // Bounded, so past the cap a retired token falls back to the
+        // unknown answer — honest, because we genuinely no longer know.
+        for i in 0..RETIRED_TOKEN_MEMORY + 4 {
+            st.install(plan(&format!("tok-{i}")));
+        }
+        assert_eq!(st.retired.len(), RETIRED_TOKEN_MEMORY, "memory is bounded");
+        assert!(mismatched_token_message(&st.retired, "tok-a").contains("unknown"));
     }
 }
