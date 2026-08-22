@@ -6,6 +6,62 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.30.2] — 2026-08-22 — the fixes 0.30.1 pointed at
+
+### Fixed
+
+- **`:ssm-run` failed outright on environments with more than 50
+  instances.** SSM `SendCommand` caps `InstanceIds` at 50 and the whole
+  list went in one call — on a triage path reached precisely when a
+  large environment is misbehaving. It sends in batches now. A batch
+  that fails to send no longer discards the successful ones: those
+  instances come back named, as `SendFailed`, and the audit line's
+  success count still measures against the full instance list.
+
+- **EBL010 couldn't tell an untagged environment from an unloaded
+  one.** A failed `ListTagsForResource` and "this environment has no
+  tags" were the same value, so the fetch failure silently disabled the
+  rule — and an environment with no tags at all, the case the rule most
+  wants to catch, was invisible to it.
+
+- **JSON is parsed by a JSON parser.** Both LLM response bodies and
+  `terraform.tfstate` went through a YAML parser on the reasoning that
+  JSON is a YAML subset. True, and beside the point: it means every
+  YAML feature, anchor expansion included, applied to input ebman
+  doesn't control.
+
+- **The breadcrumb named the session's region beside another region's
+  environment.** `us-east-1 / uflexi / api-prod` for an environment
+  living in eu-west-2. It was accidentally truthful before 0.30.0,
+  when Detail really did show the session region's data.
+
+- **The EC2 console link for a Detail instance pointed at the session's
+  region** — deliberately, because Detail's instance list used to come
+  from there. 0.30.0 fixed the fetch and left the compensation, so a
+  real instance ID resolved to "does not exist".
+
+- **A write could still retarget the session's region.** The confirm
+  modal carries only a target name, and a refresh landing during the
+  undo window dropped the row. ebman remembers where each environment
+  was last seen.
+
+- **`:alarm-create` / `:alarm-delete`** resolved their client from the
+  environment on screen while operating on the selected row.
+
+- Plus: the assumed-role client cache 0.30.0 introduced is now actually
+  read (the edit routing through it had silently failed);
+  `list_environments_for_account` no longer re-assumes per call; and a
+  refreshed session client is checked, not assumed, to have resolved
+  the same region.
+
+### Changed
+
+- **An empty or truncated `terraform.tfstate` is no longer valid
+  input.** It used to parse as an environment-free state, so
+  `ebman drift --exit-code` passed green on a broken file. It now
+  reports "no terraform.tfstate found", which is a claim an operator
+  can act on.
+
 ## [0.30.1] — 2026-08-22 — the region fixes, actually applied
 
 Same-day patch. Two post-release review rounds found that one of
