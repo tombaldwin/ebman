@@ -770,6 +770,23 @@ pub async fn cached_role_client(
     Ok(built)
 }
 
+/// Seed the role cache so a test can prove the READ path without a
+/// live STS. The write path needs real credentials; the read path is
+/// the half that shipped broken.
+#[cfg(test)]
+pub(crate) fn seed_role_cache_for_tests(
+    name: &str,
+    region: &str,
+    client: std::sync::Arc<AwsClient>,
+) {
+    if let Ok(mut cache) = role_cache().lock() {
+        cache.insert(
+            (name.to_string(), region.to_string()),
+            (std::time::Instant::now(), client),
+        );
+    }
+}
+
 /// A client for this profile+region, built once and reused for
 /// `CLIENT_CACHE_TTL`.
 ///
