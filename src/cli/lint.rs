@@ -170,7 +170,11 @@ async fn probe_waf_missing(
 /// coverage caveats).
 pub(crate) struct EnvLintInputs {
     pub options: Vec<(String, String, String)>,
-    pub env_tag_keys: Vec<String>,
+    /// `None` = the tag fetch failed or wasn't attempted, so EBL010
+    /// skips. `Some(vec![])` = fetched successfully and the env has no
+    /// tags, which fires. Flattening these together handed the rule a
+    /// successful-but-empty result on every failure.
+    pub env_tag_keys: Option<Vec<String>>,
     pub healthy_count: Option<i64>,
     pub xray_denied: Option<bool>,
     pub probe_failure: Option<String>,
@@ -185,7 +189,7 @@ impl EnvLintInputs {
     pub(crate) fn bare(options: Vec<(String, String, String)>) -> Self {
         Self {
             options,
-            env_tag_keys: Vec::new(),
+            env_tag_keys: None,
             healthy_count: None,
             xray_denied: None,
             probe_failure: None,
@@ -218,11 +222,8 @@ pub(crate) async fn fetch_env_lint_inputs(
     let health_fut = aws.fetch_env_instance_counts(&env.name);
     let (opts_res, tags_opt, health_res) = tokio::join!(opts_fut, tags_fut, health_fut);
     let options = opts_res.map_err(|e| e.to_string())?;
-    let env_tag_keys: Vec<String> = tags_opt
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(k, _)| k)
-        .collect();
+    let env_tag_keys: Option<Vec<String>> =
+        tags_opt.map(|t| t.into_iter().map(|(k, _)| k).collect());
     let healthy_count = health_res.ok().map(|c| c.healthy as i64);
     let newer_stack = aws::newer_stack_version(&env.solution_stack, latest_stacks);
     // EBL020 probe — only when the env actually has X-Ray on (rare),
@@ -304,9 +305,11 @@ pub(crate) fn build_lint_context<'a>(
     inputs: &'a EnvLintInputs,
     required_tags: &'a [String],
 ) -> lint::LintContext<'a> {
-    let mut ctx = lint::LintContext::for_env(env, &inputs.options)
-        .with_required_tags(required_tags)
-        .with_env_tag_keys(&inputs.env_tag_keys);
+    let mut ctx =
+        lint::LintContext::for_env(env, &inputs.options).with_required_tags(required_tags);
+    if let Some(keys) = inputs.env_tag_keys.as_deref() {
+        ctx = ctx.with_env_tag_keys(keys);
+    }
     if let Some(newer) = inputs.newer_stack.as_deref() {
         ctx = ctx.with_newer_stack_available(newer);
     }

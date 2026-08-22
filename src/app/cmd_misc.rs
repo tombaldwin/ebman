@@ -703,17 +703,21 @@ impl App {
             };
             let health_fut = aws.fetch_env_instance_counts(&env_name);
             let (opts_res, tags_opt, health_res) = tokio::join!(opts_fut, tags_fut, health_fut);
-            let env_tag_keys_owned: Vec<String> = tags_opt
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(k, _)| k)
-                .collect();
+            // Stays an `Option`: `None` is "the tag fetch failed, or
+            // the env has no ARN to fetch against", and EBL010 must
+            // SKIP on that. Flattening it to an empty Vec here would
+            // hand the rule a successful-but-empty result and fire a
+            // false positive for every required key on every env.
+            let env_tag_keys_owned: Option<Vec<String>> =
+                tags_opt.map(|t| t.into_iter().map(|(k, _)| k).collect());
             let healthy_count_owned = health_res.ok().map(|c| c.healthy as i64);
             let body = match opts_res {
                 Ok(opts) => {
                     let mut ctx = crate::lint::LintContext::for_env(&env, &opts)
-                        .with_required_tags(&required_tags_owned)
-                        .with_env_tag_keys(&env_tag_keys_owned);
+                        .with_required_tags(&required_tags_owned);
+                    if let Some(keys) = env_tag_keys_owned.as_deref() {
+                        ctx = ctx.with_env_tag_keys(keys);
+                    }
                     if let Some(newer) = newer_stack_owned.as_deref() {
                         ctx = ctx.with_newer_stack_available(newer);
                     }

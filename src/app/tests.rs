@@ -9072,3 +9072,53 @@ fn json_surfaces_are_parsed_by_a_json_parser() {
         "saved configs are genuinely YAML — if this flipped, check why"
     );
 }
+
+#[test]
+fn no_lint_caller_flattens_a_failed_tag_fetch_into_an_empty_list() {
+    // Making `env_tag_keys` an `Option` fixed the rule but INVERTED the
+    // bug at the call sites: all three collapsed `None` (fetch failed,
+    // or the env has no ARN) into an empty Vec before calling, so a
+    // failed `ListTagsForResource` went from silently skipping the rule
+    // to firing a false positive for every required key on every env.
+    // Worse than what it replaced.
+    //
+    // Pinned structurally because the failure is a lost distinction,
+    // not a wrong value: `unwrap_or_default()` on the tags option is
+    // exactly the shape that throws it away.
+    for (name, src) in [
+        ("app/cmd_misc.rs", include_str!("cmd_misc.rs")),
+        ("app/spawn_deploy.rs", include_str!("spawn_deploy.rs")),
+        ("cli/lint.rs", include_str!("../cli/lint.rs")),
+    ] {
+        let code: String = src
+            .lines()
+            .map(|l| l.split("//").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Find each tag-keys binding and check the WHOLE expression,
+        // not just its first line — the binding routinely wraps, and a
+        // single-line check missed a two-line `Some(tags_opt
+        // .unwrap_or_default() …)` when this guard was mutation-tested.
+        let lines: Vec<&str> = code.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if !(line.contains("env_tag_keys") && line.contains('=')) {
+                continue;
+            }
+            // Read to the end of the statement.
+            let mut expr = String::new();
+            for l in &lines[n..] {
+                expr.push_str(l);
+                if l.trim_end().ends_with(';') {
+                    break;
+                }
+            }
+            assert!(
+                !expr.contains("unwrap_or_default"),
+                "{name}:{} flattens the tag-fetch failure into an empty list, \
+                 which makes EBL010 fire instead of skip: {}",
+                n + 1,
+                expr.trim()
+            );
+        }
+    }
+}

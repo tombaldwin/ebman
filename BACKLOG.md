@@ -1142,6 +1142,15 @@ Ten verifiable claims. **Three were already fixed** and are struck above — the
 
 Standing lesson from both sweeps: a backlog entry is a claim with a timestamp, and an unverified one is worth less than nothing — it makes settled work look pending and any estimate against it wrong. Verify before planning.
 
+#### Pre-0.30.2 code review — 2026-08-22
+
+Reviewing the eight unreleased commits before tagging. One finding, and it is the worst kind: a fix that inverted the bug it was fixing.
+
+- [x] **EBL010's `Option` fix was undone by all three of its callers.** Making `env_tag_keys` an `Option` fixed the RULE — `None` skips, `Some(&[])` fires — but every call site collapsed `None` into an empty Vec before calling: `:lint` (`cmd_misc.rs`), the confirm-modal lint (`spawn_deploy.rs`) and `ebman lint` (`cli/lint.rs`) all did `tags_opt.unwrap_or_default()`. So a failed `ListTagsForResource` went from *silently skipping the rule* to *firing a false positive for every required key on every env* — strictly worse than the bug it replaced, and it would have shipped. All three now keep the `Option`, and `LintInputs::env_tag_keys` is `Option<Vec<String>>` with `bare()` defaulting to `None`.
+  A structural guard rejects `unwrap_or_default` on the tag-keys binding at any of the three. **Its first version was too weak** — it checked one line, and the mutation used to verify it spanned two, so it reported a false pass. It reads the whole statement now.
+
+Reviewed and sound: the SSM chunking (the audit's `ok_count` counts `status == "Success"` against the full instance count, so `SendFailed` rows correctly land outside the numerator, and `format_ssm_results` renders any status generically — no branch treats an unknown one as success); the breadcrumb region; `instance_console_target`; the JSON-parser switch, including `is_backend_pointer`, which still classifies a pointer as such and treats a malformed file as one.
+
 #### Important (need live verification or a design pass)
 - [x] **Cost Explorer pagination** — Shipped. `fetch_env_costs` follows `NextPageToken` (`aws/cost.rs`). The `MAX_COST_PAGES = 20` cap now warns, returns `EnvCosts { truncated }`, and a truncated walk is neither cached nor allowed to replace a complete in-memory map; `:cost status` and `:fleet-cost` both say when what's on screen is partial.
 - [x] **logs-tail `next_token` follow** — Shipped. `fetch_recent_log_events` follows `next_token` up to `MAX_PAGES_PER_POLL = 5` with boundary-millisecond dedupe (`aws/logs.rs`). The carry is keyed on whether the watermark moved rather than on `truncated`, so a stalled watermark keeps its skip set and the same lines aren't re-emitted every poll.
