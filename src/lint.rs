@@ -146,12 +146,21 @@ pub struct LintContext<'a> {
     /// against this. Empty slice means "no requirement declared"
     /// — the rule skips rather than firing on every env.
     pub required_tags: &'a [String],
-    /// Env's actual tag keys (just the keys, not values), as
-    /// fetched from EB's `ListTagsForResource`. Empty slice means
-    /// "tags not loaded" — the rule skips rather than firing.
-    /// Populated by callers that have already fetched tag data
-    /// (the Detail/Tags tab does, but `:lint` doesn't yet).
-    pub env_tag_keys: &'a [String],
+    /// Env's actual tag keys (just the keys, not values), as fetched
+    /// from EB's `ListTagsForResource`.
+    ///
+    /// `None` means "not loaded" — the rule skips. `Some(&[])` means
+    /// the fetch SUCCEEDED and the env genuinely has no tags, which
+    /// fires EBL010 for every required key.
+    ///
+    /// It was a bare slice, so those two states were the same value:
+    /// a failed `ListTagsForResource` silently disabled the rule, and
+    /// an env with no tags at all — the worst case the rule exists to
+    /// catch — looked identical to one whose tags hadn't loaded. Same
+    /// conflation as `describe_worker_queues` returning an empty list
+    /// for AccessDenied, fixed in 0.27; the neighbouring `dlq_depth`
+    /// and `healthy_instance_count` already use `Option` for it.
+    pub env_tag_keys: Option<&'a [String]>,
     /// SQS dead-letter-queue depth for worker envs, when
     /// `:workers on` (or equivalent) has populated it. `None`
     /// means worker-tab data isn't loaded — the corresponding
@@ -202,7 +211,7 @@ impl<'a> LintContext<'a> {
             cost_usd_per_month: None,
             newer_stack_available: None,
             required_tags: &[],
-            env_tag_keys: &[],
+            env_tag_keys: None,
             dlq_depth: None,
             healthy_instance_count: None,
             xray_trace_denied: None,
@@ -244,7 +253,7 @@ impl<'a> LintContext<'a> {
     /// Attach the env's actual tag keys (just keys, not values).
     /// Paired with [`Self::with_required_tags`] to fire EBL010.
     pub fn with_env_tag_keys(mut self, env_tag_keys: &'a [String]) -> Self {
-        self.env_tag_keys = env_tag_keys;
+        self.env_tag_keys = Some(env_tag_keys);
         self
     }
 
@@ -1104,22 +1113,25 @@ impl Rule for MissingRequiredTags {
     }
     fn applies(&self, ctx: &LintContext) -> Option<Issue> {
         // Three guards before firing:
-        //  1. Operator declared required_tags (else nothing to check)
-        //  2. Caller populated env_tag_keys (else we can't compare —
-        //     `:lint` doesn't fetch tags yet; the Detail/Tags tab
-        //     does, but that data isn't on App today)
+        //  1. Caller LOADED the env's tags. `None` is "not loaded";
+        //     `Some(&[])` is a successful fetch of an env with no
+        //     tags, which fires for every required key — that env is
+        //     the worst case the rule exists to catch.
+        //  2. Operator declared required_tags (else nothing to check)
         //  3. At least one required key is missing from the env
-        // Wiring env_tag_keys at every call site is a 0.18 follow-
-        // up; until then, this rule fires only when callers
-        // explicitly pass tag keys (e.g. confirm-modal in the
-        // future).
-        if ctx.required_tags.is_empty() || ctx.env_tag_keys.is_empty() {
+        let Some(env_tag_keys) = ctx.env_tag_keys else {
+            // Not loaded — nothing to compare against. A FAILED fetch
+            // is a different thing and the caller reports it; what we
+            // must not do is treat either as "all tags present".
+            return None;
+        };
+        if ctx.required_tags.is_empty() {
             return None;
         }
         let missing: Vec<&str> = ctx
             .required_tags
             .iter()
-            .filter(|req| !ctx.env_tag_keys.iter().any(|k| k.eq_ignore_ascii_case(req)))
+            .filter(|req| !env_tag_keys.iter().any(|k| k.eq_ignore_ascii_case(req)))
             .map(String::as_str)
             .collect();
         if missing.is_empty() {

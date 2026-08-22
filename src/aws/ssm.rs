@@ -50,26 +50,78 @@ impl AwsClient {
         // bound for non-MaintenanceWindow runs is 2880s; staying well
         // under it avoids surprising server-side rejections).
         let ssm_timeout = wall_clock_secs.min(600) as i32;
-        let mut send = self
-            .ssm()
-            .send_command()
-            .document_name("AWS-RunShellScript")
-            .timeout_seconds(ssm_timeout)
-            .parameters("commands", vec![command.to_string()]);
-        for id in instance_ids {
-            send = send.instance_ids(id);
+        // SendCommand caps `InstanceIds` at 50. The whole list used to
+        // go in one call, so `:ssm-run` on an env with more than fifty
+        // instances failed outright — and `:ssm-run` is a triage path,
+        // reached precisely when a large env is misbehaving. Send in
+        // chunks and remember which command each instance belongs to,
+        // because the poll below is keyed on the command id.
+        const SEND_CHUNK: usize = 50;
+        let mut command_for: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        let mut send_errors: Vec<SsmRunResult> = Vec::new();
+        for chunk in instance_ids.chunks(SEND_CHUNK) {
+            let mut send = self
+                .ssm()
+                .send_command()
+                .document_name("AWS-RunShellScript")
+                .timeout_seconds(ssm_timeout)
+                .parameters("commands", vec![command.to_string()]);
+            for id in chunk {
+                send = send.instance_ids(id);
+            }
+            let sent = send
+                .send()
+                .await
+                .map_err(|e| eyre!("SendCommand failed: {e}"))
+                .and_then(|r| {
+                    r.command
+                        .and_then(|c| c.command_id)
+                        .ok_or_else(|| eyre!("SendCommand returned no command_id"))
+                });
+            match sent {
+                Ok(id) => {
+                    for i in chunk {
+                        command_for.insert(i.clone(), id.clone());
+                    }
+                }
+                // One chunk failing must not discard the others: with
+                // 200 instances a single throttled call would have
+                // thrown away three successful sends. The affected
+                // instances are reported as failures by name, which is
+                // strictly more than the operator got before.
+                Err(e) => {
+                    tracing::warn!(
+                        target: "ebman::aws",
+                        instances = chunk.len(),
+                        error = %e,
+                        "SendCommand chunk failed"
+                    );
+                    send_errors.extend(chunk.iter().map(|i| SsmRunResult {
+                        instance_id: i.clone(),
+                        status: "SendFailed".into(),
+                        exit_code: -1,
+                        stdout: String::new(),
+                        stderr: format!("{e}"),
+                    }));
+                }
+            }
         }
-        let send_resp = send.send().await.wrap_err("SendCommand failed")?;
-        let command_id = send_resp
-            .command
-            .and_then(|c| c.command_id)
-            .ok_or_else(|| eyre!("SendCommand returned no command_id"))?;
+        if command_for.is_empty() {
+            return Err(eyre!(
+                "SendCommand failed for every instance ({} attempted)",
+                instance_ids.len()
+            ));
+        }
 
         // Track which instances are still pending. SSM needs ~a second
         // before invocations become queryable; the loop's first iteration
         // tolerates an InvocationDoesNotExist error.
-        let mut pending: std::collections::HashSet<String> = instance_ids.iter().cloned().collect();
-        let mut completed: Vec<SsmRunResult> = Vec::new();
+        let mut pending: std::collections::HashSet<String> = command_for.keys().cloned().collect();
+        // Chunks that never sent are terminal already — carry them
+        // straight into the results rather than waiting out the
+        // deadline for invocations that don't exist.
+        let mut completed: Vec<SsmRunResult> = send_errors;
         // `tokio::time::Instant` (vs `std::time::Instant`) so the
         // deadline check advances with `tokio::time::pause + advance`
         // under `#[tokio::test(start_paused = true)]` — otherwise the
@@ -92,7 +144,9 @@ impl AwsClient {
             // doesn't hammer SSM's rate limit.
             const POLL_CONCURRENCY: usize = 10;
             let mut responses = futures::stream::iter(cycle.into_iter().map(|id| {
-                let command_id = command_id.clone();
+                // The command this instance was sent under — with more
+                // than 50 instances there is more than one.
+                let command_id = command_for.get(&id).cloned().unwrap_or_default();
                 async move {
                     let resp = self
                         .ssm()

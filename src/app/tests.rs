@@ -8989,3 +8989,51 @@ async fn the_breadcrumb_names_the_region_of_the_env_it_names() {
         "session region with no env:\n{out}"
     );
 }
+
+#[test]
+fn ebl010_tells_an_untagged_env_from_an_unloaded_one() {
+    // `env_tag_keys` was a bare slice, so "the fetch failed" and "this
+    // env has no tags" were the same value — a failed
+    // `ListTagsForResource` silently disabled the rule, and an env
+    // with no tags at all, the worst case the rule exists to catch,
+    // looked identical to one whose tags hadn't loaded. Same
+    // conflation as `describe_worker_queues` returning an empty list
+    // for AccessDenied, fixed in 0.27.
+    use crate::lint::LintContext;
+    let env = mk_env("api-prod", "uflexi", "Web", "Green");
+    let opts: Vec<(String, String, String)> = Vec::new();
+    let required = vec!["Owner".to_string(), "CostCentre".to_string()];
+    let rules = crate::lint::default_rules(&[]);
+
+    // Not loaded: skip. Firing here would flag every env in the fleet
+    // on a transient API error.
+    let ctx = LintContext::for_env(&env, &opts).with_required_tags(&required);
+    assert!(
+        !crate::lint::run_rules(&rules, &ctx)
+            .iter()
+            .any(|i| i.rule_id == "EBL010"),
+        "unloaded tags must not fire"
+    );
+
+    // Loaded and empty: fires for both keys. This is the env that has
+    // no tags at all, which used to be invisible.
+    let none_at_all: Vec<String> = Vec::new();
+    let ctx = LintContext::for_env(&env, &opts)
+        .with_required_tags(&required)
+        .with_env_tag_keys(&none_at_all);
+    let issue = crate::lint::run_rules(&rules, &ctx)
+        .into_iter()
+        .find(|i| i.rule_id == "EBL010")
+        .expect("an env with no tags at all must fire");
+    assert!(issue.detail.contains("Owner"), "{}", issue.detail);
+    assert!(issue.detail.contains("CostCentre"), "{}", issue.detail);
+
+    // Loaded and complete: silent.
+    let all = vec!["Owner".to_string(), "CostCentre".to_string()];
+    let ctx = LintContext::for_env(&env, &opts)
+        .with_required_tags(&required)
+        .with_env_tag_keys(&all);
+    assert!(!crate::lint::run_rules(&rules, &ctx)
+        .iter()
+        .any(|i| i.rule_id == "EBL010"));
+}
