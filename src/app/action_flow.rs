@@ -45,12 +45,14 @@ impl App {
         }
         self.armed_watchdogs.remove(&env_name);
         let label = snapshot.previous_version_label.clone();
-        let aws = self.aws.clone();
+        // The env's own region — this is a deploy, and the watchdog
+        // fires unattended.
+        let client = self.client_for_env(&env_name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let account = self.context.account_id.clone();
         let profile = self.context.profile.clone();
-        let region = self.context.region.clone();
+        let region = self.region_for_name(&env_name);
         crate::audit::append_action_dispatched(
             account.as_deref(),
             profile.as_deref(),
@@ -65,10 +67,13 @@ impl App {
         ));
         let env_for_msg = env_name.clone();
         tokio::spawn(async move {
-            let result = aws
-                .deploy_version(&env_name, &label)
-                .await
-                .map_err(|e| flatten_err("deploy_version", e));
+            let result = match client.resolve().await {
+                Ok(aws) => aws
+                    .deploy_version(&env_name, &label)
+                    .await
+                    .map_err(|e| flatten_err("deploy_version", e)),
+                Err(e) => Err(flatten_err("cached_client", e)),
+            };
             let _ = tx.send(AppMsg::ActionResult {
                 gen,
                 action: Action::Deploy,
@@ -673,7 +678,7 @@ impl App {
     /// Fetch `list_compatible_platforms` for `env` and surface them in an
     /// overlay so the user can copy the desired ARN into `:upgrade <arn>`.
     pub(crate) fn spawn_list_compatible_platforms(&mut self, env_name: String) {
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env_name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         self.status_message = Some(format!(
@@ -681,10 +686,13 @@ impl App {
         ));
         let env_for_msg = env_name.clone();
         tokio::spawn(async move {
-            let result = aws
-                .list_compatible_platforms(&env_name)
-                .await
-                .map_err(|e| flatten_err("list_compatible_platforms", e));
+            let result = match client.resolve().await {
+                Ok(aws) => aws
+                    .list_compatible_platforms(&env_name)
+                    .await
+                    .map_err(|e| flatten_err("list_compatible_platforms", e)),
+                Err(e) => Err(flatten_err("cached_client", e)),
+            };
             let body = match result {
                 Ok(p) if p.is_empty() => {
                     format!("No compatible platform versions found for {env_for_msg}.\n\nesc / q to close")

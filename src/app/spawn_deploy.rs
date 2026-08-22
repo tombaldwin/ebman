@@ -572,7 +572,8 @@ impl App {
 
     pub(crate) fn spawn_preflight_events(&mut self, env_name: String) {
         let env_for_msg = env_name.clone();
-        self.spawn_aws(
+        self.spawn_aws_in(
+            self.client_for_env(&env_for_msg),
             "preflight_events",
             move |aws| async move { aws.list_events_for_env(&env_name, 3).await },
             move |gen, result| AppMsg::PreflightEvents {
@@ -585,7 +586,8 @@ impl App {
 
     pub(crate) fn spawn_dry_run(&mut self, env_name: String) {
         let env_for_msg = env_name.clone();
-        self.spawn_aws(
+        self.spawn_aws_in(
+            self.client_for_env(&env_for_msg),
             "dry_run_list_instances",
             move |aws| async move { aws.list_instances(&env_name).await },
             move |gen, result| AppMsg::DryRunResult {
@@ -612,7 +614,8 @@ impl App {
         let env_for_msg = env_name.clone();
         let env_for_render = env_name.clone();
         let candidate_for_render = candidate_label.clone();
-        self.spawn_aws(
+        self.spawn_aws_in(
+            self.client_for_env(&env_for_msg),
             "version_preview",
             move |aws| async move { aws.list_application_versions(&app_name).await },
             move |gen, result| {
@@ -692,7 +695,8 @@ impl App {
     /// of one doesn't taint the other.
     pub(crate) fn spawn_unavailability_estimate(&mut self, app_name: String, env_name: String) {
         let env_for_msg = env_name.clone();
-        self.spawn_aws(
+        self.spawn_aws_in(
+            self.client_for_env(&env_for_msg),
             "unavailability_estimate",
             move |aws| async move { aws.fetch_env_option_settings(&app_name, &env_name).await },
             move |gen, result| {

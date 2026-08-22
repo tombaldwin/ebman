@@ -3063,7 +3063,7 @@ impl RegionClient {
         self.remote.is_none()
     }
 
-    async fn resolve(self) -> Result<Arc<AwsClient>, color_eyre::eyre::Report> {
+    pub(crate) async fn resolve(self) -> Result<Arc<AwsClient>, color_eyre::eyre::Report> {
         match self.remote {
             None => Ok(self.home),
             Some(Remote::Profile(profile, region)) => {
@@ -3156,6 +3156,33 @@ impl App {
             .find(|e| e.name == env_name)
             .map(|e| self.region_for(e))
             .unwrap_or_else(|| self.context.region.clone())
+    }
+
+    /// The client for work about one named environment.
+    ///
+    /// The accessor per-env spawns should reach for. `self.aws` is
+    /// correct only for work that is genuinely account- or
+    /// region-wide — the fleet listing, identity, the applications
+    /// catalogue, Cost Explorer — and a guard test in `app/tests.rs`
+    /// requires every spawn site that keeps it to say why.
+    pub(crate) fn client_for_env(&self, env_name: &str) -> RegionClient {
+        self.client_for_region(&self.region_for_name(env_name))
+    }
+
+    /// The client for whatever environment the operator is pointed at
+    /// — Detail's, if it's open, otherwise the selected row. For
+    /// commands that name a resource belonging to an env without
+    /// naming the env (`:alarm-history NAME`, say).
+    pub(crate) fn current_env_client(&self) -> RegionClient {
+        match self
+            .detail
+            .as_ref()
+            .map(|d| d.env_name.clone())
+            .or_else(|| self.selected_env().map(|e| e.name.clone()))
+        {
+            Some(name) => self.client_for_env(&name),
+            None => self.client_for_region(&self.context.region),
+        }
     }
 
     /// The client for the environment the `:why` overlay is diagnosing.

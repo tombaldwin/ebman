@@ -100,7 +100,8 @@ impl App {
         });
         let name_for_msg = env_name.clone();
         let dims = self.cfg.alarm_dimensions.clone();
-        self.spawn_aws(
+        self.spawn_aws_in(
+            self.client_for_env(&name_for_msg),
             "list_alarms_for_env",
             move |aws| async move { aws.list_alarms_for_env(&env_name, &dims).await },
             move |gen, result| AppMsg::Alarms {
@@ -434,7 +435,15 @@ impl App {
         // and refetch without firing a request on every j/k.
         let selected = self.selected_env().map(|e| e.name.clone());
         self.event_panel.for_env = selected.clone();
-        self.spawn_aws(
+        // Per-env when a row is selected: under a fan-out the panel
+        // would otherwise show the home region's event stream beside
+        // the row it claims to be about.
+        let client = match selected.as_deref() {
+            Some(name) => self.client_for_env(name),
+            None => self.client_for_region(&self.context.region),
+        };
+        self.spawn_aws_in(
+            client,
             "list_events",
             move |aws| async move {
                 match selected {

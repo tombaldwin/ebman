@@ -1621,7 +1621,7 @@ impl App {
                     self.current_overlay.as_ref(),
                     Some(Overlay::TextDump { title, .. }) if title == &want_title
                 ) {
-                    let aws = self.aws.clone();
+                    let client = self.client_for_env(&application);
                     let tx = self.msg_tx.clone();
                     let gen = self.generation;
                     let app_name = application.clone();
@@ -1637,10 +1637,13 @@ impl App {
                         .filter(|e| !e.version_label.is_empty())
                         .map(|e| e.version_label.clone());
                     tokio::spawn(async move {
-                        let result = aws
-                            .list_application_versions(&app_name)
-                            .await
-                            .map_err(|e| flatten_err("list_application_versions", e));
+                        let result = match client.resolve().await {
+                            Ok(aws) => aws
+                                .list_application_versions(&app_name)
+                                .await
+                                .map_err(|e| flatten_err("list_application_versions", e)),
+                            Err(e) => Err(flatten_err("cached_client", e)),
+                        };
                         let _ = tx.send(AppMsg::AppVersions {
                             gen,
                             application: app_name,
