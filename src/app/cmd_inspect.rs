@@ -123,15 +123,18 @@ impl App {
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env_name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         self.status_message = Some(format!("fetching deploy lineage for {env_name}…"));
         tokio::spawn(async move {
-            let result = aws
-                .list_events_for_env(&env_name, 100)
-                .await
-                .map_err(|e| flatten_err("list_events_for_env", e));
+            let result = match client.resolve().await {
+                Ok(aws) => aws
+                    .list_events_for_env(&env_name, 100)
+                    .await
+                    .map_err(|e| flatten_err("list_events_for_env", e)),
+                Err(e) => Err(flatten_err("cached_client", e)),
+            };
             let body = match result {
                 Ok(events) => format_lineage(&env_name, &events),
                 Err(e) => format!("lineage: {e}\n\nesc / q to close"),
@@ -155,15 +158,18 @@ impl App {
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env_name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         self.status_message = Some(format!("fetching change history for {env_name}…"));
         tokio::spawn(async move {
-            let result = aws
-                .list_events_for_env(&env_name, 100)
-                .await
-                .map_err(|e| flatten_err("list_events_for_env", e));
+            let result = match client.resolve().await {
+                Ok(aws) => aws
+                    .list_events_for_env(&env_name, 100)
+                    .await
+                    .map_err(|e| flatten_err("list_events_for_env", e)),
+                Err(e) => Err(flatten_err("cached_client", e)),
+            };
             let body = match result {
                 Ok(events) => render_changes_overlay(&env_name, &events),
                 Err(e) => format!("changes: {e}\n\nesc / q to close"),
@@ -313,7 +319,7 @@ impl App {
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env.name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let mut disabled = self.cfg.lint_disable.clone();
@@ -339,6 +345,17 @@ impl App {
         let issue_id_title = issue_id.to_string();
         self.status_message = Some(format!("explain: building prompt for {issue_id}…"));
         tokio::spawn(async move {
+            let aws = match client.resolve().await {
+                Ok(aws) => aws,
+                Err(e) => {
+                    let _ = tx.send(AppMsg::TextOverlay {
+                        gen,
+                        title: format!("explain — {issue_id_title}"),
+                        body: format!("explain: {}", flatten_err("cached_client", e)),
+                    });
+                    return;
+                }
+            };
             // Parallel fetch — see spawn_confirm_lint for the rationale.
             let opts_fut = aws.fetch_env_option_settings(&app_name, &env_name_for_fetch);
             let tags_fut = async {
@@ -428,7 +445,7 @@ impl App {
             return;
         };
         let filter_ns = rest.first().map(|s| s.to_string());
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env.name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let app_name = env.application.clone();
@@ -437,10 +454,13 @@ impl App {
             "fetching config vocabulary for {env_name}… (this can take a few seconds)"
         ));
         tokio::spawn(async move {
-            let result = aws
-                .fetch_env_configuration_options(&app_name, &env_name)
-                .await
-                .map_err(|e| flatten_err("fetch_env_configuration_options", e));
+            let result = match client.resolve().await {
+                Ok(aws) => aws
+                    .fetch_env_configuration_options(&app_name, &env_name)
+                    .await
+                    .map_err(|e| flatten_err("fetch_env_configuration_options", e)),
+                Err(e) => Err(flatten_err("cached_client", e)),
+            };
             let body = match result {
                 Ok(rows) => render_options_overlay(&rows, filter_ns.as_deref(), &env_name),
                 Err(e) => format!("options: {e}\n\nesc / q to close"),
@@ -531,7 +551,7 @@ impl App {
             }
         };
         let local_name = crate::saved_config::saved_config_name(&path);
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env.name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let (app_name, env_name) = (env.application.clone(), env.name.clone());
@@ -541,10 +561,13 @@ impl App {
             "comparing {env_name} ↔ saved config '{local_name}'…"
         ));
         tokio::spawn(async move {
-            let result = aws
-                .fetch_env_configuration_options(&app_name, &env_name)
-                .await
-                .map_err(|e| flatten_err("fetch_env_configuration_options", e));
+            let result = match client.resolve().await {
+                Ok(aws) => aws
+                    .fetch_env_configuration_options(&app_name, &env_name)
+                    .await
+                    .map_err(|e| flatten_err("fetch_env_configuration_options", e)),
+                Err(e) => Err(flatten_err("cached_client", e)),
+            };
             let body = match result {
                 Ok(deployed) => {
                     let diffs = diff_config_options(&local_opts, &deployed);
@@ -756,16 +779,37 @@ impl App {
             self.error_message = Some("pick a different env to compare against".into());
             return;
         }
-        let aws = self.aws.clone();
+        // A client each: `:config-diff` exists to compare two
+        // environments, and under a fan-out the whole point of the
+        // comparison is often that they're in different regions.
+        // Fetching both through one client silently compared the
+        // left-hand env against itself, or against nothing.
+        let left_client = self.client_for_env(&left.name);
+        let right_client = self.client_for_env(&right.name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let (la, ln) = (left.application.clone(), left.name.clone());
         let (ra, rn) = (right.application.clone(), right.name.clone());
         self.status_message = Some(format!("comparing config: {ln} ↔ {rn}…"));
         tokio::spawn(async move {
+            let clients = tokio::try_join!(left_client.resolve(), right_client.resolve());
+            let (left_aws, right_aws) = match clients {
+                Ok(pair) => pair,
+                Err(e) => {
+                    let _ = tx.send(AppMsg::TextOverlay {
+                        gen,
+                        title: format!("config diff — {ln} ↔ {rn}"),
+                        body: format!(
+                            "config-diff: {}\n\nesc / q to close",
+                            flatten_err("cached_client", e)
+                        ),
+                    });
+                    return;
+                }
+            };
             let body = match tokio::try_join!(
-                aws.fetch_env_configuration_options(&la, &ln),
-                aws.fetch_env_configuration_options(&ra, &rn),
+                left_aws.fetch_env_configuration_options(&la, &ln),
+                right_aws.fetch_env_configuration_options(&ra, &rn),
             ) {
                 Ok((lopts, ropts)) => {
                     let diffs = diff_config_options(&lopts, &ropts);
@@ -801,17 +845,20 @@ impl App {
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env.name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let app_name = env.application.clone();
         let env_name = env.name.clone();
         self.status_message = Some(format!("fetching RDS config for {env_name}…"));
         tokio::spawn(async move {
-            let result = aws
-                .fetch_env_rds_config(&app_name, &env_name)
-                .await
-                .map_err(|e| flatten_err("fetch_env_rds_config", e));
+            let result = match client.resolve().await {
+                Ok(aws) => aws
+                    .fetch_env_rds_config(&app_name, &env_name)
+                    .await
+                    .map_err(|e| flatten_err("fetch_env_rds_config", e)),
+                Err(e) => Err(flatten_err("cached_client", e)),
+            };
             let body = match result {
                 Ok(rows) if rows.is_empty() => "No RDS instance attached to this env.\n\n\
                      EB-managed RDS is configured via `aws:rds:dbinstance.*`\n\
@@ -874,17 +921,20 @@ impl App {
             ));
             return;
         }
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env.name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let app_name = env.application.clone();
         let env_name = env.name.clone();
         self.status_message = Some(format!("fetching listeners for {env_name}…"));
         tokio::spawn(async move {
-            let result = aws
-                .fetch_env_listeners(&app_name, &env_name)
-                .await
-                .map_err(|e| flatten_err("fetch_env_listeners", e));
+            let result = match client.resolve().await {
+                Ok(aws) => aws
+                    .fetch_env_listeners(&app_name, &env_name)
+                    .await
+                    .map_err(|e| flatten_err("fetch_env_listeners", e)),
+                Err(e) => Err(flatten_err("cached_client", e)),
+            };
             let body = match result {
                 Ok(rows) if rows.is_empty() => "No listener config found.\n\n\
                      The env may use a Classic ELB instead of an ALB, or no\n\
@@ -971,13 +1021,19 @@ impl App {
         // cert-specific loader, mirroring the subnet / SG pickers.
         self.form = Some(form);
         self.mode = Mode::Form;
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env.name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_for_msg = env.name.clone();
         let app_name = env.application.clone();
         tokio::spawn(async move {
-            let result = load_listener_certs(aws, &app_name, &env_for_msg, &port).await;
+            // ACM certificates are region-scoped, and this form writes
+            // the chosen ARN into the env's listener settings — an ARN
+            // from the home region simply doesn't exist in the env's.
+            let result = match client.resolve().await {
+                Ok(aws) => load_listener_certs(aws, &app_name, &env_for_msg, &port).await,
+                Err(e) => Err(flatten_err("cached_client", e)),
+            };
             let _ = tx.send(AppMsg::FormMultiSelectLoaded {
                 gen,
                 env_name: env_for_msg,
