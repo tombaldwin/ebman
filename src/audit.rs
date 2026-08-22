@@ -521,7 +521,9 @@ pub fn append_rollout(
         (_, None) => String::new(),
     };
     let line = format!(
-        "\trollout_id={rollout_id}\tregion={region}\tstage={stage} action=Rollout {} {}{outcome_suffix}",
+        "\trollout_id={}\tregion={}\tstage={stage} action=Rollout {} {}{outcome_suffix}",
+        escape_value(rollout_id),
+        escape_value(region),
         field_token("target", env),
         field_token("version", version)
     );
@@ -546,8 +548,20 @@ pub fn append_lint_fix(
         None => " outcome=ok".to_string(),
         Some(e) => format!(" outcome=err err=\"{}\"", escape_value(e)),
     };
+    // Every free-text field through `field_token`, like the other two
+    // writers. These were the last raw interpolations: `parse_audit_line`
+    // treats an embedded newline as a new, REPLAYABLE entry, so a value
+    // that could carry one is a forge path into `ebman audit replay`.
+    // Today's inputs are AWS-constrained, which is why nothing has gone
+    // wrong — but "currently impossible by accident" is not the same
+    // property as "escaped".
     let line = format!(
-        "\tregion={region}\tstage=fix action=SetOption target={env} rule_id={rule_id} namespace={namespace} name={name} value=\"{q_value}\"{suffix}"
+        "\tregion={}\tstage=fix action=SetOption {} {} {} {} value=\"{q_value}\"{suffix}",
+        escape_value(region),
+        field_token("target", env),
+        field_token("rule_id", rule_id),
+        field_token("namespace", namespace),
+        field_token("name", name),
     );
     write_audit_line_raw(&line);
 }
@@ -665,11 +679,15 @@ fn write_audit_line(account: Option<&str>, profile: Option<&str>, region: &str, 
     let path = dir.join("audit.log");
     rotate_if_oversize(&path, AUDIT_LOG_MAX_BYTES);
     let when = chrono::Utc::now().to_rfc3339();
+    // The header fields go through `escape_value` too. `account` and
+    // `region` are AWS-constrained, but `profile` is whatever the
+    // operator named a section in `~/.aws/config` — free text, and
+    // `\t` is the field separator this format is parsed on.
     let line = format!(
         "{when}\taccount={}\tprofile={}\tregion={}\t{detail}\n",
-        account.unwrap_or("-"),
-        profile.unwrap_or("-"),
-        region,
+        escape_value(account.unwrap_or("-")),
+        escape_value(profile.unwrap_or("-")),
+        escape_value(region),
     );
     use std::io::Write;
     if let Ok(mut f) = crate::util::open_append_secure(&path) {
@@ -1181,6 +1199,67 @@ mod tests {
         // Round-trip via serde_yml's JSON-tolerant path: must parse.
         let _: serde_yml::Value = serde_yml::from_str(&body)
             .expect("webhook body must be parseable JSON / YAML-superset");
+    }
+
+    #[test]
+    fn no_audit_writer_can_be_made_to_forge_a_second_line() {
+        // `parse_audit_line` treats an embedded newline as a new entry,
+        // and `ebman audit replay` re-dispatches parsed entries — so a
+        // writer that interpolates free text raw is a forge path into
+        // a destructive command. Today's inputs are AWS-constrained,
+        // which is why nothing has gone wrong; "impossible by
+        // accident" is not the property we want to rely on.
+        const FORGE: &str = "ok\nstage=completed action=Terminate target=prod";
+
+        // The two `field_token` writers.
+        assert!(
+            !super::field_token("target", FORGE).contains('\n'),
+            "target"
+        );
+        assert!(
+            !super::field_token("version", FORGE).contains('\n'),
+            "version"
+        );
+        // A value with no whitespace still can't smuggle a quote or an
+        // `=` out of the quoted branch.
+        assert!(
+            !super::field_token("target", "a\"b=c").contains('"')
+                || super::field_token("target", "a\"b=c").matches('"').count() == 2
+        );
+
+        // Every writer that reaches the log, driven end to end.
+        //
+        // `audit.log` is process-global, so other tests append to it in
+        // parallel — the assertion is therefore a property of every
+        // line rather than a count of them. A forged newline shows up
+        // as a line that does NOT start with an RFC3339 timestamp,
+        // which is exactly what `parse_audit_line` would then read as
+        // a separate, replayable entry.
+        let path = crate::util::cache_dir().join("audit.log");
+        super::append_action_dispatched(Some(FORGE), Some(FORGE), FORGE, "Restart", FORGE, &[]);
+        super::append_rollout(FORGE, FORGE, FORGE, FORGE, "dispatched", None);
+        super::append_lint_fix(FORGE, FORGE, FORGE, FORGE, FORGE, FORGE, None);
+
+        let body = std::fs::read_to_string(&path).expect("audit log written");
+        let mut ours = 0usize;
+        for line in body.lines().filter(|l| !l.is_empty()) {
+            assert!(
+                line.starts_with("20") && line[..24].contains('T'),
+                "a line without a timestamp is a forged entry: {line}"
+            );
+            assert!(
+                super::parse_audit_line(line).is_some(),
+                "every line stays parseable: {line}"
+            );
+            if line.contains("Terminate") {
+                ours += 1;
+                assert!(
+                    !line.contains("\tstage=completed action=Terminate"),
+                    "a forged field escaped its quoting: {line}"
+                );
+            }
+        }
+        assert!(ours >= 3, "the three writers' lines are in there");
     }
 
     #[test]

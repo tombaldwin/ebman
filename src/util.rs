@@ -1,11 +1,79 @@
 //! App-specific path helpers for ebman. The generic bits
-//! (`parse_bool`, `write_atomic`) live in `tui-common::util` and are
-//! re-exported here so existing `crate::util::*` call sites keep
-//! working unchanged.
+//! (`parse_bool`) live in `tui-common::util` and are re-exported here
+//! so existing `crate::util::*` call sites keep working unchanged.
 
 use std::path::PathBuf;
 
-pub use tui_common::util::{parse_bool, write_atomic};
+pub use tui_common::util::parse_bool;
+
+/// Atomic write (temp file + rename) with 0600 perms throughout.
+///
+/// Shadows `tui_common::util::write_atomic`, which creates both the
+/// temp file and the target with `std::fs::write` — i.e. the umask
+/// default, usually 0644. The three files this writes are
+/// `config.toml`, `state.toml` and the cost cache, and the first of
+/// those carries `notify_webhook` (a Slack webhook URL is a bearer
+/// credential: anyone holding it can post as the integration) and
+/// `accounts.*.external_id`. World-readable was the wrong posture for
+/// them, and it disagreed with `open_append_secure` / `write_secure`,
+/// which had already established 0600 for the cache artifacts.
+///
+/// The mode is set on the TEMP file rather than chmod'd after the
+/// rename, because the temp holds the same secrets for the same
+/// duration; a chmod afterwards leaves exactly the window this is
+/// meant to close.
+pub fn write_atomic(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "write_atomic: path has no file name",
+        )
+    })?;
+    // Same temp-name scheme as the shared helper: pid + nanos, so two
+    // processes writing the same target can't collide on the temp.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let mut tmp_name = name.to_owned();
+    tmp_name.push(format!(".tmp.{}.{}", std::process::id(), nanos));
+    let tmp = path.with_file_name(tmp_name);
+
+    let write = || -> std::io::Result<()> {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.create(true).write(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts.open(&tmp)?;
+        f.write_all(contents.as_bytes())
+    };
+    if let Err(e) = write() {
+        // Don't leave an orphan temp beside a possibly-intact target.
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    // `mode()` applies only on create, and the rename carries the
+    // temp's mode — but a pre-0.30 install's existing 0644 file that
+    // we *replace* would have been fine while one we merely open
+    // would not. Belt and braces, and it migrates nothing silently.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
 
 /// XDG-style user config directory for ebman: `~/.config/ebman/`.
 /// Falls back to the current working directory when `$HOME` is
@@ -181,6 +249,106 @@ pub fn write_secure(path: &std::path::Path, contents: &[u8]) -> std::io::Result<
 #[cfg(test)]
 mod tests {
     use super::{json_escape, json_string};
+
+    #[cfg(unix)]
+    #[test]
+    fn every_file_ebman_writes_is_operator_only() {
+        // `write_atomic` came from the shared crate, where it used
+        // `std::fs::write` — the umask default, usually 0644. It
+        // writes `config.toml`, which carries `notify_webhook` (a
+        // Slack webhook URL is a bearer credential) and
+        // `accounts.*.external_id`. That also disagreed with
+        // `open_append_secure` / `write_secure`, which had already
+        // settled on 0600 for the cache artifacts.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = super::cache_dir().join("perm-check");
+        let _ = std::fs::create_dir_all(&dir);
+
+        let atomic = dir.join("config.toml");
+        super::write_atomic(
+            &atomic,
+            "notify_webhook = \"https://hooks.example/secret\"\n",
+        )
+        .expect("write");
+        let mode = std::fs::metadata(&atomic)
+            .expect("stat")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "write_atomic left {mode:o}");
+
+        // And a rewrite of an existing world-readable file tightens it
+        // rather than inheriting what was there.
+        std::fs::set_permissions(&atomic, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        super::write_atomic(&atomic, "x = 1\n").expect("rewrite");
+        let mode = std::fs::metadata(&atomic)
+            .expect("stat")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "a rewrite left {mode:o}");
+
+        // The siblings, so the three helpers can't drift apart.
+        let appended = dir.join("audit.log");
+        drop(super::open_append_secure(&appended).expect("append"));
+        let mode = std::fs::metadata(&appended)
+            .expect("stat")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "open_append_secure left {mode:o}");
+
+        let written = dir.join("explain-cache.json");
+        super::write_secure(&written, b"{}").expect("write_secure");
+        let mode = std::fs::metadata(&written)
+            .expect("stat")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "write_secure left {mode:o}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_atomic_temp_file_is_never_world_readable() {
+        // The temp holds the same secrets for the same duration, so a
+        // chmod after the rename leaves exactly the window it's meant
+        // to close. Proven by watching the directory mid-write.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = super::cache_dir().join("temp-perm-check");
+        let _ = std::fs::create_dir_all(&dir);
+        let target = dir.join("config.toml");
+
+        // A large body so the write is still open while we look.
+        let body = "k = \"v\"\n".repeat(50_000);
+        let watch = dir.clone();
+        let seen = std::thread::spawn(move || {
+            let mut worst = 0o600u32;
+            for _ in 0..2_000 {
+                if let Ok(entries) = std::fs::read_dir(&watch) {
+                    for e in entries.flatten() {
+                        let name = e.file_name();
+                        if name.to_string_lossy().contains(".tmp.") {
+                            if let Ok(md) = e.metadata() {
+                                worst |= md.permissions().mode() & 0o777;
+                            }
+                        }
+                    }
+                }
+            }
+            worst
+        });
+        super::write_atomic(&target, &body).expect("write");
+        let worst = seen.join().expect("watcher");
+        assert_eq!(
+            worst & 0o077,
+            0,
+            "a temp file was visible to group/other at {worst:o}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn json_escape_escapes_quotes_backslashes_newlines_tabs() {
