@@ -9122,3 +9122,36 @@ fn no_lint_caller_flattens_a_failed_tag_fetch_into_an_empty_list() {
         }
     }
 }
+
+#[tokio::test]
+async fn ascii_icon_mode_renders_no_unicode_arrows() {
+    // The end-to-end half of `every_status_glyph_has_an_ascii_form`:
+    // the pure helpers can be right while a call site still hardcodes
+    // the glyph. Five did — the header delta arrows, the sort marker,
+    // and the Metrics anomaly badge, which baked `▲` into its message
+    // string where a glyph-helper grep wouldn't find it.
+    let cfg = crate::config::Config {
+        icons: "ascii".into(),
+        ..crate::config::Config::default()
+    };
+    let mut app = App::for_tests(crate::aws::AwsClient::stub(), cfg);
+    app.environments = vec![
+        mk_env("api-prod", "uflexi", "Web", "Red"),
+        mk_env("api-staging", "uflexi", "Web", "Green"),
+    ];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    // Header deltas render only when a bucket moved.
+    app.health_delta = vec![("Red".to_string(), 1)];
+    app.status_delta = vec![("Ready".to_string(), -1)];
+
+    let out = render(&mut app, 160, 44);
+    for g in ['▲', '▼'] {
+        assert!(!out.contains(g), "ascii mode rendered {g}:\n{out}");
+    }
+    // The information the glyphs carry is still there.
+    assert!(
+        out.contains('^') || out.contains('v'),
+        "the ascii forms replaced them:\n{out}"
+    );
+}

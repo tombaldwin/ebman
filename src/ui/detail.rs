@@ -1141,7 +1141,7 @@ pub(super) fn draw_detail_metrics(
         // (`req5xx`, `req4xx`) we flag `last > 2 × mean(prior points)`; for
         // latency we flag `last > 1.5 × mean(prior)`. Health / other series
         // don't carry an interpretable baseline so we skip them.
-        let anomaly = series_anomaly_label(&series.id, &values);
+        let anomaly = series_anomaly_label(&series.id, &values, theme.icons);
         // Hover lookup: if the mouse column is over the metrics body, translate
         // it to a point index and surface the value at that index.
         let hover_value = detail
@@ -1250,7 +1250,7 @@ pub fn hover_index(col: u16, area: Rect, n: usize) -> Option<usize> {
 /// error rates spike more aggressively than latency does, so we use a higher
 /// multiplier for `req4xx` / `req5xx` than for `p90`. Series IDs we don't
 /// recognise (e.g. `health`) return `None`.
-pub fn series_anomaly_label(id: &str, values: &[f64]) -> Option<String> {
+pub fn series_anomaly_label(id: &str, values: &[f64], icons: IconStyle) -> Option<String> {
     if values.len() < 4 {
         return None;
     }
@@ -1265,14 +1265,15 @@ pub fn series_anomaly_label(id: &str, values: &[f64]) -> Option<String> {
     if mean <= 0.0 || !last.is_finite() {
         return None;
     }
-    let (multiplier, glyph) = match id {
-        "req5xx" => (2.0_f64, "▲ anomaly: 5xx > 2× baseline"),
-        "req4xx" => (2.0_f64, "▲ anomaly: 4xx > 2× baseline"),
-        "p90" => (1.5_f64, "▲ anomaly: latency > 1.5× baseline"),
+    let up = super::glyph(icons, "▲", "^");
+    let (multiplier, what) = match id {
+        "req5xx" => (2.0_f64, "5xx > 2× baseline"),
+        "req4xx" => (2.0_f64, "4xx > 2× baseline"),
+        "p90" => (1.5_f64, "latency > 1.5× baseline"),
         _ => return None,
     };
     if last > mean * multiplier {
-        Some(glyph.to_string())
+        Some(format!("{up} anomaly: {what}"))
     } else {
         None
     }
@@ -1282,7 +1283,11 @@ pub(super) fn delta_span(delta: f64, id: &str, theme: &Theme) -> Span<'static> {
     if delta.abs() < f64::EPSILON {
         return Span::styled("Δ flat", Style::default().fg(theme.muted));
     }
-    let arrow = if delta >= 0.0 { "▲" } else { "▼" };
+    let arrow = if delta >= 0.0 {
+        super::glyph(theme.icons, "▲", "^")
+    } else {
+        super::glyph(theme.icons, "▼", "v")
+    };
     let color = match (id, delta >= 0.0) {
         // For health 0=OK and higher=worse, so up is bad.
         ("health", true) => theme.health_red,

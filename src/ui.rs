@@ -840,7 +840,11 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: bool) {
         if *delta == 0 {
             continue;
         }
-        let arrow = if *delta > 0 { "▲" } else { "▼" };
+        let arrow = if *delta > 0 {
+            glyph(theme.icons, "▲", "^")
+        } else {
+            glyph(theme.icons, "▼", "v")
+        };
         let color = match bucket.to_lowercase().as_str() {
             "red" | "severe" => theme.health_red,
             "yellow" | "warning" => theme.health_yellow,
@@ -1198,7 +1202,11 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
             !app.view.hidden_cols.contains(*label)
         })
         .collect();
-    let sort_marker = if app.view.sort_desc() { " ▼" } else { " ▲" };
+    let sort_marker = if app.view.sort_desc() {
+        glyph(app.theme.icons, " ▼", " v")
+    } else {
+        glyph(app.theme.icons, " ▲", " ^")
+    };
     // TREND header advertises the window length (HISTORY_CAP samples × refresh
     // interval) so operators reading the column don't have to guess. Computed
     // once outside the per-column map.
@@ -4269,25 +4277,25 @@ mod tests {
     #[test]
     fn series_anomaly_flags_5xx_spike() {
         let v = vec![1.0, 1.0, 1.0, 1.0, 10.0];
-        assert!(super::series_anomaly_label("req5xx", &v).is_some());
+        assert!(super::series_anomaly_label("req5xx", &v, IconStyle::Unicode).is_some());
     }
 
     #[test]
     fn series_anomaly_quiet_when_stable() {
         let v = vec![5.0, 5.0, 5.0, 5.0, 5.5];
-        assert!(super::series_anomaly_label("req5xx", &v).is_none());
+        assert!(super::series_anomaly_label("req5xx", &v, IconStyle::Unicode).is_none());
     }
 
     #[test]
     fn series_anomaly_ignores_unrelated_id() {
         let v = vec![1.0, 1.0, 1.0, 1.0, 99.0];
-        assert!(super::series_anomaly_label("health", &v).is_none());
+        assert!(super::series_anomaly_label("health", &v, IconStyle::Unicode).is_none());
     }
 
     #[test]
     fn series_anomaly_handles_short_series() {
         let v = vec![1.0, 9.0];
-        assert!(super::series_anomaly_label("req5xx", &v).is_none());
+        assert!(super::series_anomaly_label("req5xx", &v, IconStyle::Unicode).is_none());
     }
 
     #[test]
@@ -4382,6 +4390,29 @@ mod tests {
         ] {
             assert_eq!(format_event_time(None, mode, now), "—");
         }
+    }
+
+    #[test]
+    fn every_status_glyph_has_an_ascii_form() {
+        // `icons = "ascii"` exists for terminals without a usable
+        // unicode font — a mode where an unconditional ▲ renders as a
+        // replacement box, which for a SORT MARKER or a health delta
+        // means the operator can't read what the glyph encodes.
+        let ascii = IconStyle::Ascii;
+        assert_eq!(super::glyph(ascii, "▲", "^"), "^");
+        assert_eq!(super::glyph(IconStyle::Unicode, "▲", "^"), "▲");
+
+        // The anomaly badge builds its text from the glyph, so the
+        // whole label has to come through ascii-clean — a `▲` baked
+        // into the message string is how this one hid.
+        let spike = vec![1.0, 1.0, 1.0, 99.0];
+        let label = super::series_anomaly_label("req5xx", &spike, ascii)
+            .expect("a 99x spike is an anomaly");
+        assert!(!label.contains('▲'), "ascii mode still emitted ▲: {label}");
+        assert!(label.starts_with('^'), "{label}");
+        let label = super::series_anomaly_label("req5xx", &spike, IconStyle::Unicode)
+            .expect("still fires in unicode mode");
+        assert!(label.starts_with('▲'), "{label}");
     }
 
     #[test]
