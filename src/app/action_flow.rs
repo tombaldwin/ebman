@@ -885,7 +885,7 @@ impl App {
         crate::audit::append_action_undone(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.context.region,
+            &self.region_for_name(&pd.target),
             &action_for_audit,
             &pd.target,
         );

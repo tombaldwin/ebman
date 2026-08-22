@@ -64,11 +64,11 @@ The loop itself is `App::run`: it selects over terminal input, the `AppMsg`
 channel, and timers, mutates `App`, and redraws. AWS work never blocks it —
 every call is a spawned task that reports back as an `AppMsg`.
 
-## The four rules
+## The five rules
 
 The compiler won't catch you breaking these. Rule 1 is the exception — the
 type system now does most of the work there, and the story of how that came
-about is in `src/app/view_state.rs`. Three of the four have bitten.
+about is in `src/app/view_state.rs`. Four of the five have bitten.
 
 **1. Mutating view state means rebuilding the view.**
 The table `ui` draws is a filtered, optionally grouped projection of
@@ -86,18 +86,31 @@ One trap worth naming: `filter_mut()` marks the cache stale on the *borrow*,
 not on an actual edit. If you only want to offer a key to the buffer, use
 `filter_handle_key`, which marks it stale only when the key was consumed.
 
-**2. Async results check `generation`.**
+**2. Per-env work uses the row's region.**
+`self.aws` is the *home* client — its region is `context.region`. Under a
+multi-region fan-out the selected row is routinely somewhere else, so
+anything about one environment goes through
+[`App::client_for_env`](src/app.rs) (or `client_for_app` /
+`current_env_client` / `detail_client` / `why_red_client` / `dlq_client`),
+which resolves inside the spawned task. `spawn_aws_in` is the per-region
+sibling of `spawn_aws`. Audit lines take the same region, so the journal
+names where the write actually went — and a dispatch and its completion
+have to agree. A test in `app/tests.rs` requires every remaining
+`self.aws` spawn site to declare why account- or region-wide is right for
+it.
+
+**3. Async results check `generation`.**
 Every spawned task captures the `generation` it launched at. If the operator
 switches region, profile or account while it's in flight, `generation`
 advances and the handler drops the result rather than applying data from the
 old context to the new one. Every new `AppMsg` variant must do this.
 
-**3. Guarded key arms come first.**
+**4. Guarded key arms come first.**
 A `KeyCode::Char(c) if ctrl` arm must precede the unguarded `KeyCode::Char(c)`
 arm for the same character. The compiler does not warn when the unguarded one
 shadows it.
 
-**4. Never print to stdout from the running app.**
+**5. Never print to stdout from the running app.**
 The alternate screen swallows `println!`/`eprintln!` and they corrupt the
 display. Use `tracing::*`; output goes to `~/.cache/ebman/ebman.log`. The same
 reason is why a panic in the TUI is worse than a wrong frame — see the release
