@@ -6,6 +6,112 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.30.0] — 2026-08-22 — the region a row actually lives in
+
+Two things: a correctness class that had been wrong since multi-region
+landed, and the architecture work that made it visible.
+
+### Fixed
+
+- **Everything about one environment now uses that environment's
+  region.** `self.aws` is the *session's* client, and under a
+  `:region all` fan-out the selected row is routinely in a different
+  region — so roughly sixty spawn sites were doing per-environment work
+  against the wrong one. Detail showed another region's instances,
+  metrics, events, alarms, logs and queues under the right
+  environment's name; `:why` answered "why is this red" with the wrong
+  region's evidence; the DLQ viewer peeked, purged and replayed against
+  SQS URLs that don't exist there; `:config-diff` compared the
+  left-hand env against itself; and the subnet / security-group /
+  certificate pickers offered region-scoped IDs that don't exist where
+  the form would write them.
+
+  Worst: **every write went to the session's region.** A restart,
+  rebuild, terminate, deploy, swap-cnames or scale on a fan-out row
+  either failed as "environment not found" or — with a same-named
+  environment at home, which is exactly what a fleet with per-region
+  copies looks like — dispatched a destructive action against the wrong
+  environment, with the audit line recording the wrong region.
+
+  Audit lines now name where the write actually went, and a dispatch
+  and its completion always agree so `ebman audit` correlates the pair.
+  A test requires any remaining session-client call site to declare why
+  account- or region-wide is right for it.
+
+- **`:account NAME` combined with `:region all` never worked** — the
+  fan-out passed the account name where a profile was expected, so
+  every region failed with "profile not found". It re-assumes per
+  region now, and assumed-role clients are cached with a five-minute
+  TTL (well inside the session's one-hour cap) so per-row work can't
+  turn into an STS AssumeRole storm.
+
+- **Freshly-pasted credentials needed a restart.** The client cache's
+  TTL only ever reached the multi-region listing, so a single-region
+  operator never touched it. The refresh tick now ages out the session
+  client — silently, without the fleet teardown a context switch does.
+
+- **The Detail auto-refresh stacked slow scans.** A scan slower than
+  the 15-second tick collected a new companion every tick for as long
+  as it ran. Also gives every paginated walk a wall-clock ceiling, so a
+  throttled account can't leave an operator on an unbounded spinner
+  with no cancel and no partial render.
+
+- **`config.toml` was written world-readable** (umask default), and it
+  carries `notify_webhook` — a bearer credential — and
+  `accounts.*.external_id`. Everything ebman writes is 0600 now, with
+  the mode set on the temp file rather than applied after the rename.
+
+- **Four audit fields interpolated free text raw.** `ebman audit
+  replay` re-dispatches parsed entries and the parser treats an
+  embedded newline as a new entry, so a raw field was a forge path into
+  a destructive command. Nothing had gone wrong because today's inputs
+  are AWS-constrained; that is not the same property as escaped.
+
+- **The Detail health panel hid FATAL events** — the filter took ERROR
+  and WARN only, so the worst event in the environment was the one it
+  would not show, and it then said "no error / warning events".
+
+- **A truncated Cost Explorer walk was terminal** — nothing re-fetched
+  it and nothing said how to recover. `:cost on` retries now, and
+  `:cost status` no longer describes a partial result as cached.
+
+- **`:explain` gave a confusing failure for a non-simulatable
+  principal** (a federated session ARN), blaming the caller's own IAM
+  permissions. It refuses locally with the fix named, and accepts a
+  pasted assumed-role ARN. A truncated `SimulatePrincipalPolicy` walk
+  now says so above the rows, since that is the surface where a missing
+  action reads as "that one's fine".
+
+- **`:accounts` failed for organizations over 2,000 accounts** —
+  ListAccounts caps page size at 20, so the shared runaway guard was a
+  hard ceiling on a walk that refuses partial results.
+
+- Plus roughly twenty further correctness fixes across pagination,
+  alarm attribution, multipart abort, semver ordering, STS expiry
+  handling, partition-aware ARNs and console links, log-tail
+  re-emission and SSM deadlines. Full detail in `BACKLOG.md`.
+
+### Changed
+
+- **`alarm_dimensions` accepts a `-Name` entry** that removes a name
+  from the match set — the escape hatch for operators whose non-EB
+  alarms carry an `EnvironmentName` dimension of their own. An
+  all-removals list falls back rather than blinding the alarm panel.
+
+### Internal
+
+- `src/app.rs` 22,648 → ~3,000 lines and `src/aws.rs` 6,114 → ~700,
+  the latter split per service so the Elastic Beanstalk domain is
+  separable from the twelve generic AWS modules.
+- New `ViewState` makes the stale-view-cache rule structural rather
+  than a convention: the derived slices are private, mutating an input
+  marks them stale, and reading a stale one trips a `debug_assert`.
+- `ARCHITECTURE.md` and `CONTRIBUTING.md` added; the five rules the
+  compiler doesn't enforce are written down.
+- Tests no longer touch the machine running them — three separate
+  escapes are closed (the real cost cache, the real `state.toml`, the
+  real clipboard), each with a guard test.
+
 ## [0.29.2] — 2026-08-21 — MCP Registry discovery
 
 ### Added
