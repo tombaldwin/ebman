@@ -1189,6 +1189,27 @@ Checked and sound: the pin/freeze order is now uniform across all four CLI write
 
 - [x] **`ebman action <unknown-verb>` validated too late** — FIXED 2026-08-22 on the user's call. It built an AWS client and ran the safety gates before noticing the verb was wrong, so with no credentials it reported a credential failure and on a frozen fleet it reported the freeze (exit 3) rather than a usage error. A malformed command is malformed whichever state the fleet is in. `CliAction::parse` routes `deploy` and the three `CliVerb`s before anything else is touched; verified end to end that an unknown verb now exits 2 with the usage line and no AWS call. A test also pins that `rollout` is NOT routable here — it is dispatched earlier, and routing it as a plain verb would run a single-env action for a fan-out command.
 
+#### `ui.rs` split — 2026-08-22
+
+5,046 lines → 199. Eight new modules, one per surface, plus the 1,040-line test module lifted to `ui/tests.rs`.
+
+| module | lines | |
+|---|---|---|
+| `table` | 1,135 | environments + applications tables and their cells |
+| `header` | 867 | pill chain, breadcrumb, width arithmetic |
+| `action` | 677 | the confirm modal |
+| `chrome` | 464 | blocks, pills, glyphs, colours — the shared vocabulary |
+| `footer` | 259 | key strip, status line, health hint |
+| `events` | 218 | events panel, severity + timestamp formatting |
+| `dlq` | 187 | the DLQ viewer |
+| `shell` | 129 | the embedded SSM pane |
+
+Byte-faithful, and **proved so rather than asserted**: a whitespace-normalised, comment-stripped line census against the pre-split file shows 2,278 distinct code lines, of which 70 changed — all 70 the declaration lines that gained a `pub(crate)` prefix (68 exact, 2 rewrapped by rustfmt when the prefix pushed them past the width limit). The only additions are the `mod` declarations and the glob re-exports.
+
+The re-exports are what keep this cheap: `pub(crate) use chrome::*` and friends mean every sibling's `use super::*` still resolves, which is the convention `detail` / `overlays` / `help` already relied on — so moving an item between view modules later doesn't touch its callers, and `ui/tests.rs` reaches its subjects through `super::` regardless of which module owns them.
+
+- [ ] **`draw_table` is 695 lines** — the single biggest function left, and the reason `table.rs` is still 1,135. Splitting it means decomposing a function rather than moving one, which is a different kind of change from this pass and wants its own.
+
 #### Important (need live verification or a design pass)
 - [x] **Cost Explorer pagination** — Shipped. `fetch_env_costs` follows `NextPageToken` (`aws/cost.rs`). The `MAX_COST_PAGES = 20` cap now warns, returns `EnvCosts { truncated }`, and a truncated walk is neither cached nor allowed to replace a complete in-memory map; `:cost status` and `:fleet-cost` both say when what's on screen is partial.
 - [x] **logs-tail `next_token` follow** — Shipped. `fetch_recent_log_events` follows `next_token` up to `MAX_PAGES_PER_POLL = 5` with boundary-millisecond dedupe (`aws/logs.rs`). The carry is keyed on whether the watermark moved rather than on `truncated`, so a stalled watermark keeps its skip set and the same lines aren't re-emitted every poll.
