@@ -1191,6 +1191,7 @@ impl App {
             view: super::tail::TailView::new(),
             last_err: None,
             session_id,
+            truncated_polls: 0,
         });
         self.status_message = None;
     }
@@ -1224,7 +1225,10 @@ impl App {
             return;
         };
         let Some(Overlay::EventTail {
-            events, last_err, ..
+            events,
+            last_err,
+            truncated_polls,
+            ..
         }) = target
         else {
             return;
@@ -1233,6 +1237,12 @@ impl App {
             Ok(new_events) => {
                 *last_err = None;
                 for ev in new_events {
+                    // Count the gap BEFORE pushing: the marker itself
+                    // can be evicted by this very batch, so the tally in
+                    // the chrome is the part that has to survive.
+                    if crate::app::is_event_tail_gap(&ev) {
+                        *truncated_polls += 1;
+                    }
                     if events.len() >= EVENT_TAIL_MAX_EVENTS {
                         events.pop_front();
                     }

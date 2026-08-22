@@ -3412,35 +3412,47 @@ fn aws_client_is_send_and_sync() {
 #[tokio::test]
 async fn a_clear_during_a_build_is_not_undone_by_the_in_flight_builder() {
     let _serialised = CACHE_TEST_LOCK.lock().await;
-    // `cached_client` drops the lock across `AwsClient::with(...).await`
-    // and re-acquires to insert. A `clear_client_cache()` landing in
-    // that window — the operator edited ~/.aws and switched profile —
-    // was silently undone when the stranded build completed and
-    // inserted its pre-edit client. The AppMsg generation guard drops
-    // the stranded *result*; it doesn't see the cache write.
+    // The race, driven deterministically: a builder captures the epoch,
+    // a `clear_client_cache()` lands while it's awaiting
+    // `AwsClient::with`, and the stranded builder then tries to install
+    // a client resolved from the PRE-switch `~/.aws`. If it succeeds it
+    // repopulates the map the operator's `:profile` switch just
+    // emptied, and every fan-out authenticates as the old profile for
+    // the full TTL while the header shows the new context.
+    //
+    // The previous version of this test only checked that the epoch
+    // counter increments and that a build started AFTER a clear caches
+    // — so deleting the entire guard left it green.
     super::clear_client_cache();
-
-    // Simulate the race directly: capture the epoch, clear, then try to
-    // install — which is exactly the ordering `cached_client` guards.
-    let epoch = super::cache_epoch_for_tests();
-    super::clear_client_cache();
-    assert_ne!(
-        super::cache_epoch_for_tests(),
-        epoch,
-        "a clear must move the epoch"
-    );
-
-    // A real build after the clear installs normally.
-    let after = super::cached_client(None, "us-east-1".into())
+    let key = (None, "us-east-1".to_string());
+    let client = super::cached_client(None, "us-east-1".into())
         .await
         .expect("built");
-    let again = super::cached_client(None, "us-east-1".into())
-        .await
-        .expect("cached");
+
+    // Builder captures the epoch...
+    let epoch = super::cache_epoch_for_tests();
+    // ...operator switches profile, which clears...
+    super::clear_client_cache();
     assert!(
-        std::sync::Arc::ptr_eq(&after, &again),
-        "a build that started after the clear should still cache"
+        !super::is_cached_for_tests(&key),
+        "the clear emptied the map"
     );
+    // ...and the stranded builder tries to install.
+    let installed = super::install_if_current_for_tests(key.clone(), epoch, client.clone());
+    assert!(!installed, "a build from before the clear must not install");
+    assert!(
+        !super::is_cached_for_tests(&key),
+        "the cleared map must stay empty"
+    );
+
+    // A build that starts after the clear installs normally.
+    let epoch = super::cache_epoch_for_tests();
+    assert!(super::install_if_current_for_tests(
+        key.clone(),
+        epoch,
+        client
+    ));
+    assert!(super::is_cached_for_tests(&key));
     super::clear_client_cache();
 }
 

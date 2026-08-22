@@ -211,6 +211,16 @@ pub enum Overlay {
         /// Unique-per-session id; the polling task carries the same id and
         /// late events for stale sessions are dropped on arrival.
         session_id: u64,
+        /// How many polls couldn't fetch their whole window.
+        ///
+        /// Sticky, and rendered in the title, because the in-stream gap
+        /// marker cannot be relied on: a truncated poll can carry more
+        /// events than this ring holds, so the marker — inserted as the
+        /// oldest row — is evicted by its own batch or by the next
+        /// poll, and the overlay opens in follow mode at the newest end
+        /// where the marker isn't. A counter in the chrome survives
+        /// eviction by construction.
+        truncated_polls: usize,
     },
     /// `:about` / `:credits` — the project card with the animated
     /// 8-bit giant-grabs-the-beanstalk scene. The `Instant` is the

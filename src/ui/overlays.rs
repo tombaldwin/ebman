@@ -695,6 +695,7 @@ pub(super) fn draw_event_tail_overlay(f: &mut Frame, area: Rect, app: &App) {
         events,
         view,
         last_err,
+        truncated_polls,
         ..
     }) = app.current_overlay.as_ref()
     else {
@@ -732,13 +733,19 @@ pub(super) fn draw_event_tail_overlay(f: &mut Frame, area: Rect, app: &App) {
     }
     // The line count is post-filter; show `shown/held` while a
     // filter is active so the title doesn't overstate what's visible.
+    let gap_note = if *truncated_polls > 0 {
+        format!(" · ⚠ {truncated_polls} poll(s) dropped older events")
+    } else {
+        String::new()
+    };
     let title_text = format!(
-        "event-tail — fleet · {} events{}",
+        "event-tail — fleet · {} events{}{}",
         if view.filter_pattern.is_some() {
             format!("{}/{}", lines.len(), events.len())
         } else {
             events.len().to_string()
         },
+        gap_note,
         tail_follow_suffix(view.following)
     );
     draw_tail_overlay_chrome(

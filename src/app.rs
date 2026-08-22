@@ -339,6 +339,9 @@ pub struct App {
     /// stale numbers.
     pub costs: std::collections::HashMap<String, f64>,
     pub costs_fetched_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// The last `:yank-cli` snippet, so a test can assert on what was
+    /// copied without reaching into the system clipboard.
+    pub last_yanked_cli: Option<String>,
     /// Whether what's in `costs` came from a walk that finished.
     ///
     /// Without this, "do we already have costs?" was the only test
@@ -1238,6 +1241,7 @@ impl App {
             cost_enabled: persisted.cost_enabled.unwrap_or(false),
             costs: std::collections::HashMap::new(),
             costs_complete: true,
+            last_yanked_cli: None,
             costs_fetched_at: None,
             latest_stacks: std::collections::HashMap::new(),
             frozen: false,
@@ -1501,6 +1505,7 @@ impl App {
             cost_enabled: false,
             costs: std::collections::HashMap::new(),
             costs_complete: true,
+            last_yanked_cli: None,
             costs_fetched_at: None,
             latest_stacks: std::collections::HashMap::new(),
             frozen: false,
