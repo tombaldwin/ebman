@@ -680,10 +680,26 @@ pub fn render_promotions(
 /// matched statements + SCP / boundary blockers + a concrete
 /// suggestion of what policy statement to add when the decision
 /// was implicitDeny.
-pub(crate) fn render_explain_overlay(principal: &str, rows: &[crate::aws::IamSimResult]) -> String {
+pub(crate) fn render_explain_overlay(
+    principal: &str,
+    rows: &[crate::aws::IamSimResult],
+    truncated: bool,
+) -> String {
     let mut out = String::new();
     out.push_str(&format!("IAM diagnosis for {principal}\n"));
     out.push_str("═══════════════════════════════════════════════════\n\n");
+    if truncated {
+        // Up top, not at the bottom: this changes how every row below
+        // it should be read, and an absent action is the finding an
+        // operator is most likely to draw from a short table.
+        out.push_str(
+            "⚠ SimulatePrincipalPolicy hit its page budget — this table is
+               INCOMPLETE. An action missing below was not evaluated, not
+               necessarily allowed. Re-run `:explain` with fewer actions.
+
+",
+        );
+    }
     if rows.is_empty() {
         out.push_str("(no evaluation results returned)\n\nesc / q to close");
         return out;

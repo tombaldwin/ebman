@@ -34,11 +34,25 @@ impl App {
                             .signed_duration_since(t)
                             .to_std()
                             .unwrap_or_default();
-                        format!(
-                            "on (refreshed {} ago, {} env(s) cached)",
-                            humanize_short_age(age),
-                            self.costs.len()
-                        )
+                        // Reachable with incomplete data: a truncated
+                        // walk over a NON-empty map leaves the previous
+                        // timestamp in place. Saying "cached" there is
+                        // doubly wrong — the handler explicitly refused
+                        // to cache a partial result, and the age
+                        // describes the older complete one.
+                        if self.costs_complete {
+                            format!(
+                                "on (refreshed {} ago, {} env(s) cached)",
+                                humanize_short_age(age),
+                                self.costs.len()
+                            )
+                        } else {
+                            format!(
+                                "on ({} env(s){partial}; last complete fetch {} ago)",
+                                self.costs.len(),
+                                humanize_short_age(age)
+                            )
+                        }
                     }
                 };
                 self.status_message = Some(format!("cost: {pretty}"));
@@ -51,6 +65,20 @@ impl App {
             }
         };
         if next == self.cost_enabled {
+            // `:cost on` while already on is the ONLY way back from a
+            // truncated walk. `spawn_cost_fetch` has exactly one caller
+            // — the `:cost on` transition below — so there is no
+            // periodic refetch to pick it up, and the truncated branch
+            // deliberately leaves `costs_fetched_at` unstamped to avoid
+            // suppressing a retry that otherwise never came. Answering
+            // "already on" made the partial map terminal for the
+            // session.
+            if next && !self.costs_complete {
+                self.status_message =
+                    Some("cost: retrying the incomplete Cost Explorer walk…".into());
+                self.spawn_cost_fetch();
+                return;
+            }
             self.status_message =
                 Some(format!("cost: already {}", if next { "on" } else { "off" }));
             return;

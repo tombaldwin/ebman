@@ -226,7 +226,11 @@ impl App {
                 for r in results {
                     match r {
                         Ok(v) => envs.extend(v),
-                        Err(e) => errs.push(format!("{e}")),
+                        // `{e:#}`, not `{e}`: the region is attached
+                        // as eyre context by `list_environments_in_region`,
+                        // and the bare Display shows only the outermost
+                        // message — so the notice named no region at all.
+                        Err(e) => errs.push(format!("{e:#}")),
                     }
                 }
                 // Every region failing is a hard error; some failing
@@ -855,8 +859,26 @@ impl App {
                 self.last_refresh = Some(chrono::Utc::now());
                 // A successful refresh resets the throttle back-off so the
                 // next throttle (if any) starts again from the base interval.
-                self.consecutive_throttles = 0;
-                self.throttle_until = None;
+                //
+                // Unless the fan-out was only PARTIALLY successful and
+                // the failures were throttles. Those now arrive here in
+                // the `Ok` arm — some regions returned rows — and
+                // resetting on them meant ebman never backed off from
+                // the regions rate-limiting it, re-hammering them every
+                // tick and deepening the throttle.
+                let throttled_regions = partial_errors
+                    .iter()
+                    .filter(|e| is_throttling_error(e))
+                    .count();
+                if throttled_regions > 0 {
+                    let backoff =
+                        throttle_backoff(self.refresh_interval, self.consecutive_throttles);
+                    self.consecutive_throttles = self.consecutive_throttles.saturating_add(1);
+                    self.throttle_until = Some(Instant::now() + backoff);
+                } else {
+                    self.consecutive_throttles = 0;
+                    self.throttle_until = None;
+                }
                 // Clear status/error only if the user hasn't replaced them
                 // during the refresh round-trip. Otherwise their action message
                 // (sort change, alias set, …) would get clobbered here.
@@ -878,7 +900,14 @@ impl App {
                 // successful refresh wipes `error_message`, so a
                 // partial-failure notice set at the top of this
                 // function is erased by the very refresh it describes.
-                if !partial_errors.is_empty() {
+                //
+                // But only into a slot the auto-clear actually emptied.
+                // Writing unconditionally overwrote a message the
+                // operator set DURING the round trip — a failed
+                // `:deploy`, say — which the guard above had just
+                // deliberately preserved, and did it again every tick
+                // with no way to dismiss it.
+                if !partial_errors.is_empty() && self.error_message.is_none() {
                     self.error_message = Some(format!(
                         "some regions failed and their environments are NOT shown: {}",
                         partial_errors.join("; ")

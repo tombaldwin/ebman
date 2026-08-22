@@ -503,6 +503,16 @@ pub(crate) struct Paged<T> {
 }
 
 impl<T> Paged<T> {
+    /// Wrap a hand-rolled walk's result so it has to be unwrapped
+    /// through the same two honest choices. `simulate_principal_policy`
+    /// is the one listing that can't use [`paginate`] — IAM's marker
+    /// pagination is driven by an `is_truncated` flag rather than by
+    /// the presence of a token — but that's no reason for its callers
+    /// to get a bare `Vec` that hides the cap.
+    pub(crate) fn new(items: Vec<T>, truncated: bool) -> Self {
+        Self { items, truncated }
+    }
+
     /// The items, accepting that the walk may have been cut short.
     pub(crate) fn items(self) -> Vec<T> {
         self.items

@@ -358,7 +358,14 @@ pub async fn list_environments_in_region(
     profile: Option<String>,
     region: String,
 ) -> Result<Vec<Environment>> {
-    let client = super::cached_client(profile, region.clone()).await?;
+    // Every error out of this function carries its region. The
+    // multi-region fan-out's whole purpose is to say WHICH region's
+    // environments are missing, and neither `cached_client` nor
+    // `list_environments` attaches one — so the notice read "some
+    // regions failed … DescribeEnvironments: …" with no region in it.
+    let client = super::cached_client(profile, region.clone())
+        .await
+        .wrap_err_with(|| format!("region {region}"))?;
     // Label with the region the client RESOLVED to, not the one asked
     // for. `AwsClient::with` detects and logs the case where the SDK
     // ignores an explicit region (an empty or whitespace value leaves
@@ -367,7 +374,10 @@ pub async fn list_environments_in_region(
     // so the REGION column, `:find-env` results and any region-scoped
     // follow-up action all point at the wrong place.
     let resolved_region = client.context.region.clone();
-    let mut envs = client.list_environments().await?;
+    let mut envs = client
+        .list_environments()
+        .await
+        .wrap_err_with(|| format!("region {region}"))?;
     stamp_region(&mut envs, &resolved_region);
     Ok(envs)
 }

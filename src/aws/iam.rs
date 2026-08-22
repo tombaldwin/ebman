@@ -92,14 +92,14 @@ impl AwsClient {
     /// mean the caller lacks `iam:SimulatePrincipalPolicy` on the
     /// target role — common with assumed-role sessions that don't
     /// have IAM perms. The renderer surfaces that as a clear hint.
-    pub async fn simulate_principal_policy(
+    pub(crate) async fn simulate_principal_policy(
         &self,
         principal_arn: &str,
         action_names: &[String],
         resource_arns: &[String],
-    ) -> Result<Vec<IamSimResult>> {
+    ) -> Result<Paged<IamSimResult>> {
         if action_names.is_empty() {
-            return Ok(Vec::new());
+            return Ok(Paged::new(Vec::new(), false));
         }
         let resources: Vec<String> = if resource_arns.is_empty() {
             vec!["*".to_string()]
@@ -117,6 +117,7 @@ impl AwsClient {
         let mut raw = Vec::new();
         let mut marker: Option<String> = None;
         let mut pages = 0usize;
+        let mut truncated = false;
         loop {
             let mut req = self
                 .iam()
@@ -142,6 +143,12 @@ impl AwsClient {
                     marker = Some(m);
                 }
                 Some(m) if resp.is_truncated && !m.is_empty() => {
+                    // A log line is invisible to the operator staring
+                    // at the overlay, and `:explain` is exactly the
+                    // surface where a missing row reads as "that
+                    // action is fine". Carry the flag out so the
+                    // renderer can say the table is short.
+                    truncated = true;
                     tracing::warn!(
                         target: "ebman::aws",
                         pages,
@@ -202,6 +209,6 @@ impl AwsClient {
                 blocked_by_boundary,
             });
         }
-        Ok(out)
+        Ok(Paged::new(out, truncated))
     }
 }

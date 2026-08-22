@@ -487,7 +487,9 @@ pub(super) fn draw_detail_health(
 
     // 1. Recent significant events (ERROR / WARN in last 30m). Falls
     // back to "no recent events" rather than dumping noise.
-    lines.push(section("recent events (last 30 min · errors + warnings)"));
+    lines.push(section(
+        "recent events (last 30 min · fatal + errors + warnings)",
+    ));
     if detail.loading_events && detail.events.is_empty() {
         lines.push(muted(" fetching events…".into()));
     } else {
@@ -499,22 +501,33 @@ pub(super) fn draw_detail_health(
             .iter()
             .enumerate()
             .filter(|(_, e)| {
+                // FATAL is the severity above ERROR, and the one an
+                // operator opened this panel to find. Omitting it
+                // meant the worst event in the environment was the
+                // one event the health panel wouldn't show — and
+                // "no error / warning events" then reads as calm.
                 let sev = e.severity.to_uppercase();
-                sev == "ERROR" || sev == "WARN"
+                sev == "FATAL" || sev == "ERROR" || sev == "WARN"
             })
             .filter(|(_, e)| e.at.map(|t| t >= cutoff).unwrap_or(true))
             .take(10)
             .collect();
         if recent.is_empty() {
             lines.push(muted(
-                " (no error / warning events in the last 30 min)".into(),
+                " (no fatal / error / warning events in the last 30 min)".into(),
             ));
         } else {
             for (idx, e) in recent {
                 let when =
                     e.at.map(|t| t.with_timezone(&chrono::Local).format("%H:%M").to_string())
                         .unwrap_or_else(|| "??:??".into());
+                // Matches `ui.rs`'s event-severity mapping: FATAL and
+                // ERROR are both red, FATAL bold so it separates from
+                // the errors around it.
                 let sev_style = match e.severity.to_uppercase().as_str() {
+                    "FATAL" => Style::default()
+                        .fg(theme.health_red)
+                        .add_modifier(Modifier::BOLD),
                     "ERROR" => Style::default().fg(theme.health_red),
                     "WARN" => Style::default().fg(theme.health_yellow),
                     _ => Style::default().fg(theme.muted),

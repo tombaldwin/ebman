@@ -30,6 +30,14 @@ pub struct Config {
     /// operator-authored alarms spelled differently. This is the way
     /// back without reinstating the false positive.
     pub alarm_dimensions: Vec<String>,
+    /// Lines `parse` didn't recognise, kept verbatim.
+    ///
+    /// `:settings` save rewrites the whole file from `serialize`, so
+    /// anything the model doesn't carry is destroyed. That included a
+    /// mistyped key — the very line an operator would otherwise spot
+    /// and fix — and any key a newer release adds, which is the
+    /// opposite of the graceful degradation the parser aims for.
+    pub passthrough: Vec<String>,
     /// Per-profile theme override. Key = AWS profile name, value = theme
     /// name (matches the same names `theme = …` accepts). Lets the
     /// operator pin a high-contrast / dark / light theme to a specific
@@ -167,6 +175,7 @@ impl Default for Config {
             notify_bell: false,
             required_tags: Vec::new(),
             alarm_dimensions: vec![crate::aws::ENV_DIMENSION.to_string()],
+            passthrough: Vec::new(),
             profile_themes: std::collections::HashMap::new(),
             accounts: std::collections::HashMap::new(),
             runbooks: std::collections::HashMap::new(),
@@ -315,13 +324,35 @@ pub fn parse(text: &str) -> Config {
                 let Some((name, field)) = rest.split_once('.') else {
                     continue;
                 };
-                let entry = cfg.accounts.entry(name.to_string()).or_default();
+                // The entry is created only once a field we recognise
+                // is seen. Creating it first meant a typo — or a key a
+                // newer release adds — left a spec with an empty ARN
+                // that `contains_key` reports as a real account, so
+                // `:account NAME` took the AssumeRole path and failed
+                // with an opaque STS error instead of "no such
+                // account".
                 match field.trim() {
-                    "role_arn" => entry.role_arn = value,
-                    "source_profile" => entry.source_profile = Some(value),
-                    "external_id" => entry.external_id = Some(value),
-                    "region" => entry.region = Some(value),
-                    _ => {}
+                    "role_arn" => {
+                        cfg.accounts.entry(name.to_string()).or_default().role_arn = value;
+                    }
+                    "source_profile" => {
+                        cfg.accounts
+                            .entry(name.to_string())
+                            .or_default()
+                            .source_profile = Some(value);
+                    }
+                    "external_id" => {
+                        cfg.accounts
+                            .entry(name.to_string())
+                            .or_default()
+                            .external_id = Some(value);
+                    }
+                    "region" => {
+                        cfg.accounts.entry(name.to_string()).or_default().region = Some(value);
+                    }
+                    // Unrecognised: preserved verbatim by `passthrough`
+                    // below rather than silently creating a phantom.
+                    _ => cfg.passthrough.push(line.to_string()),
                 }
             }
             // `safety.envs.NAME.read_only = true` and
@@ -363,7 +394,10 @@ pub fn parse(text: &str) -> Config {
                     }
                 }
             }
-            _ => {}
+            // Unrecognised at the top level too — preserved rather
+            // than dropped, for the same reason as the account fields
+            // above.
+            _ => cfg.passthrough.push(line.to_string()),
         }
     }
     cfg
@@ -516,6 +550,17 @@ pub fn serialize(cfg: &Config) -> String {
     // written, so a `:settings` save — which rewrites the whole file
     // from this function — deleted every one of them and broke
     // `:account <name>` with nothing on screen to say why.
+    // Lines the parser didn't model, verbatim and last. Without this a
+    // `:settings` save silently deleted a mistyped key — the very line
+    // the operator would otherwise notice and fix — along with any key
+    // a newer release understands and this build doesn't.
+    if !cfg.passthrough.is_empty() {
+        out.push_str("\n# Preserved from the previous file (not managed by :settings):\n");
+        for line in &cfg.passthrough {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
     if !cfg.accounts.is_empty() {
         let mut names: Vec<&String> = cfg.accounts.keys().collect();
         names.sort();
@@ -523,20 +568,19 @@ pub fn serialize(cfg: &Config) -> String {
             let Some(spec) = cfg.accounts.get(name) else {
                 continue;
             };
-            // `parse` materialises an entry before it matches the field
-            // name, so a typo (`accounts.prod.rolearn`) or a key a newer
-            // release adds leaves a phantom spec with an empty ARN. It
-            // must not be written back: emitting `role_arn = ""` would
-            // replace the operator's real line with a plausible-looking
-            // empty one, and `:account prod` would then fail with an STS
-            // error rather than "no such account".
-            if spec.role_arn.trim().is_empty() {
-                continue;
+            // An absent ARN omits that one line — it does NOT drop the
+            // block. Skipping the whole account destroyed its valid
+            // `source_profile` / `region` lines too, trading one bad
+            // line for three; and emitting `role_arn = ""` replaced the
+            // operator's real line with a plausible-looking empty one.
+            // Omitting round-trips: the block re-parses exactly as it
+            // was written.
+            if !spec.role_arn.trim().is_empty() {
+                out.push_str(&format!(
+                    "accounts.{name}.role_arn = \"{}\"\n",
+                    spec.role_arn
+                ));
             }
-            out.push_str(&format!(
-                "accounts.{name}.role_arn = \"{}\"\n",
-                spec.role_arn
-            ));
             if let Some(v) = &spec.source_profile {
                 out.push_str(&format!("accounts.{name}.source_profile = \"{v}\"\n"));
             }
@@ -753,6 +797,7 @@ accounts.staging.external_id = "abc-xyz"
             notify_bell: true,
             required_tags: vec!["Owner".into(), "Env".into()],
             alarm_dimensions: vec![crate::aws::ENV_DIMENSION.to_string()],
+            passthrough: Vec::new(),
             profile_themes,
             accounts: std::collections::HashMap::new(),
             runbooks: std::collections::HashMap::new(),
@@ -1000,22 +1045,50 @@ explain.max_tokens = 512
         assert!(lost.is_empty(), "a :settings save destroys: {lost:?}");
     }
     #[test]
-    fn a_typod_account_field_is_not_written_back_as_an_empty_arn() {
-        // `parse` materialises an account entry before matching the
-        // field name, so a typo creates a phantom spec with an empty
-        // ARN. Writing that back replaces the operator's real line with
-        // a plausible-looking empty one, and `:account prod` then fails
-        // with an STS error rather than "no such account".
+    fn a_typod_account_field_survives_a_settings_save_without_creating_an_account() {
+        // Three things have to hold at once, and earlier attempts got
+        // one at the cost of another:
+        //   - the typo is PRESERVED, because it's the line the operator
+        //     would otherwise spot and fix;
+        //   - no phantom account exists, because `contains_key` gates
+        //     `:account NAME`, and a spec with an empty ARN failed with
+        //     an opaque STS error instead of "no such account";
+        //   - the account's valid sibling lines survive, because
+        //     skipping the whole block to avoid writing `role_arn = ""`
+        //     traded one bad line for three.
         let cfg = parse(concat!(
             "accounts.prod.rolearn = \"arn:aws:iam::123456789012:role/EbAdmin\"\n",
+            "accounts.prod.source_profile = \"default\"\n",
+            "accounts.prod.region = \"eu-west-1\"\n",
             "accounts.real.role_arn = \"arn:aws:iam::999:role/Ok\"\n",
         ));
+        assert!(
+            cfg.accounts
+                .get("prod")
+                .map(|a| a.role_arn.trim().is_empty())
+                .unwrap_or(true),
+            "a mistyped ARN key must not produce a usable account"
+        );
+
         let out = serialize(&cfg);
         assert!(
-            !out.contains("accounts.prod"),
-            "a spec with no ARN must not be emitted:\n{out}"
+            out.contains("accounts.prod.rolearn = \"arn:aws:iam::123456789012:role/EbAdmin\""),
+            "the mistyped line must survive the save:\n{out}"
+        );
+        assert!(
+            !out.contains("accounts.prod.role_arn"),
+            "an empty ARN must not be written back:\n{out}"
+        );
+        assert!(
+            out.contains("accounts.prod.source_profile = \"default\"")
+                && out.contains("accounts.prod.region = \"eu-west-1\""),
+            "the account's valid lines must survive:\n{out}"
         );
         assert!(out.contains("accounts.real.role_arn = \"arn:aws:iam::999:role/Ok\""));
+
+        // And the whole thing round-trips.
+        let back = parse(&out);
+        assert_eq!(back.accounts.get("real"), cfg.accounts.get("real"));
     }
 
     #[test]
@@ -1082,5 +1155,22 @@ explain.max_tokens = 512
     fn an_unset_alarm_dimensions_is_not_written() {
         let out = serialize(&Config::default());
         assert!(!out.contains("alarm_dimensions"), "{out}");
+    }
+    #[test]
+    fn an_unrecognised_key_survives_a_settings_save() {
+        // `:settings` rewrites the whole file, so anything the model
+        // doesn't carry was destroyed — including a key a newer release
+        // understands and this build doesn't, which is the opposite of
+        // the graceful degradation the parser aims for.
+        let cfg = parse("some_future_key = \"value\"\nrefresh_interval_secs = 30\n");
+        let out = serialize(&cfg);
+        assert!(
+            out.contains("some_future_key = \"value\""),
+            "an unknown key must survive:\n{out}"
+        );
+        assert!(out.contains("refresh_interval_secs = 30"));
+        // And a second save doesn't duplicate it.
+        let twice = serialize(&parse(&out));
+        assert_eq!(twice.matches("some_future_key").count(), 1, "{twice}");
     }
 }
