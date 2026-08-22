@@ -43,6 +43,8 @@ The final message must explicitly list **skipped items** alongside what shipped,
 - **No `println!` / `eprintln!` in the running app** — the alternate screen swallows them and they corrupt the TUI. Use `tracing::*` macros; output goes to `~/.cache/ebman/ebman.log`.
 - **The animation ticker is gated on `loading_since.is_some()`.** Don't move work into it that needs to run while idle — add a separate ticker.
 - **`State` and `Config` parsing is in pure `parse(&str)` functions.** Keep the I/O wrappers thin so the parsers stay unit-testable.
+- **Tests must not touch the developer's machine.** `util::config_dir()` / `cache_dir()` redirect under `cfg(test)` and `yank` is a no-op there. Three separate times a test wrote to the real `~/.cache/ebman`, the real `~/.config/ebman/state.toml`, or the real clipboard. Any new side channel to the host gets the same treatment plus a guard test.
+- **Never `git checkout <file>` while it carries uncommitted work** — it is a silent destructive revert of everything unstaged in that file, not an undo of the last edit. To back out a mutation experiment, `cp` the file first and restore from that copy; back up the file the mutation actually edits, not the one you meant to edit. Commit before experimenting.
 
 ## What "done" looks like for each landed item
 
