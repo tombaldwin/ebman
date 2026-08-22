@@ -408,7 +408,12 @@ pub async fn list_environments_for_account(
     if region.is_some() {
         spec.region = region.clone();
     }
-    let client = AwsClient::assume_role(name, &spec).await?;
+    // `cached_role_client`, not a bare `assume_role`: this runs once
+    // per region on every 15-second refresh tick under `:account` plus
+    // `:region all`, and once per account in `:org-health` / `:find-env`.
+    // A fresh AssumeRole each time is an STS call storm for a session
+    // that would be perfectly valid for another hour.
+    let client = super::cached_role_client(name, &spec).await?;
     let resolved_region = client.context.region.clone();
     let mut envs = client.list_environments().await?;
     stamp_region(&mut envs, &resolved_region);

@@ -8708,3 +8708,124 @@ async fn a_dispatch_and_its_completion_agree_on_the_region() {
         "the completion must name where the work went: {line}"
     );
 }
+
+#[tokio::test]
+async fn a_cross_region_role_client_comes_from_the_cache() {
+    // The pre-tag review added the role cache and a test that it gets
+    // CLEARED — which passed while the code path that was supposed to
+    // read it still called `assume_role` directly, because the edit
+    // routing it through silently failed. A cache nothing reads is not
+    // a fix, and "the clear works" could never have caught that.
+    //
+    // Per-env work under `:account` resolves once per call, and
+    // `spawn_env_instance_counts` builds a client per row on every
+    // 15-second tick: a fresh AssumeRole each time is an STS storm for
+    // a session that stays valid for another hour.
+    let _guard = crate::aws::CACHE_TEST_LOCK.lock().await;
+    crate::aws::clear_client_cache();
+
+    let mut app = test_app();
+    app.cfg.accounts.insert(
+        "prod".into(),
+        crate::config::AccountSpec {
+            role_arn: "arn:aws:iam::1:role/R".into(),
+            region: Some("us-east-1".into()),
+            ..Default::default()
+        },
+    );
+    app.context.profile = Some("prod".into());
+
+    // Seed the cache for the key the accessor will build. Assuming for
+    // real needs live STS, so this proves the READ path — which is the
+    // half that was broken.
+    let seeded = std::sync::Arc::new(crate::aws::AwsClient::stub());
+    crate::aws::seed_role_cache_for_tests("prod", "eu-west-2", seeded.clone());
+
+    let client = app.client_for_region("eu-west-2");
+    assert_eq!(client.account_for_tests().as_deref(), Some("prod"));
+    let resolved = client.resolve().await.expect("cache hit, no STS call");
+    assert!(
+        std::sync::Arc::ptr_eq(&resolved, &seeded),
+        "resolve must come from the role cache, not a fresh AssumeRole"
+    );
+
+    crate::aws::clear_client_cache();
+}
+
+#[tokio::test]
+async fn a_detail_env_that_left_the_table_keeps_its_region() {
+    // `region_for_name` looks in `self.environments`, but Detail's
+    // snapshot is taken at open time and is NOT torn down when a
+    // refresh drops the row — a terminated env, or a region whose
+    // fetch failed under a fan-out. The action menu targets Detail's
+    // env, so without the snapshot fallback a restart / terminate
+    // dispatched there fell back to the HOME region: the original
+    // wrong-region bug, in a narrow window, and silently.
+    let mut app = test_app();
+    let mut env = mk_env("api-prod", "uflexi", "Web", "Green");
+    env.region = Some("eu-west-2".into());
+    app.environments = vec![env];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+    assert!(app.detail.is_some(), "detail open on the fan-out row");
+
+    // The refresh that drops it — eu-west-2 failed this tick.
+    app.environments.clear();
+    app.view.invalidate();
+    app.rebuild_view();
+
+    assert_eq!(
+        app.region_for_name("api-prod"),
+        "eu-west-2",
+        "Detail's snapshot still knows where this env lives"
+    );
+    assert_eq!(app.detail_client().region_for_tests(), "eu-west-2");
+    // A name neither the table nor Detail knows still falls back.
+    assert_eq!(app.region_for_name("ghost"), "us-east-1");
+}
+
+#[tokio::test]
+async fn current_env_client_and_client_for_env_are_not_interchangeable() {
+    // `current_env_client` is Detail-first, matching how `:alarms` and
+    // `:alarm-history` pick their env. Most commands instead operate on
+    // `selected_env()`. The two agree almost always — opening Detail
+    // uses the selection — but a refresh that reorders or filters the
+    // table moves the selection while Detail keeps its snapshot, and
+    // then they name different environments in different regions.
+    //
+    // `:alarm-create` / `:alarm-delete` were resolving through the
+    // Detail-first accessor while operating on the selection, so the
+    // alarm would have been written to one region and audited as
+    // another. This pins the distinction so the accessors don't get
+    // swapped back for looking similar.
+    let mut app = test_app();
+    let mut a = mk_env("api-prod", "uflexi", "Web", "Green");
+    a.region = Some("eu-west-2".into());
+    let mut b = mk_env("api-staging", "uflexi", "Web", "Green");
+    b.region = Some("ap-south-1".into());
+    app.environments = vec![a, b];
+    app.rebuild_view();
+
+    // Detail on the first row.
+    app.table_state.select(Some(0));
+    app.open_detail();
+    // Selection moves to the second — what a re-sorted refresh does.
+    app.table_state.select(Some(1));
+
+    assert_eq!(
+        app.current_env_client().region_for_tests(),
+        "eu-west-2",
+        "Detail-first: the env on screen"
+    );
+    let selected = app.selected_env().expect("row 1").name.clone();
+    assert_eq!(selected, "api-staging");
+    assert_eq!(
+        app.client_for_env(&selected).region_for_tests(),
+        "ap-south-1",
+        "selection-based: the env the command operates on"
+    );
+    // And the audit region for a selection-based command follows the
+    // selection too, so the client and the journal agree.
+    assert_eq!(app.region_for_name(&selected), "ap-south-1");
+}

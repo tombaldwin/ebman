@@ -575,7 +575,23 @@ impl App {
                 // `context` is deliberately left alone: it carries the
                 // account id and caller ARN from the identity fetch,
                 // which a fresh `AwsClient::with` hasn't done. The
-                // profile and region are the same by construction.
+                // profile and region should be the same by
+                // construction — we asked for the region we already
+                // had — but CHECK rather than assert it: a client
+                // pointing somewhere else while `context.region` says
+                // otherwise would make `client_for_region` hand out
+                // the home client for the wrong region, which is the
+                // whole bug this release exists to fix.
+                if client.context.region != self.context.region {
+                    tracing::warn!(
+                        target: "ebman",
+                        want = %self.context.region,
+                        got = %client.context.region,
+                        "refreshed client resolved a different region — keeping the old one"
+                    );
+                    self.aws_built_at = Instant::now();
+                    return;
+                }
                 self.aws = Arc::new(*client);
                 self.aws_built_at = Instant::now();
                 tracing::debug!(target: "ebman", "home client refreshed");

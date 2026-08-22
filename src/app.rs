@@ -3069,9 +3069,7 @@ impl RegionClient {
             Some(Remote::Profile(profile, region)) => {
                 crate::aws::cached_client(profile, region).await
             }
-            Some(Remote::Account(name, spec)) => {
-                Ok(Arc::new(AwsClient::assume_role(&name, &spec).await?))
-            }
+            Some(Remote::Account(name, spec)) => crate::aws::cached_role_client(&name, &spec).await,
         }
     }
 }
@@ -3154,6 +3152,18 @@ impl App {
         self.environments
             .iter()
             .find(|e| e.name == env_name)
+            // Detail's snapshot is taken at open time and is NOT torn
+            // down when a refresh drops the row — a terminated env, or
+            // a region whose fetch failed under a fan-out. Without
+            // this the action menu, which targets Detail's env, fell
+            // back to the home region: the original wrong-region bug
+            // in a narrow window, and silently.
+            .or_else(|| {
+                self.detail
+                    .as_ref()
+                    .map(|d| &d.env_snapshot)
+                    .filter(|e| e.name == env_name)
+            })
             .map(|e| self.region_for(e))
             .unwrap_or_else(|| self.context.region.clone())
     }

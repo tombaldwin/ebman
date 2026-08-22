@@ -75,7 +75,7 @@ impl App {
         self.status_message = Some(format!(
             "creating alarm '{alarm_name}' on {env_name}/{metric_name} {op_str} {threshold}…"
         ));
-        let client = self.current_env_client();
+        let client = self.client_for_env(&env.name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_for_msg = env_name.clone();
@@ -144,7 +144,7 @@ impl App {
                 );
                 self.push_pending("Delete alarm", target.clone());
                 self.status_message = Some(format!("deleting alarm '{alarm_name}'…"));
-                let client = self.current_env_client();
+                let client = self.client_for_env(&env_name);
                 let tx = self.msg_tx.clone();
                 let gen = self.generation;
                 let alarm_for_msg = alarm_name.clone();

@@ -1075,6 +1075,18 @@ Completing the class the wrong-region fix opened. ~50 further spawn sites moved 
 
 Recorded honestly rather than fixed: **`applications` and `latest_stacks` are single collections**, so those two catalogues are the home region's under a fan-out. Widening them is a data-model change, not a client change; the guard's entry says so instead of implying the current behaviour is right.
 
+#### Post-0.30.0 review pass — 2026-08-22
+
+Reviewing what actually shipped in 0.30.0 rather than what the commit messages claimed. Five findings, all fixed; the first is the serious one.
+
+- [x] **The role cache was never read.** The pre-tag review added `cached_role_client` and reported the STS-storm fix as shipped — but the edit routing `RegionClient::resolve` through it silently failed (`cargo fmt` had collapsed the match arm to one line, so the `replace` matched nothing), and the accompanying test only asserted that the cache gets CLEARED. So a cache existed, was cleared correctly, and nothing read it: per-env work under `:account` still re-assumed on every call. Now routed through it, with a test that seeds the cache and asserts `resolve` returns the seeded `Arc` — the read path, which is the half that was broken. **Verified by a mutation that was itself verified to have applied**; the first attempt was a no-op against the reformatted line and reported a false pass.
+- [x] **`list_environments_for_account` re-assumed per call** — one AssumeRole per region on every 15-second tick under `:account` + `:region all` (the path the pre-tag review had just created), and one per account in `:org-health` / `:find-env`. Routed through the same cache.
+- [x] **`region_for_name` couldn't see Detail's snapshot** — it only searched `self.environments`, but Detail is not torn down when a refresh drops its row (a terminated env, or a region whose fetch failed under a fan-out). The action menu targets Detail's env, so a restart / terminate dispatched there fell back to the HOME region: the original wrong-region bug in a narrow window, and silently.
+- [x] **`:alarm-create` / `:alarm-delete` resolved Detail-first while operating on the selection** — `current_env_client` is Detail-first (matching `:alarms` / `:alarm-history`), but those two commands take their env from `selected_env()`. A refresh that reorders the table moves the selection while Detail keeps its snapshot, and then the alarm goes to one region and the audit line names another. Both now resolve from the env they operate on; a test pins why the two accessors aren't interchangeable.
+- [x] **`apply_client_refresh` asserted rather than checked** that the refreshed client resolved the same region. A client pointing elsewhere while `context.region` disagreed would make `client_for_region` hand out the home client for the wrong region — the exact bug 0.30.0 exists to fix. It now verifies and keeps the old client on mismatch.
+
+All five are post-tag, so they land in 0.30.1.
+
 #### Important (need live verification or a design pass)
 - [x] **Cost Explorer pagination** — Shipped. `fetch_env_costs` follows `NextPageToken` (`aws/cost.rs`). The `MAX_COST_PAGES = 20` cap now warns, returns `EnvCosts { truncated }`, and a truncated walk is neither cached nor allowed to replace a complete in-memory map; `:cost status` and `:fleet-cost` both say when what's on screen is partial.
 - [x] **logs-tail `next_token` follow** — Shipped. `fetch_recent_log_events` follows `next_token` up to `MAX_PAGES_PER_POLL = 5` with boundary-millisecond dedupe (`aws/logs.rs`). The carry is keyed on whether the watermark moved rather than on `truncated`, so a stalled watermark keeps its skip set and the same lines aren't re-emitted every poll.
