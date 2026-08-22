@@ -238,6 +238,21 @@ pub struct App {
     /// `apply_rebuild` instead of overwriting the operator's last
     /// choice. Distinct from `generation`, which bumps on APPLY.
     pub(crate) rebuild_epoch: u64,
+    /// Last-known region per environment name.
+    ///
+    /// `region_for_name` searches the live table first, but a write can
+    /// outlive its row: the confirm modal carries only a target NAME,
+    /// and there is an undo window between the operator confirming and
+    /// `tick_pending_dispatch` firing. A 15-second refresh landing in
+    /// that window — a terminated env, or a region whose fetch failed
+    /// under a fan-out — used to drop the answer, and the dispatch fell
+    /// back to the home region. Silently, which is the whole class this
+    /// release is named after.
+    ///
+    /// An environment cannot move between regions, so a remembered
+    /// answer can only go stale by the name being reused in a different
+    /// one. The live table always wins, and a context switch clears it.
+    pub(crate) env_regions: std::collections::HashMap<String, String>,
     /// When `aws` was built. The client cache's TTL only ever reached
     /// `list_environments_in_region`; everything else in the app goes
     /// through `self.aws`, which was replaced only by an explicit
@@ -1222,6 +1237,7 @@ impl App {
             worker_dlq_stale: std::collections::HashSet::new(),
             rebuild_epoch: 0,
             aws_built_at: Instant::now(),
+            env_regions: std::collections::HashMap::new(),
             detail_fetch_started: None,
             aws_refresh_in_flight: false,
             env_tag_cache: std::collections::HashMap::new(),
@@ -1516,6 +1532,7 @@ impl App {
             worker_dlq_stale: std::collections::HashSet::new(),
             rebuild_epoch: 0,
             aws_built_at: Instant::now(),
+            env_regions: std::collections::HashMap::new(),
             detail_fetch_started: None,
             aws_refresh_in_flight: false,
             env_tag_cache: std::collections::HashMap::new(),
@@ -3165,6 +3182,9 @@ impl App {
                     .filter(|e| e.name == env_name)
             })
             .map(|e| self.region_for(e))
+            // Then what we last saw. Covers the write whose row left
+            // the table during its own undo window.
+            .or_else(|| self.env_regions.get(env_name).cloned())
             .unwrap_or_else(|| self.context.region.clone())
     }
 

@@ -8829,3 +8829,74 @@ async fn current_env_client_and_client_for_env_are_not_interchangeable() {
     // selection too, so the client and the journal agree.
     assert_eq!(app.region_for_name(&selected), "ap-south-1");
 }
+
+#[tokio::test]
+async fn a_write_whose_row_left_the_table_still_goes_to_its_region() {
+    // The confirm modal carries a target NAME, and there is an undo
+    // window between the operator confirming and `tick_pending_dispatch`
+    // firing. A 15-second refresh landing in that window — a terminated
+    // env, or a region whose fetch failed under a fan-out — dropped the
+    // row, and the dispatch fell back to the home region. Silently.
+    //
+    // The Detail-snapshot fallback covers this only when Detail happens
+    // to be open on that env; an action started from the table has no
+    // snapshot at all.
+    let mut app = test_app();
+    let mut env = mk_env("api-prod", "uflexi", "Web", "Green");
+    env.region = Some("eu-west-2".into());
+
+    // The refresh that put it on screen is what remembers the region.
+    app.handle_msg(AppMsg::Refresh {
+        gen: app.generation,
+        result: Ok(vec![env]),
+        partial_errors: Vec::new(),
+    });
+    assert_eq!(app.region_for_name("api-prod"), "eu-west-2");
+    assert!(app.detail.is_none(), "no Detail snapshot to lean on");
+
+    // The next tick drops it — eu-west-2 failed, or the env terminated.
+    app.handle_msg(AppMsg::Refresh {
+        gen: app.generation,
+        result: Ok(vec![]),
+        partial_errors: vec!["region eu-west-2: throttled".into()],
+    });
+    assert!(app.environments.is_empty(), "the row is gone");
+
+    assert_eq!(
+        app.region_for_name("api-prod"),
+        "eu-west-2",
+        "a write in its undo window must not silently retarget the home region"
+    );
+    assert_eq!(
+        app.client_for_env("api-prod").region_for_tests(),
+        "eu-west-2"
+    );
+    // A name we have never seen still falls back.
+    assert_eq!(app.region_for_name("ghost"), "us-east-1");
+}
+
+#[tokio::test]
+async fn remembered_regions_do_not_survive_a_context_switch() {
+    // A same-named env in another account or partition is a different
+    // environment. Carrying the old answer across would aim a write at
+    // a region the new context may not even have.
+    let mut app = test_app();
+    let mut env = mk_env("api-prod", "uflexi", "Web", "Green");
+    env.region = Some("eu-west-2".into());
+    app.handle_msg(AppMsg::Refresh {
+        gen: app.generation,
+        result: Ok(vec![env]),
+        partial_errors: Vec::new(),
+    });
+    assert_eq!(app.region_for_name("api-prod"), "eu-west-2");
+
+    app.handle_msg(AppMsg::Rebuild {
+        epoch: app.rebuild_epoch,
+        result: Ok(Box::new(crate::aws::AwsClient::stub())),
+    });
+    assert_eq!(
+        app.region_for_name("api-prod"),
+        app.context.region,
+        "the new context's home region, not the old context's answer"
+    );
+}

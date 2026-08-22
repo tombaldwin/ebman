@@ -386,7 +386,11 @@ impl App {
                 (
                     e.name.clone(),
                     e.application.clone(),
-                    self.client_for_env(&e.name),
+                    // `region_for(e)`, not `client_for_env(&e.name)`:
+                    // we already hold the row, and the by-name lookup
+                    // scans the whole fleet — quadratic across a
+                    // fan-out that runs on every tick.
+                    self.client_for_region(&self.region_for(e)),
                 )
             })
             .collect();
@@ -442,7 +446,8 @@ impl App {
                     "Terminated" | "Terminating" | "Launching"
                 )
             })
-            .map(|e| (e.name.clone(), self.client_for_env(&e.name)))
+            // Same: the row is in hand, so skip the by-name scan.
+            .map(|e| (e.name.clone(), self.client_for_region(&self.region_for(e))))
             .collect();
         if targets.is_empty() {
             return;
@@ -626,6 +631,10 @@ impl App {
                 self.aws_built_at = Instant::now();
                 self.maybe_apply_profile_theme();
                 self.environments.clear();
+                // The remembered regions belong to the OLD context: a
+                // same-named env in the new account or partition is a
+                // different environment entirely.
+                self.env_regions.clear();
                 // Covers every view-cache input this block clears —
                 // `environments` here and `latest_stacks` below.
                 self.view.invalidate();
@@ -878,6 +887,15 @@ impl App {
                 self.prev_alerts = new_alerts;
                 self.alerts = new_alerts;
 
+                // Remember where each env lives before the rows can
+                // leave the table. Only ever added to within a context
+                // — an env doesn't move regions, and a name that stops
+                // appearing is exactly the case this exists for.
+                for e in &envs {
+                    if let Some(r) = e.region.as_ref().filter(|r| !r.is_empty()) {
+                        self.env_regions.insert(e.name.clone(), r.clone());
+                    }
+                }
                 self.environments = envs;
                 self.view.invalidate();
                 self.resort_envs();
