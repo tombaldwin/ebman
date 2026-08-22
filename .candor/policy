@@ -1,0 +1,59 @@
+# candor effect policy for ebman — `cargo candor policy .candor/policy`
+#
+# These are the boundaries ARCHITECTURE.md already claims. Until now
+# nothing enforced them: the doc says "`ui` reads `app`, `app` calls
+# `aws`, `aws` knows about neither", and the only thing keeping that
+# true was that nobody had broken it yet.
+
+# The render layer takes &App and returns a frame. It must not reach
+# the network, spawn a process, or talk over IPC — a draw path that
+# calls AWS turns a repaint into a round trip, and repaints happen on
+# every keystroke.
+# The invariant that actually matters: no draw path reaches AWS or the
+# LLM. A repaint happens on every keystroke, so a render function that
+# calls out turns a redraw into a round trip. `:explain` is an
+# operator-initiated command, never a side effect of drawing.
+deny Net Llm  ui
+
+# The AWS boundary knows nothing about the TUI.
+forbid aws -> ui
+
+# NOT `forbid aws -> app`, though the layering doc implies it: the
+# layer matcher is a prefix match, so `app` also matches
+# `aws_sdk_elasticbeanstalk::…::application_name` and the rule fired
+# on nine honest EB calls. A rule that cries wolf nine times teaches
+# people to skip the output.
+
+# NOT `deny Exec Ipc ui` either — and this one is a real finding, not
+# a false positive. `ui::shell::draw_shell` renders the embedded SSM
+# pane, which reads a live PTY: Exec to spawn it, Ipc to read it. That
+# is the one render path that legitimately is not pure, and it should
+# be declared rather than quietly true. If the shell pane ever moves
+# behind a channel, this becomes `deny Exec Ipc ui` and the exception
+# goes away.
+#
+# Worth knowing: the SYNTACTIC backend (`candor-scan`) does not see
+# this — it reports `ui::draw` with no Exec/Ipc at all. Only the
+# type-resolved dylint lint finds it, which is why the CI gate runs
+# the lint rather than gating on a scan report.
+
+# NOT asserted here, deliberately:
+#
+#   deny Fs ui
+# `ui::overlays::draw_form` reaches Fs today, through
+# `config::config_path` -> `util::config_dir`, to show which file
+# `:settings` will write. In production that resolves `$HOME` and
+# allocates a PathBuf rather than touching the disk — but candor is a
+# syntactic scanner and sees the `#[cfg(test)]` branch of
+# `test_or_home`, which does `create_dir_all`. So the finding is real
+# as a LAYERING smell (the render path recomputes a config path every
+# frame) and overstated as an effect. Recorded in BACKLOG; this line
+# goes in once the call is hoisted out of the draw.
+#
+#   deny Clipboard / Net in tests
+# Same cause, worse ratio: with `--include-tests` candor reports 102
+# test functions reaching Clipboard because it sees the
+# `#[cfg(not(test))]` arm of `yank`, which is exactly the arm that is
+# compiled out under test. A gate firing 102 times on day one gets
+# switched off. The `cfg(test)` stub plus its guard test is what
+# actually holds that boundary.

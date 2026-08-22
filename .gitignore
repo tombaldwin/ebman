@@ -17,12 +17,11 @@ crash-*.log
 # Claude Code working directory
 .claude/
 
-# Candor scanner local reports
-.candor/
-
 # candor: the scan reports are derived artefacts (regenerate with
-# `candor-scan .`), and `deps/` is a per-machine dependency cache.
-# `.candor/policy` is the source of truth and IS tracked.
+# `candor-scan .`) and `deps/` is a per-machine cache — but the
+# POLICY is source and must be tracked, or the CI gate has nothing to
+# read. This used to ignore `.candor/` wholesale, which would have
+# shipped a gate with no policy behind it.
 .candor/report.*.json
 .candor/deps/
 .candor/cache/
