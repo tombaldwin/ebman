@@ -3705,3 +3705,39 @@ async fn a_walk_inside_the_deadline_is_not_marked_truncated() {
     assert!(!result.truncated, "a complete walk stays complete");
     assert_eq!(result.items().len(), 3);
 }
+
+#[tokio::test]
+async fn the_role_cache_is_cleared_by_a_context_switch() {
+    // Assumed-role clients are cached with the same five-minute TTL as
+    // profile clients — safe because an AssumeRole session's hard cap
+    // is an hour, so an entry can never outlive its credentials.
+    // Without the cache, per-env work under `:account` re-assumes per
+    // call, and `spawn_env_instance_counts` builds one client per row
+    // on every 15-second tick: an STS AssumeRole storm on a large
+    // fleet. But a `:profile` / `:account` switch must still empty it,
+    // or the new context is served the old one's session.
+    let _guard = super::CACHE_TEST_LOCK.lock().await;
+    super::clear_client_cache();
+    assert_eq!(
+        super::role_cache().lock().expect("lock").len(),
+        0,
+        "a clear empties the role cache too, not just the profile one"
+    );
+
+    // Seed it directly (assuming a role needs a live STS) and prove the
+    // clear reaches it.
+    super::role_cache().lock().expect("lock").insert(
+        ("prod".to_string(), "eu-west-2".to_string()),
+        (
+            std::time::Instant::now(),
+            std::sync::Arc::new(super::AwsClient::stub()),
+        ),
+    );
+    assert_eq!(super::role_cache().lock().expect("lock").len(), 1);
+    super::clear_client_cache();
+    assert_eq!(
+        super::role_cache().lock().expect("lock").len(),
+        0,
+        "a context switch must not leave the previous account's session behind"
+    );
+}
