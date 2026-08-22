@@ -3169,6 +3169,25 @@ impl App {
         self.client_for_region(&self.region_for_name(env_name))
     }
 
+    /// The region an EB APPLICATION's resources live in.
+    ///
+    /// Applications and their versions are region-scoped in EB, so an
+    /// app under a fan-out has one copy per region. Resolved through
+    /// the first row of that application, which is how it got on
+    /// screen; falls back to the home region when we hold none.
+    pub(crate) fn region_for_app(&self, app_name: &str) -> String {
+        self.environments
+            .iter()
+            .find(|e| e.application == app_name)
+            .map(|e| self.region_for(e))
+            .unwrap_or_else(|| self.context.region.clone())
+    }
+
+    /// The client for work about one EB application.
+    pub(crate) fn client_for_app(&self, app_name: &str) -> RegionClient {
+        self.client_for_region(&self.region_for_app(app_name))
+    }
+
     /// The client for whatever environment the operator is pointed at
     /// — Detail's, if it's open, otherwise the selected row. For
     /// commands that name a resource belonging to an env without

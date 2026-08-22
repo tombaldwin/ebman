@@ -44,7 +44,7 @@ impl App {
         // header (`⏳ N`) is the truth-source for in-flight work, and a
         // status_message ack would just race with whatever the operator
         // last set there. Completion fires a Success / Error toast.
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env_name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_for_msg = env_name.clone();
@@ -61,6 +61,21 @@ impl App {
         let to_set_for_undo = to_set.clone();
         let to_remove_for_undo = to_remove.clone();
         tokio::spawn(async move {
+            // One resolve for both calls: the undo read and the write
+            // have to hit the same region, or :undo would offer to
+            // restore the home region's settings over the row's.
+            let aws = match client.resolve().await {
+                Ok(aws) => aws,
+                Err(e) => {
+                    let _ = tx.send(AppMsg::OptionSettingsUpdate {
+                        gen,
+                        env_name: env_for_msg,
+                        summary: summary_for_msg,
+                        result: Err(flatten_err("cached_client", e)),
+                    });
+                    return;
+                }
+            };
             // Fetch current option-settings for the affected keys
             // BEFORE the write so we can build the reverse-action.
             // Read failure doesn't block the write — undo is a
@@ -156,7 +171,7 @@ impl App {
         );
         self.push_pending(summary.clone(), env_name.clone());
         // In-flight ack lives on the pending pill; completion toasts.
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env_name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_for_msg = env_name.clone();
@@ -164,9 +179,26 @@ impl App {
         let summary_for_msg = summary.clone();
         let account = self.context.account_id.clone();
         let profile = self.context.profile.clone();
-        let region = self.context.region.clone();
+        let region = self.region_for_name(&env_name);
         let description_owned = description;
         tokio::spawn(async move {
+            let aws = match client.resolve().await {
+                Ok(aws) => aws,
+                Err(e) => {
+                    finish_deploy_from_local(
+                        &tx,
+                        gen,
+                        env_for_msg,
+                        label_for_msg,
+                        summary_for_msg,
+                        account.as_deref(),
+                        profile.as_deref(),
+                        &region,
+                        Err(flatten_err("cached_client", e)),
+                    );
+                    return;
+                }
+            };
             if let Err(e) = aws
                 .create_app_version(
                     &app_name,
@@ -235,19 +267,27 @@ impl App {
     /// label, age, description, plus a warning when the candidate is
     /// older than what's currently deployed.
     pub(crate) fn spawn_deploy_preview(&self, env: crate::aws::Environment, label: String) {
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env.name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let app_name = env.application.clone();
         let env_name = env.name.clone();
         let current_label = env.version_label.clone();
         tokio::spawn(async move {
-            let body = match aws.list_application_versions(&app_name).await {
-                Ok(versions) => format_deploy_preview(&env_name, &current_label, &label, &versions),
+            let body = match client.resolve().await {
                 Err(e) => format!(
-                    "deploy preview — failed to fetch application versions:\n  {}\n",
+                    "deploy preview — failed to reach {app_name}'s region:\n  {}\n",
                     flatten_err_to_string(&e)
                 ),
+                Ok(aws) => match aws.list_application_versions(&app_name).await {
+                    Ok(versions) => {
+                        format_deploy_preview(&env_name, &current_label, &label, &versions)
+                    }
+                    Err(e) => format!(
+                        "deploy preview — failed to fetch application versions:\n  {}\n",
+                        flatten_err_to_string(&e)
+                    ),
+                },
             };
             let _ = tx.send(AppMsg::TextOverlay {
                 gen,
@@ -318,7 +358,7 @@ impl App {
             ],
         );
         self.push_pending(summary.clone(), env_name.clone());
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env_name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_for_msg = env_name.clone();
@@ -326,9 +366,26 @@ impl App {
         let summary_for_msg = summary.clone();
         let account = self.context.account_id.clone();
         let profile = self.context.profile.clone();
-        let region = self.context.region.clone();
+        let region = self.region_for_name(&env_name);
         let description_owned = description;
         tokio::spawn(async move {
+            let aws = match client.resolve().await {
+                Ok(aws) => aws,
+                Err(e) => {
+                    finish_deploy_from_local(
+                        &tx,
+                        gen,
+                        env_for_msg,
+                        label_for_msg,
+                        summary_for_msg,
+                        account.as_deref(),
+                        profile.as_deref(),
+                        &region,
+                        Err(flatten_err("cached_client", e)),
+                    );
+                    return;
+                }
+            };
             // Three (or four) stages: bucket → put → create version → (deploy).
             // We surface the stage name in any error so the operator knows
             // where it failed.
@@ -462,20 +519,23 @@ impl App {
         };
         let pending_target = format!("{application}/{label}");
         self.push_pending(pending_label, pending_target);
-        let aws = self.aws.clone();
+        let client = self.client_for_app(&application);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let account = self.context.account_id.clone();
         let profile = self.context.profile.clone();
-        let region = self.context.region.clone();
+        let region = self.region_for_app(&application);
         let app_for_msg = application.clone();
         let label_for_msg = label.clone();
         let target_label_for_outcome = target_label.clone();
         tokio::spawn(async move {
-            let result = aws
-                .delete_application_version(&application, &label, force)
-                .await
-                .map_err(|e| flatten_err("delete_application_version", e));
+            let result = match client.resolve().await {
+                Ok(aws) => aws
+                    .delete_application_version(&application, &label, force)
+                    .await
+                    .map_err(|e| flatten_err("delete_application_version", e)),
+                Err(e) => Err(flatten_err("cached_client", e)),
+            };
             crate::audit::append_action_completed(
                 account.as_deref(),
                 profile.as_deref(),
@@ -539,19 +599,22 @@ impl App {
         // pill in the header is the in-flight truth-source; no
         // status_message ack here (would race with the next operation).
         self.push_pending(summary.clone(), env.name.clone());
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env.name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_name = env.name.clone();
         let summary_for_msg = summary.clone();
         let account = self.context.account_id.clone();
         let profile = self.context.profile.clone();
-        let region = self.context.region.clone();
+        let region = self.region_for_name(&env.name);
         tokio::spawn(async move {
-            let result = aws
-                .update_tags(&arn, &to_add, &to_remove)
-                .await
-                .map_err(|e| flatten_err("update_tags", e));
+            let result = match client.resolve().await {
+                Ok(aws) => aws
+                    .update_tags(&arn, &to_add, &to_remove)
+                    .await
+                    .map_err(|e| flatten_err("update_tags", e)),
+                Err(e) => Err(flatten_err("cached_client", e)),
+            };
             crate::audit::append_action_completed(
                 account.as_deref(),
                 profile.as_deref(),
@@ -656,24 +719,30 @@ impl App {
         cname: String,
     ) {
         let env_for_msg = env_name.clone();
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env_name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         tokio::spawn(async move {
             // Look up the configured health-check path. Missing or
             // empty setting means EB defaults to `/`, so we probe
             // the env root.
-            let path = match aws.fetch_env_option_settings(&app_name, &env_name).await {
-                Ok(opts) => opts
-                    .into_iter()
-                    .find(|(ns, name, _)| {
-                        ns == "aws:elasticbeanstalk:application"
-                            && name == "Application Healthcheck URL"
-                    })
-                    .map(|(_, _, v)| v)
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| "/".into()),
+            // A client that won't resolve is the same non-answer as a
+            // missing setting: EB defaults to `/`, and this probe is a
+            // warning surface that must not block the deploy.
+            let path = match client.resolve().await {
                 Err(_) => "/".into(),
+                Ok(aws) => match aws.fetch_env_option_settings(&app_name, &env_name).await {
+                    Ok(opts) => opts
+                        .into_iter()
+                        .find(|(ns, name, _)| {
+                            ns == "aws:elasticbeanstalk:application"
+                                && name == "Application Healthcheck URL"
+                        })
+                        .map(|(_, _, v)| v)
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| "/".into()),
+                    Err(_) => "/".into(),
+                },
             };
             let url = crate::probe::build_health_check_probe_url(&cname, &path);
             let result = crate::probe::run_health_check_probe(&url).await;
@@ -728,7 +797,7 @@ impl App {
     /// fails (the operator can still see the rule-output via
     /// `:lint` once the modal closes).
     pub(crate) fn spawn_confirm_lint(&mut self, env: crate::aws::Environment) {
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env.name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         // Snapshot operator-tunable disables — user-level (already
@@ -770,6 +839,17 @@ impl App {
             .and_then(|(v, t)| (now.duration_since(*t) < LINT_INPUT_CACHE_TTL).then_some(*v));
         let cache_env_name = env.name.clone();
         tokio::spawn(async move {
+            // The confirm modal's lint pane is advisory — an
+            // unreachable client means no findings rather than a
+            // blocked confirm, same as a failed fetch below.
+            let Ok(aws) = client.resolve().await else {
+                let _ = tx.send(AppMsg::ConfirmModalLint {
+                    gen,
+                    env_name: env_for_msg,
+                    issues: Vec::new(),
+                });
+                return;
+            };
             // Parallel fetch: option settings (always), tags + health
             // (only if not cached). The `tags_fut` / `health_fut`
             // async blocks resolve to the cached value when fresh —
