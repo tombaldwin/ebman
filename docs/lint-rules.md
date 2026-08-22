@@ -132,7 +132,9 @@ Fix: bump to 300s (5 min — enough for most app startups).
 
 **Severity:** Info · **Auto-fix:** Manual
 
-Detection: `required_tags` in config.toml is non-empty AND env's tag keys are non-empty AND at least one required key is missing (case-insensitive).
+Detection: `required_tags` in config.toml is non-empty AND the env's tags were successfully fetched AND at least one required key is missing (case-insensitive).
+
+Note the difference between *fetched and empty* and *not fetched*: an environment with no tags at all fires for every required key — it is the case the rule most wants to catch. A `ListTagsForResource` that failed makes the rule skip instead, so a transient API error can't flag the whole fleet. Before 0.30 those two states were the same value, and a failed fetch silently disabled the rule.
 
 Why it matters: cost-allocation tags, compliance tags, and ownership tags that the org has standardized on need to be present.
 
