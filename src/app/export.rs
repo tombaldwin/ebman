@@ -23,6 +23,21 @@ fn no_console_host(region: &str) -> String {
 }
 
 impl App {
+    /// The region a row's own data lives in.
+    ///
+    /// Under a multi-region fan-out this differs from
+    /// `context.region`, and using the home region builds links and CLI
+    /// snippets that point at a region where the environment doesn't
+    /// exist. One accessor because three sites needed this and two of
+    /// them got it ad-hoc.
+    pub(crate) fn region_for(&self, env: &crate::aws::Environment) -> String {
+        env.region
+            .clone()
+            .unwrap_or_else(|| self.context.region.clone())
+    }
+}
+
+impl App {
     pub(crate) fn yank_cli(&mut self) {
         let env_opt = if let Some(d) = self.detail.as_ref() {
             Some(d.env_snapshot.clone())
@@ -34,13 +49,21 @@ impl App {
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
+        // The row's own region — this snippet is the surface most
+        // likely to be pasted into a war-room channel as evidence, and
+        // with the home region it returns an empty array, or worse the
+        // WRONG environment when a same-named one exists at home.
+        let region = self.region_for(&env);
         let cmd = build_describe_cli(
             &env.name,
-            &self.context.region,
+            &region,
             self.override_profile
                 .as_deref()
                 .or(self.context.profile.as_deref()),
         );
+        // Recorded so the test can assert on what was copied without
+        // reaching into the system clipboard.
+        self.last_yanked_cli = Some(cmd.clone());
         match yank(&cmd) {
             Ok(()) => {
                 self.status_message = Some("equivalent AWS CLI command copied".into());
@@ -155,10 +178,7 @@ impl App {
         // doesn't exist — and evaluated the partition guard against the
         // wrong region too, so it could never fire for the fan-out row
         // it was added for.
-        let region = env
-            .region
-            .clone()
-            .unwrap_or_else(|| self.context.region.clone());
+        let region = self.region_for(&env);
         let Some(url) = console_url(&region, &env.application, &env.name) else {
             self.error_message = Some(no_console_host(&region));
             return;
@@ -182,13 +202,18 @@ impl App {
         let Some(inst) = d.instances.get(d.instances_cursor) else {
             return;
         };
-        // The env's own region, for the same reason as the env console
-        // link above.
-        let region = self
-            .detail
-            .as_ref()
-            .and_then(|d| d.env_snapshot.region.clone())
-            .unwrap_or_else(|| self.context.region.clone());
+        // The HOME region here, deliberately — unlike the env console
+        // link above. `d.instances` is fetched by `spawn_detail_instances`
+        // through `self.aws`, whose region is always `context.region`,
+        // so an instance ID in this list came from the home region
+        // whatever region the selected row lives in. Pointing the link
+        // at the row's region would name a home-region instance ID in
+        // another region's console, which resolves to "does not exist".
+        //
+        // The deeper issue — Detail showing home-region data for a
+        // fan-out row — is recorded in BACKLOG.md; this keeps the link
+        // consistent with the data it names rather than half-fixing it.
+        let region = self.context.region.clone();
         let id = inst.id.clone();
         let Some(base) = crate::util::console_base_url(&region) else {
             self.error_message = Some(no_console_host(&region));

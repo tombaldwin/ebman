@@ -680,12 +680,57 @@ pub async fn cached_client(
     // cache writes, so this needs its own.
     let epoch = CACHE_EPOCH.load(Ordering::SeqCst);
     let built = std::sync::Arc::new(AwsClient::with(profile, Some(region)).await?);
-    if CACHE_EPOCH.load(Ordering::SeqCst) == epoch {
-        if let Ok(mut cache) = client_cache().lock() {
-            cache.insert(key, (std::time::Instant::now(), built.clone()));
-        }
-    }
+    install_if_current(key, epoch, built.clone());
     Ok(built)
+}
+
+/// Install a freshly built client, unless a clear happened while it was
+/// building.
+///
+/// The epoch check and the insert happen under the SAME lock. Reading
+/// the epoch outside it left the window open: a clear could complete
+/// end-to-end between the check passing and the lock being taken, and
+/// the stranded builder would then repopulate the map the operator's
+/// profile switch had just emptied — serving a pre-switch client for
+/// the whole TTL while the header showed the new context.
+///
+/// `clear_client_cache` bumps the epoch *before* it locks, so under the
+/// lock the value is always current. Returns whether it installed,
+/// which is what makes the guard testable.
+fn install_if_current(
+    key: (Option<String>, String),
+    epoch: u64,
+    client: std::sync::Arc<AwsClient>,
+) -> bool {
+    use std::sync::atomic::Ordering;
+    let Ok(mut cache) = client_cache().lock() else {
+        return false;
+    };
+    if CACHE_EPOCH.load(Ordering::SeqCst) != epoch {
+        return false;
+    }
+    cache.insert(key, (std::time::Instant::now(), client));
+    true
+}
+
+/// The guarded install, for tests that need to drive the race
+/// deterministically rather than hope to hit it.
+#[cfg(test)]
+pub(crate) fn install_if_current_for_tests(
+    key: (Option<String>, String),
+    epoch: u64,
+    client: std::sync::Arc<AwsClient>,
+) -> bool {
+    install_if_current(key, epoch, client)
+}
+
+/// Is this key currently cached?
+#[cfg(test)]
+pub(crate) fn is_cached_for_tests(key: &(Option<String>, String)) -> bool {
+    client_cache()
+        .lock()
+        .map(|c| c.contains_key(key))
+        .unwrap_or(false)
 }
 
 /// The cache epoch, for tests that need to observe a clear.
@@ -700,6 +745,8 @@ pub(crate) fn cache_epoch_for_tests() -> u64 {
 /// or account switch — since that is also when they may have re-run
 /// `aws sso login` or edited `~/.aws/config`.
 pub fn clear_client_cache() {
+    // Bumped BEFORE the lock, so any builder that acquires the lock
+    // after this point sees the new value and declines to install.
     CACHE_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     if let Ok(mut cache) = client_cache().lock() {
         cache.clear();

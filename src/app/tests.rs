@@ -7206,32 +7206,37 @@ async fn explain_accepts_an_arn_from_any_partition() {
 }
 
 #[tokio::test]
-async fn console_link_uses_the_rows_own_region_not_the_home_region() {
-    // Under a multi-region fan-out the selected row can be in a
-    // different region from `context.region`. Opening the home
-    // region's console lands the operator on an empty dashboard
-    // mid-incident — and the partition guard was evaluated against the
-    // home region too, so it could never fire for the fan-out row it
-    // exists for.
+async fn row_region_is_used_for_links_and_cli_snippets() {
+    // Under a fan-out the selected row can be in a different region
+    // from `context.region`. The home region opens a console dashboard
+    // where the environment doesn't exist, and produces a CLI snippet
+    // that returns an empty array — or the WRONG environment when a
+    // same-named one exists at home.
+    //
+    // The previous version of this test re-implemented the fixed
+    // expression inline and never called a production function, so
+    // reverting the fix left it green.
     let mut app = test_app();
     let mut env = mk_env("api-prod", "uflexi", "Web", "Green");
     env.region = Some("eu-west-2".into());
-    app.environments = vec![env];
+    app.environments = vec![env.clone()];
     app.rebuild_view();
     app.table_state.select(Some(0));
     assert_eq!(app.context.region, "us-east-1", "home region differs");
 
-    let selected = app.selected_env().cloned().expect("row selected");
-    let region = selected
-        .region
-        .clone()
-        .unwrap_or_else(|| app.context.region.clone());
-    assert_eq!(region, "eu-west-2");
-    let url =
-        console_url(&region, &selected.application, &selected.name).expect("commercial partition");
+    // The accessor all three sites share.
+    assert_eq!(app.region_for(&env), "eu-west-2");
+    // A row with no region of its own falls back to the home region.
+    let mut homeless = env.clone();
+    homeless.region = None;
+    assert_eq!(app.region_for(&homeless), "us-east-1");
+
+    // And the snippet actually copied uses it.
+    app.yank_cli();
+    let cmd = app.last_yanked_cli.as_deref().unwrap_or_default();
     assert!(
-        url.contains("eu-west-2.console.aws.amazon.com") && url.contains("region=eu-west-2"),
-        "link must point at the row's region: {url}"
+        cmd.contains("--region eu-west-2"),
+        "the copied CLI must name the row's region: {cmd}"
     );
 }
 
@@ -7283,22 +7288,68 @@ fn a_real_event_is_not_mistaken_for_the_gap_marker() {
     assert!(!super::is_event_tail_gap(&undated));
 }
 
-#[test]
-fn a_truncated_batch_is_trimmed_so_the_marker_is_not_evicted() {
-    // The overlay's ring holds EVENT_TAIL_MAX_EVENTS. A truncated poll
-    // can carry more than that (5 pages x 300), so the marker —
-    // inserted first, as the oldest — was evicted by its own batch at
-    // push #1001 and never rendered.
-    let cap = super::EVENT_TAIL_MAX_EVENTS;
-    let fetched = 5 * super::EVENT_TAIL_POLL_BATCH as usize;
+#[tokio::test]
+async fn a_truncated_poll_is_still_reported_after_the_marker_is_evicted() {
+    // The in-stream marker cannot be relied on: a truncated poll can
+    // carry more events than the ring holds, so the marker — inserted
+    // as the oldest row — is evicted by its own batch or by the next
+    // poll, and the overlay opens in follow mode at the newest end
+    // where the marker isn't. The sticky counter in the chrome is what
+    // has to survive.
+    //
+    // The previous version of this test asserted `kept + 1 == cap`,
+    // arithmetic over two constants — deleting the whole mechanism left
+    // it green.
+    let mut app = test_app();
+    // The handler drops opens for stale sessions, so match the id.
+    app.event_tail_session = 1;
+    app.handle_msg(AppMsg::EventTailOpened {
+        gen: app.generation,
+        session_id: 1,
+    });
+
+    let marker = crate::aws::Event {
+        at: None,
+        env: String::new(),
+        application: String::new(),
+        message: "… older events in this window were not fetched".into(),
+        severity: super::EVENT_TAIL_GAP_SEVERITY.into(),
+        version_label: None,
+    };
+    // One truncated poll: the marker plus enough events to evict it.
+    let mut batch = vec![marker];
+    for i in 0..super::EVENT_TAIL_MAX_EVENTS {
+        batch.push(crate::aws::Event {
+            at: Some(chrono::Utc::now()),
+            env: "api-prod".into(),
+            application: "uflexi".into(),
+            message: format!("event {i}"),
+            severity: "INFO".into(),
+            version_label: None,
+        });
+    }
+    app.handle_msg(AppMsg::EventTailEvents {
+        gen: app.generation,
+        session_id: 1,
+        result: Ok(batch),
+    });
+
+    let Some(super::Overlay::EventTail {
+        events,
+        truncated_polls,
+        ..
+    }) = app.current_overlay.as_ref()
+    else {
+        panic!("event tail should be open");
+    };
     assert!(
-        fetched > cap,
-        "a truncated poll can out-fill the ring ({fetched} > {cap}) — that's the bug"
+        !events.iter().any(super::is_event_tail_gap),
+        "the marker was evicted by its own batch — which is the point"
     );
-    // The trim keeps cap-1 events, leaving exactly one slot for the
-    // marker, so the rendered batch is exactly the ring size.
-    let kept = cap.saturating_sub(1);
-    assert_eq!(kept + 1, cap);
+    assert_eq!(
+        *truncated_polls, 1,
+        "the gap must still be reported once the marker is gone"
+    );
 }
 
 #[tokio::test]
