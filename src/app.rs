@@ -246,6 +246,10 @@ pub struct App {
     /// to restart, because static profile credentials carry no expiry
     /// and the SDK's providers never re-resolve them.
     pub(crate) aws_built_at: Instant,
+    /// When the active Detail tab's last refresh was fired. Paired
+    /// with `DetailState::tab_loading` to keep the auto-refresh tick
+    /// from stacking fetches on a scan slower than the tick.
+    pub(crate) detail_fetch_started: Option<Instant>,
     /// Set while a background home-client refresh is in flight, so the
     /// 15-second tick can't stack them.
     pub(crate) aws_refresh_in_flight: bool,
@@ -1218,6 +1222,7 @@ impl App {
             worker_dlq_stale: std::collections::HashSet::new(),
             rebuild_epoch: 0,
             aws_built_at: Instant::now(),
+            detail_fetch_started: None,
             aws_refresh_in_flight: false,
             env_tag_cache: std::collections::HashMap::new(),
             env_health_cache: std::collections::HashMap::new(),
@@ -1511,6 +1516,7 @@ impl App {
             worker_dlq_stale: std::collections::HashSet::new(),
             rebuild_epoch: 0,
             aws_built_at: Instant::now(),
+            detail_fetch_started: None,
             aws_refresh_in_flight: false,
             env_tag_cache: std::collections::HashMap::new(),
             env_health_cache: std::collections::HashMap::new(),

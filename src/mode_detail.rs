@@ -474,6 +474,44 @@ impl DetailState {
         self.tabs[self.tab_idx]
     }
 
+    /// Whether the active tab already has a fetch outstanding.
+    ///
+    /// Read by `detail_refresh_active_tab` so a 15-second auto-refresh
+    /// tick — or a held key — can't stack requests on top of a slow
+    /// one. `SCAN_PAGES` is worst-case 500 sequential round trips with
+    /// no timeout and no cancel, so a scan that outlives the tick used
+    /// to be joined by another every 15 seconds for as long as it ran.
+    ///
+    /// Derived from the existing `loading_*` flags rather than a new
+    /// piece of state, because those are already cleared by every
+    /// result handler — a separate in-flight marker would need its own
+    /// clearing discipline and would wedge the tab the first time one
+    /// was missed.
+    pub fn tab_loading(&self) -> bool {
+        match self.tab() {
+            // The Health tab is a rollup: it fires up to four fetches
+            // and any one of them still running means the refresh it
+            // belongs to hasn't finished.
+            DetailTab::Health => {
+                self.loading_events
+                    || self.loading_cw_alarms
+                    || self.loading_recent_versions
+                    || self.loading_queues
+            }
+            DetailTab::Events => self.loading_events,
+            DetailTab::Instances => self.loading_instances,
+            DetailTab::Queue => self.loading_queues,
+            DetailTab::Metrics => self.loading_metrics,
+            DetailTab::Logs => matches!(
+                self.log_tail.stage,
+                LogTailStage::Requesting | LogTailStage::Polling | LogTailStage::Fetching
+            ),
+            // Config's two fetches are fired on open, not by the tab
+            // refresh, so there is nothing here to stack.
+            DetailTab::Config => false,
+        }
+    }
+
     /// Clamp `config_cursor` into the current editable-row range.
     /// Called after a tags / env-vars refetch so a delete that
     /// shrank the list doesn't leave the cursor pointing past the

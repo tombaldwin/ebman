@@ -22,6 +22,8 @@ impl App {
         }
         tabs.push(DetailTab::Logs);
         tabs.push(DetailTab::Config);
+        // A previous env's outstanding fetch must not gate this one.
+        self.detail_fetch_started = None;
         let detail = DetailState {
             env_name: env.name.clone(),
             env_snapshot: env,
@@ -235,10 +237,30 @@ impl App {
         }
     }
 
+    /// After this long an outstanding fetch is treated as lost rather
+    /// than slow, so a result that never arrives can't wedge the tab.
+    /// Well past any real `SCAN_PAGES` walk; short enough that an
+    /// operator retrying by hand isn't left tapping.
+    const DETAIL_FETCH_STUCK_AFTER: Duration = Duration::from_secs(120);
+
     pub(crate) fn detail_refresh_active_tab(&mut self) {
         let Some(detail) = self.detail.as_ref() else {
             return;
         };
+        // Don't stack a refresh on one that's still running. The
+        // auto-refresh tick fires every 15 seconds and the interactive
+        // scans behind these tabs can take longer than that, so
+        // without this a slow scan collected a new companion every
+        // tick — each one a fresh fan of sequential AWS calls against
+        // an account that is, by the time anyone is watching this
+        // screen, usually having a bad day already.
+        if detail.tab_loading()
+            && self
+                .detail_fetch_started
+                .is_some_and(|t| t.elapsed() < Self::DETAIL_FETCH_STUCK_AFTER)
+        {
+            return;
+        }
         let env_name = detail.env_name.clone();
         let app_name = detail.env_snapshot.application.clone();
         let is_worker = detail.env_snapshot.tier.eq_ignore_ascii_case("Worker");
@@ -268,6 +290,7 @@ impl App {
             DetailTab::Logs => self.spawn_detail_logs(env_name),
             DetailTab::Config => {}
         }
+        self.detail_fetch_started = Some(Instant::now());
     }
 
     pub(crate) fn handle_detail_search_key(&mut self, key: KeyEvent) {
