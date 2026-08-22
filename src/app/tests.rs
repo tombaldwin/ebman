@@ -3119,6 +3119,7 @@ async fn rebuild_clears_armed_watchdogs_and_snapshots() {
     // context-scoped state including armed_watchdogs +
     // deploy_snapshots. Use a stub client so the call doesn't
     // need real AWS.
+    let _cache_guard = crate::aws::CACHE_TEST_LOCK.lock().await;
     app.apply_rebuild(
         app.rebuild_epoch,
         Ok(Box::new(crate::aws::AwsClient::stub())),
@@ -4183,6 +4184,7 @@ async fn rebuild_clears_watching_deploys() {
             deadline_at: chrono::Utc::now() + chrono::Duration::seconds(300),
         },
     );
+    let _cache_guard = crate::aws::CACHE_TEST_LOCK.lock().await;
     app.apply_rebuild(
         app.rebuild_epoch,
         Ok(Box::new(crate::aws::AwsClient::stub())),
@@ -7692,4 +7694,57 @@ fn the_gap_marker_is_not_rendered_in_the_dimmest_colour() {
         crate::ui::event_severity_style("INFO", &theme),
         "the gap marker must not render identically to routine chatter"
     );
+}
+
+#[tokio::test]
+async fn cost_status_and_fleet_cost_say_when_the_data_is_partial() {
+    // A truncated walk deliberately leaves `costs_fetched_at` unset so
+    // a retry isn't suppressed — which meant `:cost status` reported
+    // "no data yet" while dollar figures were on screen, and
+    // `:fleet-cost` rendered an under-reporting total with no marker.
+    let mut app = test_app();
+    app.cost_enabled = true;
+    app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
+    app.rebuild_view();
+    app.handle_msg(AppMsg::CostsFetched {
+        gen: app.generation,
+        account: None,
+        region: "us-east-1".into(),
+        result: Ok(crate::aws::EnvCosts {
+            rows: vec![crate::aws::EnvCost {
+                env_name: "api-prod".into(),
+                cost_usd: 100.0,
+            }],
+            truncated: true,
+        }),
+    });
+    assert!(!app.costs_complete);
+
+    app.execute_command("cost status");
+    let status = app.status_message.as_deref().unwrap_or_default();
+    assert!(
+        status.contains("INCOMPLETE"),
+        ":cost status must not present partial data as settled: {status:?}"
+    );
+
+    app.error_message = None;
+    app.execute_command("fleet-cost");
+    let err = app.error_message.as_deref().unwrap_or_default();
+    assert!(
+        err.contains("under-reports"),
+        ":fleet-cost must mark a partial total: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn switching_context_resets_the_cost_completeness_verdict() {
+    // The flag belonged to the previous account; leaving it set meant
+    // a fresh context inherited a stale "partial" verdict.
+    let mut app = test_app();
+    app.cost_enabled = true; // `:cost off` early-returns when already off
+    app.costs.insert("old".into(), 1.0);
+    app.costs_complete = false;
+    app.execute_command("cost off");
+    assert!(app.costs.is_empty());
+    assert!(app.costs_complete, "a torn-down map carries no verdict");
 }

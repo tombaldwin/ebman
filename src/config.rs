@@ -270,17 +270,25 @@ pub fn parse(text: &str) -> Config {
                 cfg.required_tags = crate::util::split_csv(&value);
             }
             "alarm_dimensions" => {
-                // ADDITIONAL names, not a replacement. `:alarm-create`
-                // always writes `EnvironmentName` (aws/cloudwatch.rs),
-                // so dropping it from the match would make the alarms
-                // ebman itself creates invisible to ebman — and hide
-                // every EB-native alarm at the same time, which during
+                // ADDITIONAL names on top of the canonical one, not a
+                // replacement: `:alarm-create` always writes
+                // `EnvironmentName` (aws/cloudwatch.rs), so dropping it
+                // from the match would hide the alarms ebman itself
+                // creates along with every EB-native one — which during
                 // triage reads as "no alarms configured".
+                //
+                // Rebuilt from the canonical name each time rather than
+                // appended to, so a second `alarm_dimensions =` line
+                // REPLACES the first as every other key does. Appending
+                // meant an operator editing by adding a line silently
+                // got the union of both, with no way to narrow it back.
+                let mut names = vec![crate::aws::ENV_DIMENSION.to_string()];
                 for name in crate::util::split_csv(&value) {
-                    if !cfg.alarm_dimensions.contains(&name) {
-                        cfg.alarm_dimensions.push(name);
+                    if !names.contains(&name) {
+                        names.push(name);
                     }
                 }
+                cfg.alarm_dimensions = names;
             }
             "profile_themes" => {
                 // Format: `prod:high-contrast,staging:dark,default:light`.
@@ -491,13 +499,18 @@ pub fn serialize(cfg: &Config) -> String {
             out.push_str(&format!("safety.accounts.{acct}.read_only = {ro}\n"));
         }
     }
-    // Only emitted when it differs from the default, so an operator who
-    // never set it doesn't find the key appear in their file.
-    if cfg.alarm_dimensions != vec![crate::aws::ENV_DIMENSION.to_string()] {
-        out.push_str(&format!(
-            "alarm_dimensions = \"{}\"\n",
-            cfg.alarm_dimensions.join(",")
-        ));
+    // Only the names the operator ADDED — the canonical one is implicit
+    // and always matched. Emitting the full list would rewrite a
+    // hand-written `alarm_dimensions = "Environment"` as
+    // `"EnvironmentName,Environment"` on the next `:settings` save.
+    let extra: Vec<&str> = cfg
+        .alarm_dimensions
+        .iter()
+        .filter(|d| d.as_str() != crate::aws::ENV_DIMENSION)
+        .map(String::as_str)
+        .collect();
+    if !extra.is_empty() {
+        out.push_str(&format!("alarm_dimensions = \"{}\"\n", extra.join(",")));
     }
     // AssumeRole account definitions. These were parsed but never
     // written, so a `:settings` save — which rewrites the whole file
@@ -1030,5 +1043,44 @@ explain.max_tokens = 512
             Some("arn:aws:iam::1:role/He said \"hi\""),
             "serialized:\n{out}"
         );
+    }
+    #[test]
+    fn a_second_alarm_dimensions_line_replaces_the_first() {
+        // Every other key is last-write-wins. Appending meant an
+        // operator editing by adding a line silently got the union of
+        // both, with no way to narrow it back.
+        let cfg = parse(concat!(
+            "alarm_dimensions = \"A\"\n",
+            "alarm_dimensions = \"B\"\n",
+        ));
+        assert_eq!(
+            cfg.alarm_dimensions,
+            vec!["EnvironmentName".to_string(), "B".to_string()],
+            "the later line must replace the earlier one"
+        );
+    }
+
+    #[test]
+    fn a_hand_written_alarm_dimensions_line_round_trips_unchanged() {
+        // `:settings` rewrites the whole file. Emitting the full match
+        // set turned the operator's `"Environment"` into
+        // `"EnvironmentName,Environment"` on the first save.
+        let original = "alarm_dimensions = \"Environment\"\n";
+        let out = serialize(&parse(original));
+        assert!(
+            out.contains("alarm_dimensions = \"Environment\"\n"),
+            "expected the operator's own value back:\n{out}"
+        );
+        // And the parsed meaning is unchanged across the round trip.
+        assert_eq!(
+            parse(&out).alarm_dimensions,
+            parse(original).alarm_dimensions
+        );
+    }
+
+    #[test]
+    fn an_unset_alarm_dimensions_is_not_written() {
+        let out = serialize(&Config::default());
+        assert!(!out.contains("alarm_dimensions"), "{out}");
     }
 }

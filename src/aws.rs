@@ -480,12 +480,15 @@ impl AwsClient {
 /// The outcome of a paginated walk: what was collected, and whether the
 /// runaway cap cut it short.
 ///
-/// `truncated` is not decoration. Some callers filter client-side —
-/// `list_alarms_for_env` and `list_secrets` scan the whole account and
-/// match afterwards — and for those a cut-short scan is
-/// indistinguishable from "nothing matched", which during triage reads
-/// as a finding. Those call [`Paged::complete`]; the rest take
-/// [`Paged::items`] and accept a shorter list.
+/// `truncated` is not decoration. A short result is only acceptable
+/// where the caller renders it as a list and nothing more. Wherever the
+/// caller *searches* it — `list_alarms_for_env` and a filtered
+/// `list_secrets` match client-side; `list_environments`,
+/// `list_application_versions` and `list_instances` are `.find()`-ed by
+/// name; the VPC, certificate and account listings feed pickers — a
+/// cut-short walk is indistinguishable from "not there". Those call
+/// [`Paged::complete`]. An unfiltered `list_secrets` browse takes
+/// [`Paged::items`], because there a shorter list is just shorter.
 #[derive(Debug)]
 #[must_use = "a paginated walk reports whether it was cut short — take \
               `.items()` to accept a possibly-short list, or `.complete()` \
@@ -712,6 +715,15 @@ fn install_if_current(
     cache.insert(key, (std::time::Instant::now(), client));
     true
 }
+
+/// Serialises tests that touch the process-global client cache.
+///
+/// Not confined to `aws::tests`: `App::apply_rebuild` calls
+/// `clear_client_cache()`, so the app-side tests that drive it race the
+/// cache tests from another file entirely — an intermittent failure
+/// whose cause isn't visible from where it fires.
+#[cfg(test)]
+pub(crate) static CACHE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// The guarded install, for tests that need to drive the race
 /// deterministically rather than hope to hit it.

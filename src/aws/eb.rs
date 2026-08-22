@@ -1339,7 +1339,9 @@ impl AwsClient {
             ))
         })
         .await?
-        .items();
+        // Feeds the platform-upgrade picker: a short list reads as
+        // "that platform version isn't available for this env".
+        .complete("ListPlatformVersions")?;
         let mut out: Vec<CustomPlatform> = raw.into_iter().map(map_platform).collect();
         // Sort newest-first by semver-ish version.
         out.sort_by(|a, b| crate::util::compare_versions(&b.version, &a.version));
@@ -1485,7 +1487,9 @@ impl AwsClient {
             ))
         })
         .await?
-        .items();
+        // `:custom-platform-delete` takes an ARN the operator copies
+        // out of this list, so a short one reads as "not there".
+        .complete("ListPlatformVersions")?;
         let out: Vec<CustomPlatform> = raw.into_iter().map(map_platform).collect();
         Ok(out)
     }

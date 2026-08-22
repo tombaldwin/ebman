@@ -33,7 +33,7 @@ impl AwsClient {
         // subnet doesn't exist.
         let (this, vpc) = (self, vpc_id);
         let raw = super::paginate("DescribeSubnets", move |token| async move {
-            let mut req = this.ec2.describe_subnets().filters(
+            let mut req = this.ec2.describe_subnets().max_results(1000).filters(
                 Filter::builder()
                     .name("vpc-id")
                     .values(vpc.to_string())
@@ -46,7 +46,11 @@ impl AwsClient {
             Ok((resp.subnets.unwrap_or_default(), resp.next_token))
         })
         .await?
-        .items();
+        // `.complete()`, not `.items()`: this feeds a picker, and a
+        // picker showing a prefix of the real list doesn't read as
+        // "short" — the operator scrolls, doesn't find what they want,
+        // and concludes it isn't there.
+        .complete("DescribeSubnets")?;
         let mut out: Vec<SubnetInfo> = raw
             .into_iter()
             .map(|s| {
@@ -83,12 +87,16 @@ impl AwsClient {
         // listing above — a truncated picker reads as "not there".
         let (this, vpc) = (self, vpc_id);
         let raw = super::paginate("DescribeSecurityGroups", move |token| async move {
-            let mut req = this.ec2.describe_security_groups().filters(
-                Filter::builder()
-                    .name("vpc-id")
-                    .values(vpc.to_string())
-                    .build(),
-            );
+            let mut req = this
+                .ec2
+                .describe_security_groups()
+                .max_results(1000)
+                .filters(
+                    Filter::builder()
+                        .name("vpc-id")
+                        .values(vpc.to_string())
+                        .build(),
+                );
             if let Some(t) = token {
                 req = req.next_token(t);
             }
@@ -96,7 +104,7 @@ impl AwsClient {
             Ok((resp.security_groups.unwrap_or_default(), resp.next_token))
         })
         .await?
-        .items();
+        .complete("DescribeSecurityGroups")?;
         let mut out: Vec<SecurityGroupInfo> = raw
             .into_iter()
             .map(|g| SecurityGroupInfo {

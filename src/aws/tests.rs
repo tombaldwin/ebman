@@ -3259,16 +3259,9 @@ async fn list_instances_follows_next_token() {
 
 // ── profile+region client cache ────────────────────────────────────
 
-/// The client cache is process-global, so the tests that clear it would
-/// otherwise race each other under the default parallel runner. One
-/// lock, taken by every test in this section.
-///
-/// Async-aware: these tests hold it across `cached_client(..).await`.
-static CACHE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
 #[tokio::test]
 async fn cached_client_reuses_one_client_per_profile_and_region() {
-    let _serialised = CACHE_TEST_LOCK.lock().await;
+    let _serialised = super::CACHE_TEST_LOCK.lock().await;
     // `list_environments_in_region` runs once per region per refresh
     // tick and used to build a whole `AwsClient` each time — twelve SDK
     // clients plus `aws_config::load()`, which re-reads ~/.aws from
@@ -3411,7 +3404,7 @@ fn aws_client_is_send_and_sync() {
 
 #[tokio::test]
 async fn a_clear_during_a_build_is_not_undone_by_the_in_flight_builder() {
-    let _serialised = CACHE_TEST_LOCK.lock().await;
+    let _serialised = super::CACHE_TEST_LOCK.lock().await;
     // The race, driven deterministically: a builder captures the epoch,
     // a `clear_client_cache()` lands while it's awaiting
     // `AwsClient::with`, and the stranded builder then tries to install
@@ -3489,4 +3482,77 @@ fn map_platform_maps_every_field_and_tolerates_absent_ones() {
     assert_eq!(bare.version, "");
     assert_eq!(bare.status, "");
     assert_eq!(bare.lifecycle, "");
+}
+
+// ── the truncation convention can't drift ──────────────────────────
+
+#[test]
+fn every_paginated_listing_declares_how_it_treats_truncation() {
+    // The rule — "a short result is only acceptable where the caller
+    // renders it as a list and nothing more" — was applied to some
+    // listings and not others in the same pass, leaving the next
+    // reader unable to tell which convention held. Anything taking
+    // `.items()` must be named here with a reason, so adding a caller
+    // is a deliberate choice rather than a default.
+    const ITEMS_IS_CORRECT_BECAUSE: &[(&str, &str)] = &[(
+        "list_secrets",
+        "unfiltered browse — a shorter list is just shorter; the \
+         filtered path calls .complete() because then a miss is a claim",
+    )];
+
+    let mut offenders: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir("src/aws").expect("aws dir") {
+        let path = entry.expect("entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("rs")
+            || path.file_name().and_then(|f| f.to_str()) == Some("tests.rs")
+        {
+            continue;
+        }
+        let raw = std::fs::read_to_string(&path).expect("read");
+        // Comments discuss `.items()` by name, so strip them first —
+        // otherwise the guard flags the very comment explaining why a
+        // site calls `.complete()` instead.
+        let text: String = raw
+            .lines()
+            .map(|l| match l.find("//") {
+                Some(i) => &l[..i],
+                None => l,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Walk `.items()` call sites and name the enclosing fn.
+        let mut idx = 0usize;
+        while let Some(rel) = text[idx..].find(".items()") {
+            let at = idx + rel;
+            let enclosing = text[..at]
+                .rmatch_indices("fn ")
+                .next()
+                .map(|(i, _)| {
+                    text[i + 3..]
+                        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                        .next()
+                        .unwrap_or("")
+                        .to_string()
+                })
+                .unwrap_or_default();
+            if !ITEMS_IS_CORRECT_BECAUSE
+                .iter()
+                .any(|(name, _)| *name == enclosing)
+            {
+                offenders.push(format!(
+                    "{}::{enclosing}",
+                    path.file_name().unwrap().to_string_lossy()
+                ));
+            }
+            idx = at + ".items()".len();
+        }
+    }
+    offenders.sort();
+    offenders.dedup();
+    assert!(
+        offenders.is_empty(),
+        "these take `.items()` without declaring why a short result is \
+         acceptable — either call `.complete()` or add them to \
+         ITEMS_IS_CORRECT_BECAUSE with a reason: {offenders:?}"
+    );
 }

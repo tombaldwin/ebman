@@ -427,11 +427,16 @@ pub struct Partition {
     pub console_host: Option<&'static str>,
 }
 
-/// Every prefix ends in `-`, so none is a prefix of another
-/// (`"us-isob-".starts_with("us-iso-")` is false) and order doesn't
-/// matter for matching. The commercial entry carries no prefixes and is
-/// reached through `commercial()`, not by position — so this list can be
-/// appended to safely.
+/// Matching is first-match over `prefixes`, so ORDER MATTERS whenever
+/// one prefix is a prefix of another. It happens not to be true of the
+/// current set — `us-isob-` and `us-iso-` differ before the trailing
+/// `-` — but "they all end in `-`" does not guarantee it (`us-` would
+/// swallow every commercial `us-*` region), so a new entry has to be
+/// checked against the others rather than appended blindly. The test
+/// `no_prefix_shadows_another` does that check.
+///
+/// The commercial entry carries no prefixes and is reached through
+/// `commercial()`, not by position.
 pub const PARTITIONS: &[Partition] = &[
     Partition {
         arn: "aws-us-gov",
@@ -495,6 +500,14 @@ fn commercial() -> &'static Partition {
         .iter()
         .find(|p| p.arn == "aws")
         .expect("commercial partition present in PARTITIONS")
+}
+
+impl Partition {
+    /// The region prefixes this partition claims.
+    #[cfg(test)]
+    fn prefixes(&self) -> &'static [&'static str] {
+        self.prefixes
+    }
 }
 
 /// The partition a region belongs to. Unknown regions fall back to the
@@ -595,5 +608,37 @@ mod partition_tests {
             "report_bug scrubs ARNs from this list — a missing partition \
              leaks account IDs into a public issue"
         );
+    }
+}
+
+#[cfg(test)]
+mod partition_ordering_tests {
+    use super::PARTITIONS;
+
+    #[test]
+    fn no_prefix_shadows_another() {
+        // Matching is first-match, so a prefix that is itself a prefix
+        // of a later entry's would swallow it. The header used to claim
+        // this was impossible because every prefix ends in `-`; it
+        // isn't ("us-" would capture every commercial us-* region), so
+        // check the cross-product rather than assert a rule of thumb.
+        for (i, a) in PARTITIONS.iter().enumerate() {
+            for pa in a.prefixes() {
+                for (j, b) in PARTITIONS.iter().enumerate() {
+                    if i >= j {
+                        continue;
+                    }
+                    for pb in b.prefixes() {
+                        assert!(
+                            !pb.starts_with(pa),
+                            "{} (entry {i}, prefix {pa:?}) shadows {} (entry {j}, prefix {pb:?}) \
+                             — reorder so the more specific prefix comes first",
+                            a.arn,
+                            b.arn
+                        );
+                    }
+                }
+            }
+        }
     }
 }
