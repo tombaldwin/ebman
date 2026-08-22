@@ -1022,7 +1022,7 @@ Reviewed the third-review fixes and the write-safety tests. Fifteen findings; th
 
 Still open, recorded rather than fixed:
 
-- [x] **Detail shows home-region data for a fan-out row** — FIXED 2026-08-22. — `spawn_detail_*` all use `self.aws`, whose region is `context.region`, so opening Detail on an environment from another region shows that region's name with the home region's instances, metrics and events. The console-link fix works around it; the underlying coupling needs Detail to carry its own client.
+- [x] **Detail shows home-region data for a fan-out row** — FIXED 2026-08-22 (0.30.0). `spawn_detail_*` all used `self.aws`, whose region is `context.region`, so opening Detail on an environment from another region showed that region's name with the home region's instances, metrics and events. Detail carries its own client now. The instance-console link had been *worked around* to match the wrong data; that compensation became a bug once the data was right, and was fixed in the 0.30.1 review round.
 - [x] **`SCAN_PAGES = 500` is worst-case 500 sequential round trips** — FIXED 2026-08-22. on three interactive triage paths, with no timeout, no cancel and no partial render — and `detail_nav` has no in-flight guard, so scans longer than the 15 s tick stack up.
 - [x] **The client-cache TTL reaches one call path** — FIXED 2026-08-22. — only `list_environments_in_region` uses `cached_client`; everything else goes through `App::spawn_aws` → `self.aws`, which is replaced only by an explicit context switch. A single-region operator never reaches the cached path at all, so pasting fresh static credentials still does nothing until restart.
 - [ ] **`WRITE_COMMANDS` is hand-written** rather than derived from the registry, so roughly two-thirds of the write surface is unpinned. Every omission does reach `deny_write` today (checked), so this is a coverage gap rather than a live bypass; `CommandSpec` needs a `write` flag to derive from.
@@ -1093,6 +1093,16 @@ All five are post-tag, so they land in 0.30.1.
 - [x] **The per-tick fan-outs went quadratic.** `spawn_env_instance_counts` and `spawn_worker_queue_check` iterate `self.environments` and called `client_for_env(&e.name)`, which scans the whole fleet by name — O(n²) every 15 seconds. They hold the row already; they use `region_for(e)` directly now.
 
 Checked and sound: the role cache's 5-minute TTL against the STS session (no `duration_seconds` is set, so sessions are the 1-hour default — ~55 minutes of margin); no `std::sync::Mutex` is held across an await on any new path; `:alarm-history` correctly keeps the Detail-first accessor because `:alarms`, which it follows, resolves its env the same way.
+
+#### 0.30.1 review round — 2026-08-22
+
+Reviewing 0.30.1's own fixes. One finding, and it is the most instructive of the day.
+
+- [x] **A workaround outlived the bug it compensated for.** `open_instance_in_console` used the HOME region *deliberately* — Detail's instance list was fetched through the home client, so an ID in that list came from the home region whatever region the row lived in, and the link had to agree with the data it named. Its comment said exactly that, and pointed at the BACKLOG entry for the underlying coupling. 0.30.0 fixed the fetch and left the compensation behind, so a real eu-west-2 instance ID now pointed at the us-east-1 console: "does not exist". Exactly the "fix the class, not the instance" rule — the sweep fixed sixty call sites and missed the one place that had been *bent around* the old behaviour. The region choice is now a pure `instance_console_target()` so it can be pinned; `open_url` isn't observable from a test and the choice was the part that was wrong.
+
+Checked and sound this round: `env_regions` surviving `:region all` / `:region off` (neither rebuilds, and a remembered region stays correct because an env can't move); no stale-role hazard from a config reload (`apply_config_live` doesn't touch `cfg.accounts`, and `:settings` can only change theme / icons / refresh interval / redact / grouped); the `apply_client_refresh` region check can't misfire on a context switch because the epoch guard drops those first.
+
+Recorded, not fixed: **`:region all` / `:region off` don't bump `generation`**, and `spawn_refresh` skips while one is in flight — so switching mid-refresh leaves the previous mode's rows on screen until the next tick. Pre-existing, self-healing in 15s, and a different class (refresh ordering) from the region work.
 
 #### Important (need live verification or a design pass)
 - [x] **Cost Explorer pagination** — Shipped. `fetch_env_costs` follows `NextPageToken` (`aws/cost.rs`). The `MAX_COST_PAGES = 20` cap now warns, returns `EnvCosts { truncated }`, and a truncated walk is neither cached nor allowed to replace a complete in-memory map; `:cost status` and `:fleet-cost` both say when what's on screen is partial.

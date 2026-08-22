@@ -195,26 +195,29 @@ impl App {
 
     /// Open the currently-selected instance (in the Instances tab) in the
     /// EC2 console. No-op when no instance is selected.
+    /// `(region, instance id)` for the instance under Detail's cursor.
+    ///
+    /// Split out so the region CHOICE is testable — `open_url` can't be
+    /// observed from a test, and the choice is the part that was wrong.
+    pub(crate) fn instance_console_target(&self) -> Option<(String, String)> {
+        let d = self.detail.as_ref()?;
+        let inst = d.instances.get(d.instances_cursor)?;
+        Some((self.region_for(&d.env_snapshot), inst.id.clone()))
+    }
+
     pub(crate) fn open_instance_in_console(&mut self) {
-        let Some(d) = self.detail.as_ref() else {
+        let Some((region, id)) = self.instance_console_target() else {
             return;
         };
-        let Some(inst) = d.instances.get(d.instances_cursor) else {
-            return;
-        };
-        // The HOME region here, deliberately — unlike the env console
-        // link above. `d.instances` is fetched by `spawn_detail_instances`
-        // through `self.aws`, whose region is always `context.region`,
-        // so an instance ID in this list came from the home region
-        // whatever region the selected row lives in. Pointing the link
-        // at the row's region would name a home-region instance ID in
-        // another region's console, which resolves to "does not exist".
-        //
-        // The deeper issue — Detail showing home-region data for a
-        // fan-out row — is recorded in BACKLOG.md; this keeps the link
-        // consistent with the data it names rather than half-fixing it.
-        let region = self.context.region.clone();
-        let id = inst.id.clone();
+        // The ROW's region, matching where the instance list came
+        // from. This used to be the home region ON PURPOSE: Detail's
+        // instances were fetched through `self.aws`, so an ID in this
+        // list came from the home region whatever region the row lived
+        // in, and the link had to agree with the data it named. 0.30.0
+        // fixed the fetch and left the compensation behind, which
+        // turned the workaround into the bug — a row's real instance
+        // ID pointed at the home region's console, where it resolves
+        // to "does not exist".
         let Some(base) = crate::util::console_base_url(&region) else {
             self.error_message = Some(no_console_host(&region));
             return;

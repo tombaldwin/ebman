@@ -8900,3 +8900,50 @@ async fn remembered_regions_do_not_survive_a_context_switch() {
         "the new context's home region, not the old context's answer"
     );
 }
+
+#[tokio::test]
+async fn the_instance_console_link_follows_the_row_now_that_the_data_does() {
+    // This link deliberately used the HOME region, because Detail's
+    // instance list was fetched through the home client — the link had
+    // to agree with the data it named. 0.30.0 fixed the fetch and left
+    // the compensation in place, which turned the workaround into the
+    // bug: a real instance ID from eu-west-2 pointed at the us-east-1
+    // console, where it resolves to "does not exist".
+    let mut app = test_app();
+    let mut env = mk_env("api-prod", "uflexi", "Web", "Green");
+    env.region = Some("eu-west-2".into());
+    app.environments = vec![env];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+
+    let detail = app.detail.as_mut().expect("detail opened");
+    detail.instances = vec![crate::aws::Instance {
+        id: "i-0abc123".into(),
+        health: "Ok".into(),
+        color: "Green".into(),
+        causes: vec![],
+        instance_type: "t3.small".into(),
+        availability_zone: "eu-west-2a".into(),
+        launched_at: None,
+    }];
+    detail.instances_cursor = 0;
+
+    let (region, id) = app
+        .instance_console_target()
+        .expect("an instance is selected");
+    assert_eq!(id, "i-0abc123");
+    assert_eq!(
+        region, "eu-west-2",
+        "the link must name the region the instance list was fetched from"
+    );
+    // Which is the same region Detail fetched it from — the two agreeing
+    // is the actual invariant here.
+    assert_eq!(app.detail_client().region_for_tests(), region);
+
+    // No Detail, or no instance under the cursor: no target, no panic.
+    app.detail.as_mut().unwrap().instances.clear();
+    assert!(app.instance_console_target().is_none());
+    app.detail = None;
+    assert!(app.instance_console_target().is_none());
+}
