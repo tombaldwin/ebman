@@ -100,7 +100,7 @@ struct RawResource {
 #[derive(Deserialize)]
 struct RawInstance {
     #[serde(default)]
-    attributes: serde_yml::Value,
+    attributes: serde_json::Value,
 }
 
 #[derive(Deserialize)]
@@ -178,7 +178,7 @@ pub(crate) fn is_backend_pointer(text: &str) -> bool {
     if !text.contains("\"backend\"") {
         return false;
     }
-    match serde_yml::from_str::<RawTfState>(text) {
+    match serde_json::from_str::<RawTfState>(text) {
         Ok(raw) => raw.resources.is_empty(),
         Err(_) => true,
     }
@@ -189,10 +189,14 @@ pub(crate) fn is_backend_pointer(text: &str) -> bool {
 /// corrupt or non-tfstate JSON file at the discovery path
 /// shouldn't refuse to launch ebman.
 pub fn parse(text: &str) -> Option<TfState> {
-    // serde_yml handles JSON as a strict subset of YAML — no
+    // A JSON parser for JSON: tfstate is JSON, and routing it through
+    // a YAML parser meant YAML's anchor/alias expansion applied to a
+    // file ebman discovers by walking up from cwd. `serde_json` is
+    // already a direct dependency. The old note read:
+    // the old note read: serde_yml handles JSON as a subset of YAML — no
     // need for a separate serde_json dep. Fast enough on 10MB
     // tfstates for an interactive operation.
-    let raw: RawTfState = serde_yml::from_str(text).ok()?;
+    let raw: RawTfState = serde_json::from_str(text).ok()?;
     let mut envs: Vec<TfEnv> = Vec::new();
     for resource in raw.resources {
         if resource.type_ != "aws_elastic_beanstalk_environment" {
@@ -210,7 +214,7 @@ pub fn parse(text: &str) -> Option<TfState> {
 /// Pull the fields ebman compares from a single instance's
 /// `attributes` blob. Tolerant of missing fields — anything we
 /// can't extract falls back to the default value.
-fn extract_env(attrs: &serde_yml::Value) -> Option<TfEnv> {
+fn extract_env(attrs: &serde_json::Value) -> Option<TfEnv> {
     let name = attrs.get("name")?.as_str()?.to_string();
     let application = attrs
         .get("application")
@@ -233,15 +237,15 @@ fn extract_env(attrs: &serde_yml::Value) -> Option<TfEnv> {
     })
 }
 
-fn extract_settings(v: Option<&serde_yml::Value>) -> Vec<(String, String, String)> {
-    let Some(arr) = v.and_then(|v| v.as_sequence()) else {
+fn extract_settings(v: Option<&serde_json::Value>) -> Vec<(String, String, String)> {
+    let Some(arr) = v.and_then(|v| v.as_array()) else {
         return Vec::new();
     };
     let mut out: Vec<(String, String, String)> = Vec::with_capacity(arr.len());
     for entry in arr {
-        // serde_yml's `from_value` clones — fine for a one-shot
+        // `from_value` clones — fine for a one-shot
         // parse, and avoids hand-rolling the field lookups.
-        let raw: Result<RawSetting, _> = serde_yml::from_value(entry.clone());
+        let raw: Result<RawSetting, _> = serde_json::from_value(entry.clone());
         if let Ok(s) = raw {
             out.push((s.namespace, s.name, s.value));
         }
@@ -249,13 +253,15 @@ fn extract_settings(v: Option<&serde_yml::Value>) -> Vec<(String, String, String
     out
 }
 
-fn extract_tags(v: Option<&serde_yml::Value>) -> std::collections::BTreeMap<String, String> {
+fn extract_tags(v: Option<&serde_json::Value>) -> std::collections::BTreeMap<String, String> {
     let mut out = std::collections::BTreeMap::new();
-    let Some(map) = v.and_then(|v| v.as_mapping()) else {
+    let Some(map) = v.and_then(|v| v.as_object()) else {
         return out;
     };
+    // JSON object keys are already `&str`; the YAML shape needed a
+    // `k.as_str()` because a YAML key can be any scalar.
     for (k, val) in map {
-        if let (Some(k), Some(v)) = (k.as_str(), val.as_str()) {
+        if let Some(v) = val.as_str() {
             out.insert(k.to_string(), v.to_string());
         }
     }
@@ -623,13 +629,15 @@ mod tests {
     #[test]
     fn parse_malformed_returns_none() {
         assert!(parse("not json {").is_none());
-        // Empty string is technically valid YAML (null document)
-        // and serde_yml deserialises that into RawTfState with
-        // `resources: []` via #[serde(default)]. We accept that
-        // as "no envs" rather than refusing — a tfstate file
-        // that's been truncated mid-flight reads the same way,
-        // and "no envs" is the safe degraded behavior.
-        assert!(parse("").is_some_and(|s| s.envs.is_empty()));
+        // An empty file is NOT valid JSON, so it is a parse failure
+        // rather than a null document deserialising to
+        // `resources: []` — which is what the YAML parser did before
+        // 0.30, and what let an empty or truncated tfstate read as
+        // "no envs" and pass `drift --exit-code` green. The caller
+        // now reports "no terraform.tfstate found", which is a claim
+        // an operator can act on. Same reasoning as the 0.27 fix for
+        // backend pointers parsing as zero envs.
+        assert!(parse("").is_none());
         // Bracket / brace mismatch: real syntax error → None.
         assert!(parse("{\"resources\": [").is_none());
     }
@@ -965,8 +973,10 @@ mod tests {
         let json = render_drift_json(Some(Path::new("./terraform.tfstate")), &reports);
         // Round-trip through the YAML-superset parser to confirm
         // it's valid JSON.
-        let parsed: serde_yml::Value =
-            serde_yml::from_str(&json).expect("rendered output must be valid JSON");
+        // A JSON parser, so "valid JSON" is what this actually
+        // asserts — the YAML one accepted output JSON would reject.
+        let parsed: serde_json::Value =
+            serde_json::from_str(&json).expect("rendered output must be valid JSON");
         // Spot-check fields.
         assert!(json.contains("\"tfstate\":\"./terraform.tfstate\""));
         assert!(json.contains("\"name\":\"prod-api\""));
@@ -975,7 +985,7 @@ mod tests {
         assert!(json.contains("\"tf\":\"4\""));
         assert!(json.contains("\"live\":\"8\""));
         // The top-level structure is an object with envs array.
-        assert!(parsed.is_mapping());
+        assert!(parsed.is_object());
     }
 
     #[test]

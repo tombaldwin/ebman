@@ -373,7 +373,7 @@ mod tests {
 
     #[test]
     fn json_string_round_trips_via_yaml_parser() {
-        // YAML is a JSON superset; serde_yml parses both. Useful
+        // Parsed back with a JSON parser, so this asserts what it says. Useful
         // cross-check that our hand-rolled escape is spec-compliant.
         let inputs = [
             "",
@@ -384,7 +384,7 @@ mod tests {
         ];
         for input in inputs {
             let escaped = json_string(input);
-            let parsed: String = serde_yml::from_str(&escaped)
+            let parsed: String = serde_json::from_str(&escaped)
                 .unwrap_or_else(|e| panic!("json_string({input:?}) = {escaped} failed: {e}"));
             assert_eq!(parsed, input);
         }
