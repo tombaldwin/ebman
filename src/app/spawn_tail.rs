@@ -79,12 +79,27 @@ impl App {
         // Tear down any prior session so we don't have two pollers racing.
         tail::reap_tail_task(&mut self.log_tail_task, &mut self.log_tail_session);
         let session_id = self.log_tail_session;
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env_name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_for_msg = env_name.clone();
         // In-flight ack: the LogTail overlay opens itself when data lands.
         let handle = tokio::spawn(async move {
+            // Resolve the client once for the whole poll loop — a tail
+            // that re-resolved per poll would re-assume every two
+            // seconds under `:account`.
+            let aws = match client.resolve().await {
+                Ok(aws) => aws,
+                Err(e) => {
+                    let _ = tx.send(AppMsg::LogTailEvents {
+                        gen,
+                        session_id,
+                        next_since_ms: 0,
+                        result: Err(flatten_err("cached_client", e)),
+                    });
+                    return;
+                }
+            };
             // Resolve the log group up front. If the user supplied one,
             // trust it (no DescribeLogGroups round-trip); otherwise discover.
             let group = match explicit_group {

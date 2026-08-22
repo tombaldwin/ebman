@@ -311,14 +311,14 @@ impl App {
         if self.deny_write(&env_name, "config-apply") {
             return;
         }
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env_name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         // In-flight ack lives on the pending pill; completion toasts.
         crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.context.region,
+            &self.region_for_name(&env_name),
             "ConfigApply",
             env_name.as_str(),
             &[("template", template.as_str())],
@@ -326,10 +326,13 @@ impl App {
         self.push_pending(Action::ConfigApply.label(), env_name.clone());
         let env_for_msg = env_name.clone();
         tokio::spawn(async move {
-            let result = aws
-                .apply_config_template(&env_for_msg, &template)
-                .await
-                .map_err(|e| flatten_err("apply_config_template", e));
+            let result = match client.resolve().await {
+                Ok(aws) => aws
+                    .apply_config_template(&env_for_msg, &template)
+                    .await
+                    .map_err(|e| flatten_err("apply_config_template", e)),
+                Err(e) => Err(flatten_err("cached_client", e)),
+            };
             let _ = tx.send(AppMsg::ActionResult {
                 gen,
                 action: Action::ConfigApply,
@@ -351,7 +354,7 @@ impl App {
         if self.deny_write("", "config-delete") {
             return;
         }
-        let aws = self.aws.clone();
+        let client = self.client_for_app(&app_name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let target = format!("{app_name}/{template}");
@@ -361,7 +364,7 @@ impl App {
         crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.context.region,
+            &self.region_for_app(&app_name),
             "ConfigDelete",
             &target,
             &[],
@@ -369,11 +372,14 @@ impl App {
         self.push_pending(Action::ConfigDelete.label(), target.clone());
         let template_for_msg = template.clone();
         tokio::spawn(async move {
-            let result = aws
-                .delete_config_template(&app_name, &template)
-                .await
-                .map_err(|e| flatten_err("delete_config_template", e))
-                .map_err(|e| format!("config-delete '{template_for_msg}': {e}"));
+            let result = match client.resolve().await {
+                Ok(aws) => aws
+                    .delete_config_template(&app_name, &template)
+                    .await
+                    .map_err(|e| flatten_err("delete_config_template", e)),
+                Err(e) => Err(flatten_err("cached_client", e)),
+            }
+            .map_err(|e| format!("config-delete '{template_for_msg}': {e}"));
             let _ = tx.send(AppMsg::ActionResult {
                 gen,
                 action: Action::ConfigDelete,
@@ -387,12 +393,23 @@ impl App {
     /// Read-only — no read-only-mode gate. Called by `:config-inspect` and
     /// by the `i` keybind in the interactive saved-configs overlay.
     pub(crate) fn spawn_config_inspect_template(&mut self, app_name: String, template: String) {
-        let aws = self.aws.clone();
+        let client = self.client_for_app(&app_name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let title = format!("template — {app_name}/{template}");
         // In-flight ack: pending pill. Inspect result lands as a TextOverlay.
         tokio::spawn(async move {
+            let aws = match client.resolve().await {
+                Ok(aws) => aws,
+                Err(e) => {
+                    let _ = tx.send(AppMsg::TextOverlay {
+                        gen,
+                        title,
+                        body: format!("config-inspect: {}", flatten_err("cached_client", e)),
+                    });
+                    return;
+                }
+            };
             let body = match aws.describe_template_settings(&app_name, &template).await {
                 Ok(settings) if settings.is_empty() => {
                     "(template has no option settings)".to_string()
