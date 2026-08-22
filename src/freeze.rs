@@ -82,6 +82,25 @@ fn clear_if_pid_at(path: &Path, own_pid: u32) {
 
 /// The active freeze, if any: marker exists AND its owning pid is
 /// alive. A dead-pid marker is stale (crashed TUI) — ignored and
+/// The one refusal sentence for an active fleet freeze.
+///
+/// Shared because it was written twice — once in `cli::refuse_if_frozen`
+/// and once in the MCP write gate — with the same body and different
+/// framing, so the two surfaces disagreed in wording about the same
+/// condition and either could drift on the next edit.
+pub fn refusal_message(marker: &FreezeMarker) -> String {
+    let reason = if marker.reason.is_empty() {
+        "no reason given"
+    } else {
+        marker.reason.as_str()
+    };
+    format!(
+        "fleet freeze active ({reason}) — lift with `{}` in the owning TUI (pid {})",
+        marker.remedy(),
+        marker.pid
+    )
+}
+
 /// removed so it can't confuse later readers.
 pub fn read_active() -> Option<FreezeMarker> {
     read_active_with(&marker_path(), pid_alive)
@@ -234,5 +253,33 @@ mod tests {
         let m = parse_file(&p).expect("parses");
         assert_eq!(m.reason, "the \"big\" one\nline2");
         let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn one_freeze_refusal_sentence_for_every_surface() {
+        // The CLI and the MCP write gate each rendered their own copy
+        // with the same body and different framing, so the two
+        // surfaces described one condition in two ways and either
+        // could drift on the next edit.
+        let m = FreezeMarker {
+            pid: 4242,
+            reason: "prod incident".into(),
+            incident: false,
+            at: "2026-08-22T10:00:00Z".into(),
+        };
+        let msg = refusal_message(&m);
+        assert!(msg.contains("prod incident"), "{msg}");
+        assert!(msg.contains("4242"), "names the owning pid: {msg}");
+        assert!(msg.contains(m.remedy()), "names the remedy: {msg}");
+
+        // An empty reason still reads as a sentence rather than
+        // trailing off into "()".
+        let m = FreezeMarker {
+            reason: String::new(),
+            ..m
+        };
+        let msg = refusal_message(&m);
+        assert!(msg.contains("no reason given"), "{msg}");
+        assert!(!msg.contains("()"), "{msg}");
     }
 }

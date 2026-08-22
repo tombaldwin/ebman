@@ -78,16 +78,7 @@ pub(crate) use crate::util::{json_escape as cli_esc, json_string};
 /// still be written from a second terminal.
 pub(crate) fn refuse_if_frozen(prog: &str) {
     if let Some(m) = crate::freeze::read_active() {
-        let reason = if m.reason.is_empty() {
-            "no reason given"
-        } else {
-            m.reason.as_str()
-        };
-        eprintln!(
-            "{prog}: refusing — fleet freeze active ({reason}) — lift with `{}` in the owning TUI (pid {})",
-            m.remedy(),
-            m.pid
-        );
+        eprintln!("{prog}: refusing — {}", crate::freeze::refusal_message(&m));
         std::process::exit(3);
     }
 }
