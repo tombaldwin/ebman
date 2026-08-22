@@ -1208,7 +1208,12 @@ Byte-faithful, and **proved so rather than asserted**: a whitespace-normalised, 
 
 The re-exports are what keep this cheap: `pub(crate) use chrome::*` and friends mean every sibling's `use super::*` still resolves, which is the convention `detail` / `overlays` / `help` already relied on — so moving an item between view modules later doesn't touch its callers, and `ui/tests.rs` reaches its subjects through `super::` regardless of which module owns them.
 
-- [ ] **`draw_table` is 695 lines** — the single biggest function left, and the reason `table.rs` is still 1,135. Splitting it means decomposing a function rather than moving one, which is a different kind of change from this pass and wants its own.
+- [x] **`draw_table` decomposition** — 695 → 512 lines, 2026-08-22. Two extractions, and the first is the point of the exercise:
+  - **`visible_columns`** (75) — the whole column-set rule: view-mode presets, the fan-out-only REGION column, the `:cost on` opt-in inserted before AGE, and the per-column hide list with NAME exempt. Pure, four inputs, and now **tested** — previously the only way to ask "does `:cols hide NAME` do nothing?" was to render a frame and read it back. Eight assertions, two mutation-verified.
+  - **`env_cell`** (163) — the per-column match, moved verbatim behind a `CellCtx`.
+  - [ ] **Remaining: the `DisplayRow::Env` body (~200) and the `Separator` branch (~138).** Both are still inline. Extractable the same way; stopped here because the value per edit drops off sharply after the column logic.
+
+  Two things worth recording from the attempt. The arms shadow context fields with locals of the same name (`alert`, `color`), so the first version — a regex rewriting `alert` → `ctx.alert` — silently broke `let alert = …` inside an arm. Destructuring on entry keeps the arms byte-identical and can't do that. And holding `&App` in the context **does not compile**: the rows borrow `app.environments`, and passing the whole struct defeats the field-level split the borrow checker was using to allow `&mut app.table_state` at the render call. Six of the arms did a map lookup keyed by the row's env, so the context holds those six resolved values instead — cheaper per row, and the reason it builds.
 
 #### Important (need live verification or a design pass)
 - [x] **Cost Explorer pagination** — Shipped. `fetch_env_costs` follows `NextPageToken` (`aws/cost.rs`). The `MAX_COST_PAGES = 20` cap now warns, returns `EnvCosts { truncated }`, and a truncated walk is neither cached nor allowed to replace a complete in-memory map; `:cost status` and `:fleet-cost` both say when what's on screen is partial.

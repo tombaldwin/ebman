@@ -173,15 +173,19 @@ pub(crate) fn draw_apps_table(f: &mut Frame, area: Rect, app: &mut App) {
     f.render_stateful_widget(table, area, &mut app.app_table_state);
 }
 
-pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
-    app.table_area = area;
-    let theme = app.theme.clone();
-    let compact = app.view.mode == ViewMode::Compact;
-    let spacious = app.view.mode == ViewMode::Spacious;
-    let row_height: u16 = if spacious { 2 } else { 1 };
-    let block_padding: u16 = if spacious { 2 } else { 1 };
-    let indexes = app.filtered_indexes();
-
+/// Which columns the table shows, in order.
+///
+/// Pure: the whole rule set — view-mode presets, the fan-out-only
+/// REGION column, the `:cost on` opt-in, and the per-column hide list —
+/// decided from four inputs and nothing else. It was 43 lines inside a
+/// 695-line `draw_table`, which meant the only way to check "does
+/// `:cols hide NAME` actually do nothing" was to render a frame.
+pub(crate) fn visible_columns(
+    multi_regions: &[String],
+    cost_enabled: bool,
+    hidden_cols: &std::collections::BTreeSet<String>,
+    compact: bool,
+) -> Vec<(&'static str, SortKey)> {
     // Column set varies by view mode + per-column hide list. The HEALTH dot
     // and TREND glyph share the HEALTH sort key but are addressed separately
     // when hiding (`:cols hide HEALTH` hides the dot; `:cols hide TREND` hides
@@ -200,13 +204,13 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
         ("AGE", SortKey::Age),
     ];
     // REGION column only renders when the user has fanned across regions.
-    if !app.multi_regions.is_empty() {
+    if !multi_regions.is_empty() {
         full.insert(1, ("REGION", SortKey::App));
     }
     // COST column opt-in via `:cost on`. Inserted before AGE so the
     // expensive envs catch the eye on the same horizontal band as the
     // stale-env tint.
-    if app.cost_enabled {
+    if cost_enabled {
         let age_idx = full
             .iter()
             .position(|(l, _)| *l == "AGE")
@@ -224,9 +228,231 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
             if *label == "NAME" {
                 return true;
             }
-            !app.view.hidden_cols.contains(*label)
+            !hidden_cols.contains(*label)
         })
         .collect();
+    columns
+}
+
+/// Everything a cell renderer reads for one row.
+///
+/// A struct rather than eight parameters: the match below was 160
+/// lines inside a closure inside a 695-line `draw_table`, and these
+/// eight values are exactly what it closed over. Destructured on entry
+/// so the arms move VERBATIM — several of them shadow a context field
+/// with a local `let` of the same name (`alert`, `color`), which a
+/// rewrite to `ctx.alert` silently broke on the first attempt.
+/// Per-row VALUES, not `&App`.
+///
+/// Six of the arms did a map lookup keyed by this row's env
+/// (`worker_dlq_depths`, `env_instance_counts`, `history`,
+/// `newly_red`, `stale_platforms`, `costs`). Holding `&App` to reach
+/// them made the rows borrow the whole struct, which defeats the
+/// field-level split the borrow checker was using to let
+/// `render_stateful_widget` take `&mut app.table_state` afterwards.
+/// Resolving them once per row is both cheaper and the reason this
+/// compiles.
+///
+/// The lifetime is the ENVIRONMENT's: several arms hand out `&str`
+/// into it rather than allocating per row.
+pub(crate) struct CellCtx<'a> {
+    pub theme: &'a Theme,
+    pub e: &'a Environment,
+    pub redact: bool,
+    pub dlq_depth: i64,
+    pub instance_counts: Option<crate::aws::EnvInstanceCounts>,
+    pub history: Option<&'a std::collections::VecDeque<String>>,
+    pub newly_red: bool,
+    pub stale_platform: Option<&'a String>,
+    pub cost: Option<f64>,
+    /// Pre-built: NAME carries the pin star, multi-select tick,
+    /// newly-added marker and drift glyph — assembled once per row,
+    /// not once per column.
+    pub name_cell: Cell<'a>,
+    pub age: String,
+    pub color: Color,
+    pub now: chrono::DateTime<chrono::Utc>,
+}
+
+/// One table cell for `label` in the row `ctx` describes.
+pub(crate) fn env_cell<'a>(label: &str, ctx: &CellCtx<'a>) -> Cell<'a> {
+    let CellCtx {
+        theme,
+        e,
+        name_cell,
+        age,
+        color,
+        now,
+        ..
+    } = ctx;
+    let (color, now) = (*color, *now);
+    match label {
+        "NAME" => name_cell.clone(),
+        // Application / platform / region values live on
+        // `app.environments[i]` which outlives the draw
+        // call — borrow rather than clone so the per-row
+        // hot path doesn't allocate 3+ Strings per frame.
+        "APPLICATION" => Cell::from(Span::raw(e.application.as_str()))
+            .style(Style::default().fg(color).add_modifier(Modifier::BOLD)),
+        "TIER" => tier_cell(&e.tier, theme),
+        "STATUS" => {
+            // For Worker envs with DLQ messages, append a
+            // small `⚠N` suffix to the status pill so the
+            // operator can spot the reason a Green-EB row
+            // is tinted red. STATUS column is 10 cells;
+            // " Ready " pill takes 7, leaving room for
+            // " ⚠N" (3 cells). Larger DLQ counts clip
+            // gracefully — the row tint is the primary
+            // signal anyway.
+            let dlq = if e.tier.eq_ignore_ascii_case("Worker") {
+                ctx.dlq_depth
+            } else {
+                0
+            };
+            // Tier the `Ready` pill by the env's actual
+            // alert level — `Ready` is EB's operational
+            // state, not a health verdict. A green pill
+            // on a Red row reads as "fine"; render it in
+            // the health colour so the column matches
+            // reality. Updating / Terminating are kept as
+            // their own distinctive pills.
+            let alert = status_alert(&e.health, dlq);
+            if dlq > 0 {
+                Cell::from(Line::from(vec![
+                    status_pill_for(&e.status, theme, alert),
+                    Span::styled(
+                        format!(" {}{dlq}", warn_glyph(theme.icons).trim_end()),
+                        Style::default()
+                            .fg(theme.health_red)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]))
+            } else {
+                Cell::from(status_pill_for(&e.status, theme, alert))
+            }
+        }
+        "HEALTH" => Cell::from(health_dot(&e.health, theme)),
+        "INST" => {
+            // `healthy/total` if the per-env counts have
+            // landed for this refresh; em-dash placeholder
+            // otherwise (and on the very first frame
+            // before the fan-out completes). Cell colour
+            // tiers by ratio: all healthy = green, any
+            // unhealthy but some healthy = yellow,
+            // zero healthy with instances present = red,
+            // empty env = muted.
+            let counts = ctx.instance_counts;
+            let (text, color) = format_instance_counts(counts, theme);
+            Cell::from(Span::styled(
+                text,
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ))
+        }
+        "TREND" => Cell::from(sparkline_for(ctx.history, theme, ctx.newly_red)),
+        "PLATFORM" => {
+            // Devicons icon is Powerline-only (PUA
+            // codepoints tofu without a Nerd Font);
+            // colour-coding applies in every icon mode
+            // so unicode / ASCII users still get the
+            // visual differentiation between platforms.
+            let style = platform_style(&e.platform);
+            let colour = style
+                .as_ref()
+                .and_then(|s| theme.app_palette.get(s.palette_idx).copied())
+                .unwrap_or(theme.muted);
+            let icon = if theme.icons == IconStyle::Powerline {
+                style.as_ref().map(|s| s.icon)
+            } else {
+                None
+            };
+            // A newer platform version in the same family
+            // recolours the name amber + appends an ↑ glyph
+            // so the operator sees the console's "update
+            // available" nag without leaving the table.
+            // Staleness is precomputed in `rebuild_view` —
+            // this is an O(1) lookup, not a per-frame parse.
+            let stale = ctx.stale_platform;
+            let name_colour = if stale.is_some() {
+                theme.health_yellow
+            } else {
+                colour
+            };
+            let mut spans = Vec::new();
+            if let Some(g) = icon {
+                spans.push(Span::styled(format!("{g} "), Style::default().fg(colour)));
+            }
+            spans.push(Span::styled(
+                e.platform.as_str(),
+                Style::default().fg(name_colour),
+            ));
+            if stale.is_some() {
+                spans.push(Span::styled(
+                    format!(" {}", stale_glyph(theme.icons)),
+                    Style::default().fg(theme.health_yellow),
+                ));
+            }
+            Cell::from(Line::from(spans))
+        }
+        "VERSION" => Cell::from(Span::raw(e.version_label.as_str()))
+            .style(Style::default().fg(theme.app_palette[0])),
+        "CNAME" => Cell::from(redact(&e.cname, ctx.redact)).style(Style::default().fg(theme.muted)),
+        // `age` is built freshly per row inside this scope
+        // and so can't be borrowed into the returned Cell.
+        // Caching it on rebuild_view would let this be a
+        // borrow too, but the age string changes per
+        // minute boundary — a stale value would be
+        // visible until the next refresh, which is fine
+        // operationally but adds bookkeeping. Leave the
+        // single per-row clone here as the cheapest
+        // honest option for now.
+        "AGE" => {
+            Cell::from(age.clone()).style(Style::default().fg(age_color(e.updated, now, theme)))
+        }
+        "REGION" => Cell::from(Span::raw(e.region.as_deref().unwrap_or_default()))
+            .style(Style::default().fg(theme.accent)),
+        "COST" => {
+            // `:cost on` populates `app.costs` from
+            // Cost Explorer (Tag: elasticbeanstalk:env-name).
+            // Display as `$NNN` (no fractional cents —
+            // the precision is misleading; Cost Explorer
+            // reports `1240.503125...` and that's noise).
+            // Tint cells by bucket so the eye lands on
+            // the expensive ones: green < $50, muted
+            // $50–$500, red ≥ $500.
+            match ctx.cost {
+                Some(cost) => {
+                    let text = format!("${cost:.0}");
+                    let fg = if cost >= 500.0 {
+                        theme.health_red
+                    } else if cost >= 50.0 {
+                        theme.text
+                    } else {
+                        theme.health_green
+                    };
+                    Cell::from(text).style(Style::default().fg(fg).add_modifier(Modifier::BOLD))
+                }
+                None => Cell::from(Span::styled("—", Style::default().fg(theme.muted))),
+            }
+        }
+        _ => Cell::from(""),
+    }
+}
+
+pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
+    app.table_area = area;
+    let theme = app.theme.clone();
+    let compact = app.view.mode == ViewMode::Compact;
+    let spacious = app.view.mode == ViewMode::Spacious;
+    let row_height: u16 = if spacious { 2 } else { 1 };
+    let block_padding: u16 = if spacious { 2 } else { 1 };
+    let indexes = app.filtered_indexes();
+
+    let columns = visible_columns(
+        &app.multi_regions,
+        app.cost_enabled,
+        &app.view.hidden_cols,
+        compact,
+    );
     let sort_marker = if app.view.sort_desc() {
         glyph(app.theme.icons, " ▼", " v")
     } else {
@@ -399,168 +625,24 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                         Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
                     ),
                 ]));
+                let cell_ctx = CellCtx {
+                    theme: &theme,
+                    e,
+                    name_cell,
+                    age,
+                    color,
+                    now,
+                    redact: app.view.redact,
+                    dlq_depth: app.worker_dlq_depths.get(&e.name).copied().unwrap_or(0),
+                    instance_counts: app.env_instance_counts.get(&e.name).copied(),
+                    history: app.history.get(&e.name),
+                    newly_red: app.newly_red.contains(&e.name),
+                    stale_platform: app.view.stale_platforms().get(&e.name),
+                    cost: app.costs.get(&e.name).copied(),
+                };
                 let cells: Vec<Cell> = columns
                     .iter()
-                    .map(|(label, _)| match *label {
-                        "NAME" => name_cell.clone(),
-                        // Application / platform / region values live on
-                        // `app.environments[i]` which outlives the draw
-                        // call — borrow rather than clone so the per-row
-                        // hot path doesn't allocate 3+ Strings per frame.
-                        "APPLICATION" => Cell::from(Span::raw(e.application.as_str()))
-                            .style(Style::default().fg(color).add_modifier(Modifier::BOLD)),
-                        "TIER" => tier_cell(&e.tier, &theme),
-                        "STATUS" => {
-                            // For Worker envs with DLQ messages, append a
-                            // small `⚠N` suffix to the status pill so the
-                            // operator can spot the reason a Green-EB row
-                            // is tinted red. STATUS column is 10 cells;
-                            // " Ready " pill takes 7, leaving room for
-                            // " ⚠N" (3 cells). Larger DLQ counts clip
-                            // gracefully — the row tint is the primary
-                            // signal anyway.
-                            let dlq = if e.tier.eq_ignore_ascii_case("Worker") {
-                                app.worker_dlq_depths.get(&e.name).copied().unwrap_or(0)
-                            } else {
-                                0
-                            };
-                            // Tier the `Ready` pill by the env's actual
-                            // alert level — `Ready` is EB's operational
-                            // state, not a health verdict. A green pill
-                            // on a Red row reads as "fine"; render it in
-                            // the health colour so the column matches
-                            // reality. Updating / Terminating are kept as
-                            // their own distinctive pills.
-                            let alert = status_alert(&e.health, dlq);
-                            if dlq > 0 {
-                                Cell::from(Line::from(vec![
-                                    status_pill_for(&e.status, &theme, alert),
-                                    Span::styled(
-                                        format!(" {}{dlq}", warn_glyph(theme.icons).trim_end()),
-                                        Style::default()
-                                            .fg(theme.health_red)
-                                            .add_modifier(Modifier::BOLD),
-                                    ),
-                                ]))
-                            } else {
-                                Cell::from(status_pill_for(&e.status, &theme, alert))
-                            }
-                        }
-                        "HEALTH" => Cell::from(health_dot(&e.health, &theme)),
-                        "INST" => {
-                            // `healthy/total` if the per-env counts have
-                            // landed for this refresh; em-dash placeholder
-                            // otherwise (and on the very first frame
-                            // before the fan-out completes). Cell colour
-                            // tiers by ratio: all healthy = green, any
-                            // unhealthy but some healthy = yellow,
-                            // zero healthy with instances present = red,
-                            // empty env = muted.
-                            let counts = app.env_instance_counts.get(&e.name).copied();
-                            let (text, color) = format_instance_counts(counts, &theme);
-                            Cell::from(Span::styled(
-                                text,
-                                Style::default().fg(color).add_modifier(Modifier::BOLD),
-                            ))
-                        }
-                        "TREND" => Cell::from(sparkline_for(
-                            app.history.get(&e.name),
-                            &theme,
-                            app.newly_red.contains(&e.name),
-                        )),
-                        "PLATFORM" => {
-                            // Devicons icon is Powerline-only (PUA
-                            // codepoints tofu without a Nerd Font);
-                            // colour-coding applies in every icon mode
-                            // so unicode / ASCII users still get the
-                            // visual differentiation between platforms.
-                            let style = platform_style(&e.platform);
-                            let colour = style
-                                .as_ref()
-                                .and_then(|s| theme.app_palette.get(s.palette_idx).copied())
-                                .unwrap_or(theme.muted);
-                            let icon = if theme.icons == IconStyle::Powerline {
-                                style.as_ref().map(|s| s.icon)
-                            } else {
-                                None
-                            };
-                            // A newer platform version in the same family
-                            // recolours the name amber + appends an ↑ glyph
-                            // so the operator sees the console's "update
-                            // available" nag without leaving the table.
-                            // Staleness is precomputed in `rebuild_view` —
-                            // this is an O(1) lookup, not a per-frame parse.
-                            let stale = app.view.stale_platforms().get(&e.name);
-                            let name_colour = if stale.is_some() {
-                                theme.health_yellow
-                            } else {
-                                colour
-                            };
-                            let mut spans = Vec::new();
-                            if let Some(g) = icon {
-                                spans.push(Span::styled(
-                                    format!("{g} "),
-                                    Style::default().fg(colour),
-                                ));
-                            }
-                            spans.push(Span::styled(
-                                e.platform.as_str(),
-                                Style::default().fg(name_colour),
-                            ));
-                            if stale.is_some() {
-                                spans.push(Span::styled(
-                                    format!(" {}", stale_glyph(theme.icons)),
-                                    Style::default().fg(theme.health_yellow),
-                                ));
-                            }
-                            Cell::from(Line::from(spans))
-                        }
-                        "VERSION" => Cell::from(Span::raw(e.version_label.as_str()))
-                            .style(Style::default().fg(theme.app_palette[0])),
-                        "CNAME" => Cell::from(redact(&e.cname, app.view.redact))
-                            .style(Style::default().fg(theme.muted)),
-                        // `age` is built freshly per row inside this scope
-                        // and so can't be borrowed into the returned Cell.
-                        // Caching it on rebuild_view would let this be a
-                        // borrow too, but the age string changes per
-                        // minute boundary — a stale value would be
-                        // visible until the next refresh, which is fine
-                        // operationally but adds bookkeeping. Leave the
-                        // single per-row clone here as the cheapest
-                        // honest option for now.
-                        "AGE" => Cell::from(age.clone())
-                            .style(Style::default().fg(age_color(e.updated, now, &theme))),
-                        "REGION" => Cell::from(Span::raw(e.region.as_deref().unwrap_or_default()))
-                            .style(Style::default().fg(theme.accent)),
-                        "COST" => {
-                            // `:cost on` populates `app.costs` from
-                            // Cost Explorer (Tag: elasticbeanstalk:env-name).
-                            // Display as `$NNN` (no fractional cents —
-                            // the precision is misleading; Cost Explorer
-                            // reports `1240.503125...` and that's noise).
-                            // Tint cells by bucket so the eye lands on
-                            // the expensive ones: green < $50, muted
-                            // $50–$500, red ≥ $500.
-                            match app.costs.get(&e.name).copied() {
-                                Some(cost) => {
-                                    let text = format!("${cost:.0}");
-                                    let fg = if cost >= 500.0 {
-                                        theme.health_red
-                                    } else if cost >= 50.0 {
-                                        theme.text
-                                    } else {
-                                        theme.health_green
-                                    };
-                                    Cell::from(text)
-                                        .style(Style::default().fg(fg).add_modifier(Modifier::BOLD))
-                                }
-                                None => {
-                                    Cell::from(Span::styled("—", Style::default().fg(theme.muted)))
-                                }
-                            }
-                        }
-                        _ => Cell::from(""),
-                    })
+                    .map(|(label, _)| env_cell(label, &cell_ctx))
                     .collect();
 
                 // Row tint priority: severity > hover > zebra. Selection is
@@ -1132,4 +1214,68 @@ pub(crate) fn summarize_group(envs: &[&Environment]) -> String {
         parts.push(format!("{yellow} yellow"));
     }
     parts.join(" · ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn cols(regions: &[&str], cost: bool, hidden: &[&str], compact: bool) -> Vec<&'static str> {
+        let regions: Vec<String> = regions.iter().map(|s| s.to_string()).collect();
+        let hidden: BTreeSet<String> = hidden.iter().map(|s| s.to_string()).collect();
+        visible_columns(&regions, cost, &hidden, compact)
+            .into_iter()
+            .map(|(l, _)| l)
+            .collect()
+    }
+
+    #[test]
+    fn the_column_set_follows_its_four_inputs() {
+        // 43 lines of rules that lived inside a 695-line `draw_table`,
+        // so the only way to ask "does `:cols hide NAME` do nothing?"
+        // was to render a frame and read it back.
+        let base = cols(&[], false, &[], false);
+        assert_eq!(base.first(), Some(&"NAME"));
+        assert!(!base.contains(&"REGION"), "REGION is fan-out only");
+        assert!(!base.contains(&"COST"), "COST is opt-in");
+
+        // REGION appears second, next to the name it qualifies.
+        let fanned = cols(&["us-east-1", "eu-west-2"], false, &[], false);
+        assert_eq!(fanned[1], "REGION");
+
+        // COST lands immediately before AGE, so spend and staleness
+        // read on the same horizontal band.
+        let costed = cols(&[], true, &[], false);
+        let ci = costed
+            .iter()
+            .position(|c| *c == "COST")
+            .expect("COST shown");
+        assert_eq!(costed[ci + 1], "AGE");
+
+        // Compact drops TREND and PLATFORM whatever the user hid.
+        let compact = cols(&[], false, &[], true);
+        assert!(!compact.contains(&"TREND"));
+        assert!(!compact.contains(&"PLATFORM"));
+        assert!(compact.contains(&"STATUS"), "only those two");
+
+        // The hide list is honoured…
+        let hidden = cols(&[], false, &["CNAME", "VERSION"], false);
+        assert!(!hidden.contains(&"CNAME") && !hidden.contains(&"VERSION"));
+        // …except for NAME, which is the row identifier. Hiding it
+        // would leave rows that can't be told apart.
+        let hidden = cols(&[], false, &["NAME"], false);
+        assert_eq!(hidden.first(), Some(&"NAME"));
+
+        // HEALTH and TREND share a sort key but hide independently.
+        let no_trend = cols(&[], false, &["TREND"], false);
+        assert!(no_trend.contains(&"HEALTH") && !no_trend.contains(&"TREND"));
+        let no_health = cols(&[], false, &["HEALTH"], false);
+        assert!(no_health.contains(&"TREND") && !no_health.contains(&"HEALTH"));
+
+        // Everything hideable, hidden: NAME survives alone.
+        let all: Vec<&str> = base.to_vec();
+        let everything = cols(&[], false, &all, false);
+        assert_eq!(everything, vec!["NAME"]);
+    }
 }
