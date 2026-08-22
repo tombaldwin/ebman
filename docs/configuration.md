@@ -38,16 +38,23 @@ required_tags = "Owner,Project"
 # ADDITIONAL CloudWatch dimension names that identify an environment,
 # for matching alarms to it.
 #
-# `EnvironmentName` is always matched — that's what Elastic Beanstalk
-# itself and `:alarm-create` write, so it can't be configured away. This
-# key adds spellings on top, for operators whose own alarms use a
-# different dimension name.
+# `EnvironmentName` is matched by default — that's what Elastic Beanstalk
+# itself and `:alarm-create` write. This key adds spellings on top, for
+# operators whose own alarms use a different dimension name.
 #
 # Alarms match on the dimension's NAME and VALUE together — an alarm is
 # yours if it carries `EnvironmentName=<your-env>`. Matching on the
 # value alone used to attribute an unrelated RDS alarm with
 # `DBInstanceIdentifier=payments` to an environment called `payments`.
+#
+# A name prefixed with `-` is REMOVED from the match set. That's the
+# escape hatch for the opposite false positive: if your non-EB alarms
+# carry an `EnvironmentName` dimension of their own, use
+# `alarm_dimensions = "MyDim,-EnvironmentName"` to stop ebman claiming
+# them. Removing every name would match nothing at all, so an
+# all-removals list falls back to `EnvironmentName`.
 # alarm_dimensions = "Environment"
+# alarm_dimensions = "MyDim,-EnvironmentName"
 
 # Red-transition notifications — ebman emits a `tracing::warn!` and writes
 # a `stage=event kind=red_transition env=…` line to the audit log at

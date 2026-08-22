@@ -195,6 +195,7 @@ impl AwsClient {
     fn ssm(&self) -> &SsmClient {
         self.ssm.get_or_init(|| SsmClient::new(&self.config))
     }
+
     /// Build the SDK client without making any network calls.
     pub async fn with(profile: Option<String>, region: Option<String>) -> Result<Self> {
         let mut builder = aws_config::defaults(aws_config::BehaviorVersion::latest());

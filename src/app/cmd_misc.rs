@@ -603,7 +603,7 @@ impl App {
                         let mut drift = crate::terraform::compute_drift(&tf_env, &env, &opts);
                         // Overlay redacts drifted secret values — the
                         // deliberate paths for reading real values are
-                        // the Config tab / :env-vars, not a drift diff.
+                        // the Config tab / `:env list`, not a drift diff.
                         crate::terraform::redact_drift_fields(&mut drift);
                         crate::terraform::render_drift_text(&env_name, true, &drift)
                     }
