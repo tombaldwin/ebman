@@ -661,7 +661,7 @@ static CACHE_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 /// Five minutes: short enough that a paste self-heals without the
 /// operator knowing why it was broken, long enough that the 15-second
 /// refresh tick still gets ~20 free reuses per region.
-const CLIENT_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+pub(crate) const CLIENT_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 
 fn client_cache() -> &'static ClientCache {
     CLIENT_CACHE.get_or_init(Default::default)

@@ -238,6 +238,17 @@ pub struct App {
     /// `apply_rebuild` instead of overwriting the operator's last
     /// choice. Distinct from `generation`, which bumps on APPLY.
     pub(crate) rebuild_epoch: u64,
+    /// When `aws` was built. The client cache's TTL only ever reached
+    /// `list_environments_in_region`; everything else in the app goes
+    /// through `self.aws`, which was replaced only by an explicit
+    /// context switch. So a single-region operator who pasted fresh
+    /// static credentials — the case the TTL was added for — still had
+    /// to restart, because static profile credentials carry no expiry
+    /// and the SDK's providers never re-resolve them.
+    pub(crate) aws_built_at: Instant,
+    /// Set while a background home-client refresh is in flight, so the
+    /// 15-second tick can't stack them.
+    pub(crate) aws_refresh_in_flight: bool,
     /// Lazy cache for `spawn_confirm_lint`'s parallel tag fetch.
     /// Populated opportunistically by every lint call site that fires
     /// the inline `list_tags(env.arn)` fetch. TTL is `LINT_INPUT_CACHE_TTL`
@@ -555,6 +566,18 @@ pub(crate) enum AppMsg {
         /// drops arrivals whose epoch is stale — without it, a slow
         /// switch (SSO refresh) losing the race to a fast one left the
         /// app settled on the FIRST choice, not the last.
+        epoch: u64,
+        result: Result<Box<AwsClient>, String>,
+    },
+    /// A same-context rebuild of the home client, so freshly-pasted
+    /// static profile credentials take effect without a restart.
+    ///
+    /// Deliberately NOT `Rebuild`: that variant tears down the fleet,
+    /// the overlays and both tails, which is right for a context
+    /// switch and absurd for a credential refresh that changes
+    /// nothing the operator can see. Carries `rebuild_epoch` so a real
+    /// switch spawned in the meantime always wins.
+    ClientRefreshed {
         epoch: u64,
         result: Result<Box<AwsClient>, String>,
     },
@@ -1194,6 +1217,8 @@ impl App {
             worker_dlq_depths: std::collections::HashMap::new(),
             worker_dlq_stale: std::collections::HashSet::new(),
             rebuild_epoch: 0,
+            aws_built_at: Instant::now(),
+            aws_refresh_in_flight: false,
             env_tag_cache: std::collections::HashMap::new(),
             env_health_cache: std::collections::HashMap::new(),
             // Restore persisted snapshots so a cross-session `:rollback`
@@ -1485,6 +1510,8 @@ impl App {
             worker_dlq_depths: std::collections::HashMap::new(),
             worker_dlq_stale: std::collections::HashSet::new(),
             rebuild_epoch: 0,
+            aws_built_at: Instant::now(),
+            aws_refresh_in_flight: false,
             env_tag_cache: std::collections::HashMap::new(),
             env_health_cache: std::collections::HashMap::new(),
             deploy_snapshots: std::collections::HashMap::new(),
@@ -1678,6 +1705,13 @@ impl App {
                     // tick so the header countdown stays accurate even if the
                     // user `aws sso login`s in another shell mid-session.
                     self.sso_expiry = crate::sso::latest_session_expiry();
+                    // Age out the home client so credentials edited on
+                    // disk take effect. Runs on the tick rather than
+                    // gated behind the back-off below: it is one call,
+                    // it is what UNBLOCKS an operator whose creds
+                    // expired, and being throttled is no reason to keep
+                    // using a client that can't authenticate.
+                    self.spawn_home_client_refresh();
                     let now = Instant::now();
                     let backed_off = self
                         .throttle_until
@@ -3024,6 +3058,39 @@ impl App {
             home,
             remote: Some((profile, region.to_string())),
         }
+    }
+
+    /// Whether the home client is stale enough to be worth rebuilding.
+    ///
+    /// Pure so the policy is testable without a runtime. Excluded:
+    /// demo mode (the stub isn't rebuildable), a refresh already in
+    /// flight, and an AssumeRole context — those sessions have a hard
+    /// one-hour cap and re-assuming is a different operation with its
+    /// own failure modes, not a silent swap.
+    pub(crate) fn should_refresh_home_client(&self) -> bool {
+        if self.demo_mode || self.aws_refresh_in_flight {
+            return false;
+        }
+        if self.assumed_account().is_some() {
+            return false;
+        }
+        self.aws_built_at.elapsed() >= crate::aws::CLIENT_CACHE_TTL
+    }
+
+    /// The configured account name we're assumed into, if any.
+    ///
+    /// `AwsClient::assume_role` puts the friendly account name in
+    /// `context.profile` as the header breadcrumb, so a name that
+    /// matches a configured account IS the assumed-role context. An
+    /// operator with a real AWS profile of the same name gets the
+    /// account spec, which is the more specific intent.
+    pub(crate) fn assumed_account(&self) -> Option<(String, crate::config::AccountSpec)> {
+        let name = self
+            .override_profile
+            .clone()
+            .or_else(|| self.context.profile.clone())?;
+        let spec = self.cfg.accounts.get(&name)?.clone();
+        Some((name, spec))
     }
 
     /// The region an environment lives in, by name.
