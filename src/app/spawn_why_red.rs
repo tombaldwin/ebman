@@ -35,7 +35,8 @@ impl App {
             });
             return;
         }
-        self.spawn_aws(
+        self.spawn_aws_in(
+            self.why_red_client(),
             "describe_worker_queues",
             move |aws| async move { aws.describe_worker_queues(&app_name, &env_name).await },
             move |gen, result| AppMsg::WhyRedQueues {
@@ -53,7 +54,8 @@ impl App {
     /// brief invisibility is acceptable since the DLQ isn't being
     /// consumed by anyone in normal operation.
     pub(crate) fn spawn_why_red_dlq_peek(&self, dlq_url: String, session_id: u64) {
-        self.spawn_aws(
+        self.spawn_aws_in(
+            self.why_red_client(),
             "peek_messages",
             move |aws| async move { aws.peek_messages(&dlq_url, 3).await },
             move |gen, result| AppMsg::WhyRedDlqMessages {
@@ -75,7 +77,8 @@ impl App {
             });
             return;
         }
-        self.spawn_aws(
+        self.spawn_aws_in(
+            self.why_red_client(),
             "list_events_for_env",
             move |aws| async move { aws.list_events_for_env(&env_name, 50).await },
             move |gen, result| AppMsg::WhyRedEvents {
@@ -98,7 +101,8 @@ impl App {
             return;
         }
         let dims = self.cfg.alarm_dimensions.clone();
-        self.spawn_aws(
+        self.spawn_aws_in(
+            self.why_red_client(),
             "list_alarms_for_env",
             move |aws| async move { aws.list_alarms_for_env(&env_name, &dims).await },
             move |gen, result| AppMsg::WhyRedAlarms {
@@ -120,7 +124,8 @@ impl App {
             });
             return;
         }
-        self.spawn_aws(
+        self.spawn_aws_in(
+            self.why_red_client(),
             "list_instances",
             move |aws| async move { aws.list_instances(&env_name).await },
             move |gen, result| AppMsg::WhyRedInstances {
@@ -142,7 +147,8 @@ impl App {
             });
             return;
         }
-        self.spawn_aws(
+        self.spawn_aws_in(
+            self.why_red_client(),
             "list_application_versions",
             move |aws| async move { aws.list_application_versions(&app_name).await },
             move |gen, result| AppMsg::WhyRedDeploys {
