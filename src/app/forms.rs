@@ -37,15 +37,18 @@ impl App {
         };
         self.form = Some(form);
         self.mode = Mode::Form;
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env_name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_for_msg = env_name.clone();
         tokio::spawn(async move {
-            let settings = aws
-                .fetch_env_option_settings(&app_name, &env_for_msg)
-                .await
-                .map_err(|e| flatten_err("fetch_env_option_settings", e));
+            let settings = match client.resolve().await {
+                Ok(aws) => aws
+                    .fetch_env_option_settings(&app_name, &env_for_msg)
+                    .await
+                    .map_err(|e| flatten_err("fetch_env_option_settings", e)),
+                Err(e) => Err(flatten_err("cached_client", e)),
+            };
             let _ = tx.send(AppMsg::FormPrefilled {
                 gen,
                 env_name: env_for_msg,
@@ -247,14 +250,14 @@ impl App {
         // header (`⏳ N`) is the truth-source for in-flight work, and a
         // status_message ack would just race with whatever the operator
         // last set there. Completion fires a Success / Error toast.
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env_name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_for_msg = env_name.clone();
         let summary_for_msg = summary.clone();
         let account = self.context.account_id.clone();
         let profile = self.context.profile.clone();
-        let region = self.context.region.clone();
+        let region = self.region_for_name(&env_name);
         // Undo capture — same shape as `spawn_option_settings_update`.
         // The form path lost the env's application name when it
         // stashed only `env_name`; recover it by looking up the
@@ -270,6 +273,21 @@ impl App {
         let to_set_for_undo = to_set.clone();
         let to_remove_for_undo = to_remove.clone();
         tokio::spawn(async move {
+            // One resolve for the undo read and the write, so :undo
+            // can't offer the home region's settings for a row in
+            // another one.
+            let aws = match client.resolve().await {
+                Ok(aws) => aws,
+                Err(e) => {
+                    let _ = tx.send(AppMsg::OptionSettingsUpdate {
+                        gen,
+                        env_name: env_for_msg,
+                        summary: summary_for_msg,
+                        result: Err(flatten_err("cached_client", e)),
+                    });
+                    return;
+                }
+            };
             let undo_entry = if let Some(app_name) = app_for_undo {
                 match aws
                     .fetch_env_option_settings(&app_name, &env_for_undo)
@@ -431,14 +449,21 @@ impl App {
         // form ourselves and spawn the multi-select-specific loader.
         self.form = Some(form);
         self.mode = Mode::Form;
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env.name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_for_msg = env.name.clone();
         let app_name = env.application.clone();
         let field_key_for_msg = field_key.to_string();
         tokio::spawn(async move {
-            let result = load_multi_select(aws, &app_name, &env_for_msg, flavour).await;
+            // Subnets and security groups are region-scoped: the home
+            // region's VPC inventory for another region's env would
+            // offer IDs that don't exist there, and the form writes
+            // them straight into the env's option settings.
+            let result = match client.resolve().await {
+                Ok(aws) => load_multi_select(aws, &app_name, &env_for_msg, flavour).await,
+                Err(e) => Err(flatten_err("cached_client", e)),
+            };
             let _ = tx.send(AppMsg::FormMultiSelectLoaded {
                 gen,
                 env_name: env_for_msg,
