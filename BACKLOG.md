@@ -924,7 +924,7 @@ The write/freeze pre-tag review (2 lenses) fixed 2 Critical + 2 Important + 1 Mi
 - [ ] **Unified MCP tool registry** (arch I1) — the spec's `&[ToolDef{name, schema, is_write, handler}]` single table; today name/schema/handler live in three sites (tool_table descriptors + call_tool match + RPC existence check) with no compile-time or test link. A coverage test that every `tool_table(true)` name resolves to a real handler was NOT added this run — add it OR the full slice refactor (~half day). Drift is currently a runtime `isError`, not a panic.
 - [ ] **Shared verb-dispatch helper** (arch M2) — `dispatch_write` (writes.rs) and `action::run` (cli/action.rs) both hand-map verb→method + the audit pair; a shared `dispatch_verb()` removes the drift surface (~2h).
 - [ ] **pin/freeze check-order + freeze-message rendering unified** (arch M3) — CLI checks pin-then-freeze, MCP checks freeze-then-pin; the freeze refusal string is rendered in two places. Cosmetic inconsistency for an operator comparing outputs.
-- [ ] **Superseded-token message** (bugs/arch M1) — a token replaced by a newer plan reports "unknown confirm_token", indistinguishable from a typo; distinguish "superseded by a newer plan".
+- [ ] **Superseded-token message** (bugs/arch M1) — CONFIRMED STILL REAL 2026-08-22 (`writes.rs:468`): there is one `pending` slot, so a newer plan replaces the old one and confirming the old token returns "unknown confirm_token", indistinguishable from a typo; distinguish "superseded by a newer plan".
 - [ ] **CLI rollout/auto-rollback freeze is start-only** (bugs M3) — a freeze declared mid-rollout doesn't stop later regions; matches the pin start-gate semantics, flagged as a conscious choice.
 
 #### Also queued for 0.28
@@ -1122,21 +1122,41 @@ Found while sweeping, recorded not fixed:
 - [ ] **Detail shows no region at all.** It replaces the screen with its own header and draws no breadcrumb, so an operator deep in a fan-out row's Detail has nothing on screen saying which region the pane's data came from. Not a stale workaround — a gap — so it's a UI addition rather than part of this sweep. Directly on-theme for the release, and small.
 - [ ] **`:region all` / `:region off` don't bump `generation`**, and `spawn_refresh` skips while one is in flight, so switching mid-refresh leaves the previous mode's rows on screen until the next tick. Pre-existing, self-healing in 15s, different class (refresh ordering).
 
+#### Backlog verification sweep — 2026-08-22
+
+The `:1068` line turned out 74% stale, so the rest of the open backlog got the same treatment: every entry that makes a **claim about current behaviour** was checked against the code. Feature entries ("we haven't built X") have nothing to verify and were skipped.
+
+Ten verifiable claims. **Three were already fixed** and are struck above — the webhook drain before CLI exit, the events-panel cursor follow, and the `report_bug` multibyte mojibake. Each carries a comment describing its own fix, so again: fixed deliberately, record never updated.
+
+**One was partly fixed**: the ascii icon-mode stragglers are down to six sites (header delta arrows, sort marker, one cursor `▶`, the Metrics anomaly arrows) from "table markers, header, form, cursors".
+
+**Six confirmed still real**, all checked at the call site:
+
+- `WRITE_COMMANDS` derivation (re-scoped separately above).
+- **Superseded-token message** — `writes.rs:468`. One `pending` slot, so a newer plan replaces the old and confirming the old token gets "unknown confirm_token". Agent-facing, and the fix is small: remember the previous token so the message can say what happened.
+- **Unified MCP tool registry** — `tool_table` / `read_tool_table` in `tools.rs` plus dispatch in `mod.rs`; descriptors and handlers are still separate.
+- **Shared verb-dispatch helper** — `action.rs` hand-maps `"rebuild" => "Rebuild"` for audit AND `"rebuild" => aws.rebuild_env(...)` for dispatch; MCP has its own 13-arm `WriteVerb` map. Two verb tables.
+- **pin/freeze check order** — CLI is pin-then-freeze (`action.rs:161-162`), MCP's `write_gate` checks freeze first. The freeze refusal string is rendered in both. Cosmetic, as the entry says.
+- **CLI rollout freeze is start-only** — `refuse_if_frozen` runs once at `action.rs:607`, not per region. Already flagged as a conscious choice.
+- **Form scrolling** — `draw_form` has no scroll handling at all; nine-field forms on 80×24 still leave fields below the fold.
+
+Standing lesson from both sweeps: a backlog entry is a claim with a timestamp, and an unverified one is worth less than nothing — it makes settled work look pending and any estimate against it wrong. Verify before planning.
+
 #### Important (need live verification or a design pass)
 - [x] **Cost Explorer pagination** — Shipped. `fetch_env_costs` follows `NextPageToken` (`aws/cost.rs`). The `MAX_COST_PAGES = 20` cap now warns, returns `EnvCosts { truncated }`, and a truncated walk is neither cached nor allowed to replace a complete in-memory map; `:cost status` and `:fleet-cost` both say when what's on screen is partial.
 - [x] **logs-tail `next_token` follow** — Shipped. `fetch_recent_log_events` follows `next_token` up to `MAX_PAGES_PER_POLL = 5` with boundary-millisecond dedupe (`aws/logs.rs`). The carry is keyed on whether the watermark moved rather than on `truncated`, so a stalled watermark keeps its skip set and the same lines aren't re-emitted every poll.
 - [x] **worker-queue error conflation** — Shipped. `describe_worker_queues` returns `Result<WorkerQueues>` (`aws/eb.rs`), so AccessDenied no longer renders as "no worker queues".
-- [ ] **webhook drain before CLI exit** — `fire_webhook` is fire-and-forget; one-shot CLI paths race `process::exit`, dropping the outcome POST. Design fork: sync send vs drain registry. (audit.rs ~705)
+- [x] **webhook drain before CLI exit** — ALREADY FIXED; verified 2026-08-22. `cli::mod.rs` drains in-flight audit-webhook POSTs with a 12s budget before exiting.
 - [x] **rebuild-epoch ordering** — ALREADY FIXED; entry was stale. `spawn_rebuild` / `spawn_assume_role_switch` stamp a monotonic `rebuild_epoch` and `apply_rebuild` drops stale arrivals. Only its Err path was under test, and Ok is the arm that swaps the client, replaces the context and clears the fleet; pinned 2026-08-22.
-- [ ] **events-panel cursor follow** — `event_panel.scroll` is dead state pinned at 0; cursor walks below the fold. (ui.rs ~3770, app.rs ~3805)
+- [x] **events-panel cursor follow** — ALREADY FIXED; verified 2026-08-22. `draw_events` drives `event_panel.scroll` through `config_scroll_follow`, and the comment names the old symptom (holding J walked the cursor below the fold, and every subsequent key including `y` operated on an invisible row).
 - [ ] **form scrolling** — 9-field forms on 80×24 leave fields below the fold while Tab focuses them blind. Reuse `config_scroll_follow`. (ui.rs draw_form)
 
 #### Minor (batchable)
 - [x] control.sock chmod-after-bind race — CLOSED by the SO_PEERCRED check on every connection (`control.rs`), which is stronger than file perms and needs no process-global umask change. Confirmed 2026-08-22; entry was stale.
 - [x] 0600 perms on audit.log / ebman.log / crash logs / explain cache — done in 0.27 via `open_append_secure` / `write_secure`. The gap that remained: `write_atomic` (shared crate) used `std::fs::write`, so `config.toml` — which carries `notify_webhook` and `accounts.*.external_id` — was umask-default. Shadowed locally 2026-08-22 with the mode set on the temp file, not chmod'd after the rename.
 - [x] audit-line escaping — `target=` / `version=` already went through `field_token`; the gaps were `append_lint_fix`'s four raw fields, `region=` in both raw writers, and the header's `profile=` (free text from `~/.aws/config`, and `\t` is the separator). All escaped 2026-08-22.
-- [ ] report_bug scrubber mojibakes multibyte chars (`c as char` on bytes)
-- [ ] ascii icon-mode stragglers (table markers ★✓▲◆ⓣ, header ●▼▲, form ▶◀✗, cursors)
+- [x] report_bug scrubber mojibake — ALREADY FIXED; verified 2026-08-22. `scrub_12_digit_numbers` walks chars. The one remaining `byte as char` is inside `url_encode`, where the byte has just been matched against the ASCII unreserved set — correct there.
+- [ ] ascii icon-mode stragglers — PARTLY FIXED; verified 2026-08-22. The pill, toast and multi-select glyphs go through `glyph()` / an `IconStyle::Ascii` arm. Still unconditional: the header delta arrows (`ui.rs:843`), the sort marker (`ui.rs:1201`), a cursor `▶` (`ui.rs:3458`), and the Metrics anomaly arrows (`ui/detail.rs:1269-1271, 1285`). Six sites, not the whole list.
 - [x] drift redaction — ALREADY FIXED in 0.27 (`redact_drift_fields` reaches `ebman drift` text and `--json`, the MCP tool, and the TUI overlay); entry was stale. A guard test now names the three call sites so a fourth consumer can't skip it. 2026-08-22.
 - [ ] **Minor bugs — verified 2026-08-22.** The old one-line batch of ~19 was checked item by item against current code; **eleven were already fixed** by the 0.29/0.30 work and are struck below. What survives:
   - [x] **Detail Logs tab scroll is unclamped upward** — NOT A BUG; my own verification was wrong. `scroll_apply` clamps only at 0, but the Logs call site in `detail_nav.rs` already clamps at the total line count. Checking the helper in isolation instead of its call site is the same mistake the `WRITE_COMMANDS` walk made.
