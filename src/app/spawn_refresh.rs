@@ -316,26 +316,32 @@ impl App {
     /// version `date_created` instead. Errors on individual apps drop that
     /// row from the result rather than failing the batch.
     pub(crate) fn spawn_app_latest_versions(&self) {
-        let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
-        let names: Vec<String> = self.applications.iter().map(|a| a.name.clone()).collect();
+        // A client per application: EB applications are region-scoped,
+        // so under a fan-out the same name exists once per region and
+        // the home client can only answer for one of them.
+        let names: Vec<(String, RegionClient)> = self
+            .applications
+            .iter()
+            .map(|a| (a.name.clone(), self.client_for_app(&a.name)))
+            .collect();
         if names.is_empty() {
             return;
         }
         tokio::spawn(async move {
             use futures::future::join_all;
-            let futs = names.into_iter().map(|name| {
-                let aws = aws.clone();
-                async move {
-                    let res = aws.list_application_versions(&name).await;
-                    let head = res.ok().and_then(|mut v| v.drain(..).next());
-                    (
-                        name,
-                        head.as_ref().map(|h| h.label.clone()),
-                        head.and_then(|h| h.created),
-                    )
-                }
+            let futs = names.into_iter().map(|(name, client)| async move {
+                let Ok(aws) = client.resolve().await else {
+                    return (name, None, None);
+                };
+                let res = aws.list_application_versions(&name).await;
+                let head = res.ok().and_then(|mut v| v.drain(..).next());
+                (
+                    name,
+                    head.as_ref().map(|h| h.label.clone()),
+                    head.and_then(|h| h.created),
+                )
             });
             let results: Vec<(
                 String,
@@ -351,23 +357,36 @@ impl App {
     /// fetch is independent — a failure on one drops that entry from
     /// the result rather than failing the batch.
     fn spawn_worker_queue_check(&self) {
-        let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
-        let workers: Vec<(String, String)> = self
+        // A client per env: SQS queue URLs are region-scoped, and this
+        // feeds the table's DLQ-depth alert — the home region's SQS
+        // has no answer for another region's worker.
+        let workers: Vec<(String, String, RegionClient)> = self
             .environments
             .iter()
             .filter(|e| e.tier.eq_ignore_ascii_case("Worker"))
-            .map(|e| (e.name.clone(), e.application.clone()))
+            .map(|e| {
+                (
+                    e.name.clone(),
+                    e.application.clone(),
+                    self.client_for_env(&e.name),
+                )
+            })
             .collect();
         if workers.is_empty() {
             return;
         }
         tokio::spawn(async move {
             use futures::future::join_all;
-            let futs = workers.into_iter().map(|(env, app)| {
-                let aws = aws.clone();
+            let futs = workers.into_iter().map(|(env, app, client)| {
                 async move {
+                    let aws = match client.resolve().await {
+                        Ok(aws) => aws,
+                        Err(e) => {
+                            return (env, Err(flatten_err("cached_client", e)));
+                        }
+                    };
                     // Errors stay errors — a failed fetch must not be
                     // indistinguishable from "no DLQ" (the pre-0.27
                     // shape silently blinded red-alerting on
@@ -391,10 +410,12 @@ impl App {
     /// drops failures so a single env's API blip doesn't poison the
     /// whole batch. Same shape as `spawn_worker_queue_check`.
     pub(crate) fn spawn_env_instance_counts(&self) {
-        let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
-        let targets: Vec<String> = self
+        // A client per env, same as the worker-queue fan-out: this
+        // fills the INST column for every row in the table, and under
+        // a fan-out those rows span regions.
+        let targets: Vec<(String, RegionClient)> = self
             .environments
             .iter()
             .filter(|e| {
@@ -405,21 +426,19 @@ impl App {
                     "Terminated" | "Terminating" | "Launching"
                 )
             })
-            .map(|e| e.name.clone())
+            .map(|e| (e.name.clone(), self.client_for_env(&e.name)))
             .collect();
         if targets.is_empty() {
             return;
         }
         tokio::spawn(async move {
             use futures::future::join_all;
-            let futs = targets.into_iter().map(|env| {
-                let aws = aws.clone();
-                async move {
-                    aws.fetch_env_instance_counts(&env)
-                        .await
-                        .ok()
-                        .map(|counts| (env, counts))
-                }
+            let futs = targets.into_iter().map(|(env, client)| async move {
+                let aws = client.resolve().await.ok()?;
+                aws.fetch_env_instance_counts(&env)
+                    .await
+                    .ok()
+                    .map(|counts| (env, counts))
             });
             let results: Vec<(String, crate::aws::EnvInstanceCounts)> =
                 join_all(futs).await.into_iter().flatten().collect();

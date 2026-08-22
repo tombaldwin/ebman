@@ -212,7 +212,7 @@ impl App {
             return;
         };
         let env_name = env.name.clone();
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env.name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let window_label = window_ms_label(window_ms);
@@ -220,6 +220,20 @@ impl App {
             "running Insights query on {env_name} (last {window_label})… results land in an overlay when the query finishes (typically 2–15s)"
         ));
         tokio::spawn(async move {
+            // CloudWatch Logs groups are region-scoped: the home
+            // region has none for another region's env, which reads
+            // as "you haven't streamed logs yet".
+            let aws = match client.resolve().await {
+                Ok(aws) => aws,
+                Err(e) => {
+                    let _ = tx.send(AppMsg::TextOverlay {
+                        gen,
+                        title: format!("logs-insights — {env_name}"),
+                        body: format!("logs-insights: {}", super::flatten_err("cached_client", e)),
+                    });
+                    return;
+                }
+            };
             // Discover groups. Empty result is an actionable error
             // (operator hasn't streamed logs yet); SDK error is a hard fail.
             let groups = match aws.discover_env_log_groups(&env_name).await {

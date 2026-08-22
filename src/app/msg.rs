@@ -448,10 +448,14 @@ impl App {
         env_name: String,
         result: Result<(), String>,
     ) {
+        // The COMPLETION line has to name the same region as the
+        // dispatch line it closes, or a grep across the pair reports
+        // an action that started in one region and finished in
+        // another.
         write_audit_outcome(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.context.region,
+            &self.region_for_name(&env_name),
             action,
             &env_name,
             result.as_ref().map(|_| ()).map_err(|e| e.as_str()),

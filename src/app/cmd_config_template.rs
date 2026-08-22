@@ -47,7 +47,7 @@ impl App {
                 crate::audit::append_action_dispatched(
                     self.context.account_id.as_deref(),
                     self.context.profile.as_deref(),
-                    &self.context.region,
+                    &self.region_for_name(&env.name),
                     &action_label,
                     &display_env,
                     &[("template", template.as_str())],

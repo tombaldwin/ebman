@@ -8463,3 +8463,248 @@ async fn a_cross_region_row_under_an_assumed_role_re_assumes() {
     // that client already holds valid credentials.
     assert!(app.client_for_region("us-east-1").is_home_for_tests());
 }
+
+#[test]
+fn every_spawn_declares_whether_it_is_per_env() {
+    // `self.aws` is the HOME client — its region is `context.region`.
+    // Under a multi-region fan-out the selected row is routinely
+    // somewhere else, so per-env work on the home client shows (or
+    // writes to) the wrong region's environment. Sixty-odd spawn sites
+    // had that shape; the ones below are the residue that is genuinely
+    // account- or region-wide. Anything new taking `self.aws` has to
+    // be named here with a reason, so it's a deliberate choice rather
+    // than the path of least resistance.
+    //
+    // The per-env accessors are `client_for_env` / `client_for_app` /
+    // `current_env_client` / `detail_client` / `why_red_client` /
+    // `dlq_client`.
+    const HOME_CLIENT_IS_CORRECT_BECAUSE: &[(&str, &str)] = &[
+        (
+            "spawn_aws",
+            "the home-client helper itself — `spawn_aws_in` is the \
+             per-region sibling",
+        ),
+        (
+            "spawn_refresh",
+            "the fleet listing; the multi-region fan-out beside it \
+             builds its own per-region clients",
+        ),
+        (
+            "spawn_event_tail",
+            "account-wide DescribeEvents, not scoped to a row",
+        ),
+        (
+            "spawn_identity",
+            "sts:GetCallerIdentity for the session as a whole",
+        ),
+        (
+            "spawn_cost_fetch",
+            "Cost Explorer is account-wide and reached through the \
+             partition's global endpoint",
+        ),
+        (
+            "spawn_applications",
+            "the applications catalogue for the home region. Under a \
+             fan-out an app exists once per region and this shows one \
+             of them — `applications` is a single list, so widening it \
+             is a data-model change, not a client change",
+        ),
+        (
+            "spawn_solution_stacks",
+            "same shape: `latest_stacks` is one map, so the platform \
+             catalogue is the home region's",
+        ),
+        (
+            "cmd_accounts",
+            "Organizations is a global service reached through the \
+             partition's endpoint",
+        ),
+        (
+            "cmd_explain",
+            "IAM is a global service; the principal ARN carries its own \
+             partition",
+        ),
+        (
+            "cmd_secrets",
+            "an account-wide Secrets Manager browse, not about any row",
+        ),
+        ("cmd_secret_view", "same browse, one secret deep"),
+        (
+            "cmd_custom_platforms",
+            "custom platforms are an account-level catalogue",
+        ),
+        (
+            "cmd_custom_platform_delete",
+            "deletes from that same account-level catalogue, by ARN",
+        ),
+    ];
+
+    let mut offenders: Vec<String> = Vec::new();
+    let mut stack = vec![std::path::PathBuf::from("src/app")];
+    let mut files = vec![std::path::PathBuf::from("src/app.rs")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("app dir") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs")
+                && path.file_name().and_then(|f| f.to_str()) != Some("tests.rs")
+            {
+                files.push(path);
+            }
+        }
+    }
+    assert!(files.len() > 20, "the walk found only {}", files.len());
+
+    for path in files {
+        let raw = std::fs::read_to_string(&path).expect("read");
+        let lines: Vec<&str> = raw.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            // Comments discuss `self.aws` by name.
+            let code = line.split("//").next().unwrap_or("");
+            if !(code.contains("self.aws.clone()") || code.contains("self.spawn_aws(")) {
+                continue;
+            }
+            // `RegionClient` keeps the home client as its fallback —
+            // that IS the per-region machinery, not a bypass of it.
+            if path.file_name().and_then(|f| f.to_str()) == Some("app.rs")
+                && code.contains("let home = self.aws.clone()")
+            {
+                continue;
+            }
+            let enclosing = lines[..=n]
+                .iter()
+                .rev()
+                .find_map(|l| {
+                    let t = l.trim_start();
+                    let t = t.strip_prefix("pub(crate) ").unwrap_or(t);
+                    let t = t.strip_prefix("pub(super) ").unwrap_or(t);
+                    let t = t.strip_prefix("pub ").unwrap_or(t);
+                    t.strip_prefix("fn ").map(|r| {
+                        r.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                            .next()
+                            .unwrap_or("")
+                            .to_string()
+                    })
+                })
+                .unwrap_or_default();
+            if !HOME_CLIENT_IS_CORRECT_BECAUSE
+                .iter()
+                .any(|(name, _)| *name == enclosing)
+            {
+                offenders.push(format!(
+                    "{}::{enclosing}",
+                    path.file_name().unwrap().to_string_lossy()
+                ));
+            }
+        }
+    }
+    offenders.sort();
+    offenders.dedup();
+    assert!(
+        offenders.is_empty(),
+        "these spawn AWS work on the HOME client without declaring why \
+         that's right for them — use `client_for_env` / `client_for_app` \
+         (or `spawn_aws_in`), or add them to HOME_CLIENT_IS_CORRECT_BECAUSE \
+         with a reason: {offenders:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_per_env_accessors_all_follow_the_row() {
+    // One assertion per accessor, so a future refactor that points one
+    // of them back at `context.region` is caught here rather than by an
+    // operator whose restart went to the wrong region.
+    let mut app = test_app();
+    let mut env = mk_env("api-prod", "uflexi", "Web", "Green");
+    env.region = Some("eu-west-2".into());
+    app.environments = vec![env];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    assert_eq!(app.context.region, "us-east-1", "home region differs");
+
+    assert_eq!(
+        app.client_for_env("api-prod").region_for_tests(),
+        "eu-west-2"
+    );
+    assert_eq!(app.client_for_app("uflexi").region_for_tests(), "eu-west-2");
+    assert_eq!(app.current_env_client().region_for_tests(), "eu-west-2");
+
+    // Detail wins over the table selection — it's what's on screen.
+    app.open_detail();
+    assert_eq!(app.detail_client().region_for_tests(), "eu-west-2");
+
+    // An unknown name falls back to home rather than inventing a
+    // region: a modal can outlive the row that opened it.
+    assert_eq!(app.client_for_env("ghost").region_for_tests(), "us-east-1");
+    assert_eq!(
+        app.client_for_app("ghost-app").region_for_tests(),
+        "us-east-1"
+    );
+
+    // With nothing selected at all, `current_env_client` is the home
+    // client rather than a panic or an empty region.
+    let mut empty = test_app();
+    assert!(empty.current_env_client().is_home_for_tests());
+    empty.table_state.select(None);
+    assert!(empty.current_env_client().is_home_for_tests());
+}
+
+#[tokio::test]
+async fn a_write_audits_the_region_it_actually_went_to() {
+    // The audit log is the record of what was done to production. A
+    // dispatch that went to eu-west-2 while the journal said
+    // us-east-1 is worse than no line at all — it's a confident wrong
+    // answer during an incident review.
+    let mut app = test_app();
+    let mut env = mk_env("api-prod", "uflexi", "Web", "Green");
+    env.region = Some("eu-west-2".into());
+    app.environments = vec![env];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+
+    assert_eq!(
+        app.region_for_name("api-prod"),
+        "eu-west-2",
+        "the audit region comes from this lookup at every dispatch site"
+    );
+    // The home region is still what an env we hold no row for gets.
+    assert_eq!(app.region_for_name("ghost"), "us-east-1");
+}
+
+#[tokio::test]
+async fn a_dispatch_and_its_completion_agree_on_the_region() {
+    // The two lines are a pair — `ebman audit` correlates them by
+    // action + target. If the dispatch names the row's region and the
+    // completion names the home one, a grep across the pair reports an
+    // action that started in eu-west-2 and finished in us-east-1.
+    let mut app = test_app();
+    let mut env = mk_env("api-prod", "uflexi", "Web", "Green");
+    env.region = Some("eu-west-2".into());
+    app.environments = vec![env];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+
+    let path = crate::util::cache_dir().join("audit.log");
+    let before = std::fs::read_to_string(&path).unwrap_or_default();
+
+    app.handle_msg(AppMsg::ActionResult {
+        gen: app.generation,
+        action: crate::app::Action::RestartAppServer,
+        env_name: "api-prod".into(),
+        result: Ok(()),
+    });
+
+    let after = std::fs::read_to_string(&path).unwrap_or_default();
+    let line = after
+        .strip_prefix(&before)
+        .unwrap_or(&after)
+        .lines()
+        .find(|l| l.contains("api-prod"))
+        .expect("a completion line was written")
+        .to_string();
+    assert!(
+        line.contains("region=eu-west-2"),
+        "the completion must name where the work went: {line}"
+    );
+}

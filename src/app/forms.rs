@@ -240,7 +240,7 @@ impl App {
         crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.context.region,
+            &self.region_for_name(&env_name),
             "UpdateOptionSettings",
             env_name.as_str(),
             &[("summary", summary.as_str())],

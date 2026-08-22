@@ -119,15 +119,18 @@ impl App {
         } else {
             Some(env.version_label.clone())
         };
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env.name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         self.status_message = Some(format!("fetching application versions for {app_name}…"));
         tokio::spawn(async move {
-            let result = aws
-                .list_application_versions(&app_name)
-                .await
-                .map_err(|e| flatten_err("list_application_versions", e));
+            let result = match client.resolve().await {
+                Ok(aws) => aws
+                    .list_application_versions(&app_name)
+                    .await
+                    .map_err(|e| flatten_err("list_application_versions", e)),
+                Err(e) => Err(flatten_err("cached_client", e)),
+            };
             let _ = tx.send(AppMsg::AppVersions {
                 gen,
                 application: app_name,
@@ -174,7 +177,7 @@ impl App {
                     crate::audit::append_action_dispatched(
                         self.context.account_id.as_deref(),
                         self.context.profile.as_deref(),
-                        &self.context.region,
+                        &self.region_for_name(env_name),
                         "AbortRollback",
                         env_name,
                         &[],
@@ -197,7 +200,7 @@ impl App {
                     crate::audit::append_action_dispatched(
                         self.context.account_id.as_deref(),
                         self.context.profile.as_deref(),
-                        &self.context.region,
+                        &self.region_for_name(env_name),
                         "AbortRollback",
                         env_name,
                         &[("reason", "batch")],
@@ -586,13 +589,24 @@ impl App {
             );
             return;
         }
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env.name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_name = env.name.clone();
         let app_name = env.application.clone();
         self.status_message = Some(format!("computing drift for {env_name}…"));
         tokio::spawn(async move {
+            let aws = match client.resolve().await {
+                Ok(aws) => aws,
+                Err(e) => {
+                    let _ = tx.send(AppMsg::TextOverlay {
+                        gen,
+                        title: format!("drift — {env_name}"),
+                        body: format!("drift: {}", flatten_err("cached_client", e)),
+                    });
+                    return;
+                }
+            };
             let tf_env = tf_state_snapshot
                 .as_ref()
                 .and_then(|s| s.env_by_name(&env_name).cloned());
@@ -643,7 +657,7 @@ impl App {
                 e
             }
         };
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env.name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_name = env.name.clone();
@@ -669,6 +683,17 @@ impl App {
         let env_arn_owned = env.arn.clone();
         self.status_message = Some(format!("running lint on {env_name}…"));
         tokio::spawn(async move {
+            let aws = match client.resolve().await {
+                Ok(aws) => aws,
+                Err(e) => {
+                    let _ = tx.send(AppMsg::TextOverlay {
+                        gen,
+                        title: format!("lint — {env_name}"),
+                        body: format!("lint: {}", flatten_err("cached_client", e)),
+                    });
+                    return;
+                }
+            };
             let opts_fut = aws.fetch_env_option_settings(&app_name, &env_name);
             let tags_fut = async {
                 match env_arn_owned.as_deref() {
@@ -760,7 +785,7 @@ impl App {
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env.name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_name = env.name.clone();
@@ -768,10 +793,13 @@ impl App {
         self.status_message = Some(format!("fetching env resources for {env_name}…"));
         let env_name_for_title = env_name.clone();
         tokio::spawn(async move {
-            let result = aws
-                .describe_env_resources(&env_name)
-                .await
-                .map_err(|e| flatten_err("describe_env_resources", e));
+            let result = match client.resolve().await {
+                Ok(aws) => aws
+                    .describe_env_resources(&env_name)
+                    .await
+                    .map_err(|e| flatten_err("describe_env_resources", e)),
+                Err(e) => Err(flatten_err("cached_client", e)),
+            };
             let body = match result {
                 Ok(res) => super::render_env_resources_tree(&res, &env_name, &tier),
                 Err(e) => format!("resources: {e}\n\nesc / q to close"),
