@@ -3741,3 +3741,62 @@ async fn the_role_cache_is_cleared_by_a_context_switch() {
         "a context switch must not leave the previous account's session behind"
     );
 }
+
+#[tokio::test]
+async fn ssm_run_chunks_past_the_fifty_instance_cap() {
+    // `SendCommand` caps `InstanceIds` at 50. The whole list went in
+    // one call, so `:ssm-run` on an env with more than fifty instances
+    // failed outright — on a triage path reached precisely when a large
+    // env is misbehaving.
+    use aws_sdk_ssm::operation::get_command_invocation::GetCommandInvocationOutput;
+    use aws_sdk_ssm::operation::send_command::SendCommandOutput;
+    use aws_sdk_ssm::types::{Command, CommandInvocationStatus};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let sends = std::sync::Arc::new(AtomicUsize::new(0));
+    let max_ids = std::sync::Arc::new(AtomicUsize::new(0));
+    let (s, m) = (sends.clone(), max_ids.clone());
+    let send = mock!(aws_sdk_ssm::Client::send_command)
+        .match_requests(move |req| {
+            let n = req.instance_ids().len();
+            m.fetch_max(n, Ordering::SeqCst);
+            true
+        })
+        .then_output(move || {
+            let n = s.fetch_add(1, Ordering::SeqCst);
+            SendCommandOutput::builder()
+                .command(Command::builder().command_id(format!("cmd-{n}")).build())
+                .build()
+        });
+    let poll = mock!(aws_sdk_ssm::Client::get_command_invocation).then_output(|| {
+        GetCommandInvocationOutput::builder()
+            .status(CommandInvocationStatus::Success)
+            .response_code(0)
+            .standard_output_content("ok")
+            .build()
+    });
+    let ssm = mock_client!(
+        aws_sdk_ssm,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&send, &poll]
+    );
+    let client = client_with_sub!(ssm = ssm);
+
+    let ids: Vec<String> = (0..120).map(|i| format!("i-{i:04}")).collect();
+    let out = client
+        .run_shell_command(&ids, "uptime", 60)
+        .await
+        .expect("120 instances must not fail outright");
+
+    assert_eq!(
+        sends.load(Ordering::SeqCst),
+        3,
+        "120 instances is three SendCommand calls, not one"
+    );
+    assert!(
+        max_ids.load(Ordering::SeqCst) <= 50,
+        "no call may exceed the API's 50-instance cap, saw {}",
+        max_ids.load(Ordering::SeqCst)
+    );
+    assert_eq!(out.len(), 120, "every instance is accounted for");
+}
