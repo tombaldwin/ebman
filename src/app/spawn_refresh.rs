@@ -597,6 +597,8 @@ impl App {
                 self.env_instance_counts.clear();
                 self.applications.clear();
                 self.costs.clear();
+                // The verdict belonged to the previous account.
+                self.costs_complete = true;
                 self.costs_fetched_at = None;
                 // Help's stash (pre_mode / pre_overlay) points at
                 // modes and overlays this switch just tore down —

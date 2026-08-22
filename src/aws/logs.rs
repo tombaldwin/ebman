@@ -214,7 +214,9 @@ impl AwsClient {
             Ok((resp.log_groups.unwrap_or_default(), resp.next_token))
         })
         .await?
-        .items();
+        // Feeds the `:logs-tail` group picker: a short list reads as
+        // "that log group doesn't exist for this env".
+        .complete("DescribeLogGroups")?;
         let mut out: Vec<String> = raw.into_iter().filter_map(|g| g.log_group_name).collect();
         out.sort();
         Ok(out)

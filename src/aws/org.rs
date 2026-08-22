@@ -34,7 +34,7 @@ impl AwsClient {
     pub async fn list_org_accounts(&self) -> Result<Vec<OrgAccount>> {
         let this = self;
         let raw = super::paginate("organizations:ListAccounts", move |token| async move {
-            let mut req = this.org().list_accounts();
+            let mut req = this.org().list_accounts().max_results(20);
             if let Some(t) = token {
                 req = req.next_token(t);
             }
@@ -45,7 +45,9 @@ impl AwsClient {
             Ok((resp.accounts.unwrap_or_default(), resp.next_token))
         })
         .await?
-        .items();
+        // `:accounts` / `:find-env` search this list by name; a short
+        // one means "no such account" for an account that exists.
+        .complete("organizations:ListAccounts")?;
         let mut out: Vec<OrgAccount> = raw
             .into_iter()
             .map(|a| OrgAccount {

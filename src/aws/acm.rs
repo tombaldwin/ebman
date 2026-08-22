@@ -20,6 +20,7 @@ impl AwsClient {
             let mut req = this
                 .acm()
                 .list_certificates()
+                .max_items(1000)
                 .certificate_statuses(CertificateStatus::Issued);
             if let Some(t) = token {
                 req = req.next_token(t);
@@ -31,7 +32,9 @@ impl AwsClient {
             ))
         })
         .await?
-        .items();
+        // Same reasoning as the VPC pickers: a truncated cert list in
+        // `:listener-edit` reads as "that certificate isn't in ACM".
+        .complete("ListCertificates")?;
         let mut out: Vec<AcmCert> = raw
             .into_iter()
             .filter_map(|c| {

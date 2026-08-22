@@ -14,8 +14,20 @@ impl App {
             Some("on") | Some("true") | Some("enable") => true,
             Some("off") | Some("false") | Some("disable") => false,
             Some("status") | None => {
+                // A truncated walk deliberately leaves `costs_fetched_at`
+                // unset so a retry isn't suppressed — which meant this
+                // reported "no data yet" while dollar figures were
+                // visibly on screen.
+                let partial = if self.costs_complete {
+                    ""
+                } else {
+                    " — INCOMPLETE (Cost Explorer page cap)"
+                };
                 let pretty = match (self.cost_enabled, self.costs_fetched_at) {
                     (false, _) => "off".to_string(),
+                    (true, None) if !self.costs.is_empty() => {
+                        format!("on ({} env(s){partial})", self.costs.len())
+                    }
                     (true, None) => "on (no data yet)".into(),
                     (true, Some(t)) => {
                         let age = chrono::Utc::now()
@@ -85,6 +97,7 @@ impl App {
             }
         } else {
             self.costs.clear();
+            self.costs_complete = true;
             self.costs_fetched_at = None;
             self.status_message = Some("cost: off — column hidden, cache preserved".into());
         }
@@ -129,6 +142,13 @@ impl App {
                 "fleet-cost: no cost data yet (Cost Explorer fetch may still be in flight; try again in 10s)".into(),
             );
             return;
+        }
+        if !self.costs_complete {
+            self.error_message = Some(
+                "fleet-cost: the cost data is INCOMPLETE (Cost Explorer page cap) — \
+                 the total below under-reports"
+                    .into(),
+            );
         }
         let body = render_fleet_cost(
             &self.environments,
