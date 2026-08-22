@@ -1292,6 +1292,7 @@ impl App {
                 explain_settings,
                 required_tags: config.required_tags,
                 alarm_dimensions: config.alarm_dimensions,
+                passthrough: config.passthrough,
                 cfg_icons_raw: config.icons.clone(),
                 profile_themes: config.profile_themes.clone(),
                 runbooks: config.runbooks.clone(),
@@ -1555,6 +1556,7 @@ impl App {
                 explain_settings,
                 required_tags: config.required_tags.clone(),
                 alarm_dimensions: config.alarm_dimensions.clone(),
+                passthrough: config.passthrough.clone(),
                 cfg_icons_raw: config.icons.clone(),
                 profile_themes: config.profile_themes.clone(),
                 runbooks: config.runbooks.clone(),
@@ -2937,6 +2939,41 @@ fn rewrite_assumed_role_arn(arn: &str) -> Option<String> {
     let (account, role_part) = rest.split_once(':')?;
     let role_name = role_part.strip_prefix("assumed-role/")?.split('/').next()?;
     Some(format!("arn:{partition}:iam::{account}:role/{role_name}"))
+}
+
+/// Pure: why `arn` can't be handed to `iam:SimulatePrincipalPolicy`
+/// as a policy source, or `None` when it can.
+///
+/// The API accepts an IAM user, group or role ARN — those are the
+/// things policies attach to. An STS ARN that survived
+/// [`rewrite_assumed_role_arn`] (a federated user, a service session)
+/// is not one, and neither is `:root`. Sending one anyway gets an
+/// `InvalidInput` back, which `:explain` then rendered under its
+/// "you probably lack iam:SimulatePrincipalPolicy" hint — pointing
+/// the operator at a permissions problem they don't have.
+pub(crate) fn principal_not_simulatable(arn: &str) -> Option<String> {
+    let partition = crate::util::arn_partition(arn)?;
+    if let Some(rest) = arn.strip_prefix(&format!("arn:{partition}:iam::")) {
+        let resource = rest.split_once(':').map(|(_, r)| r).unwrap_or(rest);
+        if resource.starts_with("user/")
+            || resource.starts_with("group/")
+            || resource.starts_with("role/")
+        {
+            return None;
+        }
+        if resource == "root" {
+            return Some(format!(
+                "{arn} is the account root — it has no attached policies to \
+                 simulate. Pass the IAM role or user that made the call."
+            ));
+        }
+    }
+    Some(format!(
+        "{arn} isn't an IAM user, group or role, so SimulatePrincipalPolicy \
+         can't evaluate it. Federated and service sessions aren't policy \
+         attachment points — pass the underlying role ARN \
+         (arn:{partition}:iam::ACCOUNT:role/NAME)."
+    ))
 }
 
 /// Pure: parse an AWS `AccessDenied` error message into

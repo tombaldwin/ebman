@@ -1337,12 +1337,12 @@ impl App {
                         self.costs_complete = false;
                         self.error_message = Some(format!(
                             "cost: INCOMPLETE — Cost Explorer returned more pages than ebman \
-                             will walk. Showing {n} env(s); not cached."
+                             will walk. Showing {n} env(s); not cached — `:cost on` retries."
                         ));
                     } else {
                         self.error_message = Some(format!(
                             "cost: refresh INCOMPLETE (Cost Explorer page cap) — keeping the \
-                             previous {} env(s) rather than replacing them with {n}.",
+                             previous {} env(s) rather than replacing them with {n}. `:cost on` retries.",
                             self.costs.len()
                         ));
                     }

@@ -2487,6 +2487,8 @@ async fn simulate_principal_policy_follows_the_truncation_marker() {
         )
         .await
         .unwrap();
+    assert!(!rows.truncated, "two pages, then a clean stop");
+    let rows = rows.items();
     let actions: Vec<&str> = rows.iter().map(|r| r.action.as_str()).collect();
     assert!(
         actions.contains(&"elasticbeanstalk:UpdateEnvironment"),
@@ -2522,6 +2524,8 @@ async fn simulate_principal_policy_stops_when_not_truncated() {
         .simulate_principal_policy("arn:aws:iam::1:role/r", &["s3:GetObject".to_string()], &[])
         .await
         .unwrap();
+    assert!(!rows.truncated);
+    let rows = rows.items();
     assert_eq!(rows.len(), 1);
     assert_eq!(page1.num_calls(), 1, "must not loop on a stale marker");
 }
@@ -3494,20 +3498,46 @@ fn every_paginated_listing_declares_how_it_treats_truncation() {
     // reader unable to tell which convention held. Anything taking
     // `.items()` must be named here with a reason, so adding a caller
     // is a deliberate choice rather than a default.
-    const ITEMS_IS_CORRECT_BECAUSE: &[(&str, &str)] = &[(
-        "list_secrets",
-        "unfiltered browse — a shorter list is just shorter; the \
-         filtered path calls .complete() because then a miss is a claim",
-    )];
+    const ITEMS_IS_CORRECT_BECAUSE: &[(&str, &str)] = &[
+        (
+            "list_secrets",
+            "unfiltered browse — a shorter list is just shorter; the \
+             filtered path calls .complete() because then a miss is a claim",
+        ),
+        (
+            "cmd_explain",
+            "a partial IAM diagnosis is still a diagnosis, and the \
+             overlay prints an INCOMPLETE banner so a missing action \
+             can't be read as an allowed one",
+        ),
+    ];
+
+    // Walk all of `src`, not just `src/aws`: `Paged` is pub(crate), so
+    // the callers that actually have to make this choice live in
+    // `app/` and `cli/`. Scoping the guard to the module that *defines*
+    // the type let the first out-of-tree `.items()` land unlabelled.
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    let mut stack = vec![std::path::PathBuf::from("src")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("src dir") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs")
+                && path.file_name().and_then(|f| f.to_str()) != Some("tests.rs")
+            {
+                files.push(path);
+            }
+        }
+    }
+    assert!(
+        files.len() > 20,
+        "the walk found only {} files — it isn't reaching the tree",
+        files.len()
+    );
 
     let mut offenders: Vec<String> = Vec::new();
-    for entry in std::fs::read_dir("src/aws").expect("aws dir") {
-        let path = entry.expect("entry").path();
-        if path.extension().and_then(|e| e.to_str()) != Some("rs")
-            || path.file_name().and_then(|f| f.to_str()) == Some("tests.rs")
-        {
-            continue;
-        }
+    for path in files {
         let raw = std::fs::read_to_string(&path).expect("read");
         // Comments discuss `.items()` by name, so strip them first —
         // otherwise the guard flags the very comment explaining why a
@@ -3524,6 +3554,14 @@ fn every_paginated_listing_declares_how_it_treats_truncation() {
         let mut idx = 0usize;
         while let Some(rel) = text[idx..].find(".items()") {
             let at = idx + rel;
+            // Prose mentions it as `` `.items()` ``, and one of them
+            // lives in a `#[must_use]` string rather than a comment,
+            // so comment-stripping alone doesn't catch it. A real call
+            // site is preceded by a receiver — never by a backtick.
+            if text[..at].ends_with('`') {
+                idx = at + ".items()".len();
+                continue;
+            }
             let enclosing = text[..at]
                 .rmatch_indices("fn ")
                 .next()
@@ -3555,4 +3593,50 @@ fn every_paginated_listing_declares_how_it_treats_truncation() {
          acceptable — either call `.complete()` or add them to \
          ITEMS_IS_CORRECT_BECAUSE with a reason: {offenders:?}"
     );
+}
+
+#[tokio::test]
+async fn list_org_accounts_pages_past_the_default_runaway_guard() {
+    // ListAccounts caps MaxResults at 20, so the shared 100-page
+    // runaway guard put a hard 2,000-account ceiling on this walk —
+    // and because the walk `.complete()`s, an org past that ceiling
+    // got an error, not a short list. Real orgs run past 2,000
+    // accounts. 150 pages here is comfortably over the old cap and
+    // comfortably under SCAN_PAGES.
+    use aws_sdk_organizations::operation::list_accounts::ListAccountsOutput;
+    use aws_sdk_organizations::types::{Account, AccountStatus};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const PAGES: usize = 150;
+    let seen = std::sync::Arc::new(AtomicUsize::new(0));
+    let counter = seen.clone();
+    let rule = mock!(aws_sdk_organizations::Client::list_accounts).then_output(move || {
+        let n = counter.fetch_add(1, Ordering::SeqCst);
+        let mut b = ListAccountsOutput::builder().accounts(
+            Account::builder()
+                .id(format!("{:012}", n))
+                .name(format!("acct-{n:04}"))
+                .status(AccountStatus::Active)
+                .build(),
+        );
+        if n + 1 < PAGES {
+            b = b.next_token(format!("t{n}"));
+        }
+        b.build()
+    });
+    // MatchAny: one rule serves every page — the request shape only
+    // differs by the token, and Sequential would exhaust after one.
+    let org = mock_client!(
+        aws_sdk_organizations,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&rule]
+    );
+    let client = client_with_sub!(org = org);
+
+    let accounts = client
+        .list_org_accounts()
+        .await
+        .expect("a large org must not error out of :accounts");
+    assert_eq!(accounts.len(), PAGES);
+    assert_eq!(seen.load(Ordering::SeqCst), PAGES);
 }

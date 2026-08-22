@@ -33,17 +33,28 @@ impl AwsClient {
     /// stack trace.
     pub async fn list_org_accounts(&self) -> Result<Vec<OrgAccount>> {
         let this = self;
-        let raw = super::paginate("organizations:ListAccounts", move |token| async move {
-            let mut req = this.org().list_accounts().max_results(20);
-            if let Some(t) = token {
-                req = req.next_token(t);
-            }
-            let resp = req
-                .send()
-                .await
-                .wrap_err("organizations:ListAccounts failed")?;
-            Ok((resp.accounts.unwrap_or_default(), resp.next_token))
-        })
+        // `SCAN_PAGES`, not the default runaway guard: ListAccounts
+        // caps `MaxResults` at 20, so `MAX_PAGES` put a hard 2,000-
+        // account ceiling on this — and since the walk `.complete()`s,
+        // an org past that ceiling got an error instead of a list.
+        // 500 pages is 10,000 accounts, past the highest quota AWS
+        // will raise an organization to.
+        let raw = super::paginate_capped(
+            "organizations:ListAccounts",
+            super::SCAN_PAGES,
+            move |token| async move {
+                // 20 is the API maximum for this call, not a choice.
+                let mut req = this.org().list_accounts().max_results(20);
+                if let Some(t) = token {
+                    req = req.next_token(t);
+                }
+                let resp = req
+                    .send()
+                    .await
+                    .wrap_err("organizations:ListAccounts failed")?;
+                Ok((resp.accounts.unwrap_or_default(), resp.next_token))
+            },
+        )
         .await?
         // `:accounts` / `:find-env` search this list by name; a short
         // one means "no such account" for an account that exists.

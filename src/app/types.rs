@@ -928,6 +928,9 @@ pub struct ResolvedConfig {
     /// alarms to it (`alarm_dimensions`). Normally just
     /// `EnvironmentName`.
     pub alarm_dimensions: Vec<String>,
+    /// Config lines the parser didn't recognise, kept so a `:settings`
+    /// save doesn't destroy them.
+    pub passthrough: Vec<String>,
     /// Raw `icons = …` string before resolution to `IconStyle` (so
     /// `:settings` round-trips `"auto"` without flattening it).
     pub cfg_icons_raw: String,

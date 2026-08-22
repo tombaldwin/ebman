@@ -808,7 +808,7 @@ fn render_explain_overlay_marks_decisions_and_suggests_fix() {
             blocked_by_boundary: false,
         },
     ];
-    let body = super::render_explain_overlay("arn:aws:iam::123:role/EbmanReadOnly", &rows);
+    let body = super::render_explain_overlay("arn:aws:iam::123:role/EbmanReadOnly", &rows, false);
     // Both action sections present, marked with correct decision glyphs.
     assert!(body.contains("Action:   elasticbeanstalk:RebuildEnvironment"));
     assert!(body.contains("✗ implicitDeny"));
@@ -834,7 +834,7 @@ fn render_explain_overlay_flags_scp_and_boundary_blockers() {
         blocked_by_scp: true,
         blocked_by_boundary: true,
     }];
-    let body = super::render_explain_overlay("arn:aws:iam::123:role/X", &rows);
+    let body = super::render_explain_overlay("arn:aws:iam::123:role/X", &rows, false);
     assert!(body.contains("Organizations SCP"));
     assert!(body.contains("permission boundary"));
     // explicitDeny gives the "Remove the Deny" hint instead of
@@ -7747,4 +7747,216 @@ async fn switching_context_resets_the_cost_completeness_verdict() {
     app.execute_command("cost off");
     assert!(app.costs.is_empty());
     assert!(app.costs_complete, "a torn-down map carries no verdict");
+}
+
+#[tokio::test]
+async fn a_partial_fan_out_does_not_clobber_an_operator_message() {
+    // The auto-clear above deliberately preserves a message the
+    // operator set during the refresh round-trip — a failed `:deploy`,
+    // say. Writing the region notice unconditionally overwrote it, and
+    // did so again every 15s tick with no way to dismiss it.
+    let mut app = test_app();
+    app.error_message = Some("deploy failed: version build-901 not found".into());
+    app.status_snapshot_at_refresh = Some((None, None));
+    app.apply_refresh(
+        Ok(vec![mk_env("api-prod", "uflexi", "Web", "Green")]),
+        vec!["region eu-west-2: DescribeEnvironments failed".to_string()],
+    );
+    assert_eq!(
+        app.error_message.as_deref(),
+        Some("deploy failed: version build-901 not found"),
+        "the operator's own message must survive the region notice"
+    );
+}
+
+#[tokio::test]
+async fn a_partially_throttled_fan_out_still_backs_off() {
+    // Throttled regions now arrive in the Ok arm, because other regions
+    // returned rows. Resetting the back-off there meant ebman never
+    // backed off from the regions rate-limiting it, re-hammering them
+    // every tick and deepening the throttle.
+    let mut app = test_app();
+    app.apply_refresh(
+        Ok(vec![mk_env("api-prod", "uflexi", "Web", "Green")]),
+        vec!["region eu-west-2: ThrottlingException: Rate exceeded".to_string()],
+    );
+    assert!(
+        app.throttle_until.is_some(),
+        "a throttled region must arm the back-off even when others succeeded"
+    );
+    assert_eq!(app.consecutive_throttles, 1);
+}
+
+#[tokio::test]
+async fn a_clean_fan_out_clears_the_back_off() {
+    let mut app = test_app();
+    app.consecutive_throttles = 3;
+    app.apply_refresh(
+        Ok(vec![mk_env("api-prod", "uflexi", "Web", "Green")]),
+        Vec::new(),
+    );
+    assert!(app.throttle_until.is_none());
+    assert_eq!(app.consecutive_throttles, 0);
+}
+
+#[tokio::test]
+async fn cost_on_retries_an_incomplete_walk_instead_of_saying_already_on() {
+    // `spawn_cost_fetch` has exactly one caller — the `:cost on`
+    // transition — so there is no periodic refetch. Answering "already
+    // on" made a truncated walk terminal for the session: the partial
+    // map stayed, the INCOMPLETE toast was cleared by the next refresh
+    // tick, and every env past the cap showed `—`, indistinguishable
+    // from untagged.
+    let mut app = test_app();
+    app.cost_enabled = true;
+    app.costs.insert("api-prod".into(), 1.0);
+    app.costs_complete = false;
+
+    app.execute_command("cost on");
+    let msg = app.status_message.as_deref().unwrap_or_default();
+    assert!(
+        msg.contains("retrying"),
+        ":cost on must retry an incomplete walk, not report 'already on': {msg:?}"
+    );
+
+    // With complete data it still short-circuits — no metered refetch
+    // for an operator who typed it twice.
+    app.costs_complete = true;
+    app.execute_command("cost on");
+    let msg = app.status_message.as_deref().unwrap_or_default();
+    assert!(msg.contains("already on"), "{msg:?}");
+}
+
+#[tokio::test]
+async fn cost_status_does_not_call_a_partial_result_cached() {
+    // Reachable when a truncated walk lands over a non-empty map: the
+    // previous timestamp stays, so the arm that formats it said
+    // "cached" for data the handler had explicitly refused to cache.
+    let mut app = test_app();
+    app.cost_enabled = true;
+    app.costs.insert("api-prod".into(), 1.0);
+    app.costs_fetched_at = Some(chrono::Utc::now() - chrono::Duration::hours(3));
+    app.costs_complete = false;
+
+    app.execute_command("cost status");
+    let msg = app.status_message.as_deref().unwrap_or_default();
+    assert!(msg.contains("INCOMPLETE"), "{msg:?}");
+    assert!(
+        !msg.contains("env(s) cached"),
+        "a partial result was never cached: {msg:?}"
+    );
+}
+
+#[test]
+fn a_truncated_explain_says_so_before_the_rows() {
+    // `SimulatePrincipalPolicy` hitting its page budget used to warn
+    // only to the log. `:explain` is the one surface where an action's
+    // *absence* from the table reads as "that one's fine", so a short
+    // table has to announce itself — and above the rows, since it
+    // changes how all of them should be read.
+    let rows = vec![crate::aws::IamSimResult {
+        action: "s3:GetObject".into(),
+        resource: "*".into(),
+        decision: "allowed".into(),
+        matched_statements: vec![],
+        missing_context: vec![],
+        blocked_by_scp: false,
+        blocked_by_boundary: false,
+    }];
+    let body = super::render_explain_overlay("arn:aws:iam::1:role/R", &rows, true);
+    assert!(body.contains("INCOMPLETE"), "{body}");
+    assert!(
+        body.find("INCOMPLETE").unwrap() < body.find("s3:GetObject").unwrap(),
+        "the banner has to precede the rows it qualifies:\n{body}"
+    );
+
+    let clean = super::render_explain_overlay("arn:aws:iam::1:role/R", &rows, false);
+    assert!(
+        !clean.contains("INCOMPLETE"),
+        "a complete walk must not cry wolf:\n{clean}"
+    );
+}
+
+#[tokio::test]
+async fn the_health_panel_shows_fatal_events() {
+    // The recent-events filter accepted ERROR and WARN only, so FATAL —
+    // the severity *above* ERROR, and the one an operator opens this
+    // panel to find — was the single event the health panel would not
+    // show. With only a FATAL in the window the panel said "no error /
+    // warning events", which reads as calm.
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Red")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+    let detail = app.detail.as_mut().expect("detail opened");
+    detail.loading_events = false;
+    detail.events = vec![crate::aws::Event {
+        at: Some(chrono::Utc::now() - chrono::Duration::minutes(2)),
+        env: "api-prod".into(),
+        application: "uflexi".into(),
+        message: "SEVERE-CANARY: instance terminated".into(),
+        severity: "FATAL".into(),
+        version_label: None,
+    }];
+
+    let buf = render_buf(&mut app, 140, 40);
+    let row = find_row(&buf, "SEVERE-CANARY")
+        .expect("a FATAL event has to appear in the health panel's recent events");
+    assert!(
+        row_has_fg(&buf, row, app.theme.health_red),
+        "FATAL is at least as severe as ERROR — it must not render muted"
+    );
+}
+
+#[test]
+fn a_federated_session_arn_is_refused_before_the_api_call() {
+    // `parse_access_denied` deliberately leaves an STS ARN it can't
+    // rewrite alone rather than failing the parse — but that ARN then
+    // reached SimulatePrincipalPolicy, which rejects it as
+    // InvalidInput, and `:explain` rendered the failure under its
+    // "you probably lack iam:SimulatePrincipalPolicy" hint. The
+    // operator was pointed at a permissions gap they didn't have.
+    use crate::app::principal_not_simulatable as check;
+
+    for ok in [
+        "arn:aws:iam::123456789012:role/EbmanDeploy",
+        "arn:aws:iam::123456789012:user/tom",
+        "arn:aws:iam::123456789012:group/platform",
+        "arn:aws-us-gov:iam::123456789012:role/EbmanDeploy",
+        // Paths are legal in role ARNs.
+        "arn:aws:iam::123456789012:role/service-role/EbmanDeploy",
+    ] {
+        assert!(check(ok).is_none(), "{ok} is a valid policy source");
+    }
+
+    let fed = check("arn:aws:sts::123456789012:federated-user/tom").expect("refused");
+    assert!(fed.contains("role/NAME"), "names the fix: {fed}");
+    let root = check("arn:aws:iam::123456789012:root").expect("refused");
+    assert!(root.contains("root"), "{root}");
+    // Not an ARN at all — the caller's own guard handles usage, so
+    // this just must not claim it's fine.
+    assert!(check("EBL001").is_none(), "non-ARNs are the guard's job");
+}
+
+#[tokio::test]
+async fn explain_rewrites_a_pasted_assumed_role_arn() {
+    // The ARN an operator pastes into `:explain ARN ACTION` is almost
+    // always copied out of the AccessDenied message, so it's a session
+    // ARN. The parsed-from-error path rewrote it and the args path
+    // didn't, which made the documented form the one that failed.
+    let mut app = test_app();
+    app.execute_command(
+        "explain arn:aws:sts::123456789012:assumed-role/EbmanDeploy/i-0abc s3:GetObject",
+    );
+    assert!(
+        app.error_message.is_none(),
+        "a session ARN must be rewritten, not refused: {:?}",
+        app.error_message
+    );
+    let status = app.status_message.as_deref().unwrap_or_default();
+    assert!(
+        status.contains("arn:aws:iam::123456789012:role/EbmanDeploy"),
+        "it should be simulating the underlying role: {status:?}"
+    );
 }

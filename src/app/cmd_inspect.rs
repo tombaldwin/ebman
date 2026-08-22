@@ -212,7 +212,12 @@ impl App {
             // `:explain ARN ACTION` refused its documented argument.
             Some(arn) if crate::util::arn_partition(arn).is_some() && rest.len() >= 2 => {
                 let actions: Vec<String> = rest[1..].iter().map(|s| s.to_string()).collect();
-                (arn.to_string(), actions)
+                // Same rewrite the parsed-from-error path gets: the
+                // ARN an operator pastes here is usually copied
+                // straight out of an AccessDenied message, so it's an
+                // assumed-role session ARN more often than not.
+                let arn = rewrite_assumed_role_arn(arn).unwrap_or_else(|| arn.to_string());
+                (arn, actions)
             }
             Some(_) => {
                 self.error_message = Some(
@@ -246,6 +251,13 @@ impl App {
                 }
             }
         };
+        // Refuse locally rather than spending a round trip on an
+        // `InvalidInput` the overlay would then blame on the caller's
+        // own IAM permissions.
+        if let Some(why) = crate::app::principal_not_simulatable(&principal) {
+            self.error_message = Some(format!("explain: {why}"));
+            return;
+        }
         let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
@@ -260,7 +272,15 @@ impl App {
                 .await
                 .map_err(|e| flatten_err("simulate_principal_policy", e));
             let body = match result {
-                Ok(rows) => render_explain_overlay(&principal, &rows),
+                // `.items()` over `.complete()`: a partial diagnosis is
+                // still a diagnosis — the operator came here with one
+                // denied action and it's probably in the rows we did
+                // get. The overlay says the table is short so an
+                // action's absence can't be read as a clean bill.
+                Ok(page) => {
+                    let truncated = page.truncated;
+                    render_explain_overlay(&principal, &page.items(), truncated)
+                }
                 Err(e) => format!(
                     "explain: {e}\n\n\
                      This usually means the caller lacks `iam:SimulatePrincipalPolicy`\n\

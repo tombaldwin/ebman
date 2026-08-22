@@ -598,6 +598,9 @@ impl App {
             notify_bell: self.notify_bell,
             required_tags: self.cfg.required_tags.clone(),
             alarm_dimensions: self.cfg.alarm_dimensions.clone(),
+            // Carried through the `:settings` round trip so a save
+            // doesn't drop lines the model doesn't model.
+            passthrough: self.cfg.passthrough.clone(),
             profile_themes: self.cfg.profile_themes.clone(),
             // Accounts live in config.toml only — :settings doesn't
             // surface them in the form (the assume-role schema would

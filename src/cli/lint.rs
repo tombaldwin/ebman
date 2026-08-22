@@ -112,9 +112,15 @@ async fn probe_xray_trace_denied(
             .then(|| v.clone())
     })?;
     let role_arn = aws.instance_profile_role_arn(&profile).await.ok()??;
+    // `.complete()`, not `.items()`: one action can't truncate in
+    // practice, but if it ever did the empty result would read as
+    // "no decision" and the rule would silently skip. An error here
+    // skips too — but visibly, via the probe's `None`.
     let results = aws
         .simulate_principal_policy(&role_arn, &["xray:PutTraceSegments".to_string()], &[])
         .await
+        .ok()?
+        .complete("X-Ray permission probe")
         .ok()?;
     let first = results.first()?;
     Some(!first.decision.eq_ignore_ascii_case("allowed"))
