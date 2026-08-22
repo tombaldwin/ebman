@@ -8099,3 +8099,111 @@ async fn demo_mode_never_resolves_a_remote_region() {
         "demo mode stays on the stub"
     );
 }
+
+// --- the home client ages out so pasted credentials take effect --------
+
+#[tokio::test]
+async fn the_home_client_ages_out() {
+    // The client cache's TTL only ever reached
+    // `list_environments_in_region`. Everything else goes through
+    // `self.aws`, replaced only by an explicit context switch — so a
+    // single-region operator, who never reaches the cached path at
+    // all, still had to restart after pasting fresh static
+    // credentials. Static profile creds carry no expiry, so the SDK's
+    // providers never re-resolve them on their own.
+    let mut app = test_app();
+    assert!(
+        !app.should_refresh_home_client(),
+        "a freshly built client is not stale"
+    );
+
+    app.aws_built_at = std::time::Instant::now() - crate::aws::CLIENT_CACHE_TTL;
+    assert!(app.should_refresh_home_client(), "past the TTL it is");
+
+    // One at a time — the 15s tick must not stack refreshes.
+    app.aws_refresh_in_flight = true;
+    assert!(!app.should_refresh_home_client());
+    app.aws_refresh_in_flight = false;
+
+    // The demo stub isn't rebuildable.
+    app.demo_mode = true;
+    assert!(!app.should_refresh_home_client());
+    app.demo_mode = false;
+
+    // An AssumeRole session has a hard one-hour cap; re-assuming is a
+    // different operation, not a silent swap.
+    app.cfg.accounts.insert(
+        "prod".into(),
+        crate::config::AccountSpec {
+            role_arn: "arn:aws:iam::1:role/R".into(),
+            ..Default::default()
+        },
+    );
+    app.context.profile = Some("prod".into());
+    assert!(
+        !app.should_refresh_home_client(),
+        "an assumed-role context must not be silently swapped"
+    );
+    assert_eq!(app.assumed_account().map(|(n, _)| n), Some("prod".into()));
+}
+
+#[tokio::test]
+async fn a_stale_client_refresh_never_displaces_a_context_switch() {
+    // The refresh carries `rebuild_epoch`, so a `:region` / `:account`
+    // switch spawned while it was building wins. Without the guard the
+    // app would serve the PREVIOUS context's client under the new
+    // context's header — silently, since this path shows no message.
+    let mut app = test_app();
+    app.rebuild_epoch = 4;
+    app.aws_refresh_in_flight = true;
+    let before = std::sync::Arc::as_ptr(&app.aws);
+
+    app.handle_msg(AppMsg::ClientRefreshed {
+        epoch: 3, // spawned before the switch
+        result: Ok(Box::new(crate::aws::AwsClient::stub())),
+    });
+    assert_eq!(
+        std::sync::Arc::as_ptr(&app.aws),
+        before,
+        "a stale refresh must not swap the client"
+    );
+    assert!(
+        !app.aws_refresh_in_flight,
+        "the in-flight flag clears either way, or the retry never fires again"
+    );
+
+    // Current epoch: applied.
+    app.handle_msg(AppMsg::ClientRefreshed {
+        epoch: 4,
+        result: Ok(Box::new(crate::aws::AwsClient::stub())),
+    });
+    assert_ne!(
+        std::sync::Arc::as_ptr(&app.aws),
+        before,
+        "current one lands"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_client_refresh_is_silent_and_keeps_the_old_client() {
+    // Nothing the operator can see changes, so an error toast here
+    // would displace whatever they were reading for a transient
+    // credential-chain hiccup. The previous client keeps working.
+    let mut app = test_app();
+    app.status_message = Some("deploy dispatched".into());
+    app.aws_refresh_in_flight = true;
+    let before = std::sync::Arc::as_ptr(&app.aws);
+
+    app.handle_msg(AppMsg::ClientRefreshed {
+        epoch: app.rebuild_epoch,
+        result: Err("no credentials found".into()),
+    });
+    assert_eq!(std::sync::Arc::as_ptr(&app.aws), before);
+    assert!(app.error_message.is_none(), "silent");
+    assert_eq!(
+        app.status_message.as_deref(),
+        Some("deploy dispatched"),
+        "the operator's message survives"
+    );
+    assert!(!app.should_refresh_home_client(), "the age clock reset");
+}

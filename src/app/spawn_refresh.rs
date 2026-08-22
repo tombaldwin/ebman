@@ -487,6 +487,65 @@ impl App {
         apply(detail, result);
     }
 
+    /// Rebuild the home client in place when it has aged past the
+    /// cache TTL, so credentials edited on disk take effect.
+    pub(crate) fn spawn_home_client_refresh(&mut self) {
+        if !self.should_refresh_home_client() {
+            return;
+        }
+        self.aws_refresh_in_flight = true;
+        let epoch = self.rebuild_epoch;
+        let profile = self
+            .override_profile
+            .clone()
+            .or_else(|| self.context.profile.clone());
+        let region = Some(self.context.region.clone());
+        let tx = self.msg_tx.clone();
+        tokio::spawn(async move {
+            let result = match AwsClient::with(profile, region).await {
+                Ok(c) => Ok(Box::new(c)),
+                Err(e) => Err(flatten_err("aws_client_refresh", e)),
+            };
+            let _ = tx.send(AppMsg::ClientRefreshed { epoch, result });
+        });
+    }
+
+    /// Swap in a refreshed home client. Silent by design — nothing the
+    /// operator can see changes, so a failure is logged and retried on
+    /// the next interval rather than surfaced as an error that would
+    /// displace whatever they were reading.
+    pub(crate) fn apply_client_refresh(
+        &mut self,
+        epoch: u64,
+        result: Result<Box<AwsClient>, String>,
+    ) {
+        self.aws_refresh_in_flight = false;
+        // A real context switch was spawned while this was building.
+        // Applying it would serve the PREVIOUS context's client under
+        // the new context's header.
+        if epoch != self.rebuild_epoch {
+            return;
+        }
+        match result {
+            Ok(client) => {
+                // `context` is deliberately left alone: it carries the
+                // account id and caller ARN from the identity fetch,
+                // which a fresh `AwsClient::with` hasn't done. The
+                // profile and region are the same by construction.
+                self.aws = Arc::new(*client);
+                self.aws_built_at = Instant::now();
+                tracing::debug!(target: "ebman", "home client refreshed");
+            }
+            Err(e) => {
+                // Almost always a transient credential-chain hiccup.
+                // The previous client keeps working; try again next
+                // time the age check fires.
+                tracing::warn!(target: "ebman", error = %e, "home client refresh failed");
+                self.aws_built_at = Instant::now();
+            }
+        }
+    }
+
     pub(crate) fn apply_rebuild(&mut self, epoch: u64, result: Result<Box<AwsClient>, String>) {
         // Stale arrival: a NEWER switch was spawned after this one —
         // applying it would settle the app on an older choice.
@@ -504,6 +563,7 @@ impl App {
                 crate::aws::clear_client_cache();
                 self.context = client.context.clone();
                 self.aws = Arc::new(*client);
+                self.aws_built_at = Instant::now();
                 self.maybe_apply_profile_theme();
                 self.environments.clear();
                 // Covers every view-cache input this block clears —

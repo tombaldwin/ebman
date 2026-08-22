@@ -17,7 +17,7 @@ impl AppMsg {
     fn generation(&self) -> Option<u64> {
         use AppMsg::*;
         match self {
-            Rebuild { .. } | UpdateCheck(_) => None,
+            Rebuild { .. } | ClientRefreshed { .. } | UpdateCheck(_) => None,
             Refresh { gen, .. }
             | Identity { gen, .. }
             | Applications { gen, .. }
@@ -96,6 +96,7 @@ impl App {
                 ..
             } => self.apply_refresh(result, partial_errors),
             AppMsg::Rebuild { epoch, result } => self.apply_rebuild(epoch, result),
+            AppMsg::ClientRefreshed { epoch, result } => self.apply_client_refresh(epoch, result),
             AppMsg::Identity { result, .. } => self.handle_identity(result),
             AppMsg::Applications { result, .. } => self.handle_applications(result),
             AppMsg::SolutionStacks { result, .. } => self.handle_solution_stacks(result),
