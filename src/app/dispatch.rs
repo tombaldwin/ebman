@@ -199,10 +199,11 @@ impl App {
                 };
                 // Best-effort yank to the clipboard so the operator can
                 // paste the upgrade command directly. Silent if the
-                // clipboard isn't reachable.
-                if let Ok(mut cb) = arboard::Clipboard::new() {
-                    let _ = cb.set_text(cmd.to_string());
-                }
+                // clipboard isn't reachable. Goes through `yank` like
+                // every other copy — a direct `arboard` call here is
+                // how a test ends up writing to the real clipboard,
+                // since only `yank` is stubbed under `cfg(test)`.
+                let _ = crate::app::yank(cmd);
                 self.pin_status(msg);
             }
             "history" => {

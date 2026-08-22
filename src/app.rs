@@ -2369,15 +2369,26 @@ pub(crate) fn build_undo_entry(
 }
 
 fn yank(text: &str) -> std::result::Result<(), String> {
-    let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
-    cb.set_text(text.to_string()).map_err(|e| e.to_string())
+    // Stubbed under `cfg(test)`. Nine call sites reach here, and the
+    // tests that drive them assert on what *would* be copied (via
+    // `last_yanked_cli` and friends) — none of them want the real
+    // clipboard. Writing to it from `cargo test` destroys whatever the
+    // developer running the suite had copied, which is a side effect
+    // on their machine, not on the program under test. On a headless
+    // CI box it's worse: the call fails for want of a display and the
+    // assertion reports a clipboard error instead of its subject.
+    #[cfg(test)]
+    {
+        let _ = text;
+        Ok(())
+    }
+    #[cfg(not(test))]
+    {
+        let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+        cb.set_text(text.to_string()).map_err(|e| e.to_string())
+    }
 }
 
-/// Pair every async AWS error with a full-chain log entry. The returned string
-/// is the SDK's top-level `Display` (concise, suitable for the toast/footer);
-/// the chain — including the underlying `dyn Error` causes that color-eyre
-/// records on `Report` — goes to `ebman.log` via `tracing::error!`. Without
-/// this the chain was lost both from the UI and the log.
 /// Which EC2 surface a MultiSelect form is pulling its option list from.
 /// Drives both the EC2 API call and the option-setting target so the
 /// pickers share `open_multi_select_form` without conditional branches.
@@ -2506,6 +2517,11 @@ async fn load_listener_certs(
 pub(crate) static DEMO_QUIET_AWS_ERRORS: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// Pair every async AWS error with a full-chain log entry. The returned string
+/// is the SDK's top-level `Display` (concise, suitable for the toast/footer);
+/// the chain — including the underlying `dyn Error` causes that color-eyre
+/// records on `Report` — goes to `ebman.log` via `tracing::error!`. Without
+/// this the chain was lost both from the UI and the log.
 fn flatten_err(op: &str, e: color_eyre::eyre::Report) -> String {
     if DEMO_QUIET_AWS_ERRORS.load(std::sync::atomic::Ordering::Relaxed) {
         tracing::debug!(target: "ebman::aws", op = op, error = ?e, "aws call failed (demo stub)");

@@ -1188,14 +1188,29 @@ mod tests {
         // source comments and nothing noticed. An operator whose alarms
         // are invisible reads that doc, types the name, and gets an
         // unknown-command error.
-        let sources = [
-            include_str!("config.rs"),
-            include_str!("../docs/configuration.md"),
-            include_str!("../docs/commands.md"),
+        //
+        // Scoped to three named files at first, which is how
+        // `docs/safety-and-privacy.md` came to cite `:env-vars` — not
+        // a command; the env-var reader is `:env list`. Every shipped
+        // doc gets checked now, discovered at run time so a new page
+        // is covered the day it lands.
+        let mut sources: Vec<String> = vec![
+            include_str!("config.rs").to_string(),
+            std::fs::read_to_string("README.md").expect("README.md"),
         ];
+        let mut docs: Vec<std::path::PathBuf> = std::fs::read_dir("docs")
+            .expect("docs dir")
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
+            .collect();
+        docs.sort();
+        assert!(docs.len() > 5, "the docs walk found only {}", docs.len());
+        for path in docs {
+            sources.push(std::fs::read_to_string(&path).expect("read doc"));
+        }
         let known: std::collections::HashSet<&str> = all_names().into_iter().collect();
         let mut bad: Vec<String> = Vec::new();
-        for src in sources {
+        for src in &sources {
             for cap in src.split('`') {
                 let Some(name) = cap.strip_prefix(':') else {
                     continue;
@@ -1210,7 +1225,10 @@ mod tests {
                 {
                     continue;
                 }
-                if !known.contains(name) {
+                // Metasyntactic placeholders, not citations —
+                // "every `:command` grouped by job".
+                const PLACEHOLDERS: &[&str] = &["command", "name", "cmd"];
+                if !known.contains(name) && !PLACEHOLDERS.contains(&name) {
                     bad.push(format!(":{name}"));
                 }
             }

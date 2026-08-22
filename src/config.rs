@@ -291,11 +291,33 @@ pub fn parse(text: &str) -> Config {
                 // REPLACES the first as every other key does. Appending
                 // meant an operator editing by adding a line silently
                 // got the union of both, with no way to narrow it back.
+                //
+                // A leading `-` removes a name — the escape hatch for
+                // the false positive this key exists to avoid. An
+                // operator whose RDS alarms carry an `EnvironmentName`
+                // dimension needs `"MyDim,-EnvironmentName"` to stop
+                // ebman claiming them; add-only left them no way back.
+                // `-` can't collide with a real CloudWatch dimension
+                // name, so the opt-out can't happen by accident.
                 let mut names = vec![crate::aws::ENV_DIMENSION.to_string()];
                 for name in crate::util::split_csv(&value) {
-                    if !names.contains(&name) {
-                        names.push(name);
+                    match name.strip_prefix('-') {
+                        Some(drop) => names.retain(|n| n != drop),
+                        None => {
+                            if !names.contains(&name) {
+                                names.push(name);
+                            }
+                        }
                     }
+                }
+                // An empty list matches nothing, ever — no operator
+                // means that by this key, and silently disabling the
+                // alarm panel is exactly the "no alarms configured"
+                // misread the canonical default exists to prevent.
+                // `-EnvironmentName` alone falls back rather than
+                // blinding the panel.
+                if names.is_empty() {
+                    names.push(crate::aws::ENV_DIMENSION.to_string());
                 }
                 cfg.alarm_dimensions = names;
             }
@@ -537,12 +559,22 @@ pub fn serialize(cfg: &Config) -> String {
     // and always matched. Emitting the full list would rewrite a
     // hand-written `alarm_dimensions = "Environment"` as
     // `"EnvironmentName,Environment"` on the next `:settings` save.
-    let extra: Vec<&str> = cfg
+    let mut extra: Vec<String> = cfg
         .alarm_dimensions
         .iter()
         .filter(|d| d.as_str() != crate::aws::ENV_DIMENSION)
-        .map(String::as_str)
+        .cloned()
         .collect();
+    // A deliberate opt-out has to survive the round trip too: without
+    // re-emitting the `-`, a `:settings` save silently reinstated the
+    // canonical name and the false positive with it.
+    if !cfg
+        .alarm_dimensions
+        .iter()
+        .any(|d| d == crate::aws::ENV_DIMENSION)
+    {
+        extra.push(format!("-{}", crate::aws::ENV_DIMENSION));
+    }
     if !extra.is_empty() {
         out.push_str(&format!("alarm_dimensions = \"{}\"\n", extra.join(",")));
     }
@@ -958,6 +990,42 @@ explain.max_tokens = 512
             cfg.alarm_dimensions,
             vec!["EnvironmentName".to_string(), "Environment".to_string()],
             "the key ADDS spellings; the canonical one is always matched"
+        );
+    }
+
+    #[test]
+    fn alarm_dimensions_has_a_deliberate_opt_out() {
+        // This key exists because matching on the dimension *value*
+        // alone claimed an RDS alarm named after the env. Making it
+        // add-only fixed the "operator's own spelling is invisible"
+        // half and reinstated the other: an operator whose non-EB
+        // alarms carry an `EnvironmentName` dimension had no way to
+        // stop ebman claiming them.
+        let cfg = parse("alarm_dimensions = \"MyDim,-EnvironmentName\"\n");
+        assert_eq!(cfg.alarm_dimensions, vec!["MyDim".to_string()]);
+
+        // Order doesn't matter — a removal applies wherever it lands.
+        let cfg = parse("alarm_dimensions = \"-EnvironmentName,MyDim\"\n");
+        assert_eq!(cfg.alarm_dimensions, vec!["MyDim".to_string()]);
+
+        // Removing everything would match nothing, ever. Nobody means
+        // that by this key, and a blind alarm panel reads as "no
+        // alarms configured" — the exact misread the canonical
+        // default is there to prevent.
+        let cfg = parse("alarm_dimensions = \"-EnvironmentName\"\n");
+        assert_eq!(
+            cfg.alarm_dimensions,
+            vec!["EnvironmentName".to_string()],
+            "an empty match set falls back rather than blinding the panel"
+        );
+
+        // And the opt-out survives a `:settings` save, which rewrites
+        // the whole file from `serialize`.
+        let cfg = parse("alarm_dimensions = \"MyDim,-EnvironmentName\"\n");
+        let reparsed = parse(&serialize(&cfg));
+        assert_eq!(
+            reparsed.alarm_dimensions, cfg.alarm_dimensions,
+            "without re-emitting the `-`, a save reinstates the false positive"
         );
     }
 

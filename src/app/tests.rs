@@ -7960,3 +7960,42 @@ async fn explain_rewrites_a_pasted_assumed_role_arn() {
         "it should be simulating the underlying role: {status:?}"
     );
 }
+
+#[test]
+fn the_clipboard_is_only_reached_through_yank() {
+    // `yank` is stubbed under `cfg(test)` so the suite can't clobber
+    // the clipboard of whoever runs it. That only holds while `yank`
+    // is the sole door: `:update` reached `arboard` directly and every
+    // test that ran it wrote to the real clipboard.
+    let mut sites: Vec<String> = Vec::new();
+    let mut stack = vec![std::path::PathBuf::from("src")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("src dir") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rs")
+                // This file names it in its own assertions.
+                || path.file_name().and_then(|f| f.to_str()) == Some("tests.rs")
+            {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("read");
+            for (n, line) in text.lines().enumerate() {
+                // Skip the comments that discuss it by name.
+                let code = line.split("//").next().unwrap_or("");
+                if code.contains("arboard::") {
+                    sites.push(format!("{}:{}", path.display(), n + 1));
+                }
+            }
+        }
+    }
+    assert_eq!(
+        sites.len(),
+        1,
+        "the only `arboard::` call belongs inside `yank`; found: {sites:?}"
+    );
+    assert!(sites[0].starts_with("src/app.rs:"), "{sites:?}");
+}
