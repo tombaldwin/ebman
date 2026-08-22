@@ -62,7 +62,7 @@ impl App {
         crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.context.region,
+            &self.region_for_name(&env_name),
             "AlarmCreate",
             &target,
             &[
@@ -75,28 +75,31 @@ impl App {
         self.status_message = Some(format!(
             "creating alarm '{alarm_name}' on {env_name}/{metric_name} {op_str} {threshold}…"
         ));
-        let aws = self.aws.clone();
+        let client = self.current_env_client();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_for_msg = env_name.clone();
         let alarm_for_msg = alarm_name.clone();
         let account = self.context.account_id.clone();
         let profile = self.context.profile.clone();
-        let region = self.context.region.clone();
+        let region = self.region_for_name(&env_name);
         tokio::spawn(async move {
-            let result = aws
-                .put_env_metric_alarm(
-                    &alarm_for_msg,
-                    &env_for_msg,
-                    &metric_name,
-                    threshold,
-                    &op_str,
-                    300,
-                    1,
-                    &stat_str,
-                )
-                .await
-                .map_err(|e| flatten_err("put_metric_alarm", e));
+            let result = match client.resolve().await {
+                Ok(aws) => aws
+                    .put_env_metric_alarm(
+                        &alarm_for_msg,
+                        &env_for_msg,
+                        &metric_name,
+                        threshold,
+                        &op_str,
+                        300,
+                        1,
+                        &stat_str,
+                    )
+                    .await
+                    .map_err(|e| flatten_err("put_metric_alarm", e)),
+                Err(e) => Err(flatten_err("cached_client", e)),
+            };
             crate::audit::append_action_completed(
                 account.as_deref(),
                 profile.as_deref(),
@@ -134,26 +137,29 @@ impl App {
                 crate::audit::append_action_dispatched(
                     self.context.account_id.as_deref(),
                     self.context.profile.as_deref(),
-                    &self.context.region,
+                    &self.region_for_name(&env_name),
                     "AlarmDelete",
                     &target,
                     &[],
                 );
                 self.push_pending("Delete alarm", target.clone());
                 self.status_message = Some(format!("deleting alarm '{alarm_name}'…"));
-                let aws = self.aws.clone();
+                let client = self.current_env_client();
                 let tx = self.msg_tx.clone();
                 let gen = self.generation;
                 let alarm_for_msg = alarm_name.clone();
                 let env_for_msg = env_name.clone();
                 let account = self.context.account_id.clone();
                 let profile = self.context.profile.clone();
-                let region = self.context.region.clone();
+                let region = self.region_for_name(&env_name);
                 tokio::spawn(async move {
-                    let result = aws
-                        .delete_alarms(std::slice::from_ref(&alarm_for_msg))
-                        .await
-                        .map_err(|e| flatten_err("delete_alarms", e));
+                    let result = match client.resolve().await {
+                        Ok(aws) => aws
+                            .delete_alarms(std::slice::from_ref(&alarm_for_msg))
+                            .await
+                            .map_err(|e| flatten_err("delete_alarms", e)),
+                        Err(e) => Err(flatten_err("cached_client", e)),
+                    };
                     crate::audit::append_action_completed(
                         account.as_deref(),
                         profile.as_deref(),
@@ -189,16 +195,19 @@ impl App {
             return;
         };
         let name = name.to_string();
-        let aws = self.aws.clone();
+        let client = self.current_env_client();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         self.status_message = Some(format!("fetching alarm history for {name}…"));
         let name_for_title = name.clone();
         tokio::spawn(async move {
-            let result = aws
-                .fetch_alarm_history(&name, 50)
-                .await
-                .map_err(|e| flatten_err("fetch_alarm_history", e));
+            let result = match client.resolve().await {
+                Ok(aws) => aws
+                    .fetch_alarm_history(&name, 50)
+                    .await
+                    .map_err(|e| flatten_err("fetch_alarm_history", e)),
+                Err(e) => Err(flatten_err("cached_client", e)),
+            };
             let body = match result {
                 Ok(items) => super::format_alarm_history(&name, &items),
                 Err(e) => format!("alarm-history: {e}\n\nesc / q to close"),

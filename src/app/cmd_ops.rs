@@ -102,15 +102,18 @@ impl App {
             ));
             return;
         }
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env_name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         self.status_message = Some(format!("rollback: finding {env_name}'s previous version…"));
         tokio::spawn(async move {
-            let result = aws
-                .list_events_for_env(&env_name, 100)
-                .await
-                .map_err(|e| flatten_err("list_events_for_env", e));
+            let result = match client.resolve().await {
+                Ok(aws) => aws
+                    .list_events_for_env(&env_name, 100)
+                    .await
+                    .map_err(|e| flatten_err("list_events_for_env", e)),
+                Err(e) => Err(flatten_err("cached_client", e)),
+            };
             let _ = tx.send(AppMsg::RollbackTarget {
                 gen,
                 env_name,
@@ -330,7 +333,7 @@ impl App {
                 Some("another :env-edit is mid-flight — wait for the editor to close".into());
             return;
         }
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env.name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let app_name = env.application.clone();
@@ -338,10 +341,13 @@ impl App {
         let env_name_for_msg = env_name.clone();
         self.status_message = Some(format!("fetching env vars for {env_name}…"));
         tokio::spawn(async move {
-            let result = aws
-                .fetch_env_vars(&app_name, &env_name)
-                .await
-                .map_err(|e| flatten_err("fetch_env_vars", e));
+            let result = match client.resolve().await {
+                Ok(aws) => aws
+                    .fetch_env_vars(&app_name, &env_name)
+                    .await
+                    .map_err(|e| flatten_err("fetch_env_vars", e)),
+                Err(e) => Err(flatten_err("cached_client", e)),
+            };
             let _ = tx.send(AppMsg::EnvVarsForEdit {
                 gen,
                 env_name: env_name_for_msg,
@@ -368,13 +374,13 @@ impl App {
             return;
         }
         let id = inst.id.clone();
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env_name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.context.region,
+            &self.region_for_name(&env_name),
             "TerminateInstance",
             env_name.as_str(),
             &[("instance", id.as_str())],
@@ -388,10 +394,13 @@ impl App {
         // In-flight ack lives on the pending pill; completion toasts.
         let _ = id;
         tokio::spawn(async move {
-            let result = aws
-                .terminate_instance(&id)
-                .await
-                .map_err(|e| flatten_err("terminate_instance", e));
+            let result = match client.resolve().await {
+                Ok(aws) => aws
+                    .terminate_instance(&id)
+                    .await
+                    .map_err(|e| flatten_err("terminate_instance", e)),
+                Err(e) => Err(flatten_err("cached_client", e)),
+            };
             let _ = tx.send(AppMsg::ActionResult {
                 gen,
                 action: Action::TerminateInstance,
@@ -444,7 +453,7 @@ impl App {
         crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.context.region,
+            &self.region_for_name(&env_name),
             // Use the Debug-format name (`SsmRun`) for audit consistency
             // with cancel_pending_dispatch's UNDONE line and with every
             // other Action variant (`Rebuild`, `Terminate`, …). Pre-
@@ -456,7 +465,7 @@ impl App {
             env_name.as_str(),
             &[("instances", &instances_str), ("cmd", &audit_cmd)],
         );
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env_name);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let command_for_render = command.clone();
@@ -469,10 +478,13 @@ impl App {
         let audit_cmd_for_outcome = audit_cmd.clone();
         self.status_message = Some(format!("running `{command}` on {n} instance(s)…"));
         tokio::spawn(async move {
-            let result = aws
-                .run_shell_command(&instances, &command, 60)
-                .await
-                .map_err(|e| flatten_err("run_shell_command", e));
+            let result = match client.resolve().await {
+                Ok(aws) => aws
+                    .run_shell_command(&instances, &command, 60)
+                    .await
+                    .map_err(|e| flatten_err("run_shell_command", e)),
+                Err(e) => Err(flatten_err("cached_client", e)),
+            };
             let ok_count_str = match &result {
                 Ok(rows) => {
                     let oks = rows.iter().filter(|r| r.status == "Success").count();

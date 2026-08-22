@@ -24,14 +24,17 @@ impl App {
         write_audit_entry(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.context.region,
+            &self.region_for_name(&env),
             action,
             &env,
             None,
         );
         self.push_pending(action.label(), env.clone());
         let env_for_msg = env.clone();
-        self.spawn_aws(
+        // Per-env: a multi-selection can span regions, and these are
+        // rebuild / restart / terminate.
+        self.spawn_aws_in(
+            self.client_for_env(&env_for_msg),
             "batch_action",
             move |aws| async move {
                 match action {
@@ -55,13 +58,13 @@ impl App {
     /// pill + audit + `ActionResult` plumbing with the existing single-env
     /// `:deploy` path via `Action::Deploy`.
     pub(super) fn spawn_batch_deploy(&mut self, env: String, label: String) {
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.context.region,
+            &self.region_for_name(&env),
             "Deploy",
             env.as_str(),
             &[("version", label.as_str())],
@@ -69,10 +72,13 @@ impl App {
         self.push_pending(Action::Deploy.label(), env.clone());
         let env_for_msg = env.clone();
         tokio::spawn(async move {
-            let result = aws
-                .deploy_version(&env, &label)
-                .await
-                .map_err(|e| flatten_err("deploy_version", e));
+            let result = match client.resolve().await {
+                Ok(aws) => aws
+                    .deploy_version(&env, &label)
+                    .await
+                    .map_err(|e| flatten_err("deploy_version", e)),
+                Err(e) => Err(flatten_err("cached_client", e)),
+            };
             let _ = tx.send(AppMsg::ActionResult {
                 gen,
                 action: Action::Deploy,
@@ -93,7 +99,7 @@ impl App {
         key: String,
         value: Option<String>,
     ) {
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let is_add = value.is_some();
@@ -102,7 +108,7 @@ impl App {
             Some(v) => crate::audit::append_action_dispatched(
                 self.context.account_id.as_deref(),
                 self.context.profile.as_deref(),
-                &self.context.region,
+                &self.region_for_name(&env),
                 "Tag",
                 &env,
                 &[("key", &key), ("value", v)],
@@ -110,7 +116,7 @@ impl App {
             None => crate::audit::append_action_dispatched(
                 self.context.account_id.as_deref(),
                 self.context.profile.as_deref(),
-                &self.context.region,
+                &self.region_for_name(&env),
                 "Untag",
                 &env,
                 &[("key", &key)],
@@ -129,10 +135,13 @@ impl App {
             } else {
                 Vec::new()
             };
-            let result = aws
-                .update_tags(&arn, &to_add, &to_remove)
-                .await
-                .map_err(|e| flatten_err("update_tags", e));
+            let result = match client.resolve().await {
+                Ok(aws) => aws
+                    .update_tags(&arn, &to_add, &to_remove)
+                    .await
+                    .map_err(|e| flatten_err("update_tags", e)),
+                Err(e) => Err(flatten_err("cached_client", e)),
+            };
             let _ = tx.send(AppMsg::TagUpdate {
                 gen,
                 env_name: env_for_msg,
@@ -167,20 +176,20 @@ impl App {
             crate::audit::append_action_skipped(
                 self.context.account_id.as_deref(),
                 self.context.profile.as_deref(),
-                &self.context.region,
+                &self.region_for_name(&env),
                 "SetOption",
                 &env,
                 "env not in current view",
             );
             return;
         };
-        let aws = self.aws.clone();
+        let client = self.client_for_env(&env);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         crate::audit::append_action_dispatched(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.context.region,
+            &self.region_for_name(&env),
             "SetOption",
             &env,
             &[("ns", &namespace), ("name", &name), ("value", &value)],
@@ -193,6 +202,21 @@ impl App {
         let to_set_for_undo: Vec<(String, String, String)> =
             vec![(namespace.clone(), name.clone(), value.clone())];
         tokio::spawn(async move {
+            // One resolve for both calls: the undo read and the write
+            // must hit the SAME region, or :undo would offer to
+            // restore the home region's settings over the row's.
+            let aws = match client.resolve().await {
+                Ok(aws) => aws,
+                Err(e) => {
+                    let _ = tx.send(AppMsg::OptionSettingsUpdate {
+                        gen,
+                        env_name: env_for_msg,
+                        summary: pending_label,
+                        result: Err(flatten_err("cached_client", e)),
+                    });
+                    return;
+                }
+            };
             // Undo capture: read the env's current option-settings
             // BEFORE the write so :undo can reverse this batch entry
             // alongside any per-env writes. Read failure is non-

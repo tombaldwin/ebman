@@ -33,7 +33,7 @@ impl App {
                 };
                 let template = template.to_string();
                 let app_name = env.application.clone();
-                let aws = self.aws.clone();
+                let client = self.client_for_env(&env.name);
                 let tx = self.msg_tx.clone();
                 let gen = self.generation;
                 self.status_message = Some(format!(
@@ -54,10 +54,13 @@ impl App {
                 );
                 self.push_pending(action.label(), display_env.clone());
                 tokio::spawn(async move {
-                    let result = aws
-                        .create_config_template(&app_name, &template, &env_id)
-                        .await
-                        .map_err(|e| flatten_err("create_config_template", e));
+                    let result = match client.resolve().await {
+                        Ok(aws) => aws
+                            .create_config_template(&app_name, &template, &env_id)
+                            .await
+                            .map_err(|e| flatten_err("create_config_template", e)),
+                        Err(e) => Err(flatten_err("cached_client", e)),
+                    };
                     let labelled = result
                         .map(|_| ())
                         .map_err(|e| format!("config-save '{template_for_msg}': {e}"));
