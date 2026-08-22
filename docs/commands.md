@@ -133,6 +133,11 @@ Type `:` to open the command bar. Tab-completion is not implemented, but `Ctrl-K
 
 ## Multi-account / multi-region
 
+Under a `:region all` fan-out the selected row is routinely in a region
+other than the session's. Since 0.30 everything about an environment —
+Detail, `:why`, the DLQ viewer, `:lint`, `:drift`, and every write —
+goes to *that environment's* region, and the audit line says so.
+
 - `:region NAME` / `:region all` / `:r NAME` — switch region, or fan out across configured regions.
 - `:profile NAME` / `:p NAME` — switch AWS profile.
 - `:account NAME` — switch to an AssumeRole account (`accounts.NAME` in `config.toml`). Falls back to `:profile` aliasing when no `accounts.` entry exists.

@@ -720,6 +720,56 @@ fn client_cache() -> &'static ClientCache {
     CLIENT_CACHE.get_or_init(Default::default)
 }
 
+/// Assumed-role clients, keyed by `(account name, region)`.
+///
+/// Deliberately separate from [`CLIENT_CACHE`] and deliberately NOT
+/// excluded from caching the way the doc above says profile clients
+/// are: the reason `assume_role` was left uncached is the session's
+/// hard one-hour cap, and [`CLIENT_CACHE_TTL`] is five minutes. A
+/// cached entry can therefore never outlive its credentials.
+///
+/// Without this, per-env work under `:account` re-assumes per call —
+/// and `spawn_env_instance_counts` builds one client per row on every
+/// 15-second tick, which on a large fleet is an STS AssumeRole storm.
+static ROLE_CACHE: std::sync::OnceLock<RoleCache> = std::sync::OnceLock::new();
+
+type RoleCache = std::sync::Mutex<
+    std::collections::HashMap<(String, String), (std::time::Instant, std::sync::Arc<AwsClient>)>,
+>;
+
+fn role_cache() -> &'static RoleCache {
+    ROLE_CACHE.get_or_init(Default::default)
+}
+
+/// An assumed-role client for `name` pointed at `spec.region`, built
+/// once and reused for [`CLIENT_CACHE_TTL`].
+pub async fn cached_role_client(
+    name: &str,
+    spec: &crate::config::AccountSpec,
+) -> Result<std::sync::Arc<AwsClient>> {
+    use std::sync::atomic::Ordering;
+    let key = (name.to_string(), spec.region.clone().unwrap_or_default());
+    let fresh = role_cache().lock().ok().and_then(|c| {
+        c.get(&key)
+            .filter(|(built, _)| built.elapsed() < CLIENT_CACHE_TTL)
+            .map(|(_, client)| client.clone())
+    });
+    if let Some(found) = fresh {
+        return Ok(found);
+    }
+    // Same epoch discipline as `cached_client`: a context switch that
+    // lands while this is assuming must not be undone by installing a
+    // client resolved before it.
+    let epoch = CACHE_EPOCH.load(Ordering::SeqCst);
+    let built = std::sync::Arc::new(AwsClient::assume_role(name, spec).await?);
+    if let Ok(mut cache) = role_cache().lock() {
+        if CACHE_EPOCH.load(Ordering::SeqCst) == epoch {
+            cache.insert(key, (std::time::Instant::now(), built.clone()));
+        }
+    }
+    Ok(built)
+}
+
 /// A client for this profile+region, built once and reused for
 /// `CLIENT_CACHE_TTL`.
 ///
@@ -825,6 +875,9 @@ pub fn clear_client_cache() {
     // after this point sees the new value and declines to install.
     CACHE_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     if let Ok(mut cache) = client_cache().lock() {
+        cache.clear();
+    }
+    if let Ok(mut cache) = role_cache().lock() {
         cache.clear();
     }
 }

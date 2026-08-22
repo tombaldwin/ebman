@@ -243,11 +243,27 @@ impl App {
                 .override_profile
                 .clone()
                 .or_else(|| self.context.profile.clone());
+            // Under `:account NAME` the account name is what lives in
+            // `context.profile` (it's the header breadcrumb), so passing
+            // it as a profile made every region of a `:region all`
+            // fan-out fail with "profile not found" — `:account` plus
+            // `:region all` simply did not work. Re-assume per region
+            // instead, the same way `:org-health` does.
+            let account = self.assumed_account();
             tokio::spawn(async move {
                 use futures::future::join_all;
                 let tasks = regions.into_iter().map(|r| {
                     let p = profile.clone();
-                    async move { crate::aws::list_environments_in_region(p, r).await }
+                    let acct = account.clone();
+                    async move {
+                        match acct {
+                            Some((name, spec)) => {
+                                crate::aws::list_environments_for_account(&name, &spec, Some(r))
+                                    .await
+                            }
+                            None => crate::aws::list_environments_in_region(p, r).await,
+                        }
+                    }
                 });
                 let results = join_all(tasks).await;
                 let mut envs = Vec::new();

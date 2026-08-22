@@ -13,7 +13,11 @@ impl AppMsg {
     /// matches `App::generation` — the single enforcement point for the
     /// "results from a superseded context are discarded" invariant.
     /// `Rebuild` and `UpdateCheck` aren't tied to an AWS context, so they
-    /// return `None` and are always delivered.
+    /// return `None` and are always delivered. `ClientRefreshed` also
+    /// returns `None`, but for a different reason: it carries
+    /// `rebuild_epoch` and `apply_client_refresh` checks that instead —
+    /// a generation guard would be the wrong test, since the whole
+    /// point is that the context has NOT changed.
     fn generation(&self) -> Option<u64> {
         use AppMsg::*;
         match self {
