@@ -1170,9 +1170,9 @@ A unified table would therefore be four shared rows, ten TUI-only rows, and a se
 
 **What the pass does support — three small independent fixes:**
 
-- [ ] **CLI's two parallel maps for the same three verbs** (`action.rs:170` audit label, `action.rs:191` method) — a genuine drift surface: adding a verb means editing two matches and the compiler checks neither against the other. One `&[(&str, &str, fn)]` row per verb, ~20 lines. This is item M2 at its real size, which is much smaller than "shared verb-dispatch helper" implied.
-- [ ] **pin/freeze check order** (M3) — CLI is pin-then-freeze, MCP is freeze-then-pin. A five-line alignment plus one shared refusal string. Cosmetic, as the entry always said.
-- [ ] **MCP tool registry** (I1) — descriptors in `tools.rs`, handlers in `mod.rs`. Genuinely worth doing and **independent of the other two**; it is about MCP's own shape, not about the write surface.
+- [x] **CLI's two parallel maps for the same three verbs** — DONE (see M2 above; `CliVerb`, and it exposed the audit-name split). Was: (`action.rs:170` audit label, `action.rs:191` method) — a genuine drift surface: adding a verb means editing two matches and the compiler checks neither against the other. One `&[(&str, &str, fn)]` row per verb, ~20 lines. This is item M2 at its real size, which is much smaller than "shared verb-dispatch helper" implied.
+- [x] **pin/freeze check order** — DONE (see M3 above; `refuse_write` + `freeze::refusal_message`). Was: CLI is pin-then-freeze, MCP is freeze-then-pin. A five-line alignment plus one shared refusal string. Cosmetic, as the entry always said.
+- [x] **MCP tool registry** — DONE (see I1 above; pinned by test rather than restructured). Was: descriptors in `tools.rs`, handlers in `mod.rs`. Genuinely worth doing and **independent of the other two**; it is about MCP's own shape, not about the write surface.
 
 **Not supported, and now recorded as such:** `WRITE_COMMANDS` cannot be derived from any verb table. If the safety property test is to cover more of the surface, the honest route is to keep the hand-written invocation list and add a guard that every `:command` whose handler reaches a mutator appears in it — a reachability check, which is exactly the analysis that produced false positives in both directions when attempted (`:explain` and `:changes` read as gated, `:rebuild` as non-mutating). So: keep the list hand-written, and stop filing it as derivable.
 
