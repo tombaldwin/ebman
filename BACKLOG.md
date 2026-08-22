@@ -1227,6 +1227,24 @@ Three gates added to CI. Two of them found something on the first run, which is 
 - [x] **`cargo-semver-checks`** on pull requests. ebman is lib + bin on crates.io, so a signature change in the lib decides whether the next tag is a patch or a minor — 0.30.2 shipped one (`ui::series_anomaly_label` gained a parameter) that a human review caught, which is not a thing to notice by reading.
 - [x] **Least-privilege workflow permissions.** Four open CodeQL alerts, one per CI job (`actions/missing-workflow-permissions`) — jobs inheriting the repository default rather than declaring what they need. `ci.yml` is `contents: read` throughout; `release.yml` drops from a blanket `contents: write` to read, with only the `publish` job opting up, since `build` uploads via `actions/upload-artifact` and `crates_io` authenticates with its own token.
 
+#### candor as the fourth gate — 2026-08-23
+
+`.candor/` had scan reports dated 1 August, no policy file and no CI job — a one-off scan, not a gate, and the reports predated the `app.rs`, `aws.rs` and `ui.rs` splits, so their callgraph described a codebase that no longer existed.
+
+`.candor/policy` now encodes the boundaries `ARCHITECTURE.md` already claims but nothing enforced, and a CI job runs it on every push and PR. Verified by canary: a `draw_footer` that reaches `llm::dispatch` is blocked, naming both the function and the path.
+
+What the policy asserts, and what it deliberately doesn't:
+
+- **`deny Net Llm ui`** — the invariant that matters. A repaint happens on every keystroke, so a render function that calls out turns a redraw into a round trip. Passes today.
+- **`forbid aws -> ui`** — the AWS boundary knows nothing about the TUI.
+- **NOT `forbid aws -> app`**, though the layering doc implies it: the layer matcher is a prefix match, so `app` also matches `aws_sdk_elasticbeanstalk::…::application_name`, and the rule fired on nine honest EB calls. A rule that cries wolf nine times teaches people to skip the output.
+- **NOT `deny Exec Ipc ui`** — and this is a real finding rather than a false positive. `ui::shell::draw_shell` renders the embedded SSM pane, which reads a live PTY: Exec to spawn, Ipc to read. The one render path that legitimately isn't pure, now declared rather than quietly true.
+- **NOT a test-harness capability rule.** With `--include-tests`, candor reports 102 test functions reaching Clipboard — because it is a syntactic scanner and sees the `#[cfg(not(test))]` arm of `yank`, which is exactly the arm compiled out under test. A gate firing 102 times on day one gets switched off. The `cfg(test)` stub plus its guard test is what actually holds that boundary.
+
+Operationally important: **the two backends disagree.** `candor-scan` (syntactic, stable toolchain) reports `ui::draw` with no Exec/Ipc at all; only the type-resolved dylint lint finds them. So the CI job runs the lint, not a scan report — gating on the scan would have missed the exact class the policy exists to catch.
+
+- [ ] **`ui::overlays::draw_form` recomputes a config path every frame** — `config::config_path()` → `util::config_dir()` → reads `$HOME`, to render the "file: …" banner telling the operator where `:settings` will write. Not I/O in production, but the render layer reaching into config is the layering the doc forbids, and it happens per repaint. Hoist it to when the form opens; then `deny Fs ui` can go in the policy and the exception comment comes out.
+
 #### Important (need live verification or a design pass)
 - [x] **Cost Explorer pagination** — Shipped. `fetch_env_costs` follows `NextPageToken` (`aws/cost.rs`). The `MAX_COST_PAGES = 20` cap now warns, returns `EnvCosts { truncated }`, and a truncated walk is neither cached nor allowed to replace a complete in-memory map; `:cost status` and `:fleet-cost` both say when what's on screen is partial.
 - [x] **logs-tail `next_token` follow** — Shipped. `fetch_recent_log_events` follows `next_token` up to `MAX_PAGES_PER_POLL = 5` with boundary-millisecond dedupe (`aws/logs.rs`). The carry is keyed on whether the watermark moved rather than on `truncated`, so a stalled watermark keeps its skip set and the same lines aren't re-emitted every poll.
