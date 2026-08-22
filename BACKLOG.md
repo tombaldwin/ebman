@@ -1087,6 +1087,13 @@ Reviewing what actually shipped in 0.30.0 rather than what the commit messages c
 
 All five are post-tag, so they land in 0.30.1.
 
+**Review of those fixes** (same day) — two more:
+
+- [x] **The Detail-snapshot fallback was a partial fix.** The confirm modal carries only a target NAME, and there is an undo window between confirming and `tick_pending_dispatch` firing — so an action started from the TABLE (no Detail snapshot) on a row that a refresh drops in that window still fell back to the home region. `App::env_regions` now remembers where each env was last seen, consulted after the live table and the snapshot. An environment can't change region, the live table always wins, and a context switch clears it.
+- [x] **The per-tick fan-outs went quadratic.** `spawn_env_instance_counts` and `spawn_worker_queue_check` iterate `self.environments` and called `client_for_env(&e.name)`, which scans the whole fleet by name — O(n²) every 15 seconds. They hold the row already; they use `region_for(e)` directly now.
+
+Checked and sound: the role cache's 5-minute TTL against the STS session (no `duration_seconds` is set, so sessions are the 1-hour default — ~55 minutes of margin); no `std::sync::Mutex` is held across an await on any new path; `:alarm-history` correctly keeps the Detail-first accessor because `:alarms`, which it follows, resolves its env the same way.
+
 #### Important (need live verification or a design pass)
 - [x] **Cost Explorer pagination** — Shipped. `fetch_env_costs` follows `NextPageToken` (`aws/cost.rs`). The `MAX_COST_PAGES = 20` cap now warns, returns `EnvCosts { truncated }`, and a truncated walk is neither cached nor allowed to replace a complete in-memory map; `:cost status` and `:fleet-cost` both say when what's on screen is partial.
 - [x] **logs-tail `next_token` follow** — Shipped. `fetch_recent_log_events` follows `next_token` up to `MAX_PAGES_PER_POLL = 5` with boundary-millisecond dedupe (`aws/logs.rs`). The carry is keyed on whether the watermark moved rather than on `truncated`, so a stalled watermark keeps its skip set and the same lines aren't re-emitted every poll.
