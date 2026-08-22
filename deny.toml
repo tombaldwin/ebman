@@ -1,0 +1,75 @@
+# cargo-deny — supply-chain gate for CI (`cargo deny check`).
+#
+# 61 direct dependencies, including the whole AWS SDK, and until this
+# file existed nothing checked any of them against RUSTSEC.
+
+[advisories]
+# Fail on any known advisory. Every exception below is dated and
+# justified — an accepted risk belongs here in the open, not as a
+# loosened threshold. Review these when the AWS SDK moves to rustls
+# 0.23; most should disappear on their own.
+yanked = "deny"
+ignore = [
+    # rustls 0.21 / rustls-webpki, reached only through
+    # `aws-smithy-http-client`. ebman does not parse certificates or
+    # CRLs itself and cannot choose the TLS stack the AWS SDK links.
+    # Fixed upstream in rustls 0.23; nothing to do here until the SDK
+    # bumps. Reviewed 2026-08-22.
+    "RUSTSEC-2026-0098",  # name constraints accepted for URI names
+    "RUSTSEC-2026-0099",  # name constraints accepted for wildcard certs
+    "RUSTSEC-2026-0104",  # reachable panic parsing a CRL
+    # h2, via hyper inside the same SDK client stack. Unbounded empty
+    # DATA frames is a server-side DoS; ebman is a client that talks
+    # only to AWS endpoints. Reviewed 2026-08-22.
+    "RUSTSEC-2026-0258",
+    # `paste`, a proc-macro pulled by ratatui. Unmaintained, not
+    # vulnerable — no code path, no runtime component. Goes away when
+    # ratatui drops it. Reviewed 2026-08-22.
+    "RUSTSEC-2024-0436",
+    # `serde_yml` — unsound AND unmaintained, and the ONLY one of
+    # these that is ebman's own direct dependency. Not waived
+    # indefinitely: tracked in BACKLOG for migration off it. Two
+    # breaking changes inside a patch release (0.0.12 -> 0.0.13)
+    # on 2026-08-22 alone. Reviewed 2026-08-22.
+    "RUSTSEC-2025-0068",
+]
+
+[licenses]
+# ebman is MIT OR Apache-2.0. These are the licences compatible with
+# redistributing a binary under that pair.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    "MPL-2.0",
+    # All permissive and compatible with redistributing under
+    # MIT OR Apache-2.0. Each earned its place by an actual dependency
+    # rather than being pre-loaded: BSL-1.0 (clipboard-win, error-code),
+    # CDLA-Permissive-2.0 (minicbor), BlueOak-1.0.0.
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "BlueOak-1.0.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+# Duplicate versions of one crate are a warning, not a failure: the AWS
+# SDK pulls a wide tree and a shared transitive pin is routinely out of
+# our hands. Worth seeing, not worth blocking a release on.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+# Everything must come from crates.io. A git or path dependency
+# slipping into a published release is the failure this catches —
+# `Cargo.toml` carries a commented-out path override for co-developing
+# `tb-tui-common`, and uncommenting it before a release would otherwise
+# be invisible until the publish failed.
+unknown-registry = "deny"
+unknown-git = "deny"

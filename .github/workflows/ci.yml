@@ -9,6 +9,13 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: short
 
+# Least privilege for every job below. Without an explicit block a job
+# inherits the repository default, which can be write-all — CodeQL flags
+# each one (`actions/missing-workflow-permissions`). Nothing in CI needs
+# more than reading the checkout.
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
     name: build, test
@@ -55,3 +62,33 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.91
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked
+
+  deny:
+    name: cargo-deny (advisories, licences, bans)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # 61 direct dependencies including the whole AWS SDK, and until
+      # now nothing checked them against RUSTSEC at all.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories licenses bans sources
+
+  semver:
+    name: cargo-semver-checks
+    runs-on: ubuntu-latest
+    # Only on a PR: it diffs the public API against the last published
+    # release, which is noise on a main-branch push between tags.
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # ebman is lib + bin on crates.io, so a signature change in the
+      # lib is a semver event. 0.30.2 shipped one that a human review
+      # caught (`ui::series_anomaly_label` gained a parameter) — the
+      # kind of thing that decides whether the next tag is 0.30.3 or
+      # 0.31.0, and not something to notice by reading.
+      - uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          feature-group: default-features

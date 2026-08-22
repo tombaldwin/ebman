@@ -86,6 +86,15 @@ pub fn config_path(project_root: &Path) -> PathBuf {
 /// silently — a corrupt config shouldn't refuse to launch ebman.
 /// Empty / `null` fields collapse to `None`.
 pub fn parse(text: &str) -> Option<EbCliConfig> {
+    // An empty file is "no settings", not a parse failure. The EB CLI
+    // writes one sometimes, and this drives a soft filter prefill —
+    // there is nothing to refuse. Stated here rather than relying on
+    // the YAML library: `serde_yml` 0.0.12 read `""` as a null
+    // document and 0.0.13 rejects it, a behaviour change inside a
+    // patch release.
+    if text.trim().is_empty() {
+        return Some(EbCliConfig::default());
+    }
     let raw: RawConfig = serde_yml::from_str(text).ok()?;
     let global = raw.global.unwrap_or_default();
     Some(EbCliConfig {

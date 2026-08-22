@@ -39,8 +39,12 @@ on:
 # Release without a manual `cargo publish` step (which was forgotten
 # for 0.4.0 / 0.4.1 — see BACKLOG).
 
+# Only `publish` creates the GitHub Release. `build` uploads via
+# `actions/upload-artifact` (job-scoped, no repo write) and `crates_io`
+# authenticates with its own token, so neither needs write on the repo.
+# The default here is read; `publish` opts up.
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -105,6 +109,8 @@ jobs:
     # phase. The release.published event doesn't need to re-run this.
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
