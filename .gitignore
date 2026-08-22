@@ -19,3 +19,10 @@ crash-*.log
 
 # Candor scanner local reports
 .candor/
+
+# candor: the scan reports are derived artefacts (regenerate with
+# `candor-scan .`), and `deps/` is a per-machine dependency cache.
+# `.candor/policy` is the source of truth and IS tracked.
+.candor/report.*.json
+.candor/deps/
+.candor/cache/

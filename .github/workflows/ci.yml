@@ -92,3 +92,31 @@ jobs:
       - uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
           feature-group: default-features
+
+  candor:
+    name: candor (effect/layer policy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install dylint
+        run: cargo install cargo-dylint dylint-link --locked
+      - name: Build the candor lint
+        run: |
+          git clone --depth 1 https://github.com/tombaldwin/candor-rust ~/candor
+          (cd ~/candor && cargo build)
+      # The DYLINT backend, not `candor-scan`. The syntactic scanner
+      # reports `ui::draw` with no Exec/Ipc at all, while the
+      # type-resolved lint finds both through the embedded shell pane —
+      # so gating on a scan report would miss exactly the class this
+      # policy exists to catch.
+      - name: Enforce .candor/policy
+        run: |
+          LIB=$(ls ~/candor/target/debug/libcandor@*.so)
+          out=$(CANDOR_POLICY=.candor/policy cargo dylint --lib-path "$LIB" 2>&1 || true)
+          echo "$out"
+          if echo "$out" | grep -qE "AS-EFF-00[689]"; then
+            echo "::error::effect/layer policy violation — see .candor/policy"
+            exit 1
+          fi
