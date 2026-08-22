@@ -11,12 +11,49 @@ pub use tui_common::util::{parse_bool, write_atomic};
 /// Falls back to the current working directory when `$HOME` is
 /// unset (rare; mostly affects sandboxed test environments).
 pub fn config_dir() -> PathBuf {
-    if let Some(home) = std::env::var_os("HOME") {
-        let mut p = PathBuf::from(home);
-        p.push(".config/ebman");
-        return p;
+    // Same redirect as `cache_dir`, and for a worse reason: this one
+    // holds `state.toml`, which `persist_state` rewrites wholesale.
+    // `App::for_tests` sets `demo_mode: false`, and `persist_state`
+    // guards only on demo mode, so every test that drives
+    // `apply_rebuild`, `:cost off` or a `:alias` write reached the
+    // operator's real file and replaced their selected env, sort,
+    // pins, named filters and aliases with test-app defaults.
+    // `persist_state`'s own comment names that hazard; only the demo
+    // half of it was guarded.
+    test_or_home(".config/ebman")
+}
+
+/// A per-process directory under `$TMPDIR` for tests, the real
+/// `$HOME`-relative path otherwise.
+fn test_or_home(suffix: &str) -> PathBuf {
+    #[cfg(test)]
+    {
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "ebman-test-{}-{}",
+            std::process::id(),
+            suffix.replace('/', "-")
+        ));
+        // Created here, not left to callers: `write_secure` and
+        // `write_atomic` don't `create_dir_all`, so an absent directory
+        // makes them return ENOENT — and a test whose subject swallows
+        // the write error then exercises the FAILURE branch while still
+        // passing. Whether that happened depended on whether some
+        // earlier test had created the directory first.
+        let _ = std::fs::create_dir_all(&p);
+        p
     }
-    PathBuf::from(".")
+    #[cfg(not(test))]
+    {
+        match std::env::var_os("HOME") {
+            Some(home) => {
+                let mut p = PathBuf::from(home);
+                p.push(suffix);
+                p
+            }
+            None => PathBuf::from("."),
+        }
+    }
 }
 
 /// XDG-style user cache directory for ebman: `~/.cache/ebman/`.
@@ -30,23 +67,7 @@ pub fn cache_dir() -> PathBuf {
     // timestamp — and because the cache is only stale after 24 hours,
     // the next real session would have rendered that fiction and
     // skipped the fetch that would have corrected it.
-    #[cfg(test)]
-    {
-        let mut p = std::env::temp_dir();
-        p.push(format!("ebman-test-cache-{}", std::process::id()));
-        p
-    }
-    #[cfg(not(test))]
-    {
-        match std::env::var_os("HOME") {
-            Some(home) => {
-                let mut p = PathBuf::from(home);
-                p.push(".cache/ebman");
-                p
-            }
-            None => PathBuf::from("."),
-        }
-    }
+    test_or_home(".cache/ebman")
 }
 
 /// Convenience: `config_dir().join(name)`.
@@ -640,5 +661,44 @@ mod partition_ordering_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod dir_redirect_tests {
+    use super::{cache_dir, config_dir};
+
+    #[test]
+    fn test_runs_never_resolve_a_path_under_home() {
+        // `persist_state` rewrites `state.toml` wholesale and guards
+        // only on demo mode, so before this redirect every test that
+        // drove `apply_rebuild`, `:cost off` or an alias write replaced
+        // the developer's real selected env, sort, pins, named filters
+        // and aliases with test-app defaults. The cost handler did the
+        // same to `~/.cache/ebman`.
+        //
+        // Asserted for BOTH directories: the redirect was added to one
+        // and not the other, and the miss was invisible because the
+        // suite still passed.
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        for dir in [config_dir(), cache_dir()] {
+            if let Some(home) = home.as_ref() {
+                assert!(
+                    !dir.starts_with(home),
+                    "{dir:?} resolves under $HOME during tests"
+                );
+            }
+            assert!(
+                dir.starts_with(std::env::temp_dir()),
+                "{dir:?} should be under the temp dir during tests"
+            );
+            assert!(dir.is_dir(), "{dir:?} must exist — writers don't create it");
+        }
+    }
+
+    #[test]
+    fn the_two_directories_are_distinct() {
+        // Sharing one would let a cache write clobber `state.toml`.
+        assert_ne!(config_dir(), cache_dir());
     }
 }
