@@ -9155,3 +9155,54 @@ async fn ascii_icon_mode_renders_no_unicode_arrows() {
         "the ascii forms replaced them:\n{out}"
     );
 }
+
+#[tokio::test]
+async fn the_anomaly_badge_is_ascii_at_its_call_site_too() {
+    // `series_anomaly_label` takes an `IconStyle` and its unit test
+    // pins that. What that test can't see is whether the CALL SITE
+    // passes `theme.icons` or hardcodes `Unicode` — and call sites are
+    // where every regression in this release cycle actually lived.
+    // Verified by mutation: hardcoding the glyph inside the function
+    // leaves the fleet-view ascii test green, because that frame never
+    // renders the Metrics tab.
+    let cfg = crate::config::Config {
+        icons: "ascii".into(),
+        ..crate::config::Config::default()
+    };
+    let mut app = App::for_tests(crate::aws::AwsClient::stub(), cfg);
+    app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Red")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+
+    let detail = app.detail.as_mut().expect("detail opened");
+    detail.tab_idx = detail
+        .tabs
+        .iter()
+        .position(|t| *t == DetailTab::Metrics)
+        .expect("Metrics tab present");
+    detail.loading_metrics = false;
+    // A flat baseline then a spike — the shape `series_anomaly_label`
+    // fires on for a 5xx series.
+    let now = chrono::Utc::now();
+    detail.metrics = vec![crate::aws::MetricSeries {
+        id: "req5xx".into(),
+        label: "5xx".into(),
+        points: (0..6)
+            .map(|i| {
+                let v = if i == 5 { 99.0 } else { 1.0 };
+                (now - chrono::Duration::minutes(6 - i as i64), v)
+            })
+            .collect(),
+    }];
+
+    let out = render(&mut app, 160, 44);
+    assert!(
+        out.contains("anomaly"),
+        "the badge has to be on screen for this test to mean anything:\n{out}"
+    );
+    assert!(
+        !out.contains('▲'),
+        "ascii mode rendered ▲ in the anomaly badge:\n{out}"
+    );
+}
