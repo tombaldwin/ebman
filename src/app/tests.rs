@@ -9037,3 +9037,38 @@ fn ebl010_tells_an_untagged_env_from_an_unloaded_one() {
         .iter()
         .any(|i| i.rule_id == "EBL010"));
 }
+
+#[test]
+fn json_surfaces_are_parsed_by_a_json_parser() {
+    // Three JSON inputs used to go through `serde_yml` on the
+    // reasoning that JSON is a YAML subset. True — but it means every
+    // YAML feature applies to input ebman doesn't control: two LLM
+    // response bodies carrying model-generated text, and a tfstate
+    // file discovered by walking up from cwd. Anchor/alias expansion
+    // is the specific hazard. `serde_json` was a direct dependency the
+    // whole time, so the comment justifying the detour was stale too.
+    //
+    // Pinned by call site rather than by behaviour: the hazard is the
+    // *parser choice*, and a test that fed YAML in would only prove
+    // one of its features is absent.
+    for (name, src) in [
+        ("llm.rs", include_str!("../llm.rs")),
+        ("terraform.rs", include_str!("../terraform.rs")),
+    ] {
+        let code: String = src
+            .lines()
+            .map(|l| l.split("//").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !code.contains("serde_yml"),
+            "{name} parses JSON with the YAML parser again"
+        );
+    }
+    // `saved_config.rs` is exempt and stays exempt: EB saved
+    // configurations really are YAML.
+    assert!(
+        include_str!("../saved_config.rs").contains("serde_yml"),
+        "saved configs are genuinely YAML — if this flipped, check why"
+    );
+}

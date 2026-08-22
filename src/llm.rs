@@ -326,13 +326,18 @@ async fn call_anthropic(settings: &Settings, prompt: &str) -> Result<String> {
             truncate_for_error(&text, 400)
         ));
     }
-    // Parse the response via serde_yml (JSON is a valid YAML
-    // subset, so this works without serde_json).
-    let parsed: serde_yml::Value =
-        serde_yml::from_str(&text).wrap_err("explain: response wasn't valid JSON")?;
+    // A JSON parser for JSON. This used to go through `serde_yml`
+    // on the reasoning that JSON is a YAML subset — true, but it
+    // means every YAML feature applies to text the model (or
+    // whatever is answering on that endpoint) controls, including
+    // anchor/alias expansion. `serde_json` has been a direct
+    // dependency all along, so the comment justifying the detour was
+    // stale as well as wrong.
+    let parsed: serde_json::Value =
+        serde_json::from_str(&text).wrap_err("explain: response wasn't valid JSON")?;
     let content = parsed
         .get("content")
-        .and_then(|v| v.as_sequence())
+        .and_then(|v| v.as_array())
         .ok_or_else(|| eyre!("explain: response missing `content` array"))?;
     let mut out = String::new();
     for block in content {
@@ -381,8 +386,10 @@ async fn call_ollama(settings: &Settings, prompt: &str) -> Result<String> {
             truncate_for_error(&text, 400)
         ));
     }
-    let parsed: serde_yml::Value =
-        serde_yml::from_str(&text).wrap_err("explain: Ollama response wasn't valid JSON")?;
+    // Same reasoning as the Anthropic path: Ollama's body is JSON and
+    // carries model-generated text.
+    let parsed: serde_json::Value =
+        serde_json::from_str(&text).wrap_err("explain: Ollama response wasn't valid JSON")?;
     let out = parsed
         .get("response")
         .and_then(|v| v.as_str())
@@ -617,10 +624,13 @@ mod tests {
         assert_eq!(json_str("with \"quotes\""), "\"with \\\"quotes\\\"\"");
         assert_eq!(json_str("a\nb"), "\"a\\nb\"");
         assert_eq!(json_str("a\\b"), "\"a\\\\b\"");
-        // Round-trip via serde_yml since JSON is a YAML subset.
+        // Round-trip through a JSON parser. Using the YAML one here
+        // was a hole in the test itself: YAML accepts strings JSON
+        // rejects, so a writer bug that produced almost-JSON would
+        // have round-tripped clean.
         let s = "with \"quotes\" and \n newlines and \\ backslashes";
         let escaped = json_str(s);
-        let parsed: String = serde_yml::from_str(&escaped).expect("round-trip");
+        let parsed: String = serde_json::from_str(&escaped).expect("round-trip");
         assert_eq!(parsed, s);
     }
 
