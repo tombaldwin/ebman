@@ -1062,6 +1062,19 @@ The first five items off the 2026-08-22 triage list. Two of the five turned out 
 
 Stale entries closed without code changes (each confirmed against the source, then pinned by a test where one was missing): **rebuild-epoch ordering** (already guarded; only its Err path was tested), **control.sock chmod race** (closed by SO_PEERCRED), **drift cleartext** (fixed in 0.27; guard test added for the three call sites).
 
+#### Per-env region sweep — 2026-08-22
+
+Completing the class the wrong-region fix opened. ~50 further spawn sites moved onto the row's region, and the choice is now pinned by a drift guard rather than by care.
+
+- [x] **Every per-env write** — auto-rollback, alarm create/delete, the four batch dispatches, terminate-instance, `:ssm-run`, `:env-edit`, `:rollback`, option-settings from both the form and `:set-option`, tag updates, config-template apply/save/delete, listener cert edits, app-version delete, deploy from S3 and local.
+- [x] **Every read that informs one** — `:options`, `:config-diff-local`, `:rds`, `:listeners`, `:lineage`, `:changes`, `:drift`, `:lint`, `:resources`, `:versions`, `:logs-insights`, the log tail, and the form pre-fills. `:config-diff` gets a client per SIDE: comparing two envs is its whole purpose and under a fan-out they're often in different regions, so one client silently compared the left-hand env against itself.
+- [x] **The three pickers** (subnets, security groups, ACM certificates) — these write region-scoped IDs straight into the env's option settings, so home-region inventory was offering IDs that don't exist where they'd land.
+- [x] **The per-row fan-outs** — worker-queue DLQ depth and the INST column build a client per env; app-latest-versions one per application. All three fill columns on rows that span regions.
+- [x] **Audit regions follow the work** — including the completion line, which `ebman audit` correlates with its dispatch by action + target. A mismatched pair reported an action that started in one region and finished in another.
+- [x] **Drift guard** — `every_spawn_declares_whether_it_is_per_env` requires any remaining `self.aws` spawn site to be named with a reason. Nine are: the fleet listing, identity, Cost Explorer, Organizations, IAM, the Secrets Manager browse, the custom-platform catalogue, the account-wide event tail, and `spawn_aws` itself.
+
+Recorded honestly rather than fixed: **`applications` and `latest_stacks` are single collections**, so those two catalogues are the home region's under a fan-out. Widening them is a data-model change, not a client change; the guard's entry says so instead of implying the current behaviour is right.
+
 #### Important (need live verification or a design pass)
 - [x] **Cost Explorer pagination** — Shipped. `fetch_env_costs` follows `NextPageToken` (`aws/cost.rs`). The `MAX_COST_PAGES = 20` cap now warns, returns `EnvCosts { truncated }`, and a truncated walk is neither cached nor allowed to replace a complete in-memory map; `:cost status` and `:fleet-cost` both say when what's on screen is partial.
 - [x] **logs-tail `next_token` follow** — Shipped. `fetch_recent_log_events` follows `next_token` up to `MAX_PAGES_PER_POLL = 5` with boundary-millisecond dedupe (`aws/logs.rs`). The carry is keyed on whether the watermark moved rather than on `truncated`, so a stalled watermark keeps its skip set and the same lines aren't re-emitted every poll.
