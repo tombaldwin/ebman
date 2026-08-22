@@ -3012,9 +3012,28 @@ pub(crate) struct RegionClient {
     home: Arc<AwsClient>,
     /// `Some` only when the row is somewhere other than where `home` is
     /// pointed. Keeping the home client for the common case matters:
-    /// it may be an AssumeRole session, and `cached_client` only knows
-    /// how to build from a profile.
-    remote: Option<(Option<String>, String)>,
+    /// it is the only one carrying a live AssumeRole session for the
+    /// home region.
+    remote: Option<Remote>,
+}
+
+/// How to reach a region other than the home one — mirroring the two
+/// multi-region fan-outs exactly, so Detail can't resolve a row
+/// differently from the listing that produced it.
+#[derive(Clone)]
+pub(crate) enum Remote {
+    /// `cached_client`, like `list_environments_in_region`.
+    Profile(Option<String>, String),
+    /// A fresh AssumeRole into the same account, pointed at the other
+    /// region — like `list_environments_for_account`.
+    ///
+    /// Not cached, deliberately: those sessions carry a hard one-hour
+    /// cap and the client cache has no notion of expiry. `assume_role`
+    /// under `:account NAME` also puts the friendly ACCOUNT name in
+    /// `context.profile`, so without this branch a cross-region row
+    /// resolved `cached_client(Some("prod"), …)` and failed looking
+    /// for an AWS profile called `prod` that was never a profile.
+    Account(String, Box<crate::config::AccountSpec>),
 }
 
 impl RegionClient {
@@ -3022,8 +3041,18 @@ impl RegionClient {
     #[cfg(test)]
     pub(crate) fn region_for_tests(&self) -> String {
         match &self.remote {
-            Some((_, region)) => region.clone(),
+            Some(Remote::Profile(_, region)) => region.clone(),
+            Some(Remote::Account(_, spec)) => spec.region.clone().unwrap_or_default(),
             None => self.home.context.region.clone(),
+        }
+    }
+
+    /// The configured account this will assume into, if any.
+    #[cfg(test)]
+    pub(crate) fn account_for_tests(&self) -> Option<String> {
+        match &self.remote {
+            Some(Remote::Account(name, _)) => Some(name.clone()),
+            _ => None,
         }
     }
 
@@ -3037,7 +3066,12 @@ impl RegionClient {
     async fn resolve(self) -> Result<Arc<AwsClient>, color_eyre::eyre::Report> {
         match self.remote {
             None => Ok(self.home),
-            Some((profile, region)) => crate::aws::cached_client(profile, region).await,
+            Some(Remote::Profile(profile, region)) => {
+                crate::aws::cached_client(profile, region).await
+            }
+            Some(Remote::Account(name, spec)) => {
+                Ok(Arc::new(AwsClient::assume_role(&name, &spec).await?))
+            }
         }
     }
 }
@@ -3056,13 +3090,24 @@ impl App {
         if self.demo_mode || region == self.context.region || region.is_empty() {
             return RegionClient { home, remote: None };
         }
+        // An assumed-role context re-assumes into the same account
+        // pointed at the other region, exactly as `:org-health`'s
+        // fan-out does. Falling through to the profile branch would
+        // look for an AWS profile named after the account.
+        if let Some((name, mut spec)) = self.assumed_account() {
+            spec.region = Some(region.to_string());
+            return RegionClient {
+                home,
+                remote: Some(Remote::Account(name, Box::new(spec))),
+            };
+        }
         let profile = self
             .override_profile
             .clone()
             .or_else(|| self.context.profile.clone());
         RegionClient {
             home,
-            remote: Some((profile, region.to_string())),
+            remote: Some(Remote::Profile(profile, region.to_string())),
         }
     }
 

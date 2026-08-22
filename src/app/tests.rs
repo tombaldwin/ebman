@@ -8422,3 +8422,44 @@ async fn every_detail_tab_reports_its_own_loading_state() {
         }
     }
 }
+
+#[tokio::test]
+async fn a_cross_region_row_under_an_assumed_role_re_assumes() {
+    // `assume_role` puts the friendly ACCOUNT name in
+    // `context.profile` as the header breadcrumb. So resolving a
+    // cross-region row through `cached_client(context.profile, …)`
+    // went looking for an AWS profile called `prod` that was never a
+    // profile — the fix for wrong-region data would have traded it for
+    // a confusing "profile not found". Re-assume into the same account
+    // pointed at the other region, exactly as `:org-health` does.
+    let mut app = test_app();
+    app.cfg.accounts.insert(
+        "prod".into(),
+        crate::config::AccountSpec {
+            role_arn: "arn:aws:iam::1:role/EbmanReadOnly".into(),
+            region: Some("us-east-1".into()),
+            ..Default::default()
+        },
+    );
+    app.context.profile = Some("prod".into());
+    let mut env = mk_env("api-prod", "uflexi", "Web", "Green");
+    env.region = Some("eu-west-2".into());
+    app.environments = vec![env];
+    app.rebuild_view();
+
+    let client = app.client_for_region("eu-west-2");
+    assert_eq!(
+        client.account_for_tests().as_deref(),
+        Some("prod"),
+        "it must re-assume, not look for a profile named after the account"
+    );
+    assert_eq!(
+        client.region_for_tests(),
+        "eu-west-2",
+        "and point the assumed session at the row's region, not the spec's"
+    );
+
+    // The home region keeps the LIVE session rather than re-assuming —
+    // that client already holds valid credentials.
+    assert!(app.client_for_region("us-east-1").is_home_for_tests());
+}
