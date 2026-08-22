@@ -17,7 +17,10 @@ either dispatches a headless subcommand or enters the TUI.
 src/main.rs      argv, logging, panic hook, alt-screen lifecycle
 src/lib.rs       module list + the `Tui` / `LogReloadHandle` aliases
 ├── app/         the TUI: state, event loop, everything it can do
-├── ui/          rendering only — takes &App, returns nothing
+├── ui/          rendering only — takes &App, returns nothing. One
+│                module per surface (chrome / header / table / events /
+│                footer / detail / overlays / action / dlq / shell /
+│                help); `src/ui.rs` is the dispatcher and the map
 ├── aws/         every AWS SDK call, behind plain Rust types — one
 │                module per service, so `aws/eb.rs` (the domain) is
 │                separable from the twelve generic ones
@@ -41,7 +44,10 @@ without constructing an `App`.
 4. **[`src/commands.rs`](src/commands.rs)** — the command registry. Adding a
    `:command` means one entry here plus one arm in `dispatch.rs`; a test pins
    the two together so help, palette and dispatch can't drift.
-5. **[`src/aws.rs`](src/aws.rs)** — the AWS boundary. Its module doc maps
+5. **[`src/ui.rs`](src/ui.rs)** — the render dispatcher. Its module doc
+   maps each surface to the module that owns it; `draw` picks the
+   layout for the current `Mode` and hands each region on.
+6. **[`src/aws.rs`](src/aws.rs)** — the AWS boundary. Its module doc maps
    the per-service split; `aws/eb.rs` is the Elastic Beanstalk domain and
    the other twelve are generic AWS surface.
 

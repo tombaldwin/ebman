@@ -1,0 +1,1135 @@
+//! The environments table and the applications table, plus the cell
+//! renderers (tier, status pill, platform style) they share.
+//!
+//! Moved verbatim out of `src/ui.rs` (5,046 lines) in the 0.31 split;
+//! visibility widened to `pub(crate)` where a sibling needs it, and
+//! nothing else changed. `use super::*` picks up the shared vocabulary
+//! the way `detail.rs` and `overlays.rs` already do.
+
+use super::*;
+
+pub(crate) fn draw_apps_table(f: &mut Frame, area: Rect, app: &mut App) {
+    let theme = app.theme.clone();
+    let header = Row::new(
+        [
+            "NAME",
+            "ENVS",
+            "RED",
+            "UPDATING",
+            "VERSIONS",
+            "UPDATED",
+            "LATEST",
+            "DESCRIPTION",
+        ]
+        .map(|h| {
+            Cell::from(h).style(
+                Style::default()
+                    .fg(theme.title)
+                    .add_modifier(Modifier::BOLD),
+            )
+        }),
+    )
+    .height(1);
+
+    let now = chrono::Utc::now();
+    let rows: Vec<Row> = app
+        .applications
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            let age = |d: Option<chrono::DateTime<chrono::Utc>>| -> String {
+                d.map(|t| humanize_age(now.signed_duration_since(t)))
+                    .unwrap_or_else(|| "—".into())
+            };
+            // LATEST = "label · 2h ago" once `latest_version_label` lands
+            // from the post-Applications fan-out. Until then, show "—" so
+            // the column is obviously still loading rather than blank.
+            // Age suffix gets the same three-bucket tint as the envs-table
+            // AGE column so fresh/stale signals read consistently.
+            let latest_cell = match (a.latest_version_label.as_deref(), a.latest_version_created) {
+                (Some(label), Some(created)) => Cell::from(Line::from(vec![
+                    Span::styled(
+                        label.to_string(),
+                        Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("  {}", humanize_age(now.signed_duration_since(created))),
+                        Style::default().fg(age_color(Some(created), now, &theme)),
+                    ),
+                ])),
+                (Some(label), None) => Cell::from(Span::styled(
+                    label.to_string(),
+                    Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+                )),
+                _ => Cell::from(Span::styled("—", Style::default().fg(theme.muted))),
+            };
+            // Operational rollup — env count + Red / Updating buckets.
+            // Pulls from the global env list via `app_rollup` so the
+            // numbers move with the same 15s ticker as the envs table.
+            let rollup = crate::app::app_rollup(&app.environments, &a.name, &app.worker_dlq_depths);
+            let red_style = if rollup.red_count > 0 {
+                Style::default()
+                    .fg(theme.health_red)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.muted)
+            };
+            let updating_style = if rollup.updating_count > 0 {
+                Style::default()
+                    .fg(theme.status_updating)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.muted)
+            };
+            // Red column merges "EB-side Red" with the worker-DLQ alert
+            // so an env where EB reports Ready but the DLQ is filling
+            // up still counts — same rule as the env-table status pill.
+            let total_alerting = rollup.red_count + rollup.worker_dlq_alerts;
+            // Per-row affordances: pin glyph (★), multi-select marker
+            // (▶), or two-space gutter. Cursor row picks up the table's
+            // row_highlight_style — both can coexist.
+            let pinned = app.pinned_apps.contains(&a.name);
+            let selected = app.apps_selected.contains(&a.name);
+            let prefix = if pinned {
+                Span::styled(
+                    glyph(theme.icons, "★ ", "* "),
+                    Style::default()
+                        .fg(theme.accent)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else if selected {
+                Span::styled(
+                    glyph(theme.icons, "▶ ", "> "),
+                    Style::default()
+                        .fg(theme.title_alt)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Span::raw("  ")
+            };
+            let name_cell = Cell::from(Line::from(vec![
+                prefix,
+                Span::styled(
+                    a.name.clone(),
+                    Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            let r = Row::new(vec![
+                name_cell,
+                Cell::from(rollup.env_count.to_string())
+                    .style(Style::default().fg(theme.text).add_modifier(Modifier::BOLD)),
+                Cell::from(total_alerting.to_string()).style(red_style),
+                Cell::from(rollup.updating_count.to_string()).style(updating_style),
+                Cell::from(a.version_count.to_string())
+                    .style(Style::default().fg(theme.app_palette[0])),
+                Cell::from(age(a.date_updated)).style(Style::default().fg(age_color(
+                    a.date_updated,
+                    now,
+                    &theme,
+                ))),
+                latest_cell,
+                Cell::from(a.description.clone()).style(Style::default().fg(theme.text)),
+            ]);
+            // Selection bg is layered on by Table::row_highlight_style;
+            // apply zebra striping here. Multi-selected apps get the
+            // accent bg so the operator catches them peripherally
+            // without losing the cursor highlight on the active row.
+            // Even-row zebra striping otherwise; odd-rows pass through.
+            if selected {
+                r.style(Style::default().bg(theme.row_selected_bg))
+            } else if i % 2 == 0 {
+                r.style(Style::default().bg(theme.row_alt_bg))
+            } else {
+                r
+            }
+        })
+        .collect();
+    let title = format!("Applications  {}", app.applications.len());
+    let widths = [
+        Constraint::Percentage(20),
+        Constraint::Length(5),      // ENVS
+        Constraint::Length(4),      // RED
+        Constraint::Length(9),      // UPDATING
+        Constraint::Length(8),      // VERSIONS
+        Constraint::Length(8),      // UPDATED
+        Constraint::Percentage(22), // LATEST
+        Constraint::Percentage(28), // DESCRIPTION
+    ];
+    let popup_open = matches!(
+        app.mode,
+        Mode::Help | Mode::Picker | Mode::Command | Mode::Action | Mode::Filter
+    );
+    let table = Table::new(rows, widths)
+        .header(header)
+        .row_highlight_style(
+            // See `draw_table` row_highlight_style — REVERSED preserves
+            // pill contrast better than a flat bg override.
+            Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+        )
+        .highlight_symbol(cursor_marker(&theme))
+        .block(
+            titled_block(&theme, &title, !popup_open, theme.title).padding(Padding::horizontal(1)),
+        );
+    f.render_stateful_widget(table, area, &mut app.app_table_state);
+}
+
+pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
+    app.table_area = area;
+    let theme = app.theme.clone();
+    let compact = app.view.mode == ViewMode::Compact;
+    let spacious = app.view.mode == ViewMode::Spacious;
+    let row_height: u16 = if spacious { 2 } else { 1 };
+    let block_padding: u16 = if spacious { 2 } else { 1 };
+    let indexes = app.filtered_indexes();
+
+    // Column set varies by view mode + per-column hide list. The HEALTH dot
+    // and TREND glyph share the HEALTH sort key but are addressed separately
+    // when hiding (`:cols hide HEALTH` hides the dot; `:cols hide TREND` hides
+    // the trend). The NAME column is always shown.
+    let mut full = vec![
+        ("NAME", SortKey::Name),
+        ("APPLICATION", SortKey::App),
+        ("TIER", SortKey::App),
+        ("STATUS", SortKey::Status),
+        ("HEALTH", SortKey::Health),
+        ("INST", SortKey::Health),
+        ("TREND", SortKey::Health),
+        ("PLATFORM", SortKey::Version),
+        ("VERSION", SortKey::Version),
+        ("CNAME", SortKey::Name),
+        ("AGE", SortKey::Age),
+    ];
+    // REGION column only renders when the user has fanned across regions.
+    if !app.multi_regions.is_empty() {
+        full.insert(1, ("REGION", SortKey::App));
+    }
+    // COST column opt-in via `:cost on`. Inserted before AGE so the
+    // expensive envs catch the eye on the same horizontal band as the
+    // stale-env tint.
+    if app.cost_enabled {
+        let age_idx = full
+            .iter()
+            .position(|(l, _)| *l == "AGE")
+            .unwrap_or(full.len());
+        full.insert(age_idx, ("COST", SortKey::Name));
+    }
+    if compact {
+        // Compact preset hides TREND + PLATFORM regardless of user pref.
+        full.retain(|(label, _)| !matches!(*label, "TREND" | "PLATFORM"));
+    }
+    let columns: Vec<(&'static str, SortKey)> = full
+        .into_iter()
+        .filter(|(label, _)| {
+            // NAME can never be hidden — it's the row identifier.
+            if *label == "NAME" {
+                return true;
+            }
+            !app.view.hidden_cols.contains(*label)
+        })
+        .collect();
+    let sort_marker = if app.view.sort_desc() {
+        glyph(app.theme.icons, " ▼", " v")
+    } else {
+        glyph(app.theme.icons, " ▲", " ^")
+    };
+    // TREND header advertises the window length (HISTORY_CAP samples × refresh
+    // interval) so operators reading the column don't have to guess. Computed
+    // once outside the per-column map.
+    let trend_window =
+        crate::app::humanize_short_age(app.refresh_interval * crate::app::HISTORY_CAP as u32);
+    let header_cells: Vec<Cell> = columns
+        .iter()
+        .map(|(label, key)| {
+            // The HEALTH column is rendered as the dot glyph but labelled "●"
+            // in the header for the canonical column; sort marker only on it
+            // (and the canonical NAME/APPLICATION/STATUS/VERSION/AGE columns).
+            let display: std::borrow::Cow<'_, str> = if *label == "HEALTH" {
+                "●".into()
+            } else if *label == "TREND" {
+                format!("TREND ({trend_window})").into()
+            } else {
+                (*label).into()
+            };
+            let mut text = display.into_owned();
+            let primary_match = matches!(
+                (key, app.view.sort_key()),
+                (SortKey::Name, SortKey::Name)
+                    | (SortKey::App, SortKey::App)
+                    | (SortKey::Status, SortKey::Status)
+                    | (SortKey::Health, SortKey::Health)
+                    | (SortKey::Age, SortKey::Age)
+                    | (SortKey::Version, SortKey::Version)
+            );
+            let show_marker = primary_match && !matches!(*label, "TREND" | "CNAME" | "TIER");
+            if show_marker {
+                text.push_str(sort_marker);
+            }
+            Cell::from(text).style(
+                Style::default()
+                    .fg(theme.title)
+                    .add_modifier(Modifier::BOLD),
+            )
+        })
+        .collect();
+    let header = Row::new(header_cells).height(1);
+
+    // Per-application palette colour map is precomputed by App::rebuild_view
+    // and stored on the app — rebuilding it here per frame is unnecessary.
+    let app_colors = app.view.app_colors();
+
+    // Hover only applies while the user is interacting with the table itself.
+    let hover = if app.mode == Mode::Normal {
+        app.hover_row
+    } else {
+        None
+    };
+    let display = app.display_rows();
+    let now = chrono::Utc::now();
+    let mut env_idx: usize = 0;
+    let rows: Vec<Row> = display
+        .iter()
+        .enumerate()
+        .map(|(row_idx, row)| match row {
+            DisplayRow::Env(i) => {
+                let env_position = env_idx;
+                env_idx += 1;
+                let e = &app.environments[*i];
+                let color = app_colors
+                    .get(&e.application)
+                    .copied()
+                    .unwrap_or(theme.text);
+                let age = e
+                    .updated
+                    .map(|u| humanize_age(now.signed_duration_since(u)))
+                    .unwrap_or_else(|| "—".into());
+
+                let display_name = app
+                    .aliases
+                    .get(&e.name)
+                    .cloned()
+                    .unwrap_or_else(|| e.name.clone());
+                let star = if app.pinned.contains(&e.name) {
+                    glyph(app.theme.icons, "★ ", "* ")
+                } else {
+                    ""
+                };
+                let checked = if app.multi_selected.contains(&e.name) {
+                    glyph(app.theme.icons, "✓ ", "x ")
+                } else {
+                    ""
+                };
+                // Transient "appeared on this refresh" marker. Stays only
+                // for the cycle in which the env was first seen, so it
+                // calls out new envs without sticking forever.
+                let added_marker = if app.newly_added.contains(&e.name) {
+                    "+ "
+                } else {
+                    ""
+                };
+                let alert = if app.newly_red.contains(&e.name) {
+                    glyph(app.theme.icons, "▲ ", "! ")
+                } else {
+                    ""
+                };
+                // Drift glyph: ◆ if env's configuration was updated in the last
+                // 24h (someone deployed / changed options), ◇ if it's been
+                // longer than 30 days (sleeping env that may be on stale runtime).
+                let (drift_glyph, drift_color) = match e.updated {
+                    Some(u) => {
+                        let dur = now.signed_duration_since(u);
+                        if dur < chrono::Duration::hours(24) && dur > chrono::Duration::zero() {
+                            (glyph(app.theme.icons, "◆ ", "# "), theme.title_alt)
+                        } else if dur > chrono::Duration::days(30) {
+                            (glyph(app.theme.icons, "◇ ", "o "), theme.muted)
+                        } else {
+                            ("", theme.text)
+                        }
+                    }
+                    None => ("", theme.text),
+                };
+                let name_cell = Cell::from(Line::from(vec![
+                    Span::styled(
+                        checked.to_string(),
+                        Style::default()
+                            .fg(theme.title_alt)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        star.to_string(),
+                        Style::default()
+                            .fg(theme.accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        alert.to_string(),
+                        Style::default()
+                            .fg(theme.health_red)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        added_marker.to_string(),
+                        Style::default()
+                            .fg(theme.health_green)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        drift_glyph.to_string(),
+                        Style::default()
+                            .fg(drift_color)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    // tf-managed badge: `ⓣ` (U+24E3) when the env
+                    // appears in the discovered tfstate. Lookup is
+                    // O(1) against the cached HashSet refreshed at
+                    // startup + on context switch. Operators see at
+                    // a glance which envs will drift after ebman-
+                    // side mutations.
+                    Span::styled(
+                        if app.tf_managed_envs.contains(&e.name) {
+                            glyph(app.theme.icons, "ⓣ ", "t ")
+                        } else {
+                            ""
+                        },
+                        Style::default()
+                            .fg(theme.accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        display_name,
+                        Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+                let cells: Vec<Cell> = columns
+                    .iter()
+                    .map(|(label, _)| match *label {
+                        "NAME" => name_cell.clone(),
+                        // Application / platform / region values live on
+                        // `app.environments[i]` which outlives the draw
+                        // call — borrow rather than clone so the per-row
+                        // hot path doesn't allocate 3+ Strings per frame.
+                        "APPLICATION" => Cell::from(Span::raw(e.application.as_str()))
+                            .style(Style::default().fg(color).add_modifier(Modifier::BOLD)),
+                        "TIER" => tier_cell(&e.tier, &theme),
+                        "STATUS" => {
+                            // For Worker envs with DLQ messages, append a
+                            // small `⚠N` suffix to the status pill so the
+                            // operator can spot the reason a Green-EB row
+                            // is tinted red. STATUS column is 10 cells;
+                            // " Ready " pill takes 7, leaving room for
+                            // " ⚠N" (3 cells). Larger DLQ counts clip
+                            // gracefully — the row tint is the primary
+                            // signal anyway.
+                            let dlq = if e.tier.eq_ignore_ascii_case("Worker") {
+                                app.worker_dlq_depths.get(&e.name).copied().unwrap_or(0)
+                            } else {
+                                0
+                            };
+                            // Tier the `Ready` pill by the env's actual
+                            // alert level — `Ready` is EB's operational
+                            // state, not a health verdict. A green pill
+                            // on a Red row reads as "fine"; render it in
+                            // the health colour so the column matches
+                            // reality. Updating / Terminating are kept as
+                            // their own distinctive pills.
+                            let alert = status_alert(&e.health, dlq);
+                            if dlq > 0 {
+                                Cell::from(Line::from(vec![
+                                    status_pill_for(&e.status, &theme, alert),
+                                    Span::styled(
+                                        format!(" {}{dlq}", warn_glyph(theme.icons).trim_end()),
+                                        Style::default()
+                                            .fg(theme.health_red)
+                                            .add_modifier(Modifier::BOLD),
+                                    ),
+                                ]))
+                            } else {
+                                Cell::from(status_pill_for(&e.status, &theme, alert))
+                            }
+                        }
+                        "HEALTH" => Cell::from(health_dot(&e.health, &theme)),
+                        "INST" => {
+                            // `healthy/total` if the per-env counts have
+                            // landed for this refresh; em-dash placeholder
+                            // otherwise (and on the very first frame
+                            // before the fan-out completes). Cell colour
+                            // tiers by ratio: all healthy = green, any
+                            // unhealthy but some healthy = yellow,
+                            // zero healthy with instances present = red,
+                            // empty env = muted.
+                            let counts = app.env_instance_counts.get(&e.name).copied();
+                            let (text, color) = format_instance_counts(counts, &theme);
+                            Cell::from(Span::styled(
+                                text,
+                                Style::default().fg(color).add_modifier(Modifier::BOLD),
+                            ))
+                        }
+                        "TREND" => Cell::from(sparkline_for(
+                            app.history.get(&e.name),
+                            &theme,
+                            app.newly_red.contains(&e.name),
+                        )),
+                        "PLATFORM" => {
+                            // Devicons icon is Powerline-only (PUA
+                            // codepoints tofu without a Nerd Font);
+                            // colour-coding applies in every icon mode
+                            // so unicode / ASCII users still get the
+                            // visual differentiation between platforms.
+                            let style = platform_style(&e.platform);
+                            let colour = style
+                                .as_ref()
+                                .and_then(|s| theme.app_palette.get(s.palette_idx).copied())
+                                .unwrap_or(theme.muted);
+                            let icon = if theme.icons == IconStyle::Powerline {
+                                style.as_ref().map(|s| s.icon)
+                            } else {
+                                None
+                            };
+                            // A newer platform version in the same family
+                            // recolours the name amber + appends an ↑ glyph
+                            // so the operator sees the console's "update
+                            // available" nag without leaving the table.
+                            // Staleness is precomputed in `rebuild_view` —
+                            // this is an O(1) lookup, not a per-frame parse.
+                            let stale = app.view.stale_platforms().get(&e.name);
+                            let name_colour = if stale.is_some() {
+                                theme.health_yellow
+                            } else {
+                                colour
+                            };
+                            let mut spans = Vec::new();
+                            if let Some(g) = icon {
+                                spans.push(Span::styled(
+                                    format!("{g} "),
+                                    Style::default().fg(colour),
+                                ));
+                            }
+                            spans.push(Span::styled(
+                                e.platform.as_str(),
+                                Style::default().fg(name_colour),
+                            ));
+                            if stale.is_some() {
+                                spans.push(Span::styled(
+                                    format!(" {}", stale_glyph(theme.icons)),
+                                    Style::default().fg(theme.health_yellow),
+                                ));
+                            }
+                            Cell::from(Line::from(spans))
+                        }
+                        "VERSION" => Cell::from(Span::raw(e.version_label.as_str()))
+                            .style(Style::default().fg(theme.app_palette[0])),
+                        "CNAME" => Cell::from(redact(&e.cname, app.view.redact))
+                            .style(Style::default().fg(theme.muted)),
+                        // `age` is built freshly per row inside this scope
+                        // and so can't be borrowed into the returned Cell.
+                        // Caching it on rebuild_view would let this be a
+                        // borrow too, but the age string changes per
+                        // minute boundary — a stale value would be
+                        // visible until the next refresh, which is fine
+                        // operationally but adds bookkeeping. Leave the
+                        // single per-row clone here as the cheapest
+                        // honest option for now.
+                        "AGE" => Cell::from(age.clone())
+                            .style(Style::default().fg(age_color(e.updated, now, &theme))),
+                        "REGION" => Cell::from(Span::raw(e.region.as_deref().unwrap_or_default()))
+                            .style(Style::default().fg(theme.accent)),
+                        "COST" => {
+                            // `:cost on` populates `app.costs` from
+                            // Cost Explorer (Tag: elasticbeanstalk:env-name).
+                            // Display as `$NNN` (no fractional cents —
+                            // the precision is misleading; Cost Explorer
+                            // reports `1240.503125...` and that's noise).
+                            // Tint cells by bucket so the eye lands on
+                            // the expensive ones: green < $50, muted
+                            // $50–$500, red ≥ $500.
+                            match app.costs.get(&e.name).copied() {
+                                Some(cost) => {
+                                    let text = format!("${cost:.0}");
+                                    let fg = if cost >= 500.0 {
+                                        theme.health_red
+                                    } else if cost >= 50.0 {
+                                        theme.text
+                                    } else {
+                                        theme.health_green
+                                    };
+                                    Cell::from(text)
+                                        .style(Style::default().fg(fg).add_modifier(Modifier::BOLD))
+                                }
+                                None => {
+                                    Cell::from(Span::styled("—", Style::default().fg(theme.muted)))
+                                }
+                            }
+                        }
+                        _ => Cell::from(""),
+                    })
+                    .collect();
+
+                // Row tint priority: severity > hover > zebra. Selection is
+                // handled by Table::row_highlight_style so it overlays cleanly.
+                let is_hover = hover == Some(row_idx);
+                // Worker envs with DLQ messages tint the row Red even
+                // when EB reports Green/Yellow — failed jobs sitting in
+                // the dead-letter queue are an operational red flag the
+                // EB health check doesn't model.
+                let dlq_red = e.tier.eq_ignore_ascii_case("Worker")
+                    && app.worker_dlq_depths.get(&e.name).copied().unwrap_or(0) > 0;
+                let bg = if dlq_red
+                    || e.health.eq_ignore_ascii_case("Red")
+                    || e.health.eq_ignore_ascii_case("Severe")
+                {
+                    Some(theme.row_red_bg)
+                } else if e.health.eq_ignore_ascii_case("Yellow") {
+                    Some(theme.row_yellow_bg)
+                } else if is_hover {
+                    Some(theme.row_hover_bg)
+                } else if env_position.is_multiple_of(2) {
+                    Some(theme.row_alt_bg)
+                } else {
+                    None
+                };
+                let style = match bg {
+                    Some(c) => Style::default().bg(c),
+                    None => Style::default(),
+                };
+                Row::new(cells).style(style).height(row_height)
+            }
+            DisplayRow::Separator => {
+                // Resolve the next app's name + color via the same
+                // look-ahead pattern; we use the name for the Powerline
+                // ribbon and the color for the dashed fill in other styles.
+                let (next_app_name, next_color) = display
+                    .iter()
+                    .skip(row_idx + 1)
+                    .find_map(|r| match r {
+                        DisplayRow::Env(i) => {
+                            let env = &app.environments[*i];
+                            Some((
+                                env.application.clone(),
+                                app_colors
+                                    .get(&env.application)
+                                    .copied()
+                                    .unwrap_or(theme.muted),
+                            ))
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| (String::new(), theme.muted));
+                // Walk forward from this separator until the next one to
+                // collect the envs in this group; compute "3 envs · 1 red"
+                // style summary so operators see per-app health without
+                // scanning rows.
+                let group_envs: Vec<&Environment> = display
+                    .iter()
+                    .skip(row_idx + 1)
+                    .map_while(|r| match r {
+                        DisplayRow::Env(i) => Some(&app.environments[*i]),
+                        DisplayRow::Separator => None,
+                    })
+                    .collect();
+                let summary = summarize_group(&group_envs);
+                let dashes = "─".repeat(DIVIDER_FILL_WIDTH);
+                let count = columns.len();
+                if theme.icons == IconStyle::Powerline && !next_app_name.is_empty() {
+                    // Per-app coloured ribbon banner. NAME cell holds a
+                    // wedge-pill-wedge ribbon (left E0B2 cap + pill + right
+                    // E0B0 cap) so the next-app section starts with its
+                    // name visible in its own colour. Remaining cells stay
+                    // as dashes in the same colour for visual continuity.
+                    let summary_text = summary.clone();
+                    let cells: Vec<Cell> = columns
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (label, _))| {
+                            if i == 0 && *label == "NAME" {
+                                Cell::from(Line::from(vec![
+                                    Span::styled("\u{e0b2}", Style::default().fg(next_color)),
+                                    Span::styled(
+                                        format!(" {next_app_name} "),
+                                        Style::default()
+                                            .fg(theme.contrast_text(next_color))
+                                            .bg(next_color)
+                                            .add_modifier(Modifier::BOLD),
+                                    ),
+                                    Span::styled("\u{e0b0}", Style::default().fg(next_color)),
+                                ]))
+                            } else if i == 1 {
+                                // Summary lives in the column right after
+                                // the name banner — long enough that the
+                                // counts have room and short enough that
+                                // it doesn't push into PLATFORM.
+                                Cell::from(Span::styled(
+                                    format!(" {summary_text} "),
+                                    Style::default().fg(theme.muted),
+                                ))
+                            } else {
+                                Cell::from(Span::styled(
+                                    dashes.clone(),
+                                    Style::default().fg(next_color),
+                                ))
+                            }
+                        })
+                        .collect();
+                    Row::new(cells)
+                } else if !next_app_name.is_empty() {
+                    // Non-Powerline path: previously rendered every cell as
+                    // dashes (200×─), so the banner read as a homogeneous
+                    // line with no app name and no break. Now: NAME cell
+                    // gets `── ▶ app ──`, second cell carries the summary,
+                    // remaining cells stay as the dash fill so the row
+                    // still scans as a visible group divider.
+                    let glyph = separator_glyph(theme.icons);
+                    let summary_text = summary.clone();
+                    let cells: Vec<Cell> = columns
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (label, _))| {
+                            if i == 0 && *label == "NAME" {
+                                Cell::from(Line::from(vec![
+                                    Span::styled(
+                                        "── ".to_string(),
+                                        Style::default().fg(theme.muted),
+                                    ),
+                                    Span::styled(
+                                        format!("{glyph} "),
+                                        Style::default()
+                                            .fg(next_color)
+                                            .add_modifier(Modifier::BOLD),
+                                    ),
+                                    Span::styled(
+                                        next_app_name.clone(),
+                                        Style::default()
+                                            .fg(next_color)
+                                            .add_modifier(Modifier::BOLD),
+                                    ),
+                                    Span::styled(
+                                        " ──".to_string(),
+                                        Style::default().fg(theme.muted),
+                                    ),
+                                ]))
+                            } else if i == 1 {
+                                Cell::from(Span::styled(
+                                    format!(" {summary_text} "),
+                                    Style::default().fg(theme.muted),
+                                ))
+                            } else {
+                                Cell::from(Span::styled(
+                                    dashes.clone(),
+                                    Style::default().fg(next_color),
+                                ))
+                            }
+                        })
+                        .collect();
+                    Row::new(cells)
+                } else {
+                    let cells = (0..count).map(|_| {
+                        Cell::from(Span::styled(
+                            dashes.clone(),
+                            Style::default().fg(next_color),
+                        ))
+                    });
+                    Row::new(cells)
+                }
+            }
+        })
+        .collect();
+
+    let title = format!("Environments  {}/{}", indexes.len(), app.environments.len());
+    let widths: Vec<Constraint> = columns
+        .iter()
+        .map(|(label, _)| match *label {
+            "NAME" => Constraint::Percentage(14),
+            "APPLICATION" => Constraint::Percentage(12),
+            // 11 fits `" {icon} Worker " + trailing breathing space`
+            // exactly (1 pill-pad + 1 icon + 1 sep + 6 label + 1 pill-
+            // pad + 1 breathing = 11). Web fills the same width with
+            // trailing pad inside the pill so the bg stops at the same
+            // column boundary either way.
+            "TIER" => Constraint::Length(11),
+            "STATUS" => Constraint::Length(10),
+            "HEALTH" => Constraint::Length(3),
+            // " 99/99 " worst case = 7 cells incl. trailing pad. Most envs
+            // are single-digit on each side so we sit at 4-5 typical width.
+            "INST" => Constraint::Length(7),
+            "TREND" => Constraint::Length(12),
+            "PLATFORM" => Constraint::Percentage(15),
+            "VERSION" => Constraint::Percentage(10),
+            "CNAME" => Constraint::Percentage(14),
+            "AGE" => Constraint::Length(6),
+            "COST" => Constraint::Length(8),
+            _ => Constraint::Length(6),
+        })
+        .collect();
+    let popup_open = matches!(
+        app.mode,
+        Mode::Help | Mode::Picker | Mode::Command | Mode::Action | Mode::Filter
+    );
+    let block = titled_block(&theme, &title, !popup_open, theme.title)
+        .padding(Padding::horizontal(block_padding));
+    let table = Table::new(rows, widths)
+        .header(header)
+        .row_highlight_style(
+            // REVERSED swaps fg/bg per terminal cell at render time. This
+            // preserves pill contrast on the selected row — pill cells
+            // (black fg on yellow/green bg) flip to (yellow/green fg on
+            // black bg), which is still readable, whereas overriding bg
+            // would mask the pill colour and leave the black fg sitting
+            // on the dark row_selected_bg (low contrast).
+            Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+        )
+        .highlight_symbol(cursor_marker(&theme))
+        .block(block);
+
+    // Build the hover preview (if any) before the stateful render, because
+    // both touch `app` and the borrow-checker rejects overlapping borrows.
+    let hover_preview: Option<(Rect, String)> = hover.and_then(|idx| match display.get(idx)? {
+        DisplayRow::Env(i) => {
+            let e = &app.environments[*i];
+            let alias_part = match app.aliases.get(&e.name) {
+                Some(a) => format!("  alias \"{a}\""),
+                None => String::new(),
+            };
+            let preview = format!(
+                " ⓘ {}{}  ·  {}  ·  {} / {}  ·  {}  ·  {}",
+                e.name,
+                alias_part,
+                e.application,
+                e.status,
+                e.health,
+                e.platform,
+                redact(&e.cname, app.view.redact),
+            );
+            let row = Rect {
+                x: area.x,
+                y: area.y + area.height.saturating_sub(1),
+                width: area.width,
+                height: 1,
+            };
+            Some((row, preview))
+        }
+        _ => None,
+    });
+
+    let env_count_total = app.environments.len();
+    let env_count_visible = indexes.len();
+
+    f.render_stateful_widget(table, area, &mut app.table_state);
+
+    // Empty-state overlay: friendly message when there are no envs at all,
+    // or when a filter has hidden everything. Echoes the live filter text
+    // back so the operator can see what's hiding their rows.
+    if env_count_visible == 0 {
+        let heading: String;
+        let hint: String;
+        if env_count_total == 0 {
+            heading = "no envs in this account / region".to_string();
+            hint = "try a different region (r) or profile (p), or check the AWS console (b)"
+                .to_string();
+        } else if app.view.filter().is_empty() {
+            heading = "no envs match the active view".to_string();
+            hint = "type `:views` to switch back to default, or `:filters` to drop a saved one"
+                .to_string();
+        } else {
+            heading = format!("no envs match  `{}`", app.view.filter().text());
+            hint = "press / to edit, or Esc in filter mode to clear".to_string();
+        }
+        let block_height: u16 = 4;
+        let inner = Rect {
+            x: area.x + 2,
+            y: area
+                .y
+                .saturating_add(area.height.saturating_sub(block_height) / 2),
+            width: area.width.saturating_sub(4),
+            height: block_height.min(area.height),
+        };
+        let lines = vec![
+            Line::from(Span::styled(
+                heading,
+                Style::default()
+                    .fg(theme.title_alt)
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .alignment(Alignment::Center),
+            Line::from(Span::raw("")),
+            Line::from(Span::styled(hint, Style::default().fg(theme.muted)))
+                .alignment(Alignment::Center),
+        ];
+        f.render_widget(Paragraph::new(lines), inner);
+    }
+
+    if let Some((row, preview)) = hover_preview {
+        let para = Paragraph::new(Span::styled(
+            preview,
+            Style::default()
+                .bg(theme.row_hover_bg)
+                .fg(theme.text)
+                .add_modifier(Modifier::DIM),
+        ));
+        f.render_widget(Clear, row);
+        f.render_widget(para, row);
+    }
+}
+
+pub(crate) fn tier_cell(tier: &str, theme: &Theme) -> Cell<'static> {
+    // Both tiers render as same-shape pills with coloured backgrounds
+    // and a trailing un-coloured space so the bg ends *before* the
+    // STATUS column starts (otherwise the pill backgrounds bleed into
+    // the adjacent column boundary and look cramped). Web uses
+    // `theme.title` (the default-primary signal); Worker keeps the
+    // accent (yellow) bg since it's the less-common tier and the
+    // contrast still calls it out.
+    // Left-justify both labels (so "Web" sits at the same position as
+    // "Worker") and prefix each with an icon-style-aware glyph. Same
+    // pill background dimensions for both — 6-char label padding +
+    // 1-cell icon + 1 separator space = 8 inner chars, plus pill's
+    // surrounding ` … ` = 10 cells of coloured bg.
+    let label_width = "Worker".chars().count();
+    let (web_icon, worker_icon) = tier_icons(theme.icons);
+    match tier {
+        "Worker" => Cell::from(Line::from(vec![
+            pill(
+                &format!("{worker_icon} {:<label_width$}", "Worker"),
+                theme.contrast_text(theme.accent),
+                theme.accent,
+            ),
+            Span::raw(" "),
+        ])),
+        "Web" => Cell::from(Line::from(vec![
+            pill(
+                &format!("{web_icon} {:<label_width$}", "Web"),
+                theme.contrast_text(theme.title),
+                theme.title,
+            ),
+            Span::raw(" "),
+        ])),
+        other => Cell::from(Span::styled(
+            other.to_string(),
+            Style::default().fg(theme.muted),
+        )),
+    }
+}
+
+/// Per-platform render style: icon + colour palette slot. `None` ⇒
+/// "unrecognised, render plain". The palette index is an offset into
+/// `theme.app_palette` so the colour automatically adapts to the
+/// active theme without a per-theme mapping.
+pub(crate) struct PlatformStyle {
+    icon: &'static str,
+    palette_idx: usize,
+}
+
+/// Pure: pick a Devicons glyph + theme palette colour for the env's
+/// platform family. The icon is rendered Powerline-only (Devicons
+/// codepoints live in the PUA range and tofu without a Nerd Font);
+/// the colour applies in every icon mode so unicode / ASCII users
+/// still get the visual differentiation.
+///
+/// Palette indices are stable, low slots so each language sticks to
+/// the same hue across refreshes (rather than drifting with the app-
+/// colour cache).
+///
+/// **Caveat:** Devicons codepoints have been stable since Nerd Fonts
+/// 1.x, but if any render wrong in the wild (the MDI block burned us
+/// before), the fix is to either update the codepoint or return
+/// `None` for that family.
+pub(crate) fn platform_style(family: &str) -> Option<PlatformStyle> {
+    let lc = family.to_ascii_lowercase();
+    // Match longest / most-specific tokens first so e.g. "Corretto" is
+    // recognised as Java even though it doesn't mention Java.
+    let (icon, palette_idx) = if lc.contains("node") {
+        ("\u{e718}", 2) // green-teal slot for Node's brand green
+    } else if lc.contains("java") || lc.contains("tomcat") || lc.contains("corretto") {
+        ("\u{e738}", 3) // tan/orange for Java's coffee
+    } else if lc.contains("python") {
+        ("\u{e73c}", 0) // blue for Python
+    } else if lc.contains("ruby") {
+        ("\u{e791}", 5) // pink-red for Ruby
+    } else if lc.contains("php") {
+        ("\u{e73d}", 6) // purple for PHP
+    } else if lc.contains(".net") || lc.contains("iis") {
+        ("\u{e77f}", 1) // mauve for .NET
+    } else if lc.contains("docker") {
+        ("\u{e7b0}", 7) // pale blue for Docker
+    } else if lc.contains("go ") || lc.ends_with(" go") || lc == "go" {
+        ("\u{e626}", 9) // mint for Go
+    } else {
+        return None;
+    };
+    Some(PlatformStyle { icon, palette_idx })
+}
+
+/// Returns `(web_icon, worker_icon)` for the given icon style. Picks
+/// single-cell glyphs that render predictably without depending on
+/// Nerd Font MDI codepoint stability across font versions (an earlier
+/// version tried `\u{f0319}` / `\u{f0294}` and got an inbox-tray + an
+/// arrow-expand instead of web / wrench).
+///
+/// Web → `⊕` (circle-plus, reads as a globe/world stand-in); Worker
+/// → `⚒` (hammer-and-pick, the universal blue-collar glyph). Both
+/// are BMP unicode, single cell in standard monospaced + Powerline
+/// fonts. ASCII falls back to letter tags so the pill column still
+/// aligns when no decoration is available.
+pub(crate) fn tier_icons(icons: IconStyle) -> (&'static str, &'static str) {
+    match icons {
+        IconStyle::Ascii => ("W", "K"),
+        _ => ("⊕", "⚒"),
+    }
+}
+
+/// Severity of the "this env is alerting" signal, used to colour-tier
+/// the `Ready` status pill. `Ready` is EB's *operational* state
+/// ("no lifecycle op in flight"), not a health verdict — so a bright
+/// green pill on an env whose health is Red reads as "everything fine"
+/// when it isn't. Pure classification: `Red` for Red/Severe health,
+/// `Yellow` for the warning band or any non-empty DLQ on a worker,
+/// `None` otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusAlert {
+    None,
+    Yellow,
+    Red,
+}
+
+/// Pure: render the `INST` column for an env. `counts == None` means
+/// the per-env fan-out hasn't landed yet — show an em-dash placeholder
+/// in `theme.muted` so the column doesn't read as "0/0 (broken)".
+/// `(0, 0)` is "env has no instances" (mid-launch or fully scaled
+/// down) — `0/0` in `theme.muted`. Otherwise the cell colour-tiers:
+/// `healthy == total` → `theme.health_green` (all good); `healthy >
+/// 0 && healthy < total` → `theme.health_yellow` (partial); `healthy
+/// == 0 && total > 0` → `theme.health_red` (everything's down).
+pub fn format_instance_counts(
+    counts: Option<crate::aws::EnvInstanceCounts>,
+    theme: &Theme,
+) -> (String, Color) {
+    let Some(c) = counts else {
+        return ("—".into(), theme.muted);
+    };
+    let text = format!("{}/{}", c.healthy, c.total);
+    let color = if c.total == 0 {
+        theme.muted
+    } else if c.healthy == c.total {
+        theme.health_green
+    } else if c.healthy == 0 {
+        theme.health_red
+    } else {
+        theme.health_yellow
+    };
+    (text, color)
+}
+
+/// Pure classifier: what alert tier the `Ready` pill should render in
+/// for an env with the given health string + worker-DLQ depth.
+pub fn status_alert(health: &str, dlq: i64) -> StatusAlert {
+    if health.eq_ignore_ascii_case("Red") || health.eq_ignore_ascii_case("Severe") {
+        StatusAlert::Red
+    } else if health.eq_ignore_ascii_case("Yellow")
+        || health.eq_ignore_ascii_case("Warning")
+        || health.eq_ignore_ascii_case("Degraded")
+        || dlq > 0
+    {
+        StatusAlert::Yellow
+    } else {
+        StatusAlert::None
+    }
+}
+
+/// Render a status string as a coloured pill. Wrapper around
+/// [`status_pill_for`] for callers that don't care about the alerting
+/// distinction (Detail header, etc.).
+pub(crate) fn status_pill(status: &str, theme: &Theme) -> Span<'static> {
+    status_pill_for(status, theme, StatusAlert::None)
+}
+
+/// Variant of [`status_pill`] that knows whether the env is otherwise
+/// alerting. When `alert` is `Yellow` / `Red`, the `Ready` pill renders
+/// in the health colour (bold) instead of bright green — `Ready` means
+/// "no lifecycle op in flight" per EB, NOT "everything is fine". A
+/// green pill on a Red-tinted row gives the wrong at-a-glance read.
+/// Updating / Terminating are unaffected — they already carry a strong
+/// "something happening" signal that the operator wants to see in full.
+pub(crate) fn status_pill_for(status: &str, theme: &Theme, alert: StatusAlert) -> Span<'static> {
+    // Case-insensitive match without allocating a lowercase copy per
+    // call — the table renderer hits this once per env-row per frame.
+    if status.eq_ignore_ascii_case("ready") {
+        match alert {
+            StatusAlert::Red => Span::styled(
+                " Ready ",
+                Style::default()
+                    .fg(theme.health_red)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            StatusAlert::Yellow => Span::styled(
+                " Ready ",
+                Style::default()
+                    .fg(theme.health_yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            StatusAlert::None => pill(
+                "Ready",
+                theme.contrast_text(theme.status_ready),
+                theme.status_ready,
+            ),
+        }
+    } else if ieq_any(status, &["updating", "launching"]) {
+        // Slow blink draws the eye to in-flight lifecycle ops without
+        // changing the pill width or colour. Modern terminals (iTerm2,
+        // Alacritty, Ghostty, etc.) support it; legacy ones silently
+        // ignore the modifier and fall back to a static pill.
+        Span::styled(
+            format!(" {status} "),
+            Style::default()
+                .fg(theme.contrast_text(theme.status_updating))
+                .bg(theme.status_updating)
+                .add_modifier(Modifier::BOLD | Modifier::SLOW_BLINK),
+        )
+    } else if ieq_any(status, &["terminating", "terminated"]) {
+        pill(
+            status,
+            theme.contrast_text(theme.status_terminating),
+            theme.status_terminating,
+        )
+    } else {
+        Span::styled(status.to_string(), Style::default().fg(theme.text))
+    }
+}
+
+/// Pure: render a one-line summary of a group of envs for the per-app
+/// banner row. Shape: `"3 envs · 2 web · 1 worker · 1 red"`. Health
+/// buckets only appear when non-zero so the summary doesn't include
+/// noise like `0 red`. Tier counts only appear when both tiers are
+/// represented in the group (showing `2 web` when every env is web adds
+/// nothing).
+pub(crate) fn summarize_group(envs: &[&Environment]) -> String {
+    if envs.is_empty() {
+        return String::new();
+    }
+    let total = envs.len();
+    let mut web = 0usize;
+    let mut worker = 0usize;
+    let mut red = 0usize;
+    let mut yellow = 0usize;
+    for e in envs {
+        match e.tier.as_str() {
+            "Web" => web += 1,
+            "Worker" => worker += 1,
+            _ => {}
+        }
+        match e.health.to_lowercase().as_str() {
+            "red" | "severe" | "degraded" => red += 1,
+            "yellow" | "warning" => yellow += 1,
+            _ => {}
+        }
+    }
+    let env_word = if total == 1 { "env" } else { "envs" };
+    let mut parts: Vec<String> = vec![format!("{total} {env_word}")];
+    if web > 0 && worker > 0 {
+        parts.push(format!("{web} Web"));
+        parts.push(format!("{worker} Worker"));
+    }
+    if red > 0 {
+        parts.push(format!("{red} red"));
+    }
+    if yellow > 0 {
+        parts.push(format!("{yellow} yellow"));
+    }
+    parts.join(" · ")
+}
