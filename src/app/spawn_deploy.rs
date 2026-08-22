@@ -898,13 +898,17 @@ impl App {
                     healthy: if health_was_cached { None } else { health_opt },
                 });
             }
-            let env_tag_keys_owned: Vec<String> = tags_opt.unwrap_or_default();
+            // See `cmd_lint`: `None` means the fetch failed, and
+            // EBL010 skips on that rather than firing for every key.
+            let env_tag_keys_owned: Option<Vec<String>> = tags_opt;
             let healthy_count_owned = health_opt;
             let issues = match opts_res {
                 Ok(opts) => {
                     let mut ctx = crate::lint::LintContext::for_env(&env, &opts)
-                        .with_required_tags(&required_tags_owned)
-                        .with_env_tag_keys(&env_tag_keys_owned);
+                        .with_required_tags(&required_tags_owned);
+                    if let Some(keys) = env_tag_keys_owned.as_deref() {
+                        ctx = ctx.with_env_tag_keys(keys);
+                    }
                     if let Some(newer) = newer_stack_owned.as_deref() {
                         ctx = ctx.with_newer_stack_available(newer);
                     }
