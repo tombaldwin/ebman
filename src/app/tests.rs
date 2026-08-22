@@ -8947,3 +8947,45 @@ async fn the_instance_console_link_follows_the_row_now_that_the_data_does() {
     app.detail = None;
     assert!(app.instance_console_target().is_none());
 }
+
+#[tokio::test]
+async fn the_breadcrumb_names_the_region_of_the_env_it_names() {
+    // The crumb reads `REGION / app / env`. It used to render
+    // `context.region` unconditionally, which was accidentally
+    // truthful while Detail showed home-region data — and became a lie
+    // the moment Detail started fetching from the row's region.
+    // `us-east-1 / uflexi / api-prod` for an env in eu-west-2 is the
+    // confusion this release exists to remove.
+    let mut app = test_app();
+    let mut env = mk_env("api-prod", "uflexi", "Web", "Green");
+    env.region = Some("eu-west-2".into());
+    app.environments = vec![env];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    assert_eq!(app.context.region, "us-east-1", "home region differs");
+
+    let out = render(&mut app, 160, 40);
+    assert!(
+        out.contains("eu-west-2"),
+        "the crumb must name the selected env's region:\n{out}"
+    );
+
+    // Detail replaces the screen with its own header and draws no
+    // crumb, so there is no wrong region to show there — but no region
+    // at all either. Recorded in BACKLOG as a gap rather than fixed
+    // here: adding one is a UI addition, not a stale workaround.
+    app.open_detail();
+    let out = render(&mut app, 160, 40);
+    assert!(
+        !out.contains("us-east-1"),
+        "Detail must not show the SESSION's region beside another region's env:\n{out}"
+    );
+
+    // Nothing selected: the session's region is the right answer.
+    let mut empty = test_app();
+    let out = render(&mut empty, 160, 40);
+    assert!(
+        out.contains("us-east-1"),
+        "session region with no env:\n{out}"
+    );
+}

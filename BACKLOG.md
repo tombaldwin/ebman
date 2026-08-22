@@ -1104,6 +1104,22 @@ Checked and sound this round: `env_regions` surviving `:region all` / `:region o
 
 Recorded, not fixed: **`:region all` / `:region off` don't bump `generation`**, and `spawn_refresh` skips while one is in flight — so switching mid-refresh leaves the previous mode's rows on screen until the next tick. Pre-existing, self-healing in 15s, and a different class (refresh ordering) from the region work.
 
+#### Surviving-workaround sweep — 2026-08-22
+
+The class the 0.30.1 review found by accident, searched for on purpose: code deliberately *bent around* a behaviour this lineup changed. Grep finds code that does the wrong thing; it doesn't find code written to be wrong on purpose, because that reads as correct and carries a comment explaining why.
+
+Method: 86 comments in `src/` carrying justification language (`deliberately`, `on purpose`, `works around`, `compensat`, `for now`, `the deeper issue`), each checked against whether its stated premise still holds.
+
+- [x] **The breadcrumb named the session's region beside another region's env.** `REGION / app / env` rendered `context.region` unconditionally. That was accidentally truthful while Detail showed home-region data, and became a lie the moment Detail started fetching from the row's — `us-east-1 / uflexi / api-prod` for an env in eu-west-2 is exactly the confusion this release exists to remove. It names the env's region now, falling back to the session's when no env is named.
+- [x] **`open_instance_in_console`** — found in the 0.30.1 review round, same class.
+
+Checked and still true (no change needed): the truncated-Cost-Explorer note about leaving `costs_fetched_at` unstamped; the partial-fan-out note about not overwriting an operator's message; `RegionClient`'s note that assumed-role sessions aren't cached like profile ones (they are now, separately, with a TTL well inside the session cap); the `--demo` write refusals; `SsmRun` opting out of the preflight; `deny_write` bypassing `push_pending`.
+
+Found while sweeping, recorded not fixed:
+
+- [ ] **Detail shows no region at all.** It replaces the screen with its own header and draws no breadcrumb, so an operator deep in a fan-out row's Detail has nothing on screen saying which region the pane's data came from. Not a stale workaround — a gap — so it's a UI addition rather than part of this sweep. Directly on-theme for the release, and small.
+- [ ] **`:region all` / `:region off` don't bump `generation`**, and `spawn_refresh` skips while one is in flight, so switching mid-refresh leaves the previous mode's rows on screen until the next tick. Pre-existing, self-healing in 15s, different class (refresh ordering).
+
 #### Important (need live verification or a design pass)
 - [x] **Cost Explorer pagination** — Shipped. `fetch_env_costs` follows `NextPageToken` (`aws/cost.rs`). The `MAX_COST_PAGES = 20` cap now warns, returns `EnvCosts { truncated }`, and a truncated walk is neither cached nor allowed to replace a complete in-memory map; `:cost status` and `:fleet-cost` both say when what's on screen is partial.
 - [x] **logs-tail `next_token` follow** — Shipped. `fetch_recent_log_events` follows `next_token` up to `MAX_PAGES_PER_POLL = 5` with boundary-millisecond dedupe (`aws/logs.rs`). The carry is keyed on whether the watermark moved rather than on `truncated`, so a stalled watermark keeps its skip set and the same lines aren't re-emitted every poll.

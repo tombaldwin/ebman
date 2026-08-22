@@ -3313,20 +3313,35 @@ fn breadcrumb_line(app: &App) -> Line<'static> {
     } else {
         " / "
     };
-    let region = app.context.region.clone();
+    // The crumb names an env, so it has to name THAT env's region.
+    // It used to show `context.region` unconditionally, which was
+    // accidentally truthful while Detail rendered home-region data —
+    // and became a lie the moment Detail started fetching from the
+    // row's region. `us-east-1 / uflexi / api-prod` for an env that
+    // lives in eu-west-2 is exactly the confusion this release exists
+    // to remove. With no env named, the session's region is the right
+    // answer.
+    let env = match (app.mode, app.detail.as_ref()) {
+        (Mode::Detail, Some(d)) => Some((
+            d.env_snapshot.application.clone(),
+            d.env_name.clone(),
+            app.region_for(&d.env_snapshot),
+        )),
+        _ => app
+            .selected_env()
+            .map(|e| (e.application.clone(), e.name.clone(), app.region_for(e))),
+    };
+    let region = env
+        .as_ref()
+        .map(|(_, _, r)| r.clone())
+        .unwrap_or_else(|| app.context.region.clone());
     let mut spans: Vec<Span<'static>> = vec![Span::styled(
         region,
         Style::default()
             .fg(theme.title)
             .add_modifier(Modifier::BOLD),
     )];
-    let env = match (app.mode, app.detail.as_ref()) {
-        (Mode::Detail, Some(d)) => Some((d.env_snapshot.application.clone(), d.env_name.clone())),
-        _ => app
-            .selected_env()
-            .map(|e| (e.application.clone(), e.name.clone())),
-    };
-    if let Some((app_name, env_name)) = env {
+    if let Some((app_name, env_name, _)) = env {
         spans.push(Span::styled(
             crumb_sep_glyph,
             Style::default().fg(theme.muted),
