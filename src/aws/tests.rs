@@ -3640,3 +3640,68 @@ async fn list_org_accounts_pages_past_the_default_runaway_guard() {
     assert_eq!(accounts.len(), PAGES);
     assert_eq!(seen.load(Ordering::SeqCst), PAGES);
 }
+
+#[tokio::test]
+async fn a_walk_that_outruns_the_deadline_reports_itself_truncated() {
+    // The page budgets bound round trips, not the wait. `SCAN_PAGES` is
+    // worst-case 500 SEQUENTIAL round trips, and three of these walks
+    // sit on interactive triage paths with no cancel and no partial
+    // render — so a throttled account left the operator on an
+    // unbounded spinner. Hitting the deadline is the same signal as
+    // hitting the page cap: honest, and `.complete()` turns it into an
+    // error rather than a false "no match".
+    //
+    // A page budget far above the number of pages this can get through
+    // in the deadline, so reaching `truncated` can ONLY be the clock.
+    let result = super::paginate_until(
+        "slow_listing",
+        1_000,
+        std::time::Duration::from_millis(60),
+        |_token| async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            Ok((vec![1u8], Some("more".to_string())))
+        },
+    )
+    .await
+    .expect("a deadline is not an error");
+    assert!(
+        result.truncated,
+        "a walk that outruns the deadline must say so"
+    );
+    let items = result.items();
+    assert!(
+        !items.is_empty(),
+        "and keep what it collected — a partial list beats nothing"
+    );
+    assert!(
+        items.len() < 1_000,
+        "it stopped on the clock, not on the page budget: {} pages",
+        items.len()
+    );
+}
+
+#[tokio::test]
+async fn a_walk_inside_the_deadline_is_not_marked_truncated() {
+    // The deadline must not cry wolf on a healthy account — a false
+    // `truncated` turns a complete `.complete()` listing into an error.
+    let mut pages = 0usize;
+    let result = super::paginate_until(
+        "quick_listing",
+        10,
+        std::time::Duration::from_secs(30),
+        |_token| {
+            pages += 1;
+            let last = pages >= 3;
+            async move {
+                Ok((
+                    vec![1u8],
+                    if last { None } else { Some("more".to_string()) },
+                ))
+            }
+        },
+    )
+    .await
+    .expect("ok");
+    assert!(!result.truncated, "a complete walk stays complete");
+    assert_eq!(result.items().len(), 3);
+}

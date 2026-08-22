@@ -8207,3 +8207,218 @@ async fn a_failed_client_refresh_is_silent_and_keeps_the_old_client() {
     );
     assert!(!app.should_refresh_home_client(), "the age clock reset");
 }
+
+#[tokio::test]
+async fn a_stale_rebuild_ok_never_overwrites_the_newer_context() {
+    // The existing guard test drives the Err path, which proves the
+    // early return runs but not what it protects. The Ok arm is the
+    // dangerous one: it swaps `aws`, replaces `context`, bumps
+    // `generation` and clears the fleet. A slow first switch landing
+    // after a fast second would settle the app on the FIRST choice
+    // while the header showed the second.
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
+    app.rebuild_view();
+    app.rebuild_epoch = 2;
+    app.context.region = "eu-west-2".into();
+    let gen_before = app.generation;
+
+    app.handle_msg(AppMsg::Rebuild {
+        epoch: 1,
+        result: Ok(Box::new(crate::aws::AwsClient::stub())),
+    });
+    assert_eq!(app.context.region, "eu-west-2", "the newer context stands");
+    assert_eq!(app.generation, gen_before, "no generation bump");
+    assert_eq!(app.environments.len(), 1, "the fleet is not torn down");
+
+    // The current epoch does apply, teardown and all.
+    app.handle_msg(AppMsg::Rebuild {
+        epoch: 2,
+        result: Ok(Box::new(crate::aws::AwsClient::stub())),
+    });
+    assert_ne!(app.generation, gen_before);
+    assert!(app.environments.is_empty(), "current switch tears down");
+}
+
+// --- the Detail auto-refresh can't stack scans -------------------------
+
+#[tokio::test]
+async fn the_detail_tick_does_not_stack_a_slow_scan() {
+    // `detail_refresh_active_tab` fires on every 15-second tick when
+    // auto-refresh is on. The interactive scans behind these tabs are
+    // worst-case 500 sequential round trips, so a scan slower than the
+    // tick collected a new companion every 15 seconds for as long as
+    // it ran — a fan of sequential AWS calls against an account that,
+    // by the time anyone is looking at this screen, is usually already
+    // having a bad day.
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Red")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+    let detail = app.detail.as_mut().expect("detail opened");
+    detail.tab_idx = detail
+        .tabs
+        .iter()
+        .position(|t| *t == DetailTab::Instances)
+        .expect("Instances tab present");
+    // `open_detail` fires its own eager fetches; clear them so the
+    // assertions below are about the tick, not the open.
+    detail.loading_instances = false;
+    detail.loading_events = false;
+    app.detail_fetch_started = None;
+    assert!(
+        !app.detail.as_ref().unwrap().tab_loading(),
+        "nothing outstanding yet"
+    );
+
+    // First refresh fires and marks the tab loading.
+    app.detail_refresh_active_tab();
+    assert!(app.detail.as_ref().unwrap().loading_instances);
+    let fired_at = app.detail_fetch_started.expect("stamped");
+
+    // A tick landing while it's still running is a no-op.
+    app.detail_refresh_active_tab();
+    assert_eq!(
+        app.detail_fetch_started,
+        Some(fired_at),
+        "a second refresh must not have been fired"
+    );
+
+    // Once the result lands, the next tick proceeds.
+    app.detail.as_mut().unwrap().loading_instances = false;
+    app.detail_refresh_active_tab();
+    assert_ne!(
+        app.detail_fetch_started,
+        Some(fired_at),
+        "a finished fetch must not block the next one"
+    );
+}
+
+#[tokio::test]
+async fn a_lost_detail_fetch_does_not_wedge_the_tab() {
+    // The guard reads the `loading_*` flags, which a dropped result —
+    // a generation-guarded arrival after a context switch, say — never
+    // clears. Without an age cap the tab would refuse to refresh for
+    // the rest of the session.
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Red")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+    let detail = app.detail.as_mut().expect("detail opened");
+    detail.tab_idx = detail
+        .tabs
+        .iter()
+        .position(|t| *t == DetailTab::Instances)
+        .expect("Instances tab present");
+
+    app.detail_refresh_active_tab();
+    // Flag stuck on; the fetch is older than the stuck threshold.
+    app.detail_fetch_started =
+        Some(std::time::Instant::now() - std::time::Duration::from_secs(121));
+    let stale = app.detail_fetch_started;
+    app.detail_refresh_active_tab();
+    assert_ne!(
+        app.detail_fetch_started, stale,
+        "an outstanding fetch this old is lost, not slow — retry it"
+    );
+}
+
+#[tokio::test]
+async fn every_detail_tab_reports_its_own_loading_state() {
+    // `tab_loading` gates the refresh, so a tab whose flag it forgot
+    // would silently lose its in-flight guard — and one that read the
+    // WRONG flag would refuse to refresh whenever some unrelated tab
+    // was busy.
+    let mut app = test_app();
+    app.environments = vec![mk_env("wk-prod", "uflexi", "Worker", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+    let d = app.detail.as_mut().expect("detail opened");
+    assert!(
+        d.tabs.contains(&DetailTab::Queue),
+        "worker envs get the Queue tab"
+    );
+
+    // `open_detail` fires eager fetches; start from a clean slate.
+    d.loading_events = false;
+    d.loading_instances = false;
+    d.loading_queues = false;
+    d.loading_metrics = false;
+    d.loading_cw_alarms = false;
+    d.loading_recent_versions = false;
+    d.log_tail.stage = crate::app::LogTailStage::Idle;
+
+    // Every flag off: no tab claims to be loading.
+    for idx in 0..d.tabs.len() {
+        d.tab_idx = idx;
+        assert!(!d.tab_loading(), "{:?} with no flags set", d.tab());
+    }
+
+    // Each flag turns on exactly the tabs that own it.
+    /// (label, the flag to set, the tabs that should then report loading)
+    type LoadingCase = (
+        &'static str,
+        fn(&mut crate::app::DetailState),
+        &'static [DetailTab],
+    );
+    let cases: &[LoadingCase] = &[
+        (
+            "events",
+            |d| d.loading_events = true,
+            &[DetailTab::Health, DetailTab::Events],
+        ),
+        (
+            "instances",
+            |d| d.loading_instances = true,
+            &[DetailTab::Instances],
+        ),
+        (
+            "queues",
+            |d| d.loading_queues = true,
+            &[DetailTab::Health, DetailTab::Queue],
+        ),
+        (
+            "metrics",
+            |d| d.loading_metrics = true,
+            &[DetailTab::Metrics],
+        ),
+        (
+            "alarms",
+            |d| d.loading_cw_alarms = true,
+            &[DetailTab::Health],
+        ),
+        (
+            "recent versions",
+            |d| d.loading_recent_versions = true,
+            &[DetailTab::Health],
+        ),
+        (
+            "log tail",
+            |d| d.log_tail.stage = crate::app::LogTailStage::Polling,
+            &[DetailTab::Logs],
+        ),
+    ];
+    for (label, set, owners) in cases {
+        let d = app.detail.as_mut().unwrap();
+        d.loading_events = false;
+        d.loading_instances = false;
+        d.loading_queues = false;
+        d.loading_metrics = false;
+        d.loading_cw_alarms = false;
+        d.loading_recent_versions = false;
+        d.log_tail.stage = crate::app::LogTailStage::Idle;
+        set(d);
+        for idx in 0..d.tabs.len() {
+            d.tab_idx = idx;
+            let tab = d.tab();
+            assert_eq!(
+                d.tab_loading(),
+                owners.contains(&tab),
+                "{label} loading, on the {tab:?} tab"
+            );
+        }
+    }
+}

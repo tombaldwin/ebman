@@ -553,6 +553,17 @@ const MAX_PAGES: usize = 100;
 /// wall a large account hits during an outage.
 const SCAN_PAGES: usize = 500;
 
+/// Wall-clock ceiling on any single paginated walk.
+///
+/// The page budgets bound round trips; this bounds the wait. Long
+/// enough that a genuinely large healthy account completes, short
+/// enough that an operator on a triage path gets an answer — even if
+/// the answer is "this scan was too slow" — rather than an unbounded
+/// spinner. Deliberately applied to every capped walk, not just the
+/// scan-then-filter ones: there is no walk where hanging forever is
+/// the better outcome.
+const WALK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(45);
+
 /// Drive a token-paginated AWS listing to completion.
 ///
 /// Eleven listings across `aws/` hand-rolled the same loop — build the
@@ -580,6 +591,26 @@ where
 pub(crate) async fn paginate_capped<T, F, Fut>(
     what: &'static str,
     max_pages: usize,
+    page: F,
+) -> Result<Paged<T>>
+where
+    F: FnMut(Option<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<(Vec<T>, Option<String>)>>,
+{
+    paginate_until(what, max_pages, WALK_DEADLINE, page).await
+}
+
+/// [`paginate_capped`] with the wall-clock ceiling passed in.
+///
+/// Exists so the deadline is testable: with it baked in, the only way
+/// to reach that branch in a test is to run for 45 seconds or to fake
+/// the clock, and `paginate_until` uses `std::time::Instant`, which
+/// `tokio::time::pause` does not move. A test that can't reach the
+/// branch it names passes for the wrong reason.
+pub(crate) async fn paginate_until<T, F, Fut>(
+    what: &'static str,
+    max_pages: usize,
+    deadline: std::time::Duration,
     mut page: F,
 ) -> Result<Paged<T>>
 where
@@ -588,9 +619,31 @@ where
 {
     let mut items = Vec::new();
     let mut token: Option<String> = None;
+    let started = std::time::Instant::now();
     for _ in 0..max_pages {
         let (batch, next) = page(token.take()).await?;
         items.extend(batch);
+        // A page budget bounds the number of round trips, not the time
+        // they take. `SCAN_PAGES` is worst-case 500 SEQUENTIAL round
+        // trips, and three of these walks sit on interactive triage
+        // paths with no cancel and no partial render — so a throttled
+        // or slow account left the operator staring at a spinner with
+        // no way out and no idea why. Stopping here is the same signal
+        // as the page cap: `.complete()` callers get an honest error,
+        // `.items()` callers a short list.
+        if started.elapsed() >= deadline {
+            tracing::warn!(
+                target: "ebman::aws",
+                operation = what,
+                collected = items.len(),
+                secs = deadline.as_secs(),
+                "pagination deadline reached — result may be incomplete"
+            );
+            return Ok(Paged {
+                items,
+                truncated: true,
+            });
+        }
         match next {
             Some(t) if !t.is_empty() => token = Some(t),
             _ => {
