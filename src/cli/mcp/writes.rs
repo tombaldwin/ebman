@@ -267,16 +267,7 @@ fn write_gate(
     // persists for :freeze-deploys / :incident). Passed in by the
     // caller so the gate stays pure + hermetically testable.
     if let Some(m) = active_freeze {
-        let reason = if m.reason.is_empty() {
-            "no reason given".to_string()
-        } else {
-            m.reason.clone()
-        };
-        return Some(format!(
-            "fleet freeze active ({reason}) — lift with `{}` in the owning TUI (pid {})",
-            m.remedy(),
-            m.pid
-        ));
+        return Some(crate::freeze::refusal_message(&m));
     }
     // Safety pins — the shared check every write path uses.
     let pin_profile = profile

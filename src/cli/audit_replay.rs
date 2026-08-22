@@ -86,7 +86,9 @@ impl ReplayVerb {
     fn label(self) -> &'static str {
         match self {
             ReplayVerb::Rebuild => "Rebuild",
-            ReplayVerb::Restart => "Restart",
+            // Canonical = the TUI's Debug name; `parse` still
+            // accepts the historical CLI spelling.
+            ReplayVerb::Restart => "RestartAppServer",
             ReplayVerb::Terminate => "Terminate",
             ReplayVerb::Deploy => "Deploy",
         }
@@ -141,12 +143,16 @@ fn replay_plan(entry: &audit_log::AuditEntry) -> Result<ReplayPlan, String> {
     }
     let verb = match entry.action.as_deref() {
         Some("Rebuild") => ReplayVerb::Rebuild,
-        Some("Restart") => ReplayVerb::Restart,
+        // Both spellings: the TUI has always written the Debug name
+        // and the CLI wrote "Restart" until 0.30.3, so a log spans
+        // both. Refusing either makes the most common restart in the
+        // file — the TUI's — unreplayable, which is what it did.
+        Some("RestartAppServer") | Some("Restart") => ReplayVerb::Restart,
         Some("Terminate") => ReplayVerb::Terminate,
         Some("Deploy") => ReplayVerb::Deploy,
         Some(other) => {
             return Err(format!(
-                "action '{other}' isn't replayable via the CLI (supported: Rebuild / Restart / Terminate / Deploy)"
+                "action '{other}' isn't replayable via the CLI (supported: Rebuild / RestartAppServer / Terminate / Deploy)"
             ))
         }
         None => return Err("line carries no action= field — not a replayable action line".into()),
@@ -487,5 +493,41 @@ mod tests {
         );
         assert_eq!(cfg.pin_reason("other-env", Some("dev")), None);
         assert_eq!(cfg.pin_reason("other-env", None), None);
+    }
+
+    #[test]
+    fn a_tui_written_restart_is_replayable() {
+        let parse = |l: &str| crate::audit::parse_audit_line(l).expect("the fixture line parses");
+        // The TUI audits every action under its Debug name, so it has
+        // always written `RestartAppServer` — and replay accepted only
+        // `Restart`, the spelling the CLI used. So the most common
+        // restart in any log, the one dispatched from the TUI, came
+        // back as "isn't replayable via the CLI". Found by a test
+        // written for an unrelated refactor of the CLI's verb table.
+        let tui = "2026-08-22T10:00:00Z\taccount=1\tprofile=p\tregion=us-east-1\t\
+                   stage=dispatched action=RestartAppServer target=api-prod";
+        let spec = super::replay_plan(&parse(tui)).expect("the TUI's spelling replays");
+        assert_eq!(spec.verb.label(), "RestartAppServer");
+        assert_eq!(spec.env, "api-prod");
+
+        // And the historical CLI spelling still replays — logs written
+        // before 0.30.3 carry it, and refusing them would trade one
+        // broken half for the other.
+        let cli = "2026-08-22T10:00:00Z\taccount=1\tprofile=p\tregion=us-east-1\t\
+                   stage=dispatched action=Restart target=api-prod";
+        let spec = super::replay_plan(&parse(cli)).expect("the old CLI spelling still replays");
+        assert_eq!(
+            spec.verb.label(),
+            "RestartAppServer",
+            "re-emitted canonically"
+        );
+
+        // A genuinely unsupported action is still refused, and the
+        // message names the canonical spelling.
+        let err = super::replay_plan(&parse(
+            "2026-08-22T10:00:00Z\tregion=r\tstage=dispatched action=Clone target=api-prod",
+        ))
+        .expect_err("clone isn't replayable");
+        assert!(err.contains("RestartAppServer"), "{err}");
     }
 }

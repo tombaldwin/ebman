@@ -52,6 +52,67 @@ fn take_flag_value<'a, I: Iterator<Item = &'a String>>(
         .map_err(|msg| ActionArgError { msg, code: 2 })
 }
 
+/// The three verbs `ebman action` dispatches through its shared path.
+/// (`deploy` and `rollout` have their own, richer paths and are
+/// parsed separately.)
+///
+/// One row per verb rather than two parallel `match action_name`
+/// blocks — the previous shape mapped the name to an audit label in
+/// one place and to an AWS method in another, and the compiler checked
+/// neither against the other. Adding a verb to one and forgetting the
+/// other was a silent audit gap: dispatched under one name, completed
+/// under another, or `unreachable!()` in a release binary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CliVerb {
+    Rebuild,
+    Restart,
+    Terminate,
+}
+
+impl CliVerb {
+    /// Every variant, so the parser and the tests can't disagree about
+    /// what exists.
+    const ALL: &'static [(&'static str, CliVerb, &'static str)] = &[
+        ("rebuild", CliVerb::Rebuild, "Rebuild"),
+        // "RestartAppServer", not "Restart": the TUI audits every
+        // action under its Debug name, so a CLI-written "Restart"
+        // split the same operation into two names in one log —
+        // `ebman audit --action` matched half the history either way.
+        ("restart", CliVerb::Restart, "RestartAppServer"),
+        ("terminate", CliVerb::Terminate, "Terminate"),
+    ];
+
+    fn parse(name: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .find(|(n, ..)| *n == name)
+            .map(|(_, v, _)| *v)
+    }
+
+    /// The `action=` field in the audit pair. Must match the TUI's
+    /// `Action::label()` for the same verb so `ebman audit --action`
+    /// correlates across surfaces.
+    fn audit_label(self) -> &'static str {
+        Self::ALL
+            .iter()
+            .find(|(_, v, _)| *v == self)
+            .map(|(_, _, l)| *l)
+            .unwrap_or("Unknown")
+    }
+
+    async fn dispatch(
+        self,
+        aws: &aws::AwsClient,
+        env: &str,
+    ) -> Result<(), color_eyre::eyre::Report> {
+        match self {
+            CliVerb::Rebuild => aws.rebuild_env(env).await,
+            CliVerb::Restart => aws.restart_app_server(env).await,
+            CliVerb::Terminate => aws.terminate_env(env).await,
+        }
+    }
+}
+
 const ACTION_USAGE: &str = "usage: ebman action <rebuild|restart|terminate|deploy|rollout> --env NAME [--version LABEL] [--regions r1,r2,r3] [--yes] [--wait-for-green Nm] [--auto-rollback Nm]";
 
 /// Pure parser for the single-env action verbs. Mirrors the original
@@ -130,6 +191,16 @@ fn parse_action_args(args: &[String]) -> Result<ActionArgs, ActionArgError> {
 /// surface bypassed `safety.envs.*` / `safety.accounts.*` entirely
 /// (0.26 max-review C3 — the class the 0.14.1 patch fixed for
 /// `lint --fix`).
+/// The CLI's write gate: freeze first, then the per-env pin.
+///
+/// One function so the two call sites can't drift from each other,
+/// and so the ORDER is defined once — it used to be two bare calls in
+/// sequence, which is how it came to differ from the MCP gate's.
+fn refuse_write(prog: &'static str, env: &str) {
+    crate::cli::refuse_if_frozen(prog);
+    refuse_if_pinned(env);
+}
+
 fn refuse_if_pinned(env: &str) {
     let profile = std::env::var("AWS_PROFILE").ok();
     if let Some(reason) = crate::config::load().pin_reason(env, profile.as_deref()) {
@@ -158,23 +229,23 @@ pub async fn run(args: &[String]) -> Result<()> {
         }
     };
     let action_name = action_name.as_str();
-    refuse_if_pinned(&env);
-    crate::cli::refuse_if_frozen("ebman action");
+    // Freeze BEFORE pin, matching the MCP write gate. The two
+    // disagreed on order, so an env that was both pinned and frozen
+    // got a different reason depending on which surface refused it —
+    // and the freeze is the more urgent of the two: fleet-wide,
+    // session-scoped, and the thing that just changed.
+    refuse_write("ebman action", &env);
     let aws = aws::AwsClient::with(None, None).await?;
 
     if action_name == "deploy" {
         return run_deploy(&aws, &env, version, wait_for_green, auto_rollback).await;
     }
 
-    let label = match action_name {
-        "rebuild" => "Rebuild",
-        "restart" => "Restart",
-        "terminate" => "Terminate",
-        other => {
-            eprintln!("ebman action: unknown action '{other}'");
-            std::process::exit(2);
-        }
+    let Some(verb) = CliVerb::parse(action_name) else {
+        eprintln!("ebman action: unknown action '{action_name}'");
+        std::process::exit(2);
     };
+    let label = verb.audit_label();
     // Mirror the TUI's dispatched/completed audit pair — headless
     // dispatches were previously invisible to the audit log (and the
     // webhook fan-out), contradicting the safety docs.
@@ -187,12 +258,7 @@ pub async fn run(args: &[String]) -> Result<()> {
         &env,
         &[],
     );
-    let result = match action_name {
-        "rebuild" => aws.rebuild_env(&env).await,
-        "restart" => aws.restart_app_server(&env).await,
-        "terminate" => aws.terminate_env(&env).await,
-        _ => unreachable!("label match above rejects unknown actions"),
-    };
+    let result = verb.dispatch(&aws, &env).await;
     let err_text = result.as_ref().err().map(|e| e.to_string());
     audit::append_action_completed(
         None,
@@ -603,8 +669,7 @@ async fn run_rollout(args: &[String]) -> Result<()> {
     }
     // Same pin gate as the single-env verbs — a rollout is a deploy
     // fan-out of one env name across regions.
-    refuse_if_pinned(&env);
-    crate::cli::refuse_if_frozen("ebman action rollout");
+    refuse_write("ebman action rollout", &env);
     let wait_for_green_secs = match wait_for_green.as_deref() {
         Some(s) => match aws::parse_window_ms(s) {
             Some(ms) => Some((ms / 1000) as u64),
@@ -1009,6 +1074,40 @@ mod tests {
         for verb in ["rebuild", "restart"] {
             let p = parse_action_args(&argv(&["action", verb, "--env", "prod"])).unwrap();
             assert!(!p.yes, "{verb} should parse without --yes");
+        }
+    }
+
+    #[test]
+    fn every_cli_verb_has_a_label_and_a_dispatch() {
+        // The two used to be separate `match action_name` blocks and
+        // the compiler checked neither against the other, so adding a
+        // verb to one and forgetting the other was a silent audit gap:
+        // dispatched under one name and completed under another, or an
+        // `unreachable!()` in a release binary.
+        for (name, verb, label) in CliVerb::ALL {
+            assert_eq!(CliVerb::parse(name), Some(*verb), "{name} parses");
+            assert_eq!(verb.audit_label(), *label, "{name} labels");
+            assert!(!label.is_empty());
+        }
+        assert_eq!(CliVerb::parse("rollout"), None, "has its own path");
+        assert_eq!(CliVerb::parse("deploy"), None, "has its own path");
+        assert_eq!(CliVerb::parse("nonsense"), None);
+
+        // The audit label must match the TUI's for the same verb, or
+        // `ebman audit --action Restart` misses half the fleet's
+        // history depending on which surface dispatched it.
+        for (name, verb, _) in CliVerb::ALL {
+            let tui = match *name {
+                "rebuild" => crate::mode_action::Action::Rebuild,
+                "restart" => crate::mode_action::Action::RestartAppServer,
+                "terminate" => crate::mode_action::Action::Terminate,
+                other => panic!("unmapped CLI verb {other}"),
+            };
+            assert_eq!(
+                verb.audit_label(),
+                format!("{tui:?}"),
+                "{name}: CLI and TUI must audit under the same action name"
+            );
         }
     }
 }
