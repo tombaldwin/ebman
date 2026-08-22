@@ -62,6 +62,29 @@ fn take_flag_value<'a, I: Iterator<Item = &'a String>>(
 /// neither against the other. Adding a verb to one and forgetting the
 /// other was a silent audit gap: dispatched under one name, completed
 /// under another, or `unreachable!()` in a release binary.
+/// What `ebman action <name>` routes to, once the name is known good.
+///
+/// `deploy` takes different arguments and has its own function, so it
+/// is a routing variant rather than a `CliVerb`. Parsed BEFORE the
+/// safety gates and the AWS client: a malformed command is malformed
+/// whether or not the fleet is frozen, and building a client first
+/// meant `ebman action nonsense` with no credentials reported a
+/// credential failure instead of a usage error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CliAction {
+    Verb(CliVerb),
+    Deploy,
+}
+
+impl CliAction {
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "deploy" => Some(CliAction::Deploy),
+            other => CliVerb::parse(other).map(CliAction::Verb),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CliVerb {
     Rebuild,
@@ -229,6 +252,11 @@ pub async fn run(args: &[String]) -> Result<()> {
         }
     };
     let action_name = action_name.as_str();
+    let Some(action) = CliAction::parse(action_name) else {
+        eprintln!("ebman action: unknown action '{action_name}'");
+        eprintln!("{ACTION_USAGE}");
+        std::process::exit(2);
+    };
     // Freeze BEFORE pin, matching the MCP write gate. The two
     // disagreed on order, so an env that was both pinned and frozen
     // got a different reason depending on which surface refused it —
@@ -237,13 +265,11 @@ pub async fn run(args: &[String]) -> Result<()> {
     refuse_write("ebman action", &env);
     let aws = aws::AwsClient::with(None, None).await?;
 
-    if action_name == "deploy" {
-        return run_deploy(&aws, &env, version, wait_for_green, auto_rollback).await;
-    }
-
-    let Some(verb) = CliVerb::parse(action_name) else {
-        eprintln!("ebman action: unknown action '{action_name}'");
-        std::process::exit(2);
+    let verb = match action {
+        CliAction::Deploy => {
+            return run_deploy(&aws, &env, version, wait_for_green, auto_rollback).await;
+        }
+        CliAction::Verb(v) => v,
     };
     let label = verb.audit_label();
     // Mirror the TUI's dispatched/completed audit pair — headless
@@ -1107,6 +1133,49 @@ mod tests {
                 verb.audit_label(),
                 format!("{tui:?}"),
                 "{name}: CLI and TUI must audit under the same action name"
+            );
+        }
+    }
+    #[test]
+    fn an_unknown_verb_is_a_usage_error_before_anything_else() {
+        // `ebman action nonsense` used to build an AWS client and run
+        // the safety gates before noticing the verb was wrong — so with
+        // no credentials it reported a credential failure, and on a
+        // frozen fleet it reported the freeze (exit 3) rather than a
+        // usage error (exit 2). A malformed command is malformed
+        // whichever state the fleet is in.
+        assert_eq!(
+            CliAction::parse("rebuild"),
+            Some(CliAction::Verb(CliVerb::Rebuild))
+        );
+        assert_eq!(
+            CliAction::parse("restart"),
+            Some(CliAction::Verb(CliVerb::Restart))
+        );
+        assert_eq!(
+            CliAction::parse("terminate"),
+            Some(CliAction::Verb(CliVerb::Terminate))
+        );
+        assert_eq!(CliAction::parse("deploy"), Some(CliAction::Deploy));
+
+        assert_eq!(CliAction::parse("nonsense"), None);
+        assert_eq!(CliAction::parse(""), None);
+        // `rollout` is routed out of `run` before this point and must
+        // not be reachable here — routing it as a plain verb would
+        // dispatch a single-env action for a fan-out command.
+        assert_eq!(CliAction::parse("rollout"), None);
+
+        // Every name the usage line advertises is either routable here
+        // or handled earlier, so the help can't advertise a verb that
+        // errors as unknown.
+        for name in ["rebuild", "restart", "terminate", "deploy", "rollout"] {
+            assert!(
+                ACTION_USAGE.contains(name),
+                "{name} missing from the usage line"
+            );
+            assert!(
+                CliAction::parse(name).is_some() || name == "rollout",
+                "{name} is advertised but not routable"
             );
         }
     }
