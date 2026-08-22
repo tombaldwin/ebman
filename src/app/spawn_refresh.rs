@@ -47,6 +47,34 @@ impl App {
         });
     }
 
+    /// `spawn_aws`, but against the region the row actually lives in.
+    ///
+    /// A resolution failure lands on the SAME `Err(String)` the
+    /// operation itself would produce, so every existing handler
+    /// already renders it — the alternative was ten new error paths.
+    pub(crate) fn spawn_aws_in<T, Fut, Op, Build>(
+        &self,
+        client: RegionClient,
+        op_name: &'static str,
+        op: Op,
+        into_msg: Build,
+    ) where
+        T: Send + 'static,
+        Fut: std::future::Future<Output = Result<T, color_eyre::eyre::Report>> + Send + 'static,
+        Op: FnOnce(Arc<AwsClient>) -> Fut + Send + 'static,
+        Build: FnOnce(u64, Result<T, String>) -> AppMsg + Send + 'static,
+    {
+        let tx = self.msg_tx.clone();
+        let gen = self.generation;
+        tokio::spawn(async move {
+            let result = match client.resolve().await {
+                Ok(aws) => op(aws).await.map_err(|e| flatten_err(op_name, e)),
+                Err(e) => Err(flatten_err(op_name, e)),
+            };
+            let _ = tx.send(into_msg(gen, result));
+        });
+    }
+
     pub(crate) fn spawn_cost_fetch(&mut self) {
         let account = self.context.account_id.clone();
         let region = self.context.region.clone();

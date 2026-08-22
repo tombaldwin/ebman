@@ -2957,6 +2957,125 @@ fn rewrite_assumed_role_arn(arn: &str) -> Option<String> {
     Some(format!("arn:{partition}:iam::{account}:role/{role_name}"))
 }
 
+/// A client for the region a particular row lives in, resolved lazily
+/// inside the spawned task.
+///
+/// Detail's ten background fetches all used `self.aws`, whose region is
+/// `context.region`. Under a multi-region fan-out the selected row is
+/// routinely in some *other* region, so opening Detail on it showed
+/// that environment's name beside the home region's instances, metrics,
+/// events and alarms — wrong data wearing the right label, which is
+/// worse than an error. `region_for` already tells us where the row
+/// came from; this carries the answer into the task.
+#[derive(Clone)]
+pub(crate) struct RegionClient {
+    home: Arc<AwsClient>,
+    /// `Some` only when the row is somewhere other than where `home` is
+    /// pointed. Keeping the home client for the common case matters:
+    /// it may be an AssumeRole session, and `cached_client` only knows
+    /// how to build from a profile.
+    remote: Option<(Option<String>, String)>,
+}
+
+impl RegionClient {
+    /// The region this client will actually talk to.
+    #[cfg(test)]
+    pub(crate) fn region_for_tests(&self) -> String {
+        match &self.remote {
+            Some((_, region)) => region.clone(),
+            None => self.home.context.region.clone(),
+        }
+    }
+
+    /// Whether this stayed on the app's existing client rather than
+    /// resolving a new one.
+    #[cfg(test)]
+    pub(crate) fn is_home_for_tests(&self) -> bool {
+        self.remote.is_none()
+    }
+
+    async fn resolve(self) -> Result<Arc<AwsClient>, color_eyre::eyre::Report> {
+        match self.remote {
+            None => Ok(self.home),
+            Some((profile, region)) => crate::aws::cached_client(profile, region).await,
+        }
+    }
+}
+
+impl App {
+    /// The client to use for work about `region`.
+    ///
+    /// Resolved the same way the fan-out that produced the row resolved
+    /// it — `override_profile` then `context.profile` — so Detail can't
+    /// disagree with the table it was opened from.
+    pub(crate) fn client_for_region(&self, region: &str) -> RegionClient {
+        let home = self.aws.clone();
+        // Demo mode's fan-out is fictional and its client is a stub;
+        // resolving a "remote" region there would reach real AWS for a
+        // region the fixture invented.
+        if self.demo_mode || region == self.context.region || region.is_empty() {
+            return RegionClient { home, remote: None };
+        }
+        let profile = self
+            .override_profile
+            .clone()
+            .or_else(|| self.context.profile.clone());
+        RegionClient {
+            home,
+            remote: Some((profile, region.to_string())),
+        }
+    }
+
+    /// The region an environment lives in, by name.
+    ///
+    /// Falls back to the home region for a name we don't hold a row
+    /// for — a modal opened before the refresh landed, say. That is
+    /// the pre-fan-out behaviour, so the fallback can't be worse than
+    /// what shipped.
+    pub(crate) fn region_for_name(&self, env_name: &str) -> String {
+        self.environments
+            .iter()
+            .find(|e| e.name == env_name)
+            .map(|e| self.region_for(e))
+            .unwrap_or_else(|| self.context.region.clone())
+    }
+
+    /// The client for the environment the `:why` overlay is diagnosing.
+    ///
+    /// Same reason as `detail_client`: `:why` is per-row triage, and
+    /// answering "why is this red" with another region's events,
+    /// alarms and instances is the most misleading thing it could do.
+    pub(crate) fn why_red_client(&self) -> RegionClient {
+        let region = match self.current_overlay.as_ref() {
+            Some(Overlay::WhyRed { env_name, .. }) => self.region_for_name(env_name),
+            _ => self.context.region.clone(),
+        };
+        self.client_for_region(&region)
+    }
+
+    /// The client for the environment whose queue the DLQ viewer has
+    /// open. SQS queue URLs are region-scoped, so a peek or a purge
+    /// against the home region's SQS is not merely stale — the URL
+    /// doesn't exist there.
+    pub(crate) fn dlq_client(&self) -> RegionClient {
+        let region = match self.dlq.as_ref() {
+            Some(d) => self.region_for_name(&d.env_name),
+            None => self.context.region.clone(),
+        };
+        self.client_for_region(&region)
+    }
+
+    /// The client for whichever environment Detail currently has open.
+    pub(crate) fn detail_client(&self) -> RegionClient {
+        let region = self
+            .detail
+            .as_ref()
+            .map(|d| self.region_for(&d.env_snapshot))
+            .unwrap_or_else(|| self.context.region.clone());
+        self.client_for_region(&region)
+    }
+}
+
 /// Pure: why `arn` can't be handed to `iam:SimulatePrincipalPolicy`
 /// as a policy source, or `None` when it can.
 ///

@@ -45,7 +45,8 @@ impl App {
         }
         let env_for_msg = env_name.clone();
         let dims = self.cfg.alarm_dimensions.clone();
-        self.spawn_aws(
+        self.spawn_aws_in(
+            self.detail_client(),
             "list_alarms_for_env",
             move |aws| async move { aws.list_alarms_for_env(&env_name, &dims).await },
             move |gen, result| AppMsg::DetailAlarms {
@@ -72,7 +73,8 @@ impl App {
             });
             return;
         }
-        self.spawn_aws(
+        self.spawn_aws_in(
+            self.detail_client(),
             "list_application_versions",
             move |aws| async move { aws.list_application_versions(&app_name).await },
             move |gen, result| AppMsg::DetailRecentVersions {
@@ -88,17 +90,21 @@ impl App {
             return;
         };
         let env_name = d.env_name.clone();
-        let aws = self.aws.clone();
+        let client = self.detail_client();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         tokio::spawn(async move {
             // We don't surface fetch errors here — failure just means we
             // can't tell whether CW Logs are configured, in which case the
             // Logs tab falls back to the generic "press ^R or s" hint.
-            let groups = aws
-                .discover_env_log_groups(&env_name)
-                .await
-                .unwrap_or_default();
+            // A client that won't resolve is the same non-answer.
+            let groups = match client.resolve().await {
+                Ok(aws) => aws
+                    .discover_env_log_groups(&env_name)
+                    .await
+                    .unwrap_or_default(),
+                Err(_) => Vec::new(),
+            };
             let _ = tx.send(AppMsg::DetailLogGroups {
                 gen,
                 env_name,
@@ -117,7 +123,8 @@ impl App {
             d.loading_env_vars = true;
         }
         let env_for_msg = env_name.clone();
-        self.spawn_aws(
+        self.spawn_aws_in(
+            self.detail_client(),
             "fetch_env_vars",
             move |aws| async move { aws.fetch_env_vars(&app_name, &env_name).await },
             move |gen, result| AppMsg::DetailEnvVars {
@@ -139,7 +146,8 @@ impl App {
         if let Some(d) = self.detail.as_mut() {
             d.loading_tags = true;
         }
-        self.spawn_aws(
+        self.spawn_aws_in(
+            self.detail_client(),
             "list_tags",
             move |aws| async move { aws.list_tags(&arn).await },
             move |gen, result| AppMsg::DetailTags {
@@ -159,12 +167,15 @@ impl App {
             d.log_tail.poll_attempt = 0;
             d.log_tail.error = None;
         }
-        let aws = self.aws.clone();
+        let client = self.detail_client();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_for_msg = env_name.clone();
         tokio::spawn(async move {
-            let result = collect_tail_logs(aws, env_name.clone(), tx.clone(), gen).await;
+            let result = match client.resolve().await {
+                Ok(aws) => collect_tail_logs(aws, env_name.clone(), tx.clone(), gen).await,
+                Err(e) => Err(flatten_err("cached_client", e)),
+            };
             let _ = tx.send(AppMsg::DetailLogs {
                 gen,
                 env_name: env_for_msg,
@@ -198,11 +209,22 @@ impl App {
                 )
             })
             .collect();
-        let aws = self.aws.clone();
+        let client = self.detail_client();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let name = env_name.clone();
         tokio::spawn(async move {
+            let aws = match client.resolve().await {
+                Ok(aws) => aws,
+                Err(e) => {
+                    let _ = tx.send(AppMsg::DetailMetrics {
+                        gen,
+                        env_name,
+                        result: Err(flatten_err("cached_client", e)),
+                    });
+                    return;
+                }
+            };
             // Fire both queries concurrently; combine into one ordered series
             // list. Built-ins come first, then user metrics in add-order so
             // the operator sees their additions appended to the familiar
@@ -244,7 +266,8 @@ impl App {
             return;
         }
         let env_for_msg = env_name.clone();
-        self.spawn_aws(
+        self.spawn_aws_in(
+            self.detail_client(),
             "describe_worker_queues",
             move |aws| async move {
                 aws.describe_worker_queues(&application_name, &env_name)
@@ -279,7 +302,8 @@ impl App {
             return;
         }
         let env_for_msg = env_name.clone();
-        self.spawn_aws(
+        self.spawn_aws_in(
+            self.detail_client(),
             "list_events_for_env",
             move |aws| async move { aws.list_events_for_env(&env_name, 50).await },
             move |gen, result| AppMsg::DetailEvents {
@@ -310,7 +334,8 @@ impl App {
             return;
         }
         let env_for_msg = env_name.clone();
-        self.spawn_aws(
+        self.spawn_aws_in(
+            self.detail_client(),
             "list_instances",
             move |aws| async move { aws.list_instances(&env_name).await },
             move |gen, result| AppMsg::DetailInstances {

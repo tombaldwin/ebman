@@ -1015,7 +1015,16 @@ impl App {
             self.spawn_ssm_run_impl(modal.target_env.clone(), command, instances);
             return;
         }
-        let aws = self.aws.clone();
+        // The ROW's region, not the home one. Under a multi-region
+        // fan-out `self.aws` points wherever the operator started, so a
+        // restart / terminate / deploy on a row from another region
+        // either failed as "environment not found" or — with a
+        // same-named env at home, which is exactly what a fleet with
+        // per-region copies has — dispatched a destructive action
+        // against the wrong environment. The audit line takes the same
+        // region so the journal names where the write actually went.
+        let region = self.region_for_name(&modal.target_env);
+        let client = self.client_for_region(&region);
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let action = modal.action;
@@ -1029,13 +1038,25 @@ impl App {
         write_audit_entry(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.context.region,
+            &region,
             action,
             &env,
             swap_with.as_deref(),
         );
         self.push_pending(action.label(), env.clone());
         tokio::spawn(async move {
+            let aws = match client.resolve().await {
+                Ok(aws) => aws,
+                Err(e) => {
+                    let _ = tx.send(AppMsg::ActionResult {
+                        gen,
+                        action,
+                        env_name: env,
+                        result: Err(flatten_err("cached_client", e)),
+                    });
+                    return;
+                }
+            };
             let result = match action {
                 Action::Rebuild => aws.rebuild_env(&env).await,
                 Action::RestartAppServer => aws.restart_app_server(&env).await,

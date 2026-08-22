@@ -7999,3 +7999,103 @@ fn the_clipboard_is_only_reached_through_yank() {
     );
     assert!(sites[0].starts_with("src/app.rs:"), "{sites:?}");
 }
+
+// --- per-row work goes to the row's region -----------------------------
+
+#[tokio::test]
+async fn detail_and_why_and_dlq_use_the_rows_own_region() {
+    // Under a multi-region fan-out the selected row is routinely in
+    // some other region, but every per-row background fetch used
+    // `self.aws`, whose region is `context.region`. Detail showed the
+    // environment's name beside the home region's instances, metrics,
+    // events and alarms — wrong data wearing the right label.
+    let mut app = test_app();
+    let mut env = mk_env("api-prod", "uflexi", "Web", "Green");
+    env.region = Some("eu-west-2".into());
+    app.environments = vec![env.clone()];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    assert_eq!(app.context.region, "us-east-1", "home region differs");
+
+    // The lookup all four accessors share.
+    assert_eq!(app.region_for_name("api-prod"), "eu-west-2");
+    // An env we hold no row for falls back to home — a modal opened
+    // before the refresh landed. That's the pre-fan-out behaviour.
+    assert_eq!(app.region_for_name("not-in-the-table"), "us-east-1");
+
+    app.open_detail();
+    assert_eq!(
+        app.detail_client().region_for_tests(),
+        "eu-west-2",
+        "Detail must fetch from where the environment actually is"
+    );
+    app.dlq = Some(crate::app::DlqState {
+        env_name: "api-prod".into(),
+        main_queue_url: String::new(),
+        dlq_url: String::new(),
+        messages: Vec::new(),
+        list_state: Default::default(),
+        loading: false,
+        error: None,
+        confirm_purge: false,
+        purge_typed: tui_common::TextInput::new(),
+        viewing: crate::app::QueueView::Dlq,
+        confirm_delete_id: None,
+        replay_input: None,
+    });
+    assert_eq!(
+        app.dlq_client().region_for_tests(),
+        "eu-west-2",
+        "an SQS queue URL doesn't even exist in the home region"
+    );
+}
+
+#[tokio::test]
+async fn a_write_dispatches_to_the_rows_region() {
+    // The worst case in this class: a restart / terminate / deploy on a
+    // fan-out row went to the home region, where it either failed as
+    // "environment not found" or — with a same-named env at home, which
+    // is what a fleet with per-region copies looks like — dispatched a
+    // destructive action against the wrong environment entirely.
+    let mut app = test_app();
+    let mut env = mk_env("api-prod", "uflexi", "Web", "Green");
+    env.region = Some("eu-west-2".into());
+    app.environments = vec![env];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+
+    assert_eq!(
+        app.client_for_region(&app.region_for_name("api-prod"))
+            .region_for_tests(),
+        "eu-west-2",
+        "the write client follows the row"
+    );
+    // A row with no region of its own stays on the home client, which
+    // may be an AssumeRole session `cached_client` can't rebuild.
+    let mut homeless = mk_env("home-env", "uflexi", "Web", "Green");
+    homeless.region = None;
+    app.environments.push(homeless);
+    app.rebuild_view();
+    assert_eq!(
+        app.client_for_region(&app.region_for_name("home-env"))
+            .region_for_tests(),
+        "us-east-1"
+    );
+}
+
+#[tokio::test]
+async fn demo_mode_never_resolves_a_remote_region() {
+    // The demo fleet's regions are fictional and its client is a stub;
+    // resolving one would reach real AWS for a region the fixture
+    // invented, during a screencast.
+    let mut app = test_app();
+    app.demo_mode = true;
+    let mut env = mk_env("api-prod", "uflexi", "Web", "Green");
+    env.region = Some("ap-southeast-4".into());
+    app.environments = vec![env];
+    app.rebuild_view();
+    assert!(
+        app.client_for_region("ap-southeast-4").is_home_for_tests(),
+        "demo mode stays on the stub"
+    );
+}

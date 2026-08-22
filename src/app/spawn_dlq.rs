@@ -27,7 +27,8 @@ impl App {
             QueueView::Main => dlq.main_queue_url.clone(),
         };
         let queue_for_msg = queue_url.clone();
-        self.spawn_aws(
+        self.spawn_aws_in(
+            self.dlq_client(),
             "peek_messages",
             move |aws| async move { aws.peek_messages(&queue_url, 50).await },
             move |gen, result| AppMsg::DlqMessages {
@@ -53,6 +54,8 @@ impl App {
         if self.deny_write(&env_for_guard, "delete") {
             return;
         }
+        // Resolved before the `as_mut` borrow: it reads `self.dlq`.
+        let client = self.dlq_client();
         let Some(dlq) = self.dlq.as_mut() else { return };
         // Resolve by MESSAGE ID at dispatch time — the armed confirm
         // survives refreshes safely; a message that vanished from the
@@ -71,7 +74,6 @@ impl App {
             return;
         }
         let env_name = dlq.env_name.clone();
-        let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let queue_label = if matches!(dlq.viewing, QueueView::Main) {
@@ -82,12 +84,29 @@ impl App {
         crate::audit::append_dlq_op(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.context.region,
+            &self.region_for_name(&env_name),
             "sqs-delete",
             &env_name,
             &[("queue", queue_label), ("msg_id", &msg.id)],
         );
         tokio::spawn(async move {
+            // SQS queue URLs are region-scoped: against the home
+            // region's SQS a fan-out row's queue doesn't merely read
+            // stale, it doesn't exist. Resolve where the env actually
+            // lives before touching it — this covers a purge and a
+            // replay, so a wrong-region client is a destructive
+            // action pointed at the wrong account's queue.
+            let aws = match client.resolve().await {
+                Ok(aws) => aws,
+                Err(e) => {
+                    let _ = tx.send(AppMsg::DlqActionResult {
+                        gen,
+                        env_name,
+                        result: Err(flatten_err("cached_client", e)),
+                    });
+                    return;
+                }
+            };
             let result = aws
                 .delete_message(&queue_url, &msg.receipt_handle)
                 .await
@@ -111,6 +130,8 @@ impl App {
         if self.deny_write(&env_name, "resend") {
             return;
         }
+        // Resolved before the `as_mut` borrow: it reads `self.dlq`.
+        let client = self.dlq_client();
         let Some(dlq) = self.dlq.as_mut() else { return };
         let Some(idx) = dlq.list_state.selected() else {
             return;
@@ -122,7 +143,6 @@ impl App {
             dlq.error = Some("main queue URL unknown — cannot resend".into());
             return;
         }
-        let aws = self.aws.clone();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let env_name = dlq.env_name.clone();
@@ -131,12 +151,29 @@ impl App {
         crate::audit::append_dlq_op(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.context.region,
+            &self.region_for_name(&env_name),
             "dlq-resend",
             &env_name,
             &[("msg_id", &msg.id)],
         );
         tokio::spawn(async move {
+            // SQS queue URLs are region-scoped: against the home
+            // region's SQS a fan-out row's queue doesn't merely read
+            // stale, it doesn't exist. Resolve where the env actually
+            // lives before touching it — this covers a purge and a
+            // replay, so a wrong-region client is a destructive
+            // action pointed at the wrong account's queue.
+            let aws = match client.resolve().await {
+                Ok(aws) => aws,
+                Err(e) => {
+                    let _ = tx.send(AppMsg::DlqActionResult {
+                        gen,
+                        env_name,
+                        result: Err(flatten_err("cached_client", e)),
+                    });
+                    return;
+                }
+            };
             let result = match aws.send_message(&main_url, &msg.body).await {
                 Ok(()) => match aws.delete_message(&dlq_url, &msg.receipt_handle).await {
                     Ok(()) => Ok(DlqOp::Resent {
@@ -167,15 +204,32 @@ impl App {
         crate::audit::append_dlq_op(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.context.region,
+            &self.region_for_name(&env_name),
             "dlq-purge",
             &env_name,
             &[],
         );
-        let aws = self.aws.clone();
+        let client = self.dlq_client();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         tokio::spawn(async move {
+            // SQS queue URLs are region-scoped: against the home
+            // region's SQS a fan-out row's queue doesn't merely read
+            // stale, it doesn't exist. Resolve where the env actually
+            // lives before touching it — this covers a purge and a
+            // replay, so a wrong-region client is a destructive
+            // action pointed at the wrong account's queue.
+            let aws = match client.resolve().await {
+                Ok(aws) => aws,
+                Err(e) => {
+                    let _ = tx.send(AppMsg::DlqActionResult {
+                        gen,
+                        env_name,
+                        result: Err(flatten_err("cached_client", e)),
+                    });
+                    return;
+                }
+            };
             let result = aws
                 .purge_queue(&dlq_url)
                 .await
@@ -213,20 +267,37 @@ impl App {
         let main_url = dlq.main_queue_url.clone();
         let dlq_url = dlq.dlq_url.clone();
         let env_name = dlq.env_name.clone();
-        let aws = self.aws.clone();
+        let client = self.dlq_client();
         let tx = self.msg_tx.clone();
         let gen = self.generation;
         let count = messages.len();
         crate::audit::append_dlq_op(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
-            &self.context.region,
+            &self.region_for_name(&env_name),
             "dlq-replay",
             &env_name,
             &[("count", &count.to_string())],
         );
         self.status_message = Some(format!("replaying {count} message(s) to the main queue…"));
         tokio::spawn(async move {
+            // SQS queue URLs are region-scoped: against the home
+            // region's SQS a fan-out row's queue doesn't merely read
+            // stale, it doesn't exist. Resolve where the env actually
+            // lives before touching it — this covers a purge and a
+            // replay, so a wrong-region client is a destructive
+            // action pointed at the wrong account's queue.
+            let aws = match client.resolve().await {
+                Ok(aws) => aws,
+                Err(e) => {
+                    let _ = tx.send(AppMsg::DlqActionResult {
+                        gen,
+                        env_name,
+                        result: Err(flatten_err("cached_client", e)),
+                    });
+                    return;
+                }
+            };
             let mut failures = 0usize;
             for msg in &messages {
                 match aws.send_message(&main_url, &msg.body).await {
