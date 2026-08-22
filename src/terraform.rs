@@ -983,4 +983,55 @@ mod tests {
         let json = render_drift_json(None, &[]);
         assert!(json.contains("\"tfstate\":null"));
     }
+
+    #[test]
+    fn every_drift_surface_redacts_by_default() {
+        // The three consumers of `compute_drift` — `ebman drift` (both
+        // text and --json), the MCP drift tool, and the TUI `:drift`
+        // overlay — must all pass through `redact_drift_fields`.
+        // Redaction started MCP-only, and the gap meant a drifted
+        // env-var secret landed in CI logs verbatim. This pins the
+        // call sites so a fourth consumer can't quietly skip it.
+        let sources = [
+            ("cli/drift.rs", include_str!("cli/drift.rs")),
+            ("cli/mcp/tools.rs", include_str!("cli/mcp/tools.rs")),
+            ("app/cmd_misc.rs", include_str!("app/cmd_misc.rs")),
+        ];
+        for (name, src) in sources {
+            assert!(
+                src.contains("redact_drift_fields"),
+                "{name} renders drift without redacting it"
+            );
+        }
+
+        // And the function actually blanks a secret rather than just
+        // being called.
+        let mut fields = vec![
+            super::DriftField {
+                kind: "option_setting".into(),
+                namespace: Some("aws:elasticbeanstalk:application:environment".into()),
+                name: Some("DATABASE_URL".into()),
+                tf_value: "postgres://user:hunter2@db/prod".into(),
+                live_value: "postgres://user:hunter2@db/staging".into(),
+            },
+            super::DriftField {
+                kind: "option_setting".into(),
+                namespace: Some("aws:autoscaling:asg".into()),
+                name: Some("MinSize".into()),
+                tf_value: "2".into(),
+                live_value: "4".into(),
+            },
+        ];
+        super::redact_drift_fields(&mut fields);
+        assert!(
+            !fields[0].tf_value.contains("hunter2") && !fields[0].live_value.contains("hunter2"),
+            "an env-var secret survived redaction: {:?}",
+            fields[0]
+        );
+        assert_eq!(
+            (fields[1].tf_value.as_str(), fields[1].live_value.as_str()),
+            ("2", "4"),
+            "a non-secret must stay readable — the drift signal is the point"
+        );
+    }
 }
