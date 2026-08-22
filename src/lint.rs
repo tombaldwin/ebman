@@ -476,27 +476,26 @@ pub fn parse_baseline(text: &str) -> Result<Vec<BaselineIssue>, String> {
             continue;
         };
         let rule_id = obj
-            .get(serde_yml::Value::from("rule_id"))
+            .get("rule_id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| "baseline issue missing rule_id".to_string())?
             .to_string();
-        let env_name = obj
-            .get(serde_yml::Value::from("env"))
-            .and_then(|v| v.as_str())
-            .map(String::from);
+        let env_name = obj.get("env").and_then(|v| v.as_str()).map(String::from);
         let title = obj
-            .get(serde_yml::Value::from("title"))
+            .get("title")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
         let mut fields: BTreeMap<String, String> = BTreeMap::new();
-        if let Some(f) = obj
-            .get(serde_yml::Value::from("fields"))
-            .and_then(|v| v.as_mapping())
-        {
+        if let Some(f) = obj.get("fields").and_then(|v| v.as_mapping()) {
+            // serde_yml 0.0.13 changed mapping iteration to hand out
+            // the key as `&str` rather than a `Value` — a breaking
+            // change in a patch release, from the crate RUSTSEC
+            // already flags as unsound. See the BACKLOG entry about
+            // migrating off it.
             for (k, v) in f {
-                if let (Some(k_str), Some(v_str)) = (k.as_str(), v.as_str()) {
-                    fields.insert(k_str.to_string(), v_str.to_string());
+                if let Some(v_str) = v.as_str() {
+                    fields.insert(k.to_string(), v_str.to_string());
                 }
             }
         }
