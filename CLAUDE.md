@@ -79,6 +79,25 @@ When the user asks to cut a release (e.g. "tag 0.X", "ship the release", "prepar
    - **Act on findings — don't just list them.** Same rule as the autonomous-mode loop: Critical and Important findings get fixed *before* tagging unless the user has explicitly deferred. Bundle the fixes into the release commit (or a same-day patch tag like `0.X.1` if the release already shipped). Architecture refactors usually defer to the next release with the user's go-ahead.
    - **0.14.0 caught two real bugs this way** — `lint --fix` bypassing `safety.envs.*.read_only` and rollouts losing failed-region audit lines. Both went out same-day as 0.14.1. Worth the 5 minutes every cycle.
 
-3. **Surface findings in the release message.** What the docs audit + code review fixed lands in the release notes / final summary alongside what shipped, so the audit and review aren't invisible work.
+3. **Enumerate the breaking changes for the changelog.** The CI
+   `cargo-semver-checks` job answers "is the declared bump big enough?"
+   — it catches an API break shipped as a patch. It does **not** list
+   what broke once the version is already at the breaking position: a
+   declared major bump permits everything, so `0.30.2 -> 0.31.0` reports
+   `0 checks: 0 pass, 254 skip / no semver update required` no matter
+   what changed. To write an accurate **Breaking** section, run it
+   against the last published version as if it were a patch:
 
-4. **No silent edits — flag intentional gaps.** If a command shipped behind a feature flag or as a soft preview, say so in the audit summary rather than just documenting it as if it were generally available. If a code-review finding was deferred (not fixed in the release commit), say WHY and what version it's tracked against.
+   ```bash
+   cargo semver-checks check-release --baseline-version <last-published> --release-type patch
+   ```
+
+   Every `--- failure ... ---` block is a breaking change that belongs in
+   the changelog. This is a checklist step, not a gate — it fails by
+   construction on any legitimate major bump, so it cannot be wired into
+   CI. 0.31.0 shipped with `Form.banner` undocumented because this was
+   only run after the tag.
+
+4. **Surface findings in the release message.** What the docs audit + code review fixed lands in the release notes / final summary alongside what shipped, so the audit and review aren't invisible work.
+
+5. **No silent edits — flag intentional gaps.** If a command shipped behind a feature flag or as a soft preview, say so in the audit summary rather than just documenting it as if it were generally available. If a code-review finding was deferred (not fixed in the release commit), say WHY and what version it's tracked against.

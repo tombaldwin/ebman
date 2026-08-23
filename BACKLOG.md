@@ -1301,7 +1301,24 @@ Four items, all demonstrated defects rather than judgement calls.
   crates.io is unreachable, so a blip can't silently disable it. The
   gate script was extracted from the YAML and exercised over all four
   cases (published / unpublished / crates.io down / PR) rather than
-  retyped into a test copy.
+  retyped into a test copy. Verified live on the first push: the job
+  logged `manifest=0.31.0 published=0.31.0 → already published` and
+  skipped the check.
+
+  **Correction to how I first wrote this up.** I claimed the gate would
+  have caught 0.31.0's undocumented `Form.banner`. It would not. At the
+  release commit the version is *already* at the breaking position, and
+  a declared major bump permits everything — `0.30.2 -> 0.31.0` reports
+  `0 checks: 0 pass, 254 skip / no semver update required`, whatever
+  broke. What the gate actually catches is the **under-bump**: an API
+  break shipped as a patch, which is the version-claim error that hurts
+  downstream users. Enumerating breaks for the changelog needs
+  `--release-type patch` against the last published version, which
+  can't be a build gate (it fails by construction on any legitimate
+  major bump). That went into the release procedure instead, next to
+  the docs audit and the code review — an honest checklist item rather
+  than a CI step that can't fail, which is the shape this repo has
+  already been bitten by three times.
 
 #### 0.31.0 shipped — 2026-08-23
 

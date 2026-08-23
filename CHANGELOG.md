@@ -39,10 +39,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `cargo-semver-checks` runs on main pushes as well as PRs, gated on
   whether the manifest version is already published. It was PR-only, so
-  it never ran on the one commit whose version claim actually ships —
-  the release commit — and 0.31.0 shipped an undocumented breaking
-  change as a result. Between tags there is still nothing to check, so
-  this adds no noise.
+  it never ran on the one commit whose version claim actually ships: the
+  release commit. Between tags there is still nothing to check, so this
+  adds no noise.
+
+  What it catches is an under-bump — shipping a breaking change as a
+  patch. It does **not** enumerate the breaks once the version is
+  already at the breaking position, because a declared major bump
+  permits everything and all 254 checks skip. Listing them for the
+  changelog is a separate `--release-type patch` run, now part of the
+  release procedure in `CLAUDE.md`.
 
 ## [0.31.0] — 2026-08-23 — gates, and the tail of the region work
 
