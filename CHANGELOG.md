@@ -61,6 +61,9 @@ see **Breaking** below. The binary is unaffected.
 ### Breaking (library only)
 
 - `ui::series_anomaly_label` takes an `IconStyle` parameter.
+- `form::Form` gains a public `banner` field, so struct-literal
+  construction without `..Default::default()` no longer compiles.
+  Use `Form::banner_for(env_name)` to populate it.
 - `ui::event_severity_style`, `ui::visible_window`, `ui::StatusAlert`,
   `ui::format_instance_counts` and `ui::status_alert` are no longer
   publicly reachable. All five were internal render helpers that were
