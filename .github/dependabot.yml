@@ -1,0 +1,26 @@
+version: 2
+updates:
+  # `deny.toml` carries dated RUSTSEC waivers, most of them "waiting for
+  # the AWS SDK to bump" — a wait that is invisible until someone
+  # re-reads the file. Weekly updates make those waivers self-clearing.
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # One PR, not seventeen. The AWS SDK crates move together and
+      # share an MSRV floor, so splitting them produces PRs that cannot
+      # pass CI individually.
+      aws-sdk:
+        patterns:
+          - "aws-*"
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "ci"

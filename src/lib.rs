@@ -10,6 +10,16 @@
 //! (`tui-common` planned for a workspace with `pgman`) `use ebman::…`
 //! the internal types instead of re-implementing them.
 
+// `unwrap_used` / `expect_used` are denied crate-wide (see
+// Cargo.toml). Test code is exempt: a panic in a test IS the failure
+// report, and `#[allow]` on every assertion would be noise. This does
+// not weaken production checking: `cargo clippy --all-targets`
+// compiles the lib WITHOUT cfg(test) as well, and that build still
+// denies. Verified by planting an `unwrap` in production code and
+// confirming clippy still errors — by the CI clippy job, not by a
+// test, since a test cannot observe what clippy did.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 pub mod app;
 pub mod audit;
 pub mod aws;

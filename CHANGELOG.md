@@ -125,6 +125,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Internal
 
+- **`clippy::unwrap_used` / `expect_used` are denied**, making a rule the
+  codebase already followed by discipline into one the compiler checks.
+  Measured first: 0 `unwrap` and 2 `expect` in ~82k lines of non-test
+  code, both genuinely infallible and now carrying a justification —
+  the static-table one is pinned by a test, so the `expect` is honest
+  rather than hopeful. Test code is exempt, since a panic in a test *is*
+  the failure report; production code is still checked, because
+  `--all-targets` compiles the lib without `cfg(test)` too.
+
+- **Two more CI gates**: `cargo-machete` (it found `tokio-stream` and
+  `aws-types` on its first run) and `cargo test --doc`, which
+  `--all-targets` silently skips — both existing doctests are `ignore`d,
+  so nothing was lost, but the gate didn't exist.
+
+- **Dependabot**, with the AWS SDK crates grouped into one PR. They move
+  together and share an MSRV floor, so splitting them produces PRs that
+  can't pass CI individually. This also makes `deny.toml`'s dated
+  advisory waivers self-clearing instead of waiting on someone to
+  re-read the file.
+
 - **The test suite no longer mutates the process environment.** Three
   tests set `HOME` / `AWS_CONFIG_FILE` / `AWS_SHARED_CREDENTIALS_FILE`,
   and one never restored `HOME` — so every test that ran after it in the

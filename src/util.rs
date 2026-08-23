@@ -684,6 +684,12 @@ pub const PARTITIONS: &[Partition] = &[
 
 /// The commercial partition — the fallback for regions we don't
 /// recognise, and the only entry with no prefixes of its own.
+// Infallible by construction: `PARTITIONS` is a static table in this
+// file and `commercial_partition_is_present` pins that the entry
+// exists, so this cannot be broken by an edit without a test failing
+// first. That test is what makes the `expect` honest rather than
+// hopeful.
+#[allow(clippy::expect_used)]
 fn commercial() -> &'static Partition {
     PARTITIONS
         .iter()
@@ -868,5 +874,21 @@ mod dir_redirect_tests {
     fn the_two_directories_are_distinct() {
         // Sharing one would let a cache write clobber `state.toml`.
         assert_ne!(config_dir(), cache_dir());
+    }
+}
+
+#[cfg(test)]
+mod partition_guard {
+    #[test]
+    fn commercial_partition_is_present() {
+        // `commercial()` unwraps this lookup with an `expect`, which is
+        // only honest while the table actually contains the entry. This
+        // is what makes it so, rather than trusting a reading of the
+        // file — the `#[allow(clippy::expect_used)]` there points here.
+        assert!(
+            super::PARTITIONS.iter().any(|p| p.arn == "aws"),
+            "the commercial partition is the fallback for every \
+             unrecognised region; without it `commercial()` panics"
+        );
     }
 }
