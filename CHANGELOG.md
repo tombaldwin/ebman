@@ -113,6 +113,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Internal
 
+- **The test suite no longer mutates the process environment.** Three
+  tests set `HOME` / `AWS_CONFIG_FILE` / `AWS_SHARED_CREDENTIALS_FILE`,
+  and one never restored `HOME` — so every test that ran after it in the
+  same process saw `/tmp/fake-home`, while several production paths read
+  `HOME` live. One file serialised itself with a lock; another mutated
+  the same variable with no lock, under a `// SAFETY: tests run
+  single-threaded by default` comment that was false. `set_var` is also
+  `unsafe` under the 2024 env API and a hard error on that edition, so
+  this was a migration blocker as well as a latent flake. The pure half
+  of each path (`expand_tilde_from`, `aws_file_path`) now takes the
+  value as a parameter, and a guard keeps the pattern out.
+
 - **The AWS request id is captured.** It was never recorded anywhere, so
   when AWS support asked for one there was nothing to give them. It now
   rides in the error chain and reaches `ebman.log`.

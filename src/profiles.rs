@@ -7,20 +7,41 @@ use std::{collections::BTreeSet, path::PathBuf};
 /// env wrappers, or work-vs-personal splits via `AWS_CONFIG_FILE`
 /// had their valid profiles refused by the 0.17.2 pre-check.
 pub fn config_file_path() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("AWS_CONFIG_FILE") {
+    aws_file_path(
+        std::env::var_os("AWS_CONFIG_FILE"),
+        std::env::var_os("HOME"),
+        ".aws/config",
+    )
+}
+
+/// The pure half of [`config_file_path`] / [`credentials_file_path`]:
+/// an explicit override wins, otherwise `$HOME` joined with `rel`.
+///
+/// Split out so the tests stop mutating the environment. The test below
+/// set `HOME=/tmp/fake-home` and **never restored it**, so every test
+/// that ran afterwards in the same process saw the fake — and several
+/// production paths read `HOME` live. `ENV_LOCK` serialised the tests
+/// that knew to take it; it could not undo a value left behind.
+pub fn aws_file_path(
+    override_var: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+    rel: &str,
+) -> Option<PathBuf> {
+    if let Some(p) = override_var {
         return Some(PathBuf::from(p));
     }
-    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".aws/config"))
+    home.map(|h| PathBuf::from(h).join(rel))
 }
 
 /// Same shape as [`config_file_path`] but for the credentials file —
 /// honours `AWS_SHARED_CREDENTIALS_FILE` with the standard
 /// `~/.aws/credentials` fallback.
 pub fn credentials_file_path() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("AWS_SHARED_CREDENTIALS_FILE") {
-        return Some(PathBuf::from(p));
-    }
-    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".aws/credentials"))
+    aws_file_path(
+        std::env::var_os("AWS_SHARED_CREDENTIALS_FILE"),
+        std::env::var_os("HOME"),
+        ".aws/credentials",
+    )
 }
 
 pub fn load_profiles() -> Vec<String> {
@@ -107,47 +128,52 @@ mod tests {
     /// runs tests in parallel by default and `set_var` / `remove_var`
     /// are not thread-safe; the mutex keeps the env-var-touching tests
     /// from racing each other.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
-    fn config_file_path_honours_aws_config_file_override() {
-        let _g = ENV_LOCK.lock().unwrap();
-        let prev = std::env::var_os("AWS_CONFIG_FILE");
-        std::env::set_var("AWS_CONFIG_FILE", "/tmp/custom-aws-config");
-        let p = config_file_path().expect("AWS_CONFIG_FILE set should yield Some path");
-        assert_eq!(p, PathBuf::from("/tmp/custom-aws-config"));
-        if let Some(v) = prev {
-            std::env::set_var("AWS_CONFIG_FILE", v);
-        } else {
-            std::env::remove_var("AWS_CONFIG_FILE");
-        }
-    }
-
-    #[test]
-    fn credentials_file_path_honours_aws_shared_credentials_file_override() {
-        let _g = ENV_LOCK.lock().unwrap();
-        let prev = std::env::var_os("AWS_SHARED_CREDENTIALS_FILE");
-        std::env::set_var("AWS_SHARED_CREDENTIALS_FILE", "/tmp/custom-aws-creds");
-        let p = credentials_file_path()
-            .expect("AWS_SHARED_CREDENTIALS_FILE set should yield Some path");
-        assert_eq!(p, PathBuf::from("/tmp/custom-aws-creds"));
-        if let Some(v) = prev {
-            std::env::set_var("AWS_SHARED_CREDENTIALS_FILE", v);
-        } else {
-            std::env::remove_var("AWS_SHARED_CREDENTIALS_FILE");
-        }
+    fn an_explicit_override_wins_over_home() {
+        // Both overrides, tested through the pure half. These used to
+        // mutate the real environment under `ENV_LOCK`; the lock kept
+        // them from racing each other, but not from racing anything
+        // that didn't know to take it — and `app/tests/parsing.rs` was
+        // mutating HOME with no lock at all, claiming in a `// SAFETY`
+        // comment that `cargo test` is single-threaded. It isn't.
+        let os = std::ffi::OsString::from;
+        assert_eq!(
+            aws_file_path(Some(os("/tmp/custom-aws-config")), None, ".aws/config"),
+            Some(PathBuf::from("/tmp/custom-aws-config"))
+        );
+        assert_eq!(
+            aws_file_path(
+                Some(os("/tmp/custom-aws-creds")),
+                Some(os("/home/someone")),
+                ".aws/credentials"
+            ),
+            Some(PathBuf::from("/tmp/custom-aws-creds")),
+            "the override wins even when HOME is set"
+        );
     }
 
     #[test]
     fn config_file_path_falls_back_to_home_when_no_override() {
-        let _g = ENV_LOCK.lock().unwrap();
-        let prev = std::env::var_os("AWS_CONFIG_FILE");
-        std::env::remove_var("AWS_CONFIG_FILE");
-        std::env::set_var("HOME", "/tmp/fake-home");
-        let p = config_file_path().expect("HOME set should yield Some path");
-        assert_eq!(p, PathBuf::from("/tmp/fake-home/.aws/config"));
-        if let Some(v) = prev {
-            std::env::set_var("AWS_CONFIG_FILE", v);
-        }
+        // No env mutation, and no lock needed. The previous version set
+        // HOME=/tmp/fake-home and never put it back, so every test that
+        // ran after it in the same process saw the fake value.
+        let os = std::ffi::OsString::from;
+        assert_eq!(
+            aws_file_path(None, Some(os("/tmp/fake-home")), ".aws/config"),
+            Some(PathBuf::from("/tmp/fake-home/.aws/config"))
+        );
+        // An explicit override wins over HOME.
+        assert_eq!(
+            aws_file_path(
+                Some(os("/custom/cfg")),
+                Some(os("/tmp/fake-home")),
+                ".aws/config"
+            ),
+            Some(PathBuf::from("/custom/cfg"))
+        );
+        // No HOME and no override → no path at all, rather than a
+        // relative one rooted at the cwd.
+        assert_eq!(aws_file_path(None, None, ".aws/config"), None);
     }
 }

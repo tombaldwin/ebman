@@ -1345,3 +1345,53 @@ fn every_cached_index_is_checked() {
          Use `.get()` / `App::env_at`: {offenders:?}"
     );
 }
+
+#[test]
+fn the_test_suite_does_not_mutate_the_environment() {
+    // `std::env::set_var` is process-global and `cargo test` is
+    // parallel by default. Three tests used to mutate `HOME`,
+    // `AWS_CONFIG_FILE` and `AWS_SHARED_CREDENTIALS_FILE`; one of them
+    // never restored `HOME`, so every test that ran after it in the
+    // same process saw `/tmp/fake-home` — and several production paths
+    // read `HOME` live. One file serialised itself with a lock while
+    // another mutated the same variable with no lock at all, under a
+    // `// SAFETY: tests run single-threaded by default` comment that
+    // was simply false.
+    //
+    // It is also `unsafe` under the 2024 env API and a hard error on
+    // that edition, so this is a migration blocker as well as a flake.
+    // The fix each time was to split the pure half out and pass the
+    // value in; this stops the pattern coming back.
+    let mut offenders: Vec<String> = Vec::new();
+    let mut stack = vec![std::path::PathBuf::from("src")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("src dir") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("read");
+            for (n, line) in text.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or("");
+                // Needles assembled at runtime so this detector does
+                // not match its own source — the first version flagged
+                // exactly one offender: itself.
+                let set = format!("env{}set_var", "::");
+                let remove = format!("env{}remove_var", "::");
+                if code.contains(&set) || code.contains(&remove) {
+                    offenders.push(format!("{}:{}", path.display(), n + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "`set_var` / `remove_var` are process-global and the suite runs \
+         in parallel — split the pure half out and pass the value in \
+         instead: {offenders:?}"
+    );
+}
