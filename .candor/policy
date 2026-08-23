@@ -13,7 +13,7 @@
 # LLM. A repaint happens on every keystroke, so a render function that
 # calls out turns a redraw into a round trip. `:explain` is an
 # operator-initiated command, never a side effect of drawing.
-deny Net Llm  ui
+deny Net Llm Fs Env  ui
 
 # The AWS boundary knows nothing about the TUI.
 forbid aws -> ui
@@ -37,18 +37,15 @@ forbid aws -> ui
 # type-resolved dylint lint finds it, which is why the CI gate runs
 # the lint rather than gating on a scan report.
 
-# NOT asserted here, deliberately:
+# `Fs` and `Env` joined the deny list once they became true. candor
+# found `ui::overlays::draw_form` reaching both through
+# `config::config_path` -> `util::config_dir`, to render the "file: …"
+# banner — resolving `$HOME` on every repaint. The banner is computed
+# at form-open now (`Form::banner_for`), and the render layer reaches
+# neither. That is the intended shape for this file: a finding
+# becomes a rule once it is fixed, so the fix can't quietly come back.
 #
-#   deny Fs ui
-# `ui::overlays::draw_form` reaches Fs today, through
-# `config::config_path` -> `util::config_dir`, to show which file
-# `:settings` will write. In production that resolves `$HOME` and
-# allocates a PathBuf rather than touching the disk — but candor is a
-# syntactic scanner and sees the `#[cfg(test)]` branch of
-# `test_or_home`, which does `create_dir_all`. So the finding is real
-# as a LAYERING smell (the render path recomputes a config path every
-# frame) and overstated as an effect. Recorded in BACKLOG; this line
-# goes in once the call is hoisted out of the draw.
+# NOT asserted here, deliberately:
 #
 #   deny Clipboard / Net in tests
 # Same cause, worse ratio: with `--include-tests` candor reports 102

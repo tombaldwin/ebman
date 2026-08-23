@@ -30,16 +30,14 @@ pub(super) fn draw_form(f: &mut Frame, area: Rect, app: &mut App) {
         ])
         .split(inner);
 
-    // LocalConfig forms (`:settings`) don't have an AWS target; show the
-    // config file path instead so the operator knows where the submit
-    // will land.
-    let banner = if form.env_name.is_empty() {
-        format!(" file: {}", crate::config::config_path().display())
-    } else {
-        format!(" target: {}", form.env_name)
-    };
+    // Computed at open (`Form::banner_for`), not here: this ran on
+    // every repaint and resolved `$HOME` each time, which is also the
+    // render layer reaching `Fs`.
     f.render_widget(
-        Paragraph::new(Span::styled(banner, Style::default().fg(theme.muted))),
+        Paragraph::new(Span::styled(
+            form.banner.clone(),
+            Style::default().fg(theme.muted),
+        )),
         chunks[0],
     );
     f.render_widget(

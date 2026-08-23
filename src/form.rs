@@ -26,6 +26,15 @@ pub struct Form {
     /// Env name the form was opened against. Captured at open-time so a
     /// later cursor move on the main table doesn't redirect the submit.
     pub env_name: String,
+    /// The one-line context banner: the AWS target, or the config file
+    /// path for `:settings` (which has no AWS target).
+    ///
+    /// Computed at OPEN, not at draw. The renderer used to call
+    /// `config::config_path()` inline — which resolves `$HOME` and
+    /// allocates a `PathBuf` on every repaint, and put the render
+    /// layer's reach into `Fs` where `ARCHITECTURE.md` says rendering
+    /// takes `&App` and returns a frame. candor found it.
+    pub banner: String,
     /// Vertical scroll for the field area, maintained by the renderer's
     /// cursor-follow so the focused field/option stays visible on small
     /// terminals (a 9-field form overflows an 80×24 popup).
@@ -132,6 +141,7 @@ impl Form {
         fields: Vec<FormField>,
         submit: FormSubmit,
     ) -> Self {
+        let env_name = env_name.into();
         Self {
             title: title.into(),
             fields,
@@ -139,8 +149,22 @@ impl Form {
             state: FormState::Loading,
             submit,
             summary: summary.into(),
-            env_name: env_name.into(),
+            banner: Self::banner_for(&env_name),
+            env_name,
             scroll: 0,
+        }
+    }
+
+    /// The banner text for a form targeting `env_name`.
+    ///
+    /// An empty name means a `LocalConfig` form (`:settings`), which
+    /// writes to the config file rather than to AWS — so the operator
+    /// gets the path the submit will land in.
+    pub fn banner_for(env_name: &str) -> String {
+        if env_name.is_empty() {
+            format!(" file: {}", crate::config::config_path().display())
+        } else {
+            format!(" target: {env_name}")
         }
     }
 
@@ -709,6 +733,7 @@ mod tests {
         let base = Config::default();
         let f = Form {
             scroll: 0,
+            banner: String::new(),
             title: "settings".into(),
             fields: vec![
                 FormField {
@@ -808,6 +833,7 @@ mod tests {
         let base = Config::default();
         let f = Form {
             scroll: 0,
+            banner: String::new(),
             title: "x".into(),
             fields: vec![FormField {
                 key: "this-field-does-not-map".into(),
@@ -834,6 +860,7 @@ mod tests {
     fn local_config_submit_yields_no_option_settings() {
         let f = Form {
             scroll: 0,
+            banner: String::new(),
             title: "x".into(),
             fields: vec![],
             cursor: 0,
@@ -851,6 +878,7 @@ mod tests {
     fn form_to_option_settings_drops_empty_optional_integers() {
         let f = Form {
             scroll: 0,
+            banner: String::new(),
             title: "t".into(),
             fields: vec![
                 FormField {
@@ -934,6 +962,7 @@ mod tests {
         // edit form — must not be sent as an empty value.
         let f = Form {
             scroll: 0,
+            banner: String::new(),
             title: "t".into(),
             fields: vec![
                 FormField {
@@ -987,5 +1016,37 @@ mod tests {
                 "postgres".into(),
             )]
         );
+    }
+    #[test]
+    fn the_banner_is_resolved_once_at_open() {
+        // It used to be built inside `draw_form`, so every repaint of
+        // a `:settings` form resolved `$HOME` and allocated a
+        // `PathBuf` — and put the render layer's reach into `Fs`,
+        // which is the boundary ARCHITECTURE.md draws. candor found it.
+        let settings = Form::loading(
+            "settings",
+            String::new(),
+            "settings",
+            Vec::new(),
+            FormSubmit::LocalConfig,
+        );
+        assert!(
+            settings.banner.starts_with(" file: "),
+            "a form with no AWS target names the file it writes: {:?}",
+            settings.banner
+        );
+        assert!(
+            !settings.banner.trim_end().ends_with("file:"),
+            "and the path is in it"
+        );
+
+        let env = Form::loading(
+            "capacity",
+            "api-prod",
+            "capacity",
+            Vec::new(),
+            FormSubmit::LocalConfig,
+        );
+        assert_eq!(env.banner, " target: api-prod");
     }
 }
