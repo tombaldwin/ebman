@@ -613,7 +613,9 @@ pub fn health_items(detail: &DetailState, now: chrono::DateTime<chrono::Utc>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::aws::{Environment, Event as EbEvent, Instance, QueueStats, WorkerQueues};
+    use crate::aws::{
+        DlqOrigin, Environment, Event as EbEvent, Instance, QueueStats, WorkerQueues,
+    };
 
     fn mk_env(tier: &str) -> Environment {
         Environment {
@@ -766,6 +768,7 @@ mod tests {
             dlq_url: Some("https://sqs/dlq".into()),
             main_stats: Some(QueueStats::default()),
             dlq_stats: Some(QueueStats::default()),
+            dlq_origin: Some(DlqOrigin::Reported),
         };
         let items = health_items(&d, chrono::Utc::now());
         assert_eq!(items.len(), 2);
@@ -784,6 +787,7 @@ mod tests {
             dlq_url: None,
             main_stats: Some(QueueStats::default()),
             dlq_stats: Some(QueueStats::default()),
+            dlq_origin: Some(DlqOrigin::Reported),
         };
         let items = health_items(&d, chrono::Utc::now());
         assert!(items.is_empty());
@@ -801,6 +805,7 @@ mod tests {
             dlq_url: Some("https://sqs/dlq".into()),
             main_stats: Some(QueueStats::default()),
             dlq_stats: Some(QueueStats::default()),
+            dlq_origin: Some(DlqOrigin::Reported),
         };
         let items = health_items(&d, chrono::Utc::now());
         assert!(matches!(items[0], HealthItem::Event { .. }));

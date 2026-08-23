@@ -5,6 +5,7 @@
 //! is what makes them straightforward to unit-test.
 
 use super::*;
+use crate::aws::DlqOrigin;
 
 /// Render the `:changes` overlay — the env's deploy / config-change
 /// events as a newest-first timeline. Routine health + scaling
@@ -1110,4 +1111,32 @@ pub(crate) fn redact_block(value: &str) -> String {
         return value.to_string();
     }
     "▓".repeat(value.chars().count())
+}
+
+/// What to say when a worker env has no DLQ depth to show.
+///
+/// `dlq_stats == None` has three quite different causes and they used to
+/// render identically as "(queue URL not resolved)":
+///
+///  - EB named no dead-letter queue and the `<main>-dlq` convention
+///    guess didn't exist either. The ordinary case for an env without
+///    one — but the operator should know a guess was made, or they
+///    can't tell this from a misnamed queue.
+///  - EB *did* name one and it doesn't exist. That is an anomaly worth
+///    surfacing: something deleted a queue EB still references.
+///  - There was no URL to try at all.
+pub(crate) fn dlq_absence_note(dlq_url: Option<&str>, origin: Option<DlqOrigin>) -> String {
+    let name = |u: &str| u.rsplit('/').next().unwrap_or(u).to_string();
+    match (dlq_url, origin) {
+        (Some(u), Some(DlqOrigin::Derived)) => {
+            format!("no DLQ found — guessed '{}' by naming convention", name(u))
+        }
+        (Some(u), Some(DlqOrigin::Reported)) => {
+            format!("EB names DLQ '{}' but it does not exist", name(u))
+        }
+        // A URL with no origin predates the distinction (a cached or
+        // hand-built value); say the neutral thing rather than guess.
+        (Some(u), None) => format!("DLQ '{}' returned no stats", name(u)),
+        (None, _) => "no dead-letter queue configured".to_string(),
+    }
 }

@@ -459,6 +459,27 @@ pub struct WorkerQueues {
     pub dlq_url: Option<String>,
     pub main_stats: Option<QueueStats>,
     pub dlq_stats: Option<QueueStats>,
+    /// Where `dlq_url` came from. `None` when there is no `dlq_url`.
+    ///
+    /// Without this, "EB told us about this queue" and "we appended
+    /// `-dlq` to the main queue name and hoped" are the same value —
+    /// and so are the two ways `dlq_stats` ends up `None`. A guess that
+    /// missed is the ordinary case for an env with no dead-letter queue;
+    /// a queue EB *reported* that then doesn't exist is a real anomaly.
+    /// The operator can't act on either without being told which it is.
+    pub dlq_origin: Option<DlqOrigin>,
+}
+
+/// How a `WorkerQueues::dlq_url` was arrived at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DlqOrigin {
+    /// EB named it — `DescribeEnvironmentResources`'s
+    /// `WorkerDeadLetterQueue`, or the `aws:elasticbeanstalk:sqsd`
+    /// option settings.
+    Reported,
+    /// Derived by SQS naming convention (`<main>-dlq`) because EB named
+    /// none. Right for the EB default; a guess for anything else.
+    Derived,
 }
 
 /// Result of `fetch_env_vpc_context` — the env's VPC plus the option-
@@ -680,6 +701,7 @@ impl AwsClient {
     ) -> Result<WorkerQueues> {
         let mut main_url: Option<String> = None;
         let mut dlq_url: Option<String> = None;
+        let mut dlq_origin: Option<DlqOrigin> = None;
         // Errors must stay distinguishable from "this env has no
         // queues": the pre-0.27 shape swallowed every failure into
         // an empty result, so an AccessDenied rendered as "no worker
@@ -705,7 +727,10 @@ impl AwsClient {
                         }
                         match name.as_str() {
                             "WorkerQueue" => main_url = Some(url),
-                            "WorkerDeadLetterQueue" => dlq_url = Some(url),
+                            "WorkerDeadLetterQueue" => {
+                                dlq_url = Some(url);
+                                dlq_origin = Some(DlqOrigin::Reported);
+                            }
                             _ => {}
                         }
                     }
@@ -753,6 +778,7 @@ impl AwsClient {
                                     let v = opt.value.unwrap_or_default();
                                     if !v.is_empty() && dlq_url.is_none() {
                                         dlq_url = Some(v);
+                                        dlq_origin = Some(DlqOrigin::Reported);
                                     }
                                 }
                                 _ => {}
@@ -780,6 +806,13 @@ impl AwsClient {
         // If we still have a main queue but no DLQ URL, derive one by SQS naming convention.
         if let (Some(main), None) = (&main_url, &dlq_url) {
             dlq_url = derive_dlq_url(main);
+            // Only a *successful* derivation is an origin. `derive_dlq_url`
+            // returns None when the main queue already ends in `-dlq`, and
+            // claiming a Derived origin for a url we never produced would
+            // be the same conflation this field exists to remove.
+            if dlq_url.is_some() {
+                dlq_origin = Some(DlqOrigin::Derived);
+            }
         }
 
         // Stats failures must stay distinguishable from "queue empty"
@@ -822,6 +855,7 @@ impl AwsClient {
             dlq_url,
             main_stats,
             dlq_stats,
+            dlq_origin,
         })
     }
 

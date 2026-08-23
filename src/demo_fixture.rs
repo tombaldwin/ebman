@@ -41,8 +41,8 @@ use chrono::{TimeZone, Utc};
 
 use crate::app::App;
 use crate::aws::{
-    AppVersion, CwAlarm, EnvInstanceCounts, Environment, Event as EbEvent, Instance, QueueStats,
-    WorkerQueues,
+    AppVersion, CwAlarm, DlqOrigin, EnvInstanceCounts, Environment, Event as EbEvent, Instance,
+    QueueStats, WorkerQueues,
 };
 
 /// Anchor timestamp the fixture is computed against. Stable across
@@ -255,6 +255,7 @@ pub fn worker_queues_for_env(env_name: &str) -> WorkerQueues {
                 in_flight: 0,
                 delayed: 0,
             }),
+            dlq_origin: Some(DlqOrigin::Reported),
         },
         "poly-prod-worker" => WorkerQueues {
             main_url: Some(
@@ -269,6 +270,7 @@ pub fn worker_queues_for_env(env_name: &str) -> WorkerQueues {
                 delayed: 0,
             }),
             dlq_stats: Some(QueueStats::default()),
+            dlq_origin: Some(DlqOrigin::Reported),
         },
         "poly-staging-worker" => WorkerQueues {
             main_url: Some(
@@ -279,6 +281,10 @@ pub fn worker_queues_for_env(env_name: &str) -> WorkerQueues {
             ),
             main_stats: Some(QueueStats::default()),
             dlq_stats: Some(QueueStats::default()),
+            // EB named no DLQ for this one, so the convention guess is
+            // what found it — the demo fleet should show that annotation
+            // as well as the reported case.
+            dlq_origin: Some(DlqOrigin::Derived),
         },
         _ => WorkerQueues::default(),
     }
