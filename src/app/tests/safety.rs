@@ -521,3 +521,92 @@ async fn every_batch_write_is_refused_when_one_member_is_pinned() {
         );
     }
 }
+
+// --- the destructive commands actually route --------------------------
+//
+// From the 131-command dispatch sweep: each of these could be turned
+// into a no-op and the whole suite stayed green. The safety tests pin
+// the 29 declared WRITE_COMMANDS, but those are the option-setting ones
+// that gate inside their own handler. The confirm-modal actions —
+// restart, rebuild, terminate, stop, start — were pinned by nothing, so
+// a broken or renamed dispatch arm would silently do nothing at all.
+
+#[tokio::test]
+async fn the_confirm_modal_commands_arm_the_right_action() {
+    for (cmd, expected) in [
+        ("restart", Action::RestartAppServer),
+        ("rebuild", Action::Rebuild),
+        ("stop", Action::Scale),
+        ("start", Action::Scale),
+    ] {
+        let mut app = test_app();
+        app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
+        app.view.invalidate();
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+
+        app.execute_command(cmd);
+
+        let Some(ActionFlow::Confirm(modal)) = app.action_flow.as_ref() else {
+            panic!(
+                ":{cmd} armed no confirm modal at all (error: {:?})",
+                app.error_message
+            );
+        };
+        assert_eq!(modal.action, expected, ":{cmd} armed the wrong action");
+        assert_eq!(
+            modal.target_env, "api-prod",
+            ":{cmd} aimed at the wrong env"
+        );
+        assert_eq!(app.mode, Mode::Action, ":{cmd} left the mode behind");
+    }
+}
+
+#[tokio::test]
+async fn terminate_routes_to_the_strict_typed_name_guard() {
+    // Terminate deliberately does NOT use the Y/N confirm the others
+    // do — it goes through the action menu so the operator has to type
+    // the env name. That difference is the whole safety story for the
+    // one irreversible action, and nothing pinned it.
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
+    app.view.invalidate();
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+
+    app.execute_command("terminate");
+
+    let Some(ActionFlow::Confirm(modal)) = app.action_flow.as_ref() else {
+        panic!(
+            ":terminate armed no confirm at all (error: {:?})",
+            app.error_message
+        );
+    };
+    assert_eq!(modal.action, Action::Terminate);
+    assert_eq!(modal.target_env, "api-prod");
+    assert_eq!(
+        modal.kind,
+        ConfirmKind::TypeName,
+        ":terminate must demand the typed env name, not a Y/N"
+    );
+}
+
+#[tokio::test]
+async fn destructive_commands_still_refuse_under_deny_write() {
+    // The routing tests above arm a modal; this pins that the same
+    // route still refuses when writes are denied. Without it, a fix to
+    // routing could quietly bypass the gate and both other tests would
+    // still pass.
+    for cmd in ["restart", "rebuild", "terminate", "stop", "start"] {
+        let mut app = read_only_app_with_env();
+        app.execute_command(cmd);
+        assert!(
+            app.action_flow.is_none(),
+            ":{cmd} armed an action despite --deny-write"
+        );
+        assert!(
+            app.error_message.is_some(),
+            ":{cmd} refused silently — the operator needs to be told"
+        );
+    }
+}

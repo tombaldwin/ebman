@@ -439,7 +439,10 @@ impl App {
                         self.help.pre_mode = Some(Mode::Detail);
                         self.mode = Mode::Help;
                     }
-                    KeyCode::Char('a') => self.open_action_menu(),
+                    KeyCode::Char('a') => {
+                        // Refusal already surfaced its own message.
+                        let _ = self.open_action_menu();
+                    }
                     // Guarded `b` on Instances tab opens the EC2 console for
                     // the selected instance; must come before the unguarded
                     // `b` (which opens the env console) per the match-arm
@@ -714,7 +717,10 @@ impl App {
                     KeyCode::Char('a') if self.scope == Scope::Apps => {
                         self.open_apps_action_menu();
                     }
-                    KeyCode::Char('a') if self.scope == Scope::Envs => self.open_action_menu(),
+                    KeyCode::Char('a') if self.scope == Scope::Envs => {
+                        // Refusal already surfaced its own message.
+                        let _ = self.open_action_menu();
+                    }
                     KeyCode::Char('b') if self.scope == Scope::Apps => {
                         self.open_app_in_console();
                     }

@@ -35,6 +35,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   (os error 6)".** That is what someone piping it in CI saw first. It
   now says it needs a terminal and points at the headless subcommands.
 
+### Fixed
+
+- **`:terminate` armed a confirm modal even under `--deny-write`.**
+  `cmd_terminate` opens the action menu and then advances the flow, and
+  the advance step has no gate of its own — it is meant to be called
+  from inside the menu, which already gated. The menu refused; the next
+  line armed the confirm regardless. No terminate could actually be
+  dispatched from it (the mode was never switched, so the modal was
+  unreachable and undrawn), but the stale state made `?` open the
+  Action help instead of the global one.
+
 ### Internal
 
 - **Render-coverage sweep over all 41 `draw_*` entry points**: stub each
