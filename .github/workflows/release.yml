@@ -105,8 +105,11 @@ jobs:
   publish:
     name: publish release
     needs: build
-    # Tag-push only — the draft release attach is part of the build
-    # phase. The release.published event doesn't need to re-run this.
+    # Tag-push only. THIS job creates the draft release and attaches
+    # the artefacts `build` uploaded; the `release.published` event
+    # (which fires when the maintainer un-drafts it) must not re-run
+    # it. The old comment said the attach happened in the build phase,
+    # which was never true of this file.
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:

@@ -9258,3 +9258,72 @@ async fn a_red_env_gets_a_red_status_pill_in_the_table() {
          proves nothing about the alert"
     );
 }
+
+// --- render smoke for the screens the ui.rs split moved -----------------
+//
+// Measured after the split: `draw_dlq`, `draw_shell` and `draw_events`
+// could each be replaced with `return;` and all 1,098 tests still
+// passed. Three whole screens with no render coverage — and they are
+// the ones an operator reaches during an incident, which is when a
+// panic or a blank pane costs most. These are smoke tests, not
+// golden-frame tests: they assert the screen draws and puts its own
+// identifying content on the buffer.
+
+#[tokio::test]
+async fn the_dlq_viewer_renders_its_messages() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("wk-prod", "uflexi", "Worker", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.dlq = Some(crate::app::DlqState {
+        env_name: "wk-prod".into(),
+        main_queue_url: "https://sqs.eu-west-2.amazonaws.com/1/awseb-main".into(),
+        dlq_url: "https://sqs.eu-west-2.amazonaws.com/1/awseb-main-dlq".into(),
+        messages: vec![crate::aws::QueueMessage {
+            id: "MSG-CANARY-1".into(),
+            receipt_handle: "rh".into(),
+            body: "poison pill payload".into(),
+            receive_count: 7,
+            sent_at: None,
+        }],
+        list_state: Default::default(),
+        loading: false,
+        error: None,
+        confirm_purge: false,
+        purge_typed: tui_common::TextInput::new(),
+        viewing: crate::app::QueueView::Dlq,
+        confirm_delete_id: None,
+        replay_input: None,
+    });
+    app.mode = crate::app::Mode::Dlq;
+
+    let out = render(&mut app, 150, 30);
+    assert!(
+        out.contains("MSG-CANARY-1"),
+        "the message id renders:\n{out}"
+    );
+    assert!(out.contains("wk-prod"), "and the env it belongs to:\n{out}");
+}
+
+#[tokio::test]
+async fn the_events_panel_renders_its_rows() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Red")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.event_panel.visible = true;
+    app.event_panel.events = vec![crate::aws::Event {
+        at: Some(chrono::Utc::now()),
+        env: "api-prod".into(),
+        application: "uflexi".into(),
+        message: "EVENT-CANARY: deployment failed".into(),
+        severity: "ERROR".into(),
+        version_label: None,
+    }];
+
+    let out = render(&mut app, 160, 40);
+    assert!(
+        out.contains("EVENT-CANARY"),
+        "the events panel draws its rows:\n{out}"
+    );
+}

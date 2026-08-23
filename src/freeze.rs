@@ -80,8 +80,6 @@ fn clear_if_pid_at(path: &Path, own_pid: u32) {
     }
 }
 
-/// The active freeze, if any: marker exists AND its owning pid is
-/// alive. A dead-pid marker is stale (crashed TUI) — ignored and
 /// The one refusal sentence for an active fleet freeze.
 ///
 /// Shared because it was written twice — once in `cli::refuse_if_frozen`
@@ -101,6 +99,8 @@ pub fn refusal_message(marker: &FreezeMarker) -> String {
     )
 }
 
+/// The active freeze, if any: marker exists AND its owning pid is
+/// alive. A dead-pid marker is stale (crashed TUI) — ignored and
 /// removed so it can't confuse later readers.
 pub fn read_active() -> Option<FreezeMarker> {
     read_active_with(&marker_path(), pid_alive)
