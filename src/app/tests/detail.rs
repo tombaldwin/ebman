@@ -565,3 +565,96 @@ async fn every_detail_tab_reports_its_own_loading_state() {
         }
     }
 }
+
+// --- render smoke for the Detail tabs the coverage sweep found bare ---
+//
+// A sweep over all 41 `draw_*` entry points (stub each with an early
+// return, run the suite, see whether anything notices) found 28 that no
+// test would catch if they stopped drawing entirely. These four are the
+// Detail tabs an operator reaches mid-incident, which is the same
+// argument that got `draw_dlq` / `draw_shell` / `draw_events` covered.
+
+fn detail_app_on_tab(tab: DetailTab) -> App {
+    detail_app_on_tab_for_tier(tab, "Web")
+}
+
+/// The Queue tab only exists for Worker-tier environments — `open_detail`
+/// builds the tab list from the tier — so the tier has to be a parameter.
+fn detail_app_on_tab_for_tier(tab: DetailTab, tier: &str) -> App {
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "uflexi", tier, "Red")];
+    app.view.invalidate();
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+    let detail = app.detail.as_mut().expect("detail opened");
+    detail.tab_idx = detail
+        .tabs
+        .iter()
+        .position(|t| *t == tab)
+        .expect("tab present");
+    app
+}
+
+#[tokio::test]
+async fn detail_events_tab_renders_its_events() {
+    let mut app = detail_app_on_tab(DetailTab::Events);
+    let d = app.detail.as_mut().unwrap();
+    d.loading_events = false;
+    d.events = vec![make_event("EVENT-CANARY deployment failed")];
+
+    let out = render(&mut app, 160, 44);
+    assert!(out.contains("EVENT-CANARY"), "event text renders:\n{out}");
+}
+
+#[tokio::test]
+async fn detail_instances_tab_renders_its_instances() {
+    let mut app = detail_app_on_tab(DetailTab::Instances);
+    let d = app.detail.as_mut().unwrap();
+    d.loading_instances = false;
+    d.instances = vec![crate::aws::Instance {
+        id: "i-0canary99".into(),
+        health: "Severe".into(),
+        color: "Red".into(),
+        causes: vec!["ELB health failing".into()],
+        instance_type: "t3.medium".into(),
+        availability_zone: "eu-west-2a".into(),
+        launched_at: None,
+    }];
+
+    let out = render(&mut app, 160, 44);
+    assert!(out.contains("i-0canary99"), "instance id renders:\n{out}");
+}
+
+#[tokio::test]
+async fn detail_queue_tab_renders_its_queues() {
+    let mut app = detail_app_on_tab_for_tier(DetailTab::Queue, "Worker");
+    let d = app.detail.as_mut().unwrap();
+    d.loading_queues = false;
+    d.queues = crate::aws::WorkerQueues {
+        main_url: Some("https://sqs.eu-west-2.amazonaws.com/1/awseb-CANARY".into()),
+        dlq_url: None,
+        main_stats: None,
+        dlq_stats: None,
+    };
+
+    let out = render(&mut app, 160, 44);
+    assert!(out.contains("awseb-CANARY"), "queue url renders:\n{out}");
+}
+
+#[tokio::test]
+async fn detail_logs_tab_draws_even_with_nothing_tailing() {
+    // The empty state is the one an operator hits first, and a panic
+    // here would take the whole TUI down mid-incident.
+    let mut app = detail_app_on_tab(DetailTab::Logs);
+    let out = render(&mut app, 160, 44);
+    // Assert on the pane's OWN title, not on "Logs" (the tab strip draws
+    // that) and not on the env name (the Detail header draws that). The
+    // first cut of this test asserted both and passed with
+    // `draw_detail_logs` stubbed out entirely — it was measuring the
+    // chrome around the tab, not the tab.
+    assert!(
+        out.contains("instance(s)"),
+        "the Logs pane's own title counts instances and lines:\n{out}"
+    );
+}

@@ -497,3 +497,50 @@ async fn log_tail_poller_reaped_when_overlay_replaced() {
     assert!(app.log_tail_task.is_none(), "poller must be reaped");
     assert_eq!(app.log_tail_session, 2);
 }
+
+// --- render smoke for the form overlay ------------------------------
+//
+// Found by the 41-surface coverage sweep: `draw_form` could be replaced
+// with `return;` and all 1,106 tests still passed. Worth calling out,
+// because earlier in this cycle its scroll behaviour was recorded as
+// "already fixed, verified" on the strength of reading the code — with
+// nothing exercising it.
+
+#[tokio::test]
+async fn the_form_overlay_renders_its_fields() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
+    app.view.invalidate();
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+
+    let mut form = crate::form::Form::loading(
+        "FORM-CANARY-TITLE",
+        "api-prod",
+        "resize the ASG",
+        vec![
+            crate::form::FormField::text("minsize", "MinSize-CANARY", None::<String>),
+            crate::form::FormField::text("maxsize", "MaxSize-CANARY", Some("upper bound")),
+        ],
+        crate::form::FormSubmit::OptionSettings {
+            mappings: Vec::new(),
+        },
+    );
+    form.state = crate::form::FormState::Ready;
+    app.form = Some(form);
+    app.mode = crate::app::Mode::Form;
+
+    let out = render(&mut app, 160, 44);
+    assert!(
+        out.contains("FORM-CANARY-TITLE"),
+        "the title renders:\n{out}"
+    );
+    assert!(
+        out.contains("MinSize-CANARY") && out.contains("MaxSize-CANARY"),
+        "every field renders, not just the focused one:\n{out}"
+    );
+    assert!(
+        out.contains("api-prod"),
+        "and the env it will act on — this form writes:\n{out}"
+    );
+}

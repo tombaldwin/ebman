@@ -1284,6 +1284,62 @@ Two methodology errors of my own, caught during the review and worth recording b
 1. I compared the waiver list against `cargo deny`'s output **with the waivers applied** — circular, and it made all six look stale.
 2. The corrected run used `cargo deny --config X check` instead of `cargo deny check --config X`, which cargo-deny rejected as a usage error. I read the resulting empty output as "no live advisories". A proxy standing in for a signal, indistinguishable from success when it fails — ten minutes after writing that sentence to someone else.
 
+#### Render-coverage sweep — 2026-08-23
+
+`draw_shell` was found uncovered by accident while writing the DLQ and
+events smoke tests, so this time the whole surface got measured instead
+of waiting to notice the next one: stub each of the **41 `draw_*` entry
+points** with an early return, run the suite, see whether anything
+fails.
+
+**13 covered, 28 not.** Twenty-eight render surfaces could stop drawing
+entirely and no test would say a word.
+
+Closed six of them (all mutation-verified by stubbing the surface and
+confirming the test fails):
+
+- [x] `draw_shell` — recorded **twice** as "needs a PTY, can't test".
+  That was a guess and it was wrong: `ShellSession`'s `writer` /
+  `master` / `child` are all `Option` precisely so `--demo` can build a
+  session with no subprocess, and `resize` is a no-op when `master` is
+  `None`. `ShellSession::demo` + `tick_demo_typer` renders a full
+  transcript in a unit test.
+- [x] `draw_detail_events`, `draw_detail_instances`, `draw_detail_queue`,
+  `draw_detail_logs` — the Detail tabs an operator reaches mid-incident.
+- [x] `draw_form` — the whole form overlay. Worth calling out: earlier
+  this cycle its scroll behaviour was recorded as "already fixed,
+  verified" on the strength of *reading* the code, with nothing
+  exercising it.
+
+Two methodology notes, both the same class I keep hitting:
+
+1. **The first sweep reported 0 caught and 14 "did not compile".** The
+   classifier tested for `^error` before `test result: FAILED`, and
+   `cargo test` prints `error: test failed, to rerun pass --lib` on an
+   ordinary test failure — so every genuinely-covered surface was
+   mislabelled as a build break. Zero caught was the tell; `draw_dlq`
+   and `draw_shell` had been mutation-verified an hour earlier.
+2. **The first `draw_detail_logs` test passed with its own surface
+   stubbed out.** It asserted on the env name and a non-blank line
+   count, both drawn by the Detail chrome around the tab. Re-pinned on
+   the pane's own title (`Logs · N instance(s) · M lines`), which the
+   tab strip doesn't draw.
+
+**Still uncovered (23)** — mostly overlays, listed so the next pass
+doesn't have to re-derive them:
+
+`draw_help` and its six per-mode variants, `draw_palette`,
+`draw_picker`, `draw_toasts`, `draw_about`, `draw_whatsnew`,
+`draw_describe`, `draw_history_overlay`, `draw_diff_overlay`,
+`draw_alarms_overlay`, `draw_why_red_overlay`, `draw_report_bug_overlay`,
+`draw_text_dump_overlay`, `draw_log_tail_overlay`,
+`draw_saved_configs_overlay`, `draw_saved_configs_interactive`,
+`draw_apps_table`, `draw_apps_action_menu`.
+
+`draw_why_red_overlay` and `draw_apps_table` are the two with the
+strongest case — the first is the triage path, the second is a whole
+alternate table.
+
 #### app/tests.rs split — 2026-08-23
 
 9,515 lines → 16 modules under `src/app/tests/`, one per surface
