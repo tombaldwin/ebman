@@ -9219,3 +9219,42 @@ async fn the_anomaly_badge_is_ascii_at_its_call_site_too() {
         "ascii mode rendered ▲ in the anomaly badge:\n{out}"
     );
 }
+
+#[tokio::test]
+async fn a_red_env_gets_a_red_status_pill_in_the_table() {
+    // `status_alert()` has unit tests; nothing checked that the TABLE
+    // uses its result. Forcing `StatusAlert::None` at the call site —
+    // which strips the alert colour from every Red env's STATUS pill,
+    // the thing that says "this one" at a glance during triage —
+    // passed all 1,097 tests.
+    //
+    // HEALTH and TREND are hidden because they colour a Red row red on
+    // their own: the FIRST version of this test asserted on the row
+    // and passed under the very mutation it was written to catch,
+    // because the health dot satisfied it. With them hidden, the
+    // status pill is the only thing that can make this row red.
+    let mut app = test_app();
+    app.view.hidden_cols.insert("HEALTH".into());
+    app.view.hidden_cols.insert("TREND".into());
+
+    let mut calm = mk_env("api-calm", "uflexi", "Web", "Green");
+    calm.status = "Ready".into();
+    let mut red = mk_env("api-red", "uflexi", "Web", "Red");
+    red.status = "Ready".into();
+    app.environments = vec![calm, red];
+    app.rebuild_view();
+
+    let buf = render_buf(&mut app, 170, 20);
+    let calm_row = find_row(&buf, "api-calm").expect("calm row rendered");
+    let red_row = find_row(&buf, "api-red").expect("red row rendered");
+
+    assert!(
+        row_has_fg(&buf, red_row, app.theme.health_red),
+        "a Red env's STATUS pill must carry the alert colour"
+    );
+    assert!(
+        !row_has_fg(&buf, calm_row, app.theme.health_red),
+        "and a healthy env's must not — otherwise the assertion above \
+         proves nothing about the alert"
+    );
+}
