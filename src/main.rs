@@ -418,12 +418,24 @@ fn enter_tui() -> Result<Tui> {
     // `enable_raw_mode` and comes back "Device not configured (os
     // error 6)" — which names no cause and no remedy, and is the first
     // thing anyone running ebman in CI sees. Checked here rather than
-    // at the call site so every path into the alt-screen is covered.
+    // at the `--demo` call site, so it covers every cold start into the
+    // TUI. (`run_env_editor` also re-enters the alt-screen, but only
+    // from inside a running TUI, which already got past this.)
     //
-    // Safe to fail loudly at this point: we have not entered the
-    // alternate screen yet, so stderr is still the user's terminal.
+    // Safe to print at this point: we have not entered the alternate
+    // screen yet, so stderr is still the user's terminal — the same
+    // reason the argv errors above use `eprintln!`.
+    //
+    // Exit 2, not 1. `docs/headless.md` documents the convention CI
+    // scripts branch on — 0 clean, 1 AWS-layer error, 2 usage error —
+    // and returning an `eyre` error here would have exited 1, telling a
+    // CI script that AWS had failed when the actual problem is that a
+    // TUI was asked for where no terminal exists. That is a usage
+    // error.
     if !io::stdout().is_terminal() {
-        return Err(color_eyre::eyre::eyre!("{}", no_tty_message()));
+        // No "ebman: " prefix — the message names it already.
+        eprintln!("{}", no_tty_message());
+        std::process::exit(2);
     }
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -660,5 +672,9 @@ mod tests {
             m.contains("ebman envs --json"),
             "must point at the headless path: {m}"
         );
+        // It is printed bare, so it has to name the binary itself —
+        // the argv errors above get an "ebman: " prefix, this one
+        // would stutter with one.
+        assert!(m.starts_with("ebman "), "must name itself: {m}");
     }
 }
