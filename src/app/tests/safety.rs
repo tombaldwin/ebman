@@ -610,3 +610,81 @@ async fn destructive_commands_still_refuse_under_deny_write() {
         );
     }
 }
+
+// --- the mutating commands the write tables never listed -------------
+//
+// From the 131-command dispatch sweep. `WRITE_COMMANDS` pins the
+// option-setting commands — the ones with no `deny_write` of their own.
+// Everything that gates *inside* its own handler was therefore in no
+// list at all, so nothing pinned that it kept doing so. All of these
+// were verified to refuse before being listed here; none of them was a
+// hole, but none of them was pinned either.
+const GATED_COMMANDS: &[&str] = &[
+    "restart",
+    "rebuild",
+    "terminate",
+    "stop",
+    "start",
+    "abort",
+    "scale 3",
+    "deploy build-900",
+    "delete-version build-900",
+    "custom-platform-delete arn:aws:elasticbeanstalk:eu-west-2:1:platform/my/1.0.0",
+    "unset-option aws:autoscaling:asg MinSize",
+    "env-edit",
+    "rds-attach",
+    "rollout build-900 --regions eu-west-2,us-east-1",
+];
+
+#[tokio::test]
+async fn every_gated_command_is_refused_in_read_only_mode() {
+    for cmd in GATED_COMMANDS {
+        let mut app = read_only_app_with_env();
+        app.execute_command(cmd);
+        let err = app.error_message.as_deref().unwrap_or_default();
+        assert!(
+            err.contains("read-only mode"),
+            ":{cmd} was not refused by the safety gate — got {err:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn swap_is_refused_in_read_only_mode() {
+    // Needs a second env in the same application, or it is turned away
+    // on the argument before the gate is ever consulted — which is what
+    // made it look ungated on first inspection.
+    let mut app = read_only_app_with_env();
+    app.environments
+        .push(mk_env("api-staging", "uflexi", "Web", "Green"));
+    app.view.invalidate();
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+
+    app.execute_command("swap api-staging");
+    let err = app.error_message.as_deref().unwrap_or_default();
+    assert!(err.contains("read-only mode"), ":swap got {err:?}");
+}
+
+#[tokio::test]
+async fn ssm_run_is_refused_in_read_only_mode() {
+    // Same shape: it needs cached instances from an open Detail pane
+    // before it reaches the gate.
+    let mut app = read_only_app_with_env();
+    app.open_detail();
+    if let Some(d) = app.detail.as_mut() {
+        d.instances = vec![crate::aws::Instance {
+            id: "i-0abc".into(),
+            health: "Ok".into(),
+            color: "Green".into(),
+            causes: Vec::new(),
+            instance_type: "t3.medium".into(),
+            availability_zone: "eu-west-2a".into(),
+            launched_at: None,
+        }];
+    }
+
+    app.execute_command("ssm-run uptime");
+    let err = app.error_message.as_deref().unwrap_or_default();
+    assert!(err.contains("read-only mode"), ":ssm-run got {err:?}");
+}
