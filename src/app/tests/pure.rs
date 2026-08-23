@@ -1387,3 +1387,79 @@ async fn the_events_panel_renders_its_rows() {
         "the events panel draws its rows:\n{out}"
     );
 }
+
+#[test]
+fn dlq_absence_note_distinguishes_the_three_causes() {
+    use crate::aws::DlqOrigin;
+    // The whole point: these used to render identically as
+    // "(queue URL not resolved)", so an operator could not tell a
+    // missing dead-letter queue from a naming-convention guess that
+    // missed, nor either from a queue EB references that has been
+    // deleted underneath it.
+    let derived = crate::app::dlq_absence_note(
+        Some("https://sqs.eu-west-2.amazonaws.com/1/awseb-main-dlq"),
+        Some(DlqOrigin::Derived),
+    );
+    assert!(derived.contains("guessed"), "{derived}");
+    assert!(
+        derived.contains("awseb-main-dlq"),
+        "names the guess: {derived}"
+    );
+
+    let reported = crate::app::dlq_absence_note(
+        Some("https://sqs.eu-west-2.amazonaws.com/1/real-dlq"),
+        Some(DlqOrigin::Reported),
+    );
+    assert!(
+        reported.contains("does not exist"),
+        "a queue EB names but that is gone is an anomaly, not a shrug: {reported}"
+    );
+    assert!(reported.contains("real-dlq"), "{reported}");
+
+    let none = crate::app::dlq_absence_note(None, None);
+    assert!(none.contains("no dead-letter queue configured"), "{none}");
+
+    // All three must differ, or the distinction is cosmetic.
+    assert_ne!(derived, reported);
+    assert_ne!(derived, none);
+    assert_ne!(reported, none);
+}
+
+#[test]
+fn dlq_absence_note_reads_as_one_clean_line() {
+    use crate::aws::DlqOrigin;
+    for (u, o) in [
+        (Some("https://sqs/x-dlq"), Some(DlqOrigin::Derived)),
+        (Some("https://sqs/x-dlq"), Some(DlqOrigin::Reported)),
+        (Some("https://sqs/x-dlq"), None),
+        (None, None),
+    ] {
+        let m = crate::app::dlq_absence_note(u, o);
+        assert!(!m.contains('\n'), "status bar is one line: {m:?}");
+        assert!(!m.contains("  "), "wrapped-literal indentation hole: {m:?}");
+        assert!(!m.is_empty());
+    }
+}
+
+#[test]
+fn a_dlq_url_always_carries_its_origin() {
+    // Guard for the widened type. `dlq_url` and `dlq_origin` are only
+    // meaningful together: a url with no origin is a state the fetcher
+    // cannot produce, and if one appears it means a call site set the
+    // url and dropped the provenance — the exact way a distinction gets
+    // destroyed after being added. Pinned against every fixture the
+    // crate builds.
+    for name in [
+        "poly-batch",
+        "poly-prod-worker",
+        "poly-staging-worker",
+        "not-a-worker-env",
+    ] {
+        let q = crate::demo_fixture::worker_queues_for_env(name);
+        assert_eq!(
+            q.dlq_url.is_some(),
+            q.dlq_origin.is_some(),
+            "{name}: dlq_url and dlq_origin must be set together"
+        );
+    }
+}

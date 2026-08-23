@@ -636,6 +636,7 @@ async fn detail_queue_tab_renders_its_queues() {
         dlq_url: None,
         main_stats: None,
         dlq_stats: None,
+        dlq_origin: None,
     };
 
     let out = render(&mut app, 160, 44);

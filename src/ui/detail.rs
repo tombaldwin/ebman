@@ -743,7 +743,10 @@ pub(super) fn draw_detail_health(
                     "dlq:   visible={}  in-flight={}  delayed={}",
                     s.visible, s.in_flight, s.delayed
                 ),
-                None => "dlq:   (queue URL not resolved)".to_string(),
+                None => format!(
+                    "dlq:   {}",
+                    crate::app::dlq_absence_note(q.dlq_url.as_deref(), q.dlq_origin)
+                ),
             };
             let dlq_style = if dlq_visible > 0 {
                 Style::default()
@@ -1470,7 +1473,24 @@ pub(super) fn draw_detail_queue(
         "DLQ URL",
         redact(q.dlq_url.as_deref().unwrap_or("—"), redact_on),
     ));
+    // Say so when the URL above is a convention guess rather than
+    // something EB named — it changes what "no messages" means.
+    if q.dlq_origin == Some(crate::aws::DlqOrigin::Derived) {
+        lines.push(Line::from(Span::styled(
+            "    (derived by naming convention — EB named no DLQ)",
+            Style::default().fg(theme.muted),
+        )));
+    }
     lines.extend(stats_row("    stats", q.dlq_stats.as_ref()));
+    if q.dlq_stats.is_none() {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "    {}",
+                crate::app::dlq_absence_note(q.dlq_url.as_deref(), q.dlq_origin)
+            ),
+            Style::default().fg(theme.health_yellow),
+        )));
+    }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "  j/k pick queue · enter view messages · d quick-open DLQ",
