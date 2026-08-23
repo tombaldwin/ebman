@@ -1284,6 +1284,54 @@ Two methodology errors of my own, caught during the review and worth recording b
 1. I compared the waiver list against `cargo deny`'s output **with the waivers applied** — circular, and it made all six look stale.
 2. The corrected run used `cargo deny --config X check` instead of `cargo deny check --config X`, which cargo-deny rejected as a usage error. I read the resulting empty output as "no live advisories". A proxy standing in for a signal, indistinguishable from success when it fails — ten minutes after writing that sentence to someone else.
 
+#### app/tests.rs split — 2026-08-23
+
+9,515 lines → 16 modules under `src/app/tests/`, one per surface
+(`refresh` 1,928, `pure` 1,389, `region` 784, `dispatch` 697 … `audit`
+81), with `support.rs` holding `test_app` / `mk_env` / the render
+harness / the write-command tables. Root `tests.rs` is 27 lines of
+module declarations and a map. Same pass `ui.rs` got, and lower risk:
+the compiler plus 1,104 existing tests are a complete safety net.
+
+Mechanically: split on column-0 anchors rather than brace-counting,
+because 441 `fn` and 441 column-0 `}` matched exactly and test bodies
+are full of `{}` inside string literals. One rewrite was unavoidable —
+`super::` meant `crate::app` in the flat file and would mean
+`crate::app::tests` a level deeper, so all 295 occurrences were
+re-anchored; rustfmt then reflowed some lines because the new path is
+longer. Confirmed first that the file had **no nested `mod`**, which is
+what makes that rewrite exact.
+
+Verification, since "the tests still pass" proves very little about a
+move of this size:
+
+- All 422 test names present, none renamed, none duplicated.
+- Per-test body comparison with whitespace stripped and rustfmt's
+  trailing commas normalised: **420 of 422 byte-identical**; the 2 that
+  differ are the guards below, changed on purpose.
+- Zero non-blank lines fell outside a captured item — checked before
+  writing anything, since a splitter that silently drops a region
+  between items is the obvious failure mode.
+
+Two bugs found along the way:
+
+- [x] **The splitter swallowed items.** A single-line `const X = &[..];`
+  sent the end-of-item search hunting for a line starting with `];`,
+  which it found at the end of a *later* multi-line const — taking
+  everything between with it, and duplicating those items. Caught by
+  `E0428 defined multiple times`, not by anything I did.
+- [x] **Both source-scanning drift guards excluded themselves by
+  filename** (`file_name() == "tests.rs"`), which stopped being true the
+  moment the tests became a directory: each then matched its own
+  assertion literal and failed. Generalised to a shared
+  `is_test_source` that skips the whole test subtree — what they always
+  meant — with its own test pinning that production paths are *not*
+  excluded, since over-excluding would switch both guards off silently.
+  Both re-verified against a planted violation: an `arboard::` call in
+  `cmd_misc.rs`, and an allow-list entry removed. The first attempt at
+  the second mutation didn't compile, so its "pass" was meaningless —
+  redone with one that builds.
+
 #### Post-0.31.0 batch — 2026-08-23
 
 Four items, all demonstrated defects rather than judgement calls.

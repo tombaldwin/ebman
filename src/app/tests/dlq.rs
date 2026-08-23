@@ -1,0 +1,318 @@
+//! The DLQ browser and its redrive path.
+//!
+//! Split out of the 9,515-line `app/tests.rs`. Bodies moved
+//! unchanged apart from one rewrite: `super::` meant `crate::app` in
+//! the flat file and would mean `crate::app::tests` here, so every
+//! explicit `super::` path was re-anchored (rustfmt reflowed some
+//! lines as a result, since the new path is longer).
+
+use super::super::*;
+#[allow(unused_imports)]
+use super::support::*;
+
+#[test]
+fn app_rollup_worker_dlq_alert_counts() {
+    let envs = vec![crate::aws::Environment {
+        name: "worker-prod".into(),
+        application: "wapp".into(),
+        status: "Ready".into(),
+        health: "Green".into(),
+        platform: "Java 17".into(),
+        solution_stack: String::new(),
+        tier: "Worker".into(),
+        cname: String::new(),
+        version_label: String::new(),
+        arn: None,
+        updated: None,
+        id: None,
+        region: None,
+    }];
+    let mut dlq: HashMap<String, i64> = HashMap::new();
+    dlq.insert("worker-prod".into(), 7);
+    let r = crate::app::app_rollup(&envs, "wapp", &dlq);
+    // EB calls it Green; ebman flags it because the DLQ is non-empty.
+    assert_eq!(r.env_count, 1);
+    assert_eq!(r.red_count, 0, "EB health stays Green");
+    assert_eq!(
+        r.worker_dlq_alerts, 1,
+        "worker env with DLQ depth > 0 counts as alerting"
+    );
+}
+
+#[test]
+fn compute_red_alerts_counts_eb_red_and_worker_dlq() {
+    use crate::aws::Environment;
+    let mk = |name: &str, tier: &str, health: &str| Environment {
+        name: name.into(),
+        application: "uflexi".into(),
+        status: "Ready".into(),
+        health: health.into(),
+        platform: "Java 17".into(),
+        solution_stack: String::new(),
+        tier: tier.into(),
+        cname: String::new(),
+        version_label: String::new(),
+        arn: None,
+        updated: None,
+        id: None,
+        region: None,
+    };
+    let envs = vec![
+        mk("web-prod", "Web", "Green"),
+        mk("web-red", "Web", "Red"),
+        mk("worker-green-dlq", "Worker", "Green"),
+        mk("worker-clean", "Worker", "Green"),
+        mk("worker-red", "Worker", "Severe"),
+    ];
+    let mut dlq = std::collections::HashMap::new();
+    dlq.insert("worker-green-dlq".to_string(), 3);
+    dlq.insert("worker-clean".to_string(), 0);
+    // EB-Red + DLQ-Red + EB-Red-on-worker = 3 alerts (worker-red counted once).
+    assert_eq!(crate::app::compute_red_alerts(&envs, &dlq), 3);
+}
+
+#[test]
+fn compute_red_alerts_ignores_dlq_for_web_tier() {
+    use crate::aws::Environment;
+    let env = Environment {
+        name: "web-prod".into(),
+        application: "uflexi".into(),
+        status: "Ready".into(),
+        health: "Green".into(),
+        platform: "Java 17".into(),
+        solution_stack: String::new(),
+        tier: "Web".into(),
+        cname: String::new(),
+        version_label: String::new(),
+        arn: None,
+        updated: None,
+        id: None,
+        region: None,
+    };
+    // Even with a spurious "web-prod" entry in dlq_depths, a Web env
+    // never counts as DLQ-red. Belt-and-braces against a stale cache
+    // entry surviving a tier change.
+    let mut dlq = std::collections::HashMap::new();
+    dlq.insert("web-prod".to_string(), 99);
+    assert_eq!(crate::app::compute_red_alerts(&[env], &dlq), 0);
+}
+
+#[test]
+fn compute_red_alerts_zero_dlq_is_not_alert_worthy() {
+    use crate::aws::Environment;
+    let env = Environment {
+        name: "worker-clean".into(),
+        application: "uflexi".into(),
+        status: "Ready".into(),
+        health: "Green".into(),
+        platform: "Java 17".into(),
+        solution_stack: String::new(),
+        tier: "Worker".into(),
+        cname: String::new(),
+        version_label: String::new(),
+        arn: None,
+        updated: None,
+        id: None,
+        region: None,
+    };
+    let mut dlq = std::collections::HashMap::new();
+    dlq.insert("worker-clean".to_string(), 0);
+    assert_eq!(crate::app::compute_red_alerts(&[env], &dlq), 0);
+}
+
+#[tokio::test]
+async fn worker_queue_fetch_error_keeps_previous_dlq_depth() {
+    // 0.27 fix: a failed fetch must not clear the env's alert —
+    // the old clear-and-rebuild dropped it every errored tick.
+    let mut app = test_app();
+    app.handle_msg(AppMsg::WorkerQueueCheck {
+        gen: app.generation,
+        results: vec![("wk-prod".into(), Ok(Some(7)))],
+    });
+    assert_eq!(app.worker_dlq_depths.get("wk-prod"), Some(&7));
+    // Fetch error → depth survives, marked stale.
+    app.handle_msg(AppMsg::WorkerQueueCheck {
+        gen: app.generation,
+        results: vec![("wk-prod".into(), Err("AccessDenied".into()))],
+    });
+    assert_eq!(
+        app.worker_dlq_depths.get("wk-prod"),
+        Some(&7),
+        "error must not read as 'no DLQ'"
+    );
+    assert!(app.worker_dlq_stale.contains("wk-prod"));
+    // Successful re-check clears the staleness.
+    app.handle_msg(AppMsg::WorkerQueueCheck {
+        gen: app.generation,
+        results: vec![("wk-prod".into(), Ok(Some(3)))],
+    });
+    assert!(!app.worker_dlq_stale.contains("wk-prod"));
+    assert_eq!(app.worker_dlq_depths.get("wk-prod"), Some(&3));
+    // Genuine no-DLQ → cleared; fresh depth → updated.
+    app.handle_msg(AppMsg::WorkerQueueCheck {
+        gen: app.generation,
+        results: vec![("wk-prod".into(), Ok(None))],
+    });
+    assert!(!app.worker_dlq_depths.contains_key("wk-prod"));
+}
+
+#[tokio::test]
+async fn render_dlq_depth_tints_the_ready_pill_amber() {
+    // A Worker env that EB reports Green but whose DLQ has messages
+    // gets its `Ready` pill rendered in health_yellow — the row-level
+    // "this isn't actually fine" signal. Differential: same env with
+    // an empty DLQ shows no amber pill.
+    let mut app = test_app();
+    app.environments = vec![mk_env("worker-x", "uflexi", "Worker", "Green")];
+    app.rebuild_view();
+    app.table_state.select(None);
+    let theme = app.theme.clone();
+
+    let clean = render_buf(&mut app, 140, 30);
+    let clean_amber = count_fg(&clean, theme.health_yellow);
+
+    app.worker_dlq_depths.insert("worker-x".into(), 12);
+    let backed_up = render_buf(&mut app, 140, 30);
+    let dlq_amber = count_fg(&backed_up, theme.health_yellow);
+
+    assert!(
+        dlq_amber > clean_amber,
+        "a non-empty DLQ should add amber (Ready-pill) cells \
+             (dlq={dlq_amber}, clean={clean_amber})"
+    );
+}
+
+#[tokio::test]
+async fn dlq_destructive_operations_are_refused_in_read_only_mode() {
+    // Purge and replay are irreversible and driven from the DLQ
+    // viewer's keymap rather than a `:command`, so the command-level
+    // property tests above never reach them.
+    /// One destructive DLQ handler, driven from the viewer's keymap.
+    type DlqOp = fn(&mut App);
+    let cases: Vec<(&str, DlqOp)> = vec![
+        ("purge", |app: &mut App| {
+            app.spawn_dlq_purge("api-prod".into(), "https://sqs/q-dlq".into())
+        }),
+        ("replay", |app: &mut App| app.spawn_dlq_replay_batch(vec![])),
+        ("resend", |app: &mut App| app.spawn_dlq_resend_selected()),
+        ("delete", |app: &mut App| app.spawn_dlq_delete_one("m-1")),
+    ];
+    for (name, op) in cases {
+        let mut app = read_only_app_with_env();
+        // `replay`/`resend`/`delete` read the env from DLQ state and
+        // return early without it, so they'd never reach the gate.
+        app.dlq = Some(open_dlq_state("api-prod"));
+        op(&mut app);
+        let err = app.error_message.as_deref().unwrap_or_default();
+        assert!(
+            err.contains("read-only mode"),
+            "DLQ {name} was not refused — got {err:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn dlq_destructive_operations_honour_a_per_env_pin() {
+    let mut app = read_only_app_with_env();
+    app.read_only = false;
+    app.cfg.safety_envs.insert("api-prod".into(), true);
+    app.spawn_dlq_purge("api-prod".into(), "https://sqs/q-dlq".into());
+    let err = app.error_message.as_deref().unwrap_or_default();
+    assert!(err.contains("safety.envs"), "got {err:?}");
+}
+
+// --- per-row work goes to the row's region -----------------------------
+
+#[tokio::test]
+async fn detail_and_why_and_dlq_use_the_rows_own_region() {
+    // Under a multi-region fan-out the selected row is routinely in
+    // some other region, but every per-row background fetch used
+    // `self.aws`, whose region is `context.region`. Detail showed the
+    // environment's name beside the home region's instances, metrics,
+    // events and alarms — wrong data wearing the right label.
+    let mut app = test_app();
+    let mut env = mk_env("api-prod", "uflexi", "Web", "Green");
+    env.region = Some("eu-west-2".into());
+    app.environments = vec![env.clone()];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    assert_eq!(app.context.region, "us-east-1", "home region differs");
+
+    // The lookup all four accessors share.
+    assert_eq!(app.region_for_name("api-prod"), "eu-west-2");
+    // An env we hold no row for falls back to home — a modal opened
+    // before the refresh landed. That's the pre-fan-out behaviour.
+    assert_eq!(app.region_for_name("not-in-the-table"), "us-east-1");
+
+    app.open_detail();
+    assert_eq!(
+        app.detail_client().region_for_tests(),
+        "eu-west-2",
+        "Detail must fetch from where the environment actually is"
+    );
+    app.dlq = Some(crate::app::DlqState {
+        env_name: "api-prod".into(),
+        main_queue_url: String::new(),
+        dlq_url: String::new(),
+        messages: Vec::new(),
+        list_state: Default::default(),
+        loading: false,
+        error: None,
+        confirm_purge: false,
+        purge_typed: tui_common::TextInput::new(),
+        viewing: crate::app::QueueView::Dlq,
+        confirm_delete_id: None,
+        replay_input: None,
+    });
+    assert_eq!(
+        app.dlq_client().region_for_tests(),
+        "eu-west-2",
+        "an SQS queue URL doesn't even exist in the home region"
+    );
+}
+
+// --- render smoke for the screens the ui.rs split moved -----------------
+//
+// Measured after the split: `draw_dlq`, `draw_shell` and `draw_events`
+// could each be replaced with `return;` and all 1,098 tests still
+// passed. Three whole screens with no render coverage — and they are
+// the ones an operator reaches during an incident, which is when a
+// panic or a blank pane costs most. These are smoke tests, not
+// golden-frame tests: they assert the screen draws and puts its own
+// identifying content on the buffer.
+
+#[tokio::test]
+async fn the_dlq_viewer_renders_its_messages() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("wk-prod", "uflexi", "Worker", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.dlq = Some(crate::app::DlqState {
+        env_name: "wk-prod".into(),
+        main_queue_url: "https://sqs.eu-west-2.amazonaws.com/1/awseb-main".into(),
+        dlq_url: "https://sqs.eu-west-2.amazonaws.com/1/awseb-main-dlq".into(),
+        messages: vec![crate::aws::QueueMessage {
+            id: "MSG-CANARY-1".into(),
+            receipt_handle: "rh".into(),
+            body: "poison pill payload".into(),
+            receive_count: 7,
+            sent_at: None,
+        }],
+        list_state: Default::default(),
+        loading: false,
+        error: None,
+        confirm_purge: false,
+        purge_typed: tui_common::TextInput::new(),
+        viewing: crate::app::QueueView::Dlq,
+        confirm_delete_id: None,
+        replay_input: None,
+    });
+    app.mode = crate::app::Mode::Dlq;
+
+    let out = render(&mut app, 150, 30);
+    assert!(
+        out.contains("MSG-CANARY-1"),
+        "the message id renders:\n{out}"
+    );
+    assert!(out.contains("wk-prod"), "and the env it belongs to:\n{out}");
+}

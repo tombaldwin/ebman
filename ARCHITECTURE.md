@@ -101,7 +101,7 @@ anything about one environment goes through
 which resolves inside the spawned task. `spawn_aws_in` is the per-region
 sibling of `spawn_aws`. Audit lines take the same region, so the journal
 names where the write actually went — and a dispatch and its completion
-have to agree. A test in `app/tests.rs` requires every remaining
+have to agree. A test in `app/tests/refresh.rs` requires every remaining
 `self.aws` spawn site to declare why account- or region-wide is right for
 it.
 
@@ -137,7 +137,8 @@ what finally fires them.
 ## Testing
 
 Tests live beside the code in `#[cfg(test)] mod tests` blocks; `app`'s are in
-[`src/app/tests.rs`](src/app/tests.rs). AWS is stubbed via
+[`src/app/tests/`](src/app/tests/), one module per surface, with the shared
+fixtures in [`support.rs`](src/app/tests/support.rs). AWS is stubbed via
 `AwsClient::stub()`, and `App::for_tests` builds an `App` without touching the
 network or the filesystem. Pure logic — parsers, formatters, the sorting and
 diffing helpers — is deliberately extracted out of UI and event handlers so it

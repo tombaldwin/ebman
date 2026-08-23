@@ -3213,7 +3213,7 @@ impl App {
     /// The accessor per-env spawns should reach for. `self.aws` is
     /// correct only for work that is genuinely account- or
     /// region-wide — the fleet listing, identity, the applications
-    /// catalogue, Cost Explorer — and a guard test in `app/tests.rs`
+    /// catalogue, Cost Explorer — and a guard test in `app/tests/refresh.rs`
     /// requires every spawn site that keeps it to say why.
     pub(crate) fn client_for_env(&self, env_name: &str) -> RegionClient {
         self.client_for_region(&self.region_for_name(env_name))

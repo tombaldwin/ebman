@@ -1,0 +1,499 @@
+//! Overlays, modals, forms, pickers, the splash and help.
+//!
+//! Split out of the 9,515-line `app/tests.rs`. Bodies moved
+//! unchanged apart from one rewrite: `super::` meant `crate::app` in
+//! the flat file and would mean `crate::app::tests` here, so every
+//! explicit `super::` path was re-anchored (rustfmt reflowed some
+//! lines as a result, since the new path is longer).
+
+use super::super::*;
+#[allow(unused_imports)]
+use super::support::*;
+
+#[test]
+fn render_config_diff_overlay_states() {
+    // No differences → identical message.
+    let body = crate::app::render_config_diff_overlay("staging", "prod", &[]);
+    assert!(body.contains("identical"));
+    // With a diff → the namespace + name + both values appear.
+    let diffs = vec![crate::app::ConfigDiff {
+        namespace: "aws:autoscaling:asg".into(),
+        name: "MinSize".into(),
+        left: Some("2".into()),
+        right: None,
+    }];
+    let body = crate::app::render_config_diff_overlay("staging", "prod", &diffs);
+    assert!(body.contains("aws:autoscaling:asg"));
+    assert!(body.contains("MinSize"));
+    assert!(body.contains("L: 2"));
+    assert!(body.contains("R: (unset)"));
+}
+
+#[test]
+fn render_explain_overlay_marks_decisions_and_suggests_fix() {
+    let rows = vec![
+        crate::aws::IamSimResult {
+            action: "elasticbeanstalk:RebuildEnvironment".into(),
+            resource: "*".into(),
+            decision: "implicitDeny".into(),
+            matched_statements: vec![],
+            missing_context: vec![],
+            blocked_by_scp: false,
+            blocked_by_boundary: false,
+        },
+        crate::aws::IamSimResult {
+            action: "ec2:DescribeInstances".into(),
+            resource: "*".into(),
+            decision: "allowed".into(),
+            matched_statements: vec!["arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess @ 0:0".into()],
+            missing_context: vec![],
+            blocked_by_scp: false,
+            blocked_by_boundary: false,
+        },
+    ];
+    let body =
+        crate::app::render_explain_overlay("arn:aws:iam::123:role/EbmanReadOnly", &rows, false);
+    // Both action sections present, marked with correct decision glyphs.
+    assert!(body.contains("Action:   elasticbeanstalk:RebuildEnvironment"));
+    assert!(body.contains("✗ implicitDeny"));
+    assert!(body.contains("Action:   ec2:DescribeInstances"));
+    assert!(body.contains("✓ allowed"));
+    // implicitDeny suggests the JSON-policy fix.
+    assert!(body.contains("\"Effect\": \"Allow\""));
+    assert!(body.contains("\"Action\": \"elasticbeanstalk:RebuildEnvironment\""));
+    // The allowed action does NOT get the fix suggestion.
+    assert!(body.matches("To allow, add this statement").count() == 1);
+    // Matched statement surfaces for the allowed action.
+    assert!(body.contains("AmazonEC2ReadOnlyAccess"));
+}
+
+#[test]
+fn render_explain_overlay_flags_scp_and_boundary_blockers() {
+    let rows = vec![crate::aws::IamSimResult {
+        action: "ec2:TerminateInstances".into(),
+        resource: "*".into(),
+        decision: "explicitDeny".into(),
+        matched_statements: vec!["org-scp/SCPDenyTerminate @ 0:0".into()],
+        missing_context: vec![],
+        blocked_by_scp: true,
+        blocked_by_boundary: true,
+    }];
+    let body = crate::app::render_explain_overlay("arn:aws:iam::123:role/X", &rows, false);
+    assert!(body.contains("Organizations SCP"));
+    assert!(body.contains("permission boundary"));
+    // explicitDeny gives the "Remove the Deny" hint instead of
+    // the implicitDeny JSON snippet.
+    assert!(body.contains("explicit Deny always wins"));
+    assert!(!body.contains("\"Effect\": \"Allow\""));
+}
+
+#[tokio::test]
+async fn first_run_hint_stays_false_for_subsequent_launches() {
+    // Simulates "ebman has run before; state.toml exists."
+    // The test harness defaults first_run_hint to false anyway,
+    // but this nails down the contract: a state.toml on disk
+    // means no hint, full stop.
+    let app = test_app();
+    assert!(
+        !app.first_run_hint,
+        "test harness must default first_run_hint=false (state.toml presumed present)"
+    );
+}
+
+#[test]
+fn render_options_overlay_handles_unknown_namespace() {
+    let rows = vec![opt("aws:autoscaling:asg", "MinSize", Some("2"), None)];
+    let body = crate::app::render_options_overlay(&rows, Some("aws:bogus:ns"), "uflexi-prod");
+    assert!(body.contains("No options found"));
+    assert!(body.contains("aws:bogus:ns"));
+}
+
+#[test]
+fn render_secrets_overlay_empty_no_filter_hints_at_iam() {
+    let body = crate::app::render_secrets_overlay(&[], None);
+    assert!(body.contains("No Secrets Manager secrets"));
+    assert!(body.contains("ListSecrets"));
+}
+
+#[test]
+fn render_secrets_overlay_lists_metadata_only() {
+    let now = chrono::Utc::now();
+    let rows = vec![crate::aws::SecretSummary {
+        name: "prod/db/password".into(),
+        arn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/db/password-AbCdEf".into(),
+        description: Some("RDS master".into()),
+        last_changed: Some(now - chrono::Duration::days(3)),
+        last_rotated: Some(now - chrono::Duration::days(30)),
+        kms_key_id: Some("alias/aws/secretsmanager".into()),
+    }];
+    let body = crate::app::render_secrets_overlay(&rows, None);
+    assert!(body.contains("prod/db/password"));
+    assert!(body.contains("RDS master"));
+    assert!(body.contains("arn:aws:secretsmanager"));
+    assert!(body.contains("changed:"));
+    assert!(body.contains("rotated:"));
+    assert!(body.contains("alias/aws/secretsmanager"));
+    // The values themselves must never appear in :secrets output.
+    assert!(!body.to_lowercase().contains("password:"));
+}
+
+#[test]
+fn render_secrets_overlay_marks_never_rotated() {
+    let now = chrono::Utc::now();
+    let rows = vec![crate::aws::SecretSummary {
+        name: "api-key".into(),
+        arn: "arn:aws:secretsmanager:us-east-1:1:secret:api-key-x".into(),
+        description: None,
+        last_changed: Some(now - chrono::Duration::hours(2)),
+        last_rotated: None,
+        kms_key_id: None,
+    }];
+    let body = crate::app::render_secrets_overlay(&rows, None);
+    assert!(body.contains("rotated: never"));
+}
+
+#[test]
+fn render_secret_value_overlay_redacts_when_redact_on() {
+    let body = crate::app::render_secret_value_overlay("api-key", "hunter2", true);
+    assert!(body.contains("<redacted; 7 chars"));
+    assert!(body.contains("fingerprint"));
+    assert!(!body.contains("hunter2"));
+    assert!(body.contains(":redact off"));
+}
+
+#[test]
+fn render_secret_value_overlay_shows_value_when_redact_off() {
+    let body = crate::app::render_secret_value_overlay("api-key", "hunter2", false);
+    assert!(body.contains("hunter2"));
+    assert!(body.contains("yank"));
+}
+
+#[test]
+fn render_secret_value_overlay_pretty_prints_json() {
+    let body = crate::app::render_secret_value_overlay(
+        "prod/db",
+        r#"{"USERNAME":"app","PASSWORD":"x"}"#,
+        false,
+    );
+    // Expect a multi-line shape, not the input one-liner.
+    assert!(body.contains("USERNAME"));
+    assert!(body.contains("PASSWORD"));
+    assert!(
+        body.matches('\n').count() >= 4,
+        "should pretty-print: {body}"
+    );
+}
+
+#[test]
+fn render_secret_value_overlay_leaves_non_json_alone() {
+    let body = crate::app::render_secret_value_overlay("flat", "ABC-DEF-GHI", false);
+    assert!(body.contains("ABC-DEF-GHI"));
+}
+
+#[test]
+fn render_options_overlay_truncates_long_value_options_list() {
+    let mut row = opt("aws:foo", "Enum", Some("a"), None);
+    row.value_options = (0..20).map(|i| format!("v{i}")).collect();
+    let rows = vec![row];
+    let body = crate::app::render_options_overlay(&rows, None, "env");
+    assert!(body.contains("oneof: v0, v1, v2, v3, v4, … +15"));
+}
+
+#[test]
+fn render_changes_overlay_states() {
+    let ev = |msg: &str, vl: Option<&str>| crate::aws::Event {
+        at: None,
+        env: "e".into(),
+        application: "a".into(),
+        message: msg.into(),
+        severity: "INFO".into(),
+        version_label: vl.map(String::from),
+    };
+    // Only noise → empty-state message.
+    let noise = vec![ev("Environment health transitioned to Ok.", None)];
+    assert!(crate::app::render_changes_overlay("prod", &noise).contains("No deploy"));
+    // A deploy event is kept and its version label shown.
+    let evs = vec![
+        ev("Deploying new version to instance(s).", Some("build-9")),
+        ev("Environment health transitioned to Ok.", None),
+    ];
+    let body = crate::app::render_changes_overlay("prod", &evs);
+    assert!(body.contains("Deploying new version"));
+    assert!(body.contains("[build-9]"));
+    assert!(!body.contains("health transitioned"));
+}
+
+#[test]
+fn classify_update_kind_platform_update() {
+    let evs = vec![make_event(
+        "Updating environment to use platform 'arn:aws:elasticbeanstalk:…:platform/Corretto 17'.",
+    )];
+    // Even though the message also contains 'platform', deploy
+    // pattern (`version label`) isn't matched, so we fall through
+    // to the platform branch.
+    assert_eq!(
+        crate::app::classify_update_kind(&evs),
+        crate::app::UpdateKind::Platform
+    );
+}
+
+#[tokio::test]
+async fn deploy_wait_for_green_threads_secs_through_to_modal() {
+    // `:deploy LABEL --wait-for-green 5m` carries the duration
+    // into the ConfirmModal where spawn_action picks it up.
+    // No watcher is armed until the operator confirms — that's
+    // tested separately at the spawn_action layer.
+    let mut app = test_app();
+    app.environments = vec![mk_env("prod", "shop", "Web", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.execute_command("deploy build-900 --wait-for-green 5m");
+    match &app.action_flow {
+        Some(ActionFlow::Confirm(modal)) => {
+            assert_eq!(modal.deploy_version.as_deref(), Some("build-900"));
+            assert_eq!(modal.wait_for_green_secs, Some(300));
+            assert!(modal.auto_rollback_secs.is_none());
+        }
+        _ => panic!("expected confirm modal open"),
+    }
+}
+
+#[tokio::test]
+async fn handle_unavailability_estimate_stuffs_line_into_modal() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("prod", "shop", "Web", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.execute_command("deploy build-900");
+    app.handle_msg(AppMsg::UnavailabilityEstimate {
+        gen: app.generation,
+        env_name: "prod".into(),
+        line: Some((
+            "deploy plan: Rolling → max 1/4 instance unavailable".into(),
+            true,
+        )),
+    });
+    match &app.action_flow {
+        Some(ActionFlow::Confirm(modal)) => {
+            assert!(!modal.loading_unavailability);
+            let (text, caution) = modal.unavailability_line.as_ref().unwrap();
+            assert!(text.contains("max 1/4"));
+            assert!(*caution);
+        }
+        _ => panic!("expected confirm modal"),
+    }
+}
+
+#[tokio::test]
+async fn deploy_modal_opens_with_version_preview_loading_flag_set() {
+    // `:deploy LABEL` (no --preview) now sets
+    // `loading_version_preview` so the modal reserves space
+    // for the preview block. The actual fetch lands via
+    // `handle_version_preview` and unsets the flag.
+    let mut app = test_app();
+    app.environments = vec![mk_env("prod", "shop", "Web", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.execute_command("deploy build-900");
+    match &app.action_flow {
+        Some(ActionFlow::Confirm(modal)) => {
+            assert!(
+                modal.loading_version_preview,
+                "Deploy modal must reserve space for the inline preview"
+            );
+            assert!(modal.version_preview.is_none());
+        }
+        _ => panic!("expected confirm modal open"),
+    }
+}
+
+#[tokio::test]
+async fn deploy_modal_handle_version_preview_stuffs_body_in_slot() {
+    // Simulate the AppMsg landing — handler should clear the
+    // loading flag and store the body.
+    let mut app = test_app();
+    app.environments = vec![mk_env("prod", "shop", "Web", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.execute_command("deploy build-900");
+    let body = "candidate: build-900\ncurrent: build-820\n".to_string();
+    app.handle_msg(AppMsg::VersionPreview {
+        gen: app.generation,
+        env_name: "prod".into(),
+        result: Ok(body.clone()),
+    });
+    match &app.action_flow {
+        Some(ActionFlow::Confirm(modal)) => {
+            assert!(!modal.loading_version_preview);
+            assert_eq!(modal.version_preview.as_deref(), Some(body.as_str()));
+        }
+        _ => panic!("expected confirm modal still open"),
+    }
+}
+
+#[tokio::test]
+async fn deploy_modal_handle_version_preview_error_renders_inline() {
+    // AWS error should not leave the modal stuck in loading;
+    // the failure becomes a one-line inline message.
+    let mut app = test_app();
+    app.environments = vec![mk_env("prod", "shop", "Web", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.execute_command("deploy build-900");
+    app.handle_msg(AppMsg::VersionPreview {
+        gen: app.generation,
+        env_name: "prod".into(),
+        result: Err("ListApplicationVersions throttled".into()),
+    });
+    match &app.action_flow {
+        Some(ActionFlow::Confirm(modal)) => {
+            assert!(!modal.loading_version_preview);
+            let preview = modal.version_preview.as_deref().unwrap_or("");
+            assert!(
+                preview.contains("version preview unavailable") && preview.contains("throttled"),
+                "expected inline error, got: {preview}"
+            );
+        }
+        _ => panic!("expected confirm modal still open"),
+    }
+}
+
+#[tokio::test]
+async fn diff_two_arg_form_opens_overlay_for_named_envs() {
+    // `:diff ENV-A ENV-B` is the post-0.8 shape that lets the
+    // operator name both sides without first selecting one of
+    // them. Verifies the new two-arg dispatch lands the Diff
+    // overlay without complaining about "no env selected".
+    let mut app = test_app();
+    app.environments = vec![
+        mk_env("staging", "uflexi", "Web", "Green"),
+        mk_env("prod", "uflexi", "Web", "Green"),
+    ];
+    app.rebuild_view();
+    // Deliberately leave no selection — the two-arg form should
+    // ignore the selected-env fallback entirely.
+    app.execute_command("diff staging prod");
+    assert!(
+        matches!(app.current_overlay, Some(Overlay::Diff(_))),
+        "expected Overlay::Diff, got {:?}",
+        app.current_overlay.is_some()
+    );
+    assert!(
+        app.error_message.is_none(),
+        "unexpected error: {:?}",
+        app.error_message
+    );
+}
+
+#[tokio::test]
+async fn diff_two_arg_form_rejects_same_env_twice() {
+    // `:diff ENV ENV` is a typo, not a request — surface a clear
+    // error rather than silently comparing an env against itself.
+    let mut app = test_app();
+    app.environments = vec![mk_env("prod", "uflexi", "Web", "Green")];
+    app.rebuild_view();
+    app.execute_command("diff prod prod");
+    assert!(
+        app.current_overlay.is_none(),
+        "shouldn't open overlay for same-env diff"
+    );
+    let err = app.error_message.as_deref().unwrap_or("");
+    assert!(
+        err.contains("different envs"),
+        "expected 'different envs' guidance, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn diff_two_arg_form_errors_on_unknown_env() {
+    // Missing env-B → no overlay, clear error message naming the
+    // missing env so the operator knows which arg to fix.
+    let mut app = test_app();
+    app.environments = vec![mk_env("staging", "uflexi", "Web", "Green")];
+    app.rebuild_view();
+    app.execute_command("diff staging missing-env");
+    assert!(app.current_overlay.is_none());
+    let err = app.error_message.as_deref().unwrap_or("");
+    assert!(
+        err.contains("missing-env"),
+        "expected error to name the missing env, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn question_mark_opens_help_and_escape_dismisses_it() {
+    let mut app = test_app();
+    assert_eq!(app.mode, Mode::Normal);
+    press(&mut app, KeyCode::Char('?'), KeyModifiers::NONE);
+    assert_eq!(app.mode, Mode::Help);
+    press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(app.mode, Mode::Normal);
+}
+
+#[tokio::test]
+async fn event_tail_poller_reaped_when_overlay_replaced() {
+    // Opening another overlay on top of the tail (without going
+    // through the close handler) must not leave the poll task
+    // running invisibly: the next poll result reaps it.
+    let mut app = test_app();
+    app.event_tail_session = 1;
+    app.handle_msg(AppMsg::EventTailOpened {
+        gen: app.generation,
+        session_id: 1,
+    });
+    app.event_tail_task = Some(tokio::spawn(async {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        }
+    }));
+    app.current_overlay = Some(Overlay::TextDump {
+        title: "something else".into(),
+        body: "…".into(),
+    });
+    app.handle_msg(AppMsg::EventTailEvents {
+        gen: app.generation,
+        session_id: 1,
+        result: Ok(vec![]),
+    });
+    assert!(app.event_tail_task.is_none(), "poller must be reaped");
+    assert_eq!(
+        app.event_tail_session, 2,
+        "session bump drops already-queued messages"
+    );
+    assert!(
+        matches!(app.current_overlay, Some(Overlay::TextDump { .. })),
+        "the replacement overlay is untouched"
+    );
+}
+
+#[tokio::test]
+async fn log_tail_poller_reaped_when_overlay_replaced() {
+    // Same reap contract for :logs-tail — the quirk predates
+    // :event-tail and both tails share the fix.
+    let mut app = test_app();
+    app.log_tail_session = 1;
+    app.handle_msg(AppMsg::LogTailOpened {
+        gen: app.generation,
+        session_id: 1,
+        env_name: "api-prod".into(),
+        log_group: "/aws/elasticbeanstalk/api-prod/web.stdout.log".into(),
+        since_ms: 0,
+    });
+    app.log_tail_task = Some(tokio::spawn(async {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        }
+    }));
+    app.current_overlay = Some(Overlay::TextDump {
+        title: "something else".into(),
+        body: "…".into(),
+    });
+    app.handle_msg(AppMsg::LogTailEvents {
+        gen: app.generation,
+        session_id: 1,
+        next_since_ms: 5,
+        result: Ok(vec![]),
+    });
+    assert!(app.log_tail_task.is_none(), "poller must be reaped");
+    assert_eq!(app.log_tail_session, 2);
+}
