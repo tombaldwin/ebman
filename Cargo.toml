@@ -98,6 +98,12 @@ expect_used = "deny"
 # `\\`-continued literal, raw strings). Already in the lock file
 # transitively, so this costs nothing to build.
 proc-macro2 = "1"
+# Property tests for the four hand-rolled parsers. `parse_audit_line` is
+# a char scanner with 13 `chars[i]` sites, hand-guarded by `while i < n`,
+# running over a file on disk that can be truncated mid-write — the one
+# place here where "never panics on arbitrary input" is worth asserting
+# rather than enumerating.
+proptest = "1"
 # Mocked AWS clients for unit-testing aws.rs without a live AWS account.
 # Used to assert on observed request shapes and exercise response variants
 # (e.g. EB autocreated worker queues, paginated SQS ReceiveMessage).

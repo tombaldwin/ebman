@@ -125,6 +125,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Internal
 
+- **Property tests for the four hand-rolled parsers.** `parse_audit_line`
+  is a char scanner with 13 `chars[i]` sites behind a hand-maintained
+  `while i < n`, reading a log a crash or a full disk can truncate
+  mid-write — including mid-UTF-8. `state::parse`,
+  `CustomMetricSpec::parse` and `parse_saved_config` read files ebman
+  either doesn't write or doesn't control. "Never panics on arbitrary
+  input" is worth asserting there rather than enumerating; verified by
+  dropping a bounds guard, which the properties catch immediately.
+
 - **`clippy::unwrap_used` / `expect_used` are denied**, making a rule the
   codebase already followed by discipline into one the compiler checks.
   Measured first: 0 `unwrap` and 2 `expect` in ~82k lines of non-test

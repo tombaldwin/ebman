@@ -309,3 +309,35 @@ EnvironmentConfigurationMetadata:
         }
     }
 }
+
+#[cfg(test)]
+mod parser_properties {
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(1000))]
+
+        /// `parse_saved_config` reads `.elasticbeanstalk/saved_configs/*.cfg.yml`
+        /// — files ebman does not write and does not control. It may
+        /// return an error; it may not panic.
+        #[test]
+        fn parse_saved_config_never_panics(s in ".{0,400}") {
+            let _ = super::parse_saved_config(&s);
+        }
+
+        /// Near-miss YAML: the right keys at the wrong depth, which is
+        /// what a hand-edited or half-migrated file looks like.
+        #[test]
+        fn parse_saved_config_survives_near_miss_yaml(
+            ns in "[a-z:]{0,24}",
+            name in "[A-Za-z]{0,20}",
+            val in "[A-Za-z0-9 ]{0,30}",
+        ) {
+            let _ = super::parse_saved_config(&format!(
+                "OptionSettings:\n  {ns}:\n    {name}: {val}\n"
+            ));
+            let _ = super::parse_saved_config(&format!("OptionSettings:\n  {ns}: {val}\n"));
+            let _ = super::parse_saved_config(&format!("OptionSettings: {val}\n"));
+        }
+    }
+}

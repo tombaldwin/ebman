@@ -26,9 +26,20 @@ FILE=${1:?usage: mutate.sh <file> <sed-expr> [test-filter]}
 EXPR=${2:?usage: mutate.sh <file> <sed-expr> [test-filter]}
 FILTER=${3:-}
 BAK=$(mktemp -t "$(basename "$FILE")")
-trap 'cp "$BAK" "$FILE"; rm -f "$BAK"' EXIT
-
 cp "$FILE" "$BAK"
+# proptest records a seed for every failure it sees. A failure this
+# script MANUFACTURED is not a regression, and committing its seed would
+# imply a bug that never existed — so remember what was there and put it
+# back.
+PROPTEST_BEFORE=$(ls proptest-regressions 2>/dev/null | sort)
+trap 'cp "$BAK" "$FILE"; rm -f "$BAK";
+      if [ -d proptest-regressions ]; then
+        for f in proptest-regressions/*; do
+          [ -e "$f" ] || continue
+          grep -qx "$(basename "$f")" <<<"$PROPTEST_BEFORE" || rm -f "$f"
+        done
+        rmdir proptest-regressions 2>/dev/null
+      fi' EXIT
 before=$(md5 -q "$FILE" 2>/dev/null || md5sum "$FILE" | cut -d' ' -f1)
 sed -i '' "$EXPR" "$FILE"
 after=$(md5 -q "$FILE" 2>/dev/null || md5sum "$FILE" | cut -d' ' -f1)

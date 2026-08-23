@@ -528,3 +528,41 @@ metric.disk = "AWS/EC2|DiskReadOps|Sum"
         assert!(s.profile.is_none());
     }
 }
+
+#[cfg(test)]
+mod parser_properties {
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(1500))]
+
+        /// `State::parse` reads `~/.config/ebman/state.toml`, which a
+        /// crash mid-write can truncate. It must degrade to `None` or a
+        /// partial state, never panic.
+        #[test]
+        fn state_parse_never_panics(s in ".{0,400}") {
+            let _ = super::parse(&s);
+        }
+
+        /// `CustomMetricSpec::parse` is its own hand-rolled scanner
+        /// over a `|`-delimited form, fed from the same file.
+        #[test]
+        fn custom_metric_spec_parse_never_panics(s in "[a-zA-Z0-9|;=/: ]{0,120}") {
+            let _ = super::CustomMetricSpec::parse(&s);
+        }
+
+        /// Biased toward near-valid TOML — the shapes that actually
+        /// reach the interesting branches.
+        #[test]
+        fn state_parse_survives_near_miss_toml(
+            key in "[a-z_]{0,20}",
+            val in "[a-zA-Z0-9,._/-]{0,60}",
+        ) {
+            let _ = super::parse(&format!("{key} = \"{val}\""));
+            let _ = super::parse(&format!("{key}={val}"));
+            let _ = super::parse(&format!("[{key}]\n{key} = {val}"));
+            // Truncated mid-value, the crash-during-write shape.
+            let _ = super::parse(&format!("{key} = \"{val}"));
+        }
+    }
+}
