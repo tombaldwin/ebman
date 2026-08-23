@@ -544,3 +544,295 @@ async fn the_form_overlay_renders_its_fields() {
         "and the env it will act on — this form writes:\n{out}"
     );
 }
+
+// --- render smoke for the body-carrying overlays --------------------
+//
+// From the 41-surface coverage sweep: each of these could be replaced
+// with `return;` and nothing failed. They all follow the same shape —
+// an `Overlay` variant carrying text, and a `draw_*` that has to put
+// that text on screen — so one table covers the lot. The canary strings
+// are deliberately unique so a passing assertion can't be satisfied by
+// the chrome drawn around the overlay.
+#[tokio::test]
+async fn every_body_carrying_overlay_renders_its_body() {
+    use crate::app::Overlay;
+    let cases: Vec<(&str, Overlay)> = vec![
+        ("CANARYDESCRIBE", Overlay::Describe("CANARYDESCRIBE".into())),
+        ("CANARYWHATSNEW", Overlay::Whatsnew("CANARYWHATSNEW".into())),
+        ("CANARYHISTORY", Overlay::History("CANARYHISTORY".into())),
+        (
+            "CANARYALARMS",
+            Overlay::Alarms {
+                env_name: "api-prod".into(),
+                body: "CANARYALARMS".into(),
+            },
+        ),
+        ("CANARYDIFF", Overlay::Diff("CANARYDIFF".into())),
+        (
+            "CANARYSAVEDCFG",
+            Overlay::SavedConfigs("CANARYSAVEDCFG".into()),
+        ),
+        (
+            "CANARYTEXTDUMP",
+            Overlay::TextDump {
+                title: "dump".into(),
+                body: "CANARYTEXTDUMP".into(),
+            },
+        ),
+        (
+            "CANARYREPORTBUG",
+            Overlay::ReportBug {
+                body: "CANARYREPORTBUG".into(),
+            },
+        ),
+        (
+            "CANARYCFGITEM",
+            Overlay::SavedConfigsInteractive {
+                items: vec![("CANARYCFGITEM".into(), "/tmp/x.cfg.yml".into())],
+                cursor: 0,
+                confirm_delete: false,
+            },
+        ),
+    ];
+
+    for (needle, overlay) in cases {
+        let mut app = test_app();
+        app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
+        app.view.invalidate();
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        app.current_overlay = Some(overlay);
+
+        let out = render(&mut app, 160, 44);
+        assert!(
+            out.contains(needle),
+            "overlay did not render its own body ({needle}):\n{out}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_command_palette_renders_its_items() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
+    app.view.invalidate();
+    app.rebuild_view();
+    app.open_palette();
+    assert_eq!(app.mode, crate::app::Mode::Palette, "palette opened");
+    assert!(!app.palette_items.is_empty(), "and has something to show");
+
+    let out = render(&mut app, 160, 44);
+    let first = app.palette_items[0].label.clone();
+    assert!(
+        out.contains(&first),
+        "the first palette entry ({first}) has to be on screen:\n{out}"
+    );
+}
+
+#[tokio::test]
+async fn the_picker_renders_its_choices() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
+    app.view.invalidate();
+    app.rebuild_view();
+    app.picker = Some(crate::app::Picker {
+        kind: crate::app::PickerKind::Region,
+        items: vec!["eu-west-2-CANARY".into(), "us-east-1".into()],
+        filter: tui_common::TextInput::new(),
+        list_state: Default::default(),
+    });
+    app.mode = crate::app::Mode::Picker;
+
+    let out = render(&mut app, 160, 44);
+    assert!(out.contains("eu-west-2-CANARY"), "choices render:\n{out}");
+}
+
+#[tokio::test]
+async fn toasts_render_over_everything_else() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
+    app.view.invalidate();
+    app.rebuild_view();
+    app.toasts.push_back(crate::app::Toast {
+        text: "TOASTCANARY restart dispatched".into(),
+        kind: crate::app::ToastKind::Info,
+        shown_at: std::time::Instant::now(),
+    });
+
+    let out = render(&mut app, 160, 44);
+    assert!(out.contains("TOASTCANARY"), "the toast renders:\n{out}");
+}
+
+#[tokio::test]
+async fn the_apps_scope_renders_its_own_table() {
+    // A whole alternate table — `:apps` swaps it in for the env table.
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "APPCANARY", "Web", "Green")];
+    app.applications = vec![crate::aws::Application {
+        name: "APPCANARY".into(),
+        description: "the one app".into(),
+        date_created: None,
+        date_updated: None,
+        version_count: 3,
+        templates: Vec::new(),
+        latest_version_created: None,
+        latest_version_label: None,
+    }];
+    app.view.invalidate();
+    app.rebuild_view();
+    app.scope = crate::app::Scope::Apps;
+    app.rebuild_view();
+
+    let out = render(&mut app, 160, 44);
+    // Assert on this table's OWN column headers, not on the app name:
+    // the name also reaches the header breadcrumb, so the first cut of
+    // this assertion passed with `draw_apps_table` stubbed out entirely
+    // — the same mistake the Logs tab test made.
+    assert!(
+        out.contains("VERSIONS") && out.contains("DESCRIPTION"),
+        "the apps table draws its own columns:\n{out}"
+    );
+    assert!(
+        out.contains("the one app"),
+        "and the row body, which only this table renders:\n{out}"
+    );
+}
+
+#[tokio::test]
+async fn every_help_topic_renders_something_of_its_own() {
+    // `draw_help` fans out to a per-topic renderer, and the sweep found
+    // all seven bare. A stubbed one leaves the popup frame drawn by the
+    // chrome, so assert on line count inside the popup rather than on
+    // the frame itself.
+    use crate::app::HelpTopic;
+    // Each topic's own pane title. Needles chosen from the help source
+    // rather than guessed: earlier attempts asserted on "esc" (the
+    // footer keystrip draws it in every mode) and then on "the frame
+    // differs from Normal mode" (the footer changes with mode on its
+    // own). Both passed with every help renderer stubbed out.
+    for (topic, title) in [
+        (HelpTopic::Global, "ebman — keybindings"),
+        (HelpTopic::Detail, "Detail view — keybindings"),
+        (HelpTopic::Dlq, "Queue viewer — keybindings"),
+        (HelpTopic::Action, "Action menu — keybindings"),
+        (HelpTopic::Shell, "Embedded shell — keybindings"),
+        (
+            HelpTopic::SavedConfigs,
+            "Saved configurations — keybindings",
+        ),
+    ] {
+        let mut app = test_app();
+        app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
+        app.view.invalidate();
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        app.help.topic = topic;
+        app.help.scroll = 0;
+        app.mode = crate::app::Mode::Help;
+
+        let out = render(&mut app, 200, 44);
+        assert!(
+            out.contains(title),
+            "help topic {topic:?} did not draw its own title {title:?}:\n{out}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_about_overlay_renders() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
+    app.view.invalidate();
+    app.rebuild_view();
+    app.current_overlay = Some(crate::app::Overlay::About(std::time::Instant::now()));
+
+    let out = render(&mut app, 160, 44);
+    assert!(
+        out.contains(env!("CARGO_PKG_VERSION")),
+        "About names the version it is:\n{out}"
+    );
+}
+
+#[tokio::test]
+async fn the_why_red_overlay_renders_its_findings() {
+    // The triage path: `:why` on a red environment. Worth covering for
+    // the same reason as the DLQ viewer — it is reached mid-incident.
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Red")];
+    app.view.invalidate();
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.current_overlay = Some(crate::app::Overlay::WhyRed {
+        env_name: "api-prod".into(),
+        tier: "Web".into(),
+        events: Some(Ok(vec![make_event("WHYREDCANARY deploy failed")])),
+        alarms: Some(Ok(Vec::new())),
+        instances: Some(Ok(Vec::new())),
+        deploys: Some(Ok(Vec::new())),
+        queues: None,
+        dlq_messages: None,
+        session_id: 1,
+        cursor: 0,
+    });
+
+    let out = render(&mut app, 180, 44);
+    assert!(
+        out.contains("WHYREDCANARY"),
+        "the event that explains the red renders:\n{out}"
+    );
+}
+
+#[tokio::test]
+async fn the_log_tail_overlay_renders_its_lines() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
+    app.view.invalidate();
+    app.rebuild_view();
+    let mut events = std::collections::VecDeque::new();
+    events.push_back(crate::aws::LogEvent {
+        timestamp_ms: 1_700_000_000_000,
+        stream: "i-0abc/web.stdout".into(),
+        message: "LOGTAILCANARY 500 internal error".into(),
+    });
+    app.current_overlay = Some(crate::app::Overlay::LogTail {
+        log_group: "/aws/elasticbeanstalk/api-prod/var/log/web.stdout.log".into(),
+        env_name: "api-prod".into(),
+        events,
+        since_ms: 0,
+        view: Default::default(),
+        last_err: None,
+        session_id: 1,
+    });
+
+    let out = render(&mut app, 180, 44);
+    assert!(
+        out.contains("LOGTAILCANARY"),
+        "the tailed line renders:\n{out}"
+    );
+}
+
+#[tokio::test]
+async fn the_apps_action_menu_renders_its_actions() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "MENUCANARY", "Web", "Green")];
+    app.view.invalidate();
+    app.rebuild_view();
+    app.current_overlay = Some(crate::app::Overlay::AppsActionMenu {
+        app_name: "MENUCANARY".into(),
+        env_names: vec!["api-prod".into(), "api-staging".into()],
+        cursor: 0,
+    });
+
+    let out = render(&mut app, 180, 44);
+    // The menu renders counts, not env names. "Rebuild all 2 env(s)" is
+    // a string only this overlay builds, so it can't be satisfied by the
+    // table or the footer underneath.
+    assert!(
+        out.contains("Rebuild all 2 env(s)"),
+        "the menu offers its fan-out actions with the env count:\n{out}"
+    );
+    assert!(
+        out.contains("MENUCANARY"),
+        "and names the application:\n{out}"
+    );
+}

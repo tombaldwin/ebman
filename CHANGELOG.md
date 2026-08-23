@@ -44,7 +44,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   each verified by stubbing its surface and confirming the test fails.
   `draw_shell` had been recorded twice as needing a real PTY; it does
   not, since `ShellSession` is built to run without a subprocess in
-  `--demo`. The remaining 23 are listed in `BACKLOG.md`.
+  `--demo`.
+
+  The other 22 followed, and a full re-sweep confirms **41 caught, 0
+  uncovered**: every render surface now has a test that fails if it
+  stops drawing. Four assertions along the way passed with their
+  surface stubbed out because the chrome around it drew the needle —
+  all four were caught by mutation-verifying rather than by review.
 
 - **`src/app/tests.rs` split 9,515 lines → 16 modules**, one per surface,
   mirroring the `app/` submodule layout — the same pass `ui.rs` had.

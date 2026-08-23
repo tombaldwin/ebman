@@ -1293,7 +1293,8 @@ points** with an early return, run the suite, see whether anything
 fails.
 
 **13 covered, 28 not.** Twenty-eight render surfaces could stop drawing
-entirely and no test would say a word.
+entirely and no test would say a word. All 41 are covered as of the
+second pass below.
 
 Closed six of them (all mutation-verified by stubbing the surface and
 confirming the test fails):
@@ -1325,20 +1326,35 @@ Two methodology notes, both the same class I keep hitting:
    the pane's own title (`Logs · N instance(s) · M lines`), which the
    tab strip doesn't draw.
 
-**Still uncovered (23)** — mostly overlays, listed so the next pass
-doesn't have to re-derive them:
+**All 41 are covered now** — the remaining 23 were closed in a second
+pass and a full re-sweep confirms **41 caught, 0 uncovered**. The
+overlays went in as one table-driven test (they share a shape: an
+`Overlay` variant carrying text, and a renderer that must put it on
+screen), the six help topics as another, and the rest individually.
 
-`draw_help` and its six per-mode variants, `draw_palette`,
-`draw_picker`, `draw_toasts`, `draw_about`, `draw_whatsnew`,
-`draw_describe`, `draw_history_overlay`, `draw_diff_overlay`,
-`draw_alarms_overlay`, `draw_why_red_overlay`, `draw_report_bug_overlay`,
-`draw_text_dump_overlay`, `draw_log_tail_overlay`,
-`draw_saved_configs_overlay`, `draw_saved_configs_interactive`,
-`draw_apps_table`, `draw_apps_action_menu`.
+- [x] `draw_why_red_overlay`, `draw_log_tail_overlay`,
+  `draw_apps_action_menu`, `draw_apps_table`, `draw_palette`,
+  `draw_picker`, `draw_toasts`, `draw_about`, the six `draw_help_*`
+  topics, and the nine body-carrying overlays.
 
-`draw_why_red_overlay` and `draw_apps_table` are the two with the
-strongest case — the first is the triage path, the second is a whole
-alternate table.
+**The recurring mistake, worth naming.** Four separate assertions in
+this sweep passed with the surface under test stubbed out, because the
+chrome *around* it drew the needle:
+
+| test | needle | who actually drew it |
+|---|---|---|
+| Detail Logs tab | env name, line count | the Detail header |
+| Apps table | the app name | the header breadcrumb |
+| Help topics (1st try) | `esc` | the footer keystrip, in every mode |
+| Help topics (2nd try) | "frame differs from Normal mode" | the footer, which changes with mode by itself |
+
+The second help attempt is the interesting one: a *differential* test
+looked like the robust answer to the needle problem, and it was still
+wrong, because mode changes the chrome on its own. What actually works
+is a needle taken from the surface's own source — each help topic's
+pane title (`ebman — keybindings`, `Detail view — keybindings`, …) —
+rather than one guessed from outside. **Every one of the four was
+caught by mutation-verifying, not by review.**
 
 #### app/tests.rs split — 2026-08-23
 
