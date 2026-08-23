@@ -1327,13 +1327,42 @@ aims at asserted.
   explicitly, since a refusal there has already set its own message.
   Fix mutation-verified by reverting it.
 
-**Still uncovered (83).** The list is dominated by read-only inspection
-commands (`resources`, `secrets`, `listeners`, `subnets`, `versions`,
-`history`, `lineage`, …) where a no-op is visible to the operator
-immediately, so the case is weaker than it was for writes. The ones
-worth doing next, because a silent no-op is *not* obvious: `env-edit`,
-`delete-version`, `custom-platform-delete`, `rds-attach`,
-`unset-option`, `abort`, `rollout`, `swap`, `scale`.
+Those nine were then done too, taking the count to **57 of 131
+covered, 74 remaining**: `env-edit`, `delete-version`,
+`custom-platform-delete`, `rds-attach`, `unset-option`, `abort`,
+`rollout`, `swap`, `scale`.
+
+**What that second pass found.** `WRITE_COMMANDS` pins the commands with
+no `deny_write` of their own; everything that gates *inside* its own
+handler was therefore in no list at all, so nothing pinned that it kept
+gating. Sixteen such commands. Each was checked before being listed —
+**none was a hole** — and they are now pinned by `GATED_COMMANDS` plus
+two tests for the awkward ones.
+
+Two of them needed care, and are the reason the first probe looked
+alarming:
+
+- `:swap` is turned away on its argument ("target not found") before the
+  gate is consulted, so it needs a second env in the same application
+  before the question can even be asked.
+- `:ssm-run` needs cached instances from an open Detail pane for the
+  same reason.
+
+Both refuse correctly once given valid input. Read as "ungated" on the
+first pass purely because the precondition fired first — a good reminder
+that *absence of a refusal message* is not evidence of an absent gate.
+
+- [x] **`:rds-attach` opened a seven-field form under `--deny-write`.**
+  The write itself was gated on submit, so nothing could escape, but the
+  operator filled the whole form in before being told no. `:env-edit` —
+  the sibling command, also a form — refuses at open. Made consistent:
+  `rds-attach` now gates at open too. Mutation-verified by removing the
+  new gate and watching `GATED_COMMANDS` catch it.
+
+Correctly **not** gated, checked rather than assumed: `:update` (prints
+the upgrade command for the detected install channel — touches no AWS)
+and no-arg `:upgrade` (lists compatible platforms, a read; the ARN form
+gates).
 
 #### Render-coverage sweep — 2026-08-23
 

@@ -313,6 +313,15 @@ impl App {
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
+        // Gate at open, the way `:env-edit` does. The write itself is
+        // gated on submit (`spawn_option_settings_update` calls
+        // `deny_write`), so nothing could escape — but under
+        // `--deny-write` this opened a seven-field form and only refused
+        // once the operator had filled it in and pressed submit. The
+        // sibling command refuses immediately; this one should too.
+        if self.deny_write(&env.name, ":rds-attach") {
+            return;
+        }
         let ns = "aws:rds:dbinstance";
         let fields = vec![
             crate::form::FormField::text(
