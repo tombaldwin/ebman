@@ -1363,6 +1363,39 @@ the upgrade command for the detected install channel — touches no AWS)
 and no-arg `:upgrade` (lists compatible platforms, a read; the ARN form
 gates).
 
+#### Terminal lifecycle — 2026-08-23
+
+RAII guard over the alternate screen, a shared best-effort
+`restore_terminal`, and `panic = "abort"` in release. Details in the
+0.31.1 changelog.
+
+**What is actually verified, and what isn't.** With permission to use
+the real terminal, ran the built binary inside a `script`-allocated pty
+and compared `stty -g` before and after a full alt-screen session:
+byte-identical. That establishes the restore path works end to end
+against a real termios — which is the part a unit test can't reach.
+
+Two earlier attempts at that check were vacuous and worth recording:
+the first ran `stty` outside the pty (it errored, and "intact" was
+printed anyway); the second redirected stdout to `/dev/null`, which
+tripped the new non-TTY guard, so ebman exited 2 without ever entering
+the alt screen — a clean "restored" verdict for a session that never
+started.
+
+**Not verified directly:** the `App::new`-fails-after-entering path the
+RAII guard exists for. ebman deliberately starts without credentials and
+surfaces the error in-app, so it can't be triggered from outside. The
+reasoning that covers it: Rust guarantees `Drop` on a `?` return, and
+the function `Drop` calls is the same one the pty run exercised. That is
+an argument, not a measurement, and it is written down here as such.
+
+**Deliberately not tested in the suite:** `restore_terminal` itself.
+Calling it would disable raw mode on whoever runs `cargo test`,
+including CI and other contributors. The permission to touch one
+terminal doesn't make that acceptable in a committed test. The
+structural guard — no site may re-create `disable_raw_mode()?` — is the
+part that ships.
+
 #### Release panel on 0.31.1 — 2026-08-23
 
 Three seats, all **SHIP**, four actionable findings between them. Every
