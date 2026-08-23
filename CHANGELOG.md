@@ -57,7 +57,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `:rds-attach`, `:subnets`, `:elb-subnets` and `:security-groups` now
   all refuse at open.
 
+### Fixed
+
+- **Two operator-facing messages rendered with a hole punched through
+  them** — the `--control-socket` length error (26 spaces) and the
+  `:explain` page-budget warning (15 spaces), the latter being a message
+  whose entire point is "this table is INCOMPLETE, an action missing
+  below was not evaluated". Both were wrapped literals missing their
+  `\` continuation, which embeds the newline *and* the source
+  indentation.
+
 ### Internal
+
+- **A guard for the wrapped-literal bug that actually works.** It had
+  shipped three times; the only defence was a helper called from two
+  test sites, so it caught the bug solely for messages someone
+  remembered to route through it. The new guard scans every literal in
+  `src/`. It uses `proc_macro2` to do the lexing after five hand-rolled
+  scanners were each wrong differently — `//` inside a URL, `'\"'` char
+  literals, the closing half of a continued literal, raw strings, and a
+  runaway that flagged 260 lines. Deliberate pre-formatted blocks opt
+  out by opening with `"\`, which is already the idiom for them.
+
+- `tokio-stream` and `aws-types` dropped — unused direct dependencies.
+
+- The MSRV job now runs `cargo test`, not just `cargo build`. It gated a
+  suite it never compiled against the MSRV.
 
 - `draw_table`'s group-separator arm extracted to `separator_row`: 137
   lines out, 511 → 382. Verified as a pure refactor by diffing the

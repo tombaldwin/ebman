@@ -694,9 +694,9 @@ pub(crate) fn render_explain_overlay(
         // it should be read, and an absent action is the finding an
         // operator is most likely to draw from a short table.
         out.push_str(
-            "⚠ SimulatePrincipalPolicy hit its page budget — this table is
-               INCOMPLETE. An action missing below was not evaluated, not
-               necessarily allowed. Re-run `:explain` with fewer actions.
+            "⚠ SimulatePrincipalPolicy hit its page budget — this table is \
+             INCOMPLETE. An action missing below was not evaluated, not \
+             necessarily allowed. Re-run `:explain` with fewer actions.
 
 ",
         );

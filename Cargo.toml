@@ -26,7 +26,6 @@ ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }
 # io-util + io-std: the MCP server's stdio JSON-RPC transport.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "io-util", "io-std"] }
-tokio-stream = "0.1"
 futures = "0.3"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-elasticbeanstalk = "1"
@@ -37,7 +36,6 @@ aws-sdk-cloudwatchlogs = "1"
 aws-sdk-s3 = "1"
 aws-sdk-ec2 = "1"
 aws-sdk-acm = "1"
-aws-types = "1"
 chrono = "0.4"
 color-eyre = "0.6"
 tracing = "0.1"
@@ -79,6 +77,13 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 sha2 = "0.10"
 
 [dev-dependencies]
+# Used by one test: a source-scanning guard for the wrapped-literal
+# bug needs to know where string literals begin and end, and five
+# hand-rolled scanners got that wrong in five different ways (`//`
+# inside a URL, `'\"'` char literals, the closing half of a
+# `\\`-continued literal, raw strings). Already in the lock file
+# transitively, so this costs nothing to build.
+proc-macro2 = "1"
 # Mocked AWS clients for unit-testing aws.rs without a live AWS account.
 # Used to assert on observed request shapes and exercise response variants
 # (e.g. EB autocreated worker queues, paginated SQS ReceiveMessage).
