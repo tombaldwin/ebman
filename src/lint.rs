@@ -461,18 +461,23 @@ pub struct BaselineIssue {
 /// Parse a baseline JSON file (the output of `ebman lint --baseline FILE`
 /// or `ebman lint --json > FILE`). Returns the list of baseline
 /// issues so callers can compute set differences against the current
-/// run. JSON parsed via serde_yml (JSON is a YAML subset; avoids a
-/// serde_json dep).
+/// run.
+///
+/// A JSON parser for JSON. This went through `serde_yml` on the "JSON
+/// is a YAML subset, avoids a serde_json dep" reasoning — the dep was
+/// already there, and the file is CI input from a previous run, so
+/// every YAML feature applied to it. Same correction as the LLM and
+/// tfstate parsers.
 pub fn parse_baseline(text: &str) -> Result<Vec<BaselineIssue>, String> {
-    let value: serde_yml::Value =
-        serde_yml::from_str(text).map_err(|e| format!("baseline JSON parse failed: {e}"))?;
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("baseline JSON parse failed: {e}"))?;
     let issues = value
         .get("issues")
-        .and_then(|v| v.as_sequence())
+        .and_then(|v| v.as_array())
         .ok_or_else(|| "baseline JSON missing `issues` array".to_string())?;
     let mut out = Vec::with_capacity(issues.len());
     for item in issues {
-        let Some(obj) = item.as_mapping() else {
+        let Some(obj) = item.as_object() else {
             continue;
         };
         let rule_id = obj
@@ -487,7 +492,7 @@ pub fn parse_baseline(text: &str) -> Result<Vec<BaselineIssue>, String> {
             .unwrap_or("")
             .to_string();
         let mut fields: BTreeMap<String, String> = BTreeMap::new();
-        if let Some(f) = obj.get("fields").and_then(|v| v.as_mapping()) {
+        if let Some(f) = obj.get("fields").and_then(|v| v.as_object()) {
             // serde_yml 0.0.13 changed mapping iteration to hand out
             // the key as `&str` rather than a `Value` — a breaking
             // change in a patch release, from the crate RUSTSEC
@@ -2157,14 +2162,14 @@ mod tests {
         // Round-trip through a YAML-superset parser to confirm it's
         // valid JSON. (serde_yml is already a dep; saves bringing
         // in serde_json just for the test.)
-        let _: serde_yml::Value =
-            serde_yml::from_str(&json).expect("rendered output must be valid JSON");
+        let _: serde_json::Value =
+            serde_json::from_str(&json).expect("rendered output must be valid JSON");
         // Spot-check the escape for the embedded quote + newline.
         assert!(json.contains("\\\"quotes\\\""));
         assert!(json.contains("\\n"));
         // Empty issues list — still a well-formed object.
         let empty = render_issues_json(&[]);
-        let _: serde_yml::Value = serde_yml::from_str(&empty).unwrap();
+        let _: serde_json::Value = serde_json::from_str(&empty).unwrap();
         assert_eq!(empty, "{\"issues\":[]}");
     }
 

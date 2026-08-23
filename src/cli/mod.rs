@@ -146,7 +146,7 @@ mod tests {
         let s = "line1\nline2 \"with quotes\"";
         let escaped = json_string(s);
         let parsed: String =
-            serde_yml::from_str(&escaped).expect("hand-rolled JSON should parse as YAML");
+            serde_json::from_str(&escaped).expect("hand-rolled JSON must be valid JSON");
         assert_eq!(parsed, s);
     }
 }
