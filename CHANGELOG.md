@@ -22,18 +22,6 @@ see **Breaking** below. The binary is unaffected.
   "isn't replayable via the CLI". The CLI writes the canonical name
   now and replay accepts both, because existing logs span the change.
 
-- **`:ssm-run` failed outright on environments with more than 50
-  instances** — the `SendCommand` API cap, hit on a triage path reached
-  precisely when a large environment is misbehaving. It sends in
-  batches now, and a batch that fails to send reports those instances
-  by name instead of discarding the successful ones.
-
-- **EBL010 couldn't tell an untagged environment from an unloaded
-  one.** A failed `ListTagsForResource` and "this environment has no
-  tags" were the same value, so the fetch failure silently disabled the
-  rule — and an environment with no tags at all, the case the rule most
-  wants to catch, was invisible to it.
-
 - **`ebman action <unknown-verb>` built an AWS client and ran the
   safety gates before noticing the verb was wrong**, so with no
   credentials it reported a credential failure and on a frozen fleet it
@@ -45,22 +33,22 @@ see **Breaking** below. The binary is unaffected.
   confirm_token"** — the same answer a typo gets, though the two want
   different next moves from an MCP agent.
 
-- **The breadcrumb named the session's region beside another region's
-  environment**, and the EC2 console link for a Detail instance pointed
-  at the session's region. Both were compensations for pre-0.30
-  behaviour that became wrong once 0.30 fixed the data underneath them.
-
 - **`icons = "ascii"` still emitted five unicode glyphs** — the header
   delta arrows, the sort marker and the Metrics anomaly badge, which
   had `▲` baked into its message string.
 
-- **JSON is parsed by a JSON parser.** Seven places routed JSON through
-  a YAML parser on the reasoning that JSON is a YAML subset — true, and
-  beside the point, since it applies every YAML feature to input ebman
-  doesn't control. Includes both LLM response bodies, `terraform.tfstate`
-  and the lint baseline.
+- **The lint baseline is parsed by a JSON parser.** 0.30.2 corrected
+  the LLM response bodies and `terraform.tfstate`; the baseline file
+  was the one left, and it is CI input from a previous run. The same
+  pass cut `serde_yml` from nine files to two — the two that genuinely
+  read YAML.
 
 ### Changed
+
+- **The minimum supported Rust version is now 1.94.1**, up from 1.91.
+  Not a choice: the AWS SDK crates this release picks up declare it,
+  and the old floor was already false — `cargo build` on 1.91 failed
+  to resolve. The CI gate that asserts the MSRV is what caught it.
 
 - **An empty or truncated `terraform.tfstate` is no longer valid
   input.** It used to parse as an environment-free state, so

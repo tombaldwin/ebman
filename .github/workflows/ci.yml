@@ -55,11 +55,11 @@ jobs:
       - run: cargo clippy --locked --all-targets -- -D warnings
 
   msrv:
-    name: msrv (rust 1.91)
+    name: msrv (rust 1.94.1)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.91
+      - uses: dtolnay/rust-toolchain@1.94.1
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked
 
@@ -104,14 +104,24 @@ jobs:
         run: cargo install cargo-dylint dylint-link --locked
       - name: Build the candor lint
         run: |
-          git clone --depth 1 https://github.com/tombaldwin/candor-rust ~/candor
-          (cd ~/candor && cargo build)
+          # Pinned, not HEAD. This gate can fail the release, so it must
+          # not change underfoot: an unrelated push to candor-rust would
+          # otherwise land in the next ebman CI run with no review here.
+          # Bump deliberately.
+          git clone --filter=blob:none https://github.com/tombaldwin/candor-rust ~/candor
+          (cd ~/candor && git checkout --quiet a7f01138a1ceea6b2e05dc92995ee47ee9219201 && cargo build)
       # The DYLINT backend, not `candor-scan`. The syntactic scanner
       # reports `ui::draw` with no Exec/Ipc at all, while the
       # type-resolved lint finds both through the embedded shell pane —
       # so gating on a scan report would miss exactly the class this
       # policy exists to catch.
       - name: Enforce .candor/policy
+        # Plain text, overriding the workflow-level `always`. The three
+        # greps below parse this output; with colour on, cargo writes
+        # "Checking\e[0m ebman" and the "did it actually run" guard
+        # fails a clean tree. It did exactly that once.
+        env:
+          CARGO_TERM_COLOR: never
         run: |
           LIB=$(ls ~/candor/target/debug/libcandor@*.so)
           # Force a re-analysis. `rust-cache` restores the check
@@ -131,7 +141,7 @@ jobs:
           echo "$out"
           # And prove it actually analysed this crate, for the same
           # reason: a lint that silently no-ops emits no findings.
-          if ! echo "$out" | grep -q "Checking ebman"; then
+          if ! echo "$out" | grep -qE 'Checking.*ebman'; then
             echo "::error::candor lint produced no analysis of ebman — gate did not run"
             exit 1
           fi

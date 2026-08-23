@@ -2,7 +2,7 @@
 name = "ebman"
 version = "0.31.0"
 edition = "2021"
-rust-version = "1.91"
+rust-version = "1.94.1"
 authors = ["Tom Baldwin <tom@polymorphism.co.uk>"]
 description = "k9s-style TUI for AWS Elastic Beanstalk"
 license = "MIT OR Apache-2.0"
