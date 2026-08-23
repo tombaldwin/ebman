@@ -742,7 +742,8 @@ fn role_cache() -> &'static RoleCache {
 }
 
 /// An assumed-role client for `name` pointed at `spec.region`, built
-/// once and reused for [`CLIENT_CACHE_TTL`].
+/// once and reused for the same five-minute TTL as the profile
+/// client cache (`CLIENT_CACHE_TTL`, private to this module).
 pub async fn cached_role_client(
     name: &str,
     spec: &crate::config::AccountSpec,
