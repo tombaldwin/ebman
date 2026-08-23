@@ -37,6 +37,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Internal
 
+- **`src/app/tests.rs` split 9,515 lines → 16 modules**, one per surface,
+  mirroring the `app/` submodule layout — the same pass `ui.rs` had.
+  Shared fixtures live in `support.rs`. Bodies moved unchanged apart
+  from re-anchoring `super::` (which meant `crate::app` in the flat
+  file and would mean `crate::app::tests` a level deeper). Verified
+  per-test: all 422 tests present, none renamed or duplicated, and
+  every body byte-identical modulo rustfmt reflow except the two
+  source-scanning guards, which were deliberately changed.
+
+- The two drift guards — "the clipboard is only reached through `yank`"
+  and "every spawn declares whether it is per-env" — excluded
+  themselves by matching the filename `tests.rs`, which stopped being
+  true the moment the tests became a directory. Both promptly found
+  their own assertion literals and failed. They now skip the whole test
+  subtree, which is what they always meant; both were re-verified to
+  still fire against a planted violation.
+
 - `cargo-semver-checks` runs on main pushes as well as PRs, gated on
   whether the manifest version is already published. It was PR-only, so
   it never ran on the one commit whose version claim actually ships: the
