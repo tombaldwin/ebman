@@ -31,7 +31,7 @@ cargo install ebman
 
 **Pre-built binary:** download the tarball for your platform from the [GitHub Releases page](https://github.com/tombaldwin/ebman/releases), verify the `*.sha256` next to it, extract, and put `ebman` on your `PATH`.
 
-Tested on Rust 1.91+. macOS (Apple Silicon + Intel) and Linux x86_64. AWS SDK uses the standard credentials chain (`AWS_PROFILE` / `AWS_REGION` env, `~/.aws/credentials`, instance role, etc.).
+Tested on Rust 1.94.1+ (the AWS SDK sets the floor). macOS (Apple Silicon + Intel) and Linux x86_64. AWS SDK uses the standard credentials chain (`AWS_PROFILE` / `AWS_REGION` env, `~/.aws/credentials`, instance role, etc.).
 
 For the prettier glyph set (Powerline pill chain, Nerd Font tab icons), see [docs/fonts.md](docs/fonts.md). The default `icons = "unicode"` works fine in any terminal.
 
