@@ -1119,8 +1119,8 @@ Checked and still true (no change needed): the truncated-Cost-Explorer note abou
 
 Found while sweeping, recorded not fixed:
 
-- [ ] **Detail shows no region at all.** It replaces the screen with its own header and draws no breadcrumb, so an operator deep in a fan-out row's Detail has nothing on screen saying which region the pane's data came from. Not a stale workaround — a gap — so it's a UI addition rather than part of this sweep. Directly on-theme for the release, and small.
-- [ ] **`:region all` / `:region off` don't bump `generation`**, and `spawn_refresh` skips while one is in flight, so switching mid-refresh leaves the previous mode's rows on screen until the next tick. Pre-existing, self-healing in 15s, different class (refresh ordering).
+- [x] **Detail shows no region at all.** SHIPPED 2026-08-23. The header's second row now leads with `Region:`, resolved through `App::region_for(env)` — the same expression `detail_client` uses to pick the client, so the label cannot disagree with where the pane's data came from. Placed first in the row so it survives truncation on a narrow terminal. Render test asserts the ROW's region shows and the SESSION's does not; mutation-verified both ways (swap to `context.region`, and drop the field). Original note follows.  It replaces the screen with its own header and draws no breadcrumb, so an operator deep in a fan-out row's Detail has nothing on screen saying which region the pane's data came from. Not a stale workaround — a gap — so it's a UI addition rather than part of this sweep. Directly on-theme for the release, and small.
+- [x] **`:region all` / `:region off` don't bump `generation`** — SHIPPED 2026-08-23, but *not* by bumping `generation`. A fan-out change alters which regions the fleet listing covers, not the account or credentials, so bumping `generation` would also drop every in-flight per-env result that is still valid — including `ActionResult` for a dispatched write, whose `complete_pending` would then never run and leave the header's `⏳ N` chip stuck forever (`apply_rebuild` clears `pending_actions` for exactly that reason; there is nothing to clear here). Added the narrower `fanout_epoch` instead, mirroring `rebuild_epoch`: `spawn_refresh` stamps it on the `Refresh` message and `apply_refresh` drops a superseded listing. Dropping is only half of it — `spawn_refresh` returns early while `load_state` is Loading, so the drop must also clear the flag and re-spawn or nothing fetches the new mode's rows and it wedges. Three mutations verified (neuter the check; drop-without-respawn; remove the bump). Original note follows.  and `spawn_refresh` skips while one is in flight, so switching mid-refresh leaves the previous mode's rows on screen until the next tick. Pre-existing, self-healing in 15s, different class (refresh ordering).
 
 #### Backlog verification sweep — 2026-08-22
 
@@ -1277,12 +1277,31 @@ Checked and sound:
 - **`deny.toml` waivers.** Exactly six live advisories, exactly six waivers, no stale entries and no gaps — verified against a run with `ignore = []`.
 - **Release binary smoke.** Builds clean, `--version` correct, unknown subcommand and unknown action both exit 2.
 
-- [ ] **`--demo` without a TTY reports a raw OS error** — "Device not configured (os error 6)" from `enter_tui`, rather than "ebman needs a terminal". Confirmed PRE-EXISTING and not a regression: `src/main.rs` is untouched in this lineup and the installed 0.30.2 behaves identically. Cosmetic, and it is what someone piping ebman in CI will see first.
+- [x] **`--demo` without a TTY reports a raw OS error** — SHIPPED 2026-08-23. Guard moved *inside* `enter_tui` rather than the `--demo` call site, so every path into the alt-screen is covered, not just the one the bug was noticed on. Verified before/after against the shipped 0.31.0 binary. The message is a pure `no_tty_message()` so its *rendered* form is testable — asserted to carry no embedded newline and no double-space indentation hole, the wrapped-literal defect this project has shipped twice; mutation-verified by removing the `\` continuations. Original note follows.  — "Device not configured (os error 6)" from `enter_tui`, rather than "ebman needs a terminal". Confirmed PRE-EXISTING and not a regression: `src/main.rs` is untouched in this lineup and the installed 0.30.2 behaves identically. Cosmetic, and it is what someone piping ebman in CI will see first.
 
 Two methodology errors of my own, caught during the review and worth recording because they are the same class the candor session and I had just finished discussing:
 
 1. I compared the waiver list against `cargo deny`'s output **with the waivers applied** — circular, and it made all six look stale.
 2. The corrected run used `cargo deny --config X check` instead of `cargo deny check --config X`, which cargo-deny rejected as a usage error. I read the resulting empty output as "no live advisories". A proxy standing in for a signal, indistinguishable from success when it fails — ten minutes after writing that sentence to someone else.
+
+#### Post-0.31.0 batch — 2026-08-23
+
+Four items, all demonstrated defects rather than judgement calls.
+
+- [x] **`cargo-semver-checks` was PR-only.** Now runs on main pushes too,
+  gated on whether the manifest version is already published on
+  crates.io. The old comment's reasoning was half right and worth
+  keeping: between tags manifest == published, so any API change reads
+  as "same version, different API" and main would stay red until
+  someone bumped — a gate that noisy gets switched off. But it also
+  meant the gate never ran on the one commit whose version claim
+  actually ships. Gating on "is there an unpublished version to
+  validate" gets both: silent between tags, checks the release commit
+  *before* the tag instead of after. Fails toward running the check if
+  crates.io is unreachable, so a blip can't silently disable it. The
+  gate script was extracted from the YAML and exercised over all four
+  cases (published / unpublished / crates.io down / PR) rather than
+  retyped into a test copy.
 
 #### 0.31.0 shipped — 2026-08-23
 

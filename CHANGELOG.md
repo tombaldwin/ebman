@@ -6,6 +6,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **`:region all` / `:region off` left the previous mode's rows on
+  screen.** `spawn_refresh` skips while a listing is already in flight,
+  so the mode change was a no-op if it landed mid-refresh — the
+  single-region listing then arrived, matched on `generation`, and was
+  applied under the new mode's header. It healed on the next 15s tick,
+  which is why it survived. The fleet listing now carries the
+  `fanout_epoch` it was launched at and a superseded one is dropped and
+  refetched immediately.
+
+  Deliberately a separate axis from `generation`: a fan-out change
+  doesn't change account or credentials, so bumping `generation` would
+  also drop in-flight per-env results that are still valid — including
+  the `ActionResult` for a dispatched write, whose `complete_pending`
+  would never run, leaving the header's `⏳ N` chip stuck forever.
+
+- **Detail showed no region at all.** It replaces the whole screen and
+  draws no breadcrumb, so under a `:region all` fan-out nothing said
+  which region the instances, metrics and log groups came from — and
+  since 0.30 made per-env work follow the row's region, "probably the
+  session's" stopped being safe. The header now names it, resolved
+  through the same expression `detail_client` uses, so the label can't
+  disagree with the fetch.
+
+- **Running ebman with a non-TTY stdout reported "Device not configured
+  (os error 6)".** That is what someone piping it in CI saw first. It
+  now says it needs a terminal and points at the headless subcommands.
+
+### Internal
+
+- `cargo-semver-checks` runs on main pushes as well as PRs, gated on
+  whether the manifest version is already published. It was PR-only, so
+  it never ran on the one commit whose version claim actually ships —
+  the release commit — and 0.31.0 shipped an undocumented breaking
+  change as a result. Between tags there is still nothing to check, so
+  this adds no noise.
+
 ## [0.31.0] — 2026-08-23 — gates, and the tail of the region work
 
 A minor rather than a patch because the library's public API changed —

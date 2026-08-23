@@ -238,6 +238,13 @@ pub struct App {
     /// `apply_rebuild` instead of overwriting the operator's last
     /// choice. Distinct from `generation`, which bumps on APPLY.
     pub(crate) rebuild_epoch: u64,
+    /// Bumped whenever `:region all` / `:region off` changes the set of
+    /// regions the fleet listing covers. `spawn_refresh` stamps it onto
+    /// the `Refresh` message; `apply_refresh` drops a listing whose
+    /// stamp is stale and re-spawns, because `spawn_refresh` skips
+    /// while one is already in flight and the mode change would
+    /// otherwise not be picked up until the next 15s tick.
+    pub(crate) fanout_epoch: u64,
     /// Last-known region per environment name.
     ///
     /// `region_for_name` searches the live table first, but a write can
@@ -532,6 +539,17 @@ pub struct App {
 pub(crate) enum AppMsg {
     Refresh {
         gen: u64,
+        /// The `fanout_epoch` this listing was launched at.
+        ///
+        /// `generation` can't carry this. A `:region all` / `:region
+        /// off` changes which regions the fleet listing covers, but not
+        /// the account or the credentials, so bumping `generation`
+        /// would also drop every in-flight per-env result that is still
+        /// perfectly valid — including `ActionResult` for a dispatched
+        /// write, whose `complete_pending` would then never run and
+        /// leave the header's `⏳ N` chip stuck forever. This is the
+        /// narrower axis: only the fleet listing is stale.
+        fanout: u64,
         result: Result<Vec<Environment>, String>,
         /// Per-region failures from a multi-region fan-out that still
         /// returned rows from other regions.
@@ -1236,6 +1254,7 @@ impl App {
             worker_dlq_depths: std::collections::HashMap::new(),
             worker_dlq_stale: std::collections::HashSet::new(),
             rebuild_epoch: 0,
+            fanout_epoch: 0,
             aws_built_at: Instant::now(),
             env_regions: std::collections::HashMap::new(),
             detail_fetch_started: None,
@@ -1531,6 +1550,7 @@ impl App {
             worker_dlq_depths: std::collections::HashMap::new(),
             worker_dlq_stale: std::collections::HashSet::new(),
             rebuild_epoch: 0,
+            fanout_epoch: 0,
             aws_built_at: Instant::now(),
             env_regions: std::collections::HashMap::new(),
             detail_fetch_started: None,

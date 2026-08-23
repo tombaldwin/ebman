@@ -95,10 +95,11 @@ impl App {
         }
         match msg {
             AppMsg::Refresh {
+                fanout,
                 result,
                 partial_errors,
                 ..
-            } => self.apply_refresh(result, partial_errors),
+            } => self.apply_refresh(fanout, result, partial_errors),
             AppMsg::Rebuild { epoch, result } => self.apply_rebuild(epoch, result),
             AppMsg::ClientRefreshed { epoch, result } => self.apply_client_refresh(epoch, result),
             AppMsg::Identity { result, .. } => self.handle_identity(result),
@@ -1812,6 +1813,7 @@ mod tests {
         assert_eq!(
             AppMsg::Refresh {
                 gen: 7,
+                fanout: 0,
                 result: Ok(Vec::new()),
                 partial_errors: Vec::new(),
             }
