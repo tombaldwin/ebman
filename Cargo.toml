@@ -101,7 +101,7 @@ proc-macro2 = "1"
 # Mocked AWS clients for unit-testing aws.rs without a live AWS account.
 # Used to assert on observed request shapes and exercise response variants
 # (e.g. EB autocreated worker queues, paginated SQS ReceiveMessage).
-aws-smithy-mocks = "0.2"
+aws-smithy-mocks = "0.3"
 aws-smithy-types = "1"
 # The `test-util` feature enables `with_test_defaults` on the SDK config
 # builders, which `aws-smithy-mocks::mock_client!` relies on. Only needed
