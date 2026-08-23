@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **`ebman lint` reported a clean result for checks that never ran.**
+  The EBL020 (X-Ray) and EBL018 (WAF) probes returned `Option<bool>`,
+  where `None` meant four different things — the rule doesn't apply,
+  there's no instance profile, the IAM call failed, or the result was
+  empty. So an `AccessDenied` on `iam:SimulatePrincipalPolicy` was
+  indistinguishable from a passing check, in output that gates CI and
+  that an MCP agent treats as authoritative. The probes now report
+  `NotApplicable` / `Checked` / `Unknown`; the rules still skip on a
+  failure (a failed probe must never become a false positive) but the
+  run says so and exits 1 rather than 0.
+
+
 - **A stale view cache could panic the TUI instead of drawing a wrong
   frame.** `ViewState`'s rows hold indices into `environments`, which
   `ViewState` doesn't own, so a mutation that forgets `invalidate()`

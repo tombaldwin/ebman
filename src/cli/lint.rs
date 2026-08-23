@@ -97,33 +97,94 @@ struct LintArgs {
 /// failed (the rule skips — never a false positive from a failed
 /// probe). Lives at the call site rather than in `LintContext`
 /// because rules are pure and synchronous.
+/// What a permission probe actually learned.
+///
+/// These were `Option<bool>`, where `None` meant four different things:
+/// the rule doesn't apply, there is no instance profile, the IAM call
+/// failed, or the result was empty. The first two are a legitimate
+/// skip. The others are "we could not check" — and collapsing them into
+/// the same value made an `AccessDenied` on
+/// `iam:SimulatePrincipalPolicy` indistinguishable from a clean bill of
+/// health.
+///
+/// That matters because `ebman lint --json` is a CI gate and an MCP
+/// tool result an agent treats as authoritative. "Clean" because IAM
+/// denied the probe is not a smaller answer, it is a wrong one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ProbeOutcome {
+    /// The rule doesn't apply here — X-Ray is off, no instance profile,
+    /// not a prod ALB env. A silent skip is correct.
+    NotApplicable,
+    /// The probe ran. `true` means the rule should fire.
+    Checked(bool),
+    /// The probe could not run. The rule skips, but says so.
+    Unknown(String),
+}
+
+impl ProbeOutcome {
+    /// The rule's verdict, or `None` when there wasn't one.
+    pub(crate) fn verdict(&self) -> Option<bool> {
+        match self {
+            Self::Checked(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// The warning to surface when coverage silently shrank.
+    pub(crate) fn coverage_warning(&self, rule: &str, env: &str) -> Option<String> {
+        match self {
+            Self::Unknown(why) => Some(format!(
+                "{rule} could not be evaluated for {env}: {why} — this is \
+                 NOT a clean result, the check did not run"
+            )),
+            _ => None,
+        }
+    }
+}
+
 async fn probe_xray_trace_denied(
     aws: &aws::AwsClient,
     options: &[(String, String, String)],
-) -> Option<bool> {
+) -> ProbeOutcome {
     let xray_on = options.iter().any(|(ns, n, v)| {
         ns == "aws:elasticbeanstalk:xray" && n == "XRayEnabled" && v.eq_ignore_ascii_case("true")
     });
     if !xray_on {
-        return None;
+        return ProbeOutcome::NotApplicable;
     }
-    let profile = options.iter().find_map(|(ns, n, v)| {
+    let Some(profile) = options.iter().find_map(|(ns, n, v)| {
         (ns == "aws:autoscaling:launchconfiguration" && n == "IamInstanceProfile" && !v.is_empty())
             .then(|| v.clone())
-    })?;
-    let role_arn = aws.instance_profile_role_arn(&profile).await.ok()??;
+    }) else {
+        return ProbeOutcome::NotApplicable;
+    };
+    let role_arn = match aws.instance_profile_role_arn(&profile).await {
+        Ok(Some(a)) => a,
+        // No role on the profile is "doesn't apply"; a failed lookup is
+        // not, and used to be the same value.
+        Ok(None) => return ProbeOutcome::NotApplicable,
+        Err(e) => return ProbeOutcome::Unknown(format!("instance-profile lookup failed: {e}")),
+    };
     // `.complete()`, not `.items()`: one action can't truncate in
     // practice, but if it ever did the empty result would read as
     // "no decision" and the rule would silently skip. An error here
     // skips too — but visibly, via the probe's `None`.
-    let results = aws
+    let results = match aws
         .simulate_principal_policy(&role_arn, &["xray:PutTraceSegments".to_string()], &[])
         .await
-        .ok()?
-        .complete("X-Ray permission probe")
-        .ok()?;
-    let first = results.first()?;
-    Some(!first.decision.eq_ignore_ascii_case("allowed"))
+    {
+        Ok(p) => match p.complete("X-Ray permission probe") {
+            Ok(r) => r,
+            Err(e) => return ProbeOutcome::Unknown(format!("{e}")),
+        },
+        // The one that matters: AccessDenied on
+        // iam:SimulatePrincipalPolicy used to read as "no finding".
+        Err(e) => return ProbeOutcome::Unknown(format!("SimulatePrincipalPolicy failed: {e}")),
+    };
+    match results.first() {
+        Some(first) => ProbeOutcome::Checked(!first.decision.eq_ignore_ascii_case("allowed")),
+        None => ProbeOutcome::Unknown("policy simulation returned no decision".into()),
+    }
 }
 
 /// EBL018 input probe: for a prod-named env fronted by an ALB, ask
@@ -136,9 +197,9 @@ async fn probe_waf_missing(
     aws: &aws::AwsClient,
     env: &aws::Environment,
     options: &[(String, String, String)],
-) -> Option<bool> {
+) -> ProbeOutcome {
     if !lint::is_prod_named(&env.name) {
-        return None;
+        return ProbeOutcome::NotApplicable;
     }
     let alb = options.iter().any(|(ns, n, v)| {
         ns == "aws:elasticbeanstalk:environment"
@@ -146,18 +207,27 @@ async fn probe_waf_missing(
             && v.eq_ignore_ascii_case("application")
     });
     if !alb {
-        return None;
+        return ProbeOutcome::NotApplicable;
     }
-    let resources = aws.describe_env_resources(&env.name).await.ok()?;
+    let resources = match aws.describe_env_resources(&env.name).await {
+        Ok(r) => r,
+        Err(e) => return ProbeOutcome::Unknown(format!("DescribeEnvironmentResources: {e}")),
+    };
     // For ALBs, DescribeEnvironmentResources reports the full ARN in
     // the name slot (classic ELBs report a bare name — filtered here).
-    let alb_arn = resources
+    // No ARN means no ALB to check, which genuinely doesn't apply.
+    let Some(alb_arn) = resources
         .load_balancers
         .iter()
-        .find(|n| n.starts_with("arn:"))?;
+        .find(|n| n.starts_with("arn:"))
+    else {
+        return ProbeOutcome::NotApplicable;
+    };
     match aws.web_acl_for_resource(alb_arn).await {
-        Ok(acl) => Some(acl.is_none()),
-        Err(_) => None,
+        Ok(acl) => ProbeOutcome::Checked(acl.is_none()),
+        // "No WAF associated" and "we were not allowed to look" are
+        // very different answers to a security rule.
+        Err(e) => ProbeOutcome::Unknown(format!("GetWebACLForResource: {e}")),
     }
 }
 
@@ -180,6 +250,14 @@ pub(crate) struct EnvLintInputs {
     pub probe_failure: Option<String>,
     pub newer_stack: Option<String>,
     pub waf_missing: Option<bool>,
+    /// Checks that could NOT run, with why.
+    ///
+    /// The rules still skip on a failed probe — that part was right, a
+    /// failed probe must never become a false positive. What was wrong
+    /// is that the skip was silent, so `--json` reported the same thing
+    /// for "checked, clean" and "IAM denied the probe". These carry the
+    /// difference out to the operator.
+    pub coverage_warnings: Vec<String>,
 }
 
 impl EnvLintInputs {
@@ -195,6 +273,7 @@ impl EnvLintInputs {
             probe_failure: None,
             newer_stack: None,
             waf_missing: None,
+            coverage_warnings: Vec::new(),
         }
     }
 }
@@ -229,10 +308,10 @@ pub(crate) async fn fetch_env_lint_inputs(
     // EBL020 probe — only when the env actually has X-Ray on (rare),
     // so the common path pays no IAM calls. Probe failures leave the
     // field unset: skip, never false-positive.
-    let xray_denied = probe_xray_trace_denied(aws, &options).await;
+    let xray_outcome = probe_xray_trace_denied(aws, &options).await;
     // EBL018 probe — only for prod-named ALB envs (both gates checked
     // inside), so the common path pays no WAF calls.
-    let waf_missing = probe_waf_missing(aws, env, &options).await;
+    let waf_outcome = probe_waf_missing(aws, env, &options).await;
     // EBL016 probe — opt-in via `probe_live` (one curl HEAD per env
     // is too slow for default lint). Only a FAILURE is recorded.
     let probe_failure: Option<String> = if probe_live && !env.cname.is_empty() {
@@ -250,14 +329,22 @@ pub(crate) async fn fetch_env_lint_inputs(
     } else {
         None
     };
+    let coverage_warnings = [
+        xray_outcome.coverage_warning("EBL020", &env.name),
+        waf_outcome.coverage_warning("EBL018", &env.name),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     Ok(EnvLintInputs {
         options,
         env_tag_keys,
         healthy_count,
-        xray_denied,
+        xray_denied: xray_outcome.verdict(),
         probe_failure,
         newer_stack,
-        waf_missing,
+        waf_missing: waf_outcome.verdict(),
+        coverage_warnings,
     })
 }
 
@@ -746,6 +833,19 @@ pub async fn run(args: &[String]) -> Result<()> {
                             continue;
                         }
                     };
+                // A probe that could not run is not a clean result. The
+                // rule still skips — a failed probe must never become a
+                // false positive — but silence here made an
+                // AccessDenied on iam:SimulatePrincipalPolicy look
+                // identical to a passing check, in output that gates CI.
+                if !inputs.coverage_warnings.is_empty() {
+                    cycle_degraded = true;
+                    if !quiet {
+                        for w in &inputs.coverage_warnings {
+                            eprintln!("warning: {w}");
+                        }
+                    }
+                }
                 let mut issues = run_rules_for_env(&rules, env, &inputs, &safety_cfg.required_tags);
                 if let Some(min) = severity_filter {
                     issues.retain(|i| i.severity >= min);
@@ -1432,5 +1532,66 @@ mod tests {
         assert!(s.contains("EBL001 env-1: issue 1"), "got: {s}");
         assert!(s.contains("…and 2 more"), "got: {s}");
         assert!(!s.contains("issue 6"), "cap at 5, got: {s}");
+    }
+}
+
+#[cfg(test)]
+mod probe_outcome_tests {
+    use super::ProbeOutcome;
+
+    #[test]
+    fn a_failed_probe_is_not_a_clean_result() {
+        // The whole point. `Option<bool>` collapsed "the rule doesn't
+        // apply" and "IAM denied the probe" into the same `None`, so
+        // `ebman lint --json` — a CI gate — reported a clean bill of
+        // health for a check that never ran.
+        let denied = ProbeOutcome::Unknown("SimulatePrincipalPolicy failed: AccessDenied".into());
+        assert_eq!(denied.verdict(), None, "the rule still skips");
+        let warn = denied
+            .coverage_warning("EBL020", "api-prod")
+            .expect("an unrunnable check must say so");
+        assert!(
+            warn.contains("EBL020") && warn.contains("api-prod"),
+            "{warn}"
+        );
+        assert!(
+            warn.contains("NOT a clean result"),
+            "the wording has to leave no room for reading it as a pass: {warn}"
+        );
+    }
+
+    #[test]
+    fn not_applicable_stays_silent() {
+        // X-Ray off, no instance profile, not a prod ALB — a genuine
+        // skip. Warning on these would train the operator to ignore the
+        // warnings that matter.
+        let na = ProbeOutcome::NotApplicable;
+        assert_eq!(na.verdict(), None);
+        assert_eq!(na.coverage_warning("EBL020", "api-prod"), None);
+    }
+
+    #[test]
+    fn a_checked_probe_reports_its_verdict_and_warns_about_nothing() {
+        assert_eq!(ProbeOutcome::Checked(true).verdict(), Some(true));
+        assert_eq!(ProbeOutcome::Checked(false).verdict(), Some(false));
+        assert_eq!(
+            ProbeOutcome::Checked(false).coverage_warning("EBL018", "api-prod"),
+            None
+        );
+    }
+
+    #[test]
+    fn the_three_outcomes_are_distinguishable() {
+        // If two of them ever compared equal the distinction would be
+        // decorative — which is what `Option<bool>` was.
+        assert_ne!(ProbeOutcome::NotApplicable, ProbeOutcome::Checked(false));
+        assert_ne!(
+            ProbeOutcome::NotApplicable,
+            ProbeOutcome::Unknown("x".into())
+        );
+        assert_ne!(
+            ProbeOutcome::Checked(false),
+            ProbeOutcome::Unknown("x".into())
+        );
     }
 }
