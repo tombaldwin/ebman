@@ -59,7 +59,7 @@ serde = { version = "1", features = ["derive"] }
 # MCP server (`ebman mcp serve`): incoming JSON-RPC must be *parsed*,
 # which the hand-rolled `util::json_string` emit path can't do.
 serde_json = "1"
-toml = "0.8"
+toml = "1.1"
 # YAML parsing for the EB CLI saved-configs format (`.elasticbeanstalk/
 # saved_configs/*.cfg.yml`) so `:config-diff-local` can compare a local
 # saved config against the deployed env. serde_yml is the actively-
