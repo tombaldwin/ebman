@@ -69,6 +69,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Internal
 
+- **The CLI write gate is one function, and a guard keeps it that way.**
+  The freeze check and the config-pin check both existed and all four
+  write paths called both — so there was no live hole — but each
+  composed them by hand, and nothing made a fifth path do it. 0.14.1 was
+  a same-day patch for exactly that half-composition. They now converge
+  on `cli::write_refusal`, promoted out of the MCP server because it
+  already had the right shape (a verdict over inputs passed in, rather
+  than a function that exits). A source-scanning guard fails if a CLI
+  path reaches for `pin_reason` directly.
+
+- `App::is_read_only_for` was a second copy of `read_only_reason`'s
+  four-branch precedence, kept in step by a comment asking a human to do
+  it. It delegates now. A disagreement between them would have been
+  invisible in both directions: a write that slips through, or a refusal
+  with no explanation.
+
 - **A guard for the wrapped-literal bug that actually works.** It had
   shipped three times; the only defence was a helper called from two
   test sites, so it caught the bug solely for messages someone

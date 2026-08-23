@@ -83,6 +83,65 @@ pub(crate) fn refuse_if_frozen(prog: &str) {
     }
 }
 
+/// The write gate: freeze first, then the config pin. Returns the
+/// refusal message when the write must not proceed, `None` when clear.
+///
+/// This began life inside the MCP server, which had the right shape
+/// already — a verdict over data passed in, "so the gate stays pure +
+/// hermetically testable" — while the three other CLI write paths each
+/// composed `refuse_if_frozen` and `pin_reason` by hand. All four DID
+/// compose both, so there was no live hole; the problem was that
+/// nothing made a fifth path do it. 0.14.1 was a same-day patch for
+/// exactly that, `lint --fix` checking one and not the other.
+///
+/// Promoting the best of the four rather than writing a fifth. It takes
+/// its inputs rather than reading them so the MCP server can keep
+/// testing it hermetically; `refuse_write` below is the CLI's
+/// read-the-world-and-exit wrapper.
+pub(crate) fn write_refusal(
+    safety_cfg: &crate::config::Config,
+    env: &str,
+    profile: &Option<String>,
+    active_freeze: Option<crate::freeze::FreezeMarker>,
+) -> Option<String> {
+    // Cross-process freeze (the pid-scoped marker a live TUI session
+    // persists for :freeze-deploys / :incident).
+    if let Some(m) = active_freeze {
+        return Some(crate::freeze::refusal_message(&m));
+    }
+    let pin_profile = profile
+        .clone()
+        .or_else(|| std::env::var("AWS_PROFILE").ok());
+    if let Some(pin) = safety_cfg.pin_reason(env, pin_profile.as_deref()) {
+        return Some(format!("refusing {env} — pinned by {pin}"));
+    }
+    None
+}
+
+/// CLI wrapper over [`write_refusal`]: read the world, print, exit 3.
+///
+/// `subject` is what the message names — usually the env, but
+/// `audit replay` says "restart on api-prod", which is more useful and
+/// worth keeping.
+pub(crate) fn refuse_write(prog: &str, subject: &str, env: &str, profile: Option<&str>) {
+    let profile = profile.map(str::to_string);
+    if let Some(reason) = write_refusal(
+        &crate::config::load(),
+        env,
+        &profile,
+        crate::freeze::read_active(),
+    ) {
+        // `write_refusal` phrases the pin case as "refusing ENV — …";
+        // for a caller naming something richer, say that instead.
+        let reason = reason
+            .strip_prefix(&format!("refusing {env} — "))
+            .map(|r| format!("refusing {subject} — {r}"))
+            .unwrap_or(reason);
+        eprintln!("{prog}: {reason}");
+        std::process::exit(3);
+    }
+}
+
 /// Shared value-flag guard: reject a missing value or a following
 /// flag consumed as one. Class fix from the 0.26 max-review — a
 /// swallowed value silently changed semantics (`lint --fix --yes
@@ -148,5 +207,57 @@ mod tests {
         let parsed: String =
             serde_json::from_str(&escaped).expect("hand-rolled JSON must be valid JSON");
         assert_eq!(parsed, s);
+    }
+}
+
+#[cfg(test)]
+mod write_gate_guard {
+    /// No CLI write path may reach for `pin_reason` directly.
+    ///
+    /// The freeze check and the pin check both existed and all four
+    /// write paths called both — but each composed them by hand, and
+    /// nothing made the fifth path do it. 0.14.1 was a same-day patch
+    /// for exactly that: `lint --fix` checking one and not the other.
+    ///
+    /// Converging them on `write_refusal` only helps while they stay
+    /// converged, and "everyone remembered" is what failed last time.
+    /// This is the part that can't be forgotten.
+    #[test]
+    fn cli_write_paths_do_not_reach_past_the_shared_gate() {
+        let mut offenders: Vec<String> = Vec::new();
+        let mut stack = vec![std::path::PathBuf::from("src/cli")];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("src/cli") {
+                let path = entry.expect("entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                // `mod.rs` defines the shared gate; it is allowed to
+                // call `pin_reason` because it IS the composition.
+                if path.file_name().and_then(|f| f.to_str()) == Some("mod.rs") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).expect("read");
+                // Stop at the inline test module — fixtures legitimately
+                // exercise `pin_reason` directly.
+                let prod = text.split("#[cfg(test)]").next().unwrap_or("");
+                for (n, line) in prod.lines().enumerate() {
+                    let code = line.split("//").next().unwrap_or("");
+                    if code.contains(".pin_reason(") {
+                        offenders.push(format!("{}:{}", path.display(), n + 1));
+                    }
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these CLI paths call `pin_reason` directly instead of going \
+             through `cli::write_refusal`, which also checks the freeze — \
+             the exact half-composition 0.14.1 shipped: {offenders:?}"
+        );
     }
 }

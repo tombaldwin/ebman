@@ -220,16 +220,8 @@ fn parse_action_args(args: &[String]) -> Result<ActionArgs, ActionArgError> {
 /// and so the ORDER is defined once — it used to be two bare calls in
 /// sequence, which is how it came to differ from the MCP gate's.
 fn refuse_write(prog: &'static str, env: &str) {
-    crate::cli::refuse_if_frozen(prog);
-    refuse_if_pinned(env);
-}
-
-fn refuse_if_pinned(env: &str) {
     let profile = std::env::var("AWS_PROFILE").ok();
-    if let Some(reason) = crate::config::load().pin_reason(env, profile.as_deref()) {
-        eprintln!("ebman action: refusing {env} — pinned by {reason}");
-        std::process::exit(3);
-    }
+    crate::cli::refuse_write(prog, env, env, profile.as_deref());
 }
 
 pub async fn run(args: &[String]) -> Result<()> {
