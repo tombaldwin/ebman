@@ -1134,8 +1134,15 @@ pub(crate) fn dlq_absence_note(dlq_url: Option<&str>, origin: Option<DlqOrigin>)
         (Some(u), Some(DlqOrigin::Reported)) => {
             format!("EB names DLQ '{}' but it does not exist", name(u))
         }
-        // A URL with no origin predates the distinction (a cached or
-        // hand-built value); say the neutral thing rather than guess.
+        // Unreachable by construction — `fetch_worker_queues` sets the
+        // origin at every site that sets the url, and
+        // `a_dlq_url_always_carries_its_origin` pins that. The arm
+        // exists because the match must be exhaustive over `Option`, so
+        // it says the neutral thing rather than asserting a state the
+        // fetcher cannot produce. (Nothing caches `WorkerQueues`, so
+        // there is no stale-value path here either — I checked rather
+        // than assuming, having first written a comment that invented
+        // one.)
         (Some(u), None) => format!("DLQ '{}' returned no stats", name(u)),
         (None, _) => "no dead-letter queue configured".to_string(),
     }
