@@ -1009,3 +1009,75 @@ pub fn rewrite_credential_error(profile: &str, msg: &str) -> Option<CredentialHi
 
 #[cfg(test)]
 mod tests;
+
+/// The structured half of an AWS failure: the service's own error code
+/// and the request id, captured while the `SdkError` is still typed.
+///
+/// This exists because both were being thrown away. `flatten_err_to_string`
+/// recovered the code by lowercasing `format!("{e:?}")` and substring-
+/// matching for "throttling" — and the refresh back-off rides on that,
+/// so the thing stopping ebman from hammering a rate-limited account
+/// depended on the `Debug` representation of an SDK type, which is not
+/// a stability contract. A false positive was available for free: an
+/// environment named `throttling-test` reclassified.
+///
+/// The request id was never captured at all, so when AWS support asks
+/// for one there was nothing to give them.
+///
+/// Inserted into the `eyre` chain, where it can be recovered by
+/// `downcast_ref` — which works precisely because it is *our* type. A
+/// generic `ProvideErrorMetadata` cannot be downcast out of a chain of
+/// `dyn Error`, which is why the capture has to happen at the boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AwsErrorMeta {
+    /// The service's error code, e.g. `ThrottlingException`.
+    pub code: Option<String>,
+    pub request_id: Option<String>,
+}
+
+impl std::fmt::Display for AwsErrorMeta {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match (&self.code, &self.request_id) {
+            (Some(c), Some(r)) => write!(f, "{c} (request id {r})"),
+            (Some(c), None) => write!(f, "{c}"),
+            (None, Some(r)) => write!(f, "request id {r}"),
+            (None, None) => write!(f, "AWS error"),
+        }
+    }
+}
+
+impl std::error::Error for AwsErrorMeta {}
+
+/// Capture the code + request id off an SDK error and push them into the
+/// chain, then wrap with `op` the way every other boundary site does.
+///
+/// The `E: ProvideErrorMetadata` bound is what makes this typed: it is
+/// the SDK's own accessor, not a guess about how `Debug` renders.
+pub(crate) fn wrap_aws<T, E, R>(
+    r: std::result::Result<T, aws_sdk_elasticbeanstalk::error::SdkError<E, R>>,
+    op: &str,
+) -> Result<T>
+where
+    E: aws_sdk_elasticbeanstalk::error::ProvideErrorMetadata
+        + std::error::Error
+        + Send
+        + Sync
+        + 'static,
+    R: std::fmt::Debug + Send + Sync + 'static,
+    aws_sdk_elasticbeanstalk::error::SdkError<E, R>: aws_sdk_elasticbeanstalk::operation::RequestId,
+{
+    use aws_sdk_elasticbeanstalk::error::ProvideErrorMetadata;
+    use aws_sdk_elasticbeanstalk::operation::RequestId;
+    match r {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            let meta = AwsErrorMeta {
+                code: e.code().map(str::to_string),
+                request_id: e.request_id().map(str::to_string),
+            };
+            Err(color_eyre::eyre::Report::new(e))
+                .wrap_err(meta)
+                .wrap_err_with(|| op.to_string())
+        }
+    }
+}

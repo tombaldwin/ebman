@@ -2298,16 +2298,25 @@ pub(crate) fn compute_red_alerts(
 }
 
 pub(crate) fn is_throttling_error(msg: &str) -> bool {
-    let lower = msg.to_lowercase();
-    [
-        "throttling",
-        "throttlingexception",
-        "requestlimitexceeded",
-        "too many requests",
-        "rate exceeded",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle))
+    // Reads the classification `flatten_err_to_string` already made,
+    // rather than making it again.
+    //
+    // This used to substring-match the flattened message for
+    // "throttling" — a SECOND sniff, after the first one had already
+    // decided. That meant any error whose text merely contained the word
+    // armed the refresh back-off: an environment named `throttling-test`
+    // failing with AccessDenied slowed the whole fleet listing over a
+    // permissions problem that backing off cannot fix.
+    //
+    // Both callers (`spawn_refresh`'s partial-error filter and its
+    // Err arm) receive strings built by `flatten_err`, so the prefix is
+    // always present when it applies.
+    // `contains`, not `starts_with`: the multi-region fan-out reports a
+    // partial failure as "region eu-west-2: <flattened>", so the marker
+    // is not always at position 0. The colon is what makes this specific
+    // — it is the prefix `flatten_err_to_string` emits, not the bare
+    // word that appeared in an environment's name.
+    msg.contains("ThrottlingException:")
 }
 
 /// Exponential back-off horizon: 2× base on the first throttle, doubling each
@@ -2618,6 +2627,34 @@ fn flatten_err(op: &str, e: color_eyre::eyre::Report) -> String {
 /// All other errors pass through with Display unchanged.
 pub(crate) fn flatten_err_to_string(e: &color_eyre::eyre::Report) -> String {
     let display = e.to_string();
+    // Prefer the code the SDK itself reported. `AwsErrorMeta` is our own
+    // type, inserted at the boundary by `aws::wrap_aws`, so it can be
+    // downcast back out of the chain — which a generic
+    // `ProvideErrorMetadata` cannot be, hence capturing it there.
+    //
+    // The Debug sniff below is the fallback for the call sites not yet
+    // converted. It is a fallback, not the mechanism: it lowercases the
+    // `Debug` rendering of an SDK type and substring-matches it, so an
+    // environment named `throttling-test` reclassifies as throttling and
+    // arms the refresh back-off.
+    // `downcast_ref` on the Report, not a walk over `chain()`: eyre
+    // stores a context layer inside its own wrapper type, so the chain
+    // yields that wrapper rather than our struct and a per-link
+    // downcast finds nothing.
+    if let Some(meta) = e.downcast_ref::<crate::aws::AwsErrorMeta>() {
+        if let Some(code) = meta.code.as_deref() {
+            let lower = code.to_ascii_lowercase();
+            if lower.contains("throttl") || lower.contains("requestlimitexceeded") {
+                return format!("ThrottlingException: {display}");
+            }
+            if lower.contains("accessdenied") || lower.contains("unauthorized") {
+                return format!("AccessDenied: {display}");
+            }
+            if lower.contains("notfound") || lower.contains("nosuch") {
+                return format!("NotFound: {display}");
+            }
+        }
+    }
     let dbg_lower = format!("{e:?}").to_lowercase();
     // Throttling tokens — kept in sync with `is_throttling_error` so the
     // predicate and the surfaced prefix can't drift.

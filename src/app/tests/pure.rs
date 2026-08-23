@@ -318,18 +318,45 @@ fn traffic_warning_flags_red_health() {
 }
 
 #[test]
-fn is_throttling_error_matches_common_aws_strings() {
+fn is_throttling_error_reads_the_classification_already_made() {
+    // Narrowed contract: the input is a message from `flatten_err`,
+    // which has already classified it. This used to substring-match the
+    // flattened text for "throttling" — a second sniff after the first
+    // had decided — so any error whose text merely contained the word
+    // armed the refresh back-off.
     assert!(is_throttling_error("ThrottlingException: Rate exceeded"));
     assert!(is_throttling_error(
-        "service error: ThrottlingException — please slow down"
+        "ThrottlingException: service error — please slow down"
     ));
-    assert!(is_throttling_error("RequestLimitExceeded"));
-    assert!(is_throttling_error("HTTP 429 Too Many Requests"));
-    assert!(is_throttling_error("rate exceeded for this account"));
-    // Negative cases.
+
+    // Not throttling.
     assert!(!is_throttling_error("EnvironmentNotFound"));
-    assert!(!is_throttling_error("AccessDenied"));
+    assert!(!is_throttling_error("AccessDenied: not authorized"));
     assert!(!is_throttling_error(""));
+    // The false positive that mattered: the word appears, the
+    // classification says otherwise.
+    assert!(!is_throttling_error(
+        "AccessDenied: environment throttling-test is not authorized"
+    ));
+    // Raw AWS text that never went through `flatten_err` is NOT this
+    // function's input — both callers pass flattened strings, and
+    // classifying twice is what created the bug.
+    assert!(!is_throttling_error("RequestLimitExceeded"));
+}
+
+#[test]
+fn the_debug_fallback_still_classifies_unconverted_call_sites() {
+    // Not every `wrap_err` site captures typed metadata yet, so
+    // `flatten_err_to_string` keeps its Debug sniff as a FALLBACK. End
+    // to end, an unconverted throttle still comes out with the prefix
+    // the predicate now reads — which is what makes narrowing the
+    // predicate safe.
+    let report = color_eyre::eyre::eyre!("ThrottlingException: Rate exceeded");
+    let flat = crate::app::flatten_err_to_string(&report);
+    assert!(
+        is_throttling_error(&flat),
+        "fallback path must still arm the back-off: {flat}"
+    );
 }
 
 #[test]
@@ -1462,4 +1489,75 @@ fn a_dlq_url_always_carries_its_origin() {
             "{name}: dlq_url and dlq_origin must be set together"
         );
     }
+}
+
+#[test]
+fn a_typed_error_code_beats_sniffing_the_debug_dump() {
+    use crate::aws::AwsErrorMeta;
+    use color_eyre::eyre::WrapErr;
+
+    // The mechanism that arms the refresh back-off used to lowercase
+    // `format!("{e:?}")` and substring-match it. That made the back-off
+    // depend on the `Debug` representation of an SDK type — not a
+    // stability contract — and handed out false positives for free.
+    let meta = AwsErrorMeta {
+        code: Some("ThrottlingException".into()),
+        request_id: Some("abc-123".into()),
+    };
+    let report = Err::<(), _>(color_eyre::eyre::eyre!("service error"))
+        .wrap_err(meta)
+        .wrap_err_with(|| "DescribeEnvironments failed".to_string())
+        .unwrap_err();
+    let flat = crate::app::flatten_err_to_string(&report);
+    assert!(
+        flat.starts_with("ThrottlingException:"),
+        "the SDK's own code classifies it: {flat}"
+    );
+    assert!(
+        crate::app::is_throttling_error(&flat),
+        "and the back-off predicate still fires: {flat}"
+    );
+}
+
+#[test]
+fn an_env_named_throttling_does_not_arm_the_back_off() {
+    use crate::aws::AwsErrorMeta;
+    use color_eyre::eyre::WrapErr;
+
+    // The false positive the Debug sniff allowed. An env legitimately
+    // named `throttling-test` put the word in the error chain, so a
+    // plain AccessDenied against it read as throttling and armed the
+    // refresh back-off — slowing the fleet listing over a permissions
+    // problem that back-off cannot fix.
+    let meta = AwsErrorMeta {
+        code: Some("AccessDeniedException".into()),
+        request_id: None,
+    };
+    let report = Err::<(), _>(color_eyre::eyre::eyre!(
+        "environment throttling-test: not authorized"
+    ))
+    .wrap_err(meta)
+    .wrap_err_with(|| "DescribeEnvironments failed".to_string())
+    .unwrap_err();
+    let flat = crate::app::flatten_err_to_string(&report);
+    assert!(
+        flat.starts_with("AccessDenied:"),
+        "the code says AccessDenied, whatever the message contains: {flat}"
+    );
+    assert!(
+        !crate::app::is_throttling_error(&flat),
+        "and the back-off must NOT arm: {flat}"
+    );
+}
+
+#[test]
+fn the_request_id_survives_to_the_log() {
+    // Never captured before, so when AWS support asked for one there was
+    // nothing to give them.
+    use crate::aws::AwsErrorMeta;
+    let meta = AwsErrorMeta {
+        code: Some("ThrottlingException".into()),
+        request_id: Some("req-9f3c".into()),
+    };
+    assert!(meta.to_string().contains("req-9f3c"), "{meta}");
 }
