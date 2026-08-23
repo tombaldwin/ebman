@@ -572,3 +572,44 @@ async fn the_group_separator_row_renders_its_app_and_summary() {
          reads without expanding anything:\n{out}"
     );
 }
+
+#[tokio::test]
+async fn a_stale_view_cache_drops_rows_instead_of_panicking() {
+    // `ViewState`'s rows hold indices into `environments`, which is one
+    // of the four inputs it does NOT own — so a mutation that forgets
+    // `view.invalidate()` leaves indices pointing past the end.
+    //
+    // `assert_fresh` is deliberately softened in release on the
+    // reasoning that "one wrong frame is better than a panic in the alt
+    // screen". Unchecked indexing made the wrong frame BE the panic,
+    // which defeated the softening entirely. Simulate the stale state
+    // by shrinking `environments` behind the cache's back — exactly
+    // what a missed `invalidate()` produces.
+    let mut app = test_app();
+    app.environments = vec![
+        mk_env("alpha", "uflexi", "Web", "Green"),
+        mk_env("beta", "uflexi", "Web", "Green"),
+        mk_env("gamma", "uflexi", "Web", "Green"),
+    ];
+    app.view.invalidate();
+    app.rebuild_view();
+    assert_eq!(app.view.display().len(), 3, "cache holds three rows");
+
+    // The mutation an author forgets to follow with `invalidate()`.
+    app.environments.truncate(1);
+
+    // Must not panic, and must still draw the row that does exist.
+    let out = render(&mut app, 150, 20);
+    assert!(
+        out.contains("alpha"),
+        "the surviving row still renders:\n{out}"
+    );
+    assert!(
+        !out.contains("gamma"),
+        "and the dropped one is simply absent:\n{out}"
+    );
+
+    // The exports read the same cached indices.
+    app.export_json();
+    app.export_markdown();
+}

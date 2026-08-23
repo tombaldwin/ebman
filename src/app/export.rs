@@ -76,7 +76,7 @@ impl App {
         let count = self.view.filtered().len();
         let mut out = String::from("[\n");
         for (idx, &i) in self.view.filtered().iter().enumerate() {
-            let e = &self.environments[i];
+            let Some(e) = self.env_at(i) else { continue };
             let cname = if self.view.redact {
                 redact_block(&e.cname)
             } else {
@@ -118,7 +118,7 @@ impl App {
         out.push_str("| NAME | APPLICATION | TIER | STATUS | HEALTH | PLATFORM | VERSION | CNAME | UPDATED |\n");
         out.push_str("| ---- | ----------- | ---- | ------ | ------ | -------- | ------- | ----- | ------- |\n");
         for &i in self.view.filtered() {
-            let e = &self.environments[i];
+            let Some(e) = self.env_at(i) else { continue };
             let cname = if self.view.redact {
                 redact_block(&e.cname)
             } else {
@@ -285,7 +285,7 @@ impl App {
             "NAME\tAPPLICATION\tTIER\tSTATUS\tHEALTH\tPLATFORM\tVERSION\tCNAME\tUPDATED\n",
         );
         for &i in self.view.filtered() {
-            let e = &self.environments[i];
+            let Some(e) = self.env_at(i) else { continue };
             let cname = if self.view.redact {
                 redact_block(&e.cname)
             } else {

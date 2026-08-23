@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **A stale view cache could panic the TUI instead of drawing a wrong
+  frame.** `ViewState`'s rows hold indices into `environments`, which
+  `ViewState` doesn't own, so a mutation that forgets `invalidate()`
+  leaves them pointing past the end. `assert_fresh` is softened in
+  release precisely because "one wrong frame is better than a panic in
+  the alternate screen" — but eight sites indexed unchecked, which made
+  the wrong frame *be* the panic. They're checked now: a missing row is
+  absent for one frame and the next refresh corrects it, which is what
+  the softening was asking for.
+
+
 - **Three paths left the terminal wrecked on the way out.** `App::new`
   failing (an expired SSO session is a realistic trigger, and it runs
   *after* the alternate screen is entered), a splash draw failing, and

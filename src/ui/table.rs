@@ -519,7 +519,14 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
             DisplayRow::Env(i) => {
                 let env_position = env_idx;
                 env_idx += 1;
-                let e = &app.environments[*i];
+                // Checked: the index comes from the cached view, and a
+                // stale cache would otherwise panic here — in the alt
+                // screen, which is exactly what `assert_fresh`'s
+                // release-mode softening exists to avoid. An absent row
+                // for one frame is what that softening was asking for.
+                let Some(e) = app.environments.get(*i) else {
+                    return Row::new(Vec::<Cell>::new());
+                };
                 let color = app_colors
                     .get(&e.application)
                     .copied()
@@ -735,7 +742,7 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
     // both touch `app` and the borrow-checker rejects overlapping borrows.
     let hover_preview: Option<(Rect, String)> = hover.and_then(|idx| match display.get(idx)? {
         DisplayRow::Env(i) => {
-            let e = &app.environments[*i];
+            let e = app.environments.get(*i)?;
             let alias_part = match app.aliases.get(&e.name) {
                 Some(a) => format!("  alias \"{a}\""),
                 None => String::new(),
@@ -847,7 +854,7 @@ fn separator_row<'a>(
         .skip(row_idx + 1)
         .find_map(|r| match r {
             DisplayRow::Env(i) => {
-                let env = &envs[*i];
+                let env = envs.get(*i)?;
                 Some((
                     env.application.clone(),
                     app_colors
@@ -867,7 +874,7 @@ fn separator_row<'a>(
         .iter()
         .skip(row_idx + 1)
         .map_while(|r| match r {
-            DisplayRow::Env(i) => Some(&envs[*i]),
+            DisplayRow::Env(i) => envs.get(*i),
             DisplayRow::Separator => None,
         })
         .collect();
