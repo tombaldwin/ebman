@@ -185,31 +185,36 @@ fn parse_metric_extra_args_supports_both_in_any_order() {
 
 #[test]
 fn expand_tilde_only_replaces_leading() {
-    // Set HOME for the test.
-    let prev = std::env::var_os("HOME");
-    // SAFETY: tests run single-threaded by default; restore at the end.
-    unsafe {
-        std::env::set_var("HOME", "/Users/tester");
-    }
+    // No env mutation. This test used to `set_var("HOME")` under a
+    // `// SAFETY: tests run single-threaded by default` comment, which
+    // is false — `cargo test` is parallel by default, `profiles.rs`
+    // says so in its own comment while racing this test for the same
+    // variable, and several production paths read `HOME` live.
+    let home = |h: &str| Some(std::ffi::OsString::from(h));
     assert_eq!(
-        crate::app::expand_tilde("~/foo/bar"),
+        crate::app::expand_tilde_from(home("/Users/tester"), "~/foo/bar"),
         "/Users/tester/foo/bar"
     );
     // No leading tilde → unchanged.
-    assert_eq!(crate::app::expand_tilde("/abs/path"), "/abs/path");
+    assert_eq!(
+        crate::app::expand_tilde_from(home("/Users/tester"), "/abs/path"),
+        "/abs/path"
+    );
     // `~name` left alone (not supported).
-    assert_eq!(crate::app::expand_tilde("~tom/foo"), "~tom/foo");
+    assert_eq!(
+        crate::app::expand_tilde_from(home("/Users/tester"), "~tom/foo"),
+        "~tom/foo"
+    );
     // Mid-path tilde left alone.
-    assert_eq!(crate::app::expand_tilde("/foo/~/bar"), "/foo/~/bar");
-    if let Some(v) = prev {
-        unsafe {
-            std::env::set_var("HOME", v);
-        }
-    } else {
-        unsafe {
-            std::env::remove_var("HOME");
-        }
-    }
+    assert_eq!(
+        crate::app::expand_tilde_from(home("/Users/tester"), "/foo/~/bar"),
+        "/foo/~/bar"
+    );
+    // No HOME at all → the tilde stays, rather than expanding to "/".
+    assert_eq!(
+        crate::app::expand_tilde_from(None, "~/foo/bar"),
+        "~/foo/bar"
+    );
 }
 
 #[test]

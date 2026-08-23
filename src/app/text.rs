@@ -198,8 +198,21 @@ pub fn parse_s3_url(raw: &str) -> Option<(String, String)> {
 /// left as-is; the operator gets a clear "can't read" error if they pass
 /// something obscure. Pure for ease of testing.
 pub fn expand_tilde(path: &str) -> String {
+    expand_tilde_from(std::env::var_os("HOME"), path)
+}
+
+/// The pure half of [`expand_tilde`], with `$HOME` passed in.
+///
+/// Split out so the test doesn't have to mutate the environment. It did,
+/// under a `// SAFETY: tests run single-threaded by default` comment
+/// that was simply untrue — `cargo test` is parallel by default, and
+/// `profiles.rs` says so in its own comment two files away while racing
+/// this one for the same variable. Several production paths read `HOME`
+/// live, so the race was reachable, not theoretical. `set_var` is also
+/// `unsafe` under the 2024 env API and a hard error on that edition.
+pub fn expand_tilde_from(home: Option<std::ffi::OsString>, path: &str) -> String {
     if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
+        if let Some(home) = home {
             let mut p = std::path::PathBuf::from(home);
             p.push(rest);
             return p.display().to_string();
