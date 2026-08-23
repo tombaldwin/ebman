@@ -8,6 +8,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **Three paths left the terminal wrecked on the way out.** `App::new`
+  failing (an expired SSO session is a realistic trigger, and it runs
+  *after* the alternate screen is entered), a splash draw failing, and
+  the restore itself — `disable_raw_mode()?` ran before
+  `LeaveAlternateScreen`, so a failure in the first meant the second
+  never happened. The operator is then looking at a dead alternate
+  screen with mouse capture on, typing `reset` blind. The alternate
+  screen is now owned by an RAII guard, and the restore attempts every
+  step regardless of which one failed.
+
+- **The `$EDITOR` hand-off had the same bug**, and worse consequences:
+  it spawned the editor into a terminal still in raw mode and still on
+  the alternate screen.
+
+- **A panic in a spawned task left the app running.** The hook restored
+  the terminal and printed a backtrace over the display, and then the
+  loop carried on waiting for an `AppMsg` that would never arrive — a
+  spinner forever, with the real error already scrolled past. Release
+  builds abort after the hook runs, so it is a crash report instead.
+
+
 - **An environment named `throttling-test` could slow the whole fleet
   listing.** Classifying an AWS error meant lowercasing its `Debug`
   dump and substring-matching for "throttling", and the resulting

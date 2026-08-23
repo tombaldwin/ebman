@@ -1248,3 +1248,49 @@ fn no_wrapped_string_literal_leaves_an_indentation_hole() {
          too: {offenders:#?}"
     );
 }
+
+#[test]
+fn terminal_restore_goes_through_the_best_effort_helper() {
+    // `restore_terminal` cannot be unit-tested: calling it would
+    // disable raw mode on the machine running the suite, and this
+    // project's rule is that tests never touch the developer's terminal,
+    // clipboard, config or cache. So the protection is structural
+    // instead — nothing may re-create the sequence it replaced.
+    //
+    // That sequence was `disable_raw_mode()?` followed by a separate `?`
+    // on `LeaveAlternateScreen`, written twice (main's `leave_tui` and
+    // the `$EDITOR` hand-off). A failure in the first meant the second
+    // never ran, leaving the operator on a dead alternate screen with
+    // mouse capture on, typing `reset` blind.
+    let mut offenders: Vec<String> = Vec::new();
+    let mut stack = vec![std::path::PathBuf::from("src")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("src dir") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") || is_test_source(&path) {
+                continue;
+            }
+            // `lib.rs` defines the helper; it is allowed to call it.
+            if path.file_name().and_then(|f| f.to_str()) == Some("lib.rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("read");
+            for (n, line) in text.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or("");
+                if code.contains("disable_raw_mode()?") {
+                    offenders.push(format!("{}:{}", path.display(), n + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "`disable_raw_mode()?` bails before the alternate screen is left \
+         — use `ebman::restore_terminal`, which attempts every step: \
+         {offenders:?}"
+    );
+}

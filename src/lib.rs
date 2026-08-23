@@ -61,6 +61,29 @@ use tracing_subscriber::{reload, EnvFilter};
 /// long-running operations (embedded shell, `$EDITOR` hand-off).
 pub type Tui = Terminal<CrosstermBackend<Stdout>>;
 
+/// Best-effort terminal restore: every step attempted regardless of
+/// whether the previous one failed.
+///
+/// Shared because it was written twice with a `?` between the steps —
+/// once in `main`'s `leave_tui`, once in the `$EDITOR` hand-off — and in
+/// both a failure in `disable_raw_mode` meant the alternate screen was
+/// never left. The operator is then looking at a dead screen with mouse
+/// capture on, typing `reset` blind. Which step fails matters less than
+/// the fact that a `?` between them stops the rest from running, and
+/// there is no useful second move here: if the terminal will not
+/// restore, trying the remaining steps anyway is strictly better than
+/// stopping.
+pub fn restore_terminal(terminal: &mut Tui) {
+    use crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
+    let _ = disable_raw_mode();
+    let _ = crossterm::execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        crossterm::event::DisableMouseCapture
+    );
+    let _ = terminal.show_cursor();
+}
+
 /// Handle for live-reloading the log filter from the running app.
 /// Constructed by `main::init_logging` and threaded onto `App` so
 /// `:loglevel` can mutate the active subscriber at runtime.

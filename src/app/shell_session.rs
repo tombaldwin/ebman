@@ -154,11 +154,9 @@ impl App {
         original: &[(String, String)],
     ) -> Result<()> {
         use crossterm::{
-            event::{DisableMouseCapture, EnableMouseCapture},
+            event::EnableMouseCapture,
             execute,
-            terminal::{
-                disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-            },
+            terminal::{enable_raw_mode, EnterAlternateScreen},
         };
 
         let editor = std::env::var("VISUAL")
@@ -190,14 +188,11 @@ impl App {
         // the shared temp dir for the whole $EDITOR session.
         crate::util::write_secure(&path, body.as_bytes()).wrap_err("writing env-edit temp file")?;
 
-        // Leave the TUI for the editor.
-        disable_raw_mode()?;
-        execute!(
-            terminal.backend_mut(),
-            LeaveAlternateScreen,
-            DisableMouseCapture
-        )?;
-        terminal.show_cursor()?;
+        // Leave the TUI for the editor — best-effort, all steps.
+        // This was `disable_raw_mode()?` followed by a `?` on the
+        // execute, so a failure in the first spawned $EDITOR into a
+        // terminal still in raw mode and still on the alternate screen.
+        crate::restore_terminal(terminal);
 
         let status = std::process::Command::new(&editor).arg(&path).status();
 
