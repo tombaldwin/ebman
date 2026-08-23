@@ -114,8 +114,27 @@ jobs:
       - name: Enforce .candor/policy
         run: |
           LIB=$(ls ~/candor/target/debug/libcandor@*.so)
-          out=$(CANDOR_POLICY=.candor/policy cargo dylint --lib-path "$LIB" 2>&1 || true)
+          # Force a re-analysis. `rust-cache` restores the check
+          # artefacts, and a cached `cargo dylint` prints "Finished"
+          # without re-running the lint — so the gate would pass on
+          # stale results from before the change under review.
+          touch src/lib.rs src/main.rs
+          # No `|| true` on the lint. Swallowing its exit code means a
+          # crash, a missing lib or a compile error produces no AS-EFF
+          # lines, the grep below finds nothing, and the gate passes —
+          # a gate that reports success when it did not run.
+          if ! out=$(CANDOR_POLICY=.candor/policy cargo dylint --lib-path "$LIB" 2>&1); then
+            echo "$out"
+            echo "::error::candor lint failed to RUN (not a policy violation)"
+            exit 1
+          fi
           echo "$out"
+          # And prove it actually analysed this crate, for the same
+          # reason: a lint that silently no-ops emits no findings.
+          if ! echo "$out" | grep -q "Checking ebman"; then
+            echo "::error::candor lint produced no analysis of ebman — gate did not run"
+            exit 1
+          fi
           if echo "$out" | grep -qE "AS-EFF-00[689]"; then
             echo "::error::effect/layer policy violation — see .candor/policy"
             exit 1

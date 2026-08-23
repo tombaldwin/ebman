@@ -493,11 +493,8 @@ pub fn parse_baseline(text: &str) -> Result<Vec<BaselineIssue>, String> {
             .to_string();
         let mut fields: BTreeMap<String, String> = BTreeMap::new();
         if let Some(f) = obj.get("fields").and_then(|v| v.as_object()) {
-            // serde_yml 0.0.13 changed mapping iteration to hand out
-            // the key as `&str` rather than a `Value` — a breaking
-            // change in a patch release, from the crate RUSTSEC
-            // already flags as unsound. See the BACKLOG entry about
-            // migrating off it.
+            // JSON object keys are `&str` by construction — no
+            // scalar-key case to handle the way a YAML mapping needs.
             for (k, v) in f {
                 if let Some(v_str) = v.as_str() {
                     fields.insert(k.to_string(), v_str.to_string());
