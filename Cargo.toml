@@ -23,7 +23,7 @@ categories = ["command-line-utilities"]
 # bottom of this file (don't commit it uncommented).
 tui-common = { version = "0.1.3", package = "tb-tui-common" }
 ratatui = "0.29"
-crossterm = { version = "0.28", features = ["event-stream"] }
+crossterm = { version = "0.29", features = ["event-stream"] }
 # io-util + io-std: the MCP server's stdio JSON-RPC transport.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "io-util", "io-std"] }
 futures = "0.3"
