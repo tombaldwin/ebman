@@ -117,9 +117,9 @@ Living list of done / pending / dropped work. New entries get added at the botto
 - `ebman completions <bash|zsh|fish>` — shell completion scripts generated from a single CLI-surface source of truth (subcommands + global flags + per-subcommand flags/verbs; static, no live env names). Subcommand names pinned to `cli::SUBCOMMANDS` (shared with `main.rs` dispatch) by a test so completion can't drift from the real CLI.
 - `ebman mcp setup [--allow-writes]` — prints MCP registration commands (`claude mcp add` + `.mcp.json` snippet + `AWS_REGION` pin) from the trusted local binary; the secure alternative to "point your agent at a remote file and run it". Print-only.
 - `--version` / `-V` and `--help` / `-h` flags (exit before TUI)
-- MSRV declared (`rust-version = "1.82"`)
+- MSRV declared in `Cargo.toml` (1.94.1 as of 0.31.0; the AWS SDK sets the floor)
 - README with feature summary, keymap, config, and "what's stored locally" section
-- GitHub Actions CI: build + test on macOS and Linux, `cargo fmt --check`, `cargo clippy -D warnings`, MSRV gate on 1.82
+- GitHub Actions CI: build + test on macOS and Linux, `cargo fmt --check`, `cargo clippy -D warnings`, MSRV gate (pinned to the declared `rust-version`)
 - Cargo metadata: license, repository, keywords, categories
 
 ### Operator UX (Tier 1 & 2)
@@ -1283,6 +1283,47 @@ Two methodology errors of my own, caught during the review and worth recording b
 
 1. I compared the waiver list against `cargo deny`'s output **with the waivers applied** — circular, and it made all six look stale.
 2. The corrected run used `cargo deny --config X check` instead of `cargo deny check --config X`, which cargo-deny rejected as a usage error. I read the resulting empty output as "no live advisories". A proxy standing in for a signal, indistinguishable from success when it fails — ten minutes after writing that sentence to someone else.
+
+#### 0.31.0 shipped — 2026-08-23
+
+Tagged `v0.31.0` after CI went green. The push-before-tag order was the
+release-engineer panellist's call and it earned its keep: the lineup had
+never had a CI run, and the first one failed two gates.
+
+- **msrv — a real defect.** The `cargo update` earlier in this lineup moved
+  the AWS SDK to crates declaring rustc **1.94.1**, so `rust-version = "1.91"`
+  had been false ever since; `cargo build --locked` on 1.91 fails to resolve.
+  Raised in `Cargo.toml`, the CI pin and the README, and **verified on a real
+  1.94.1 toolchain** rather than asserted. A user-visible change, so it is in
+  the changelog under Changed.
+
+- **candor — a false failure, in my own guard.** The "prove it actually
+  analysed this crate" check greps for `Checking ebman`, but the workflow sets
+  `CARGO_TERM_COLOR: always`, so cargo writes `Checking\e[0m ebman` and the
+  literal never matches. Locally cargo drops colour when piped — which is
+  exactly why it passed here and failed there. The gate itself had run clean.
+  Fixed with `CARGO_TERM_COLOR: never` on that step plus a looser pattern.
+  Worth noting the shape: this is the *third* consecutive defect in this one
+  gate (`.gitignore` hiding the policy, then `|| true`, now the colour), and
+  all three had the same failure mode — the gate not measuring what it claims.
+
+- **The candor clone is now pinned to a commit** instead of tracking HEAD.
+  The release engineer flagged it as a flake/supply risk before the run; a
+  gate that can block a release should not change underfoot.
+
+- **The changelog claimed four fixes that shipped the day before.** `:ssm-run`
+  50-instance batching and EBL010 landed in `7551912` / `dbb1d80`, both
+  ancestors of `v0.30.2`, and the breadcrumb and EC2-link region fixes with
+  them. Caught by diffing `v0.30.2..HEAD` instead of trusting the draft.
+  Rewritten to what git says shipped.
+
+- **A sixth breaking change was undocumented.** `cargo-semver-checks` is
+  PR-only, so it had never validated the version claim on main. Run manually
+  against published 0.30.2 with `--release-type patch`, it confirmed the five
+  documented breaks and found `Form.banner` — a new public field on a
+  constructible struct. 0.31.0 was the right bump; the notes were incomplete.
+  **Follow-up worth considering: run semver-checks on tag pushes too**, not
+  only PRs, since the release is the moment the claim actually ships.
 
 #### Important (need live verification or a design pass)
 - [x] **Cost Explorer pagination** — Shipped. `fetch_env_costs` follows `NextPageToken` (`aws/cost.rs`). The `MAX_COST_PAGES = 20` cap now warns, returns `EnvCosts { truncated }`, and a truncated walk is neither cached nor allowed to replace a complete in-memory map; `:cost status` and `:fleet-cost` both say when what's on screen is partial.
