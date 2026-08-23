@@ -110,6 +110,15 @@ impl App {
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
+        // Refuse at open, not at submit. The write is gated either way
+        // (`spawn_option_settings_update` calls `deny_write`), so nothing
+        // escapes — but without this the operator fills in the whole form
+        // on a read-only fleet before being told no. `:env-edit` has always
+        // refused at open; `:rds-attach` was brought into line, and this is
+        // the rest of the class.
+        if self.deny_write(&env.name, ":capacity") {
+            return;
+        }
         let fields = vec![
             crate::form::FormField::integer(
                 "min",
@@ -179,6 +188,15 @@ impl App {
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
+        // Refuse at open, not at submit. The write is gated either way
+        // (`spawn_option_settings_update` calls `deny_write`), so nothing
+        // escapes — but without this the operator fills in the whole form
+        // on a read-only fleet before being told no. `:env-edit` has always
+        // refused at open; `:rds-attach` was brought into line, and this is
+        // the rest of the class.
+        if self.deny_write(&env.name, ":scaling-triggers") {
+            return;
+        }
         let ns = "aws:autoscaling:trigger";
         let measures = vec![
             "CPUUtilization".to_string(),

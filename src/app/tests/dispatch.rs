@@ -776,9 +776,15 @@ pub(super) fn fingerprint(app: &App) -> Fingerprint {
 /// Every `:command` in the registry, with representative arguments.
 ///
 /// The assertion is that running it moves *something* the operator can
-/// see. That is a low bar deliberately: it is the exact property the
-/// dispatch sweep measures, so a command whose arm is deleted, renamed
-/// or short-circuited fails here — which is what nothing did before.
+/// see. A low bar deliberately: it is the exact property the dispatch
+/// sweep measures, so a command whose arm is short-circuited fails here.
+///
+/// It does **not** catch a *deleted* or renamed arm — that falls through
+/// to the `other =>` catch-all, which sets "unknown command: …", so the
+/// fingerprint moves and this test passes. Deletion is caught by
+/// `every_registry_name_has_a_dispatch_arm` in `src/commands.rs`, which
+/// scans the source. The two together cover both, and neither covers
+/// both alone.
 pub(super) const OBSERVABLE_COMMANDS: &[&str] = &[
     "about",
     "accounts",
@@ -875,8 +881,8 @@ async fn every_command_moves_observable_state() {
         let after = fingerprint(&app);
         assert_ne!(
             before, after,
-            ":{cmd} changed nothing an operator could see — a deleted or \
-             short-circuited dispatch arm would look exactly like this"
+            ":{cmd} changed nothing an operator could see — a \
+             short-circuited dispatch arm looks exactly like this"
         );
     }
 }
@@ -1014,10 +1020,106 @@ fn every_registry_command_is_covered_by_some_test() {
     }
     covered.extend(COVERED_INDIVIDUALLY.iter().map(|(c, _)| c.to_string()));
 
+    // `COVERED_INDIVIDUALLY` is a free-text promise that a test exists
+    // somewhere. Check the cheapest thing that would be false if the
+    // promise were fiction: the command name appears in the test tree at
+    // all. It cannot prove the test is any good — but a name that
+    // appears nowhere is a claim with nothing behind it, which is the
+    // failure mode an honour-system list invites.
+    let mut test_src = String::new();
+    for entry in std::fs::read_dir("src/app/tests").expect("tests dir") {
+        let path = entry.expect("entry").path();
+        if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            test_src.push_str(&std::fs::read_to_string(&path).expect("read"));
+        }
+    }
+    // Cut the list's own declaration out before searching. Without this
+    // the check is self-satisfying: `COVERED_INDIVIDUALLY` lives in a
+    // file under `src/app/tests`, so every entry "appears in the test
+    // tree" by virtue of being written down. The first version of this
+    // check had exactly that hole and passed a deliberately fictional
+    // entry.
+    if let Some(start) = test_src.find("const COVERED_INDIVIDUALLY") {
+        if let Some(len) = test_src[start..].find("\n];") {
+            test_src.replace_range(start..start + len, "");
+        }
+    }
+    let unbacked: Vec<&str> = COVERED_INDIVIDUALLY
+        .iter()
+        .filter(|(c, _)| !test_src.contains(*c))
+        .map(|(c, _)| *c)
+        .collect();
+    assert!(
+        unbacked.is_empty(),
+        "these commands claim individual coverage but their name appears \
+         nowhere in src/app/tests — the claim has nothing behind it: {unbacked:?}"
+    );
+
     let missing: Vec<&String> = registry.iter().filter(|c| !covered.contains(*c)).collect();
     assert!(
         missing.is_empty(),
         "these registry commands are in no coverage list — add them to \
          OBSERVABLE_COMMANDS, or to COVERED_INDIVIDUALLY with the reason: {missing:?}"
+    );
+}
+
+#[test]
+fn every_render_surface_is_accounted_for() {
+    // The command side has `every_registry_command_is_covered_by_some_test`;
+    // the render side had nothing, so a 42nd `draw_*` added next cycle
+    // would silently take render coverage from 41 of 41 back to 41 of 42.
+    // This is the missing half of that pair.
+    //
+    // It pins the SET of surfaces, not their coverage — proving each one
+    // is exercised needs the stub-and-see sweep, which can't run inside
+    // the suite. What it does is force the question: a new surface fails
+    // here, and whoever adds it has to either cover it and add the name,
+    // or say why not.
+    let mut found: Vec<String> = Vec::new();
+    let dir = std::path::Path::new("src/ui");
+    let mut files = vec![std::path::PathBuf::from("src/ui.rs")];
+    for entry in std::fs::read_dir(dir).expect("src/ui") {
+        let path = entry.expect("entry").path();
+        if path.extension().and_then(|e| e.to_str()) == Some("rs") && !is_test_source(&path) {
+            files.push(path);
+        }
+    }
+    for path in &files {
+        let text = std::fs::read_to_string(path).expect("read");
+        for line in text.lines() {
+            let t = line
+                .strip_prefix("pub(crate) ")
+                .or_else(|| line.strip_prefix("pub(super) "))
+                .or_else(|| line.strip_prefix("pub "))
+                .unwrap_or(line);
+            if let Some(rest) = t.strip_prefix("fn draw_") {
+                let name = rest
+                    .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .next()
+                    .unwrap_or("");
+                found.push(format!("draw_{name}"));
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
+
+    // Guard the parse itself. An empty result would otherwise read as a
+    // clean pass — the failure shape this repo has now hit four times.
+    assert!(
+        found.len() > 30,
+        "parsed only {} render surfaces — the parse broke",
+        found.len()
+    );
+
+    const KNOWN: usize = 41;
+    assert_eq!(
+        found.len(),
+        KNOWN,
+        "the set of `draw_*` surfaces changed ({} now, {KNOWN} when the \
+         coverage sweep last ran and reached 41 of 41). If you added one, \
+         cover it — stub it with an early return and check a test fails — \
+         then bump KNOWN. If you removed one, just bump KNOWN.\nfound: {found:?}",
+        found.len()
     );
 }
