@@ -21,32 +21,16 @@ impl App {
     /// Any of these returning `true` blocks the action; the operator-
     /// facing error message can differentiate via `read_only_reason`.
     pub fn is_read_only_for(&self, env_name: &str) -> bool {
-        if self.read_only {
-            return true;
-        }
-        // Session-scoped freeze (`:freeze-deploys`) is fleet-wide —
-        // doesn't care about env_name. Layered above the per-env /
-        // per-account pins because it's the most-recent operator
-        // gesture: if they froze deploys, they meant for nothing to
-        // dispatch regardless of what the persisted pins say.
-        if self.deploy_freeze.is_some() {
-            return true;
-        }
-        if self.cfg.safety_envs.get(env_name).copied().unwrap_or(false) {
-            return true;
-        }
-        if let Some(profile) = self.context.profile.as_deref() {
-            if self
-                .cfg
-                .safety_accounts
-                .get(profile)
-                .copied()
-                .unwrap_or(false)
-            {
-                return true;
-            }
-        }
-        false
+        // Deliberately delegating rather than repeating the chain.
+        // These were two separate four-branch cascades kept in the same
+        // order by a comment asking a human to do it — and the ONE
+        // difference between them would have been invisible: a
+        // predicate that says "allowed" while the reason function has
+        // something to say is a write that slips through, and the
+        // reverse is a refusal with no explanation. The allocation is
+        // irrelevant here (this runs on a confirm, or once per env in a
+        // batch of tens — never per frame).
+        self.read_only_reason(env_name).is_some()
     }
 
     /// Enforce the read-only gate for a destructive action against

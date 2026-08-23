@@ -760,14 +760,22 @@ pub async fn run(args: &[String]) -> Result<()> {
                 }
 
                 if fix && !issues.is_empty() {
-                    if let Some(reason) =
-                        safety_cfg.pin_reason(&env.name, active_profile_for_safety.as_deref())
-                    {
+                    // Through the shared gate, not `pin_reason` alone.
+                    // `active_freeze: None` because the freeze is
+                    // handled once up front for the whole run — a
+                    // per-env freeze check would print the same refusal
+                    // N times, and this loop skips the env rather than
+                    // exiting. Passing it explicitly rather than
+                    // reaching for `pin_reason` keeps this path on the
+                    // shared decision even so.
+                    if let Some(reason) = crate::cli::write_refusal(
+                        &safety_cfg,
+                        &env.name,
+                        &active_profile_for_safety,
+                        None,
+                    ) {
                         if !quiet {
-                            eprintln!(
-                                "ebman lint --fix: refusing {} — pinned by {reason}",
-                                env.name
-                            );
+                            eprintln!("ebman lint --fix: {reason}");
                         }
                         // Only a real (--yes) run treats the refusal as
                         // a dispatch failure — a --dry-run preview

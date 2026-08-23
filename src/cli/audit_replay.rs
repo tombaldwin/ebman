@@ -11,7 +11,7 @@
 
 use color_eyre::eyre::Result;
 
-use crate::{audit as audit_log, aws, config, util};
+use crate::{audit as audit_log, aws, util};
 
 /// Parsed `ebman audit replay` invocation. `id` is a prefix of the
 /// target line's RFC3339 timestamp — the first column of `ebman
@@ -259,20 +259,16 @@ pub(crate) async fn run_replay(args: &[String]) -> Result<()> {
     // under default creds (`profile=-`) — the ambient AWS_PROFILE,
     // which is what `AwsClient::with(None, …)` will resolve to.
     // Same fallback `lint --fix` uses.
-    let cfg = config::load();
     let pin_profile = plan
         .profile
         .clone()
         .or_else(|| std::env::var("AWS_PROFILE").ok());
-    crate::cli::refuse_if_frozen("ebman audit replay");
-    if let Some(pin) = cfg.pin_reason(&plan.env, pin_profile.as_deref()) {
-        eprintln!(
-            "ebman audit replay: refusing {} on {} — pinned by {pin}",
-            plan.verb.label(),
-            plan.env
-        );
-        std::process::exit(3);
-    }
+    crate::cli::refuse_write(
+        "ebman audit replay",
+        &format!("{} on {}", plan.verb.label(), plan.env),
+        &plan.env,
+        pin_profile.as_deref(),
+    );
     if plan.verb.destructive() && !yes {
         eprintln!(
             "ebman audit replay: '{}' is destructive; re-run with --yes to confirm",
@@ -480,7 +476,7 @@ mod tests {
         // The shared `Config::pin_reason` (0.26 extraction) is what
         // replay consults; keep the replay-shaped assertions here so
         // this file still pins its own gate behaviour.
-        let mut cfg = config::Config::default();
+        let mut cfg = crate::config::Config::default();
         cfg.safety_envs.insert("api-prod".into(), true);
         cfg.safety_accounts.insert("prod-admin".into(), true);
         assert_eq!(

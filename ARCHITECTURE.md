@@ -124,8 +124,14 @@ note in `ViewState::assert_fresh`.
 
 ## Writes and safety
 
-Every mutating path — TUI, CLI and the MCP server alike — funnels through
-`App::deny_write` / `deny_write_batch` in [`src/app/safety.rs`](src/app/safety.rs).
+Every mutating path funnels through one gate, but there are two of them
+because the TUI and the CLI need different things from a refusal. In the
+TUI it is `App::deny_write` / `deny_write_batch`
+([`src/app/safety.rs`](src/app/safety.rs)), which sets a toast and
+returns. In the CLI and the MCP server it is `cli::write_refusal`
+([`src/cli/mod.rs`](src/cli/mod.rs)), which returns the reason so the
+server can hand it to a client and `cli::refuse_write` can print it and
+exit 3. Both resolve the same layers.
 `--deny-write`, `safety.envs.NAME.read_only`, `safety.accounts.NAME.read_only`
 and the freeze window are all resolved there, so there is exactly one place to
 audit. Writes are journalled by [`src/audit.rs`](src/audit.rs).
