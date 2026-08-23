@@ -135,7 +135,11 @@ async fn main() -> Result<()> {
     // `App::new` — `draw_splash` needs it to pick between the plain-text
     // tagline and the Powerline rounded-cap pill variant.
     let splash_icons = cfg.icons.clone();
-    let mut terminal = enter_tui()?;
+    // RAII: whatever happens between here and the end of `main`
+    // — including the `?` paths in the splash loop below — the
+    // terminal is restored.
+    let mut tui = TuiGuard::enter()?;
+    let terminal = &mut tui.terminal;
 
     // Animate the splash while App::new resolves (config load + STS + first
     // SDK setup). Keep the splash visible for at least SPLASH_MIN_DURATION even
@@ -154,7 +158,7 @@ async fn main() -> Result<()> {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(30));
         while splash_started.elapsed() < SPLASH_MIN_DURATION {
             interval.tick().await;
-            splash::draw_splash(&mut terminal, splash_frame, &splash_icons)?;
+            splash::draw_splash(terminal, splash_frame, &splash_icons)?;
             splash_frame = splash_frame.wrapping_add(1);
         }
         app
@@ -171,7 +175,7 @@ async fn main() -> Result<()> {
                     app_ready = Some(res?);
                 }
                 _ = interval.tick() => {
-                    splash::draw_splash(&mut terminal, splash_frame, &splash_icons)?;
+                    splash::draw_splash(terminal, splash_frame, &splash_icons)?;
                     splash_frame = splash_frame.wrapping_add(1);
                     if app_ready.is_some() && splash_started.elapsed() >= SPLASH_MIN_DURATION {
                         break app_ready
@@ -193,7 +197,7 @@ async fn main() -> Result<()> {
         rx
     });
 
-    let result = app_inst.run(&mut terminal, control_rx).await;
+    let result = app_inst.run(terminal, control_rx).await;
     // Drain in-flight audit-webhook POSTs before the runtime drops —
     // an action completed just before `q` otherwise loses its outcome
     // POST (same class as the CLI exits; the TUI path was the last
@@ -212,7 +216,10 @@ async fn main() -> Result<()> {
     // and idempotent; if run() succeeded it just over-writes its own
     // earlier write with the same values.
     app_inst.persist_state();
-    leave_tui(&mut terminal)?;
+    // Explicit, because `--reload` re-execs right after and the
+    // new process must not inherit the alternate screen. The
+    // Drop below is then a no-op.
+    tui.leave();
     // Honour a reload request from the control socket: re-exec the same
     // binary with the original argv so the parent shell's terminal is
     // reused by the new process. Done AFTER `leave_tui` so the old TUI
@@ -453,15 +460,45 @@ fn enter_tui() -> Result<Tui> {
     Ok(Terminal::new(CrosstermBackend::new(stdout))?)
 }
 
-fn leave_tui(terminal: &mut Tui) -> Result<()> {
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
-    Ok(())
+/// Owns the alternate screen for as long as it is alive.
+///
+/// Three `?` paths used to return from `main` between `enter_tui` and
+/// `leave_tui` — `App::new` failing (an expired SSO session is a
+/// realistic trigger, and it runs after we are already in the alt
+/// screen), a splash draw failing, and the restore itself. Each left
+/// the operator in raw mode looking at a dead alternate screen, having
+/// to type `reset` blind.
+///
+/// RAII closes all three at once: however the scope exits — `?`, panic,
+/// or a clean `leave()` — the terminal comes back.
+struct TuiGuard {
+    terminal: Tui,
+    restored: bool,
+}
+
+impl TuiGuard {
+    fn enter() -> Result<Self> {
+        Ok(Self {
+            terminal: enter_tui()?,
+            restored: false,
+        })
+    }
+
+    /// Restore explicitly, for the paths that need the terminal back
+    /// *before* they do something else — `--reload` re-execs, and the
+    /// new process must not inherit the alt screen.
+    fn leave(&mut self) {
+        if !self.restored {
+            ebman::restore_terminal(&mut self.terminal);
+            self.restored = true;
+        }
+    }
+}
+
+impl Drop for TuiGuard {
+    fn drop(&mut self) {
+        self.leave();
+    }
 }
 
 fn install_panic_hook() {

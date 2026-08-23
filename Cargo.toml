@@ -110,6 +110,14 @@ aws-sdk-iam = { version = "1", features = ["test-util"] }
 tokio = { version = "1", features = ["test-util"] }
 
 [profile.release]
+# A panic in a spawned task used to run the panic hook — which restores
+# the terminal and prints a backtrace over the display — and then let
+# the app CARRY ON, in a wrecked terminal, waiting on an `AppMsg` that
+# would never arrive. A spinner forever, with the real error already
+# scrolled past. Aborting turns that into a crash report the operator
+# can act on. The hook still runs first, so the terminal is restored and
+# the report is written before the abort.
+panic = "abort"
 lto = "thin"
 codegen-units = 1
 strip = true
