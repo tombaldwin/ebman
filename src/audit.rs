@@ -1367,3 +1367,51 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod parser_properties {
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(2000))]
+
+        /// `parse_audit_line` must never panic, whatever is on the line.
+        ///
+        /// It is a hand-written char scanner with 13 `chars[i]` sites
+        /// guarded by a hand-maintained `while i < n`, and it runs over
+        /// `audit.log` — a file on disk that a crash or a full disk can
+        /// leave truncated mid-write, including mid-UTF-8. Enumerating
+        /// examples cannot cover that input space; this can.
+        #[test]
+        fn parse_audit_line_never_panics(s in ".{0,400}") {
+            let _ = super::parse_audit_line(&s);
+        }
+
+        /// The same, biased toward input that looks *nearly* valid —
+        /// random text mostly misses the interesting branches, and the
+        /// dangerous states are half-formed records, not noise.
+        #[test]
+        fn parse_audit_line_survives_near_miss_records(
+            ts in "[0-9TZ:.-]{0,30}",
+            verb in "[a-zA-Z]{0,20}",
+            rest in "[a-zA-Z0-9=\"' \t\\\\-]{0,120}",
+        ) {
+            let _ = super::parse_audit_line(&format!("{ts}\t{verb}\t{rest}"));
+            let _ = super::parse_audit_line(&format!("{ts}\t{verb}"));
+            let _ = super::parse_audit_line(&ts);
+        }
+
+        /// `parse_kv_pairs` handles the quoting itself; unbalanced
+        /// quotes and trailing escapes are exactly what a truncated
+        /// write produces.
+        #[test]
+        fn parse_kv_pairs_never_panics(s in "[a-z0-9=\"'\\\\ \t]{0,200}") {
+            let pairs = super::parse_kv_pairs(&s);
+            // Whatever it returns, keys must be non-empty — an empty key
+            // would make the audit line unreadable downstream.
+            for (k, _) in pairs {
+                prop_assert!(!k.is_empty());
+            }
+        }
+    }
+}
