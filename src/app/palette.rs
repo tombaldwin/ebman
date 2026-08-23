@@ -179,7 +179,7 @@ impl App {
             }
             PaletteAction::JumpEnv(name) => {
                 if let Some(pos) = self.view.display().iter().position(|r| match r {
-                    DisplayRow::Env(i) => self.environments[*i].name == name,
+                    DisplayRow::Env(i) => self.env_at(*i).is_some_and(|e| e.name == name),
                     DisplayRow::Separator => false,
                 }) {
                     self.table_state.select(Some(pos));
@@ -199,7 +199,7 @@ impl App {
         let needle = self.quickjump_input.text().to_lowercase();
         for (pos, row) in self.view.display().iter().enumerate() {
             if let DisplayRow::Env(i) = row {
-                let e = &self.environments[*i];
+                let Some(e) = self.env_at(*i) else { continue };
                 let alias = self
                     .aliases
                     .get(&e.name)

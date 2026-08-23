@@ -1294,3 +1294,54 @@ fn terminal_restore_goes_through_the_best_effort_helper() {
          {offenders:?}"
     );
 }
+
+#[test]
+fn every_cached_index_is_checked() {
+    // `ViewState`'s rows hold indices into `environments`, which
+    // `ViewState` does not own — so a mutation that forgets
+    // `view.invalidate()` leaves them pointing past the end. Indexing
+    // unchecked there panics, in the alternate screen, which is the
+    // exact outcome `assert_fresh`'s release-mode softening exists to
+    // avoid: it chose "one wrong frame over a panic", and unchecked
+    // indexing made the wrong frame BE the panic.
+    //
+    // `app/view.rs` is the one legitimate exception: `rebuild_view`
+    // indexes a `filtered` list it computed itself, in the same
+    // function, so those indices cannot be stale.
+    let mut offenders: Vec<String> = Vec::new();
+    let mut stack = vec![std::path::PathBuf::from("src")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("src dir") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") || is_test_source(&path) {
+                continue;
+            }
+            if path.ends_with("app/view.rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("read");
+            for (n, line) in text.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or("");
+                // `environments[…]` is always the fleet list. For the
+                // shorter `envs`, only a DERFERENCED index is a cached
+                // view index (`envs[*i]` from a `DisplayRow::Env(i)`) —
+                // `envs[0]` on a locally-built vector is unrelated, and
+                // matching it flagged six innocent sites in terraform
+                // and the MCP server.
+                if code.contains("environments[") || code.contains("envs[*") {
+                    offenders.push(format!("{}:{}", path.display(), n + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "unchecked index into the env list — a cached view index can \
+         outlive a mutation of it, and this panics in the alt screen. \
+         Use `.get()` / `App::env_at`: {offenders:?}"
+    );
+}

@@ -395,6 +395,12 @@ impl App {
         let mut display: Vec<DisplayRow> = Vec::new();
         let mut prev_app: Option<&str> = None;
         for i in &filtered {
+            // Unchecked deliberately, and the only place that is true.
+            // `filtered` was computed from `environments` a few lines
+            // up in THIS function, so the indices cannot be stale — the
+            // hazard everywhere else is a CACHED index outliving a
+            // mutation of `environments`. `every_cached_index_is_checked`
+            // pins that distinction.
             let e = &self.environments[*i];
             if self.view.grouped() && prev_app.is_some() && prev_app != Some(e.application.as_str())
             {
@@ -447,7 +453,7 @@ impl App {
         let pending = self.pending_select.take();
         if let Some(name) = pending {
             let pos = self.view.display().iter().position(|r| match r {
-                DisplayRow::Env(i) => self.environments[*i].name == name,
+                DisplayRow::Env(i) => self.env_at(*i).is_some_and(|e| e.name == name),
                 DisplayRow::Separator => false,
             });
             if let Some(p) = pos {

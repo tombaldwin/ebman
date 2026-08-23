@@ -3222,6 +3222,23 @@ impl App {
     /// for — a modal opened before the refresh landed, say. That is
     /// the pre-fan-out behaviour, so the fallback can't be worse than
     /// what shipped.
+    /// The environment a **cached view index** points at, checked.
+    ///
+    /// `ViewState`'s derived rows hold indices into `environments`, and
+    /// `environments` is one of the four inputs `ViewState` does not own
+    /// — so a mutation that forgets `view.invalidate()` leaves indices
+    /// pointing into a shorter list. `assert_fresh` is deliberately
+    /// softened in release on the reasoning that "one wrong frame is
+    /// better than a panic in the alt screen"; unchecked indexing here
+    /// means the wrong frame IS the panic, which defeats the softening.
+    ///
+    /// Returns `None` instead. A missing row renders as absent for one
+    /// frame and the next refresh corrects it — which is what the
+    /// release-mode softening was actually asking for.
+    pub(crate) fn env_at(&self, i: usize) -> Option<&crate::aws::Environment> {
+        self.environments.get(i)
+    }
+
     pub(crate) fn region_for_name(&self, env_name: &str) -> String {
         self.environments
             .iter()
