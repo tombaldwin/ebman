@@ -417,7 +417,12 @@ impl App {
     /// Terminate keeps its strict-typed-name guard via the action menu
     /// rather than the Y/N confirm `open_parameterised_action` uses.
     pub(crate) fn cmd_terminate(&mut self) {
-        self.open_action_menu();
+        // Honour the refusal. `advance_action_flow` has no gate of its
+        // own — it trusts the menu that opened it — so calling it
+        // regardless armed a Terminate confirm under `--deny-write`.
+        if !self.open_action_menu() {
+            return;
+        }
         self.advance_action_flow(Action::Terminate);
     }
 

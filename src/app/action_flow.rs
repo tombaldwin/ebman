@@ -91,19 +91,30 @@ impl App {
         self.selected_env().cloned()
     }
 
-    pub(crate) fn open_action_menu(&mut self) {
+    /// Open the per-env action menu. Returns `false` when it refused —
+    /// no env selected, or `deny_write` said no.
+    ///
+    /// The bool matters because `cmd_terminate` calls this and then
+    /// `advance_action_flow(Terminate)`, and `advance_action_flow` has
+    /// no gate of its own (it trusts the menu that called it). Ignoring
+    /// the refusal left a Terminate confirm sitting in `action_flow`
+    /// under `--deny-write`: unreachable, since the mode was never
+    /// switched to `Action`, and undispatchable — but enough to make
+    /// `?` open the Action help instead of the global one.
+    pub(crate) fn open_action_menu(&mut self) -> bool {
         let Some(target) = self.target_env_for_action() else {
             self.status_message =
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
-            return;
+            return false;
         };
         if self.deny_write(&target.name, "action menu") {
-            return;
+            return false;
         }
         let mut list_state = ListState::default();
         list_state.select(Some(0));
         self.action_flow = Some(ActionFlow::Menu { list_state });
         self.mode = Mode::Action;
+        true
     }
 
     pub(crate) fn close_action_flow(&mut self) {

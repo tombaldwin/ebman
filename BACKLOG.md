@@ -1284,6 +1284,57 @@ Two methodology errors of my own, caught during the review and worth recording b
 1. I compared the waiver list against `cargo deny`'s output **with the waivers applied** — circular, and it made all six look stale.
 2. The corrected run used `cargo deny --config X check` instead of `cargo deny check --config X`, which cargo-deny rejected as a usage error. I read the resulting empty output as "no live advisories". A proxy standing in for a signal, indistinguishable from success when it fails — ten minutes after writing that sentence to someone else.
 
+#### Command-dispatch coverage sweep — 2026-08-23
+
+Same method as the render sweep, new axis: neutralise each of the 131
+registry commands at the top of `execute_command` (alias-aware — the
+match arms carry aliases, so stubbing only the canonical name would have
+produced false "uncovered" for anything a test reaches via its alias),
+run the suite, see whether anything fails.
+
+**43 caught, 88 uncovered.** Two-thirds of the command surface can be
+made a complete no-op with the suite still green. A command that
+silently does nothing is worse than a blank pane, because the operator
+believes it worked.
+
+The good news first: **all 29 declared write commands are covered.**
+`WRITE_COMMANDS` / `BATCH_WRITE_COMMANDS` / `APPLICATION_SCOPED_WRITES`
+are iterated by the safety tests, so stubbing any of them fails those.
+The highest-stakes subset was already protected.
+
+The gap was next door. `WRITE_COMMANDS` pins the option-setting
+commands — the ones with no `deny_write` of their own. The
+**confirm-modal actions** are gated elsewhere and so appear in no list:
+`restart`, `rebuild`, `terminate`, `stop`, `start` were pinned by
+nothing at all. Now covered, with the action each arms and the env it
+aims at asserted.
+
+- [x] **`:terminate` armed a confirm modal under `--deny-write`.** Found
+  by writing that coverage. `cmd_terminate` calls `open_action_menu()`
+  and then `advance_action_flow(Action::Terminate)` — and
+  `advance_action_flow` has no gate of its own, because it is designed
+  to be called from *inside* the menu that already gated. The menu
+  refused and the next line armed the confirm anyway.
+
+  **Not a safety hole, and worth being precise about why.** Probed it
+  rather than assuming: `open_action_menu` returns before setting
+  `mode = Action`, so the modal was unreachable by keyboard and never
+  drawn, and confirming produced no dispatch (`pending_dispatch` false,
+  `pending_actions` empty). What it did do was leave inert `Terminate`
+  state in `action_flow`, which is enough to make `?` open the Action
+  help instead of the global one. `open_action_menu` returns `bool` now
+  and `cmd_terminate` honours it; the two keybind call sites discard it
+  explicitly, since a refusal there has already set its own message.
+  Fix mutation-verified by reverting it.
+
+**Still uncovered (83).** The list is dominated by read-only inspection
+commands (`resources`, `secrets`, `listeners`, `subnets`, `versions`,
+`history`, `lineage`, …) where a no-op is visible to the operator
+immediately, so the case is weaker than it was for writes. The ones
+worth doing next, because a silent no-op is *not* obvious: `env-edit`,
+`delete-version`, `custom-platform-delete`, `rds-attach`,
+`unset-option`, `abort`, `rollout`, `swap`, `scale`.
+
 #### Render-coverage sweep — 2026-08-23
 
 `draw_shell` was found uncovered by accident while writing the DLQ and
