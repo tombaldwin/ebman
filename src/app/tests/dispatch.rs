@@ -695,3 +695,329 @@ async fn alias_command_rebuilds_the_view() {
     assert!(!app.view.is_stale(), ":alias-drop must rebuild the view");
     assert!(app.view.display().is_empty());
 }
+
+// --- every command does something observable -------------------------
+
+/// A cheap, comparable snapshot of the state a `:command` can move.
+///
+/// The point is attribution: three assertions earlier in this sweep
+/// passed because chrome drew the needle they looked for. A fingerprint
+/// diff can't be satisfied by anything the command didn't change.
+#[derive(PartialEq, Debug)]
+pub(super) struct Fingerprint {
+    mode: String,
+    status: Option<String>,
+    error: Option<String>,
+    overlay: Option<String>,
+    action_flow: bool,
+    form: bool,
+    picker: bool,
+    detail: bool,
+    dlq: bool,
+    shell: bool,
+    quit: bool,
+    load_state: String,
+    toasts: usize,
+    help_topic: String,
+    events_visible: bool,
+    palette_items: usize,
+    redact: bool,
+    read_only: bool,
+    scope: String,
+    sort: String,
+    filter: String,
+    grouped: bool,
+    pending: usize,
+    envs: usize,
+    multi_regions: usize,
+    hidden_cols: usize,
+    saved_views: usize,
+    log_tail_task: bool,
+}
+
+pub(super) fn fingerprint(app: &App) -> Fingerprint {
+    Fingerprint {
+        mode: format!("{:?}", app.mode),
+        status: app.status_message.clone(),
+        error: app.error_message.clone(),
+        // Discriminant only — `LogTail` carries up to 2000 events and
+        // formatting the whole thing per command would be absurd.
+        overlay: app
+            .current_overlay
+            .as_ref()
+            .map(|o| format!("{:?}", std::mem::discriminant(o))),
+        action_flow: app.action_flow.is_some(),
+        form: app.form.is_some(),
+        picker: app.picker.is_some(),
+        detail: app.detail.is_some(),
+        dlq: app.dlq.is_some(),
+        shell: app.current_shell.is_some(),
+        quit: app.quit,
+        load_state: format!("{:?}", app.load_state),
+        toasts: app.toasts.len(),
+        help_topic: format!("{:?}", app.help.topic),
+        events_visible: app.event_panel.visible,
+        palette_items: app.palette_items.len(),
+        redact: app.view.redact,
+        read_only: app.read_only,
+        scope: format!("{:?}", app.scope),
+        sort: format!("{:?}/{}", app.view.sort_key(), app.view.sort_desc()),
+        filter: app.view.filter().text().to_string(),
+        grouped: app.view.grouped(),
+        pending: app.pending_actions.len(),
+        envs: app.environments.len(),
+        multi_regions: app.multi_regions.len(),
+        hidden_cols: app.view.hidden_cols.len(),
+        saved_views: app.saved_views.len(),
+        log_tail_task: app.log_tail_task.is_some(),
+    }
+}
+
+/// Every `:command` in the registry, with representative arguments.
+///
+/// The assertion is that running it moves *something* the operator can
+/// see. That is a low bar deliberately: it is the exact property the
+/// dispatch sweep measures, so a command whose arm is deleted, renamed
+/// or short-circuited fails here — which is what nothing did before.
+pub(super) const OBSERVABLE_COMMANDS: &[&str] = &[
+    "about",
+    "accounts",
+    "alarm-history my-alarm",
+    "alarms",
+    "apps-info",
+    "capacity",
+    "changes",
+    "clone api-clone",
+    "cols list",
+    "config-diff api-staging",
+    "config-diff-local",
+    "custom-platforms",
+    "deselect",
+    "drop saved1",
+    "elb-subnets",
+    "env list",
+    "envs-by-version build-900",
+    "event-tail",
+    "event-time",
+    "events off",
+    "export",
+    "filter saved1",
+    "filters",
+    "find-env api",
+    "group on",
+    "help",
+    "history",
+    "instance-type t3.small",
+    "json",
+    "lineage",
+    "lint",
+    "listener-edit 443",
+    "listeners",
+    "loglevel debug",
+    "logs-insights fields @message",
+    "managed-window Mon 3",
+    "metric list",
+    "options",
+    "org-health",
+    "pending",
+    "pin",
+    "plugins",
+    "profile default",
+    "promotions",
+    "quit",
+    "rds",
+    "readonly on",
+    "redact on",
+    "refresh",
+    "report",
+    "report-bug",
+    "resources",
+    "rollbacks-armed",
+    "save saved2",
+    "save-view v1",
+    "saved-configs",
+    "scaling-triggers",
+    "secret my-secret",
+    "secrets",
+    "security-groups",
+    "settings",
+    "sort name",
+    "subnets",
+    "update",
+    "upgrade",
+    "versions",
+    "view v1",
+    "view-drop v1",
+    "views",
+    "whatsnew",
+    "why",
+    "account acct1",
+];
+
+fn app_for_command_probe() -> App {
+    let mut app = test_app();
+    app.environments = vec![
+        mk_env("api-prod", "uflexi", "Web", "Green"),
+        mk_env("api-staging", "uflexi", "Web", "Green"),
+    ];
+    app.view.invalidate();
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app
+}
+
+#[tokio::test]
+async fn every_command_moves_observable_state() {
+    for cmd in OBSERVABLE_COMMANDS {
+        let mut app = app_for_command_probe();
+        let before = fingerprint(&app);
+        app.execute_command(cmd);
+        let after = fingerprint(&app);
+        assert_ne!(
+            before, after,
+            ":{cmd} changed nothing an operator could see — a deleted or \
+             short-circuited dispatch arm would look exactly like this"
+        );
+    }
+}
+
+#[tokio::test]
+async fn logs_tail_starts_its_polling_task() {
+    // `:logs-tail` is a pure spawn: no status, no overlay, nothing
+    // synchronous. What it does leave behind is the tracked poll task.
+    let mut app = app_for_command_probe();
+    assert!(app.log_tail_task.is_none());
+    app.execute_command("logs-tail");
+    assert!(
+        app.log_tail_task.is_some(),
+        ":logs-tail started no polling task"
+    );
+}
+
+#[tokio::test]
+async fn config_inspect_dispatches_work() {
+    // The other pure spawn, and the only command with nothing on `App`
+    // to observe at all. What it does do is put a message on the
+    // channel, so drain for one.
+    let mut app = app_for_command_probe();
+    app.execute_command("config-inspect tpl");
+    for _ in 0..50 {
+        if app.msg_rx.try_recv().is_ok() {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!(":config-inspect dispatched no work at all");
+}
+
+/// Commands covered by a test of their own rather than by one of the
+/// bulk tables, with the reason. Keeping the reason here is the point:
+/// an entry with no justification is how a gap gets papered over.
+const COVERED_INDIVIDUALLY: &[(&str, &str)] = &[
+    ("logs-tail", "pure spawn — pinned via log_tail_task"),
+    (
+        "config-inspect",
+        "pure spawn — pinned via the message channel",
+    ),
+    ("region", "fan-out epoch tests in app/tests/refresh.rs"),
+    ("restart", "confirm-modal action — arms the right Action"),
+    ("rebuild", "confirm-modal action"),
+    (
+        "terminate",
+        "confirm-modal action, plus the typed-name guard",
+    ),
+    ("stop", "confirm-modal action"),
+    ("start", "confirm-modal action"),
+    ("swap", "needs a second env in the same app before it gates"),
+    ("ssm-run", "needs cached Detail instances before it gates"),
+    ("scale", "GATED_COMMANDS"),
+    ("abort", "GATED_COMMANDS"),
+    ("rollout", "GATED_COMMANDS"),
+    ("deploy", "GATED_COMMANDS"),
+    ("env-edit", "GATED_COMMANDS"),
+    ("rds-attach", "GATED_COMMANDS"),
+    ("delete-version", "GATED_COMMANDS"),
+    ("custom-platform-delete", "GATED_COMMANDS"),
+    ("unset-option", "GATED_COMMANDS"),
+    ("q", "alias of quit"),
+    // Already had tests of their own before either sweep ran — each was
+    // "caught" on the very first pass, so they are recorded here rather
+    // than duplicated into the bulk table.
+    ("diff", "two-arg diff form tests in app/tests/overlays.rs"),
+    ("ssh", "instance-id and env-name arg tests"),
+    ("explain", "explain-overlay render tests"),
+    ("cost", "cost fetch + truncation tests"),
+    ("fleet-cost", "fleet-cost rollup render tests"),
+    ("abort-rollback", "named-env disarm tests"),
+    ("freeze-deploys", "freeze marker + refusal-message tests"),
+    ("thaw-deploys", "freeze lifecycle tests"),
+    ("incident", "incident start/restart/end arg tests"),
+    ("undo", "undo-history cap tests"),
+    ("drift", "tfstate parse + exit-code tests"),
+    ("promote-env", "promotion lineage tests"),
+    ("rollback", "rollback --to and --auto-rollback tests"),
+    ("alias", "command-alias expansion tests"),
+    ("alias-drop", "command-alias expansion tests"),
+];
+
+#[test]
+fn every_registry_command_is_covered_by_some_test() {
+    // The drift guard behind the two sweeps. Both reached 100% — 41 of
+    // 41 render surfaces, 131 of 131 commands — and without this, the
+    // next command added would quietly drop that to 131 of 132. Reads
+    // the registry from source for the same reason the other guards do:
+    // a list maintained by hand is a list that goes stale.
+    let src = std::fs::read_to_string("src/commands.rs").expect("read commands.rs");
+    let start = src.find("pub const COMMANDS").expect("COMMANDS table");
+    let body = &src[start..src[start..].find("\n];").expect("table end") + start];
+
+    // Entries are mostly multi-line — `cmd_with_aliases(` on one line
+    // and `"region",` on the next — so take the first quoted string
+    // after each builder call rather than parsing line by line.
+    let mut registry: Vec<String> = Vec::new();
+    let lines: Vec<&str> = body.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim_start();
+        let Some(rest) = ["cmd(", "cmd_env_arg(", "cmd_with_aliases("]
+            .iter()
+            .find_map(|p| t.strip_prefix(*p))
+        else {
+            continue;
+        };
+        let name = rest.split('"').nth(1).map(str::to_string).or_else(|| {
+            lines[i + 1..]
+                .iter()
+                .find(|l| l.contains('"'))
+                .and_then(|l| l.split('"').nth(1).map(str::to_string))
+        });
+        if let Some(n) = name {
+            registry.push(n);
+        }
+    }
+    assert!(
+        registry.len() > 120,
+        "parsed only {} commands out of the registry — the parse broke, \
+         and an empty result would read as a clean pass",
+        registry.len()
+    );
+
+    let first_word = |s: &&str| s.split_whitespace().next().unwrap_or("").to_string();
+    let mut covered: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for list in [
+        OBSERVABLE_COMMANDS,
+        GATED_COMMANDS,
+        WRITE_COMMANDS,
+        BATCH_WRITE_COMMANDS,
+        APPLICATION_SCOPED_WRITES,
+    ] {
+        covered.extend(list.iter().map(first_word));
+    }
+    covered.extend(COVERED_INDIVIDUALLY.iter().map(|(c, _)| c.to_string()));
+
+    let missing: Vec<&String> = registry.iter().filter(|c| !covered.contains(*c)).collect();
+    assert!(
+        missing.is_empty(),
+        "these registry commands are in no coverage list — add them to \
+         OBSERVABLE_COMMANDS, or to COVERED_INDIVIDUALLY with the reason: {missing:?}"
+    );
+}

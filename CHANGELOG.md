@@ -53,6 +53,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Internal
 
+- **Command-dispatch coverage: 131 of 131.** Same method as the render
+  sweep on a second axis — neutralise each registry command, see whether
+  the suite notices. It started at 43 of 131. The bulk went in as one
+  state-fingerprint test (run the command, assert something an operator
+  could see changed), which is a floor rather than a behaviour test, but
+  means no command can silently become a no-op. A drift guard now
+  requires every registry command to appear in a coverage list with a
+  reason, so the next one added can't quietly reopen the gap.
+
 - **Render-coverage sweep over all 41 `draw_*` entry points**: stub each
   with an early return and see whether the suite notices. 13 were
   covered, 28 were not. Six now are — the embedded shell pane, the four

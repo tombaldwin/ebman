@@ -619,22 +619,6 @@ async fn destructive_commands_still_refuse_under_deny_write() {
 // list at all, so nothing pinned that it kept doing so. All of these
 // were verified to refuse before being listed here; none of them was a
 // hole, but none of them was pinned either.
-const GATED_COMMANDS: &[&str] = &[
-    "restart",
-    "rebuild",
-    "terminate",
-    "stop",
-    "start",
-    "abort",
-    "scale 3",
-    "deploy build-900",
-    "delete-version build-900",
-    "custom-platform-delete arn:aws:elasticbeanstalk:eu-west-2:1:platform/my/1.0.0",
-    "unset-option aws:autoscaling:asg MinSize",
-    "env-edit",
-    "rds-attach",
-    "rollout build-900 --regions eu-west-2,us-east-1",
-];
 
 #[tokio::test]
 async fn every_gated_command_is_refused_in_read_only_mode() {
