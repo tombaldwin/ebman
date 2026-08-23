@@ -407,3 +407,20 @@ fn is_test_source_excludes_test_trees_and_nothing_else() {
     // A production file whose name merely contains "test".
     assert!(!is_test_source(Path::new("src/app/latest_stacks.rs")));
 }
+
+pub(super) const GATED_COMMANDS: &[&str] = &[
+    "restart",
+    "rebuild",
+    "terminate",
+    "stop",
+    "start",
+    "abort",
+    "scale 3",
+    "deploy build-900",
+    "delete-version build-900",
+    "custom-platform-delete arn:aws:elasticbeanstalk:eu-west-2:1:platform/my/1.0.0",
+    "unset-option aws:autoscaling:asg MinSize",
+    "env-edit",
+    "rds-attach",
+    "rollout build-900 --regions eu-west-2,us-east-1",
+];

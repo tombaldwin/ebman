@@ -1327,8 +1327,7 @@ aims at asserted.
   explicitly, since a refusal there has already set its own message.
   Fix mutation-verified by reverting it.
 
-Those nine were then done too, taking the count to **57 of 131
-covered, 74 remaining**: `env-edit`, `delete-version`,
+Then the rest, to **131 of 131**. The nine that came first were: `env-edit`, `delete-version`,
 `custom-platform-delete`, `rds-attach`, `unset-option`, `abort`,
 `rollout`, `swap`, `scale`.
 
@@ -1363,6 +1362,47 @@ Correctly **not** gated, checked rather than assumed: `:update` (prints
 the upgrade command for the detected install channel — touches no AWS)
 and no-arg `:upgrade` (lists compatible platforms, a read; the ARN form
 gates).
+
+#### Command coverage completed — 2026-08-23
+
+**131 of 131**, confirmed by a full re-sweep. The last 74 went in as one
+table-driven test rather than 74 hand-written ones.
+
+The mechanism: snapshot the state a command can move — mode, status,
+error, overlay discriminant, the flow/form/picker/detail/dlq/shell
+options, load state, toasts, help topic, scope, sort, filter, grouping,
+pending count, saved views, hidden columns — run the command, assert the
+snapshot changed. That is exactly the property the sweep measures, so a
+deleted, renamed or short-circuited arm fails it, and unlike a string
+needle it cannot be satisfied by chrome the command didn't draw.
+
+Only **2 of 74** moved nothing observable, both pure spawns:
+`:logs-tail` (pinned via the `log_tail_task` handle it leaves behind)
+and `:config-inspect` (the one command with nothing on `App` to look at
+— pinned by draining its message off the channel).
+
+**Be clear about what this proves.** The bar is "the command does
+*something*", not "the command does the *right* thing". It is a floor,
+not a substitute for behaviour tests. What it buys is that no command
+can silently become a no-op — which is the failure the sweep found 88
+instances of, and which is worse than a visible error because the
+operator believes it worked.
+
+- [x] **A drift guard so completeness survives the next command.** Both
+  sweeps hit 100%, and without a guard the next command added would
+  quietly make it 131 of 132. `every_registry_command_is_covered_by_some_test`
+  reads the registry out of `src/commands.rs` and requires every name to
+  appear in one of the five bulk tables or in `COVERED_INDIVIDUALLY`
+  *with a stated reason* — an entry with no justification is how a gap
+  gets papered over. Mutation-verified by injecting a new command into
+  the registry and watching the guard name it.
+
+  Its own parse is guarded too (`registry.len() > 120`), which earned
+  its keep immediately: the first version parsed **0** commands, because
+  registry entries are multi-line — `cmd_with_aliases(` on one line and
+  `"region",` on the next. Without that assertion an empty parse would
+  have read as a clean pass, which is the same "gate with nothing behind
+  it" shape this repo has now hit four times.
 
 #### Render-coverage sweep — 2026-08-23
 
