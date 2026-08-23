@@ -674,143 +674,14 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                 };
                 Row::new(cells).style(style).height(row_height)
             }
-            DisplayRow::Separator => {
-                // Resolve the next app's name + color via the same
-                // look-ahead pattern; we use the name for the Powerline
-                // ribbon and the color for the dashed fill in other styles.
-                let (next_app_name, next_color) = display
-                    .iter()
-                    .skip(row_idx + 1)
-                    .find_map(|r| match r {
-                        DisplayRow::Env(i) => {
-                            let env = &app.environments[*i];
-                            Some((
-                                env.application.clone(),
-                                app_colors
-                                    .get(&env.application)
-                                    .copied()
-                                    .unwrap_or(theme.muted),
-                            ))
-                        }
-                        _ => None,
-                    })
-                    .unwrap_or_else(|| (String::new(), theme.muted));
-                // Walk forward from this separator until the next one to
-                // collect the envs in this group; compute "3 envs · 1 red"
-                // style summary so operators see per-app health without
-                // scanning rows.
-                let group_envs: Vec<&Environment> = display
-                    .iter()
-                    .skip(row_idx + 1)
-                    .map_while(|r| match r {
-                        DisplayRow::Env(i) => Some(&app.environments[*i]),
-                        DisplayRow::Separator => None,
-                    })
-                    .collect();
-                let summary = summarize_group(&group_envs);
-                let dashes = "─".repeat(DIVIDER_FILL_WIDTH);
-                let count = columns.len();
-                if theme.icons == IconStyle::Powerline && !next_app_name.is_empty() {
-                    // Per-app coloured ribbon banner. NAME cell holds a
-                    // wedge-pill-wedge ribbon (left E0B2 cap + pill + right
-                    // E0B0 cap) so the next-app section starts with its
-                    // name visible in its own colour. Remaining cells stay
-                    // as dashes in the same colour for visual continuity.
-                    let summary_text = summary.clone();
-                    let cells: Vec<Cell> = columns
-                        .iter()
-                        .enumerate()
-                        .map(|(i, (label, _))| {
-                            if i == 0 && *label == "NAME" {
-                                Cell::from(Line::from(vec![
-                                    Span::styled("\u{e0b2}", Style::default().fg(next_color)),
-                                    Span::styled(
-                                        format!(" {next_app_name} "),
-                                        Style::default()
-                                            .fg(theme.contrast_text(next_color))
-                                            .bg(next_color)
-                                            .add_modifier(Modifier::BOLD),
-                                    ),
-                                    Span::styled("\u{e0b0}", Style::default().fg(next_color)),
-                                ]))
-                            } else if i == 1 {
-                                // Summary lives in the column right after
-                                // the name banner — long enough that the
-                                // counts have room and short enough that
-                                // it doesn't push into PLATFORM.
-                                Cell::from(Span::styled(
-                                    format!(" {summary_text} "),
-                                    Style::default().fg(theme.muted),
-                                ))
-                            } else {
-                                Cell::from(Span::styled(
-                                    dashes.clone(),
-                                    Style::default().fg(next_color),
-                                ))
-                            }
-                        })
-                        .collect();
-                    Row::new(cells)
-                } else if !next_app_name.is_empty() {
-                    // Non-Powerline path: previously rendered every cell as
-                    // dashes (200×─), so the banner read as a homogeneous
-                    // line with no app name and no break. Now: NAME cell
-                    // gets `── ▶ app ──`, second cell carries the summary,
-                    // remaining cells stay as the dash fill so the row
-                    // still scans as a visible group divider.
-                    let glyph = separator_glyph(theme.icons);
-                    let summary_text = summary.clone();
-                    let cells: Vec<Cell> = columns
-                        .iter()
-                        .enumerate()
-                        .map(|(i, (label, _))| {
-                            if i == 0 && *label == "NAME" {
-                                Cell::from(Line::from(vec![
-                                    Span::styled(
-                                        "── ".to_string(),
-                                        Style::default().fg(theme.muted),
-                                    ),
-                                    Span::styled(
-                                        format!("{glyph} "),
-                                        Style::default()
-                                            .fg(next_color)
-                                            .add_modifier(Modifier::BOLD),
-                                    ),
-                                    Span::styled(
-                                        next_app_name.clone(),
-                                        Style::default()
-                                            .fg(next_color)
-                                            .add_modifier(Modifier::BOLD),
-                                    ),
-                                    Span::styled(
-                                        " ──".to_string(),
-                                        Style::default().fg(theme.muted),
-                                    ),
-                                ]))
-                            } else if i == 1 {
-                                Cell::from(Span::styled(
-                                    format!(" {summary_text} "),
-                                    Style::default().fg(theme.muted),
-                                ))
-                            } else {
-                                Cell::from(Span::styled(
-                                    dashes.clone(),
-                                    Style::default().fg(next_color),
-                                ))
-                            }
-                        })
-                        .collect();
-                    Row::new(cells)
-                } else {
-                    let cells = (0..count).map(|_| {
-                        Cell::from(Span::styled(
-                            dashes.clone(),
-                            Style::default().fg(next_color),
-                        ))
-                    });
-                    Row::new(cells)
-                }
-            }
+            DisplayRow::Separator => separator_row(
+                display,
+                row_idx,
+                &app.environments,
+                app_colors,
+                &theme,
+                &columns,
+            ),
         })
         .collect();
 
@@ -947,6 +818,151 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
         ));
         f.render_widget(Clear, row);
         f.render_widget(para, row);
+    }
+}
+
+/// The group-separator row drawn between applications under `:group on`.
+///
+/// Lifted verbatim out of `draw_table`'s match arm — 137 lines of its
+/// 511. Unlike the `DisplayRow::Env` arm beside it, this one needs
+/// almost nothing: the env list to look ahead for the next group, the
+/// per-app colour map, and three theme fields. Taking `envs` rather than
+/// `&App` keeps that narrowness visible in the signature, and avoids
+/// borrowing all of `App` while `draw_table` still holds
+/// `&mut app.table_state`.
+fn separator_row<'a>(
+    display: &[DisplayRow],
+    row_idx: usize,
+    envs: &[crate::aws::Environment],
+    app_colors: &std::collections::HashMap<String, Color>,
+    theme: &Theme,
+    // The separator spans the table, so it needs one cell per column.
+    columns: &[(&'static str, SortKey)],
+) -> Row<'a> {
+    // Resolve the next app's name + color via the same
+    // look-ahead pattern; we use the name for the Powerline
+    // ribbon and the color for the dashed fill in other styles.
+    let (next_app_name, next_color) = display
+        .iter()
+        .skip(row_idx + 1)
+        .find_map(|r| match r {
+            DisplayRow::Env(i) => {
+                let env = &envs[*i];
+                Some((
+                    env.application.clone(),
+                    app_colors
+                        .get(&env.application)
+                        .copied()
+                        .unwrap_or(theme.muted),
+                ))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| (String::new(), theme.muted));
+    // Walk forward from this separator until the next one to
+    // collect the envs in this group; compute "3 envs · 1 red"
+    // style summary so operators see per-app health without
+    // scanning rows.
+    let group_envs: Vec<&Environment> = display
+        .iter()
+        .skip(row_idx + 1)
+        .map_while(|r| match r {
+            DisplayRow::Env(i) => Some(&envs[*i]),
+            DisplayRow::Separator => None,
+        })
+        .collect();
+    let summary = summarize_group(&group_envs);
+    let dashes = "─".repeat(DIVIDER_FILL_WIDTH);
+    let count = columns.len();
+    if theme.icons == IconStyle::Powerline && !next_app_name.is_empty() {
+        // Per-app coloured ribbon banner. NAME cell holds a
+        // wedge-pill-wedge ribbon (left E0B2 cap + pill + right
+        // E0B0 cap) so the next-app section starts with its
+        // name visible in its own colour. Remaining cells stay
+        // as dashes in the same colour for visual continuity.
+        let summary_text = summary.clone();
+        let cells: Vec<Cell> = columns
+            .iter()
+            .enumerate()
+            .map(|(i, (label, _))| {
+                if i == 0 && *label == "NAME" {
+                    Cell::from(Line::from(vec![
+                        Span::styled("\u{e0b2}", Style::default().fg(next_color)),
+                        Span::styled(
+                            format!(" {next_app_name} "),
+                            Style::default()
+                                .fg(theme.contrast_text(next_color))
+                                .bg(next_color)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled("\u{e0b0}", Style::default().fg(next_color)),
+                    ]))
+                } else if i == 1 {
+                    // Summary lives in the column right after
+                    // the name banner — long enough that the
+                    // counts have room and short enough that
+                    // it doesn't push into PLATFORM.
+                    Cell::from(Span::styled(
+                        format!(" {summary_text} "),
+                        Style::default().fg(theme.muted),
+                    ))
+                } else {
+                    Cell::from(Span::styled(
+                        dashes.clone(),
+                        Style::default().fg(next_color),
+                    ))
+                }
+            })
+            .collect();
+        Row::new(cells)
+    } else if !next_app_name.is_empty() {
+        // Non-Powerline path: previously rendered every cell as
+        // dashes (200×─), so the banner read as a homogeneous
+        // line with no app name and no break. Now: NAME cell
+        // gets `── ▶ app ──`, second cell carries the summary,
+        // remaining cells stay as the dash fill so the row
+        // still scans as a visible group divider.
+        let glyph = separator_glyph(theme.icons);
+        let summary_text = summary.clone();
+        let cells: Vec<Cell> = columns
+            .iter()
+            .enumerate()
+            .map(|(i, (label, _))| {
+                if i == 0 && *label == "NAME" {
+                    Cell::from(Line::from(vec![
+                        Span::styled("── ".to_string(), Style::default().fg(theme.muted)),
+                        Span::styled(
+                            format!("{glyph} "),
+                            Style::default().fg(next_color).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            next_app_name.clone(),
+                            Style::default().fg(next_color).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" ──".to_string(), Style::default().fg(theme.muted)),
+                    ]))
+                } else if i == 1 {
+                    Cell::from(Span::styled(
+                        format!(" {summary_text} "),
+                        Style::default().fg(theme.muted),
+                    ))
+                } else {
+                    Cell::from(Span::styled(
+                        dashes.clone(),
+                        Style::default().fg(next_color),
+                    ))
+                }
+            })
+            .collect();
+        Row::new(cells)
+    } else {
+        let cells = (0..count).map(|_| {
+            Cell::from(Span::styled(
+                dashes.clone(),
+                Style::default().fg(next_color),
+            ))
+        });
+        Row::new(cells)
     }
 }
 

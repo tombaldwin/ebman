@@ -541,3 +541,34 @@ async fn a_red_env_gets_a_red_status_pill_in_the_table() {
          proves nothing about the alert"
     );
 }
+
+#[tokio::test]
+async fn the_group_separator_row_renders_its_app_and_summary() {
+    // `:group on` draws a separator between applications carrying the
+    // next app's name and a "N envs · M red" summary. Extracting that
+    // 137-line match arm into `separator_row` was a pure refactor — but
+    // the arm turned out to have NO coverage at all (stub it to an empty
+    // row and all 1,135 tests still passed), so the refactor was
+    // unverified. This is the test that makes it verifiable.
+    let mut app = test_app();
+    app.environments = vec![
+        mk_env("alpha-prod", "ALPHAAPP", "Web", "Green"),
+        mk_env("beta-prod", "BETAAPP", "Web", "Red"),
+        mk_env("beta-staging", "BETAAPP", "Web", "Green"),
+    ];
+    app.view.invalidate();
+    app.rebuild_view();
+    app.execute_command("group on");
+    assert!(app.view.grouped(), "grouping is on");
+
+    let out = render(&mut app, 190, 30);
+    assert!(
+        out.contains("BETAAPP"),
+        "the separator names the group it introduces:\n{out}"
+    );
+    assert!(
+        out.contains("2 envs") && out.contains("1 red"),
+        "and summarises it — this is the per-app health an operator \
+         reads without expanding anything:\n{out}"
+    );
+}

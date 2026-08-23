@@ -59,6 +59,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Internal
 
+- `draw_table`'s group-separator arm extracted to `separator_row`: 137
+  lines out, 511 → 382. Verified as a pure refactor by diffing the
+  rendered frame before and after — byte-identical. The arm had no test
+  coverage at all (stubbing it to an empty row left the suite green), so
+  a render test went in first.
+
+
 - **Command-dispatch coverage: 131 of 131.** Same method as the render
   sweep on a second axis — neutralise each registry command, see whether
   the suite notices. It started at 43 of 131. The bulk went in as one
