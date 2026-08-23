@@ -32,8 +32,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   disagree with the fetch.
 
 - **Running ebman with a non-TTY stdout reported "Device not configured
-  (os error 6)".** That is what someone piping it in CI saw first. It
-  now says it needs a terminal and points at the headless subcommands.
+  (os error 6)"** and exited 1. That is what someone piping it in CI saw
+  first, and 1 is the documented code for an AWS-layer error — so a CI
+  script branching on it was told AWS had failed. It now says it needs a
+  terminal, points at the headless subcommands, and exits **2**, the
+  documented usage-error code.
 
 ### Fixed
 
