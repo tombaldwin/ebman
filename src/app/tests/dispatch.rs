@@ -1123,3 +1123,128 @@ fn every_render_surface_is_accounted_for() {
         found.len()
     );
 }
+
+/// String literals in `src` that embed a raw newline — the
+/// wrapped-literal bug.
+///
+/// Uses a real lexer. Five hand-rolled scanners preceded this one and
+/// each was wrong differently: a `//` inside a URL, `'"'` char literals,
+/// the closing half of a `\`-continued literal reading as a fresh
+/// opening quote, raw strings, and finally a runaway that flagged every
+/// line after the first mistake. `proc_macro2` already lexes Rust
+/// correctly and is already in the lock file; classifying its output is
+/// the only part that needs writing.
+pub(super) fn literals_with_embedded_newlines(src: &str) -> Vec<String> {
+    fn walk(ts: proc_macro2::TokenStream, out: &mut Vec<String>) {
+        for tree in ts {
+            match tree {
+                proc_macro2::TokenTree::Group(g) => walk(g.stream(), out),
+                proc_macro2::TokenTree::Literal(l) => {
+                    let text = l.to_string();
+                    // Only plain string literals. Raw strings (`r"…"`,
+                    // `r#"…"#`) are multi-line by design.
+                    if !text.starts_with('"') {
+                        continue;
+                    }
+                    // A `\` immediately before the newline is the
+                    // continuation — that is the CORRECT form.
+                    // A literal opening with `"\` + newline is the
+                    // idiom for "pre-formatted block": `--help`, the
+                    // WHATSNEW text, YAML fixtures. The author has
+                    // declared the layout is deliberate, so every
+                    // newline in it is too. Threshold tuning cannot
+                    // separate those from the bug — `--help` aligns its
+                    // options deeply — but this author signal can.
+                    if text.starts_with("\"\\\n") {
+                        continue;
+                    }
+                    const SOURCE_INDENT: usize = 2;
+                    let chars: Vec<char> = text.chars().collect();
+                    for (i, c) in chars.iter().enumerate() {
+                        if *c != '\n' || (i > 0 && chars[i - 1] == '\\') {
+                            continue;
+                        }
+                        let run = chars[i + 1..].iter().take_while(|c| **c == ' ').count();
+                        if run >= SOURCE_INDENT {
+                            let preview: String = text.chars().take(70).collect();
+                            out.push(preview.replace('\n', "\\n"));
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let Ok(ts) = src.parse::<proc_macro2::TokenStream>() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    walk(ts, &mut out);
+    out
+}
+
+#[test]
+fn the_wrapped_literal_scanner_is_accurate() {
+    // Every case here broke one of the five hand-rolled predecessors.
+    let bad = "fn f() { let m = \"some text\n              more text\"; }";
+    assert_eq!(
+        literals_with_embedded_newlines(bad).len(),
+        1,
+        "the actual bug: a literal split with no continuation"
+    );
+
+    for ok in [
+        "fn f() { let m = \"some text \\\n     more text\"; }", // `\` continuation
+        "fn f() { let u = \"https://sqs.eu-west-2.amazonaws.com/1/q\"; }",
+        "fn f() { out.push('\"'); }",
+        "fn f() { let v = raw.trim_matches('\"'); }",
+        "fn f() { /* a \"quote\" in a comment */ }",
+        "fn f() { body.push_str(\"ENV        TARGET      DEADLINE\\n\"); }",
+        "fn f() { let s = r\"raw\nmultiline\"; }", // raw strings are fine
+    ] {
+        assert!(
+            literals_with_embedded_newlines(ok).is_empty(),
+            "false positive on: {ok}"
+        );
+    }
+}
+
+#[test]
+fn no_wrapped_string_literal_leaves_an_indentation_hole() {
+    // A literal split across lines WITHOUT a trailing `\` embeds the
+    // newline AND the next line's indentation, so the operator sees a
+    // 20-space gap mid-sentence — and the status bar is one line, so a
+    // narrow terminal pushes the rest off-screen.
+    //
+    // CLAUDE.md records this shipping twice. It had shipped a third
+    // time, in main.rs's --control-socket length error, and an outside
+    // reviewer found it rather than us: the only guard was
+    // `assert_no_run_on_spaces`, called from two test sites, so it
+    // caught the bug solely for messages someone remembered to route
+    // through it.
+    let mut offenders: Vec<String> = Vec::new();
+    let mut stack = vec![std::path::PathBuf::from("src")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("src dir") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") || is_test_source(&path) {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("read");
+            for lit in literals_with_embedded_newlines(&text) {
+                offenders.push(format!("{}: {lit}", path.display()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "string literals with an embedded newline — a wrapped literal \
+         missing its `\\` continuation embeds the next line's indentation \
+         too: {offenders:#?}"
+    );
+}

@@ -104,7 +104,9 @@ async fn main() -> Result<()> {
                 // where it can be said out loud.
                 if path.as_os_str().len() > 100 {
                     eprintln!(
-                        "ebman: --control-socket path is too long for a unix socket                          ({} bytes; the OS caps at ~104) — pick a shorter path",
+                        "ebman: --control-socket path is too long for a unix \
+                         socket ({} bytes; the OS caps at ~104) — pick a \
+                         shorter path",
                         path.as_os_str().len()
                     );
                     std::process::exit(2);
