@@ -49,10 +49,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   unreachable and undrawn), but the stale state made `?` open the
   Action help instead of the global one.
 
-- **`:rds-attach` opened its form under `--deny-write`** and only
-  refused on submit, after the operator had filled in seven fields. The
-  write was always gated — nothing could escape — but `:env-edit`, the
-  sibling form command, refuses at open. It does now too.
+- **Seven form commands opened under `--deny-write`** and only refused
+  on submit, after the operator had filled the whole form in — nine
+  fields for `:scaling-triggers`. The writes were always gated, so
+  nothing could escape, but `:env-edit` has always refused at open and
+  the rest didn't. `:capacity`, `:scaling-triggers`, `:listener-edit`,
+  `:rds-attach`, `:subnets`, `:elb-subnets` and `:security-groups` now
+  all refuse at open.
 
 ### Internal
 

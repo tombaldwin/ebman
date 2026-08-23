@@ -1363,6 +1363,58 @@ the upgrade command for the detected install channel — touches no AWS)
 and no-arg `:upgrade` (lists compatible platforms, a read; the ARN form
 gates).
 
+#### Release panel on 0.31.1 — 2026-08-23
+
+Three seats, all **SHIP**, four actionable findings between them. Every
+one was a defect in my own work, and none was caught by my own review
+pass beforehand.
+
+**Operator.** I fixed `:rds-attach` to refuse at open and stopped there
+— but six siblings still opened their forms on a read-only fleet and
+refused only at submit: `:capacity`, `:scaling-triggers` (nine fields),
+`:listener-edit`, `:subnets`, `:elb-subnets`, `:security-groups`. Not a
+safety hole; every submit path gates. But it is precisely the annoyance
+the changelog claimed had been fixed, and fixing one instance of a class
+while writing it up as the class is the failure mode this backlog
+already has a rule about. All seven refuse at open now, all four new
+gates mutation-verified, and the changelog says what actually shipped.
+
+**Release engineer.** `Cargo.lock` must be regenerated in the *same*
+commit as the version bump — every CI and release job runs `--locked`,
+so a forgotten lockfile fails all 8 CI jobs and all 4 release builds.
+Also confirmed the semver gate will genuinely run on the bump commit
+rather than skip, and flagged `softprops/action-gh-release@v2` — an
+unpinned major tag running with `contents: write` — as the highest-value
+SHA-pin candidate. Tracked, not done: pinning it is a change to the
+release path and doesn't belong in the release it would first affect.
+
+**Skeptic.** Re-verified the coverage claims independently by stubbing
+four render surfaces and neutralising four commands, and they held. Its
+three findings:
+
+- [x] **No drift guard on the render side.** The command side had one; a
+  42nd `draw_*` would have taken 41-of-41 back to 41-of-42 silently.
+  `every_render_surface_is_accounted_for` pins the set now, with its own
+  parse guarded — mutation-verified by adding a 42nd surface.
+- [x] **My assert message overstated what it catches.** A *deleted* arm
+  falls through to `other =>`, sets "unknown command", moves the
+  fingerprint, and the test passes. Confirmed by removing the `:pin`
+  arm: `every_command_moves_observable_state` passed,
+  `every_registry_name_has_a_dispatch_arm` failed. The two cover both
+  cases; neither covers both alone. Wording fixed to say so.
+- [x] **`COVERED_INDIVIDUALLY` was honour-system.** Now checks the
+  command name appears in the test tree at all. **The first version of
+  that check was self-satisfying** — the list lives in a file the check
+  reads, so a fictional entry validated itself, and it duly passed a
+  deliberately fake entry. Caught only because I mutation-tested the
+  check itself. Fixed by cutting the list's own declaration out of the
+  searched text; re-verified against the same fake entry.
+
+Worth recording: **two of the four fixes above were themselves wrong on
+the first attempt**, and both were caught by mutating rather than
+reading. A check that validates itself and a mutation that silently
+fails to apply look identical to a passing test.
+
 #### Command coverage completed — 2026-08-23
 
 **131 of 131**, confirmed by a full re-sweep. The last 74 went in as one

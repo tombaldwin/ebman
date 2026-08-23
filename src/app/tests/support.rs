@@ -423,4 +423,14 @@ pub(super) const GATED_COMMANDS: &[&str] = &[
     "env-edit",
     "rds-attach",
     "rollout build-900 --regions eu-west-2,us-east-1",
+    // The rest of the refuse-at-open class. `:rds-attach` was fixed in
+    // isolation first; the release panel pointed out that six siblings
+    // still opened their forms on a read-only fleet and only refused at
+    // submit — `:scaling-triggers` with nine fields to fill in first.
+    "capacity",
+    "scaling-triggers",
+    "listener-edit 443",
+    "subnets",
+    "elb-subnets",
+    "security-groups",
 ];

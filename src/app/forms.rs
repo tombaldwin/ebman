@@ -402,6 +402,16 @@ impl App {
                 Some("no env selected — press 1-9, click a row, or type ' to jump by name".into());
             return;
         };
+        // Same class as `:capacity` / `:scaling-triggers` — refuse at
+        // open rather than after the operator has picked their subnets.
+        let cmd_label = match flavour {
+            MultiSelectFlavour::Subnets => ":subnets",
+            MultiSelectFlavour::ElbSubnets => ":elb-subnets",
+            MultiSelectFlavour::SecurityGroups => ":security-groups",
+        };
+        if self.deny_write(&env.name, cmd_label) {
+            return;
+        }
         let (title_prefix, summary, field_key, label, ns, opt_name) = match flavour {
             MultiSelectFlavour::Subnets => (
                 "subnets",
