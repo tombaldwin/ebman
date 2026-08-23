@@ -224,6 +224,7 @@ impl App {
             Some((self.status_message.clone(), self.error_message.clone()));
         let tx = self.msg_tx.clone();
         let gen = self.generation;
+        let fanout = self.fanout_epoch;
         if self.multi_regions.is_empty() {
             let aws = self.aws.clone();
             tokio::spawn(async move {
@@ -233,6 +234,7 @@ impl App {
                     .map_err(|e| flatten_err("list_environments", e));
                 let _ = tx.send(AppMsg::Refresh {
                     gen,
+                    fanout,
                     result,
                     partial_errors: Vec::new(),
                 });
@@ -289,6 +291,7 @@ impl App {
                 };
                 let _ = tx.send(AppMsg::Refresh {
                     gen,
+                    fanout,
                     result,
                     partial_errors,
                 });
@@ -810,9 +813,34 @@ impl App {
 
     pub(crate) fn apply_refresh(
         &mut self,
+        fanout: u64,
         result: Result<Vec<Environment>, String>,
         partial_errors: Vec<String>,
     ) {
+        // The fan-out set changed while this listing was in flight, so
+        // it describes the wrong regions: either single-region rows
+        // arriving after `:region all`, or every region's rows arriving
+        // after `:region off`. Applying it would put the old mode's
+        // table on screen under the new mode's header.
+        //
+        // Dropping it is only half the fix. `spawn_refresh` returns
+        // early while `load_state` is Loading, so `cmd_region`'s own
+        // call was a no-op — clearing the flag here and re-spawning is
+        // what actually gets the new mode on screen, instead of waiting
+        // out the 15s tick. Both arms of the match below would
+        // otherwise leave `load_state` Loading forever.
+        if fanout != self.fanout_epoch {
+            tracing::debug!(
+                target: "ebman",
+                stamped = fanout,
+                current = self.fanout_epoch,
+                "dropping fleet listing from a superseded fan-out mode"
+            );
+            self.load_state = LoadState::Idle;
+            self.loading_since = None;
+            self.spawn_refresh();
+            return;
+        }
         match result {
             Ok(envs) => {
                 // Track newly-Red transitions for the anomaly highlight.

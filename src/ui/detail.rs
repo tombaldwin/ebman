@@ -55,7 +55,21 @@ pub(super) fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
     }
 
     let cname_text = redact(&env.cname, app.view.redact);
-    let mut h2 = kv("Platform", &env.platform, theme);
+    // Which region this pane's data came from. Detail replaces the whole
+    // screen and draws no breadcrumb, so under a `:region all` fan-out
+    // there was nothing on screen telling the operator where these
+    // instances, metrics and log groups were fetched from — and after
+    // 0.30 made per-env work follow the row's region, "probably the
+    // session's" stopped being a safe assumption.
+    //
+    // Resolved through the SAME expression `App::detail_client` uses to
+    // pick the client, so the label cannot disagree with where the data
+    // actually came from. First field in the row, so it survives
+    // truncation on a narrow terminal.
+    let env_region = app.region_for(env);
+    let mut h2 = kv("Region", &env_region, theme);
+    h2.push(sep(theme));
+    h2.extend(kv("Platform", &env.platform, theme));
     if let Some(newer) = app.view.stale_platforms().get(&env.name) {
         h2.push(Span::styled(
             format!("  {}v{newer} available", stale_glyph(theme.icons)),

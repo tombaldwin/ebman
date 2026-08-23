@@ -77,19 +77,60 @@ jobs:
   semver:
     name: cargo-semver-checks
     runs-on: ubuntu-latest
-    # Only on a PR: it diffs the public API against the last published
-    # release, which is noise on a main-branch push between tags.
-    if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # This job used to be PR-only, on the reasoning that diffing the
+      # public API against the last published release is noise on a
+      # main push between tags. That half was right — between tags the
+      # manifest version EQUALS the published one, so any API change
+      # reads as "same version, different API" and main stays red until
+      # someone bumps. But it also meant the gate never ran on the one
+      # commit whose version claim actually ships: the release commit.
+      # 0.31.0 shipped a breaking change (a new pub field on a
+      # constructible struct) that nothing caught — it was found by
+      # running this tool by hand after the tag.
+      #
+      # So: gate on whether there is an unpublished version to validate.
+      # Between tags manifest == published and there is nothing to say;
+      # on the release commit they differ and the claim gets checked
+      # before the tag rather than after it.
+      - id: gate
+        name: Is there an unpublished version to validate?
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "pull request — always check."
+            exit 0
+          fi
+          manifest=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          published=$(curl -sS --max-time 20 -H 'User-Agent: ebman-ci' \
+            https://crates.io/api/v1/crates/ebman | jq -r '.crate.max_version' || true)
+          echo "manifest=$manifest published=$published"
+          if [ -z "$manifest" ]; then
+            echo "::error::could not read the package version out of Cargo.toml"
+            exit 1
+          fi
+          # Fail toward running the check, never toward skipping it: a
+          # crates.io blip must not silently turn the gate off.
+          if [ -z "$published" ] || [ "$published" = "null" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "crates.io unreachable — checking anyway."
+          elif [ "$manifest" = "$published" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "$manifest is already published — no new claim to validate."
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "$manifest is not published yet — validating the bump."
+          fi
       # ebman is lib + bin on crates.io, so a signature change in the
       # lib is a semver event. 0.30.2 shipped one that a human review
       # caught (`ui::series_anomaly_label` gained a parameter) — the
       # kind of thing that decides whether the next tag is 0.30.3 or
       # 0.31.0, and not something to notice by reading.
       - uses: obi1kenobi/cargo-semver-checks-action@v2
+        if: steps.gate.outputs.run == 'true'
         with:
           feature-group: default-features
 

@@ -1,4 +1,4 @@
-use std::{io, panic};
+use std::{io, io::IsTerminal, panic};
 
 use color_eyre::eyre::Result;
 use crossterm::{
@@ -401,7 +401,30 @@ KEYS:
     );
 }
 
+/// What to print when there's no terminal to draw on.
+///
+/// Pure so the wording is testable — the TUI's own status bar is one
+/// line and this is the same class of message, so it must not carry an
+/// embedded newline or a wrapped-literal indentation hole.
+fn no_tty_message() -> &'static str {
+    "ebman needs a terminal — stdout is not a TTY. \
+     Run it directly instead of piping or redirecting it; \
+     for scripting use the headless subcommands (`ebman envs --json`, \
+     `ebman lint`, `ebman action`), which write to a pipe quite happily."
+}
+
 fn enter_tui() -> Result<Tui> {
+    // Without this, a piped or redirected stdout reaches
+    // `enable_raw_mode` and comes back "Device not configured (os
+    // error 6)" — which names no cause and no remedy, and is the first
+    // thing anyone running ebman in CI sees. Checked here rather than
+    // at the call site so every path into the alt-screen is covered.
+    //
+    // Safe to fail loudly at this point: we have not entered the
+    // alternate screen yet, so stderr is still the user's terminal.
+    if !io::stdout().is_terminal() {
+        return Err(color_eyre::eyre::eyre!("{}", no_tty_message()));
+    }
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -550,7 +573,7 @@ fn dirs_log_dir() -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::prune_old_crash_reports;
+    use super::{no_tty_message, prune_old_crash_reports};
 
     // The original `decide_poll` + `cli_esc` tests moved to
     // `src/cli/mod.rs` (0.15 CLI-split). The original
@@ -618,5 +641,24 @@ mod tests {
         assert!(fresh.exists(), "fresh file should survive");
         assert!(!stale.exists(), "stale file should be deleted by TTL");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn no_tty_message_is_one_clean_line() {
+        let m = no_tty_message();
+        // A literal split across lines WITHOUT a `\` continuation
+        // embeds the newline and the next line's indentation. That has
+        // shipped here twice, so assert on the rendered string rather
+        // than trusting the source shape.
+        assert!(!m.contains('\n'), "embedded newline: {m:?}");
+        assert!(!m.contains("  "), "indentation hole: {m:?}");
+        // It has to say what to do instead, not just what went wrong —
+        // the raw "Device not configured (os error 6)" it replaces was
+        // accurate and useless.
+        assert!(m.contains("needs a terminal"), "{m}");
+        assert!(
+            m.contains("ebman envs --json"),
+            "must point at the headless path: {m}"
+        );
     }
 }

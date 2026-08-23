@@ -14,6 +14,13 @@ impl App {
     ///   - `all`  → multi-region fan-out across `extra_regions ∪ current`.
     ///   - `off` / `single` → return to single-region mode.
     ///   - `<name>` → switch to that region (rebuilds the AWS client).
+    ///
+    /// The two fan-out arms bump `fanout_epoch`. `spawn_refresh` skips
+    /// while a listing is already in flight, so without it the mode
+    /// change was invisible until the next 15s tick — the old mode's
+    /// rows stayed on screen under the new mode's header. `<name>` goes
+    /// through the picker, which rebuilds the client and bumps
+    /// `generation` instead; that already supersedes the listing.
     pub(crate) fn cmd_region(&mut self, rest: &[&str]) {
         match rest.first().copied() {
             Some("all") => {
@@ -29,6 +36,7 @@ impl App {
                 regions.sort();
                 regions.dedup();
                 self.multi_regions = regions.clone();
+                self.fanout_epoch = self.fanout_epoch.wrapping_add(1);
                 self.status_message = Some(format!(
                     "multi-region: fanning across {} regions ({})",
                     regions.len(),
@@ -38,6 +46,7 @@ impl App {
             }
             Some("off") | Some("single") => {
                 self.multi_regions.clear();
+                self.fanout_epoch = self.fanout_epoch.wrapping_add(1);
                 self.status_message = Some("multi-region off".into());
                 self.spawn_refresh();
             }

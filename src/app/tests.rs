@@ -3307,7 +3307,7 @@ async fn apply_refresh_keeps_watching_when_status_is_updating_even_if_health_is_
     );
     let mut env = mk_env("prod", "shop", "Web", "Green");
     env.status = "Updating".into();
-    app.apply_refresh(Ok(vec![env]), Vec::new());
+    app.apply_refresh(app.fanout_epoch, Ok(vec![env]), Vec::new());
     assert!(
         app.watching_deploys.contains_key("prod"),
         "Updating+Green is mid-deploy — watcher must remain armed"
@@ -3346,7 +3346,7 @@ async fn apply_refresh_keeps_armed_watchdog_when_status_is_updating_even_if_heal
     );
     let mut env = mk_env("prod", "shop", "Web", "Green");
     env.status = "Updating".into();
-    app.apply_refresh(Ok(vec![env]), Vec::new());
+    app.apply_refresh(app.fanout_epoch, Ok(vec![env]), Vec::new());
     assert!(
         app.armed_watchdogs.contains_key("prod"),
         "Updating+Green is mid-deploy — watchdog must remain armed"
@@ -4125,7 +4125,11 @@ async fn apply_refresh_drains_watching_deploy_on_green() {
             deadline_at: now + chrono::Duration::seconds(300),
         },
     );
-    app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Green")]), Vec::new());
+    app.apply_refresh(
+        app.fanout_epoch,
+        Ok(vec![mk_env("prod", "shop", "Web", "Green")]),
+        Vec::new(),
+    );
     assert!(
         app.watching_deploys.is_empty(),
         "Green should drain the watcher"
@@ -4157,7 +4161,11 @@ async fn apply_refresh_drains_watching_deploy_on_timeout() {
             deadline_at: now - chrono::Duration::seconds(60),
         },
     );
-    app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Red")]), Vec::new());
+    app.apply_refresh(
+        app.fanout_epoch,
+        Ok(vec![mk_env("prod", "shop", "Web", "Red")]),
+        Vec::new(),
+    );
     assert!(
         app.watching_deploys.is_empty(),
         "expired watcher should drain on timeout"
@@ -4869,7 +4877,11 @@ async fn refresh_early_disarms_armed_watchdog_when_env_goes_green() {
         },
     );
     // Refresh delivers a Green prod env.
-    app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Green")]), Vec::new());
+    app.apply_refresh(
+        app.fanout_epoch,
+        Ok(vec![mk_env("prod", "shop", "Web", "Green")]),
+        Vec::new(),
+    );
     assert!(
         app.armed_watchdogs.is_empty(),
         "Green refresh should clear the armed watchdog"
@@ -4896,7 +4908,11 @@ async fn refresh_leaves_watchdog_armed_when_env_still_non_green() {
             deadline_at: now + chrono::Duration::seconds(300),
         },
     );
-    app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Red")]), Vec::new());
+    app.apply_refresh(
+        app.fanout_epoch,
+        Ok(vec![mk_env("prod", "shop", "Web", "Red")]),
+        Vec::new(),
+    );
     assert!(
         app.armed_watchdogs.contains_key("prod"),
         "Red refresh must leave watchdog armed"
@@ -4959,7 +4975,11 @@ async fn apply_refresh_disarms_armed_watchdog_when_env_reaches_green() {
             deadline_at: now + chrono::Duration::seconds(300),
         },
     );
-    app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Green")]), Vec::new());
+    app.apply_refresh(
+        app.fanout_epoch,
+        Ok(vec![mk_env("prod", "shop", "Web", "Green")]),
+        Vec::new(),
+    );
     assert!(
         app.armed_watchdogs.is_empty(),
         "Green refresh should disarm"
@@ -4993,7 +5013,11 @@ async fn apply_refresh_dispatches_rollback_when_deadline_passed_and_env_non_gree
         },
     );
     let pending_before = app.pending_actions.len();
-    app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Red")]), Vec::new());
+    app.apply_refresh(
+        app.fanout_epoch,
+        Ok(vec![mk_env("prod", "shop", "Web", "Red")]),
+        Vec::new(),
+    );
     assert!(
         app.armed_watchdogs.is_empty(),
         "dispatch should drain the watchdog"
@@ -5040,6 +5064,7 @@ async fn apply_refresh_keeps_watchdog_armed_before_deadline_even_when_non_green(
     );
     let pending_before = app.pending_actions.len();
     app.apply_refresh(
+        app.fanout_epoch,
         Ok(vec![mk_env("prod", "shop", "Web", "Yellow")]),
         Vec::new(),
     );
@@ -5071,7 +5096,11 @@ async fn apply_refresh_errors_when_deadline_passed_but_no_snapshot() {
         },
     );
     // deploy_snapshots intentionally empty.
-    app.apply_refresh(Ok(vec![mk_env("prod", "shop", "Web", "Red")]), Vec::new());
+    app.apply_refresh(
+        app.fanout_epoch,
+        Ok(vec![mk_env("prod", "shop", "Web", "Red")]),
+        Vec::new(),
+    );
     let err = app.error_message.as_deref().unwrap_or("");
     assert!(
         err.contains("no pre-deploy snapshot"),
@@ -7656,6 +7685,7 @@ async fn a_region_that_fails_the_fan_out_is_reported_not_dropped() {
     // meant a whole region could vanish silently.
     let mut app = test_app();
     app.apply_refresh(
+        app.fanout_epoch,
         Ok(vec![mk_env("api-prod", "uflexi", "Web", "Green")]),
         vec!["eu-west-2: DescribeEnvironments failed".to_string()],
     );
@@ -7675,6 +7705,7 @@ async fn a_region_that_fails_the_fan_out_is_reported_not_dropped() {
 async fn a_clean_fan_out_reports_nothing() {
     let mut app = test_app();
     app.apply_refresh(
+        app.fanout_epoch,
         Ok(vec![mk_env("api-prod", "uflexi", "Web", "Green")]),
         Vec::new(),
     );
@@ -7759,6 +7790,7 @@ async fn a_partial_fan_out_does_not_clobber_an_operator_message() {
     app.error_message = Some("deploy failed: version build-901 not found".into());
     app.status_snapshot_at_refresh = Some((None, None));
     app.apply_refresh(
+        app.fanout_epoch,
         Ok(vec![mk_env("api-prod", "uflexi", "Web", "Green")]),
         vec!["region eu-west-2: DescribeEnvironments failed".to_string()],
     );
@@ -7777,6 +7809,7 @@ async fn a_partially_throttled_fan_out_still_backs_off() {
     // every tick and deepening the throttle.
     let mut app = test_app();
     app.apply_refresh(
+        app.fanout_epoch,
         Ok(vec![mk_env("api-prod", "uflexi", "Web", "Green")]),
         vec!["region eu-west-2: ThrottlingException: Rate exceeded".to_string()],
     );
@@ -7792,6 +7825,7 @@ async fn a_clean_fan_out_clears_the_back_off() {
     let mut app = test_app();
     app.consecutive_throttles = 3;
     app.apply_refresh(
+        app.fanout_epoch,
         Ok(vec![mk_env("api-prod", "uflexi", "Web", "Green")]),
         Vec::new(),
     );
@@ -8848,6 +8882,7 @@ async fn a_write_whose_row_left_the_table_still_goes_to_its_region() {
     // The refresh that put it on screen is what remembers the region.
     app.handle_msg(AppMsg::Refresh {
         gen: app.generation,
+        fanout: app.fanout_epoch,
         result: Ok(vec![env]),
         partial_errors: Vec::new(),
     });
@@ -8857,6 +8892,7 @@ async fn a_write_whose_row_left_the_table_still_goes_to_its_region() {
     // The next tick drops it — eu-west-2 failed, or the env terminated.
     app.handle_msg(AppMsg::Refresh {
         gen: app.generation,
+        fanout: app.fanout_epoch,
         result: Ok(vec![]),
         partial_errors: vec!["region eu-west-2: throttled".into()],
     });
@@ -8885,6 +8921,7 @@ async fn remembered_regions_do_not_survive_a_context_switch() {
     env.region = Some("eu-west-2".into());
     app.handle_msg(AppMsg::Refresh {
         gen: app.generation,
+        fanout: app.fanout_epoch,
         result: Ok(vec![env]),
         partial_errors: Vec::new(),
     });
@@ -9325,5 +9362,154 @@ async fn the_events_panel_renders_its_rows() {
     assert!(
         out.contains("EVENT-CANARY"),
         "the events panel draws its rows:\n{out}"
+    );
+}
+
+// ---------------------------------------------------------------
+// `:region all` / `:region off` — fan-out epoch
+// ---------------------------------------------------------------
+
+#[tokio::test]
+async fn fanout_mode_change_bumps_the_fanout_epoch() {
+    let mut app = test_app();
+    assert_eq!(app.fanout_epoch, 0);
+
+    app.execute_command("region all");
+    assert_eq!(app.fanout_epoch, 1, ":region all changes the region set");
+
+    app.execute_command("region off");
+    assert_eq!(app.fanout_epoch, 2, ":region off changes it back");
+
+    // A plain `:region <name>` goes through the picker, which rebuilds
+    // the client and bumps `generation` instead — that already
+    // supersedes the listing, so this axis must not move.
+    let before = app.fanout_epoch;
+    app.execute_command("sort name");
+    assert_eq!(
+        app.fanout_epoch, before,
+        "unrelated commands leave it alone"
+    );
+}
+
+#[tokio::test]
+async fn a_listing_from_a_superseded_fanout_mode_is_dropped_and_refetched() {
+    // The bug: `spawn_refresh` returns early while a listing is already
+    // in flight, so `cmd_region`'s own call was a no-op. The old mode's
+    // listing then arrived, matched on `generation`, and was applied —
+    // putting single-region rows on screen under a `:region all`
+    // header until the next 15s tick healed it.
+    let mut app = test_app();
+    app.handle_msg(AppMsg::Refresh {
+        gen: app.generation,
+        fanout: app.fanout_epoch,
+        result: Ok(vec![mk_env("home-only", "uflexi", "Web", "Green")]),
+        partial_errors: Vec::new(),
+    });
+    assert_eq!(app.environments.len(), 1);
+
+    app.execute_command("region all");
+    let stale = 0;
+    assert_ne!(stale, app.fanout_epoch);
+
+    // The single-region listing launched before the switch lands.
+    app.handle_msg(AppMsg::Refresh {
+        gen: app.generation,
+        fanout: stale,
+        result: Ok(vec![
+            mk_env("wrong-a", "uflexi", "Web", "Green"),
+            mk_env("wrong-b", "uflexi", "Web", "Green"),
+        ]),
+        partial_errors: Vec::new(),
+    });
+    assert_eq!(
+        app.environments.len(),
+        1,
+        "a listing from the superseded mode must not replace the table"
+    );
+    assert_eq!(app.environments[0].name, "home-only");
+
+    // ...and dropping it must not wedge refresh. `spawn_refresh` skips
+    // while Loading, so the drop has to clear the flag AND re-spawn or
+    // nothing fetches the new mode's rows.
+    assert!(
+        matches!(app.load_state, crate::app::LoadState::Loading),
+        "the drop must launch a replacement listing, not just discard"
+    );
+
+    // A listing stamped with the current epoch applies normally.
+    app.handle_msg(AppMsg::Refresh {
+        gen: app.generation,
+        fanout: app.fanout_epoch,
+        result: Ok(vec![
+            mk_env("eu-1", "uflexi", "Web", "Green"),
+            mk_env("us-1", "uflexi", "Web", "Green"),
+        ]),
+        partial_errors: Vec::new(),
+    });
+    assert_eq!(app.environments.len(), 2);
+}
+
+#[tokio::test]
+async fn fanout_change_does_not_bump_generation() {
+    // Why this is a separate axis rather than a `generation` bump.
+    // `:region all` changes which regions the FLEET LISTING covers; it
+    // does not change account or credentials. `generation` is the
+    // context-switch axis, and bumping it here would drop every
+    // in-flight per-env result that is still perfectly valid —
+    // including `ActionResult` for a dispatched write, whose
+    // `complete_pending` would never run, leaving the header's `⏳ N`
+    // chip stuck forever. `apply_rebuild` clears `pending_actions` for
+    // exactly that reason; there is nothing to clear here.
+    let mut app = test_app();
+    let gen_before = app.generation;
+
+    app.execute_command("region all");
+    app.execute_command("region off");
+
+    assert_eq!(
+        app.generation, gen_before,
+        "a fan-out change is not a context switch"
+    );
+    assert_eq!(app.fanout_epoch, 2, "it moved the narrower axis instead");
+}
+
+#[tokio::test]
+async fn detail_header_names_the_rows_region_not_the_sessions() {
+    // Detail replaces the whole screen and draws no breadcrumb, so
+    // under a `:region all` fan-out nothing on screen said which region
+    // the instances, metrics and log groups had been fetched from.
+    // Since 0.30 made per-env work follow the ROW's region, "probably
+    // the session's" is not a safe assumption either.
+    let mut app = test_app();
+    let mut env = mk_env("api-prod", "uflexi", "Web", "Green");
+    env.region = Some("eu-west-2".into());
+    app.environments = vec![env];
+    app.view.invalidate();
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+
+    assert_eq!(
+        app.context.region, "us-east-1",
+        "precondition: the session is somewhere else entirely"
+    );
+
+    let out = render(&mut app, 160, 40);
+    assert!(
+        out.contains("Region: eu-west-2"),
+        "Detail must name the row's region.\n{out}"
+    );
+    assert!(
+        !out.contains("Region: us-east-1"),
+        "naming the session's region here is the bug, not the fix.\n{out}"
+    );
+
+    // The label is only worth anything if it agrees with where the
+    // pane's data actually comes from. Same expression, so it cannot
+    // drift: `detail_client` resolves through `region_for` too.
+    assert_eq!(
+        app.detail_client().region_for_tests(),
+        "eu-west-2",
+        "the header would be describing a different region than the fetch"
     );
 }
