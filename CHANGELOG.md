@@ -6,6 +6,92 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.31.0] — 2026-08-23 — gates, and the tail of the region work
+
+A minor rather than a patch because the library's public API changed —
+see **Breaking** below. The binary is unaffected.
+
+### Fixed
+
+- **`ebman audit --action` matched only half your history, and
+  `audit replay` couldn't replay a TUI restart.** The TUI audits every
+  action under its Debug name (`RestartAppServer`) and `ebman action`
+  wrote `Restart`, so one operation had two names in one log — and
+  replay accepted only the CLI's spelling, which meant the most common
+  restart in any log, the one dispatched from the TUI, came back as
+  "isn't replayable via the CLI". The CLI writes the canonical name
+  now and replay accepts both, because existing logs span the change.
+
+- **`:ssm-run` failed outright on environments with more than 50
+  instances** — the `SendCommand` API cap, hit on a triage path reached
+  precisely when a large environment is misbehaving. It sends in
+  batches now, and a batch that fails to send reports those instances
+  by name instead of discarding the successful ones.
+
+- **EBL010 couldn't tell an untagged environment from an unloaded
+  one.** A failed `ListTagsForResource` and "this environment has no
+  tags" were the same value, so the fetch failure silently disabled the
+  rule — and an environment with no tags at all, the case the rule most
+  wants to catch, was invisible to it.
+
+- **`ebman action <unknown-verb>` built an AWS client and ran the
+  safety gates before noticing the verb was wrong**, so with no
+  credentials it reported a credential failure and on a frozen fleet it
+  reported the freeze. A malformed command is malformed whichever state
+  the fleet is in; it exits 2 with the usage line now, before any
+  side effect.
+
+- **A confirm_token superseded by a newer plan reported "unknown
+  confirm_token"** — the same answer a typo gets, though the two want
+  different next moves from an MCP agent.
+
+- **The breadcrumb named the session's region beside another region's
+  environment**, and the EC2 console link for a Detail instance pointed
+  at the session's region. Both were compensations for pre-0.30
+  behaviour that became wrong once 0.30 fixed the data underneath them.
+
+- **`icons = "ascii"` still emitted five unicode glyphs** — the header
+  delta arrows, the sort marker and the Metrics anomaly badge, which
+  had `▲` baked into its message string.
+
+- **JSON is parsed by a JSON parser.** Seven places routed JSON through
+  a YAML parser on the reasoning that JSON is a YAML subset — true, and
+  beside the point, since it applies every YAML feature to input ebman
+  doesn't control. Includes both LLM response bodies, `terraform.tfstate`
+  and the lint baseline.
+
+### Changed
+
+- **An empty or truncated `terraform.tfstate` is no longer valid
+  input.** It used to parse as an environment-free state, so
+  `ebman drift --exit-code` passed **green** on a broken file. It now
+  reports "no terraform.tfstate found".
+
+- **`:settings` resolves its config-file banner once**, at open, rather
+  than on every repaint.
+
+### Breaking (library only)
+
+- `ui::series_anomaly_label` takes an `IconStyle` parameter.
+- `ui::event_severity_style`, `ui::visible_window`, `ui::StatusAlert`,
+  `ui::format_instance_counts` and `ui::status_alert` are no longer
+  publicly reachable. All five were internal render helpers that were
+  public by accident; none is used outside the `ui` module. The
+  narrowing was a side effect of the module split and is kept
+  deliberately.
+
+### Internal
+
+- **Four CI gates added**: `cargo-deny` (advisories, licences — nothing
+  had ever checked 61 dependencies against RUSTSEC), `cargo-semver-checks`
+  on PRs, the [candor](https://github.com/tombaldwin/candor-rust)
+  effect/layer policy in `.candor/policy`, and least-privilege workflow
+  permissions (closing four CodeQL alerts).
+- `src/ui.rs` split 5,046 → 199 lines across eight modules;
+  `draw_table` decomposed 695 → 512 with its column rules extracted and
+  tested.
+- Test count 1,059 → 1,100.
+
 ## [0.30.2] — 2026-08-22 — the fixes 0.30.1 pointed at
 
 ### Fixed

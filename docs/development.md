@@ -9,6 +9,11 @@ cargo clippy --all-targets -- -D warnings
 
 You don't need AWS credentials: `cargo test` stubs the SDK, and `cargo run -- --demo` runs the TUI against a synthetic fleet.
 
+CI additionally runs `cargo-deny` (advisories, licences), `cargo-semver-checks`
+(public-API breakage, on PRs), and the [candor](https://github.com/tombaldwin/candor-rust)
+effect/layer policy in `.candor/policy`. See CONTRIBUTING.md for what each one
+fails on.
+
 See [`ARCHITECTURE.md`](../ARCHITECTURE.md) for the module map and the invariants the compiler doesn't enforce, and [`CONTRIBUTING.md`](../CONTRIBUTING.md) for the pre-PR checklist. See `BACKLOG.md` for in-flight and planned work, and `CLAUDE.md` for the AI-assisted-contributor rules (the project has been developed heavily with Claude Code).
 
 ## Distribution

@@ -31,6 +31,21 @@ cargo test
 
 CI runs all three, and clippy is `-D warnings`, so a warning is a failure.
 
+Four more gates run in CI that you can't easily reproduce from that list,
+so it's worth knowing what they check before one surprises you:
+
+| gate | what fails it |
+|---|---|
+| `cargo-deny` | a new RUSTSEC advisory, a yanked crate, or a dependency licence outside `deny.toml`'s allow-list |
+| `cargo-semver-checks` | a breaking change to the **public** API on a PR — ebman is lib + bin on crates.io, so this decides whether the next tag is a patch or a minor |
+| [candor](https://github.com/tombaldwin/candor-rust) | an effect/layer violation of `.candor/policy` — chiefly, a render path that reaches the network, the LLM, the filesystem or the environment |
+| CodeQL | GitHub's default scanning, including workflow permissions |
+
+`cargo deny check` runs locally if you have it. The candor gate needs the
+dylint lint rather than `candor-scan`: the syntactic scanner under-reports
+effects that cross into an unclassified dependency, and says so in its
+output when it does.
+
 Beyond green:
 
 - **New pure logic gets a test.** Any new helper, parser or formatter needs at
