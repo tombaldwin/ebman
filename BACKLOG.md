@@ -1266,6 +1266,24 @@ Checked and sound: no name collisions across the eleven `ui` modules, so the glo
 
 Standing tally worth keeping: **four tests written this session passed under the mutation they were written to catch.** Every one was caught by checking the mutation applied AND that the test failed — not by writing the test carefully.
 
+#### Pre-0.31.0 review — 2026-08-23
+
+Focused on what a RELEASE decision turns on, rather than re-reading code already reviewed twice.
+
+Checked and sound:
+
+- **`release.yml` permissions.** No job writes to the repo except `publish`, which creates the GitHub Release via `softprops/action-gh-release` and has `contents: write`. `build` uses `upload-artifact` (job-scoped), `crates_io` authenticates with its own token, and `mcp_registry` edits `server.json` in the working copy only. **Untested until the next tag** — it is the one change in this lineup that cannot be exercised before it matters. Failure mode is a clear 403 at publish time, not a silent bad release.
+- **`cargo-semver-checks` config.** `feature-group: default-features` is the only sensible setting: the crate has no `[features]` section.
+- **`deny.toml` waivers.** Exactly six live advisories, exactly six waivers, no stale entries and no gaps — verified against a run with `ignore = []`.
+- **Release binary smoke.** Builds clean, `--version` correct, unknown subcommand and unknown action both exit 2.
+
+- [ ] **`--demo` without a TTY reports a raw OS error** — "Device not configured (os error 6)" from `enter_tui`, rather than "ebman needs a terminal". Confirmed PRE-EXISTING and not a regression: `src/main.rs` is untouched in this lineup and the installed 0.30.2 behaves identically. Cosmetic, and it is what someone piping ebman in CI will see first.
+
+Two methodology errors of my own, caught during the review and worth recording because they are the same class the candor session and I had just finished discussing:
+
+1. I compared the waiver list against `cargo deny`'s output **with the waivers applied** — circular, and it made all six look stale.
+2. The corrected run used `cargo deny --config X check` instead of `cargo deny check --config X`, which cargo-deny rejected as a usage error. I read the resulting empty output as "no live advisories". A proxy standing in for a signal, indistinguishable from success when it fails — ten minutes after writing that sentence to someone else.
+
 #### Important (need live verification or a design pass)
 - [x] **Cost Explorer pagination** — Shipped. `fetch_env_costs` follows `NextPageToken` (`aws/cost.rs`). The `MAX_COST_PAGES = 20` cap now warns, returns `EnvCosts { truncated }`, and a truncated walk is neither cached nor allowed to replace a complete in-memory map; `:cost status` and `:fleet-cost` both say when what's on screen is partial.
 - [x] **logs-tail `next_token` follow** — Shipped. `fetch_recent_log_events` follows `next_token` up to `MAX_PAGES_PER_POLL = 5` with boundary-millisecond dedupe (`aws/logs.rs`). The carry is keyed on whether the watermark moved rather than on `truncated`, so a stalled watermark keeps its skip set and the same lines aren't re-emitted every poll.
