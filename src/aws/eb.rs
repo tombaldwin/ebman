@@ -1910,7 +1910,11 @@ impl AwsClient {
             if let Some(t) = token {
                 req = req.next_token(t);
             }
-            let resp = req.send().await.wrap_err("DescribeEnvironments failed")?;
+            // Through `wrap_aws`, not bare `wrap_err`: this is the
+            // call whose failure arms the refresh back-off, so it is
+            // the one that most needs a real error code rather than a
+            // substring match on a `Debug` dump.
+            let resp = super::wrap_aws(req.send().await, "DescribeEnvironments failed")?;
             Ok((resp.environments.unwrap_or_default(), resp.next_token))
         })
         .await?

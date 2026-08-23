@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **An environment named `throttling-test` could slow the whole fleet
+  listing.** Classifying an AWS error meant lowercasing its `Debug`
+  dump and substring-matching for "throttling", and the resulting
+  message was then substring-matched *again* by the predicate that arms
+  the refresh back-off. Any error whose text merely contained the word
+  — an `AccessDenied` naming that environment, say — backed the refresh
+  off over a permissions problem that backing off cannot fix.
+
+  Errors now carry the code AWS itself reported. Classification happens
+  once, at the boundary, where the SDK error is still typed.
+
+
 - **`:region all` / `:region off` left the previous mode's rows on
   screen.** `spawn_refresh` skips while a listing is already in flight,
   so the mode change was a no-op if it landed mid-refresh — the
@@ -68,6 +80,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   indentation.
 
 ### Internal
+
+- **The AWS request id is captured.** It was never recorded anywhere, so
+  when AWS support asked for one there was nothing to give them. It now
+  rides in the error chain and reaches `ebman.log`.
+
+- `aws::wrap_aws` captures the error code and request id off an
+  `SdkError` while it is still typed, as an `AwsErrorMeta` in the eyre
+  chain — recoverable by `downcast_ref` precisely because it is our own
+  type, which a generic `ProvideErrorMetadata` is not. The fleet listing
+  is converted; the `Debug` sniff remains as a fallback for the call
+  sites that aren't yet, so behaviour is unchanged where it hasn't been
+  improved.
+
 
 - **The CLI write gate is one function, and a guard keeps it that way.**
   The freeze check and the config-pin check both existed and all four
