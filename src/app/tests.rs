@@ -9051,9 +9051,19 @@ fn json_surfaces_are_parsed_by_a_json_parser() {
     // Pinned by call site rather than by behaviour: the hazard is the
     // *parser choice*, and a test that fed YAML in would only prove
     // one of its features is absent.
+    // Extended after the first version missed four more: the lint
+    // baseline parser (whose own error message says "baseline JSON
+    // parse failed"), and three round-trip tests asserting output is
+    // valid JSON while reading it with a YAML parser — which accepts
+    // things JSON rejects, so they asserted less than they appeared
+    // to. A guard scoped to the files I happened to be editing is the
+    // same mistake as a backlog entry nobody re-checks.
     for (name, src) in [
         ("llm.rs", include_str!("../llm.rs")),
         ("terraform.rs", include_str!("../terraform.rs")),
+        ("lint.rs", include_str!("../lint.rs")),
+        ("audit.rs", include_str!("../audit.rs")),
+        ("cli/mod.rs", include_str!("../cli/mod.rs")),
     ] {
         let code: String = src
             .lines()
@@ -9065,8 +9075,11 @@ fn json_surfaces_are_parsed_by_a_json_parser() {
             "{name} parses JSON with the YAML parser again"
         );
     }
-    // `saved_config.rs` is exempt and stays exempt: EB saved
-    // configurations really are YAML.
+    // `saved_config.rs` and `eb_cli.rs` are exempt and stay exempt:
+    // EB saved configurations and `.elasticbeanstalk/config.yml`
+    // really are YAML. They are also the ONLY two remaining
+    // `serde_yml` consumers, which is what makes the RUSTSEC waiver
+    // on it a two-file problem rather than a nine-file one.
     assert!(
         include_str!("../saved_config.rs").contains("serde_yml"),
         "saved configs are genuinely YAML — if this flipped, check why"

@@ -1196,8 +1196,10 @@ mod tests {
         );
         // Escaped string appears in both `text` and `detail`.
         assert!(body.contains("\\\"deploy started\\\""));
-        // Round-trip via serde_yml's JSON-tolerant path: must parse.
-        let _: serde_yml::Value = serde_yml::from_str(&body)
+        // A JSON parser: the webhook body IS JSON, and a YAML reader
+        // accepts things JSON rejects — so this asserted less than it
+        // appeared to.
+        let _: serde_json::Value = serde_json::from_str(&body)
             .expect("webhook body must be parseable JSON / YAML-superset");
     }
 
