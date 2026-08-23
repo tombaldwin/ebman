@@ -526,7 +526,16 @@ impl Server {
             // plan/confirm checking `dispatching` must see it true.
             self.dispatching
                 .store(true, std::sync::atomic::Ordering::SeqCst);
-            st.pending.take().expect("checked above")
+            // Infallible: the `is_none()` check a few lines up runs
+            // under this same `writes` lock, which is not released
+            // between there and here, so nothing can take `pending` in
+            // between. Restructuring to carry the value down from that
+            // check would need the lock guard threaded through the
+            // early-return arms for no safety gain.
+            #[allow(clippy::expect_used)]
+            {
+                st.pending.take().expect("checked above under this lock")
+            }
         };
 
         // RAII reset (0.28 pre-tag review I2): if `dispatch_write`

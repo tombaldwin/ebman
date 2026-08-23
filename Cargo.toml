@@ -76,6 +76,20 @@ serde_yml = "0.0"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 sha2 = "0.10"
 
+[lints.clippy]
+# Compiler-enforced versions of two rules this codebase already follows
+# by discipline. Measured before turning them on: 0 `unwrap` and 2
+# `expect` in ~82k lines of non-test code, both on a static table that
+# cannot fail. Discipline is what got it there; nothing stopped the next
+# commit from breaking it.
+#
+# Deliberately NOT enabling `clippy::pedantic` wholesale — it reports
+# 1712 warnings here, which is a week of `#[allow]` for nothing.
+# `indexing_slicing` stays off too: 152 sites, most of them
+# `Layout::split()` results that are correct by construction today.
+unwrap_used = "deny"
+expect_used = "deny"
+
 [dev-dependencies]
 # Used by one test: a source-scanning guard for the wrapped-literal
 # bug needs to know where string literals begin and end, and five

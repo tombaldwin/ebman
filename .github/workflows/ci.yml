@@ -32,6 +32,11 @@ jobs:
         run: cargo build --locked --all-targets
       - name: Test
         run: cargo test --locked --all-targets
+      # `--all-targets` silently SKIPS doctests. Both current ones are
+      # `ignore`d so nothing is lost today, but the gate did not exist —
+      # a doctest added tomorrow would never run.
+      - name: Doctests
+        run: cargo test --locked --doc
 
   fmt:
     name: rustfmt
@@ -66,6 +71,15 @@ jobs:
       # ship green — the gate claimed "builds on 1.94.1" while the suite
       # it gates was never compiled against it.
       - run: cargo test --locked
+
+  machete:
+    name: cargo-machete (unused deps)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Found `tokio-stream` and `aws-types` on its first run — both
+      # were direct dependencies with zero references in src/.
+      - uses: bnjbvr/cargo-machete@main
 
   deny:
     name: cargo-deny (advisories, licences, bans)

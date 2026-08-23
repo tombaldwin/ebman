@@ -1,3 +1,8 @@
+// Same exemption as the lib: test code may panic freely, because a
+// panic in a test IS the failure report. Production code in this file
+// is still checked — the non-test build denies.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 use std::{io, io::IsTerminal, panic};
 
 use color_eyre::eyre::Result;
@@ -178,6 +183,10 @@ async fn main() -> Result<()> {
                     splash::draw_splash(terminal, splash_frame, &splash_icons)?;
                     splash_frame = splash_frame.wrapping_add(1);
                     if app_ready.is_some() && splash_started.elapsed() >= SPLASH_MIN_DURATION {
+                        // Infallible: guarded by `app_ready.is_some()`
+                        // on the line above, in the same synchronous
+                        // block — nothing runs between them.
+                        #[allow(clippy::expect_used)]
                         break app_ready
                             .take()
                             .expect("app_ready was Some, just checked above");
