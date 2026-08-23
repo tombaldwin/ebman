@@ -280,6 +280,11 @@ async fn detail_and_why_and_dlq_use_the_rows_own_region() {
 // panic or a blank pane costs most. These are smoke tests, not
 // golden-frame tests: they assert the screen draws and puts its own
 // identifying content on the buffer.
+//
+// All three are covered now. `draw_shell` was left out at first on the
+// belief that it needed a real PTY; it does not, and that belief was
+// recorded twice without being checked. Each test was verified by
+// stubbing its screen out and confirming the test fails.
 
 #[tokio::test]
 async fn the_dlq_viewer_renders_its_messages() {
@@ -315,4 +320,44 @@ async fn the_dlq_viewer_renders_its_messages() {
         "the message id renders:\n{out}"
     );
     assert!(out.contains("wk-prod"), "and the env it belongs to:\n{out}");
+}
+
+#[tokio::test]
+async fn the_embedded_shell_pane_renders_its_transcript() {
+    // This one was recorded twice as "needs a PTY, can't test". That was
+    // wrong: `ShellSession`'s `writer` / `master` / `child` are all
+    // `Option` precisely so `--demo` can build a session with no
+    // subprocess, and `resize` is a no-op when `master` is `None`. So
+    // the pane renders perfectly well in a test — the blocker was a
+    // guess that never got checked.
+    let mut app = test_app();
+    let shell = crate::shell::ShellSession::demo(
+        "i-0canary123".into(),
+        "$ systemctl status web\nactive (running)\n",
+        28,
+        140,
+    );
+    // `demo` parks the transcript in the typewriter, not the parser —
+    // the run loop drains it a couple of characters per frame. Drain it
+    // fully here so the assertion is about the render, not the pacing.
+    for _ in 0..500 {
+        shell.tick_demo_typer();
+    }
+    shell.resize(28, 140);
+    app.current_shell = Some(Box::new(shell));
+    app.mode = crate::app::Mode::Shell;
+
+    let out = render(&mut app, 150, 30);
+    assert!(
+        out.contains("i-0canary123"),
+        "the pane titles itself with the instance it is attached to:\n{out}"
+    );
+    assert!(
+        out.contains("F12 detach"),
+        "and keeps the detach hint visible — it is the way out:\n{out}"
+    );
+    assert!(
+        out.contains("active (running)"),
+        "vt100 screen contents reach the ratatui buffer:\n{out}"
+    );
 }

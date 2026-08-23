@@ -37,6 +37,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Internal
 
+- **Render-coverage sweep over all 41 `draw_*` entry points**: stub each
+  with an early return and see whether the suite notices. 13 were
+  covered, 28 were not. Six now are — the embedded shell pane, the four
+  Detail tabs (events / instances / queue / logs) and the form overlay —
+  each verified by stubbing its surface and confirming the test fails.
+  `draw_shell` had been recorded twice as needing a real PTY; it does
+  not, since `ShellSession` is built to run without a subprocess in
+  `--demo`. The remaining 23 are listed in `BACKLOG.md`.
+
 - **`src/app/tests.rs` split 9,515 lines → 16 modules**, one per surface,
   mirroring the `app/` submodule layout — the same pass `ui.rs` had.
   Shared fixtures live in `support.rs`. Bodies moved unchanged apart
