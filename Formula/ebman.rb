@@ -12,24 +12,24 @@
 class Ebman < Formula
   desc "k9s-style TUI for AWS Elastic Beanstalk"
   homepage "https://github.com/tombaldwin/ebman"
-  version "0.33.0"
+  version "0.34.0"
   license "MIT OR Apache-2.0"
 
   if OS.mac?
     if Hardware::CPU.arm?
       url "https://github.com/tombaldwin/ebman/releases/download/v#{version}/ebman-v#{version}-aarch64-apple-darwin.tar.gz"
-      sha256 "62c54c234484285f19224d0cb9b254f38717719526f6d03f0961ea9e27f7fd0e"
+      sha256 "f9cc0e8336d2966187b79da5c1d49fa370466a72bbfa45ce2f375d98beb5280d"
     else
       url "https://github.com/tombaldwin/ebman/releases/download/v#{version}/ebman-v#{version}-x86_64-apple-darwin.tar.gz"
-      sha256 "8d7b81a8a0f48cdd01b82e4515b9f8daaad7ccfa42e998903bff9642f8eefd14"
+      sha256 "731ecc1a6b12c74e83121550fda6ff4d6ff09ddbfb2f1ee298195a0e239e5b1f"
     end
   elsif OS.linux?
     if Hardware::CPU.arm?
       url "https://github.com/tombaldwin/ebman/releases/download/v#{version}/ebman-v#{version}-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "a2ff296a3ee489fa9dec9ada27f62ef2861ed2c45048e269c32c7cbfc0670066"
+      sha256 "91e56ce175e763db7c233f796289b1f41d7bbb71c107df2b2cbc838025bd75fc"
     else
       url "https://github.com/tombaldwin/ebman/releases/download/v#{version}/ebman-v#{version}-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "b29bb78c2f5aed20a17e08b167534c1b36faf105409c4d9b2a6926fd61dda76a"
+      sha256 "5c414355c9357b9b7a787c129575f450c8ce7fbe7a697e780ea83cb2c5d1fbb1"
     end
   end
 
