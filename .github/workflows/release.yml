@@ -95,7 +95,7 @@ jobs:
           tar -czf "$stage.tar.gz" "$stage"
           shasum -a 256 "$stage.tar.gz" | tee "$stage.tar.gz.sha256"
       - name: Upload as workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ebman-${{ matrix.target }}
           path: |
