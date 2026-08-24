@@ -137,7 +137,7 @@ jobs:
         with:
           subject-path: dist/ebman-*.tar.gz
       - name: Attach artefacts to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           # GITHUB_REF_NAME is the tag, e.g. v0.2.0.
           tag_name: ${{ github.ref_name }}
