@@ -941,6 +941,30 @@ The write/freeze pre-tag review (2 lenses) fixed 2 Critical + 2 Important + 1 Mi
   human output makes it; the JSON output flattens it back. Noted
   2026-08-24; verified still live at 0.33.0.
 
+- [ ] **The six `Vec`-shaped Detail fetches still pair a value with a
+  `loading_*: bool`.** Surfaced 2026-08-24 by the `Fetch<T>` work, which
+  converted the two pairs that carried their own `Result` and stopped
+  there. These six (`events`, `instances`, `queues`, `metrics`, `tags`,
+  `env_vars`) settle into `DetailState`'s *shared* error slot instead, so
+  wrapping them in `Fetch<T>` adds an error arm nothing fills and changes
+  what the footer shows.
+
+  The decision it needs is a UI one, not a mechanical one: per-section
+  errors, or keep the single panel error. Recorded here rather than
+  inside the completed `Fetch<T>` entry because a follow-up buried in a
+  `[x]` item is invisible to anyone scanning for open work. See the
+  `Collapse the Option<T> + loading_* pairs` entry for the full analysis.
+
+- [ ] **`draw_table`'s `DisplayRow::Env` arm is still inline** (~200
+  lines of a 389-line function). The `Separator` arm was extracted in
+  0.30; this one captures ~30 `App` fields and would need a context
+  struct, which is where the value per edit drops off sharply. Same
+  reason as above for surfacing it: the note lived inside a completed
+  entry. See the `Separator branch extracted` entry for what the attempt
+  learned (holding `&App` in the context does not compile — the rows
+  borrow `app.environments` and it defeats the field-level split that
+  lets `&mut app.table_state` coexist).
+
 - [ ] **CLI rollout/auto-rollback freeze is start-only** (bugs M3) — a freeze declared mid-rollout doesn't stop later regions; matches the pin start-gate semantics, flagged as a conscious choice.
 
 #### Also queued for 0.28
