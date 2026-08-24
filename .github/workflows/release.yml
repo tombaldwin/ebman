@@ -78,7 +78,7 @@ jobs:
             runner: macos-latest
             archive_ext: tar.gz
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -95,12 +95,16 @@ jobs:
           tar -czf "$stage.tar.gz" "$stage"
           shasum -a 256 "$stage.tar.gz" | tee "$stage.tar.gz.sha256"
       - name: Upload as workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ebman-${{ matrix.target }}
           path: |
             ebman-*.tar.gz
             ebman-*.tar.gz.sha256
+          # Default is `warn`. If staging produced nothing, a warning
+          # buried in a green job would let `publish` attach an empty
+          # asset set to a real tag. Fail the build instead.
+          if-no-files-found: error
 
   publish:
     name: publish release
@@ -126,8 +130,8 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: ebman-*
@@ -137,7 +141,7 @@ jobs:
         with:
           subject-path: dist/ebman-*.tar.gz
       - name: Attach artefacts to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           # GITHUB_REF_NAME is the tag, e.g. v0.2.0.
           tag_name: ${{ github.ref_name }}
@@ -167,7 +171,7 @@ jobs:
     if: (github.event_name == 'release' || github.event_name == 'workflow_dispatch') && !github.event.repository.fork
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # The release event payload's `tag_name` is what was published;
           # workflow_dispatch passes the tag via `inputs.tag`. Either
@@ -212,7 +216,7 @@ jobs:
       id-token: write # GitHub OIDC → registry namespace auth
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.release.tag_name || inputs.tag }}
       - name: Sync server.json version to the release tag
