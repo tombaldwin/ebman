@@ -8,6 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **`ebman action rollout --profile X` bypassed
+  `safety.accounts.X.read_only`.** It dispatched under `X` while
+  resolving the account pin against the ambient `AWS_PROFILE`, so a pin
+  on the account the rollout actually ran under was never consulted —
+  on a multi-region deploy fan-out, the largest write the CLI performs.
+  The gate was correct; it was being handed the wrong account.
+
+- **`:export` could produce invalid JSON.** The "comma unless this is
+  the last row" test counted the *filtered* index, which disagrees with
+  reality the moment a row is skipped — and rows can be skipped, since a
+  cached view index can outlive a mutation of the env list. Skipping the
+  last one left a trailing comma on the clipboard.
+
 - **`ebman lint` reported a clean result for checks that never ran.**
   The EBL020 (X-Ray) and EBL018 (WAF) probes returned `Option<bool>`,
   where `None` meant four different things — the rule doesn't apply,
@@ -18,6 +31,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `NotApplicable` / `Checked` / `Unknown`; the rules still skip on a
   failure (a failed probe must never become a false positive) but the
   run says so and exits 1 rather than 0.
+
+  `lint.disable` / `--rules` switch the probe off too, so a rule you
+  have opted out of cannot redden the pipeline — and stops paying for
+  the IAM and WAF calls. The check lives inside each probe rather than
+  at the call site, so a new caller cannot forget it.
 
 
 - **A stale view cache could panic the TUI instead of drawing a wrong
