@@ -1,0 +1,42 @@
+--- src/app/action_flow.rs
++++ delete match arm Action::AbortUpdate in App::advance_action_flow
+@@ -438,38 +438,17 @@
+             Action::Capacity => {
+                 // `:capacity` opens a modal form pre-filled from
+                 // DescribeConfigurationSettings — no command-bar args
+                 // needed, so we close the menu and dispatch straight
+                 // to the form opener.
+                 self.close_action_flow();
+                 self.cmd_capacity();
+             }
+-            Action::AbortUpdate => {
+-                self.action_flow = Some(ActionFlow::Confirm(ConfirmModal {
+-                    params: ParameterisedAction::default(),
+-                    action,
+-                    target_env: env.name.clone(),
+-                    typed: TextInput::new(),
+-                    kind: ConfirmKind::YesNo,
+-                    dryrun: None,
+-                    loading_dryrun: false,
+-                    recent_events: None,
+-                    loading_events: false,
+-                    traffic_warning: compute_traffic_warning(&env),
+-                    version_preview: None,
+-                    loading_version_preview: false,
+-                    health_check_probe: None,
+-                    loading_health_check: false,
+-                    unavailability_line: None,
+-                    loading_unavailability: false,
+-                    lint_issues: None,
+-                    loading_lint: false,
+-                }));
+-            }
++             /* ~ changed by cargo-mutants ~ */
+             _ => {
+                 self.action_flow = Some(ActionFlow::Confirm(ConfirmModal {
+                     params: ParameterisedAction::default(),
+                     action,
+                     target_env: env.name.clone(),
+                     typed: TextInput::new(),
+                     kind: ConfirmKind::YesNo,
+                     dryrun: None,

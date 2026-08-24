@@ -1,0 +1,21 @@
+--- src/app/action_flow.rs
++++ replace == with != in App::spawn_action
+@@ -1027,17 +1027,17 @@
+         // SsmRun's dispatch shape doesn't fit the standard
+         // `Result<(), _>` + `ActionResult` pipeline below — the SDK
+         // call returns per-instance rows that surface in a
+         // TextOverlay. Short-circuit to a dedicated helper that
+         // carries the audit / pending / spawn dance with the right
+         // payload. Everything ABOVE this point (read-only check, demo
+         // guard, deploy-only auto-rollback / wait-for-green arming —
+         // none of which fires for SsmRun) still runs uniformly.
+-        if modal.action == Action::SsmRun {
++        if modal.action != /* ~ changed by cargo-mutants ~ */ Action::SsmRun {
+             let command = modal.params.ssm_run_command.clone().unwrap_or_default();
+             let instances = modal.params.ssm_run_instances.clone().unwrap_or_default();
+             self.spawn_ssm_run_impl(modal.target_env.clone(), command, instances);
+             return;
+         }
+         // The ROW's region, not the home one. Under a multi-region
+         // fan-out `self.aws` points wherever the operator started, so a
+         // restart / terminate / deploy on a row from another region

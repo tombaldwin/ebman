@@ -1,0 +1,1025 @@
+{
+  "outcomes": [
+    {
+      "scenario": "Baseline",
+      "summary": "Success",
+      "log_path": "log/baseline.log",
+      "diff_path": null,
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 191.051376292,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.891603125,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.0",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/app/action_flow.rs:130:9: replace App::handle_action_key with ()",
+          "package": "ebman",
+          "file": "src/app/action_flow.rs",
+          "function": {
+            "function_name": "App::handle_action_key",
+            "return_type": "",
+            "span": {
+              "start": {
+                "line": 129,
+                "column": 5
+              },
+              "end": {
+                "line": 336,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 130,
+              "column": 9
+            },
+            "end": {
+              "line": 335,
+              "column": 10
+            }
+          },
+          "replacement": "()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__app__action_flow.rs_line_130_col_9.log",
+      "diff_path": "diff/src__app__action_flow.rs_line_130_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 12.834800458,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.6628222919999995,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.0",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/app/action_flow.rs:171:17: delete match arm KeyCode::Enter in App::handle_action_key",
+          "package": "ebman",
+          "file": "src/app/action_flow.rs",
+          "function": {
+            "function_name": "App::handle_action_key",
+            "return_type": "",
+            "span": {
+              "start": {
+                "line": 129,
+                "column": 5
+              },
+              "end": {
+                "line": 336,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 171,
+              "column": 17
+            },
+            "end": {
+              "line": 225,
+              "column": 18
+            }
+          },
+          "replacement": "",
+          "genre": "MatchArm"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__app__action_flow.rs_line_171_col_17.log",
+      "diff_path": "diff/src__app__action_flow.rs_line_171_col_17.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 12.459294625,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.773022708,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.0",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/app/action_flow.rs:190:25: delete field swap_with from struct ParameterisedAction expression in App::handle_action_key",
+          "package": "ebman",
+          "file": "src/app/action_flow.rs",
+          "function": {
+            "function_name": "App::handle_action_key",
+            "return_type": "",
+            "span": {
+              "start": {
+                "line": 129,
+                "column": 5
+              },
+              "end": {
+                "line": 336,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 190,
+              "column": 25
+            },
+            "end": {
+              "line": 190,
+              "column": 57
+            }
+          },
+          "replacement": "",
+          "genre": "StructField"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__app__action_flow.rs_line_190_col_25.log",
+      "diff_path": "diff/src__app__action_flow.rs_line_190_col_25.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 11.6885795,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.373609458,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.0",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/app/action_flow.rs:204:29: delete field swap_with from struct ParameterisedAction expression in App::handle_action_key",
+          "package": "ebman",
+          "file": "src/app/action_flow.rs",
+          "function": {
+            "function_name": "App::handle_action_key",
+            "return_type": "",
+            "span": {
+              "start": {
+                "line": 129,
+                "column": 5
+              },
+              "end": {
+                "line": 336,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 204,
+              "column": 29
+            },
+            "end": {
+              "line": 204,
+              "column": 53
+            }
+          },
+          "replacement": "",
+          "genre": "StructField"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/src__app__action_flow.rs_line_204_col_29.log",
+      "diff_path": "diff/src__app__action_flow.rs_line_204_col_29.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.391788833,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.92819975,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.0",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/app/action_flow.rs:339:9: replace App::advance_action_flow with ()",
+          "package": "ebman",
+          "file": "src/app/action_flow.rs",
+          "function": {
+            "function_name": "App::advance_action_flow",
+            "return_type": "",
+            "span": {
+              "start": {
+                "line": 338,
+                "column": 5
+              },
+              "end": {
+                "line": 491,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 339,
+              "column": 9
+            },
+            "end": {
+              "line": 490,
+              "column": 10
+            }
+          },
+          "replacement": "()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__app__action_flow.rs_line_339_col_9.log",
+      "diff_path": "diff/src__app__action_flow.rs_line_339_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 13.508035708,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.667461708,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.0",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/app/action_flow.rs:371:13: delete match arm Action::Terminate in App::advance_action_flow",
+          "package": "ebman",
+          "file": "src/app/action_flow.rs",
+          "function": {
+            "function_name": "App::advance_action_flow",
+            "return_type": "",
+            "span": {
+              "start": {
+                "line": 338,
+                "column": 5
+              },
+              "end": {
+                "line": 491,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 371,
+              "column": 13
+            },
+            "end": {
+              "line": 401,
+              "column": 14
+            }
+          },
+          "replacement": "",
+          "genre": "MatchArm"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__app__action_flow.rs_line_371_col_13.log",
+      "diff_path": "diff/src__app__action_flow.rs_line_371_col_13.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 13.822183875,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.750599708,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.0",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/app/action_flow.rs:446:13: delete match arm Action::AbortUpdate in App::advance_action_flow",
+          "package": "ebman",
+          "file": "src/app/action_flow.rs",
+          "function": {
+            "function_name": "App::advance_action_flow",
+            "return_type": "",
+            "span": {
+              "start": {
+                "line": 338,
+                "column": 5
+              },
+              "end": {
+                "line": 491,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 446,
+              "column": 13
+            },
+            "end": {
+              "line": 467,
+              "column": 14
+            }
+          },
+          "replacement": "",
+          "genre": "MatchArm"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/src__app__action_flow.rs_line_446_col_13.log",
+      "diff_path": "diff/src__app__action_flow.rs_line_446_col_13.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 11.24112925,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 5.413376959,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.0",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/app/action_flow.rs:554:9: replace App::deny_swap_target -> bool with true",
+          "package": "ebman",
+          "file": "src/app/action_flow.rs",
+          "function": {
+            "function_name": "App::deny_swap_target",
+            "return_type": "-> bool",
+            "span": {
+              "start": {
+                "line": 540,
+                "column": 5
+              },
+              "end": {
+                "line": 558,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 554,
+              "column": 9
+            },
+            "end": {
+              "line": 557,
+              "column": 10
+            }
+          },
+          "replacement": "true",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__app__action_flow.rs_line_554_col_9.log",
+      "diff_path": "diff/src__app__action_flow.rs_line_554_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 11.053041375,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.759389792,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.0",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/app/action_flow.rs:554:9: replace App::deny_swap_target -> bool with false",
+          "package": "ebman",
+          "file": "src/app/action_flow.rs",
+          "function": {
+            "function_name": "App::deny_swap_target",
+            "return_type": "-> bool",
+            "span": {
+              "start": {
+                "line": 540,
+                "column": 5
+              },
+              "end": {
+                "line": 558,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 554,
+              "column": 9
+            },
+            "end": {
+              "line": 557,
+              "column": 10
+            }
+          },
+          "replacement": "false",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__app__action_flow.rs_line_554_col_9_001.log",
+      "diff_path": "diff/src__app__action_flow.rs_line_554_col_9_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.384452792,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.3783305,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.0",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/app/action_flow.rs:585:9: replace App::open_parameterised_action_on with ()",
+          "package": "ebman",
+          "file": "src/app/action_flow.rs",
+          "function": {
+            "function_name": "App::open_parameterised_action_on",
+            "return_type": "",
+            "span": {
+              "start": {
+                "line": 573,
+                "column": 5
+              },
+              "end": {
+                "line": 691,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 585,
+              "column": 9
+            },
+            "end": {
+              "line": 690,
+              "column": 10
+            }
+          },
+          "replacement": "()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__app__action_flow.rs_line_585_col_9.log",
+      "diff_path": "diff/src__app__action_flow.rs_line_585_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 13.157045833,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.3696751670000005,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.0",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/app/action_flow.rs:657:43: replace && with || in App::open_parameterised_action_on",
+          "package": "ebman",
+          "file": "src/app/action_flow.rs",
+          "function": {
+            "function_name": "App::open_parameterised_action_on",
+            "return_type": "",
+            "span": {
+              "start": {
+                "line": 573,
+                "column": 5
+              },
+              "end": {
+                "line": 691,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 657,
+              "column": 43
+            },
+            "end": {
+              "line": 657,
+              "column": 45
+            }
+          },
+          "replacement": "||",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/src__app__action_flow.rs_line_657_col_43.log",
+      "diff_path": "diff/src__app__action_flow.rs_line_657_col_43.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 13.22664525,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.697258458,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.0",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/app/action_flow.rs:657:27: delete ! in App::open_parameterised_action_on",
+          "package": "ebman",
+          "file": "src/app/action_flow.rs",
+          "function": {
+            "function_name": "App::open_parameterised_action_on",
+            "return_type": "",
+            "span": {
+              "start": {
+                "line": 573,
+                "column": 5
+              },
+              "end": {
+                "line": 691,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 657,
+              "column": 27
+            },
+            "end": {
+              "line": 657,
+              "column": 28
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__app__action_flow.rs_line_657_col_27.log",
+      "diff_path": "diff/src__app__action_flow.rs_line_657_col_27.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.58539075,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.33744225,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.0",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/app/action_flow.rs:657:53: replace != with == in App::open_parameterised_action_on",
+          "package": "ebman",
+          "file": "src/app/action_flow.rs",
+          "function": {
+            "function_name": "App::open_parameterised_action_on",
+            "return_type": "",
+            "span": {
+              "start": {
+                "line": 573,
+                "column": 5
+              },
+              "end": {
+                "line": 691,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 657,
+              "column": 53
+            },
+            "end": {
+              "line": 657,
+              "column": 55
+            }
+          },
+          "replacement": "==",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__app__action_flow.rs_line_657_col_53.log",
+      "diff_path": "diff/src__app__action_flow.rs_line_657_col_53.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 7.102367917,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.487387458,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.0",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/app/action_flow.rs:917:9: replace App::spawn_action with ()",
+          "package": "ebman",
+          "file": "src/app/action_flow.rs",
+          "function": {
+            "function_name": "App::spawn_action",
+            "return_type": "",
+            "span": {
+              "start": {
+                "line": 910,
+                "column": 5
+              },
+              "end": {
+                "line": 1134,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 917,
+              "column": 9
+            },
+            "end": {
+              "line": 1133,
+              "column": 12
+            }
+          },
+          "replacement": "()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/src__app__action_flow.rs_line_917_col_9.log",
+      "diff_path": "diff/src__app__action_flow.rs_line_917_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 14.354724,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.826691167,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.0",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/app/action_flow.rs:1035:25: replace == with != in App::spawn_action",
+          "package": "ebman",
+          "file": "src/app/action_flow.rs",
+          "function": {
+            "function_name": "App::spawn_action",
+            "return_type": "",
+            "span": {
+              "start": {
+                "line": 910,
+                "column": 5
+              },
+              "end": {
+                "line": 1134,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 1035,
+              "column": 25
+            },
+            "end": {
+              "line": 1035,
+              "column": 27
+            }
+          },
+          "replacement": "!=",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/src__app__action_flow.rs_line_1035_col_25.log",
+      "diff_path": "diff/src__app__action_flow.rs_line_1035_col_25.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 13.105188375000001,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.778911292,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.0",
+            "--lib"
+          ]
+        }
+      ]
+    }
+  ],
+  "total_mutants": 15,
+  "missed": 5,
+  "caught": 10,
+  "timeout": 0,
+  "unviable": 0,
+  "success": 0,
+  "start_time": "2026-08-24T20:49:44.841208Z",
+  "end_time": "2026-08-24T20:56:57.291588Z",
+  "cargo_mutants_version": "27.1.0"
+}

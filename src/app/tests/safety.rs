@@ -770,3 +770,57 @@ async fn swap_cnames_command_also_gates_the_target() {
         "the refusal must name the pinned env, got: {msg:?}"
     );
 }
+
+/// The success path of the swap picker, which the refusal tests above do
+/// not cover.
+///
+/// Found by `cargo mutants --in-diff`: deleting `swap_with` from the
+/// `ConfirmModal` the picker builds survived the whole suite. The modal
+/// would then carry no target, and the dispatch would fall through to
+/// "swap target missing" — after the operator had confirmed. Two tests
+/// asserted the swap is REFUSED when the target is pinned; none asserted
+/// the target actually arrives when it is not.
+///
+/// Exactly the "a change that adds a distinction must be chased to every
+/// call site" rule, turned on the change that added the distinction.
+#[tokio::test]
+async fn the_swap_picker_carries_its_target_into_the_confirm_modal() {
+    let mut app = test_app();
+    app.environments = vec![
+        mk_env("blue", "shop", "WebServer", "Green"),
+        mk_env("green", "shop", "WebServer", "Green"),
+    ];
+    app.rebuild_view();
+    app.table_state.select(Some(0)); // `blue`, neither env pinned
+
+    assert!(app.open_action_menu());
+    app.advance_action_flow(crate::app::Action::SwapCnames);
+    assert!(
+        matches!(
+            app.action_flow,
+            Some(crate::app::ActionFlow::SwapTarget { .. })
+        ),
+        "swap opens a target picker"
+    );
+
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+
+    let Some(crate::app::ActionFlow::Confirm(modal)) = &app.action_flow else {
+        panic!("choosing a target must open the confirm modal");
+    };
+    assert_eq!(
+        modal.action,
+        crate::app::Action::SwapCnames,
+        "and it must be the swap it was opened for"
+    );
+    assert_eq!(
+        modal.params.swap_with.as_deref(),
+        Some("green"),
+        "the chosen target must ride on the modal — without it the dispatch \
+         reaches `swap target missing` only after the operator confirms"
+    );
+    assert_eq!(
+        modal.target_env, "blue",
+        "and the source must be the selected env, not the picked one"
+    );
+}
