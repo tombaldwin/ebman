@@ -95,7 +95,25 @@ When the user asks to cut a release (e.g. "tag 0.X", "ship the release", "prepar
    ```
 
    Every `--- failure ... ---` block is a breaking change that belongs in
-   the changelog. This is a checklist step, not a gate — it fails by
+   the changelog.
+
+   **This does not catch a break inherited from a dependency, and 0.33.0
+   found that out.** `cargo-semver-checks` compares the rustdoc
+   `resolved_path` string. A public item typed `ratatui::Terminal` has
+   that same path before and after ratatui 0.29 → 0.30, so the tool sees
+   no change while the type identity has in fact moved and downstream
+   code no longer compiles. Run against published 0.32.0 as a patch it
+   reported `223 checks: 223 pass` — a false clean covering **38**
+   publicly reachable items. It is a structural blind spot, not a lint
+   anyone forgot to enable.
+
+   So the enumeration has a second half, and it is a *lockfile*
+   question, not a semver-checks run: **did any dependency that appears
+   in the public API change major?** If yes, walk every `pub mod` from
+   the crate root and list every reachable item whose signature, public
+   field, enum variant, or type alias names a type from that crate — and
+   remember that `pub mod app` re-exports far more than the module list
+   suggests (`App` alone has ~91 public fields). This is a checklist step, not a gate — it fails by
    construction on any legitimate major bump, so it cannot be wired into
    CI. 0.31.0 shipped with `Form.banner` undocumented because this was
    only run after the tag.

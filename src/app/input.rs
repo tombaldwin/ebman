@@ -7,6 +7,23 @@
 
 use super::*;
 
+/// Map a terminal screen line to an index into the display rows.
+///
+/// Pure so it can be tested without a terminal. `row_height` is the
+/// piece that was missing: in `ViewMode::Spacious` each row occupies two
+/// screen lines, so a click N lines below the first data line is row
+/// N/2, not row N. Without it, clicking the 3rd visible environment in
+/// spacious mode selected the 5th.
+pub(crate) fn table_row_at(
+    offset: usize,
+    screen_row: u16,
+    data_top: u16,
+    row_height: u16,
+) -> usize {
+    let lines_below_top = screen_row.saturating_sub(data_top);
+    offset + (lines_below_top / row_height.max(1)) as usize
+}
+
 impl App {
     pub(crate) fn handle_event(&mut self, event: Event) {
         // First-run hint dismisses on any input. The renderer
@@ -124,7 +141,7 @@ impl App {
             return;
         }
         let offset = self.table_state.offset();
-        let target = offset + (row - data_top) as usize;
+        let target = table_row_at(offset, row, data_top, self.view.mode.row_height());
         self.hover_row = Some(target);
     }
 
@@ -144,7 +161,7 @@ impl App {
             return;
         }
         let offset = self.table_state.offset();
-        let target = offset + (row - data_top) as usize;
+        let target = table_row_at(offset, row, data_top, self.view.mode.row_height());
         if target < rows.len() && matches!(rows[target], DisplayRow::Env(_)) {
             self.table_state.select(Some(target));
         }
@@ -1059,5 +1076,62 @@ impl App {
                 let _ = reply.send(json);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod row_mapping_tests {
+    use super::table_row_at;
+
+    /// The bug this helper exists for. In `ViewMode::Spacious` a row is
+    /// two screen lines tall, so the 3rd visible environment starts four
+    /// lines below the first data line. The old arithmetic returned 4.
+    #[test]
+    fn spacious_maps_two_screen_lines_to_one_row() {
+        let data_top = 5;
+        // Third visible row: lines 9 and 10 (data_top + 4, + 5).
+        assert_eq!(table_row_at(0, 9, data_top, 2), 2);
+        assert_eq!(
+            table_row_at(0, 10, data_top, 2),
+            2,
+            "both lines of a row select it"
+        );
+        // First and second, for the boundaries.
+        assert_eq!(table_row_at(0, 5, data_top, 2), 0);
+        assert_eq!(table_row_at(0, 6, data_top, 2), 0);
+        assert_eq!(table_row_at(0, 7, data_top, 2), 1);
+    }
+
+    /// Height 1 must be exactly the old behaviour — this is the case that
+    /// was already correct, and the fix must not move it.
+    #[test]
+    fn height_one_is_unchanged() {
+        let data_top = 5;
+        for line in 0..10u16 {
+            assert_eq!(table_row_at(0, data_top + line, data_top, 1), line as usize);
+        }
+    }
+
+    /// Scrolled: the offset is a row index, not a line count, so it is
+    /// added after the division rather than before.
+    #[test]
+    fn offset_is_added_in_rows_not_lines() {
+        assert_eq!(table_row_at(7, 9, 5, 2), 9, "7 + (4 / 2)");
+        assert_eq!(table_row_at(7, 9, 5, 1), 11, "7 + 4");
+    }
+
+    /// A row_height of 0 would panic on divide. It cannot happen through
+    /// `ViewMode::row_height`, but the helper is `pub(crate)` and the
+    /// caller passes a `u16`, so it is guarded rather than assumed.
+    #[test]
+    fn zero_row_height_does_not_panic() {
+        assert_eq!(table_row_at(3, 9, 5, 0), 7);
+    }
+
+    /// `screen_row` above `data_top` is filtered by the callers, but the
+    /// helper must not underflow if that guard ever moves.
+    #[test]
+    fn screen_row_above_data_top_saturates() {
+        assert_eq!(table_row_at(2, 1, 5, 2), 2);
     }
 }

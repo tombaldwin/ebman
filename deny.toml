@@ -22,10 +22,6 @@ ignore = [
     # DATA frames is a server-side DoS; ebman is a client that talks
     # only to AWS endpoints. Reviewed 2026-08-22.
     "RUSTSEC-2026-0258",
-    # `paste`, a proc-macro pulled by ratatui. Unmaintained, not
-    # vulnerable — no code path, no runtime component. Goes away when
-    # ratatui drops it. Reviewed 2026-08-22.
-    "RUSTSEC-2024-0436",
     # `serde_yml` — unsound AND unmaintained, and the ONLY one of
     # these that is ebman's own direct dependency. Not waived
     # indefinitely: tracked in BACKLOG for migration off it. Two

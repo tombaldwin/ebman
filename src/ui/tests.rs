@@ -989,7 +989,6 @@ fn buffer_to_string(buf: &ratatui::buffer::Buffer) -> String {
     out
 }
 
-/// Regression test pinning ratatui 0.29's broken OSC 8 behavior.
 /// OSC 8 hyperlinks still don't work through ratatui, and the reason
 /// changed in 0.30 — which is why this test exists.
 ///
@@ -1033,7 +1032,13 @@ fn osc8_still_cannot_round_trip_through_ratatui() {
         rendered.contains("]8;;"),
         "the escape payload renders as literal text: {rendered:?}"
     );
-    // The link text does survive now, unlike under 0.29 — but wrapped
-    // in that junk, so it is not a hyperlink, just a mess.
+    // The link text is present, but wrapped in that junk, so it is not a
+    // hyperlink — just a mess.
+    //
+    // Not evidence about 0.29 either way: this buffer is 40 cells and the
+    // 0.29 rewrite widened it from 20 to fit the whole sequence. Under
+    // 0.29 the opener consumed 26 cells, so `Click` would have landed at
+    // 26..31 and survived at this width too. What changed in 0.30 is the
+    // ESC handling asserted above, not whether the text fits.
     assert!(rendered.contains("Click"), "{rendered:?}");
 }
