@@ -990,49 +990,50 @@ fn buffer_to_string(buf: &ratatui::buffer::Buffer) -> String {
 }
 
 /// Regression test pinning ratatui 0.29's broken OSC 8 behavior.
-/// Verified by experiment: each byte of an escape sequence
-/// (including the leading `\x1b`) is treated as a 1-cell-wide
-/// printing character — there's no special handling for control
-/// sequences in ratatui's `Buffer::set_stringn` path. The
-/// consequences for OSC 8 hyperlinks:
+/// OSC 8 hyperlinks still don't work through ratatui, and the reason
+/// changed in 0.30 — which is why this test exists.
 ///
-/// - The 24-byte opener `\x1b]8;;https://example.com\x1b\\`
-///   consumes 24 cells of layout space.
-/// - The visible text `Click` gets pushed past the buffer width
-///   (or past the column the caller intended).
-/// - The escape bytes get rendered as visible control characters
-///   in terminals that don't recognise them mid-cell.
+/// Under 0.29 every byte of an escape sequence, `\x1b` included, took a
+/// full cell: the 24-byte opener ate 24 cells and pushed the visible
+/// text off the buffer. Ugly, but the bytes survived, so a custom
+/// widget bypassing the diff renderer could in principle reassemble
+/// them.
 ///
-/// This test pins the broken behavior so that if a future
-/// ratatui upgrade adds OSC 8 (or zero-width control) support,
-/// it will fail loudly and prompt us to revisit the feature.
-/// Currently shipping OSC 8 would require a custom widget that
-/// bypasses ratatui's diff renderer, which is too invasive
-/// for the value — see BACKLOG.
+/// 0.30 strips the ESC bytes and renders the REST as literal text, so
+/// the buffer holds `]8;;https://example.com\Click]8;;\`. For our
+/// purposes that is worse: the escape is now unrecoverable from the
+/// buffer, so even the custom-widget escape hatch is gone. Emitting
+/// OSC 8 anywhere would put visible junk on the operator's screen.
+///
+/// Nothing in production emits OSC 8 — this pins the constraint, not a
+/// behaviour we depend on. The previous version of this test said it
+/// would "fail loudly and prompt us to revisit the feature" if ratatui
+/// ever changed here. It did exactly that on the 0.30 bump, which is
+/// the whole reason it was written.
 #[test]
-fn osc8_in_span_is_split_into_per_byte_cells_ratatui_0_29_limitation() {
+fn osc8_still_cannot_round_trip_through_ratatui() {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use ratatui::text::{Line, Span};
     use ratatui::widgets::{Paragraph, Widget};
     let osc8 = "\x1b]8;;https://example.com\x1b\\Click\x1b]8;;\x1b\\";
     let para = Paragraph::new(Line::from(Span::raw(osc8)));
-    let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
+    let mut buf = Buffer::empty(Rect::new(0, 0, 40, 1));
     para.render(buf.area, &mut buf);
-    // Cell 0 must hold the ESC byte (proves each escape byte
-    // is taking a full cell, not being zero-width or merged).
-    assert_eq!(buf[(0, 0)].symbol(), "\x1b");
-    // The URL chars get spread across cells 5..19. "Click" never
-    // makes it into the visible buffer — proof that ratatui treats
-    // every escape byte as 1 cell of layout width.
     let rendered = buffer_to_string(&buf);
+
+    // The ESC bytes are gone — dropped, not preserved.
     assert!(
-        !rendered.contains("Click"),
-        "If this fails, ratatui learned about OSC 8 — revisit the BACKLOG entry. Got: {rendered:?}"
+        !rendered.contains('\x1b'),
+        "0.30 strips ESC; if this fails the behaviour changed again: {rendered:?}"
     );
-    // The escape framing reaches the buffer (bytes are preserved
-    // per cell) but spread across cells in a way that won't
-    // assemble into a hyperlink at terminal render time.
-    assert!(rendered.contains('\x1b'));
-    assert!(rendered.contains("]8;;"));
+    // ...and the sequence's payload is now visible junk, which is what
+    // makes emitting OSC 8 unsafe rather than merely ineffective.
+    assert!(
+        rendered.contains("]8;;"),
+        "the escape payload renders as literal text: {rendered:?}"
+    );
+    // The link text does survive now, unlike under 0.29 — but wrapped
+    // in that junk, so it is not a hyperlink, just a mess.
+    assert!(rendered.contains("Click"), "{rendered:?}");
 }

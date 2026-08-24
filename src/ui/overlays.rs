@@ -310,7 +310,7 @@ pub(super) fn draw_palette(f: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol(cursor_marker(theme));
-    let mut state = app.palette_state.clone();
+    let mut state = app.palette_state;
     f.render_stateful_widget(list, layout[2], &mut state);
 
     // Hint footer
