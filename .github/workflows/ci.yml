@@ -79,7 +79,12 @@ jobs:
       - uses: actions/checkout@v4
       # Found `tokio-stream` and `aws-types` on its first run — both
       # were direct dependencies with zero references in src/.
-      - uses: bnjbvr/cargo-machete@main
+      #
+      # Pinned to a commit, not `@main`. This is a REQUIRED gate: on a
+      # moving branch it can break, or be subverted, underfoot — and a
+      # required gate that changes without review is the shape this
+      # repo already fixed once for the candor lint. Bump deliberately.
+      - uses: bnjbvr/cargo-machete@5a6550345dd59f4450caa4cf7779438e875e8914
 
   deny:
     name: cargo-deny (advisories, licences, bans)

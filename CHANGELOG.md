@@ -143,6 +143,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Internal
 
+- **The release path no longer downloads unpinned executables.**
+  `mcp-publisher` was fetched from `releases/latest` and piped into
+  `tar` inside a job holding `id-token: write` — so an unreviewed
+  binary got an OIDC token for our registry namespace on every release.
+  It's pinned to a version with a checksum now. `cargo-machete`, a
+  *required* CI gate, was pinned to `@main`; it's pinned to a commit,
+  the same fix the candor lint already had.
+
 - **The TUI no longer clones the whole screen on every frame.**
   `last_rendered_buffer` has exactly one reader — the control socket's
   `screen` op — so without `--control-socket` it was a full-screen
