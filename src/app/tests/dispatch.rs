@@ -1422,3 +1422,98 @@ fn the_test_suite_does_not_mutate_the_environment() {
          instead: {offenders:?}"
     );
 }
+
+/// Docs drift guards for the two release-checklist items that were still
+/// manual.
+///
+/// `CLAUDE.md`'s release procedure step 1 mandates hand-walking
+/// `docs/commands.md`, `keys.md`, `configuration.md` and `headless.md`
+/// before tagging. One third of that is already automated —
+/// `command_names_cited_in_prose_actually_exist` has caught two real
+/// gaps (`:alarm-add`, `:env-vars`). These are the other two, and they
+/// are the same shape: a flat `match` in source that a doc file is
+/// supposed to mirror.
+///
+/// A manual checklist that has already failed twice is a backlog entry,
+/// not a gate. Both pass today, so they cost nothing now and catch the
+/// next addition at commit time instead of at release time.
+mod docs_drift {
+    /// Every key `config::parse` accepts must appear in
+    /// `docs/configuration.md`. An operator cannot use a key they cannot
+    /// find, and a key that silently exists is indistinguishable from a
+    /// typo they got wrong.
+    #[test]
+    fn every_config_key_is_documented() {
+        let src = std::fs::read_to_string("src/config.rs").expect("read config.rs");
+        let docs = std::fs::read_to_string("docs/configuration.md").expect("read configuration.md");
+
+        let mut keys: Vec<String> = Vec::new();
+        for line in src.lines() {
+            let t = line.trim();
+            // The parser is a flat `match key { "name" => … }`.
+            if let Some(rest) = t.strip_prefix('"') {
+                if let Some((name, tail)) = rest.split_once('"') {
+                    if tail.trim_start().starts_with("=>")
+                        && !name.is_empty()
+                        && name
+                            .chars()
+                            .all(|c| c.is_ascii_lowercase() || c == '_' || c == '.')
+                    {
+                        keys.push(name.to_string());
+                    }
+                }
+            }
+        }
+        keys.sort();
+        keys.dedup();
+        assert!(
+            keys.len() > 15,
+            "found only {} config keys — the extractor is broken, and a guard \
+             over nothing passes vacuously: {keys:?}",
+            keys.len()
+        );
+
+        let missing: Vec<&String> = keys.iter().filter(|k| !docs.contains(*k)).collect();
+        assert!(
+            missing.is_empty(),
+            "config keys accepted by the parser but absent from \
+             docs/configuration.md: {missing:?}"
+        );
+    }
+
+    /// Every subcommand `cli::SUBCOMMANDS` advertises must appear in
+    /// `docs/headless.md`, which is the reference for anything scripting
+    /// against ebman.
+    #[test]
+    fn every_subcommand_is_documented() {
+        let src = std::fs::read_to_string("src/cli/mod.rs").expect("read cli/mod.rs");
+        let docs = std::fs::read_to_string("docs/headless.md").expect("read headless.md");
+
+        let start = src
+            .find("SUBCOMMANDS")
+            .expect("SUBCOMMANDS const in src/cli/mod.rs");
+        let body = &src[start..start + src[start..].find("];").expect("const end")];
+        let subs: Vec<String> = body
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase()))
+            .map(str::to_string)
+            .collect();
+
+        assert!(
+            subs.len() >= 8,
+            "found only {} subcommands — extractor broken: {subs:?}",
+            subs.len()
+        );
+        let missing: Vec<&String> = subs
+            .iter()
+            .filter(|s| !docs.contains(&format!("ebman {s}")))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "subcommands advertised by the CLI but absent from \
+             docs/headless.md: {missing:?}"
+        );
+    }
+}
