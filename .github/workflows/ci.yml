@@ -43,7 +43,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      # PINNED. `@stable` floats, and these two jobs gate on lint/format
+      # output — so a new stable shipping a new clippy lint or a rustfmt
+      # tweak turns main red for reasons unrelated to any change. That is
+      # worse here than on a human-driven project: an agent mid-task will
+      # fix the unrelated lint inside whatever it was doing, and the diff
+      # arrives mixed. Every other required gate in this repo is pinned
+      # (cargo-machete to a commit, candor-scan to a version,
+      # mcp-publisher to a sha256) for exactly this reason; these two
+      # were the exception. Bump deliberately.
+      - uses: dtolnay/rust-toolchain@1.96.0
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
@@ -53,7 +62,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      # PINNED. `@stable` floats, and these two jobs gate on lint/format
+      # output — so a new stable shipping a new clippy lint or a rustfmt
+      # tweak turns main red for reasons unrelated to any change. That is
+      # worse here than on a human-driven project: an agent mid-task will
+      # fix the unrelated lint inside whatever it was doing, and the diff
+      # arrives mixed. Every other required gate in this repo is pinned
+      # (cargo-machete to a commit, candor-scan to a version,
+      # mcp-publisher to a sha256) for exactly this reason; these two
+      # were the exception. Bump deliberately.
+      - uses: dtolnay/rust-toolchain@1.96.0
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -209,7 +227,37 @@ jobs:
             echo "::error::candor lint produced no analysis of ebman — gate did not run"
             exit 1
           fi
-          if echo "$out" | grep -qE "AS-EFF-00[689]"; then
-            echo "::error::effect/layer policy violation — see .candor/policy"
+          # Fail on ANY effect/layer finding, then allowlist by exact id.
+          #
+          # This used to grep for `AS-EFF-00[689]` — three hardcoded ids
+          # out of a numbering scheme we do not control. A fourth
+          # violation class, an upstream renumber at the next candor
+          # bump, or a policy rule emitting a different id, and the gate
+          # goes green on a real violation. That is the same shape as the
+          # `starts_with("pub ")` guard that would have gone blind on a
+          # visibility edit, and the `split("//")` stripper that let a
+          # clipboard call hide behind a URL literal. Both were live.
+          #
+          # Inverted: anything matching AS-EFF fails unless its id is in
+          # ACCEPTED. Empty today — the policy is fully enforced — so a
+          # new id fails loudly instead of passing silently.
+          ACCEPTED=""
+          # Prove the check can fail, on every run, before trusting it to
+          # pass. A gate with no demonstration that it rejects anything is
+          # a gate you are trusting on assertion — and this repo has found
+          # three guards that were silently passing. Same discipline as
+          # `scripts/mutate.sh`: a test that cannot fail is not evidence.
+          canary=$(echo "warning: AS-EFF-999 canary" | grep -oE "AS-EFF-[0-9]+" | sort -u)
+          if [ "$canary" != "AS-EFF-999" ]; then
+            echo "::error::the candor finding-extractor does not extract findings"
             exit 1
           fi
+          findings=$(echo "$out" | grep -oE "AS-EFF-[0-9]+" | sort -u || true)
+          for id in $findings; do
+            case " $ACCEPTED " in
+              *" $id "*) echo "note: $id is an accepted exception" ;;
+              *)
+                echo "::error::effect/layer policy violation $id — see .candor/policy"
+                exit 1 ;;
+            esac
+          done
