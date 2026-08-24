@@ -45,6 +45,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **A read-only env could still have its CNAME swapped.** A swap
+  rewrites both environments' DNS, so it writes to the target as much as
+  the source — but every gate on the path checked the source
+  (`open_action_menu` the *selected* env, `open_parameterised_action_on`
+  the one it was handed), and the target arrives later from a picker or
+  a command argument. So `safety.envs.NAME.read_only` was defeated by
+  selecting the other env first. Both entry points were affected: the
+  action menu's Swap flow and `:swap TARGET`. Now gated by one
+  `deny_swap_target` helper both call, with a test per entry point.
+
+- **Correction to the `Fetch<T>` note in this release's commit history.**
+  The commit message for `Fetch<T>` claimed the BACKLOG was wrong to say
+  there were 14 `Option` + `loading_*` pairs, and that there were eight.
+  The 14 was right: eight in `DetailState`, six in `ConfirmModal`, and I
+  had only surveyed the first. The commit's other corrections — that the
+  four states are orthogonal rather than redundant, and that
+  `LogTailStage` is not a generic `Fetch<T>` — were verified by test and
+  stand.
+
 - **A failed Detail fetch was silently erased by an unrelated
   successful one.** `DetailState::error` is one slot shared by four
   fetches that `open_detail` fires concurrently, and every handler

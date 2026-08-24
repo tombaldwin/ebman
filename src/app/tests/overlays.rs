@@ -250,9 +250,9 @@ async fn deploy_wait_for_green_threads_secs_through_to_modal() {
     app.execute_command("deploy build-900 --wait-for-green 5m");
     match &app.action_flow {
         Some(ActionFlow::Confirm(modal)) => {
-            assert_eq!(modal.deploy_version.as_deref(), Some("build-900"));
-            assert_eq!(modal.wait_for_green_secs, Some(300));
-            assert!(modal.auto_rollback_secs.is_none());
+            assert_eq!(modal.params.deploy_version.as_deref(), Some("build-900"));
+            assert_eq!(modal.params.wait_for_green_secs, Some(300));
+            assert!(modal.params.auto_rollback_secs.is_none());
         }
         _ => panic!("expected confirm modal open"),
     }

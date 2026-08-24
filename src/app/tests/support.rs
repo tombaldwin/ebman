@@ -219,7 +219,7 @@ pub(super) fn mk_modal(action: Action, env: &str) -> ConfirmModal {
     ConfirmModal {
         action,
         target_env: env.into(),
-        swap_with: None,
+        params: ParameterisedAction::default(),
         typed: TextInput::new(),
         kind: ConfirmKind::YesNo,
         dryrun: None,
@@ -227,14 +227,6 @@ pub(super) fn mk_modal(action: Action, env: &str) -> ConfirmModal {
         recent_events: None,
         loading_events: false,
         traffic_warning: None,
-        deploy_version: None,
-        upgrade_platform_arn: None,
-        upgrade_platform_label: None,
-        clone_target: None,
-        scale_min: None,
-        scale_max: None,
-        auto_rollback_secs: None,
-        wait_for_green_secs: None,
         version_preview: None,
         loading_version_preview: false,
         health_check_probe: None,
@@ -243,8 +235,6 @@ pub(super) fn mk_modal(action: Action, env: &str) -> ConfirmModal {
         loading_unavailability: false,
         lint_issues: None,
         loading_lint: false,
-        ssm_run_command: None,
-        ssm_run_instances: None,
     }
 }
 

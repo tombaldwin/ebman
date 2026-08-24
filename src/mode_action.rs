@@ -317,9 +317,25 @@ pub(crate) enum RolloutState {
 pub(crate) struct ConfirmModal {
     pub action: Action,
     pub target_env: String,
-    pub swap_with: Option<String>,
     pub typed: TextInput,
     pub kind: ConfirmKind,
+    /// The action-gated payload — which version to deploy, which
+    /// platform ARN, the SSM command, and so on.
+    ///
+    /// Held as one `ParameterisedAction` rather than as eleven `Option`
+    /// fields copied out of one. They used to be both: the same eleven
+    /// were declared on `ParameterisedAction` AND here, and
+    /// `open_parameterised_action_on` copied them across a line at a
+    /// time. A new parameterised action meant three edits in three
+    /// places, and forgetting the third — the copy — compiles fine and
+    /// silently drops the parameter on the way to the modal.
+    ///
+    /// The BACKLOG proposed moving these onto `Action`'s variants
+    /// instead. That is the bigger hammer: `Action` is named at 244
+    /// sites, is `Copy`, and keys the `ACTIONS` menu table.
+    /// Consolidating onto the struct that already held them fixes the
+    /// duplication at a fraction of the blast radius.
+    pub params: ParameterisedAction,
     pub dryrun: Option<DryRunInfo>,
     pub loading_dryrun: bool,
     pub recent_events: Option<Vec<EbEvent>>,
@@ -329,34 +345,6 @@ pub(crate) struct ConfirmModal {
     /// CHANGE: updated 4m ago". Surfaced above the Y/N row so the operator
     /// sees mid-flight changes before authorising another action.
     pub traffic_warning: Option<String>,
-    /// Version label to deploy when `action == Deploy`. None for other actions.
-    pub deploy_version: Option<String>,
-    /// Platform ARN to migrate to when `action == UpgradePlatform`.
-    pub upgrade_platform_arn: Option<String>,
-    /// Human-readable label for the upgrade target — shown in the modal.
-    pub upgrade_platform_label: Option<String>,
-    /// New env name when `action == Clone`.
-    pub clone_target: Option<String>,
-    /// Desired min/max instance counts when `action == Scale`. Both set to
-    /// the same value for a "scale to N" operation; differ for explicit
-    /// min/max overrides.
-    pub scale_min: Option<i32>,
-    pub scale_max: Option<i32>,
-    /// Auto-rollback watchdog deadline in seconds (Deploy only). When
-    /// `Some(N)`, a background task fires N seconds after dispatch
-    /// and — if the env hasn't reached Green by then — automatically
-    /// redeploys the captured `DeploySnapshot`'s previous version.
-    /// `None` is the default; the operator opts in with
-    /// `:deploy LABEL --auto-rollback 5m`.
-    pub auto_rollback_secs: Option<u64>,
-    /// Wait-for-green deadline in seconds (Deploy only). When
-    /// `Some(N)`, a watcher is armed at dispatch and `apply_refresh`
-    /// emits a pinned status (success on Green, error on timeout)
-    /// the next time the env's health is observed. Orthogonal to
-    /// `auto_rollback_secs` — both flags can be set on the same
-    /// deploy. The operator opts in with
-    /// `:deploy LABEL --wait-for-green 5m`.
-    pub wait_for_green_secs: Option<u64>,
     /// Pre-deploy preview body — formatted output of
     /// `format_deploy_preview` (label / age / description /
     /// rollback-warning when candidate is older than current).
@@ -401,15 +389,6 @@ pub(crate) struct ConfirmModal {
     pub lint_issues: Option<Vec<crate::lint::Issue>>,
     /// True while `spawn_confirm_lint` is in flight.
     pub loading_lint: bool,
-    /// Shell command to run when `action == SsmRun`. The trimmed
-    /// form (no surrounding quotes) — the original quote-handling
-    /// happens in `cmd_ssm_run` before the modal opens.
-    pub ssm_run_command: Option<String>,
-    /// Resolved target instance IDs when `action == SsmRun`. Pre-
-    /// resolved at modal-open time from `Detail.instances`; this
-    /// way the operator sees the fan-out count in the confirm copy
-    /// and the dispatch path is straight-forward.
-    pub ssm_run_instances: Option<Vec<String>>,
 }
 
 /// Helper carrying the optional parameters needed by the new parameterised

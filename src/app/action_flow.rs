@@ -176,6 +176,23 @@ impl App {
                         ActionFlow::SwapTarget { source, .. } => source.clone(),
                         _ => return,
                     };
+                    // A CNAME swap rewrites BOTH environments' DNS, so
+                    // it is a write to the target as much as to the
+                    // source. The only `deny_write` on this path is in
+                    // `open_action_menu`, against the *selected* env —
+                    // and the target is picked afterwards, from this
+                    // list. So `safety.envs.TARGET.read_only` did not
+                    // protect an env from having production traffic
+                    // swapped onto or off it; you just had to select the
+                    // other env first. Gate the target here, where it is
+                    // first known.
+                    if self.deny_swap_target(&ParameterisedAction {
+                        swap_with: Some(target.clone()),
+                        ..Default::default()
+                    }) {
+                        self.close_action_flow();
+                        return;
+                    }
                     let warning = self
                         .environments
                         .iter()
@@ -183,9 +200,12 @@ impl App {
                         .map(compute_traffic_warning)
                         .unwrap_or(None);
                     self.action_flow = Some(ActionFlow::Confirm(ConfirmModal {
+                        params: ParameterisedAction {
+                            swap_with: Some(target),
+                            ..Default::default()
+                        },
                         action: Action::SwapCnames,
                         target_env: source,
-                        swap_with: Some(target),
                         typed: TextInput::new(),
                         kind: ConfirmKind::YesNo,
                         dryrun: None,
@@ -193,14 +213,6 @@ impl App {
                         recent_events: None,
                         loading_events: false,
                         traffic_warning: warning,
-                        deploy_version: None,
-                        upgrade_platform_arn: None,
-                        upgrade_platform_label: None,
-                        clone_target: None,
-                        scale_min: None,
-                        scale_max: None,
-                        auto_rollback_secs: None,
-                        wait_for_green_secs: None,
                         version_preview: None,
                         loading_version_preview: false,
                         health_check_probe: None,
@@ -209,8 +221,6 @@ impl App {
                         loading_unavailability: false,
                         lint_issues: None,
                         loading_lint: false,
-                        ssm_run_command: None,
-                        ssm_run_instances: None,
                     }));
                 }
                 // TextInput consumes editing keys (incl. Backspace);
@@ -365,9 +375,9 @@ impl App {
                 // so the rule lives in exactly one place.
                 let wants_preflight = action.wants_preflight();
                 self.action_flow = Some(ActionFlow::Confirm(ConfirmModal {
+                    params: ParameterisedAction::default(),
                     action,
                     target_env: env.name.clone(),
-                    swap_with: None,
                     typed: TextInput::new(),
                     kind: ConfirmKind::TypeName,
                     dryrun: None,
@@ -375,14 +385,6 @@ impl App {
                     recent_events: None,
                     loading_events: wants_preflight,
                     traffic_warning: compute_traffic_warning(&env),
-                    deploy_version: None,
-                    upgrade_platform_arn: None,
-                    upgrade_platform_label: None,
-                    clone_target: None,
-                    scale_min: None,
-                    scale_max: None,
-                    auto_rollback_secs: None,
-                    wait_for_green_secs: None,
                     version_preview: None,
                     loading_version_preview: false,
                     health_check_probe: None,
@@ -391,8 +393,6 @@ impl App {
                     loading_unavailability: false,
                     lint_issues: None,
                     loading_lint: false,
-                    ssm_run_command: None,
-                    ssm_run_instances: None,
                 }));
                 if wants_preflight {
                     self.spawn_dry_run(env.name.clone());
@@ -445,9 +445,9 @@ impl App {
             }
             Action::AbortUpdate => {
                 self.action_flow = Some(ActionFlow::Confirm(ConfirmModal {
+                    params: ParameterisedAction::default(),
                     action,
                     target_env: env.name.clone(),
-                    swap_with: None,
                     typed: TextInput::new(),
                     kind: ConfirmKind::YesNo,
                     dryrun: None,
@@ -455,14 +455,6 @@ impl App {
                     recent_events: None,
                     loading_events: false,
                     traffic_warning: compute_traffic_warning(&env),
-                    deploy_version: None,
-                    upgrade_platform_arn: None,
-                    upgrade_platform_label: None,
-                    clone_target: None,
-                    scale_min: None,
-                    scale_max: None,
-                    auto_rollback_secs: None,
-                    wait_for_green_secs: None,
                     version_preview: None,
                     loading_version_preview: false,
                     health_check_probe: None,
@@ -471,15 +463,13 @@ impl App {
                     loading_unavailability: false,
                     lint_issues: None,
                     loading_lint: false,
-                    ssm_run_command: None,
-                    ssm_run_instances: None,
                 }));
             }
             _ => {
                 self.action_flow = Some(ActionFlow::Confirm(ConfirmModal {
+                    params: ParameterisedAction::default(),
                     action,
                     target_env: env.name.clone(),
-                    swap_with: None,
                     typed: TextInput::new(),
                     kind: ConfirmKind::YesNo,
                     dryrun: None,
@@ -487,14 +477,6 @@ impl App {
                     recent_events: None,
                     loading_events: false,
                     traffic_warning: compute_traffic_warning(&env),
-                    deploy_version: None,
-                    upgrade_platform_arn: None,
-                    upgrade_platform_label: None,
-                    clone_target: None,
-                    scale_min: None,
-                    scale_max: None,
-                    auto_rollback_secs: None,
-                    wait_for_green_secs: None,
                     version_preview: None,
                     loading_version_preview: false,
                     health_check_probe: None,
@@ -503,8 +485,6 @@ impl App {
                     loading_unavailability: false,
                     lint_issues: None,
                     loading_lint: false,
-                    ssm_run_command: None,
-                    ssm_run_instances: None,
                 }));
             }
         }
@@ -557,6 +537,26 @@ impl App {
         });
     }
 
+    /// Refuse a CNAME swap whose **target** is pinned read-only.
+    ///
+    /// A swap rewrites both environments' DNS, so it is a write to the
+    /// target as much as to the source — but every `deny_write` on these
+    /// paths checks the source (`open_action_menu` checks the *selected*
+    /// env, `open_parameterised_action_on` checks the env it was handed).
+    /// The target arrives later, from a picker or a command argument, and
+    /// nothing looked at it. So `safety.envs.TARGET.read_only` could be
+    /// defeated by selecting the other env first.
+    ///
+    /// One helper, called from both swap entry points, so the two cannot
+    /// drift. Pinned by `a_read_only_env_cannot_be_swapped_into` and
+    /// `swap_cnames_command_also_gates_the_target`.
+    pub(crate) fn deny_swap_target(&mut self, params: &ParameterisedAction) -> bool {
+        match params.swap_with.as_deref() {
+            Some(target) => self.deny_write(target, "swap-cnames target"),
+            None => false,
+        }
+    }
+
     pub(crate) fn open_parameterised_action(
         &mut self,
         action: Action,
@@ -585,6 +585,10 @@ impl App {
         if self.deny_write(&env.name, action.label()) {
             return;
         }
+        // A swap also writes to its target; see `deny_swap_target`.
+        if self.deny_swap_target(&params) {
+            return;
+        }
         // The preflight (impact preview + last-3 events) is gated by
         // `Action::wants_preflight()` — single source of truth, see
         // `mode_action.rs`. Every ConfirmModal construction site must
@@ -596,10 +600,15 @@ impl App {
         // the operator the separate `:deploy LABEL --preview`
         // round-trip.
         let wants_version_preview = action == Action::Deploy && params.deploy_version.is_some();
+        // Taken before `params` moves into the modal below. Cloning one
+        // field is cheaper than keeping eleven copies alive to avoid it.
+        let preview_label = params.deploy_version.clone();
         let modal = ConfirmModal {
+            // The whole point of the consolidation: one move, not eleven
+            // copies. Adding a parameterised field is now one edit.
+            params,
             action,
             target_env: env.name.clone(),
-            swap_with: params.swap_with,
             typed: TextInput::new(),
             kind: ConfirmKind::YesNo,
             dryrun: None,
@@ -618,14 +627,6 @@ impl App {
             } else {
                 compute_traffic_warning(&env)
             },
-            deploy_version: params.deploy_version.clone(),
-            upgrade_platform_arn: params.upgrade_platform_arn,
-            upgrade_platform_label: params.upgrade_platform_label,
-            clone_target: params.clone_target,
-            scale_min: params.scale_min,
-            scale_max: params.scale_max,
-            auto_rollback_secs: params.auto_rollback_secs,
-            wait_for_green_secs: params.wait_for_green_secs,
             version_preview: None,
             loading_version_preview: wants_version_preview,
             health_check_probe: None,
@@ -654,8 +655,6 @@ impl App {
             // isn't gated by EB-config-health rules; firing them here
             // would be noise.
             loading_lint: !self.demo_mode && action != Action::SsmRun,
-            ssm_run_command: params.ssm_run_command,
-            ssm_run_instances: params.ssm_run_instances,
         };
         let needs_health_check_probe = modal.loading_health_check;
         let needs_unavailability = modal.loading_unavailability;
@@ -667,7 +666,7 @@ impl App {
             self.spawn_preflight_events(env.name.clone());
         }
         if wants_version_preview {
-            if let Some(label) = params.deploy_version {
+            if let Some(label) = preview_label {
                 self.spawn_version_preview(
                     env.application.clone(),
                     env.name.clone(),
@@ -964,7 +963,7 @@ impl App {
             // outcome) or the deadline timer firing AutoRollbackCheck.
             // `armed_watchdogs` carries the in-flight state for both
             // surfaces.
-            if let Some(secs) = modal.auto_rollback_secs {
+            if let Some(secs) = modal.params.auto_rollback_secs {
                 let tx = self.msg_tx.clone();
                 let env_name = modal.target_env.clone();
                 let gen = self.generation;
@@ -1001,8 +1000,8 @@ impl App {
             // No tokio task needed: apply_refresh runs on every refresh
             // tick anyway and checks deadlines there. Orthogonal to
             // auto-rollback so both flags can coexist.
-            if let Some(secs) = modal.wait_for_green_secs {
-                let target_label = modal.deploy_version.clone().unwrap_or_default();
+            if let Some(secs) = modal.params.wait_for_green_secs {
+                let target_label = modal.params.deploy_version.clone().unwrap_or_default();
                 let armed_at = chrono::Utc::now();
                 let deadline_at = armed_at + chrono::Duration::seconds(secs as i64);
                 self.watching_deploys.insert(
@@ -1034,8 +1033,8 @@ impl App {
         // guard, deploy-only auto-rollback / wait-for-green arming —
         // none of which fires for SsmRun) still runs uniformly.
         if modal.action == Action::SsmRun {
-            let command = modal.ssm_run_command.clone().unwrap_or_default();
-            let instances = modal.ssm_run_instances.clone().unwrap_or_default();
+            let command = modal.params.ssm_run_command.clone().unwrap_or_default();
+            let instances = modal.params.ssm_run_instances.clone().unwrap_or_default();
             self.spawn_ssm_run_impl(modal.target_env.clone(), command, instances);
             return;
         }
@@ -1053,12 +1052,12 @@ impl App {
         let gen = self.generation;
         let action = modal.action;
         let env = modal.target_env.clone();
-        let swap_with = modal.swap_with.clone();
-        let deploy_version = modal.deploy_version.clone();
-        let upgrade_arn = modal.upgrade_platform_arn.clone();
-        let clone_target = modal.clone_target.clone();
-        let scale_min = modal.scale_min;
-        let scale_max = modal.scale_max;
+        let swap_with = modal.params.swap_with.clone();
+        let deploy_version = modal.params.deploy_version.clone();
+        let upgrade_arn = modal.params.upgrade_platform_arn.clone();
+        let clone_target = modal.params.clone_target.clone();
+        let scale_min = modal.params.scale_min;
+        let scale_max = modal.params.scale_max;
         write_audit_entry(
             self.context.account_id.as_deref(),
             self.context.profile.as_deref(),
