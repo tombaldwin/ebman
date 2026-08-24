@@ -1590,7 +1590,29 @@ should ship as a patch first:
   checked the source, so `safety.envs.TARGET.read_only` was defeated by
   selecting the other env first. Both entry points had it.
 
-- [ ] `App::mode` + seven partner `Option`s → `Screen` + `Modal`.
+- [x] **`App::mode` + partner `Option`s** — DONE 2026-08-24, but NOT as
+  `Screen` + `Modal`. The invariant is real and is now enforced; putting
+  the state inside the enum is the wrong way to do it here, for two
+  structural reasons.
+
+  `Mode` is `Copy` and `shell_return_mode = self.mode` stores one to
+  return to on F12 — a payload-carrying `Mode` would copy a 42-field
+  `DetailState` on every shell attach and force a lightweight tag to be
+  reinvented for the uses `Mode` already serves.
+
+  And the invariant is **asymmetric**, which an enum would flatten.
+  Being in a mode requires its state; holding the state does not require
+  the mode — the background layer dispatches on `detail.is_some()` so a
+  Help or action popup over Detail keeps Detail behind it rather than
+  flashing the main table. Merging collapses a distinction the UI relies
+  on. Pinned by `holding_state_without_the_mode_is_fine`.
+
+  Enforced instead the way `ViewState::assert_fresh` enforces the other
+  invariant the types miss: panic in debug, log once per surface in
+  release. Six surfaces, one test each — which earned itself, because
+  instrumenting the four draw functions had three of four firing
+  (`draw_detail` is unreachable in the broken state) and a shared test
+  would have shown the dead guard as covered.
 
 **Not doing, with reasons** (the reviewer's own list, and I agree):
 miri (one `unsafe`, FFI it can't execute), `cargo-hack` (zero features),

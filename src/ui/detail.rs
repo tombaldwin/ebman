@@ -10,6 +10,7 @@ use super::*;
 
 pub(super) fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
     let Some(detail) = app.detail.as_ref() else {
+        crate::ui::missing_mode_state("Detail");
         return;
     };
     let env = detail.env_snapshot.clone();

@@ -11,6 +11,7 @@ use super::*;
 pub(super) fn draw_form(f: &mut Frame, area: Rect, app: &mut App) {
     use crate::form::{FieldKind, FormState};
     let Some(form) = app.form.as_mut() else {
+        crate::ui::missing_mode_state("Form");
         return;
     };
     let popup = centered_overlay(OverlaySize::Text, area);
@@ -1763,6 +1764,7 @@ pub(super) fn draw_describe(f: &mut Frame, area: Rect, app: &App, text: &str) {
 pub(super) fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
     let theme = app.theme.clone();
     let Some(picker) = app.picker.as_mut() else {
+        crate::ui::missing_mode_state("Picker");
         return;
     };
     let popup = centered_overlay(OverlaySize::Picker, area);

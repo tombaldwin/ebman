@@ -11,6 +11,7 @@ use super::*;
 pub(crate) fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
     let theme = app.theme.clone();
     let Some(flow) = app.action_flow.as_mut() else {
+        crate::ui::missing_mode_state("Action");
         return;
     };
     match flow {
