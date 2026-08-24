@@ -18,12 +18,12 @@ impl App {
                 // unset so a retry isn't suppressed — which meant this
                 // reported "no data yet" while dollar figures were
                 // visibly on screen.
-                let partial = if self.costs_complete {
+                let partial = if self.costs.is_complete() {
                     ""
                 } else {
                     " — INCOMPLETE (Cost Explorer page cap)"
                 };
-                let pretty = match (self.cost_enabled, self.costs_fetched_at) {
+                let pretty = match (self.costs.enabled(), self.costs.fetched_at()) {
                     (false, _) => "off".to_string(),
                     (true, None) if !self.costs.is_empty() => {
                         format!("on ({} env(s){partial})", self.costs.len())
@@ -40,7 +40,7 @@ impl App {
                         // doubly wrong — the handler explicitly refused
                         // to cache a partial result, and the age
                         // describes the older complete one.
-                        if self.costs_complete {
+                        if self.costs.is_complete() {
                             format!(
                                 "on (refreshed {} ago, {} env(s) cached)",
                                 humanize_short_age(age),
@@ -64,7 +64,7 @@ impl App {
                 return;
             }
         };
-        if next == self.cost_enabled {
+        if next == self.costs.enabled() {
             // `:cost on` while already on is the ONLY way back from a
             // truncated walk. `spawn_cost_fetch` has exactly one caller
             // — the `:cost on` transition below — so there is no
@@ -73,7 +73,7 @@ impl App {
             // suppressing a retry that otherwise never came. Answering
             // "already on" made the partial map terminal for the
             // session.
-            if next && !self.costs_complete {
+            if next && !self.costs.is_complete() {
                 self.status_message =
                     Some("cost: retrying the incomplete Cost Explorer walk…".into());
                 self.spawn_cost_fetch();
@@ -83,7 +83,7 @@ impl App {
                 Some(format!("cost: already {}", if next { "on" } else { "off" }));
             return;
         }
-        self.cost_enabled = next;
+        self.costs.set_enabled(next);
         if next {
             // Load whatever the cache has so the column renders
             // immediately with stale data; spawn a fresh fetch in
@@ -97,11 +97,10 @@ impl App {
             let cache = crate::cost_cache::load(&account, &self.context.region);
             let now = chrono::Utc::now();
             let stale = cache.is_stale(now);
-            self.costs = cache.costs;
-            self.costs_fetched_at = cache.fetched_at;
+            self.costs.restore_cached(cache.costs, cache.fetched_at);
             // Only complete walks are ever persisted, so anything the
             // cache hands back is complete by construction.
-            self.costs_complete = true;
+
             if stale {
                 // Cache stale (>24h) or absent. Fetch in background;
                 // operator sees stale numbers (or "—") immediately
@@ -125,8 +124,6 @@ impl App {
             }
         } else {
             self.costs.clear();
-            self.costs_complete = true;
-            self.costs_fetched_at = None;
             self.status_message = Some("cost: off — column hidden, cache preserved".into());
         }
         self.persist_state();
@@ -160,7 +157,7 @@ impl App {
     /// cache is empty): toast pointing the operator at the enable
     /// command, no overlay opened.
     pub(crate) fn cmd_fleet_cost(&mut self) {
-        if !self.cost_enabled {
+        if !self.costs.enabled() {
             self.error_message =
                 Some("cost tracking is off — run `:cost on` to populate the cache first".into());
             return;
@@ -171,7 +168,7 @@ impl App {
             );
             return;
         }
-        if !self.costs_complete {
+        if !self.costs.is_complete() {
             self.error_message = Some(
                 "fleet-cost: the cost data is INCOMPLETE (Cost Explorer page cap) — \
                  the total below under-reports"
@@ -180,8 +177,8 @@ impl App {
         }
         let body = render_fleet_cost(
             &self.environments,
-            &self.costs,
-            self.costs_fetched_at,
+            self.costs.by_env(),
+            self.costs.fetched_at(),
             chrono::Utc::now(),
         );
         self.current_overlay = Some(Overlay::TextDump {

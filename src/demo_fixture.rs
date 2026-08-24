@@ -547,9 +547,8 @@ pub(crate) fn install(app: &mut App) {
     app.event_panel.events = events();
     app.worker_dlq_depths = worker_dlq_depths();
     app.env_instance_counts = instance_counts();
-    app.cost_enabled = true;
-    app.costs = costs();
-    app.costs_fetched_at = Some(fixture_now());
+    app.costs.set_enabled(true);
+    app.costs.set_complete(costs(), fixture_now());
     app.context.account_id = Some("123456789012".into());
     app.context.profile = Some("poly-demo".into());
     app.context.caller_arn = Some("arn:aws:iam::123456789012:user/demo-operator".into());

@@ -482,7 +482,7 @@ pub(super) fn draw_detail_health(
     // column + `:why` overlay (green / muted / red) for cross-view
     // consistency. Hidden when cost tracking isn't enabled — keeps
     // the line layout stable for operators who don't care about cost.
-    if let Some(cost) = app.costs.get(&env.name).copied() {
+    if let Some(cost) = app.costs.get(&env.name) {
         let bucket_fg = if cost >= 500.0 {
             theme.health_red
         } else if cost >= 50.0 {

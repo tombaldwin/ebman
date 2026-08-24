@@ -1335,15 +1335,14 @@ impl App {
                     // empty map, or one that was itself partial. A
                     // COMPLETE map is worth more than fresher partial
                     // data, and must survive.
-                    if self.costs.is_empty() || !self.costs_complete {
-                        // Nothing to preserve — partial beats blank,
-                        // but say so and don't cache it or stamp a
-                        // fetch time that would suppress a retry.
-                        self.costs.clear();
-                        for row in &costs.rows {
-                            self.costs.insert(row.env_name.clone(), row.cost_usd);
-                        }
-                        self.costs_complete = false;
+                    if !self.costs.partial_would_lose_better_data() {
+                        // Nothing better to preserve. `set_partial` is
+                        // what makes "don't cache it, don't stamp a
+                        // fetch time that would suppress the retry"
+                        // structural rather than remembered.
+                        self.costs.set_partial(
+                            costs.rows.iter().map(|r| (r.env_name.clone(), r.cost_usd)),
+                        );
                         self.error_message = Some(format!(
                             "cost: INCOMPLETE — Cost Explorer returned more pages than ebman \
                              will walk. Showing {n} env(s); not cached — `:cost on` retries."
@@ -1357,19 +1356,17 @@ impl App {
                     }
                     return;
                 }
-                self.costs.clear();
-                for row in &costs.rows {
-                    self.costs.insert(row.env_name.clone(), row.cost_usd);
-                }
-                self.costs_fetched_at = Some(now);
-                self.costs_complete = true;
+                self.costs.set_complete(
+                    costs.rows.iter().map(|r| (r.env_name.clone(), r.cost_usd)),
+                    now,
+                );
                 {
                     // Persist to ~/.cache/ebman/cost-{account}-{region}.toml
                     // so subsequent sessions render immediately.
                     let account_key = account.unwrap_or_else(|| "unknown".into());
                     let cache = crate::cost_cache::CostCache {
                         fetched_at: Some(now),
-                        costs: self.costs.clone(),
+                        costs: self.costs.by_env().clone(),
                     };
                     if let Err(e) = crate::cost_cache::save(&account_key, &region, &cache) {
                         tracing::warn!(

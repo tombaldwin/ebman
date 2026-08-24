@@ -139,7 +139,8 @@ mod spawn_why_red; // the why-is-this-red diagnostic fan-out
 
 // Pure logic — no `App` receiver, no I/O, directly unit-testable.
 mod config_diff; // `:diff` option-setting comparison
-mod cost; // instance pricing, fleet rollups
+mod cost;
+mod costs; // instance pricing, fleet rollups
 mod deploy_math; // rolling-batch and unavailability arithmetic
 mod env_edit; // the `:env` editor round-trip
 mod render; // overlay body renderers (`-> String`)
@@ -151,6 +152,7 @@ mod types; // Focus / Overlay / Mode / SortKey / Picker / ...
 
 pub(crate) use config_diff::*;
 pub(crate) use cost::*;
+pub(crate) use costs::Costs;
 pub(crate) use deploy_math::*;
 pub(crate) use env_edit::*;
 pub(crate) use render::*;
@@ -378,30 +380,15 @@ pub struct App {
     /// a real value ("env reports no instances") and renders as `0/0`.
     pub(crate) env_instance_counts:
         std::collections::HashMap<String, crate::aws::EnvInstanceCounts>,
-    /// Cost Explorer integration is opt-in via `:cost on`. Toggling
-    /// flips this + triggers a fetch (or a stale-cache load); the
-    /// envs-table COST column renders only while this is true.
-    /// Persisted to state.toml under `cost_enabled`.
-    pub(crate) cost_enabled: bool,
-    /// Per-env monthly USD spend, populated by `spawn_cost_fetch`
-    /// after a `:cost on` opt-in. Empty when costs haven't been
-    /// fetched yet or the cache file is missing. Cleared when the
-    /// operator toggles `:cost off` so the column stops rendering
-    /// stale numbers.
-    pub(crate) costs: std::collections::HashMap<String, f64>,
-    pub(crate) costs_fetched_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Per-env spend, whether the walk that produced it finished, when
+    /// it landed, and whether Cost Explorer is opted in — one type, in
+    /// `app/costs.rs`, because three of those must move together and
+    /// four separate fields gave the compiler no way to say so. That had
+    /// already produced a bug; the module doc has it.
+    pub(crate) costs: Costs,
     /// The last `:yank-cli` snippet, so a test can assert on what was
     /// copied without reaching into the system clipboard.
     pub(crate) last_yanked_cli: Option<String>,
-    /// Whether what's in `costs` came from a walk that finished.
-    ///
-    /// Without this, "do we already have costs?" was the only test
-    /// available, and it made a partial map permanent: the first
-    /// truncated walk populated `costs`, and every later truncated walk
-    /// then saw a non-empty map and kept it — so the partial data from
-    /// the first failure survived the whole session while each retry
-    /// paid for twenty metered Cost Explorer pages and discarded them.
-    pub(crate) costs_complete: bool,
     /// `family_key → newest available version` from `ListAvailableSolutionStacks`,
     /// built by `spawn_solution_stacks`. Drives the envs-table stale-platform
     /// tint. Empty until the first fetch lands; cleared on context switch so a
@@ -1317,11 +1304,12 @@ impl App {
             promotion_history: Vec::new(),
             demo_mode: false,
             env_instance_counts: std::collections::HashMap::new(),
-            cost_enabled: persisted.cost_enabled.unwrap_or(false),
-            costs: std::collections::HashMap::new(),
-            costs_complete: true,
+            costs: {
+                let mut c = Costs::default();
+                c.set_enabled(persisted.cost_enabled.unwrap_or(false));
+                c
+            },
             last_yanked_cli: None,
-            costs_fetched_at: None,
             latest_stacks: std::collections::HashMap::new(),
             frozen: false,
             first_run_hint: !crate::state::file_exists(),
@@ -1612,11 +1600,8 @@ impl App {
             promotion_history: Vec::new(),
             demo_mode: false,
             env_instance_counts: std::collections::HashMap::new(),
-            cost_enabled: false,
-            costs: std::collections::HashMap::new(),
-            costs_complete: true,
+            costs: Costs::default(),
             last_yanked_cli: None,
-            costs_fetched_at: None,
             latest_stacks: std::collections::HashMap::new(),
             frozen: false,
             first_run_hint: false,
@@ -2169,7 +2154,7 @@ impl App {
             selected_env: selected,
             pinned: self.pinned.clone(),
             pinned_apps: self.pinned_apps.clone(),
-            cost_enabled: Some(self.cost_enabled),
+            cost_enabled: Some(self.costs.enabled()),
             aliases: self.aliases.clone(),
             saved_views: self.saved_views.clone(),
             deploy_snapshots: self
