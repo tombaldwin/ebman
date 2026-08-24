@@ -24,4 +24,5 @@ mod refresh;
 mod region;
 mod render;
 mod safety;
+pub(crate) mod scan;
 mod support;

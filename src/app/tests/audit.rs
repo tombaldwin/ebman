@@ -65,7 +65,7 @@ fn the_clipboard_is_only_reached_through_yank() {
             let text = std::fs::read_to_string(&path).expect("read");
             for (n, line) in text.lines().enumerate() {
                 // Skip the comments that discuss it by name.
-                let code = line.split("//").next().unwrap_or("");
+                let code = super::scan::strip_line_comment(line);
                 if code.contains("arboard::") {
                     sites.push(format!("{}:{}", path.display(), n + 1));
                 }

@@ -1307,7 +1307,7 @@ fn terminal_restore_goes_through_the_best_effort_helper() {
             }
             let text = std::fs::read_to_string(&path).expect("read");
             for (n, line) in text.lines().enumerate() {
-                let code = line.split("//").next().unwrap_or("");
+                let code = super::scan::strip_line_comment(line);
                 if code.contains("disable_raw_mode()?") {
                     offenders.push(format!("{}:{}", path.display(), n + 1));
                 }
@@ -1352,7 +1352,7 @@ fn every_cached_index_is_checked() {
             }
             let text = std::fs::read_to_string(&path).expect("read");
             for (n, line) in text.lines().enumerate() {
-                let code = line.split("//").next().unwrap_or("");
+                let code = super::scan::strip_line_comment(line);
                 // `environments[…]` is always the fleet list. For the
                 // shorter `envs`, only a DERFERENCED index is a cached
                 // view index (`envs[*i]` from a `DisplayRow::Env(i)`) —
@@ -1403,7 +1403,7 @@ fn the_test_suite_does_not_mutate_the_environment() {
             }
             let text = std::fs::read_to_string(&path).expect("read");
             for (n, line) in text.lines().enumerate() {
-                let code = line.split("//").next().unwrap_or("");
+                let code = super::scan::strip_line_comment(line);
                 // Needles assembled at runtime so this detector does
                 // not match its own source — the first version flagged
                 // exactly one offender: itself.

@@ -364,7 +364,7 @@ fn json_surfaces_are_parsed_by_a_json_parser() {
     ] {
         let code: String = src
             .lines()
-            .map(|l| l.split("//").next().unwrap_or(""))
+            .map(super::scan::strip_line_comment)
             .collect::<Vec<_>>()
             .join("\n");
         assert!(

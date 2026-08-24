@@ -1878,7 +1878,7 @@ fn every_spawn_declares_whether_it_is_per_env() {
         let lines: Vec<&str> = raw.lines().collect();
         for (n, line) in lines.iter().enumerate() {
             // Comments discuss `self.aws` by name.
-            let code = line.split("//").next().unwrap_or("");
+            let code = super::scan::strip_line_comment(line);
             if !(code.contains("self.aws.clone()") || code.contains("self.spawn_aws(")) {
                 continue;
             }
