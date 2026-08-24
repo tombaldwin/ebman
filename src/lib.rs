@@ -6,9 +6,25 @@
 //! dispatch into the lib. See `CLAUDE.md` for working rules and
 //! `BACKLOG.md` for the milestone plan.
 //!
-//! Splitting lib + bin lets integration tests and a sibling crate
-//! (`tui-common` planned for a workspace with `pgman`) `use ebman::…`
-//! the internal types instead of re-implementing them.
+//! # What is public, and why so little
+//!
+//! Only what `src/main.rs` needs: `app`, `audit`, `cli`, `config`,
+//! `control`, `freeze`, `project`, `splash`, `util`, plus the
+//! `font_probe` re-export and the `Tui` / `LogReloadHandle` aliases.
+//! Everything else is `pub(crate)`.
+//!
+//! It used to be all 33 modules — about 500 public items, 107 public
+//! structs, 94% of them with every field `pub` — serving a `main.rs`
+//! that touches twelve. The original rationale (integration tests, and
+//! a sibling crate sharing types with `pgman`) went stale: the tests
+//! are inline `#[cfg(test)]` and need `pub(crate)`, and pgman consumes
+//! the extracted `tb-tui-common` crate instead.
+//!
+//! The cost of leaving it wide was not theoretical. Adding a field to
+//! an internal struct was a semver event twice in two releases —
+//! `Form.banner` in 0.31.0 and `WorkerQueues.dlq_origin` in 0.32.0 —
+//! which made `cargo-semver-checks` a tax on ordinary refactoring
+//! rather than a safety net on the API anyone actually uses.
 
 // `unwrap_used` / `expect_used` are denied crate-wide (see
 // Cargo.toml). Test code is exempt: a panic in a test IS the failure
@@ -22,18 +38,18 @@
 
 pub mod app;
 pub mod audit;
-pub mod aws;
+pub(crate) mod aws;
 pub mod cli;
-pub mod commands;
+pub(crate) mod commands;
 pub mod config;
 pub mod control;
-pub mod cost_cache;
-pub mod deploy_poll;
-pub mod eb_cli;
-pub mod form;
-pub mod lint;
-pub mod llm;
-pub mod terraform;
+pub(crate) mod cost_cache;
+pub(crate) mod deploy_poll;
+pub(crate) mod eb_cli;
+pub(crate) mod form;
+pub(crate) mod lint;
+pub(crate) mod llm;
+pub(crate) mod terraform;
 
 // `font_probe` and `overlay` live in the shared `tui-common` crate so
 // the sibling pgman repo can depend on the same code. Re-exported here
@@ -41,24 +57,24 @@ pub mod terraform;
 // the `ebman::*` paths from the bin) keep working unchanged.
 pub use tui_common::font_probe;
 pub use tui_common::overlay;
-pub mod demo_fixture;
+pub(crate) mod demo_fixture;
 pub mod freeze;
-pub mod mode_action;
-pub mod mode_detail;
-pub mod mode_dlq;
-pub mod plugins;
-pub mod probe;
-pub mod profiles;
+pub(crate) mod mode_action;
+pub(crate) mod mode_detail;
+pub(crate) mod mode_dlq;
+pub(crate) mod plugins;
+pub(crate) mod probe;
+pub(crate) mod profiles;
 pub mod project;
-pub mod report_bug;
-pub mod saved_config;
-pub mod shell;
+pub(crate) mod report_bug;
+pub(crate) mod saved_config;
+pub(crate) mod shell;
 pub mod splash;
-pub mod sso;
-pub mod state;
-pub mod theme;
-pub mod ui;
-pub mod update_check;
+pub(crate) mod sso;
+pub(crate) mod state;
+pub(crate) mod theme;
+pub(crate) mod ui;
+pub(crate) mod update_check;
 pub mod util;
 
 use std::io::Stdout;

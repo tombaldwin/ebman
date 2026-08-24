@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Breaking (library only)
+
+- **24 of the 33 modules are now crate-private.** Only what the binary
+  needs stays public: `app`, `audit`, `cli`, `config`, `control`,
+  `freeze`, `project`, `splash`, `util`, plus the `font_probe`
+  re-export and the `Tui` / `LogReloadHandle` aliases. `aws`,
+  `commands`, `lint`, `ui`, `theme`, `state`, `form`, `llm`,
+  `terraform`, `profiles`, `plugins` and the rest are internal.
+
+  The old rationale — integration tests, and a sibling crate sharing
+  types with `pgman` — went stale: the tests are inline `#[cfg(test)]`
+  and want `pub(crate)`, and pgman consumes the extracted
+  `tb-tui-common` instead. What was left was ~500 public items serving a
+  `main.rs` that touches twelve, which made adding a field to an
+  internal struct a semver event: `Form.banner` in 0.31.0 and
+  `WorkerQueues.dlq_origin` in this cycle, neither intended. The binary
+  is unaffected.
+
+
 ### Fixed
 
 - **`ebman action rollout --profile X` bypassed

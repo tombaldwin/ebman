@@ -1,7 +1,7 @@
 //! `ebman explain EBL### [--env NAME] [--json] [--dry-run] [--no-cache]`
 //! — LLM-backed explanation of a lint issue. Loads the configured
 //! Provider (Anthropic API or Ollama), assembles the prompt via
-//! [`crate::llm::build_prompt`], dispatches, prints the response.
+//! `llm::build_prompt` (crate-private), dispatches, prints the response.
 //!
 //! Requires explicit operator consent via `explain.enabled = true`
 //! in `config.toml`. The presence of `ANTHROPIC_API_KEY` is not
