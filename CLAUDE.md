@@ -98,14 +98,18 @@ When the user asks to cut a release (e.g. "tag 0.X", "ship the release", "prepar
    the changelog.
 
    **This does not catch a break inherited from a dependency, and 0.33.0
-   found that out.** `cargo-semver-checks` compares the rustdoc
-   `resolved_path` string. A public item typed `ratatui::Terminal` has
-   that same path before and after ratatui 0.29 → 0.30, so the tool sees
-   no change while the type identity has in fact moved and downstream
-   code no longer compiles. Run against published 0.32.0 as a patch it
-   reported `223 checks: 223 pass` — a false clean covering **38**
-   publicly reachable items. It is a structural blind spot, not a lint
-   anyone forgot to enable.
+   found that out.** A public item typed `ratatui::Terminal` keeps that
+   spelling across ratatui 0.29 → 0.30 while the type identity moves, so
+   downstream code stops compiling. Run against published 0.32.0 as a
+   patch, the tool reported `223 checks: 223 pass` — a false clean
+   covering **38** publicly reachable items.
+
+   Don't over-claim the cause: the rustdoc JSON's `resolved_path` strings
+   are identical across the bump (the canonical paths and `external_crates`
+   list are not), so the evidence is in the tool's input, but *why* it
+   doesn't act on it was never confirmed against its source and its README
+   documents no such limitation. Treat it as a demonstrated gap, not an
+   explained one.
 
    So the enumeration has a second half, and it is a *lockfile*
    question, not a semver-checks run: **did any dependency that appears

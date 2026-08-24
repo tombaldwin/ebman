@@ -40,11 +40,24 @@ identity, so a downstream crate on ratatui 0.29 stops compiling.
   dependency — so this breaks only by crate identity.
 
 `cargo-semver-checks` reports **"no semver update required"** for all of
-the above. That is a structural blind spot, not a missed lint: it
-compares the rustdoc `resolved_path` string, which is identical across
-the bump. The check that catches this class is "did a dependency with
-public-API presence change major?", which is a lockfile question. Noted
-in `CLAUDE.md`'s release procedure so the next bump doesn't repeat it.
+the above — `223 checks: 223 pass`, run against a 0.32.0 baseline
+verified to have been built with ratatui 0.29.
+
+What was observed, as distinct from what it implies: in the rustdoc JSON
+the two versions produce, the `resolved_path` strings are identical
+(`ratatui::Terminal` either side), while the canonical paths in that same
+file did change — `ratatui::widgets::table::table_state::TableState`
+became `ratatui_widgets::table::state::TableState` — and `external_crates`
+went from `[crossterm, ratatui, tb_tui_common]` to `[crossterm,
+ratatui_core, ratatui_widgets, ratatui_crossterm, tb_tui_common]`. So the
+evidence of the break is present in the input the tool reads. Why it
+doesn't act on it is an inference from that, not something confirmed
+against the tool's source, and its README documents no such limitation.
+
+Either way the practical rule is the same and doesn't depend on the
+mechanism: the check that catches this class is "did a dependency with
+public-API presence change major?", which is a lockfile question rather
+than a semver-checks run. Recorded in `CLAUDE.md`'s release procedure.
 
 Practically the blast radius is nil — crates.io reports **0 reverse
 dependencies**, and the binary's CLI surface is untouched. The minor
