@@ -822,7 +822,7 @@ Surfaced by a post-0.10 review of the command surface + recent themes. Recent di
 #### Drift + observability — SUPPORT
 - ~~**`:config-diff --at 1h|24h|7d`** — point-in-time config diff. Scans the env's event history for `ConfigurationChange` events inside the window, replays the deltas backward from current option-settings state, shows what changed.~~ Withdrawn (2026-05-26). Re-audit shows EB's event API only carries free-text messages ("Environment configuration was updated successfully"), not structured before/after option-settings deltas. The "replay backward" mechanic the entry implies isn't implementable against EB's API surface. The honest reshape (a `--window` flag on the existing `:changes` command) duplicates 80% of `:changes` for marginal operator value. Operators who want "what's drifted in the last hour" today run `:changes` (which is already config-event-filtered) and compare against `:config-diff PROD-PEER` — same answer, two short commands. Drop unless a new design is proposed.
 - [x] **`:freeze-deploys [reason]` / `:thaw-deploys`** — SHIPPED. Session-scoped fleet-wide write-lock; new `DeployFreeze { reason, frozen_at }` layered above per-env / per-account safety pins in `is_read_only_for`. Refusal toast surfaces the operator-supplied reason + age ("deploys frozen (3m ago): incident #1234 — :thaw-deploys to unfreeze"). Audit-logged. Re-issue replaces the reason in place. Cleared by `:thaw-deploys` or by exiting ebman (no state.toml persistence — intentional, freeze is a session-safety gesture not durable policy).
-- ~~**OSC 8 terminal hyperlinks**~~ Withdrawn (2026-05-26, verified in 0.12). Re-attempted with an actual experiment in `ui::tests::osc8_in_span_is_split_into_per_byte_cells_ratatui_0_29_limitation` — ratatui 0.29's `Buffer::set_stringn` path treats each byte of an OSC 8 escape sequence as a 1-cell-wide printing character, so a 24-byte opener consumes 24 cells of layout space and pushes the visible text past the buffer width. The regression test pins the broken behavior so a future ratatui upgrade that adds zero-width control handling will fail it and prompt us to revisit. Shipping today would require a custom widget that bypasses the diff renderer per-line — too invasive for the value when modern terminals (iTerm, etc.) already auto-detect URLs in pasted output, which the existing `y`-to-yank flow already produces.
+- ~~**OSC 8 terminal hyperlinks**~~ Withdrawn (2026-05-26, verified in 0.12). Re-attempted with an actual experiment in `ui::tests::osc8_in_span_is_split_into_per_byte_cells_ratatui_0_29_limitation` — ratatui 0.29's `Buffer::set_stringn` path treats each byte of an OSC 8 escape sequence as a 1-cell-wide printing character, so a 24-byte opener consumes 24 cells of layout space and pushes the visible text past the buffer width. The regression test pins the broken behavior so a future ratatui upgrade that adds zero-width control handling will fail it and prompt us to revisit. Shipping today would require a custom widget that bypasses the diff renderer per-line — too invasive for the value when modern terminals (iTerm, etc.) already auto-detect URLs in pasted output, which the existing `y`-to-yank flow already produces. **Update 2026-08-24 (ratatui 0.30):** the prediction came true and the answer did not change. The bump failed this test, which is exactly what it was written to do. ratatui 0.30 no longer gives each escape byte a cell — it strips the ESC and renders the remainder as literal text, so the layout damage is gone but the escape is now unrecoverable from the buffer, which is *worse* for this feature: not even a custom widget could reassemble it. Test renamed to `ui::tests::osc8_still_cannot_round_trip_through_ratatui` since it no longer pins a 0.29-specific mechanism. Still withdrawn.
 
 #### Operator polish — BONUS
 - [x] **`:undo` for the last config write** — SHIPPED. Captures before-state on every `spawn_option_settings_update` (covers `:set-option` / `:keypair` / `:deployment-policy` / `:rolling-update` / `:health-check-url` / `:env-edit` / `:capacity` / `:scaling-triggers` / `:listener-edit` / etc.) via an extra DescribeConfigurationSettings call BEFORE the write; pushes a reverse-action `UndoEntry` onto a 10-entry ring buffer (`App.undo_history`) on successful completion. `:undo` pops the back, refuses if the captured env is no longer in view, and re-dispatches the reverse via the same spawn — which captures ITS own undo, so `:undo`+`:undo` = redo. Empty-string-prior values reverse via `to_remove` (not empty `to_set`) since EB doesn't distinguish unset from empty. Cross-context cleared on `apply_rebuild`. Config writes only (per BACKLOG design call) — deploy/terminate are out of scope; `:rollback` covers that.
@@ -842,7 +842,7 @@ Theme: **workspace polish — saved views as real tabs + ergonomic gap closures*
 
 #### Ergonomic gap closures — SUPPORT
 - [x] **`:batch-set-option` captures undo** — SHIPPED (`76e54b6`). Closed the multi-env undo gap from 0.11: `spawn_batch_set_option` now does the same pre-write option-settings read + `build_undo_entry` + `AppMsg::UndoCaptured` dispatch as its single-env sibling, so each env in a batch contributes its own undo entry. Repeated `:undo` walks the batch backwards. Self-review caught a context-switch race (env terminated mid-batch); guarded with an upfront fleet-presence check + audit-logged skip.
-- ~~**OSC 8 terminal hyperlinks**~~ — Re-attempted with an actual experiment (vs the 0.11 assumption-based skip). Verified that ratatui 0.29 splits each escape byte into its own 1-cell-wide printing cell — a 24-byte OSC 8 opener eats 24 cells of layout space, pushing visible text past the buffer width. Regression test at `ui::tests::osc8_in_span_is_split_into_per_byte_cells_ratatui_0_29_limitation` pins the broken behavior; a future ratatui that adds zero-width control handling will fail the test and prompt us to revisit.
+- ~~**OSC 8 terminal hyperlinks**~~ — Re-attempted with an actual experiment (vs the 0.11 assumption-based skip). Verified that ratatui 0.29 splits each escape byte into its own 1-cell-wide printing cell — a 24-byte OSC 8 opener eats 24 cells of layout space, pushing visible text past the buffer width. Regression test at `ui::tests::osc8_in_span_is_split_into_per_byte_cells_ratatui_0_29_limitation` pins the broken behavior; a future ratatui that adds zero-width control handling will fail the test and prompt us to revisit. **Update 2026-08-24 (ratatui 0.30):** the prediction came true and the answer did not change. The bump failed this test, which is exactly what it was written to do. ratatui 0.30 no longer gives each escape byte a cell — it strips the ESC and renders the remainder as literal text, so the layout damage is gone but the escape is now unrecoverable from the buffer, which is *worse* for this feature: not even a custom widget could reassemble it. Test renamed to `ui::tests::osc8_still_cannot_round_trip_through_ratatui` since it no longer pins a 0.29-specific mechanism. Still withdrawn.
 
 #### Skipped on purpose — held for 0.13
 - **Cross-region rollout (`:rollout LABEL --regions r1,r2,r3 [--auto-rollback Nm]`)** — Held (2026-05-26). Real value but needs careful design: same-name vs explicit-mapping env discovery across regions, sequential vs parallel dispatch, partial-failure handling (region 1 ok, region 2 listing failed), per-region AwsClient construction, audit-log shape. Multiple reasonable shapes; warrants a dedicated session rather than tail-end of an autonomous run.
@@ -1400,6 +1400,71 @@ step will work at tag time.
   only `App` and its three entry points public. Deliberately not done
   in this release — it is a second breaking change to an API with zero
   consumers, and it should be measured, not bundled.
+
+#### ratatui 0.30 / crossterm 0.29, and the dependabot queue — 2026-08-24
+
+- [x] **ratatui 0.29 → 0.30.2, crossterm 0.28 → 0.29**, with
+  `tb-tui-common` 0.1.3 → **0.2.0 published to crates.io** so ebman
+  builds against the registry rather than a path patch.
+
+  Neither crate needed a code change. The 85 compile errors a naive bump
+  produces are entirely a two-versions-in-one-tree clash — `tb-tui-common`
+  0.1.3 pinned ratatui `^0.29`, and 0.30 relocated types into
+  `ratatui-core`, so `Color` from 0.29 and `Color` from 0.30 are distinct
+  types to the compiler. It reads as a large API migration and is nothing
+  of the sort; the compiler says so plainly once you look ("there are
+  multiple different versions of crate `crossterm` in the dependency
+  graph"). Aligning the versions took it to zero errors without touching
+  a line of either crate.
+
+  Two real changes fell out. `ListState` is now `Copy`, so a `.clone()` in
+  `ui/overlays.rs` became redundant — and *required* on 0.29, which is why
+  the code is now 0.30-only rather than compatible with both. And the OSC 8
+  behaviour change above.
+
+  Verified beyond the suite, because "the tests pass" is weak evidence for
+  a TUI library bump: rendered the same frame — three envs, two apps,
+  grouping on, a selected row, health colours, the group-separator summary
+  — on 0.29 and on 0.30 and diffed. Byte-identical.
+
+- [x] **The candor gate in `tb-tui-common` moved underfoot.** It passed in
+  June and failed on a commit that changed no code at all, because
+  `cargo install candor-scan` was unversioned and a newer scanner
+  classified the same source differently. Third instance of that pattern
+  across these repos; pinned to 0.31.0. The finding itself was true and
+  the *rule* was over-broad: `font_probe` writes a glyph and reads the
+  cursor position back, which is Ipc because it is a conversation with
+  another process — but that process is the terminal, and asking the
+  terminal what it can render is what a shared TUI library is *for*.
+  Exempted narrowly, with the reasoning written into both `.candor/policy`
+  and `ci/candor-check.sh`.
+
+- [x] **Dependabot queue cleared — all nine PRs closed.** #7 (ratatui) and
+  #9 (crossterm) auto-closed once main passed them; neither could have
+  worked alone.
+
+  - **The four action bumps landed as one commit**, not four merges.
+    `release.yml` hands built tarballs between jobs via
+    upload-artifact → download-artifact, which is version-coupled: merging
+    #2 without #4 leaves a v7 uploader feeding a v4 downloader, and the
+    failure surfaces at the next tag, in the one workflow with no dry run.
+    Merged in sequence main is briefly in exactly that state. Checked the
+    inputs actually passed rather than assuming — `pattern`,
+    `merge-multiple`, all five softprops inputs still exist. The
+    asymmetric v7↔v8 pairing is deliberate upstream, confirmed from
+    download-artifact's own end-to-end example.
+  - Fixed while in there: `if-no-files-found` defaults to `warn`, so a
+    staging step that produced nothing would warn inside a green job and
+    `publish` would attach an **empty asset set to a real tag**. Now
+    `error`. Inherited free from v8: `digest-mismatch: error`.
+  - **`toml` 0.8 → 1.1, `sha2` 0.10 → 0.11, `aws-smithy-mocks` 0.2 → 0.3**,
+    taken locally rather than merged so fallout could be fixed in the same
+    commit. `toml` 1.1.4 carries `+spec-1.1.0` — a change to the
+    *language*, so "it compiled" says nothing. What makes it safe is that
+    TOML 1.1 is a widening, and `project::parse` is the crate's only
+    `toml::` call site and nothing serialises TOML, so ebman cannot emit
+    1.1 syntax an older ebman would reject. Pinned with two
+    mutation-verified tests rather than left to be re-derived.
 
 #### Structure + tooling review, acted on — 2026-08-24
 
