@@ -22,6 +22,19 @@
 //! relied on — so moving an item between view modules doesn't touch
 //! its callers.
 
+// ARCHITECTURE.md rule 5, enforced by the compiler rather than by
+// memory: the alternate screen swallows stdout/stderr, so a stray
+// `println!` here does not appear — it corrupts the frame. Use
+// `tracing::*`; output goes to ~/.cache/ebman/ebman.log.
+//
+// Module-scoped, so the CLI's legitimate printing is unaffected. There
+// were zero violations when this went in, so it costs nothing today and
+// catches the next one at compile time instead of in a review.
+#![cfg_attr(
+    not(test),
+    deny(clippy::print_stdout, clippy::print_stderr, clippy::dbg_macro)
+)]
+
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
