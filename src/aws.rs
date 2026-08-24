@@ -77,15 +77,12 @@ mod sqs;
 mod ssm;
 mod waf;
 
-pub use acm::*;
 pub use cloudwatch::*;
 pub use cost::*;
 pub use eb::*;
-pub use ec2::*;
 pub use iam::*;
 pub use logs::*;
 pub use org::*;
-pub use s3::*;
 pub use secrets::*;
 pub use sqs::*;
 pub use ssm::*;

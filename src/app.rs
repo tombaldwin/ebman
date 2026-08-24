@@ -154,7 +154,7 @@ pub use tail::TailView;
 /// user plugins from `commands.toml` — plugins that shadow a built-in are
 /// dropped with a warning rather than silently masking it.
 ///
-/// Derived from [`crate::commands::COMMANDS`] so adding a command only
+/// Derived from `commands::COMMANDS` (crate-private) so adding a command only
 /// requires one edit (`commands.rs`). The list is built lazily on first
 /// access; the registry is a `const` slice so the work is O(N) with N≈90.
 pub fn builtin_commands() -> Vec<&'static str> {

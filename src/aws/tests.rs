@@ -12,6 +12,12 @@
 //! `#[cfg(test)]` block next to the code.
 
 use super::*;
+// Explicit, because `aws.rs` no longer re-exports `s3::*`. That glob
+// existed only to widen the public API; nothing in the lib used it, so
+// it read as dead the moment the module went `pub(crate)` — but the
+// tests DID use it, and they don't compile in the lib build where that
+// was measured. Importing what they need says so.
+use super::s3::{plan_part_lengths, should_multipart};
 
 #[test]
 fn platform_branch_from_arn_takes_full_branch_segment() {

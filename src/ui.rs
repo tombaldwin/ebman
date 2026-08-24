@@ -65,7 +65,6 @@ pub(crate) use shell::*;
 pub(crate) use table::*;
 
 use detail::*;
-pub use detail::{hover_index, series_anomaly_label};
 use help::*;
 use overlays::*;
 

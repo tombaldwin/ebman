@@ -9,6 +9,13 @@ the AI-assisted-contributor rules see [`CLAUDE.md`](CLAUDE.md).
 
 ## Shape of the crate
 
+`ebman` is lib + bin, but the library is not a general-purpose API: only
+the nine modules `src/main.rs` needs are public, and everything else is
+`pub(crate)`. That is deliberate — a wide public surface made every
+internal refactor a semver event, and `cargo-semver-checks` a tax on
+ordinary work rather than a guard on the API anyone uses.
+
+
 `ebman` is lib + bin. `src/lib.rs` holds everything testable; `src/main.rs` is
 a thin entry point that parses argv, sets up logging and the panic hook, and
 either dispatches a headless subcommand or enters the TUI.

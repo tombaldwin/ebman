@@ -116,16 +116,9 @@ pub struct LintContext<'a> {
     /// Operator-set option_settings, flat `(namespace, name, value)`.
     /// Matches the shape `fetch_env_option_settings` returns.
     pub options: &'a [(String, String, String)],
-    /// Recent events (newest-first), or empty if the caller
-    /// didn't fetch them. Some rules use event history (e.g.
-    /// "no deploys without --auto-rollback in the last week");
-    /// rules that need events MUST handle the empty case
-    /// gracefully (skip rather than false-positive).
-    pub events: &'a [crate::aws::Event],
     /// Cost in USD per month, when `:cost on` has populated it.
     /// `None` means cost data isn't available — cost-shape rules
     /// skip rather than flag.
-    pub cost_usd_per_month: Option<f64>,
     /// Newer-platform-version available signal. `Some(version)` =
     /// the caller has checked `App.latest_stacks` and confirmed
     /// the env's family has a strictly-newer version (the value).
@@ -207,8 +200,6 @@ impl<'a> LintContext<'a> {
         Self {
             env,
             options,
-            events: &[],
-            cost_usd_per_month: None,
             newer_stack_available: None,
             required_tags: &[],
             env_tag_keys: None,
@@ -218,18 +209,6 @@ impl<'a> LintContext<'a> {
             health_probe_failure: None,
             waf_missing: None,
         }
-    }
-
-    /// Attach recent EB events (newest-first).
-    pub fn with_events(mut self, events: &'a [crate::aws::Event]) -> Self {
-        self.events = events;
-        self
-    }
-
-    /// Attach the env's monthly cost in USD (from `:cost on`).
-    pub fn with_cost(mut self, cost_usd_per_month: f64) -> Self {
-        self.cost_usd_per_month = Some(cost_usd_per_month);
-        self
     }
 
     /// Attach the "newer platform version available" signal —
