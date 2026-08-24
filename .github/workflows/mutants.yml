@@ -1,15 +1,26 @@
 name: mutants
 
-# Nightly, not per-PR. Full-repo mutation testing is 30-60 minutes of
-# CPU; the suite itself is ~3s, so the cost is entirely in rebuilds.
+# Mutation testing in two modes, because the single nightly this replaces
+# produced nothing at all.
 #
-# Worth automating specifically because the hand process has failed
-# repeatedly and in ways that LOOK like success: a `sed` written against
-# the pre-`fmt` shape silently no-ops and the test "passes" a mutation
-# that was never applied; a mutation that doesn't compile prints no
-# `test result:` line and reads as a pass. `scripts/mutate.sh` guards a
-# single experiment against both. This guards the whole tree.
+# Its one run in history was CANCELLED at the GitHub Actions six-hour
+# ceiling: no `mutants.toml`, no `[package.metadata.mutants]`, so it
+# enumerated mutants across the whole tree with a rebuild each and could
+# never finish. `continue-on-error: true` meant it never went red either,
+# and the artifact step uploaded `mutants.out/` from a killed run. So the
+# signal this project explicitly chose OVER coverage-as-a-gate — on the
+# reasoning that coverage answers "what is untested" and this codebase is
+# past that, into "are the tests load-bearing" — was emitting nothing.
+#
+# Worth automating at all because the hand process fails in ways that look
+# like success: a `sed` written against the pre-`fmt` shape silently
+# no-ops and the test "passes" a mutation never applied; a mutation that
+# doesn't compile prints no `test result:` line and reads as a pass; and a
+# test filter matching zero tests reports `ok. 0 passed`.
+# `scripts/mutate.sh` guards a single experiment against all three.
+
 on:
+  pull_request:
   schedule:
     - cron: "0 3 * * *"
   workflow_dispatch:
@@ -18,25 +29,72 @@ permissions:
   contents: read
 
 jobs:
-  mutants:
-    name: cargo-mutants
+  # The one that matters. `--in-diff` mutates only the lines this PR
+  # touched, which is minutes rather than hours, and asks exactly the
+  # question worth asking at review time: is the test that came with this
+  # change load-bearing? Blocking, because on a diff-sized surface a
+  # surviving mutant is nearly always a real gap rather than an
+  # equivalent-mutant argument.
+  in-diff:
+    name: cargo-mutants (changed lines)
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    # Non-blocking: surviving mutants are a reading list, not a build
-    # failure. Turning them into one would mean either chasing every
-    # equivalent mutant or switching the job off, and the second is what
-    # actually happens.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-mutants --locked
+      - name: Diff against the merge base
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          git diff "$base" -- 'src/**/*.rs' > pr.diff
+          wc -l < pr.diff | xargs echo "diff lines:"
+      - name: Mutate the changed lines
+        run: |
+          set -euo pipefail
+          # No Rust changes in this PR — nothing to mutate, and an empty
+          # diff must not read as a pass.
+          if [ ! -s pr.diff ]; then
+            echo "no src/**/*.rs changes; nothing to mutate"
+            exit 0
+          fi
+          cargo mutants --in-diff pr.diff --no-shuffle --timeout 120 -- --lib
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: mutants-in-diff
+          path: mutants.out/
+          retention-days: 14
+
+  # Whole-tree sweep, sharded so each shard finishes. Non-blocking:
+  # across the full surface, surviving mutants are a reading list, and
+  # turning them into a build failure means either chasing every
+  # equivalent mutant or switching the job off — and the second is what
+  # actually happens.
+  full:
+    name: cargo-mutants (shard ${{ matrix.shard }}/8)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 320
     continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-mutants --locked
-      - name: Mutate
-        run: cargo mutants --no-shuffle --timeout 120 -- --lib
-      - name: Upload the surviving-mutant report
+      - name: Mutate this shard
+        run: cargo mutants --shard ${{ matrix.shard }}/8 --no-shuffle --timeout 120 -- --lib
+      - uses: actions/upload-artifact@v7
         if: always()
-        uses: actions/upload-artifact@v7
         with:
-          name: mutants-report
+          name: mutants-shard-${{ matrix.shard }}
           path: mutants.out/
           retention-days: 14
