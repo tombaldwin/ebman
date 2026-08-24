@@ -1363,6 +1363,44 @@ the upgrade command for the detected install channel — touches no AWS)
 and no-arg `:upgrade` (lists compatible platforms, a read; the ARN form
 gates).
 
+#### Post-panel delta review — 2026-08-24
+
+A fourth review, scoped to the three commits that landed AFTER the
+release panel ran — the panel reviewed a lineup that no longer existed.
+Verdict SHIP, one real defect.
+
+- [x] **Deleting `cost_usd_per_month` left its doc comment attached to
+  the NEXT field**, so `newer_stack_available` documented itself as
+  "Cost in USD per month". The same class as the split doc comment the
+  first panel's skeptic found in `freeze.rs` — a deletion that leaves
+  prose behind, twice now. Fixed.
+- [x] `pub use tui_common::overlay` was kept public alongside
+  `font_probe`, but only `font_probe` is reached from `main.rs`. Now
+  `pub(crate)`.
+
+Confirmed rather than assumed, which is why the review was worth
+running: the `with_events` / `with_cost` deletion was correct. The
+reviewer checked three ways — no rule reads events or cost, EBL003
+("Red for extended period") deliberately uses `env.updated` as its
+duration proxy instead, `docs/lint-rules.md` has no such rule, and the
+backlog's only forward pointer is generic. Scaffolding for rules never
+written, and git history keeps it.
+
+It also downloaded the pinned `mcp-publisher` artefact and verified the
+sha256, the tar member name, that the job is ubuntu-only so `sha256sum`
+exists, and that `-c -` is shell-correct — i.e. the untested release
+step will work at tag time.
+
+- [ ] **`app` is still a wide surface.** Keeping the module public keeps
+  `App`'s ~100 pub fields and the `mode_action` / `mode_detail` /
+  `mode_dlq` re-exports (`DetailState`, `ConfirmModal`, `ViewState`,
+  `TailView`) public with it — so a new field on `DetailState` will
+  still trip semver-checks next cycle. The narrowing removed most of the
+  tax, not all of it. Next step: `pub(crate)` inside `app.rs`, keeping
+  only `App` and its three entry points public. Deliberately not done
+  in this release — it is a second breaking change to an API with zero
+  consumers, and it should be measured, not bundled.
+
 #### Structure + tooling review, acted on — 2026-08-24
 
 An invited Rust review of project structure and tooling. Its headline:
