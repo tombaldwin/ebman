@@ -373,6 +373,30 @@ pub(crate) enum LogTailStage {
     Ready,
 }
 
+/// Which Detail fetch produced the error currently on show.
+///
+/// Exists because `DetailState::error` is one slot shared by four
+/// concurrent fetches, and every handler cleared it on success. So a
+/// successful instances fetch erased a denied events fetch, and the
+/// operator got a clean panel with no hint that anything had failed —
+/// silently, and decided by whichever AWS response happened to land
+/// last. Tagging the error means only the fetch that set it can clear
+/// it. Pinned by `a_successful_fetch_does_not_erase_another_fetchs_error`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DetailFetch {
+    Events,
+    Instances,
+    Metrics,
+    Queues,
+}
+
+/// A Detail fetch failure, with the fetch that owns it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DetailError {
+    pub source: DetailFetch,
+    pub message: String,
+}
+
 pub(crate) struct DetailState {
     pub env_name: String,
     pub env_snapshot: Environment, // taken at open-time; not refreshed
@@ -415,7 +439,7 @@ pub(crate) struct DetailState {
     pub loading_metrics: bool,
     pub loading_tags: bool,
     pub loading_env_vars: bool,
-    pub error: Option<String>,
+    pub error: Option<DetailError>,
     /// Tail-log state, populated when the user visits the Logs tab.
     pub log_tail: LogTail,
     /// Cursor position within the Queue tab (0 = Main queue, 1 = DLQ). The
@@ -444,14 +468,12 @@ pub(crate) struct DetailState {
     /// fetch failed; Some(Ok) = fetched. Surfaced in the Health tab's
     /// alarms section. Mirrors the alarms data in `:why` so the two
     /// triage surfaces no longer disagree.
-    pub cw_alarms: Option<Result<Vec<crate::aws::CwAlarm>, String>>,
-    pub loading_cw_alarms: bool,
+    pub cw_alarms: crate::app::Fetch<Vec<crate::aws::CwAlarm>>,
     /// Recently-registered application versions (up to ~5). Surfaced in
     /// the Health tab's "recent deploys" section so an env that flipped
     /// Red right after a deploy makes that obvious without leaving the
     /// Detail view.
-    pub recent_versions: Option<Result<Vec<crate::aws::AppVersion>, String>>,
-    pub loading_recent_versions: bool,
+    pub recent_versions: crate::app::Fetch<Vec<crate::aws::AppVersion>>,
     /// Cursor index into [`config_editable_items`] — the editable
     /// rows of the Config tab (tags + env vars). `j`/`k` move it;
     /// `enter` opens the in-place editor for the row it points at.
@@ -490,6 +512,19 @@ impl DetailState {
     /// result handler — a separate in-flight marker would need its own
     /// clearing discipline and would wedge the tab the first time one
     /// was missed.
+    /// Record a failure against the fetch that produced it.
+    pub(crate) fn set_error(&mut self, source: DetailFetch, message: String) {
+        self.error = Some(DetailError { source, message });
+    }
+
+    /// Clear the error **only if this fetch is the one that set it.**
+    /// The whole point: a success must not speak for a sibling fetch.
+    pub(crate) fn clear_error(&mut self, source: DetailFetch) {
+        if self.error.as_ref().is_some_and(|e| e.source == source) {
+            self.error = None;
+        }
+    }
+
     pub(crate) fn tab_loading(&self) -> bool {
         match self.tab() {
             // The Health tab is a rollup: it fires up to four fetches
@@ -497,8 +532,8 @@ impl DetailState {
             // belongs to hasn't finished.
             DetailTab::Health => {
                 self.loading_events
-                    || self.loading_cw_alarms
-                    || self.loading_recent_versions
+                    || self.cw_alarms.in_flight()
+                    || self.recent_versions.in_flight()
                     || self.loading_queues
             }
             DetailTab::Events => self.loading_events,
@@ -710,10 +745,8 @@ mod tests {
             health_cursor: 0,
             metrics_hover_col: None,
             metrics_body_rect: None,
-            cw_alarms: None,
-            loading_cw_alarms: false,
-            recent_versions: None,
-            loading_recent_versions: false,
+            cw_alarms: Default::default(),
+            recent_versions: Default::default(),
             config_cursor: 0,
             config_edit: None,
             config_scroll: 0,

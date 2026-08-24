@@ -440,9 +440,9 @@ impl App {
             match r {
                 Ok(events) => {
                     d.events = events;
-                    d.error = None;
+                    d.clear_error(crate::mode_detail::DetailFetch::Events);
                 }
-                Err(msg) => d.error = Some(msg),
+                Err(msg) => d.set_error(crate::mode_detail::DetailFetch::Events, msg),
             }
         });
     }
@@ -494,9 +494,9 @@ impl App {
             match r {
                 Ok(instances) => {
                     d.instances = instances;
-                    d.error = None;
+                    d.clear_error(crate::mode_detail::DetailFetch::Instances);
                 }
-                Err(msg) => d.error = Some(msg),
+                Err(msg) => d.set_error(crate::mode_detail::DetailFetch::Instances, msg),
             }
         });
     }
@@ -511,9 +511,9 @@ impl App {
             match r {
                 Ok(metrics) => {
                     d.metrics = metrics;
-                    d.error = None;
+                    d.clear_error(crate::mode_detail::DetailFetch::Metrics);
                 }
-                Err(msg) => d.error = Some(msg),
+                Err(msg) => d.set_error(crate::mode_detail::DetailFetch::Metrics, msg),
             }
         });
     }
@@ -1286,8 +1286,7 @@ impl App {
         if detail.env_name != env_name {
             return;
         }
-        detail.loading_cw_alarms = false;
-        detail.cw_alarms = Some(result);
+        detail.cw_alarms.settle(result);
     }
 
     fn handle_env_vars_for_edit(
@@ -1399,8 +1398,7 @@ impl App {
         if detail.env_name != env_name {
             return;
         }
-        detail.loading_recent_versions = false;
-        detail.recent_versions = Some(result);
+        detail.recent_versions.settle(result);
     }
 
     fn handle_form_prefilled(
@@ -1701,9 +1699,9 @@ impl App {
             match r {
                 Ok(queues) => {
                     d.queues = queues;
-                    d.error = None;
+                    d.clear_error(crate::mode_detail::DetailFetch::Queues);
                 }
-                Err(msg) => d.error = Some(msg),
+                Err(msg) => d.set_error(crate::mode_detail::DetailFetch::Queues, msg),
             }
         });
     }

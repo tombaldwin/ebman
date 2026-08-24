@@ -490,8 +490,8 @@ async fn every_detail_tab_reports_its_own_loading_state() {
     d.loading_instances = false;
     d.loading_queues = false;
     d.loading_metrics = false;
-    d.loading_cw_alarms = false;
-    d.loading_recent_versions = false;
+    d.cw_alarms = Default::default();
+    d.recent_versions = Default::default();
     d.log_tail.stage = crate::app::LogTailStage::Idle;
 
     // Every flag off: no tab claims to be loading.
@@ -528,14 +528,10 @@ async fn every_detail_tab_reports_its_own_loading_state() {
             |d| d.loading_metrics = true,
             &[DetailTab::Metrics],
         ),
-        (
-            "alarms",
-            |d| d.loading_cw_alarms = true,
-            &[DetailTab::Health],
-        ),
+        ("alarms", |d| d.cw_alarms.begin(), &[DetailTab::Health]),
         (
             "recent versions",
-            |d| d.loading_recent_versions = true,
+            |d| d.recent_versions.begin(),
             &[DetailTab::Health],
         ),
         (
@@ -550,8 +546,8 @@ async fn every_detail_tab_reports_its_own_loading_state() {
         d.loading_instances = false;
         d.loading_queues = false;
         d.loading_metrics = false;
-        d.loading_cw_alarms = false;
-        d.loading_recent_versions = false;
+        d.cw_alarms = Default::default();
+        d.recent_versions = Default::default();
         d.log_tail.stage = crate::app::LogTailStage::Idle;
         set(d);
         for idx in 0..d.tabs.len() {
@@ -657,5 +653,149 @@ async fn detail_logs_tab_draws_even_with_nothing_tailing() {
     assert!(
         out.contains("instance(s)"),
         "the Logs pane's own title counts instances and lines:\n{out}"
+    );
+}
+
+/// Characterisation test, written BEFORE the `Fetch<T>` refactor and
+/// kept afterwards, re-expressed through the new API. The assertions are
+/// unchanged; only the spelling moved.
+///
+/// The BACKLOG called `Option<T>` + `loading_*: bool` "4 representable
+/// states for 3 real ones". That is a misreading, and this test is the
+/// evidence — which is why `Fetch<T>` is a struct holding both facts and
+/// not the four-variant enum that entry implies. All four combinations
+/// are reachable and each means something different: the settled value
+/// says whether we hold data, the in-flight flag says whether a request
+/// is running right now.
+///
+/// The state that makes them orthogonal is settled-and-in-flight: a
+/// refresh running while the previous result is still on screen.
+/// `spawn_detail_alarms` calls `begin()` without clearing the value,
+/// deliberately, so a refresh does not blank the panel. A four-variant
+/// enum would lose it and `tab_loading()` would stop reporting a refresh
+/// as in flight whenever data was already present.
+#[tokio::test]
+async fn the_alarms_pair_encodes_two_orthogonal_facts_not_one_redundant_state() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "uflexi", "WebServer", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+    let d = app.detail.as_mut().expect("detail opened");
+    d.tab_idx = d
+        .tabs
+        .iter()
+        .position(|t| *t == DetailTab::Health)
+        .expect("Health tab");
+    // `open_detail` fires eager fetches; start from a clean slate.
+    d.loading_events = false;
+    d.loading_queues = false;
+    d.recent_versions = Default::default();
+
+    let alarm = || {
+        vec![crate::aws::CwAlarm {
+            name: "cpu-high".into(),
+            state: "ALARM".into(),
+            state_reason: String::new(),
+            metric_name: "CPUUtilization".into(),
+            namespace: "AWS/EC2".into(),
+        }]
+    };
+
+    // Idle: nothing held, nothing running.
+    d.cw_alarms = Default::default();
+    assert!(!d.tab_loading(), "idle must not claim to be loading");
+    assert!(!d.cw_alarms.is_first_load());
+    assert!(d.cw_alarms.ready().is_none() && d.cw_alarms.error().is_none());
+
+    // First load: running, nothing to show, so the spinner is on.
+    d.cw_alarms.begin();
+    assert!(d.tab_loading(), "first load is in flight");
+    assert!(
+        d.cw_alarms.is_first_load(),
+        "nothing to show yet, so ui/detail.rs draws `fetching alarms…`"
+    );
+
+    // Settled with data.
+    d.cw_alarms.settle(Ok(alarm()));
+    assert!(!d.tab_loading(), "settled must not claim to be loading");
+    assert!(!d.cw_alarms.is_first_load());
+    assert_eq!(d.cw_alarms.ready().map(Vec::len), Some(1));
+
+    // THE state a four-variant enum would lose: a refresh in flight with
+    // the previous result still displayed.
+    d.cw_alarms.begin();
+    assert!(
+        d.tab_loading(),
+        "a refresh must still report in-flight even when data is present"
+    );
+    assert!(
+        !d.cw_alarms.is_first_load(),
+        "but it must NOT draw the spinner — the old data stays visible"
+    );
+    assert_eq!(
+        d.cw_alarms.ready().map(Vec::len),
+        Some(1),
+        "and the previous result must survive `begin()`"
+    );
+
+    // Settled and failed. Distinct from idle, and `ready` must not lie.
+    d.cw_alarms.settle(Err("DescribeAlarms denied".into()));
+    assert!(!d.tab_loading());
+    assert!(d.cw_alarms.ready().is_none(), "a failure is not a value");
+    assert!(d.cw_alarms.error().is_some_and(|e| e.contains("denied")));
+}
+
+/// Does a successful fetch erase an unrelated fetch's error?
+///
+/// `open_detail` fires events / instances / metrics / queues
+/// concurrently, and all four handlers settle into the SAME
+/// `DetailState::error` slot — `Some(msg)` on failure, and `None` on
+/// success. So whichever AWS response lands last decides what the
+/// operator sees, and a success can silently wipe a real failure.
+///
+/// Written to find out rather than to assert: if this passes, the
+/// concern is unfounded and the test documents that.
+#[tokio::test]
+async fn a_successful_fetch_does_not_erase_another_fetchs_error() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("wk-prod", "uflexi", "Worker", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+
+    let gen = app.generation;
+    // Events fetch fails — AccessDenied on DescribeEvents, say.
+    app.handle_msg(crate::app::AppMsg::DetailEvents {
+        gen,
+        env_name: "wk-prod".to_string(),
+        result: Err("AccessDenied: DescribeEvents".to_string()),
+    });
+    let after_failure = app
+        .detail
+        .as_ref()
+        .and_then(|d| d.error.as_ref().map(|e| e.message.clone()));
+    assert_eq!(
+        after_failure.as_deref(),
+        Some("AccessDenied: DescribeEvents"),
+        "the failure must be recorded"
+    );
+
+    // An UNRELATED fetch then succeeds.
+    app.handle_msg(crate::app::AppMsg::DetailInstances {
+        gen,
+        env_name: "wk-prod".to_string(),
+        result: Ok(Vec::new()),
+    });
+
+    let after_success = app
+        .detail
+        .as_ref()
+        .and_then(|d| d.error.as_ref().map(|e| e.message.clone()));
+    assert_eq!(
+        after_success.as_deref(),
+        Some("AccessDenied: DescribeEvents"),
+        "an unrelated success must NOT erase it — the operator would see \
+         a clean panel and never learn the events fetch was denied"
     );
 }

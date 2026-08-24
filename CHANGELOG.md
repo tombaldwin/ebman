@@ -45,6 +45,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **A failed Detail fetch was silently erased by an unrelated
+  successful one.** `DetailState::error` is one slot shared by four
+  fetches that `open_detail` fires concurrently, and every handler
+  cleared it on success — so a successful instances fetch wiped a denied
+  events fetch and the operator saw a clean panel with no sign anything
+  had failed. Which error survived depended on which AWS response landed
+  last. Errors now carry the fetch that produced them, and only that
+  fetch can clear them.
+
 - **Two methods that were dead in production and only `pub` was hiding
   it.** `ViewState::is_stale` and `ConfigEdit::caret` are called solely
   from `#[cfg(test)]` blocks — `dead_code` cannot see through `pub`, so

@@ -129,7 +129,7 @@ pub(super) fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
     // borrow and reach for `app.detail.as_mut()` to write metrics_body_rect.
     let footer_state = DetailFooterState {
         auto_refresh: detail.auto_refresh,
-        error: detail.error.clone(),
+        error: detail.error.as_ref().map(|e| e.message.clone()),
         loading_events: detail.loading_events,
         loading_instances: detail.loading_instances,
         loading_queues: detail.loading_queues,
@@ -630,13 +630,13 @@ pub(super) fn draw_detail_health(
     // `:why` so the two triage surfaces tell the same story. Active
     // (ALARM-state) alarms first; the section is hidden when no alarms
     // exist to keep the panel quiet for healthy envs.
-    let alarms_present = matches!(&detail.cw_alarms, Some(Ok(a)) if !a.is_empty());
-    let alarms_loading = detail.loading_cw_alarms && detail.cw_alarms.is_none();
+    let alarms_present = detail.cw_alarms.ready().is_some_and(|a| !a.is_empty());
+    let alarms_loading = detail.cw_alarms.is_first_load();
     if alarms_present || alarms_loading {
         lines.push(section("alarms"));
         if alarms_loading {
             lines.push(muted(" fetching alarms…".into()));
-        } else if let Some(Ok(als)) = &detail.cw_alarms {
+        } else if let Some(als) = detail.cw_alarms.ready() {
             let mut sorted: Vec<&crate::aws::CwAlarm> = als.iter().collect();
             sorted.sort_by_key(|a| match a.state.as_str() {
                 "ALARM" => 0,
@@ -670,7 +670,7 @@ pub(super) fn draw_detail_health(
             }
         }
         lines.push(Line::raw(""));
-    } else if let Some(Err(e)) = &detail.cw_alarms {
+    } else if let Some(e) = detail.cw_alarms.error() {
         lines.push(section("alarms"));
         lines.push(Line::from(Span::styled(
             format!(" error: {e}"),
@@ -682,13 +682,16 @@ pub(super) fn draw_detail_health(
     // 4. Recent deploys — top 3 versions, newest first. The most-recent
     // deploy is the prime suspect when an env flips Red right after.
     // Section is skipped entirely on a brand-new app with no versions.
-    let versions_present = matches!(&detail.recent_versions, Some(Ok(v)) if !v.is_empty());
-    let versions_loading = detail.loading_recent_versions && detail.recent_versions.is_none();
+    let versions_present = detail
+        .recent_versions
+        .ready()
+        .is_some_and(|v| !v.is_empty());
+    let versions_loading = detail.recent_versions.is_first_load();
     if versions_present || versions_loading {
         lines.push(section("recent deploys"));
         if versions_loading {
             lines.push(muted(" fetching deploys…".into()));
-        } else if let Some(Ok(vers)) = &detail.recent_versions {
+        } else if let Some(vers) = detail.recent_versions.ready() {
             for v in vers.iter().take(3) {
                 let when = v
                     .created
