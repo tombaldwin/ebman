@@ -358,7 +358,8 @@ fn json_surfaces_are_parsed_by_a_json_parser() {
     for (name, src) in [
         ("llm.rs", include_str!("../../llm.rs")),
         ("terraform.rs", include_str!("../../terraform.rs")),
-        ("lint.rs", include_str!("../../lint.rs")),
+        ("lint/mod.rs", include_str!("../../lint/mod.rs")),
+        ("lint/rules.rs", include_str!("../../lint/rules.rs")),
         ("audit.rs", include_str!("../../audit.rs")),
         ("cli/mod.rs", include_str!("../../cli/mod.rs")),
     ] {
