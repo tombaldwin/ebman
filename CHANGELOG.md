@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.32.0] — 2026-08-24 — the review release
+
+A minor rather than a patch because the library's public API narrowed
+sharply — see **Breaking** below. The binary is unaffected, and there
+are no reverse dependencies on crates.io.
+
+Most of what follows was found by review rather than by use: a
+structure-and-tooling review, then four release-panel rounds. Nine of
+the fixes are defects that had shipped and nobody had hit yet.
+
 ### Breaking (library only)
 
 - **24 of the 33 modules are now crate-private.** Only what the binary
