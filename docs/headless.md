@@ -45,6 +45,13 @@ ebman completions <bash|zsh|fish>                                           # pr
 
 Exit-code convention (CI scripts can branch on these): `0` clean, `1` AWS-layer error, `2` usage error, `3` issues / drift found.
 
+`ebman lint` exits `1` when a check could not run — for example an
+`AccessDenied` on `iam:SimulatePrincipalPolicy`, which EBL020 needs.
+The rule skips rather than firing a false positive, but the run is not
+clean and does not claim to be: the reason goes to stderr. If a rule
+isn't for you, `lint.disable` (or `--rules`) switches it off and its
+probe stops running, so it can't affect the exit code.
+
 ### Shell completion (`ebman completions`)
 
 `ebman completions <bash|zsh|fish>` prints a completion script to stdout — subcommands, global flags, and each subcommand's flags / verbs. It's static (no AWS round-trip), so it does **not** complete live environment names; that lives in the TUI command bar (`Tab` after `:diff` / `:config-diff` / `:rds-detach`). Install:
