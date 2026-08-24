@@ -540,7 +540,7 @@ mod parser_properties {
         /// crash mid-write can truncate. It must degrade to `None` or a
         /// partial state, never panic.
         #[test]
-        fn state_parse_never_panics(s in ".{0,400}") {
+        fn state_parse_never_panics(s in "(?s).{0,400}") {
             let _ = super::parse(&s);
         }
 

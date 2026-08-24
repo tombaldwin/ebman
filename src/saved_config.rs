@@ -321,7 +321,7 @@ mod parser_properties {
         /// — files ebman does not write and does not control. It may
         /// return an error; it may not panic.
         #[test]
-        fn parse_saved_config_never_panics(s in ".{0,400}") {
+        fn parse_saved_config_never_panics(s in "(?s).{0,400}") {
             let _ = super::parse_saved_config(&s);
         }
 

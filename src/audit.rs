@@ -1383,7 +1383,7 @@ mod parser_properties {
         /// leave truncated mid-write, including mid-UTF-8. Enumerating
         /// examples cannot cover that input space; this can.
         #[test]
-        fn parse_audit_line_never_panics(s in ".{0,400}") {
+        fn parse_audit_line_never_panics(s in "(?s).{0,400}") {
             let _ = super::parse_audit_line(&s);
         }
 

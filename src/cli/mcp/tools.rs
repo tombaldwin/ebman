@@ -358,12 +358,23 @@ impl Server {
                     .await;
                 for (env, inputs) in targets.iter().zip(fetched) {
                     match inputs {
-                        Ok(inputs) => all_issues.extend(run_rules_for_env(
-                            &rules,
-                            env,
-                            &inputs,
-                            &required_tags,
-                        )),
+                        Ok(inputs) => {
+                            // A probe that could not run is not a clean
+                            // result, and this tool's output is
+                            // something an agent treats as
+                            // authoritative. The CLI reports these on
+                            // stderr; here they belong in `skipped_envs`
+                            // for the same reason the fetch failures do
+                            // — the agent cannot otherwise know that
+                            // EBL018/EBL020 coverage shrank.
+                            skipped.extend(inputs.coverage_warnings.iter().cloned());
+                            all_issues.extend(run_rules_for_env(
+                                &rules,
+                                env,
+                                &inputs,
+                                &required_tags,
+                            ));
+                        }
                         // Route through the credential rewrite so an
                         // expired-SSO skip still carries the fix hint.
                         Err(e) => skipped.push(format!(
