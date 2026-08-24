@@ -36,3 +36,14 @@ Ebman does not phone home. There is no usage telemetry, no anonymous identifier,
 Ebman never sends the payload itself. The redactor isn't bulletproof — a freeform error message could still embed a customer name in an unscrubbable shape — which is why you review the payload before pasting / opening the browser.
 
 Crash logs are written locally to `~/.cache/ebman/crash-*.log` by the panic hook (10 most recent kept, 30-day TTL). They're plain-text files; do whatever you want with them.
+
+## Verifying a release binary
+
+Release tarballs carry a signed build provenance attestation linking
+each artefact to the workflow run that produced it. The `*.sha256` files
+prove integrity; the attestation proves origin, which matters more for a
+prebuilt binary that holds AWS credentials:
+
+```bash
+gh attestation verify ebman-v0.31.1-aarch64-apple-darwin.tar.gz --repo tombaldwin/ebman
+```
