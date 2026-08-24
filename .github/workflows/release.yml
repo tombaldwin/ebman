@@ -223,8 +223,23 @@ jobs:
           jq --arg v "$VERSION" '.version = $v | .packages[0].version = $v' server.json > server.tmp
           mv server.tmp server.json
       - name: Install mcp-publisher
+        # PINNED, and checksummed. This step runs in a job holding
+        # `id-token: write`, so whatever it downloads can mint an OIDC
+        # token for the `io.github.tombaldwin` namespace. Fetching
+        # `releases/latest` and piping it straight into tar meant an
+        # unreviewed binary got that token on every release.
+        #
+        # This job is ubuntu-only, so the platform is fixed rather than
+        # derived from `uname` — one artefact to pin instead of four.
+        # Bump deliberately: change the version AND the hash together.
+        env:
+          MCP_PUBLISHER_VERSION: v1.8.1
+          MCP_PUBLISHER_SHA256: a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc
         run: |
-          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+          url="https://github.com/modelcontextprotocol/registry/releases/download/${{ env.MCP_PUBLISHER_VERSION }}/mcp-publisher_linux_amd64.tar.gz"
+          curl -fsSL "$url" -o mcp-publisher.tar.gz
+          echo "$MCP_PUBLISHER_SHA256  mcp-publisher.tar.gz" | sha256sum -c -
+          tar xzf mcp-publisher.tar.gz mcp-publisher
       - name: Authenticate (GitHub OIDC)
         run: ./mcp-publisher login github-oidc
       - name: Publish server.json
