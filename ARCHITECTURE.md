@@ -146,6 +146,30 @@ display. Use `tracing::*`; output goes to `~/.cache/ebman/ebman.log`. The same
 reason is why a panic in the TUI is worse than a wrong frame — see the release
 note in `ViewState::assert_fresh`.
 
+### Clusters that own their invariant
+
+Two of `App`'s field groups are types rather than loose fields, and both
+exist because the loose version shipped a bug.
+
+[`ViewState`](src/app/view_state.rs) is rule 1 above: the derived slices
+are private, so mutating an input marks them stale and reading a stale
+one trips a `debug_assert`.
+
+[`Costs`](src/app/costs.rs) is the same shape applied to Cost Explorer
+data. `costs` / `costs_complete` / `costs_fetched_at` / `cost_enabled`
+were four `pub(crate)` fields where three had to move together, and the
+compiler could not say so — a truncated walk populated the map without
+marking it partial, so the first failure's data survived the session
+while every retry paid for twenty metered pages and discarded them. The
+fields are private now and the three transitions are methods:
+`set_complete` takes the timestamp, `set_partial` cannot take one
+(a timestamp is what suppresses the retry), and `clear` is a settled
+empty. The rule that used to live in a comment lives in the signature.
+
+The other field clusters on `App` — tail, palette, throttle, status —
+have no comparable invariant today. Group them when one appears, not
+for tidiness.
+
 ## Writes and safety
 
 Every mutating path funnels through one gate, but there are two of them

@@ -449,7 +449,7 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
 
     let columns = visible_columns(
         &app.multi_regions,
-        app.cost_enabled,
+        app.costs.enabled(),
         &app.view.hidden_cols,
         compact,
     );
@@ -645,7 +645,7 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                     history: app.history.get(&e.name),
                     newly_red: app.newly_red.contains(&e.name),
                     stale_platform: app.view.stale_platforms().get(&e.name),
-                    cost: app.costs.get(&e.name).copied(),
+                    cost: app.costs.get(&e.name),
                 };
                 let cells: Vec<Cell> = columns
                     .iter()

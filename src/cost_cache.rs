@@ -183,8 +183,8 @@ mod tests {
         let text = serialize(&c);
         let parsed = parse(&text);
         assert_eq!(parsed.fetched_at, c.fetched_at);
-        assert!((parsed.costs.get("prod-api").copied().unwrap() - 1240.50).abs() < 0.01);
-        assert!((parsed.costs.get("staging-api").copied().unwrap() - 180.0).abs() < 0.01);
+        assert!((parsed.costs.get("prod-api").unwrap() - 1240.50).abs() < 0.01);
+        assert!((parsed.costs.get("staging-api").unwrap() - 180.0).abs() < 0.01);
     }
 
     #[test]

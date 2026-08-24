@@ -112,7 +112,7 @@ pub(crate) fn render_fleet_cost(
     let mut covered = 0usize;
     let mut missing = 0usize;
     for e in envs {
-        match costs.get(&e.name).copied() {
+        match costs.get(&e.name) {
             Some(c) => {
                 total += c;
                 covered += 1;

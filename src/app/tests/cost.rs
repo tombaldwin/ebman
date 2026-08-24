@@ -136,10 +136,13 @@ async fn a_truncated_cost_refresh_keeps_the_previous_map() {
     // 40 envs would flip from real numbers to `—`, which renders
     // identically to "untagged", while `:fleet-cost` under-reported.
     let mut app = test_app();
-    app.costs.insert("api-prod".into(), 100.0);
-    app.costs.insert("web-prod".into(), 200.0);
-    app.costs.insert("worker-prod".into(), 50.0);
-    let before = app.costs.clone();
+    app.costs
+        .set_complete([("api-prod".into(), 100.0)], chrono::Utc::now());
+    app.costs
+        .set_complete([("web-prod".into(), 200.0)], chrono::Utc::now());
+    app.costs
+        .set_complete([("worker-prod".into(), 50.0)], chrono::Utc::now());
+    let before = app.costs.by_env().clone();
 
     app.handle_msg(AppMsg::CostsFetched {
         gen: app.generation,
@@ -155,7 +158,8 @@ async fn a_truncated_cost_refresh_keeps_the_previous_map() {
     });
 
     assert_eq!(
-        app.costs, before,
+        app.costs.by_env(),
+        &before,
         "a partial walk must not replace a good map"
     );
     let msg = app.error_message.as_deref().expect("must say so");
@@ -186,7 +190,7 @@ async fn a_truncated_cost_refresh_with_nothing_cached_shows_what_it_has() {
 
     assert_eq!(app.costs.len(), 1, "partial data still renders");
     assert!(
-        app.costs_fetched_at.is_none(),
+        app.costs.fetched_at().is_none(),
         "an incomplete walk must not stamp a fetch time"
     );
     let msg = app.error_message.as_deref().expect("must say so");
@@ -197,7 +201,8 @@ async fn a_truncated_cost_refresh_with_nothing_cached_shows_what_it_has() {
 #[tokio::test]
 async fn a_complete_cost_refresh_replaces_the_map() {
     let mut app = test_app();
-    app.costs.insert("stale".into(), 999.0);
+    app.costs
+        .set_complete([("stale".into(), 999.0)], chrono::Utc::now());
 
     app.handle_msg(AppMsg::CostsFetched {
         gen: app.generation,
@@ -213,9 +218,12 @@ async fn a_complete_cost_refresh_replaces_the_map() {
     });
 
     assert_eq!(app.costs.len(), 1);
-    assert!(app.costs.contains_key("api-prod"));
-    assert!(!app.costs.contains_key("stale"), "a complete walk replaces");
-    assert!(app.costs_fetched_at.is_some());
+    assert!(app.costs.by_env().contains_key("api-prod"));
+    assert!(
+        !app.costs.by_env().contains_key("stale"),
+        "a complete walk replaces"
+    );
+    assert!(app.costs.fetched_at().is_some());
 }
 
 #[tokio::test]
@@ -243,8 +251,8 @@ async fn a_partial_cost_map_does_not_become_permanent() {
         region: "us-east-1".into(),
         result: Ok(truncated("api-prod", 100.0)),
     });
-    assert!(!app.costs_complete, "a truncated walk is not complete");
-    assert_eq!(app.costs.get("api-prod"), Some(&100.0));
+    assert!(!app.costs.is_complete(), "a truncated walk is not complete");
+    assert_eq!(app.costs.get("api-prod"), Some(100.0));
 
     // Second truncated walk: what we hold is itself partial, so the
     // fresher partial data must replace it rather than be discarded.
@@ -254,10 +262,10 @@ async fn a_partial_cost_map_does_not_become_permanent() {
         region: "us-east-1".into(),
         result: Ok(truncated("web-prod", 55.0)),
     });
-    assert!(!app.costs_complete);
-    assert_eq!(app.costs.get("web-prod"), Some(&55.0));
+    assert!(!app.costs.is_complete());
+    assert_eq!(app.costs.get("web-prod"), Some(55.0));
     assert!(
-        !app.costs.contains_key("api-prod"),
+        !app.costs.by_env().contains_key("api-prod"),
         "the stale partial map must not accumulate"
     );
 
@@ -274,7 +282,7 @@ async fn a_partial_cost_map_does_not_become_permanent() {
             truncated: false,
         }),
     });
-    assert!(app.costs_complete);
+    assert!(app.costs.is_complete());
     assert_eq!(app.costs.len(), 1);
 
     // And now a truncated walk must NOT replace the complete map.
@@ -285,10 +293,10 @@ async fn a_partial_cost_map_does_not_become_permanent() {
         result: Ok(truncated("partial", 9.0)),
     });
     assert!(
-        app.costs_complete,
+        app.costs.is_complete(),
         "a complete map survives a truncated walk"
     );
-    assert_eq!(app.costs.get("full"), Some(&1.0));
+    assert_eq!(app.costs.get("full"), Some(1.0));
 }
 
 #[tokio::test]
@@ -298,7 +306,7 @@ async fn cost_status_and_fleet_cost_say_when_the_data_is_partial() {
     // "no data yet" while dollar figures were on screen, and
     // `:fleet-cost` rendered an under-reporting total with no marker.
     let mut app = test_app();
-    app.cost_enabled = true;
+    app.costs.set_enabled(true);
     app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
     app.rebuild_view();
     app.handle_msg(AppMsg::CostsFetched {
@@ -313,7 +321,7 @@ async fn cost_status_and_fleet_cost_say_when_the_data_is_partial() {
             truncated: true,
         }),
     });
-    assert!(!app.costs_complete);
+    assert!(!app.costs.is_complete());
 
     app.execute_command("cost status");
     let status = app.status_message.as_deref().unwrap_or_default();
@@ -336,12 +344,17 @@ async fn switching_context_resets_the_cost_completeness_verdict() {
     // The flag belonged to the previous account; leaving it set meant
     // a fresh context inherited a stale "partial" verdict.
     let mut app = test_app();
-    app.cost_enabled = true; // `:cost off` early-returns when already off
-    app.costs.insert("old".into(), 1.0);
-    app.costs_complete = false;
+    app.costs.set_enabled(true); // `:cost off` early-returns when already off
+    app.costs
+        .set_complete([("old".into(), 1.0)], chrono::Utc::now());
+    // A partial walk: `set_partial` is the only way to reach this state now.
+    app.costs.set_partial(app.costs.by_env().clone());
     app.execute_command("cost off");
     assert!(app.costs.is_empty());
-    assert!(app.costs_complete, "a torn-down map carries no verdict");
+    assert!(
+        app.costs.is_complete(),
+        "a torn-down map carries no verdict"
+    );
 }
 
 #[tokio::test]
@@ -353,9 +366,11 @@ async fn cost_on_retries_an_incomplete_walk_instead_of_saying_already_on() {
     // tick, and every env past the cap showed `—`, indistinguishable
     // from untagged.
     let mut app = test_app();
-    app.cost_enabled = true;
-    app.costs.insert("api-prod".into(), 1.0);
-    app.costs_complete = false;
+    app.costs.set_enabled(true);
+    app.costs
+        .set_complete([("api-prod".into(), 1.0)], chrono::Utc::now());
+    // A partial walk: `set_partial` is the only way to reach this state now.
+    app.costs.set_partial(app.costs.by_env().clone());
 
     app.execute_command("cost on");
     let msg = app.status_message.as_deref().unwrap_or_default();
@@ -365,8 +380,11 @@ async fn cost_on_retries_an_incomplete_walk_instead_of_saying_already_on() {
     );
 
     // With complete data it still short-circuits — no metered refetch
-    // for an operator who typed it twice.
-    app.costs_complete = true;
+    // for an operator who typed it twice. Simulating "the walk finished"
+    // now means saying so through `set_complete`, which also stamps the
+    // fetch time — you can no longer flip the flag on its own.
+    app.costs
+        .set_complete(app.costs.by_env().clone(), chrono::Utc::now());
     app.execute_command("cost on");
     let msg = app.status_message.as_deref().unwrap_or_default();
     assert!(msg.contains("already on"), "{msg:?}");
@@ -378,10 +396,15 @@ async fn cost_status_does_not_call_a_partial_result_cached() {
     // previous timestamp stays, so the arm that formats it said
     // "cached" for data the handler had explicitly refused to cache.
     let mut app = test_app();
-    app.cost_enabled = true;
-    app.costs.insert("api-prod".into(), 1.0);
-    app.costs_fetched_at = Some(chrono::Utc::now() - chrono::Duration::hours(3));
-    app.costs_complete = false;
+    app.costs.set_enabled(true);
+    // Aged deliberately: `set_complete` takes the stamp, so "when did
+    // this land" cannot be set independently of the data any more.
+    app.costs.set_complete(
+        [("api-prod".into(), 1.0)],
+        chrono::Utc::now() - chrono::Duration::hours(3),
+    );
+    // A partial walk: `set_partial` is the only way to reach this state now.
+    app.costs.set_partial(app.costs.by_env().clone());
 
     app.execute_command("cost status");
     let msg = app.status_message.as_deref().unwrap_or_default();
