@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **ratatui 0.29 → 0.30.2, crossterm 0.28 → 0.29**, with
+  `tb-tui-common` 0.1.3 → 0.2.0 to match. Neither crate needed a code
+  change: ratatui 0.30's API is compatible with everything ebman uses,
+  and the 85 compile errors an unaligned bump produced were entirely a
+  two-versions-in-one-tree clash, not a migration. Verified beyond the
+  suite by rendering the same frame on both versions and diffing —
+  byte-identical.
+
+  One behaviour did change upstream: ratatui 0.30 strips ESC bytes and
+  renders the remainder of an escape sequence as literal text, where
+  0.29 gave every byte its own cell. OSC 8 hyperlinks remain
+  unavailable, now for a different reason — the test that pinned the old
+  limitation had said it would "fail loudly and prompt us to revisit"
+  if ratatui ever changed here, and it did exactly that.
+
 ## [0.32.0] — 2026-08-24 — the review release
 
 A minor rather than a patch because the library's public API narrowed
