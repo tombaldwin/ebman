@@ -10,7 +10,7 @@ use super::*;
 /// `:config-diff` uses for the same field, and the backlog's stated use
 /// case ("hide the noisy version_label differences"), so both spellings
 /// work. Empty `ignore_keys` is a no-op.
-pub fn diff_field_ignored(field: &str, ignore_keys: &[String]) -> bool {
+pub(crate) fn diff_field_ignored(field: &str, ignore_keys: &[String]) -> bool {
     if ignore_keys.is_empty() {
         return false;
     }
@@ -113,7 +113,7 @@ pub(crate) fn diff_envs(
 /// doesn't have to learn the marker convention from `?`.
 /// One option-setting that differs between two envs.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConfigDiff {
+pub(crate) struct ConfigDiff {
     pub namespace: String,
     pub name: String,
     pub left: Option<String>,
@@ -131,7 +131,7 @@ pub struct ConfigDiff {
 /// lowercase so the filter is case-insensitive. Operators can also
 /// use `namespace:name` form for precise matches against a specific
 /// namespace; the filter compares both forms below.
-pub fn parse_ignore_keys(csv: Option<&str>) -> Vec<String> {
+pub(crate) fn parse_ignore_keys(csv: Option<&str>) -> Vec<String> {
     let Some(csv) = csv else {
         return Vec::new();
     };
@@ -145,7 +145,10 @@ pub fn parse_ignore_keys(csv: Option<&str>) -> Vec<String> {
 /// full `namespace:name` form) matches any entry in `ignore_keys`.
 /// Match is case-insensitive (`ignore_keys` is pre-normalised).
 /// Empty `ignore_keys` is a no-op (pass through).
-pub fn filter_config_diffs(diffs: Vec<ConfigDiff>, ignore_keys: &[String]) -> Vec<ConfigDiff> {
+pub(crate) fn filter_config_diffs(
+    diffs: Vec<ConfigDiff>,
+    ignore_keys: &[String],
+) -> Vec<ConfigDiff> {
     if ignore_keys.is_empty() {
         return diffs;
     }
@@ -161,7 +164,7 @@ pub fn filter_config_diffs(diffs: Vec<ConfigDiff>, ignore_keys: &[String]) -> Ve
         .collect()
 }
 
-pub fn diff_config_options(
+pub(crate) fn diff_config_options(
     left: &[crate::aws::ConfigOption],
     right: &[crate::aws::ConfigOption],
 ) -> Vec<ConfigDiff> {

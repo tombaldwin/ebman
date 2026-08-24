@@ -28,7 +28,7 @@ pub(super) fn iam_client(base: &SdkConfig) -> IamClient {
 /// can audit which policy granted / denied / failed-to-grant) +
 /// SCP / permission-boundary blockers when present.
 #[derive(Clone, Debug)]
-pub struct IamSimResult {
+pub(crate) struct IamSimResult {
     pub action: String,
     pub resource: String,
     /// `"allowed"`, `"explicitDeny"`, or `"implicitDeny"`. Verbatim
@@ -59,7 +59,7 @@ impl AwsClient {
     /// the profile exists but carries no role. Used by the EBL020
     /// X-Ray lint probe. (SDK-compiled; call shape unverified against
     /// a live account — same status as the ACM listener fetch.)
-    pub async fn instance_profile_role_arn(&self, profile: &str) -> Result<Option<String>> {
+    pub(crate) async fn instance_profile_role_arn(&self, profile: &str) -> Result<Option<String>> {
         // GetInstanceProfile wants the bare name; EB sometimes stores
         // the full ARN (`arn:aws:iam::123:instance-profile/name`).
         let name = profile.rsplit('/').next().unwrap_or(profile);

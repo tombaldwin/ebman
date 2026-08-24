@@ -30,7 +30,7 @@ use tui_common::TextInput;
 
 use super::{DisplayRow, SortKey, ViewMode};
 
-pub struct ViewState {
+pub(crate) struct ViewState {
     /// Row density (`:compact`).
     pub mode: ViewMode,
     /// Columns hidden via `:cols`.
@@ -60,7 +60,7 @@ pub struct ViewState {
 }
 
 impl ViewState {
-    pub fn new(
+    pub(crate) fn new(
         filter: TextInput,
         grouped: bool,
         sort_key: SortKey,
@@ -88,7 +88,7 @@ impl ViewState {
     }
 
     /// The `/` filter buffer. Read-only — see [`Self::filter_mut`].
-    pub fn filter(&self) -> &TextInput {
+    pub(crate) fn filter(&self) -> &TextInput {
         &self.filter
     }
 
@@ -98,16 +98,16 @@ impl ViewState {
     /// the caller ends up not editing anything. An extra `rebuild_view()`
     /// costs a filter pass over `environments`; a missed one shows the
     /// operator the wrong rows.
-    pub fn filter_mut(&mut self) -> &mut TextInput {
+    pub(crate) fn filter_mut(&mut self) -> &mut TextInput {
         self.stale = true;
         &mut self.filter
     }
 
-    pub fn sort_key(&self) -> SortKey {
+    pub(crate) fn sort_key(&self) -> SortKey {
         self.sort_key
     }
 
-    pub fn sort_desc(&self) -> bool {
+    pub(crate) fn sort_desc(&self) -> bool {
         self.sort_desc
     }
 
@@ -134,7 +134,7 @@ impl ViewState {
     /// it doesn't handle (`Down`, `PageUp`, most Ctrl chords), and taking
     /// `&mut` to find that out would mark the cache stale with nothing
     /// changed and no rebuild to follow.
-    pub fn filter_handle_key(&mut self, key: KeyEvent) -> bool {
+    pub(crate) fn filter_handle_key(&mut self, key: KeyEvent) -> bool {
         let consumed = self.filter.handle_key(key);
         self.stale |= consumed;
         consumed
@@ -142,17 +142,17 @@ impl ViewState {
 
     /// Replace the filter buffer wholesale (`:filter`, saved views,
     /// clearing on escape). Marks the cache stale.
-    pub fn set_filter(&mut self, filter: impl Into<TextInput>) {
+    pub(crate) fn set_filter(&mut self, filter: impl Into<TextInput>) {
         self.filter = filter.into();
         self.stale = true;
     }
 
     /// Whether rows are grouped by application, with separators between.
-    pub fn grouped(&self) -> bool {
+    pub(crate) fn grouped(&self) -> bool {
         self.grouped
     }
 
-    pub fn set_grouped(&mut self, grouped: bool) {
+    pub(crate) fn set_grouped(&mut self, grouped: bool) {
         if self.grouped != grouped {
             self.grouped = grouped;
             self.stale = true;
@@ -164,36 +164,42 @@ impl ViewState {
     /// For the inputs `ViewState` does not own — `App::environments`,
     /// `aliases`, `latest_stacks`, the theme palette. Callers that change
     /// `filter` or `grouped` do not need this.
-    pub fn invalidate(&mut self) {
+    pub(crate) fn invalidate(&mut self) {
         self.stale = true;
     }
 
-    pub fn is_stale(&self) -> bool {
+    /// Test-only observer for the staleness invariant. Production never
+    /// asks — it asserts, via `assert_fresh` on read. Marked `cfg(test)`
+    /// rather than left `pub(crate)` because the narrowing made
+    /// `dead_code` able to see it for the first time, and "unused in
+    /// production" is exactly what it is.
+    #[cfg(test)]
+    pub(crate) fn is_stale(&self) -> bool {
         self.stale
     }
 
     /// Indexes into `App::environments` that survive the current filter.
-    pub fn filtered(&self) -> &[usize] {
+    pub(crate) fn filtered(&self) -> &[usize] {
         self.assert_fresh();
         &self.filtered
     }
 
     /// Rows as drawn, including group separators when `grouped` is set.
-    pub fn display(&self) -> &[DisplayRow] {
+    pub(crate) fn display(&self) -> &[DisplayRow] {
         self.assert_fresh();
         &self.display
     }
 
     /// `application → palette colour`, assigned by order of first
     /// appearance in the filtered view.
-    pub fn app_colors(&self) -> &HashMap<String, Color> {
+    pub(crate) fn app_colors(&self) -> &HashMap<String, Color> {
         self.assert_fresh();
         &self.app_colors
     }
 
     /// `env name → newer platform version`, for envs on a superseded
     /// solution stack. Empty until `latest_stacks` has been fetched.
-    pub fn stale_platforms(&self) -> &HashMap<String, String> {
+    pub(crate) fn stale_platforms(&self) -> &HashMap<String, String> {
         self.assert_fresh();
         &self.stale_platforms
     }

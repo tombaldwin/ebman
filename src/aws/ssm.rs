@@ -13,7 +13,7 @@ use super::*;
 /// each by default) — anything larger is signalled via the
 /// `*_url` fields on the API which we don't currently follow.
 #[derive(Clone, Debug, PartialEq)]
-pub struct SsmRunResult {
+pub(crate) struct SsmRunResult {
     pub instance_id: String,
     pub status: String,
     pub exit_code: i32,
@@ -36,7 +36,7 @@ impl AwsClient {
     /// they're terminal. Returns once every instance is terminal *or*
     /// the wall-clock deadline has passed (operator gets best-effort
     /// partial results either way).
-    pub async fn run_shell_command(
+    pub(crate) async fn run_shell_command(
         &self,
         instance_ids: &[String],
         command: &str,

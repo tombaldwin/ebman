@@ -18,13 +18,13 @@ use super::tail;
 /// main table is the default; the user can `Ctrl-]` over to the events panel
 /// (when visible) for cursor navigation + line yank.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Focus {
+pub(crate) enum Focus {
     Table,
     Events,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ViewMode {
+pub(crate) enum ViewMode {
     Default,
     Compact,
     Spacious,
@@ -40,21 +40,21 @@ impl ViewMode {
     /// `update_hover` assumed one line per row, so in spacious mode a
     /// click landed on the wrong environment — and the hover tint moved
     /// with it, confirming the wrong row rather than exposing the bug.
-    pub fn row_height(self) -> u16 {
+    pub(crate) fn row_height(self) -> u16 {
         match self {
             Self::Default | Self::Compact => 1,
             Self::Spacious => 2,
         }
     }
 
-    pub fn next(self) -> Self {
+    pub(crate) fn next(self) -> Self {
         match self {
             Self::Default => Self::Compact,
             Self::Compact => Self::Spacious,
             Self::Spacious => Self::Default,
         }
     }
-    pub fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Default => "default",
             Self::Compact => "compact",
@@ -64,19 +64,19 @@ impl ViewMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Scope {
+pub(crate) enum Scope {
     Envs,
     Apps,
 }
 
 impl Scope {
-    pub fn next(self) -> Self {
+    pub(crate) fn next(self) -> Self {
         match self {
             Self::Envs => Self::Apps,
             Self::Apps => Self::Envs,
         }
     }
-    pub fn prev(self) -> Self {
+    pub(crate) fn prev(self) -> Self {
         // With two scopes, prev() and next() are equivalent, but expose both so
         // a third scope can be added without changing call sites.
         self.next()
@@ -87,21 +87,21 @@ impl Scope {
 // must come BEFORE their unguarded counterparts (`KeyCode::Char('r') => …`),
 // otherwise the unguarded arm shadows them.
 
-pub const HISTORY_CAP: usize = 20;
+pub(crate) const HISTORY_CAP: usize = 20;
 pub(crate) const MESSAGE_LOG_CAP: usize = 50;
 pub(crate) const TOAST_CAP: usize = 4;
 
 /// How long a refresh has to be in flight before the `loading…` indicator
 /// in the header appears. Faster round-trips complete invisibly so the user
 /// doesn't see a quick blip on every cycle.
-pub const LOADING_INDICATOR_THRESHOLD: Duration = Duration::from_millis(300);
+pub(crate) const LOADING_INDICATOR_THRESHOLD: Duration = Duration::from_millis(300);
 
 /// Once the loading indicator becomes visible, keep it visible for at
 /// least this long even if the load completes earlier. Smooths over the
 /// case where a round-trip is *just* slow enough to cross the threshold
 /// and then finishes ~100 ms later — without the linger, the indicator
 /// flashes on and off in a single visible frame which reads as flicker.
-pub const LOADING_INDICATOR_LINGER: Duration = Duration::from_millis(500);
+pub(crate) const LOADING_INDICATOR_LINGER: Duration = Duration::from_millis(500);
 
 /// A single read-only popup that overlays the main UI. Only one can be open
 /// at once: opening another replaces it; `Esc` / `q` dismisses it. Replacing
@@ -110,7 +110,7 @@ pub const LOADING_INDICATOR_LINGER: Duration = Duration::from_millis(500);
 /// dismiss path, separate draw conditional, separate dismiss-on-context-switch
 /// branch, …).
 #[derive(Debug, Clone)]
-pub enum Overlay {
+pub(crate) enum Overlay {
     /// Raw `DescribeEnvironment` dump shown as pretty JSON via `D`.
     Describe(String),
     /// Embedded changelog shown via `:whatsnew`.
@@ -245,12 +245,12 @@ pub enum Overlay {
     About(std::time::Instant),
 }
 
-pub const LOG_TAIL_MAX_LINES: usize = 2000;
+pub(crate) const LOG_TAIL_MAX_LINES: usize = 2000;
 
 /// Ring-buffer cap for the `:event-tail` overlay. EB events are far
 /// sparser than log lines, so a smaller cap than
 /// [`LOG_TAIL_MAX_LINES`] still holds hours of fleet history.
-pub const EVENT_TAIL_MAX_EVENTS: usize = 1000;
+pub(crate) const EVENT_TAIL_MAX_EVENTS: usize = 1000;
 
 /// First `:event-tail` batch — the fleet's most recent events,
 /// unwatermarked, so the overlay opens with context.
@@ -310,7 +310,7 @@ pub(crate) fn event_tail_matches(pattern: &regex::Regex, ev: &crate::aws::Event)
 /// `App.why_items` so the key handler can act on `items[cursor]` when
 /// the operator presses `Enter`.
 #[derive(Debug, Clone)]
-pub enum WhyItem {
+pub(crate) enum WhyItem {
     /// Pop up `Overlay::Describe` with the formatted detail text. Used
     /// for events / alarms / instances / deploys — read-only examination.
     Describe(String),
@@ -322,21 +322,21 @@ pub enum WhyItem {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToastKind {
+pub(crate) enum ToastKind {
     Info,
     Success,
     Error,
 }
 
 #[derive(Debug, Clone)]
-pub struct Toast {
+pub(crate) struct Toast {
     pub text: String,
     pub kind: ToastKind,
     pub shown_at: Instant,
 }
 
 impl Toast {
-    pub fn ttl(&self) -> Duration {
+    pub(crate) fn ttl(&self) -> Duration {
         match self.kind {
             ToastKind::Error => Duration::from_secs(8),
             _ => Duration::from_secs(4),
@@ -345,7 +345,7 @@ impl Toast {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MsgKind {
+pub(crate) enum MsgKind {
     Info,
     Error,
 }
@@ -404,7 +404,7 @@ Key bindings:
 Press esc / q / w to close.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SortKey {
+pub(crate) enum SortKey {
     App,
     Name,
     Status,
@@ -416,7 +416,7 @@ pub enum SortKey {
 impl SortKey {
     /// Cycle in the same order the columns appear in the UI:
     /// NAME → APPLICATION → STATUS → HEALTH → VERSION → AGE → NAME.
-    pub fn next(self) -> Self {
+    pub(crate) fn next(self) -> Self {
         match self {
             Self::Name => Self::App,
             Self::App => Self::Status,
@@ -427,7 +427,7 @@ impl SortKey {
         }
     }
 
-    pub fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::App => "app",
             Self::Name => "name",
@@ -438,7 +438,7 @@ impl SortKey {
         }
     }
 
-    pub fn parse(s: &str) -> Option<Self> {
+    pub(crate) fn parse(s: &str) -> Option<Self> {
         match s {
             "app" => Some(Self::App),
             "name" => Some(Self::Name),
@@ -458,7 +458,7 @@ impl SortKey {
 /// `2h` / `3d` relative form). Persists in state.toml as
 /// `event_time_format = "utc"|"local"|"age"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum EventTimeFormat {
+pub(crate) enum EventTimeFormat {
     #[default]
     Utc,
     Local,
@@ -469,7 +469,7 @@ impl EventTimeFormat {
     /// Cycle in the order documented above. Keeping UTC first means
     /// the no-arg `:event-time` press most often lands the operator
     /// back at the canonical form (the EB API uses UTC).
-    pub fn next(self) -> Self {
+    pub(crate) fn next(self) -> Self {
         match self {
             Self::Utc => Self::Local,
             Self::Local => Self::Age,
@@ -477,7 +477,7 @@ impl EventTimeFormat {
         }
     }
 
-    pub fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Utc => "utc",
             Self::Local => "local",
@@ -485,7 +485,7 @@ impl EventTimeFormat {
         }
     }
 
-    pub fn parse(s: &str) -> Option<Self> {
+    pub(crate) fn parse(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {
             "utc" => Some(Self::Utc),
             "local" => Some(Self::Local),
@@ -496,7 +496,7 @@ impl EventTimeFormat {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
+pub(crate) enum Mode {
     Normal,
     Filter,
     Help,
@@ -517,7 +517,7 @@ pub enum Mode {
 }
 
 #[derive(Debug, Clone)]
-pub enum PaletteAction {
+pub(crate) enum PaletteAction {
     /// Run a `:` command immediately with no further input.
     RunCommand(String),
     /// Switch to command mode with this prefix typed.
@@ -529,7 +529,7 @@ pub enum PaletteAction {
 }
 
 #[derive(Debug, Clone)]
-pub struct PaletteItem {
+pub(crate) struct PaletteItem {
     pub label: String,
     pub detail: String,
     pub kind_tag: &'static str, // "cmd" / "env" / "view" / "plugin"
@@ -549,7 +549,7 @@ pub struct PaletteItem {
 /// arrives; until then the entry counts as in-flight and the user can see it
 /// in the `:pending` overlay + header chip.
 #[derive(Debug, Clone)]
-pub struct PendingAction {
+pub(crate) struct PendingAction {
     pub label: String,
     pub target: String,
     pub started: Instant,
@@ -567,7 +567,7 @@ pub struct PendingAction {
 /// combo (e.g. F11).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
-pub enum HelpTopic {
+pub(crate) enum HelpTopic {
     Global,
     Detail,
     Dlq,
@@ -580,10 +580,10 @@ pub enum HelpTopic {
 
 /// Cap on the in-flight + recently-completed list. Older entries fall off
 /// the front when this is reached.
-pub const PENDING_CAP: usize = 20;
+pub(crate) const PENDING_CAP: usize = 20;
 /// Completed entries linger for this long so the user has time to see the
 /// outcome before the panel clears.
-pub const PENDING_COMPLETED_TTL: Duration = Duration::from_secs(60);
+pub(crate) const PENDING_COMPLETED_TTL: Duration = Duration::from_secs(60);
 
 // `DetailTab` / `LogTail` / `LogTailStage` / `DetailState` (+ impl)
 // moved to `crate::mode_detail` — re-exported from app.rs above.
@@ -599,7 +599,7 @@ pub const PENDING_COMPLETED_TTL: Duration = Duration::from_secs(60);
 /// 0.21+ follow-up — schema migration of the hand-rolled state
 /// parser is out of scope for the initial cut.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PromotionRecord {
+pub(crate) struct PromotionRecord {
     pub source: String,
     pub target: String,
     pub version_label: String,
@@ -726,7 +726,7 @@ impl DeploySnapshot {
     /// existing line-oriented state.toml parser happy. The pipe is
     /// illegal inside an EB version label (EB rejects `|` per its
     /// version-label validator), so there's no escaping needed.
-    pub fn to_persisted(&self) -> String {
+    pub(crate) fn to_persisted(&self) -> String {
         format!(
             "{}|{}",
             self.previous_version_label,
@@ -737,7 +737,7 @@ impl DeploySnapshot {
     /// Inverse of `to_persisted`. Returns `None` for malformed lines
     /// so the loader can silently drop them — better to lose one
     /// stale entry than to abort the App-init path.
-    pub fn parse_persisted(env_name: &str, raw: &str) -> Option<Self> {
+    pub(crate) fn parse_persisted(env_name: &str, raw: &str) -> Option<Self> {
         let (label, ts_str) = raw.split_once('|')?;
         let label = label.trim();
         if label.is_empty() {
@@ -755,7 +755,7 @@ impl DeploySnapshot {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PickerKind {
+pub(crate) enum PickerKind {
     Profile,
     Region,
     /// Picker over the env's discovered CW log groups, opened from the
@@ -771,7 +771,7 @@ pub enum PickerKind {
     SshInstance,
 }
 
-pub struct Picker {
+pub(crate) struct Picker {
     pub kind: PickerKind,
     pub items: Vec<String>,
     pub filter: TextInput,
@@ -782,14 +782,14 @@ pub struct Picker {
 /// list, parallel display annotations, and the current EB selection so
 /// the form's `MultiSelect` field can be populated in one update.
 #[derive(Clone, Debug)]
-pub struct MultiSelectOptions {
+pub(crate) struct MultiSelectOptions {
     pub options: Vec<String>,
     pub annotations: Vec<String>,
     pub initial: Vec<String>,
 }
 
 impl Picker {
-    pub fn new(kind: PickerKind, items: Vec<String>, current: Option<&str>) -> Self {
+    pub(crate) fn new(kind: PickerKind, items: Vec<String>, current: Option<&str>) -> Self {
         let mut list_state = ListState::default();
         let initial = current
             .and_then(|c| items.iter().position(|i| i == c))
@@ -805,7 +805,7 @@ impl Picker {
         }
     }
 
-    pub fn title(&self) -> &'static str {
+    pub(crate) fn title(&self) -> &'static str {
         match self.kind {
             PickerKind::Profile => " select profile ",
             PickerKind::Region => " select region ",
@@ -814,7 +814,7 @@ impl Picker {
         }
     }
 
-    pub fn filtered(&self) -> Vec<usize> {
+    pub(crate) fn filtered(&self) -> Vec<usize> {
         if self.filter.is_empty() {
             return (0..self.items.len()).collect();
         }
@@ -827,7 +827,7 @@ impl Picker {
             .collect()
     }
 
-    pub fn move_selection(&mut self, delta: i32) {
+    pub(crate) fn move_selection(&mut self, delta: i32) {
         let filt = self.filtered();
         if filt.is_empty() {
             self.list_state.select(None);
@@ -842,7 +842,7 @@ impl Picker {
         self.list_state.select(Some(filt[next]));
     }
 
-    pub fn selected_value(&self) -> Option<String> {
+    pub(crate) fn selected_value(&self) -> Option<String> {
         self.list_state
             .selected()
             .and_then(|i| self.items.get(i).cloned())
@@ -850,7 +850,7 @@ impl Picker {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LoadState {
+pub(crate) enum LoadState {
     Idle,
     Loading,
     Error,
@@ -858,7 +858,7 @@ pub enum LoadState {
 
 /// In-progress command-bar Tab-completion cycle.
 #[derive(Default)]
-pub struct CompletionState {
+pub(crate) struct CompletionState {
     /// The text the operator had typed before they first pressed Tab to
     /// start a completion cycle. Cycling forward / backward matches against
     /// this prefix; typing a new character resets it (and the cycle).
@@ -871,7 +871,7 @@ pub struct CompletionState {
 }
 
 /// State for the global help overlay.
-pub struct HelpState {
+pub(crate) struct HelpState {
     pub scroll: u16,
     /// Last computed max scroll, written by `draw_help` each frame and read
     /// by the j/k handler so an incremental scroll past the bottom doesn't
@@ -892,7 +892,7 @@ pub struct HelpState {
 
 /// State for the bottom Events panel (and the event-timestamp format it
 /// shares with the Detail/Events tab).
-pub struct EventPanel {
+pub(crate) struct EventPanel {
     pub events: Vec<EbEvent>,
     pub visible: bool,
     /// How event timestamps render in the Events panel + Detail/Events tab.
@@ -928,7 +928,7 @@ pub struct EventPanel {
 /// `current_config_snapshot`; reassigned wholesale on profile/config
 /// reload. Pure config — runtime UI state stays on `App`.
 #[derive(Debug, Clone, Default)]
-pub struct ResolvedConfig {
+pub(crate) struct ResolvedConfig {
     /// Mirror of `Config::notify_webhook` (fan-out reads a process-wide
     /// `OnceLock` in [`crate::audit`]; held here for `:settings` save).
     pub notify_webhook: Option<String>,

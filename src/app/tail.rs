@@ -13,7 +13,7 @@ use tui_common::TextInput;
 /// (0 = pinned to tail), follow flag, and the `/`-filter machinery.
 /// Embedded in `Overlay::LogTail` / `Overlay::EventTail` as `view`.
 #[derive(Debug, Clone)]
-pub struct TailView {
+pub(crate) struct TailView {
     /// Rows scrolled up from the tail. 0 with `following` = pinned.
     pub scroll: u16,
     /// Snap to the newest line when new data lands. Cleared by
@@ -35,7 +35,7 @@ impl Default for TailView {
 }
 
 impl TailView {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             scroll: 0,
             following: true,

@@ -1249,7 +1249,7 @@ pub(super) fn draw_detail_metrics(
 /// the metrics body; `n` is the number of points in the series. Returns
 /// `None` when the column is outside the body. The mapping is linear with
 /// integer rounding so the cursor "snaps" to the nearest sample.
-pub fn hover_index(col: u16, area: Rect, n: usize) -> Option<usize> {
+pub(super) fn hover_index(col: u16, area: Rect, n: usize) -> Option<usize> {
     if n == 0 || area.width < 2 {
         return None;
     }
@@ -1267,7 +1267,7 @@ pub fn hover_index(col: u16, area: Rect, n: usize) -> Option<usize> {
 /// error rates spike more aggressively than latency does, so we use a higher
 /// multiplier for `req4xx` / `req5xx` than for `p90`. Series IDs we don't
 /// recognise (e.g. `health`) return `None`.
-pub fn series_anomaly_label(id: &str, values: &[f64], icons: IconStyle) -> Option<String> {
+pub(super) fn series_anomaly_label(id: &str, values: &[f64], icons: IconStyle) -> Option<String> {
     if values.len() < 4 {
         return None;
     }

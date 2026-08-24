@@ -33,14 +33,14 @@ use std::collections::BTreeMap;
 /// above (`--severity warn` is the common flag). The `:lint`
 /// overlay colours by severity (muted / yellow / red).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Severity {
+pub(crate) enum Severity {
     Info,
     Warn,
     Error,
 }
 
 impl Severity {
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Severity::Info => "info",
             Severity::Warn => "warn",
@@ -52,7 +52,7 @@ impl Severity {
     /// and the `error` / `err` shorthand. Returns `None` for
     /// unrecognised values so the caller can surface a usage
     /// error rather than silently filter to nothing.
-    pub fn parse(s: &str) -> Option<Self> {
+    pub(crate) fn parse(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {
             "info" => Some(Severity::Info),
             "warn" | "warning" => Some(Severity::Warn),
@@ -67,7 +67,7 @@ impl Severity {
 /// can render in the TUI overlay, emit as JSON for the CLI, AND
 /// feed to a future LLM explainer without a separate format.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Issue {
+pub(crate) struct Issue {
     /// Stable identifier (e.g. `"EBL001"`). Used by CI scripts
     /// to track / suppress specific rules; survives copy-edit
     /// to the title / detail text.
@@ -111,7 +111,7 @@ pub struct Issue {
 /// let issues = run_rules(&rules, &ctx);
 /// ```
 #[derive(Debug, Clone)]
-pub struct LintContext<'a> {
+pub(crate) struct LintContext<'a> {
     pub env: &'a crate::aws::Environment,
     /// Operator-set option_settings, flat `(namespace, name, value)`.
     /// Matches the shape `fetch_env_option_settings` returns.
@@ -190,7 +190,7 @@ impl<'a> LintContext<'a> {
     /// fields default to "not loaded" — rules that need them
     /// skip rather than false-positive. Use the `.with_*` chain
     /// to populate as data becomes available.
-    pub fn for_env(
+    pub(crate) fn for_env(
         env: &'a crate::aws::Environment,
         options: &'a [(String, String, String)],
     ) -> Self {
@@ -213,7 +213,7 @@ impl<'a> LintContext<'a> {
     /// determined a newer version exists. Enables EBL008 (stale
     /// platform). The string is the newer version token (e.g.
     /// "6.2.0") used in the issue body.
-    pub fn with_newer_stack_available(mut self, newer_stack: &'a str) -> Self {
+    pub(crate) fn with_newer_stack_available(mut self, newer_stack: &'a str) -> Self {
         self.newer_stack_available = Some(newer_stack);
         self
     }
@@ -221,28 +221,28 @@ impl<'a> LintContext<'a> {
     /// Attach the operator's `required_tags` declaration. Enables
     /// EBL010 (missing required tags) when paired with
     /// [`Self::with_env_tag_keys`].
-    pub fn with_required_tags(mut self, required_tags: &'a [String]) -> Self {
+    pub(crate) fn with_required_tags(mut self, required_tags: &'a [String]) -> Self {
         self.required_tags = required_tags;
         self
     }
 
     /// Attach the env's actual tag keys (just keys, not values).
     /// Paired with [`Self::with_required_tags`] to fire EBL010.
-    pub fn with_env_tag_keys(mut self, env_tag_keys: &'a [String]) -> Self {
+    pub(crate) fn with_env_tag_keys(mut self, env_tag_keys: &'a [String]) -> Self {
         self.env_tag_keys = Some(env_tag_keys);
         self
     }
 
     /// Attach SQS dead-letter-queue depth for worker envs. Enables
     /// EBL011 (worker DLQ stuck consumer).
-    pub fn with_dlq_depth(mut self, dlq_depth: i64) -> Self {
+    pub(crate) fn with_dlq_depth(mut self, dlq_depth: i64) -> Self {
         self.dlq_depth = Some(dlq_depth);
         self
     }
 
     /// Attach the healthy instance count from EB env health.
     /// Enables EBL012 (Green-but-0-instances divergence).
-    pub fn with_healthy_count(mut self, healthy_instance_count: i64) -> Self {
+    pub(crate) fn with_healthy_count(mut self, healthy_instance_count: i64) -> Self {
         self.healthy_instance_count = Some(healthy_instance_count);
         self
     }
@@ -250,7 +250,7 @@ impl<'a> LintContext<'a> {
     /// Attach the result of an `xray:PutTraceSegments` IAM
     /// simulation against the env's instance-profile role. Enables
     /// EBL020 (X-Ray enabled but traces silently denied).
-    pub fn with_xray_trace_denied(mut self, denied: bool) -> Self {
+    pub(crate) fn with_xray_trace_denied(mut self, denied: bool) -> Self {
         self.xray_trace_denied = Some(denied);
         self
     }
@@ -258,14 +258,14 @@ impl<'a> LintContext<'a> {
     /// Attach a live health-check probe failure reason. Enables
     /// EBL016 (`--probe-live`); pass only when the probe FAILED —
     /// a passing probe leaves the field `None`.
-    pub fn with_health_probe_failure(mut self, reason: &'a str) -> Self {
+    pub(crate) fn with_health_probe_failure(mut self, reason: &'a str) -> Self {
         self.health_probe_failure = Some(reason);
         self
     }
 
     /// Attach the WAF-association probe result for the env's ALB.
     /// Enables EBL018 (prod env without WAF).
-    pub fn with_waf_missing(mut self, missing: bool) -> Self {
+    pub(crate) fn with_waf_missing(mut self, missing: bool) -> Self {
         self.waf_missing = Some(missing);
         self
     }
@@ -275,7 +275,7 @@ impl<'a> LintContext<'a> {
 /// production environment? Case-insensitive substring match on
 /// `prod` (covers `production`) or `prd`. Deliberately loose — the
 /// per-env escape hatch is `lint.disable = ["EBL018"]`.
-pub fn is_prod_named(name: &str) -> bool {
+pub(crate) fn is_prod_named(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     lower.contains("prod") || lower.contains("prd")
 }
@@ -288,7 +288,7 @@ pub fn is_prod_named(name: &str) -> bool {
 /// than being dynamic-dispatched per-env — the operator's
 /// `lint.disable` config filters AT REGISTRY-LOAD TIME, not
 /// per-invocation, so a disabled rule has zero per-env cost.
-pub trait Rule: Send + Sync {
+pub(crate) trait Rule: Send + Sync {
     fn id(&self) -> &'static str;
     fn severity(&self) -> Severity;
     fn applies(&self, ctx: &LintContext) -> Option<Issue>;
@@ -311,7 +311,7 @@ pub trait Rule: Send + Sync {
 /// the operator can correlate `ebman audit --rule EBL001` to the
 /// fix dispatches.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FixAction {
+pub(crate) enum FixAction {
     /// Set one option-setting. The 0.14 v1 shape; ~80% of
     /// auto-fixable rules collapse to this.
     SetOption {
@@ -333,7 +333,7 @@ pub enum FixAction {
 /// Deterministic output ordering matters for CI diff workflows
 /// — operators baseline against the lint output and a stable
 /// order makes "what new issue showed up?" trivial.
-pub fn run_rules(rules: &[Box<dyn Rule>], ctx: &LintContext) -> Vec<Issue> {
+pub(crate) fn run_rules(rules: &[Box<dyn Rule>], ctx: &LintContext) -> Vec<Issue> {
     let mut out: Vec<Issue> = rules.iter().filter_map(|r| r.applies(ctx)).collect();
     out.sort_by(|a, b| {
         b.severity
@@ -348,7 +348,7 @@ pub fn run_rules(rules: &[Box<dyn Rule>], ctx: &LintContext) -> Vec<Issue> {
 /// stable, and avoiding the dep keeps `ebman lint --json` fast
 /// to start. The same shape is what a future LLM explainer
 /// would ingest.
-pub fn render_issues_json(issues: &[Issue]) -> String {
+pub(crate) fn render_issues_json(issues: &[Issue]) -> String {
     let mut out = String::from("{\"issues\":[");
     for (i, issue) in issues.iter().enumerate() {
         if i > 0 {
@@ -394,7 +394,7 @@ pub fn render_issues_json(issues: &[Issue]) -> String {
 ///
 /// 16 hex chars (64 bits) is plenty for baseline-collision use —
 /// operators won't hit birthday-attack-grade scales.
-pub fn issue_identity_hash(
+pub(crate) fn issue_identity_hash(
     rule_id: &str,
     env_name: Option<&str>,
     fields: &BTreeMap<String, String>,
@@ -418,7 +418,7 @@ pub fn issue_identity_hash(
 }
 
 /// Convenience: `issue_identity_hash` against an `Issue` reference.
-pub fn issue_identity(issue: &Issue) -> String {
+pub(crate) fn issue_identity(issue: &Issue) -> String {
     issue_identity_hash(&issue.rule_id, issue.env_name.as_deref(), &issue.fields)
 }
 
@@ -427,7 +427,7 @@ pub fn issue_identity(issue: &Issue) -> String {
 /// issue and label "cleared" rows; full Issue reconstruction isn't
 /// needed for the diff.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BaselineIssue {
+pub(crate) struct BaselineIssue {
     pub identity: String,
     pub rule_id: String,
     pub env_name: Option<String>,
@@ -444,7 +444,7 @@ pub struct BaselineIssue {
 /// already there, and the file is CI input from a previous run, so
 /// every YAML feature applied to it. Same correction as the LLM and
 /// tfstate parsers.
-pub fn parse_baseline(text: &str) -> Result<Vec<BaselineIssue>, String> {
+pub(crate) fn parse_baseline(text: &str) -> Result<Vec<BaselineIssue>, String> {
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|e| format!("baseline JSON parse failed: {e}"))?;
     let issues = value
@@ -527,7 +527,7 @@ fn parse_i32(s: &str) -> Option<i32> {
 /// EBL001 — `AllAtOnce` deployment policy on a multi-instance
 /// env. Causes 100% capacity loss during deploys, which is
 /// almost never what an operator wants on production.
-pub struct AllAtOnceMultiInstance;
+pub(crate) struct AllAtOnceMultiInstance;
 
 impl Rule for AllAtOnceMultiInstance {
     fn id(&self) -> &'static str {
@@ -587,7 +587,7 @@ impl Rule for AllAtOnceMultiInstance {
 /// homepage; a deploy that breaks the homepage looks healthy
 /// to EB. Setting an explicit `/health` endpoint is the standard
 /// safety net.
-pub struct WebTierNoHealthCheckUrl;
+pub(crate) struct WebTierNoHealthCheckUrl;
 
 impl Rule for WebTierNoHealthCheckUrl {
     fn id(&self) -> &'static str {
@@ -645,7 +645,7 @@ impl Rule for WebTierNoHealthCheckUrl {
 /// signal — long-Red envs typically mean either an abandoned
 /// stack or a missed page. Threshold: 4 hours, mirroring the
 /// "newly Red" event grace window the existing alerts use.
-pub struct EnvRedForExtendedPeriod;
+pub(crate) struct EnvRedForExtendedPeriod;
 
 impl Rule for EnvRedForExtendedPeriod {
     fn id(&self) -> &'static str {
@@ -693,7 +693,7 @@ impl Rule for EnvRedForExtendedPeriod {
 /// EBL004 — BatchSize exceeds MaxSize. Means rolling deployment
 /// will try to update more instances than exist; EB clamps but
 /// the operator's configured intent is broken.
-pub struct BatchSizeExceedsMaxSize;
+pub(crate) struct BatchSizeExceedsMaxSize;
 
 impl Rule for BatchSizeExceedsMaxSize {
     fn id(&self) -> &'static str {
@@ -760,7 +760,7 @@ impl Rule for BatchSizeExceedsMaxSize {
 /// means any instance failure is a full outage. Tagged as Info
 /// (not Warn) because some envs genuinely want this; just worth
 /// surfacing on a lint check.
-pub struct SingleInstanceEnv;
+pub(crate) struct SingleInstanceEnv;
 
 impl Rule for SingleInstanceEnv {
     fn id(&self) -> &'static str {
@@ -811,7 +811,7 @@ impl Rule for SingleInstanceEnv {
 /// cooldowns cause autoscaling thrashing — instances launch and
 /// terminate in rapid succession because the cooldown expires
 /// before the new instance has stabilised under load.
-pub struct CooldownBelowRecommended;
+pub(crate) struct CooldownBelowRecommended;
 
 impl Rule for CooldownBelowRecommended {
     fn id(&self) -> &'static str {
@@ -864,7 +864,7 @@ impl Rule for CooldownBelowRecommended {
 /// (PCI, SOC2, internal policy). Detection: any `aws:elbv2:listener:*`
 /// namespace declaring `ListenerEnabled=true` `Protocol=HTTP`. We
 /// don't auto-fix because the right cert ARN is operator-specific.
-pub struct ElbWithoutHttps;
+pub(crate) struct ElbWithoutHttps;
 
 impl Rule for ElbWithoutHttps {
     fn id(&self) -> &'static str {
@@ -937,7 +937,7 @@ impl Rule for ElbWithoutHttps {
 /// embedded that's older than 180 days from `chrono::Utc::now()`.
 /// The right target version is platform-family-specific; no
 /// auto-fix.
-pub struct StalePlatformVersion;
+pub(crate) struct StalePlatformVersion;
 
 impl Rule for StalePlatformVersion {
     fn id(&self) -> &'static str {
@@ -1001,7 +1001,7 @@ impl Rule for StalePlatformVersion {
 /// launched, before app boot completes — flagged Unhealthy →
 /// ASG terminates → infinite churn during deploys. EB
 /// recommends ≥ 60s; production workloads typically want 180-300s.
-pub struct AsgMissingHealthCheckGracePeriod;
+pub(crate) struct AsgMissingHealthCheckGracePeriod;
 
 impl Rule for AsgMissingHealthCheckGracePeriod {
     fn id(&self) -> &'static str {
@@ -1069,7 +1069,7 @@ impl Rule for AsgMissingHealthCheckGracePeriod {
 /// `ctx.env.tags` lists the active tag keys. Manual fix
 /// because tag VALUES are operator-specific. No-op when
 /// `required_tags` is empty (operator hasn't declared any).
-pub struct MissingRequiredTags;
+pub(crate) struct MissingRequiredTags;
 
 impl Rule for MissingRequiredTags {
     fn id(&self) -> &'static str {
@@ -1144,7 +1144,7 @@ impl Rule for MissingRequiredTags {
 /// operator notices. The rule fires when `dlq_depth > threshold`
 /// (default 100; configurable via the caller). Auto-fix=Manual:
 /// scale workers / restart / drain — operator-context-dependent.
-pub struct WorkerDlqStuck;
+pub(crate) struct WorkerDlqStuck;
 
 /// Threshold for EBL011. Hard-coded for v1; future config-tunable
 /// via `lint.ebl011.threshold` if operators ask.
@@ -1208,7 +1208,7 @@ impl Rule for WorkerDlqStuck {
 /// observed otherwise yet), but the ALB target group reports no
 /// healthy targets — so traffic is silently failing while the
 /// dashboard says Green. High-signal alert.
-pub struct GreenButZeroInstances;
+pub(crate) struct GreenButZeroInstances;
 
 impl Rule for GreenButZeroInstances {
     fn id(&self) -> &'static str {
@@ -1281,7 +1281,7 @@ impl Rule for GreenButZeroInstances {
 /// template path keep this namespace empty). Fix=Manual — migrating
 /// from launch config to launch template needs an EB env rebuild and
 /// careful capacity-loss planning, not a one-shot option flip.
-pub struct LaunchConfigurationLegacy;
+pub(crate) struct LaunchConfigurationLegacy;
 
 impl Rule for LaunchConfigurationLegacy {
     fn id(&self) -> &'static str {
@@ -1348,7 +1348,7 @@ impl Rule for LaunchConfigurationLegacy {
 /// like `aws:ec2:vpc:Subnets`) into trimmed, non-empty entries. EB
 /// sometimes returns padded values like `"subnet-a, subnet-b"`; we
 /// tolerate.
-pub fn parse_csv_value(value: &str) -> Vec<&str> {
+pub(crate) fn parse_csv_value(value: &str) -> Vec<&str> {
     value
         .split(',')
         .map(|s| s.trim())
@@ -1368,7 +1368,7 @@ pub fn parse_csv_value(value: &str) -> Vec<&str> {
 /// subnet count. False-positive on the rare case where two subnets
 /// live in the same AZ; operators can `lint.disable = ["EBL019"]`
 /// if that bites. Auto-fix is the same SetOption as EBL001.
-pub struct AllAtOnceMultiAz;
+pub(crate) struct AllAtOnceMultiAz;
 
 impl Rule for AllAtOnceMultiAz {
     fn id(&self) -> &'static str {
@@ -1440,7 +1440,7 @@ impl Rule for AllAtOnceMultiAz {
 /// during the configured maintenance window. Fix=Manual (operator
 /// may have a deliberate reason to disable — e.g. a frozen
 /// production env mid-incident — so `--fix` doesn't flip it).
-pub struct ManagedActionsDisabled;
+pub(crate) struct ManagedActionsDisabled;
 
 impl Rule for ManagedActionsDisabled {
     fn id(&self) -> &'static str {
@@ -1514,7 +1514,7 @@ impl Rule for ManagedActionsDisabled {
 /// (BACKLOG framed this as "deprecated CW namespace"; EB's trigger
 /// namespace has no CW-namespace key, so the honest checkable
 /// signal is the legacy NetworkIn/NetworkOut measure itself.)
-pub struct ScalingTriggerLegacyNetworkMeasure;
+pub(crate) struct ScalingTriggerLegacyNetworkMeasure;
 
 impl Rule for ScalingTriggerLegacyNetworkMeasure {
     fn id(&self) -> &'static str {
@@ -1582,7 +1582,7 @@ impl Rule for ScalingTriggerLegacyNetworkMeasure {
 /// The IAM answer comes from an `iam:SimulatePrincipalPolicy` probe
 /// run by the caller (CLI-only; see `LintContext::xray_trace_denied`)
 /// — the rule itself stays pure and skips when the probe didn't run.
-pub struct XrayEnabledButTracesDenied;
+pub(crate) struct XrayEnabledButTracesDenied;
 
 impl Rule for XrayEnabledButTracesDenied {
     fn id(&self) -> &'static str {
@@ -1654,7 +1654,7 @@ impl Rule for XrayEnabledButTracesDenied {
 /// WAFv2 can't associate with them (that fleet's WAF story is
 /// CloudFront-level, which this rule can't verify). The rule itself
 /// stays pure and skips when the probe didn't run.
-pub struct NoWafOnProdAlb;
+pub(crate) struct NoWafOnProdAlb;
 
 impl Rule for NoWafOnProdAlb {
     fn id(&self) -> &'static str {
@@ -1711,7 +1711,7 @@ impl Rule for NoWafOnProdAlb {
 /// `lint.disable` themselves (the registry's load-time filter can't
 /// see it). Issues carry `env_name: None` — the fleet-wide slot the
 /// `Issue` struct reserved from day one.
-pub fn stale_custom_platform_issues(
+pub(crate) fn stale_custom_platform_issues(
     platforms: &[(String, chrono::DateTime<chrono::Utc>)],
     now: chrono::DateTime<chrono::Utc>,
 ) -> Vec<Issue> {
@@ -1760,7 +1760,7 @@ pub fn stale_custom_platform_issues(
 /// operator's mental model have drifted — usually a health path
 /// that changed, a security-group hole, or an env serving 5xx
 /// that EB's ELB checks don't exercise.
-pub struct HealthCheckProbeFailing;
+pub(crate) struct HealthCheckProbeFailing;
 
 impl Rule for HealthCheckProbeFailing {
     fn id(&self) -> &'static str {
@@ -1813,7 +1813,7 @@ impl Rule for HealthCheckProbeFailing {
     }
 }
 
-pub fn default_rules(disabled: &[String]) -> Vec<Box<dyn Rule>> {
+pub(crate) fn default_rules(disabled: &[String]) -> Vec<Box<dyn Rule>> {
     let candidates: Vec<Box<dyn Rule>> = vec![
         Box::new(AllAtOnceMultiInstance),
         Box::new(WebTierNoHealthCheckUrl),

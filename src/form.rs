@@ -13,7 +13,7 @@
 /// One modal-form session. Owned by the `App` while [`crate::app::Mode::Form`]
 /// is active; replaced wholesale on a new `:command` that opens a form.
 #[derive(Debug, Clone)]
-pub struct Form {
+pub(crate) struct Form {
     pub title: String,
     pub fields: Vec<FormField>,
     pub cursor: usize,
@@ -42,7 +42,7 @@ pub struct Form {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FormState {
+pub(crate) enum FormState {
     /// Fetching the pre-fill values from AWS.
     Loading,
     /// Form is interactive.
@@ -52,7 +52,7 @@ pub enum FormState {
 }
 
 #[derive(Debug, Clone)]
-pub struct FormField {
+pub(crate) struct FormField {
     /// Stable identifier used by `FormSubmit::OptionSettings` to map a
     /// field to a `(namespace, option_name)` triple. Not shown to the user.
     pub key: String,
@@ -89,7 +89,7 @@ pub struct FormField {
 // once a form uses it.
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FieldKind {
+pub(crate) enum FieldKind {
     /// Free-form text. No validation on shape.
     Text,
     /// Integer (signed). Validates as an `i64`; allows empty for "unset".
@@ -115,7 +115,7 @@ pub enum FieldKind {
 
 /// What the form does on submit.
 #[derive(Debug, Clone)]
-pub enum FormSubmit {
+pub(crate) enum FormSubmit {
     /// Every field maps to one `(namespace, option_name)` pair. Blank
     /// fields (empty text, or empty `allow_empty` integers) are dropped
     /// from the update so EB keeps its existing value.
@@ -134,7 +134,7 @@ pub enum FormSubmit {
 impl Form {
     /// Build a form in the `Loading` state. Caller spawns the pre-fill fetch
     /// and replaces `state` with `Ready` once values land.
-    pub fn loading(
+    pub(crate) fn loading(
         title: impl Into<String>,
         env_name: impl Into<String>,
         summary: impl Into<String>,
@@ -160,7 +160,7 @@ impl Form {
     /// An empty name means a `LocalConfig` form (`:settings`), which
     /// writes to the config file rather than to AWS — so the operator
     /// gets the path the submit will land in.
-    pub fn banner_for(env_name: &str) -> String {
+    pub(crate) fn banner_for(env_name: &str) -> String {
         if env_name.is_empty() {
             format!(" file: {}", crate::config::config_path().display())
         } else {
@@ -169,16 +169,16 @@ impl Form {
     }
 
     /// Convenience for the field at the cursor position.
-    pub fn current_field(&self) -> Option<&FormField> {
+    pub(crate) fn current_field(&self) -> Option<&FormField> {
         self.fields.get(self.cursor)
     }
 
-    pub fn current_field_mut(&mut self) -> Option<&mut FormField> {
+    pub(crate) fn current_field_mut(&mut self) -> Option<&mut FormField> {
         self.fields.get_mut(self.cursor)
     }
 
     /// Move the cursor forward or backward through the field list. Wraps.
-    pub fn move_cursor(&mut self, delta: isize) {
+    pub(crate) fn move_cursor(&mut self, delta: isize) {
         let len = self.fields.len() as isize;
         if len <= 0 {
             return;
@@ -191,7 +191,7 @@ impl Form {
     /// Run per-field validators. Stores errors on each `FormField.error` and
     /// returns `Ok(())` only if every field passes. Pure — no side effects
     /// beyond the field error strings.
-    pub fn validate(&mut self) -> Result<(), Vec<usize>> {
+    pub(crate) fn validate(&mut self) -> Result<(), Vec<usize>> {
         let mut failing: Vec<usize> = Vec::new();
         for (i, field) in self.fields.iter_mut().enumerate() {
             field.error = match validate_field(&field.value, &field.kind) {
@@ -215,7 +215,9 @@ impl Form {
     /// integers, and empty text fields. Pre-validation is the caller's
     /// responsibility.
     #[allow(clippy::type_complexity)]
-    pub fn to_option_settings(&self) -> (Vec<(String, String, String)>, Vec<(String, String)>) {
+    pub(crate) fn to_option_settings(
+        &self,
+    ) -> (Vec<(String, String, String)>, Vec<(String, String)>) {
         let mappings = match &self.submit {
             FormSubmit::OptionSettings { mappings } => mappings,
             FormSubmit::LocalConfig => return (Vec::new(), Vec::new()),
@@ -261,7 +263,7 @@ impl Form {
     ///
     /// Comma-separated list fields (`extra_regions`, `required_tags`) split
     /// on commas and trim each entry; empty entries are dropped.
-    pub fn apply_to_config(&self, base: &crate::config::Config) -> crate::config::Config {
+    pub(crate) fn apply_to_config(&self, base: &crate::config::Config) -> crate::config::Config {
         let mut cfg = base.clone();
         for field in &self.fields {
             let value = field.value.trim();
@@ -306,7 +308,7 @@ impl Form {
 }
 
 impl FormField {
-    pub fn text(
+    pub(crate) fn text(
         key: impl Into<String>,
         label: impl Into<String>,
         help: Option<impl Into<String>>,
@@ -323,7 +325,7 @@ impl FormField {
         }
     }
 
-    pub fn integer(
+    pub(crate) fn integer(
         key: impl Into<String>,
         label: impl Into<String>,
         help: Option<impl Into<String>>,
@@ -348,7 +350,7 @@ impl FormField {
     }
 
     #[allow(dead_code)]
-    pub fn boolean(
+    pub(crate) fn boolean(
         key: impl Into<String>,
         label: impl Into<String>,
         help: Option<impl Into<String>>,
@@ -365,7 +367,7 @@ impl FormField {
         }
     }
 
-    pub fn select(
+    pub(crate) fn select(
         key: impl Into<String>,
         label: impl Into<String>,
         options: Vec<String>,
@@ -388,7 +390,7 @@ impl FormField {
     /// the `initial` vec — they're filtered against `options` so a stale
     /// pre-fill (option that no longer exists in the env's VPC, etc.)
     /// doesn't end up persisted on submit.
-    pub fn multi_select(
+    pub(crate) fn multi_select(
         key: impl Into<String>,
         label: impl Into<String>,
         options: Vec<String>,
@@ -420,7 +422,7 @@ impl FormField {
     // directly — leaving this builder unused for now. Kept around as a
     // convenience for forms that have their option list up-front.
     #[allow(dead_code)]
-    pub fn with_annotations(mut self, annotations: Vec<String>) -> Self {
+    pub(crate) fn with_annotations(mut self, annotations: Vec<String>) -> Self {
         if let FieldKind::MultiSelect { options } = &self.kind {
             if annotations.len() == options.len() {
                 self.option_annotations = Some(annotations);
@@ -432,14 +434,14 @@ impl FormField {
 
 /// Pure: parse a comma-separated multi-select value into a vec of
 /// trimmed, non-empty option strings. Round-trip with `join(",")`.
-pub fn parse_multi_value(value: &str) -> Vec<String> {
+pub(crate) fn parse_multi_value(value: &str) -> Vec<String> {
     crate::util::split_csv(value)
 }
 
 /// Pure: toggle `opt` in a comma-separated multi-select value. Returns
 /// the new comma-joined string. Preserves the original order of options
 /// that were already selected and appends a newly-added one at the end.
-pub fn toggle_multi(value: &str, opt: &str) -> String {
+pub(crate) fn toggle_multi(value: &str, opt: &str) -> String {
     let mut current = parse_multi_value(value);
     if let Some(pos) = current.iter().position(|s| s == opt) {
         current.remove(pos);
@@ -452,13 +454,13 @@ pub fn toggle_multi(value: &str, opt: &str) -> String {
 /// Pure: is `opt` currently selected in a comma-separated multi-select
 /// value? Trims options on both sides so whitespace variations don't
 /// produce a false negative.
-pub fn is_multi_selected(value: &str, opt: &str) -> bool {
+pub(crate) fn is_multi_selected(value: &str, opt: &str) -> bool {
     parse_multi_value(value).iter().any(|s| s == opt)
 }
 
 /// Pure: returns `Ok(())` if `value` is acceptable for `kind`, else the
 /// human-readable error to render below the field.
-pub fn validate_field(value: &str, kind: &FieldKind) -> Result<(), String> {
+pub(crate) fn validate_field(value: &str, kind: &FieldKind) -> Result<(), String> {
     match kind {
         FieldKind::Text => Ok(()),
         FieldKind::Integer {

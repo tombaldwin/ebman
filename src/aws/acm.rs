@@ -5,7 +5,7 @@ use super::*;
 /// One ISSUED ACM certificate in the active region. Drives the
 /// `:listener-edit` SSL-cert picker.
 #[derive(Clone, Debug)]
-pub struct AcmCert {
+pub(crate) struct AcmCert {
     pub arn: String,
     pub domain: String,
 }
@@ -13,7 +13,7 @@ pub struct AcmCert {
 impl AwsClient {
     /// List the region's ACM certificates (ISSUED only) as
     /// `(arn, primary domain)`. Drives the `:listener-edit` cert picker.
-    pub async fn list_certificates(&self) -> Result<Vec<AcmCert>> {
+    pub(crate) async fn list_certificates(&self) -> Result<Vec<AcmCert>> {
         use aws_sdk_acm::types::CertificateStatus;
         let this = self;
         let raw = super::paginate("ListCertificates", move |token| async move {

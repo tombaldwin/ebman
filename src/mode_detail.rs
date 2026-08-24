@@ -18,7 +18,7 @@ use crate::aws::{Environment, Event as EbEvent, Instance, MetricSeries, WorkerQu
 /// the same list from [`health_items`] so the cursor stays in sync with
 /// what's on screen — same data → same items → same indices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HealthItem {
+pub(crate) enum HealthItem {
     /// Index into `detail.events` (which is what the Health-tab "recent
     /// events" section reads from — filtered + truncated by the renderer
     /// but indexing the source vec keeps drill-in robust against
@@ -33,7 +33,7 @@ pub enum HealthItem {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DetailTab {
+pub(crate) enum DetailTab {
     /// Rollup of "is this env OK?" — current status / health, recent
     /// significant events, instance-cause summary, DLQ depth for workers.
     /// Default tab when entering Detail so the operator sees triage info
@@ -48,7 +48,7 @@ pub enum DetailTab {
 }
 
 impl DetailTab {
-    pub fn title(self) -> &'static str {
+    pub(crate) fn title(self) -> &'static str {
         match self {
             Self::Health => "Health",
             Self::Events => "Events",
@@ -65,7 +65,7 @@ impl DetailTab {
 /// `Info` shows INFO and above, hiding DEBUG / TRACE. `All` shows
 /// everything. Cycles `All → Info → Warn → Error → All`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum EventLevel {
+pub(crate) enum EventLevel {
     #[default]
     All,
     Info,
@@ -74,7 +74,7 @@ pub enum EventLevel {
 }
 
 impl EventLevel {
-    pub fn next(self) -> Self {
+    pub(crate) fn next(self) -> Self {
         match self {
             Self::All => Self::Info,
             Self::Info => Self::Warn,
@@ -83,7 +83,7 @@ impl EventLevel {
         }
     }
 
-    pub fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::All => "all",
             Self::Info => "info+",
@@ -107,7 +107,7 @@ impl EventLevel {
 /// `TRACE` / `DEBUG` / `INFO` / `WARN` / `ERROR`; an unrecognised or
 /// empty value is treated as INFO so it isn't silently hidden by a
 /// `warn+` filter.
-pub fn severity_rank(severity: &str) -> u8 {
+pub(crate) fn severity_rank(severity: &str) -> u8 {
     match severity.to_ascii_uppercase().as_str() {
         "TRACE" => 0,
         "DEBUG" => 1,
@@ -122,7 +122,7 @@ pub fn severity_rank(severity: &str) -> u8 {
 /// the rest keep only events newer than the cutoff. Cycles
 /// `All → 1h → 6h → 24h → 7d → All`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum EventWindow {
+pub(crate) enum EventWindow {
     #[default]
     All,
     H1,
@@ -132,7 +132,7 @@ pub enum EventWindow {
 }
 
 impl EventWindow {
-    pub fn next(self) -> Self {
+    pub(crate) fn next(self) -> Self {
         match self {
             Self::All => Self::H1,
             Self::H1 => Self::H6,
@@ -142,7 +142,7 @@ impl EventWindow {
         }
     }
 
-    pub fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::All => "all",
             Self::H1 => "1h",
@@ -154,7 +154,7 @@ impl EventWindow {
 
     /// Oldest timestamp that still passes, given `now`. `None` means
     /// "no cutoff" (the `All` variant).
-    pub fn cutoff(
+    pub(crate) fn cutoff(
         self,
         now: chrono::DateTime<chrono::Utc>,
     ) -> Option<chrono::DateTime<chrono::Utc>> {
@@ -174,7 +174,7 @@ impl EventWindow {
 /// can still map back to the source vec for n/N search-jump and
 /// Health-tab drill-in. An event with no timestamp passes the window
 /// filter (can't be excluded by a cutoff it has no value for).
-pub fn filter_event_indices(
+pub(crate) fn filter_event_indices(
     events: &[EbEvent],
     level: EventLevel,
     window: EventWindow,
@@ -198,7 +198,7 @@ pub fn filter_event_indices(
 /// Determines the dispatch path on commit (`UpdateOptionSettings`
 /// for env vars, `UpdateTags` for tags).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConfigItemKind {
+pub(crate) enum ConfigItemKind {
     EnvVar,
     Tag,
 }
@@ -208,7 +208,7 @@ pub enum ConfigItemKind {
 /// represented here — the cursor only stops on rows the operator
 /// can actually change.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConfigItem {
+pub(crate) struct ConfigItem {
     pub kind: ConfigItemKind,
     pub key: String,
     pub value: String,
@@ -216,7 +216,7 @@ pub struct ConfigItem {
 
 /// What an open Config-tab editor is editing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConfigEditMode {
+pub(crate) enum ConfigEditMode {
     /// Editing an existing row's value — `key` fixed, `input` is the value.
     Value,
     /// Adding a new row — `key` empty, `input` is a `KEY=VALUE` string.
@@ -233,7 +233,7 @@ pub enum ConfigEditMode {
 /// `input` (not a byte offset) — the text-cursor position that
 /// Left/Right/Home/End move and where insert/delete act.
 #[derive(Debug, Clone)]
-pub struct ConfigEdit {
+pub(crate) struct ConfigEdit {
     pub kind: ConfigItemKind,
     pub key: String,
     pub original: String,
@@ -244,44 +244,47 @@ pub struct ConfigEdit {
 }
 
 impl ConfigEdit {
-    /// Char offset of the caret — used by tests + render split.
-    pub fn caret(&self) -> usize {
+    /// Char offset of the caret. Test-only: the doc used to say "tests +
+    /// render split", but the render split stopped calling it and nobody
+    /// noticed, because `pub` kept `dead_code` from seeing it.
+    #[cfg(test)]
+    pub(crate) fn caret(&self) -> usize {
         self.input.cursor_col()
     }
 
     /// Insert a char at the caret and step the caret past it.
-    pub fn insert(&mut self, c: char) {
+    pub(crate) fn insert(&mut self, c: char) {
         self.input.insert(c);
     }
 
     /// Delete the char *before* the caret (Backspace).
-    pub fn backspace(&mut self) {
+    pub(crate) fn backspace(&mut self) {
         self.input.backspace();
     }
 
     /// Delete the char *at* the caret (Delete / Del).
-    pub fn delete(&mut self) {
+    pub(crate) fn delete(&mut self) {
         self.input.delete_forward();
     }
 
-    pub fn move_left(&mut self) {
+    pub(crate) fn move_left(&mut self) {
         self.input.left();
     }
 
-    pub fn move_right(&mut self) {
+    pub(crate) fn move_right(&mut self) {
         self.input.right();
     }
 
-    pub fn move_home(&mut self) {
+    pub(crate) fn move_home(&mut self) {
         self.input.home();
     }
 
-    pub fn move_end(&mut self) {
+    pub(crate) fn move_end(&mut self) {
         self.input.end();
     }
 
     /// Split the buffer at the caret for rendering — `(before, after)`.
-    pub fn split_at_caret(&self) -> (&str, &str) {
+    pub(crate) fn split_at_caret(&self) -> (&str, &str) {
         let text = self.input.text();
         let byte = text
             .char_indices()
@@ -298,7 +301,7 @@ impl ConfigEdit {
 /// malformed input (no `=`, or an empty/whitespace key). The value
 /// is taken verbatim — not trimmed — since trailing spaces can be
 /// significant in an env var.
-pub fn parse_new_config_row(input: &str) -> Option<(String, String)> {
+pub(crate) fn parse_new_config_row(input: &str) -> Option<(String, String)> {
     let (k, v) = input.split_once('=')?;
     let k = k.trim();
     if k.is_empty() {
@@ -313,7 +316,7 @@ pub fn parse_new_config_row(input: &str) -> Option<(String, String)> {
 /// render), then env vars (natural order). The Config-tab cursor
 /// indexes into this list, so render + navigation agree by
 /// construction.
-pub fn config_editable_items(detail: &DetailState) -> Vec<ConfigItem> {
+pub(crate) fn config_editable_items(detail: &DetailState) -> Vec<ConfigItem> {
     let mut out = Vec::with_capacity(detail.tags.len() + detail.env_vars.len());
     let mut tags: Vec<&(String, String)> = detail.tags.iter().collect();
     tags.sort_by_key(|(k, _)| k.to_lowercase());
@@ -336,7 +339,7 @@ pub fn config_editable_items(detail: &DetailState) -> Vec<ConfigItem> {
 
 /// Per-instance tail-log capture state.
 #[derive(Debug, Clone, Default)]
-pub struct LogTail {
+pub(crate) struct LogTail {
     /// `(ec2_instance_id, last_known_content)` — content is empty until the
     /// first fetch lands. Order is preserved across refreshes so the user
     /// doesn't see instance entries jump around.
@@ -356,7 +359,7 @@ pub struct LogTail {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum LogTailStage {
+pub(crate) enum LogTailStage {
     /// Tab opened but no request issued (or context cleared).
     #[default]
     Idle,
@@ -370,7 +373,7 @@ pub enum LogTailStage {
     Ready,
 }
 
-pub struct DetailState {
+pub(crate) struct DetailState {
     pub env_name: String,
     pub env_snapshot: Environment, // taken at open-time; not refreshed
     pub tabs: Vec<DetailTab>,
@@ -470,7 +473,7 @@ pub struct DetailState {
 }
 
 impl DetailState {
-    pub fn tab(&self) -> DetailTab {
+    pub(crate) fn tab(&self) -> DetailTab {
         self.tabs[self.tab_idx]
     }
 
@@ -487,7 +490,7 @@ impl DetailState {
     /// result handler — a separate in-flight marker would need its own
     /// clearing discipline and would wedge the tab the first time one
     /// was missed.
-    pub fn tab_loading(&self) -> bool {
+    pub(crate) fn tab_loading(&self) -> bool {
         match self.tab() {
             // The Health tab is a rollup: it fires up to four fetches
             // and any one of them still running means the refresh it
@@ -516,7 +519,7 @@ impl DetailState {
     /// Called after a tags / env-vars refetch so a delete that
     /// shrank the list doesn't leave the cursor pointing past the
     /// end (which would hide the `▶` marker until the next `j`/`k`).
-    pub fn clamp_config_cursor(&mut self) {
+    pub(crate) fn clamp_config_cursor(&mut self) {
         let n = config_editable_items(self).len();
         self.config_cursor = if n == 0 {
             0
@@ -532,7 +535,7 @@ impl DetailState {
     /// commit a write that *re-creates* the deleted key. Clearing it
     /// here is the safe outcome. Add-row edits reference no existing
     /// row, so they're left alone.
-    pub fn revalidate_config_edit(&mut self) {
+    pub(crate) fn revalidate_config_edit(&mut self) {
         let Some((kind, key)) = self.config_edit.as_ref().and_then(|e| {
             if e.mode == ConfigEditMode::NewRow {
                 None
@@ -563,7 +566,10 @@ impl DetailState {
 ///
 /// Returned in render order so the cursor maps 1-to-1 with what the
 /// operator sees on screen.
-pub fn health_items(detail: &DetailState, now: chrono::DateTime<chrono::Utc>) -> Vec<HealthItem> {
+pub(crate) fn health_items(
+    detail: &DetailState,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<HealthItem> {
     let mut out: Vec<HealthItem> = Vec::new();
     // Events section — mirror the renderer's filter (severity + recency).
     let cutoff = now - chrono::Duration::minutes(30);

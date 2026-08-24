@@ -7,7 +7,7 @@
 /// "couldn't reach crates.io" / "version string didn't parse" — anything that
 /// shouldn't bother the user.
 #[derive(Debug, Clone)]
-pub struct LatestRelease {
+pub(crate) struct LatestRelease {
     pub version: String,
 }
 
@@ -15,7 +15,7 @@ pub struct LatestRelease {
 /// compares against `CARGO_PKG_VERSION`. Returns `Some(latest)` only when a
 /// strictly-newer semver is available. Anything that goes wrong silently maps
 /// to `None`.
-pub async fn check_async() -> Option<LatestRelease> {
+pub(crate) async fn check_async() -> Option<LatestRelease> {
     use tokio::process::Command;
     // 10s cap so a stalled DNS / network doesn't keep the task alive.
     let out = Command::new("curl")
@@ -69,7 +69,7 @@ fn extract_max_stable_version(body: &str) -> Option<String> {
 /// stripped the pre-release segment and compared only the numeric core,
 /// so the two tied and a binary running an rc was never told the real
 /// release had shipped.
-pub fn is_newer(candidate: &str, current: &str) -> bool {
+pub(crate) fn is_newer(candidate: &str, current: &str) -> bool {
     // Shared with the EB platform-version picker. This used to have its
     // own copy that stripped the pre-release segment and compared only
     // the numeric core, so a binary running `0.30.0-rc1` was never told
@@ -83,7 +83,7 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
 /// patterns are bulletproof — we lean on the most-common defaults and fall
 /// back to a "download from releases page" hint.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InstallChannel {
+pub(crate) enum InstallChannel {
     /// `/<prefix>/Cellar/ebman/<ver>/bin/ebman` — Homebrew. `brew upgrade ebman`.
     Homebrew,
     /// `~/.cargo/bin/ebman` — `cargo install ebman`.
@@ -95,7 +95,7 @@ pub enum InstallChannel {
 
 impl InstallChannel {
     /// Classify a binary path. Pure for testability.
-    pub fn from_path(path: &std::path::Path) -> Self {
+    pub(crate) fn from_path(path: &std::path::Path) -> Self {
         let s = path.to_string_lossy();
         if s.contains("/Cellar/ebman/") {
             return InstallChannel::Homebrew;
@@ -111,7 +111,7 @@ impl InstallChannel {
 
     /// Shell command that upgrades the binary in-place for this channel.
     /// Returned as a single-line string suitable for the operator to copy.
-    pub fn upgrade_command(self) -> &'static str {
+    pub(crate) fn upgrade_command(self) -> &'static str {
         match self {
             InstallChannel::Homebrew => "brew upgrade ebman",
             InstallChannel::Cargo => "cargo install ebman --force",
@@ -126,7 +126,7 @@ impl InstallChannel {
 
 /// Detect the running binary's install channel. Best-effort; returns
 /// `Standalone` if we can't read our own path.
-pub fn detect_install_channel() -> InstallChannel {
+pub(crate) fn detect_install_channel() -> InstallChannel {
     std::env::current_exe()
         .map(|p| InstallChannel::from_path(&p))
         .unwrap_or(InstallChannel::Standalone)

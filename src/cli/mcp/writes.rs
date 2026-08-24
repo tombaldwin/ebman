@@ -57,7 +57,7 @@ impl WriteState {
     /// pin the message branch but not the fact that anything ever
     /// reaches `retired`. That is the same shape as an earlier cache
     /// whose read path was tested while nothing wrote to it.
-    pub fn install(&mut self, plan: PendingWrite) {
+    pub(super) fn install(&mut self, plan: PendingWrite) {
         if let Some(old) = self.pending.take() {
             if self.retired.len() >= RETIRED_TOKEN_MEMORY {
                 self.retired.pop_front();

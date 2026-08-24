@@ -34,7 +34,7 @@ use crate::aws::Event as EbEvent;
 /// because they share the same crate and the compiler enforces it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum Action {
+pub(crate) enum Action {
     Rebuild,
     RestartAppServer,
     SwapCnames,
@@ -76,7 +76,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Rebuild => "Rebuild env",
             Self::RestartAppServer => "Restart app server",
@@ -95,7 +95,7 @@ impl Action {
             Self::SsmRun => "Run SSM shell command",
         }
     }
-    pub fn destructive(self) -> bool {
+    pub(crate) fn destructive(self) -> bool {
         // SsmRun is flagged destructive so the confirm modal renders
         // in red — operator-explicit shell exec across instances is
         // treat-as-write. Operators using it for read-only probes
@@ -113,7 +113,7 @@ impl Action {
     /// This is the single source of truth — every `ConfirmModal`
     /// construction site reads it instead of hand-rolling its own
     /// allow-list.
-    pub fn wants_preflight(self) -> bool {
+    pub(crate) fn wants_preflight(self) -> bool {
         matches!(
             self,
             Self::Deploy
@@ -136,7 +136,7 @@ impl Action {
     /// recognisable Nerd Font icons (refresh / power / swap / trash / …)
     /// next to the label; unicode falls back to short emoji-ish glyphs;
     /// ASCII gets a single-letter tag so the column stays aligned.
-    pub fn glyph(self, icons: crate::theme::IconStyle) -> &'static str {
+    pub(crate) fn glyph(self, icons: crate::theme::IconStyle) -> &'static str {
         use crate::theme::IconStyle;
         match (icons, self) {
             // Powerline / Nerd Font Material Design glyphs.
@@ -195,7 +195,7 @@ impl Action {
 /// Order the action menu renders rows in. `Rebuild` / `Restart` are at
 /// the top because they're the daily-driver actions; `Terminate` lives
 /// at the bottom so the operator can't ⌘+enter it by accident.
-pub const ACTIONS: &[Action] = &[
+pub(crate) const ACTIONS: &[Action] = &[
     Action::Rebuild,
     Action::RestartAppServer,
     Action::Deploy,
@@ -225,7 +225,7 @@ pub const ACTIONS: &[Action] = &[
 // the modal's once-per-action allocation cadence. Allow rather
 // than absorb the churn.
 #[allow(clippy::large_enum_variant)]
-pub enum ActionFlow {
+pub(crate) enum ActionFlow {
     Menu {
         list_state: ListState,
     },
@@ -250,7 +250,7 @@ pub enum ActionFlow {
 /// state. Each state transition is driven by an `AppMsg::Rollout*`
 /// variant.
 #[derive(Clone, Debug)]
-pub struct RolloutFlow {
+pub(crate) struct RolloutFlow {
     /// Stable correlation id written into every per-region
     /// audit-log line. Same shape `ebman action rollout` uses
     /// (`rollout-YYYYMMDDTHHMMSSZ`) so audit-log grep finds
@@ -269,7 +269,7 @@ pub struct RolloutFlow {
 }
 
 #[derive(Clone, Debug)]
-pub struct RolloutRegion {
+pub(crate) struct RolloutRegion {
     pub region: String,
     /// `None` until pre-flight lands. `Some("")` means the env
     /// was found but has no version deployed yet; `Some(label)`
@@ -292,7 +292,7 @@ pub struct RolloutRegion {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RolloutState {
+pub(crate) enum RolloutState {
     /// Pre-flight fetches in flight. Plan rows render with
     /// `…` placeholders. No keys do anything except `esc` /
     /// `q` (cancel before any region is touched).
@@ -314,7 +314,7 @@ pub enum RolloutState {
 }
 
 #[derive(Clone)]
-pub struct ConfirmModal {
+pub(crate) struct ConfirmModal {
     pub action: Action,
     pub target_env: String,
     pub swap_with: Option<String>,
@@ -415,7 +415,7 @@ pub struct ConfirmModal {
 /// Helper carrying the optional parameters needed by the new parameterised
 /// actions. Avoids passing seven `Option<…>` args to `open_parameterised_action`.
 #[derive(Default, Clone, Debug)]
-pub struct ParameterisedAction {
+pub(crate) struct ParameterisedAction {
     pub deploy_version: Option<String>,
     pub upgrade_platform_arn: Option<String>,
     pub upgrade_platform_label: Option<String>,
@@ -442,13 +442,13 @@ pub struct ParameterisedAction {
 }
 
 #[derive(Clone, Debug)]
-pub struct DryRunInfo {
+pub(crate) struct DryRunInfo {
     pub instance_count: usize,
     pub az_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConfirmKind {
+pub(crate) enum ConfirmKind {
     YesNo,
     TypeName, // user must type the env name exactly
 }

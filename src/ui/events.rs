@@ -14,7 +14,7 @@ use super::*;
 /// had already drifted: adding the `:event-tail` gap sentinel to one of
 /// them left the others rendering it in `muted`, the dimmest colour in
 /// the palette and indistinguishable from routine INFO chatter.
-pub fn event_severity_style(severity: &str, theme: &Theme) -> Style {
+pub(crate) fn event_severity_style(severity: &str, theme: &Theme) -> Style {
     match severity.to_uppercase().as_str() {
         "ERROR" | "FATAL" => Style::default().fg(theme.health_red),
         "WARN" => Style::default().fg(theme.health_yellow),

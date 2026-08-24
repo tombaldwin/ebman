@@ -351,11 +351,11 @@ impl App {
         self.table_state.select(Some(selectable[next]));
     }
 
-    pub fn display_rows(&self) -> &[DisplayRow] {
+    pub(crate) fn display_rows(&self) -> &[DisplayRow] {
         self.view.display()
     }
 
-    pub fn filtered_indexes(&self) -> &[usize] {
+    pub(crate) fn filtered_indexes(&self) -> &[usize] {
         self.view.filtered()
     }
 
@@ -367,7 +367,7 @@ impl App {
     /// can clear the stale flag. Call it after changing any input: the
     /// filter, the grouping, `environments` itself, `aliases`,
     /// `latest_stacks`, or the theme palette.
-    pub fn rebuild_view(&mut self) {
+    pub(crate) fn rebuild_view(&mut self) {
         // Filtered indexes.
         let mut filtered: Vec<usize> = Vec::new();
         if self.view.filter().is_empty() {

@@ -9,11 +9,23 @@ the AI-assisted-contributor rules see [`CLAUDE.md`](CLAUDE.md).
 
 ## Shape of the crate
 
-`ebman` is lib + bin, but the library is not a general-purpose API: only
-the nine modules `src/main.rs` needs are public, and everything else is
-`pub(crate)`. That is deliberate — a wide public surface made every
-internal refactor a semver event, and `cargo-semver-checks` a tax on
-ordinary work rather than a guard on the API anyone uses.
+`ebman` is lib + bin, but the library is not a general-purpose API. The
+public surface is **126 items**: `App` plus its seven methods, the ten
+`cli::*::run` entry points, `config::load`, and one function each from a
+handful of other modules. Everything else is `pub(crate)`.
+
+Count items, not modules. This section used to say "only the nine
+modules `src/main.rs` needs are public", which was true and misleading —
+a public module re-exports everything `pub` inside it, so those nine
+modules carried 2430 items, 1874 of them from `pub mod app` alone.
+Narrowing the modules had barely moved the number.
+
+That is deliberate — a wide public surface made every internal refactor
+a semver event, and `cargo-semver-checks` a tax on ordinary work rather
+than a guard on the API anyone uses. `#![warn(unreachable_pub)]` in
+`src/lib.rs` keeps it that way by catching the specific leak that is
+invisible to an API listing: a `pub` item inside a `pub(crate)` module,
+reachable through any public signature that names it.
 
 
 `ebman` is lib + bin. `src/lib.rs` holds everything testable; `src/main.rs` is

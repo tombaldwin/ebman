@@ -8,23 +8,39 @@
 //!
 //! # What is public, and why so little
 //!
-//! Only what `src/main.rs` needs: `app`, `audit`, `cli`, `config`,
-//! `control`, `freeze`, `project`, `splash`, `util`, plus the
-//! `font_probe` re-export and the `Tui` / `LogReloadHandle` aliases.
-//! Everything else is `pub(crate)`.
+//! Only what `src/main.rs` needs. Concretely: `App` and its seven
+//! methods (`new`, `new_demo`, `run`, `persist_state`, `set_read_only`,
+//! `set_log_reload`, `reload_requested`), the ten `cli::*::run` entry
+//! points, `config::load` with `Config`'s two icon accessors, one
+//! function each from `audit` / `project` / `freeze` / `control` /
+//! `splash` / `util`, `resolve_icons_setting`, and the `Tui` /
+//! `LogReloadHandle` aliases. Everything else is `pub(crate)`.
 //!
-//! It used to be all 33 modules — about 500 public items, 107 public
-//! structs, 94% of them with every field `pub` — serving a `main.rs`
-//! that touches twelve. The original rationale (integration tests, and
-//! a sibling crate sharing types with `pgman`) went stale: the tests
-//! are inline `#[cfg(test)]` and need `pub(crate)`, and pgman consumes
-//! the extracted `tb-tui-common` crate instead.
+//! **Read the module list below as modules, not as surface.** An
+//! earlier version of this note said "only the nine modules `main.rs`
+//! needs are public" and left the impression that the API was about
+//! nine things. It was 2430 items. `pub mod app` alone carried 1874 of
+//! them, because a public module re-exports everything `pub` inside it
+//! — `App`'s 91 public fields, the mode types, `ViewState`, the lot.
+//! Narrowing the *modules* had barely moved the number; narrowing the
+//! items took it to 126.
 //!
 //! The cost of leaving it wide was not theoretical. Adding a field to
 //! an internal struct was a semver event twice in two releases —
 //! `Form.banner` in 0.31.0 and `WorkerQueues.dlq_origin` in 0.32.0 —
 //! which made `cargo-semver-checks` a tax on ordinary refactoring
-//! rather than a safety net on the API anyone actually uses.
+//! rather than a safety net on the API anyone actually uses. And 0.33.0
+//! shipped a Breaking section enumerating **38** items that inherited a
+//! type-identity change from a ratatui bump, none of which any consumer
+//! could have wanted. After this narrowing that set is **two**: the
+//! `Tui` alias and `ControlOp::Key(KeyEvent)`, both irreducible because
+//! `main.rs` genuinely owns the alt-screen lifecycle and the control
+//! channel.
+//!
+//! Keeping it narrow is enforced, not remembered: `unreachable_pub`
+//! (below) catches a `pub` item inside a `pub(crate)` module, which is
+//! the leak that made `App::theme`'s ratatui `Color` fields publicly
+//! readable while `Theme` itself stayed unnameable.
 
 // `unwrap_used` / `expect_used` are denied crate-wide (see
 // Cargo.toml). Test code is exempt: a panic in a test IS the failure
@@ -35,6 +51,13 @@
 // confirming clippy still errors — by the CI clippy job, not by a
 // test, since a test cannot observe what clippy did.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+// Catches the leak this narrowing was cleaning up: a `pub` item inside a
+// `pub(crate)` module, which is invisible in the API listing but still
+// widens it through any public signature that names it. `App::theme:
+// Arc<Theme>` was exactly that — `Theme` is `pub` in a `pub(crate)`
+// module, so its ratatui `Color` fields were publicly readable while the
+// type stayed unnameable. Grep does not find that class; the compiler does.
+#![warn(unreachable_pub)]
 
 pub mod app;
 pub mod audit;
@@ -55,7 +78,13 @@ pub(crate) mod terraform;
 // the sibling pgman repo can depend on the same code. Re-exported here
 // so existing `crate::font_probe::*` / `crate::overlay::*` paths (and
 // the `ebman::*` paths from the bin) keep working unchanged.
-pub use tui_common::font_probe;
+// Only the one function `main` calls, not the whole module. Re-exporting
+// `font_probe` wholesale put `AutoResolved` and the two `detect_*` probes
+// in ebman's public API to serve a single call site — and they are
+// tb-tui-common's types, so a major bump there broke ebman's API for no
+// consumer. Nothing inside this crate uses the module at all; the comment
+// above claiming `crate::font_probe::*` paths depend on it was stale.
+pub use tui_common::font_probe::resolve_icons_setting;
 pub(crate) use tui_common::overlay;
 pub(crate) mod demo_fixture;
 pub mod freeze;

@@ -974,7 +974,13 @@ fn every_registry_command_is_covered_by_some_test() {
     // the registry from source for the same reason the other guards do:
     // a list maintained by hand is a list that goes stale.
     let src = std::fs::read_to_string("src/commands.rs").expect("read commands.rs");
-    let start = src.find("pub const COMMANDS").expect("COMMANDS table");
+    // Match on `const COMMANDS`, not `pub const COMMANDS`. The API
+    // narrowing turned it into `pub(crate) const` and this guard broke —
+    // a drift guard that itself drifts on an unrelated edit is worse than
+    // none, because the failure looks like the thing it guards.
+    let start = src
+        .find("const COMMANDS")
+        .expect("COMMANDS table in src/commands.rs");
     let body = &src[start..src[start..].find("\n];").expect("table end") + start];
 
     // Entries are mostly multi-line — `cmd_with_aliases(` on one line

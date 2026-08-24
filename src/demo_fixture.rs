@@ -58,7 +58,7 @@ fn fixture_now() -> chrono::DateTime<chrono::Utc> {
 /// The synthetic fleet. `pub` (0.26) so `ebman mcp serve --demo` can
 /// serve it through the tool layer — the demo AwsClient is a
 /// fail-loudly stub, so demo data has to enter above the client.
-pub fn envs() -> Vec<Environment> {
+pub(crate) fn envs() -> Vec<Environment> {
     let now = fixture_now();
     let mk =
         |name: &str, tier: &str, status: &str, health: &str, version: &str, minutes_ago: i64| {
@@ -141,7 +141,7 @@ pub fn envs() -> Vec<Environment> {
 /// consumes this in demo mode so it renders without a live
 /// `list_events_for_env` round-trip. Once `:why` spawn-gating
 /// lands, that overlay will reuse the same accessor.
-pub fn events_for_env(env_name: &str) -> Vec<EbEvent> {
+pub(crate) fn events_for_env(env_name: &str) -> Vec<EbEvent> {
     events().into_iter().filter(|e| e.env == env_name).collect()
 }
 
@@ -162,7 +162,7 @@ pub fn events_for_env(env_name: &str) -> Vec<EbEvent> {
 /// real and stay the headline; the tell is in the specifics, never in
 /// narration (canon tone rule 2). Casual viewers read a triage
 /// session; lore-aware ones spot the loopback login.
-pub fn canned_ssm_session(instance_id: &str) -> String {
+pub(crate) fn canned_ssm_session(instance_id: &str) -> String {
     // Short session-id matching what `aws ssm start-session` prints.
     let session_id = format!("poly-ops-{}", &instance_id[2..10.min(instance_id.len())]);
     let mut lines = Vec::<String>::new();
@@ -205,7 +205,7 @@ pub fn canned_ssm_session(instance_id: &str) -> String {
 /// name prefix against the env name since the fixture-side alarms
 /// encode their owning env that way. Used by `spawn_detail_alarms`
 /// and `spawn_why_red_alarms` in demo mode.
-pub fn alarms_for_env(env_name: &str) -> Vec<CwAlarm> {
+pub(crate) fn alarms_for_env(env_name: &str) -> Vec<CwAlarm> {
     alarms()
         .into_iter()
         .filter(|a| a.name.starts_with(env_name))
@@ -217,7 +217,7 @@ pub fn alarms_for_env(env_name: &str) -> Vec<CwAlarm> {
 /// demo mode. Newest first, matching the live API's sort order; the
 /// labels line up with the fleet's `version_label` values so an
 /// operator scanning `:why` sees "what shipped last, on which env".
-pub fn deploys_for_app(app_name: &str) -> Vec<AppVersion> {
+pub(crate) fn deploys_for_app(app_name: &str) -> Vec<AppVersion> {
     if app_name != "poly" {
         return Vec::new();
     }
@@ -240,7 +240,7 @@ pub fn deploys_for_app(app_name: &str) -> Vec<AppVersion> {
 /// a main + DLQ stat block; non-Worker envs return defaults (no
 /// URLs, no stats). Used by `spawn_detail_queues` and
 /// `spawn_why_red_queues` in demo mode.
-pub fn worker_queues_for_env(env_name: &str) -> WorkerQueues {
+pub(crate) fn worker_queues_for_env(env_name: &str) -> WorkerQueues {
     match env_name {
         "poly-batch" => WorkerQueues {
             main_url: Some("https://sqs.us-east-1.amazonaws.com/123456789012/poly-batch".into()),
@@ -295,7 +295,7 @@ pub fn worker_queues_for_env(env_name: &str) -> WorkerQueues {
 /// AWS call. EC2-ID format (`i-` + 17 hex) matches the post-2017
 /// long-form IDs operators see in production. Envs not listed here
 /// return an empty Vec (Grey envs / envs with no instances yet).
-pub fn instances_for(env_name: &str) -> Vec<Instance> {
+pub(crate) fn instances_for(env_name: &str) -> Vec<Instance> {
     let now = fixture_now();
     let mk = |id: &str, health: &str, color: &str, az: &str, ago_min: i64| Instance {
         id: id.into(),
@@ -512,7 +512,7 @@ fn costs() -> HashMap<String, f64> {
 /// - `MeasureName=NetworkOut` on a scaling ASG so demo `lint` fires
 ///   EBL014 (and EBL017 fires via the absent managed-actions key) —
 ///   a demo lint that finds nothing demonstrates nothing.
-pub fn option_settings_for(_env_name: &str) -> Vec<(String, String, String)> {
+pub(crate) fn option_settings_for(_env_name: &str) -> Vec<(String, String, String)> {
     let o = |ns: &str, n: &str, v: &str| (ns.to_string(), n.to_string(), v.to_string());
     vec![
         o("aws:autoscaling:asg", "MinSize", "2"),
@@ -541,7 +541,7 @@ pub fn option_settings_for(_env_name: &str) -> Vec<(String, String, String)> {
     ]
 }
 
-pub fn install(app: &mut App) {
+pub(crate) fn install(app: &mut App) {
     app.environments = envs();
     app.view.invalidate();
     app.event_panel.events = events();

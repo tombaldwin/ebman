@@ -181,7 +181,7 @@ pub(crate) const DIVIDER_FILL_WIDTH: usize = 200;
 /// stays as low as possible (anchor to top when items fit, slide down only
 /// when the cursor passes the visible area). Used by the saved-configs
 /// overlay's scroll logic and tested directly.
-pub fn visible_window(cursor: usize, total: usize, budget: usize) -> (usize, usize) {
+pub(crate) fn visible_window(cursor: usize, total: usize, budget: usize) -> (usize, usize) {
     if total == 0 {
         return (0, 0);
     }

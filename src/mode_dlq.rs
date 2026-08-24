@@ -22,7 +22,7 @@ use crate::aws::QueueMessage;
 /// One in-flight DLQ session. Owned by `App.dlq` while the operator is
 /// in the queue viewer (entered from Detail's Queue tab via `d`).
 /// Cleared on `Esc` / `q` / context switch.
-pub struct DlqState {
+pub(crate) struct DlqState {
     pub env_name: String,
     pub main_queue_url: String,
     pub dlq_url: String,
@@ -51,7 +51,7 @@ pub struct DlqState {
 /// What subset of the loaded DLQ messages a replay should cover. Parsed
 /// from the replay prompt by [`parse_replay_spec`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReplaySpec {
+pub(crate) enum ReplaySpec {
     /// Every message currently loaded in the viewer.
     All,
     /// The N most-recently-sent loaded messages.
@@ -68,7 +68,7 @@ pub enum ReplaySpec {
 /// Returns `None` for anything unparseable or non-positive. Note "every
 /// loaded message" means every message *currently peeked into the viewer* —
 /// SQS has no cheap full-queue enumeration, so a deep DLQ replays a page.
-pub fn parse_replay_spec(input: &str) -> Option<ReplaySpec> {
+pub(crate) fn parse_replay_spec(input: &str) -> Option<ReplaySpec> {
     let s = input.trim().to_lowercase();
     if s.is_empty() || s == "all" {
         return Some(ReplaySpec::All);
@@ -110,7 +110,7 @@ pub fn parse_replay_spec(input: &str) -> Option<ReplaySpec> {
 /// indices to replay, oldest-sent first so the main queue receives them in
 /// roughly chronological order. Messages with no `sent_at` are excluded
 /// from a `Within` window (their age can't be confirmed).
-pub fn select_replay_indices(
+pub(crate) fn select_replay_indices(
     messages: &[QueueMessage],
     spec: &ReplaySpec,
     now: DateTime<Utc>,
@@ -239,7 +239,7 @@ mod tests {
 /// operations: resend (DLQ → main) and purge are both disabled in
 /// `Main` view because purging a working queue is too dangerous.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QueueView {
+pub(crate) enum QueueView {
     Dlq,
     Main,
 }

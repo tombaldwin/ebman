@@ -1087,7 +1087,7 @@ pub(crate) fn tier_icons(icons: IconStyle) -> (&'static str, &'static str) {
 /// `Yellow` for the warning band or any non-empty DLQ on a worker,
 /// `None` otherwise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StatusAlert {
+pub(crate) enum StatusAlert {
     None,
     Yellow,
     Red,
@@ -1101,7 +1101,7 @@ pub enum StatusAlert {
 /// `healthy == total` → `theme.health_green` (all good); `healthy >
 /// 0 && healthy < total` → `theme.health_yellow` (partial); `healthy
 /// == 0 && total > 0` → `theme.health_red` (everything's down).
-pub fn format_instance_counts(
+pub(crate) fn format_instance_counts(
     counts: Option<crate::aws::EnvInstanceCounts>,
     theme: &Theme,
 ) -> (String, Color) {
@@ -1123,7 +1123,7 @@ pub fn format_instance_counts(
 
 /// Pure classifier: what alert tier the `Ready` pill should render in
 /// for an env with the given health string + worker-DLQ depth.
-pub fn status_alert(health: &str, dlq: i64) -> StatusAlert {
+pub(crate) fn status_alert(health: &str, dlq: i64) -> StatusAlert {
     if health.eq_ignore_ascii_case("Red") || health.eq_ignore_ascii_case("Severe") {
         StatusAlert::Red
     } else if health.eq_ignore_ascii_case("Yellow")

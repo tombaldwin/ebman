@@ -5,7 +5,7 @@
 /// Render env vars as `KEY=VALUE` lines, aligned on the `=` for easy scan.
 /// Empty values render as `""` so operators can distinguish "explicitly
 /// empty" from "not set". Pure.
-pub fn format_env_vars(vars: &[(String, String)]) -> String {
+pub(crate) fn format_env_vars(vars: &[(String, String)]) -> String {
     if vars.is_empty() {
         return "(no env vars set)".into();
     }

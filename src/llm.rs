@@ -46,7 +46,7 @@ use crate::lint::Issue;
 /// [`crate::config::Config`] at CLI / TUI invocation time. None of
 /// the fields are `Option` — defaults are filled by [`Settings::from_config`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Settings {
+pub(crate) struct Settings {
     /// Master switch. Operators must explicitly opt in via
     /// `explain.enabled = true` — presence of an API key in
     /// the env var alone is not sufficient. Defaults to false.
@@ -93,7 +93,7 @@ impl Settings {
     /// `config::serialize` (which skips empty strings + `enabled =
     /// false` + `max_tokens = 0`) emits the config.toml lines only
     /// when the operator has actually configured something.
-    pub fn write_to_config(&self, cfg: &mut crate::config::Config) {
+    pub(crate) fn write_to_config(&self, cfg: &mut crate::config::Config) {
         let default = Self::default();
         cfg.explain_enabled = self.enabled;
         cfg.explain_provider = if self.provider == default.provider {
@@ -127,7 +127,7 @@ impl Settings {
     /// Defaults match the values documented above. The merge is
     /// total — every field is filled — so callers don't need to
     /// handle `Option`s downstream.
-    pub fn from_config(cfg: &crate::config::Config) -> Self {
+    pub(crate) fn from_config(cfg: &crate::config::Config) -> Self {
         Self {
             enabled: cfg.explain_enabled,
             provider: if cfg.explain_provider.is_empty() {
@@ -163,7 +163,7 @@ impl Settings {
 /// is deliberately structured (rule id + title + detail +
 /// suggestion + fields) — same shape the lint engine emits. Pure
 /// so we can unit-test the wording without an HTTP roundtrip.
-pub fn build_prompt(issue: &Issue) -> String {
+pub(crate) fn build_prompt(issue: &Issue) -> String {
     let mut p = String::new();
     p.push_str("You are helping an AWS Elastic Beanstalk operator understand and remediate a ");
     p.push_str("diagnostic issue. Explain in 4-8 sentences what the issue means, why it matters ");
@@ -204,7 +204,7 @@ pub fn build_prompt(issue: &Issue) -> String {
 /// same rule with the same `fields` (e.g. EBL005 single-instance on
 /// `dev-a` and `dev-b`) would otherwise share a cache entry and
 /// the first env's personalised advice would leak to the second.
-pub fn cache_key(issue: &Issue) -> String {
+pub(crate) fn cache_key(issue: &Issue) -> String {
     let mut hasher = sha2::Sha256::new();
     hasher.update(issue.rule_id.as_bytes());
     hasher.update(b"\0");
@@ -231,7 +231,7 @@ pub fn cache_key(issue: &Issue) -> String {
 
 /// Filesystem path the cache entry for `issue` lives at. Caller
 /// is responsible for `create_dir_all` of the parent.
-pub fn cache_path(issue: &Issue) -> std::path::PathBuf {
+pub(crate) fn cache_path(issue: &Issue) -> std::path::PathBuf {
     let mut p = crate::util::cache_dir();
     p.push("explain");
     p.push(format!("{}-{}.txt", issue.rule_id, cache_key(issue)));
@@ -242,13 +242,13 @@ pub fn cache_path(issue: &Issue) -> std::path::PathBuf {
 /// the file doesn't exist or can't be read; ignores I/O errors
 /// rather than failing the explain call (the cache is an
 /// optimisation, not a source of truth).
-pub fn read_cache(issue: &Issue) -> Option<String> {
+pub(crate) fn read_cache(issue: &Issue) -> Option<String> {
     std::fs::read_to_string(cache_path(issue)).ok()
 }
 
 /// Write a response to the cache. Errors are swallowed — a failed
 /// write shouldn't prevent the operator seeing their explanation.
-pub fn write_cache(issue: &Issue, body: &str) {
+pub(crate) fn write_cache(issue: &Issue, body: &str) {
     let path = cache_path(issue);
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -259,7 +259,7 @@ pub fn write_cache(issue: &Issue, body: &str) {
 /// Dispatch an explain request to the configured provider.
 /// Returns the raw response text on success, an `eyre`-shaped
 /// error on transport / parse / consent failure.
-pub async fn dispatch(settings: &Settings, prompt: &str) -> Result<String> {
+pub(crate) async fn dispatch(settings: &Settings, prompt: &str) -> Result<String> {
     if !settings.enabled {
         // Surface the right next-step depending on provider. For
         // Anthropic the API-key env var matters; for Ollama there's

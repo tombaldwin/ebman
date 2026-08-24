@@ -11,7 +11,7 @@ use super::*;
 /// account (or the management account itself). Sourced from
 /// `organizations:ListAccounts`.
 #[derive(Clone, Debug)]
-pub struct OrgAccount {
+pub(crate) struct OrgAccount {
     /// 12-digit account ID.
     pub id: String,
     /// Friendly name set when the account joined the org.
@@ -31,7 +31,7 @@ impl AwsClient {
     /// Surfaces the API's `AccessDenied` cleanly so the `:accounts`
     /// overlay can render a "no org access" hint rather than an opaque
     /// stack trace.
-    pub async fn list_org_accounts(&self) -> Result<Vec<OrgAccount>> {
+    pub(crate) async fn list_org_accounts(&self) -> Result<Vec<OrgAccount>> {
         let this = self;
         // `SCAN_PAGES`, not the default runaway guard: ListAccounts
         // caps `MaxResults` at 20, so `MAX_PAGES` put a hard 2,000-

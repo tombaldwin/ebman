@@ -99,7 +99,7 @@ impl App {
 
     /// Forward a key event to the running shell's PTY. Called only when
     /// `Mode::Shell` is active. F12 is consumed locally as the detach key.
-    pub fn handle_shell_key(&mut self, key: KeyEvent) {
+    pub(crate) fn handle_shell_key(&mut self, key: KeyEvent) {
         // F12 detaches without killing the subprocess. Demo sessions
         // (no real PTY behind them) also accept Esc as a detach — VHS
         // can't emit F12 reliably, and there's no subprocess to
@@ -129,7 +129,7 @@ impl App {
     /// Tear down a finished shell session: the subprocess has exited, the
     /// reader thread returned. Surfaces a status message and routes the
     /// user back to where they came from.
-    pub fn close_shell_session(&mut self) {
+    pub(crate) fn close_shell_session(&mut self) {
         if let Some(mut s) = self.current_shell.take() {
             s.kill();
             self.status_message = Some(format!("{} ended", s.label));

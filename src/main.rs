@@ -14,7 +14,7 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 use tracing_subscriber::{layer::SubscriberExt, reload, util::SubscriberInitExt, EnvFilter};
 
-use ebman::{app::App, config, control, font_probe, splash, util, LogReloadHandle, Tui};
+use ebman::{app::App, config, control, splash, util, LogReloadHandle, Tui};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -135,11 +135,11 @@ async fn main() -> Result<()> {
     // Resolve `icons = "auto"` *before* we enter the alt-screen so the probe
     // glyph never reaches the user's scrollback. Any non-auto value is
     // passed through untouched.
-    cfg.icons = font_probe::resolve_icons_setting(&cfg.icons);
+    cfg.set_icons(ebman::resolve_icons_setting(cfg.icons()));
     // Capture the resolved icons setting before `cfg` is consumed by
     // `App::new` — `draw_splash` needs it to pick between the plain-text
     // tagline and the Powerline rounded-cap pill variant.
-    let splash_icons = cfg.icons.clone();
+    let splash_icons = cfg.icons().to_string();
     // RAII: whatever happens between here and the end of `main`
     // — including the `?` paths in the splash loop below — the
     // terminal is restored.
@@ -195,8 +195,8 @@ async fn main() -> Result<()> {
             }
         }
     };
-    app_inst.read_only = read_only;
-    app_inst.log_reload = Some(log_handle);
+    app_inst.set_read_only(read_only);
+    app_inst.set_log_reload(log_handle);
 
     // Optional control socket. Spawn the listener *after* the splash so the
     // socket is guaranteed to exist by the time the user can issue commands.
@@ -234,7 +234,7 @@ async fn main() -> Result<()> {
     // reused by the new process. Done AFTER `leave_tui` so the old TUI
     // state (raw mode, alt-screen, mouse capture) is fully torn down
     // before the new process sets it back up.
-    if result.is_ok() && app_inst.reload_requested {
+    if result.is_ok() && app_inst.reload_requested() {
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;

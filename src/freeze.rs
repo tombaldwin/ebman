@@ -16,7 +16,7 @@
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FreezeMarker {
+pub(crate) struct FreezeMarker {
     pub pid: u32,
     pub reason: String,
     /// True when set via `:incident START` (the refusal remedy is
@@ -27,7 +27,7 @@ pub struct FreezeMarker {
 
 impl FreezeMarker {
     /// The operator-facing remedy string for a refusal message.
-    pub fn remedy(&self) -> &'static str {
+    pub(crate) fn remedy(&self) -> &'static str {
         if self.incident {
             ":incident END"
         } else {
@@ -44,7 +44,7 @@ fn marker_path() -> PathBuf {
 /// when persistence failed — the caller MUST surface that, because a
 /// silently-absent marker fails OPEN (agent + CLI writes are NOT
 /// blocked) while the operator believes the fleet is frozen.
-pub fn write_marker(reason: &str, incident: bool) -> std::io::Result<()> {
+pub(crate) fn write_marker(reason: &str, incident: bool) -> std::io::Result<()> {
     write_marker_at(&marker_path(), std::process::id(), reason, incident)
 }
 
@@ -86,7 +86,7 @@ fn clear_if_pid_at(path: &Path, own_pid: u32) {
 /// and once in the MCP write gate — with the same body and different
 /// framing, so the two surfaces disagreed in wording about the same
 /// condition and either could drift on the next edit.
-pub fn refusal_message(marker: &FreezeMarker) -> String {
+pub(crate) fn refusal_message(marker: &FreezeMarker) -> String {
     let reason = if marker.reason.is_empty() {
         "no reason given"
     } else {
@@ -102,7 +102,7 @@ pub fn refusal_message(marker: &FreezeMarker) -> String {
 /// The active freeze, if any: marker exists AND its owning pid is
 /// alive. A dead-pid marker is stale (crashed TUI) — ignored and
 /// removed so it can't confuse later readers.
-pub fn read_active() -> Option<FreezeMarker> {
+pub(crate) fn read_active() -> Option<FreezeMarker> {
     read_active_with(&marker_path(), pid_alive)
 }
 
@@ -132,7 +132,7 @@ fn parse_file(path: &Path) -> Option<FreezeMarker> {
 /// required keys yield `None` (a corrupt marker never blocks writes —
 /// it also never *enables* enforcement, which the writer's warn line
 /// covers).
-pub fn parse_marker(text: &str) -> Option<FreezeMarker> {
+pub(crate) fn parse_marker(text: &str) -> Option<FreezeMarker> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
     Some(FreezeMarker {
         pid: v.get("pid")?.as_u64()? as u32,

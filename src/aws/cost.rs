@@ -33,7 +33,7 @@ pub(super) fn cost_explorer_client(base: &SdkConfig) -> CostExplorerClient {
 /// rendered as unknown cost, indistinguishable from an untagged one,
 /// for a day.
 #[derive(Clone, Debug, Default)]
-pub struct EnvCosts {
+pub(crate) struct EnvCosts {
     pub rows: Vec<EnvCost>,
     pub truncated: bool,
 }
@@ -42,7 +42,7 @@ pub struct EnvCosts {
 /// across the trailing window. Whole + fractional dollars; the SDK
 /// returns strings and we parse at the boundary.
 #[derive(Clone, Debug)]
-pub struct EnvCost {
+pub(crate) struct EnvCost {
     pub env_name: String,
     /// Monthly USD spend (summed across the trailing-30d window).
     pub cost_usd: f64,
@@ -66,7 +66,7 @@ impl AwsClient {
     /// AWS adds to every env-owned resource by default). Envs whose
     /// resources have been re-tagged or never carried the tag won't
     /// show up — surface as zero / unknown rather than guessing.
-    pub async fn fetch_env_costs(&self) -> Result<EnvCosts> {
+    pub(crate) async fn fetch_env_costs(&self) -> Result<EnvCosts> {
         use aws_sdk_costexplorer::types::{DateInterval, GroupDefinition, GroupDefinitionType};
 
         // Trailing window — end is "today" (exclusive in Cost Explorer)

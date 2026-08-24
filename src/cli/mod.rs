@@ -330,9 +330,24 @@ mod write_gate_input_guard {
                 }
             }
         };
+        // A top-level fn, whatever its visibility. The original test was
+        // `starts_with("pub ")`, which is FALSE for `pub(crate) fn` — so
+        // narrowing one function's visibility would have made this guard
+        // merge its body into the previous function's and stop seeing the
+        // thing it exists to see, silently and while still passing.
+        fn is_top_level_fn(line: &str) -> bool {
+            if line.starts_with(char::is_whitespace) {
+                return false;
+            }
+            let rest = match line.find(") ") {
+                // strip `pub(crate) ` / `pub(super) ` / `pub(in path) `
+                Some(i) if line.starts_with("pub(") => &line[i + 2..],
+                _ => line.strip_prefix("pub ").unwrap_or(line),
+            };
+            rest.starts_with("fn ") || rest.starts_with("async fn ")
+        }
         for line in src.lines() {
-            if line.starts_with("fn ") || line.starts_with("async fn ") || line.starts_with("pub ")
-            {
+            if is_top_level_fn(line) {
                 check(&current_fn, &body, &mut offenders);
                 current_fn = line
                     .split("fn ")

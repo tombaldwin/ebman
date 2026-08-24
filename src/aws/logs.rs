@@ -7,7 +7,7 @@ use super::*;
 /// stream it came from + the raw message. `:logs-tail` builds these from
 /// FilterLogEvents and renders them in chronological order.
 #[derive(Clone, Debug)]
-pub struct LogEvent {
+pub(crate) struct LogEvent {
     pub timestamp_ms: i64,
     pub stream: String,
     pub message: String,
@@ -17,7 +17,7 @@ pub struct LogEvent {
 /// a (field-name, value) pair — Insights returns fields in query-order,
 /// so the Vec preserves that order rather than a HashMap.
 #[derive(Clone, Debug)]
-pub struct InsightsRow {
+pub(crate) struct InsightsRow {
     pub fields: Vec<(String, String)>,
 }
 
@@ -26,7 +26,7 @@ pub struct InsightsRow {
 /// AWS bills against; surfacing it in the overlay footer makes the cost
 /// of broad queries visible.
 #[derive(Clone, Debug)]
-pub struct InsightsResults {
+pub(crate) struct InsightsResults {
     pub rows: Vec<InsightsRow>,
     pub records_scanned: i64,
     pub records_matched: i64,
@@ -43,7 +43,7 @@ pub struct InsightsResults {
 /// same `m` / `h` / `d` units and the same overflow guards, plus `s`
 /// (seconds), which makes sense for a log window and not for a DLQ
 /// replay.
-pub fn parse_window_ms(input: &str) -> Option<i64> {
+pub(crate) fn parse_window_ms(input: &str) -> Option<i64> {
     let s = input.trim().to_lowercase();
     if s.is_empty() {
         return None;
@@ -89,7 +89,7 @@ pub fn parse_window_ms(input: &str) -> Option<i64> {
 /// like a table. Long values are truncated to keep the overlay
 /// readable. Empty input renders as a "no rows matched" stub plus the
 /// scan stats — same shape so the overlay never collapses.
-pub fn format_insights_results(
+pub(crate) fn format_insights_results(
     results: &InsightsResults,
     query: &str,
     log_groups: &[String],
@@ -199,7 +199,7 @@ impl AwsClient {
     /// them under the prefix `/aws/elasticbeanstalk/{env}/...` so we
     /// `DescribeLogGroups` with that prefix. Returns sorted group names;
     /// empty if `:logs-stream on` hasn't been issued for the env.
-    pub async fn discover_env_log_groups(&self, env_name: &str) -> Result<Vec<String>> {
+    pub(crate) async fn discover_env_log_groups(&self, env_name: &str) -> Result<Vec<String>> {
         let prefix = format!("/aws/elasticbeanstalk/{env_name}/");
         let (this, pfx) = (self, prefix.as_str());
         let raw = super::paginate("DescribeLogGroups", move |token| async move {
@@ -228,7 +228,7 @@ impl AwsClient {
     /// log group works (one stream per instance). The returned tuple is
     /// `(events, next_since_ms)` where `next_since_ms` is the highest
     /// timestamp + 1 we saw, suitable to pass back on the next call.
-    pub async fn fetch_recent_log_events(
+    pub(crate) async fn fetch_recent_log_events(
         &self,
         log_group: &str,
         since_ms: i64,
@@ -351,7 +351,7 @@ impl AwsClient {
     /// Scheduled/Running, and returns the final result rows + scan stats.
     /// The terminal Failed / Cancelled / Timeout states surface as a clean
     /// error rather than empty rows so the caller can show the right toast.
-    pub async fn run_insights_query(
+    pub(crate) async fn run_insights_query(
         &self,
         log_groups: &[String],
         start_ms: i64,

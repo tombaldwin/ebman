@@ -4,7 +4,7 @@
 use super::*;
 
 #[derive(Clone, Debug)]
-pub struct CwAlarm {
+pub(crate) struct CwAlarm {
     pub name: String,
     pub state: String, // OK / ALARM / INSUFFICIENT_DATA
     pub state_reason: String,
@@ -19,14 +19,14 @@ pub struct CwAlarm {
 /// (the alarm fired its SNS / autoscaling action). `summary` is the
 /// short human-readable line CloudWatch emits per item.
 #[derive(Clone, Debug, PartialEq)]
-pub struct AlarmHistoryEntry {
+pub(crate) struct AlarmHistoryEntry {
     pub at: Option<DateTime<Utc>>,
     pub kind: String,
     pub summary: String,
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct MetricSeries {
+pub(crate) struct MetricSeries {
     pub id: String,    // stable, e.g. "health"
     pub label: String, // CloudWatch label
     pub points: Vec<(DateTime<Utc>, f64)>,
@@ -35,7 +35,7 @@ pub struct MetricSeries {
 /// One row passed to `fetch_custom_env_metrics`. The shape is wide enough
 /// that clippy complains if used inline (`type_complexity` lint), so this
 /// alias keeps call-sites tidy.
-pub type CustomMetricQuery = (String, String, String, String, Vec<(String, String)>);
+pub(crate) type CustomMetricQuery = (String, String, String, String, Vec<(String, String)>);
 
 /// `chrono` → the CloudWatch SDK's own timestamp type. Second
 /// granularity is all the metric APIs accept.
@@ -46,7 +46,7 @@ pub(super) fn to_smithy(d: DateTime<Utc>) -> aws_sdk_cloudwatch::primitives::Dat
 /// The CloudWatch dimension that names an Elastic Beanstalk environment.
 /// Both halves of the alarm story use it: `put_env_metric_alarm` writes
 /// it, `list_alarms_for_env` matches on it.
-pub const ENV_DIMENSION: &str = "EnvironmentName";
+pub(crate) const ENV_DIMENSION: &str = "EnvironmentName";
 
 impl AwsClient {
     /// Every metric alarm dimensioned `EnvironmentName=<env>`.
@@ -70,7 +70,7 @@ impl AwsClient {
     /// environment — normally just `EnvironmentName`, widened via the
     /// `alarm_dimensions` config key for operators whose own alarms
     /// spell it differently.
-    pub async fn list_alarms_for_env(
+    pub(crate) async fn list_alarms_for_env(
         &self,
         env_name: &str,
         dimension_names: &[String],
@@ -124,7 +124,7 @@ impl AwsClient {
     /// the alarm will be created with no datapoints. No alarm actions are
     /// attached; operators can wire SNS via the console or CLI later.
     #[allow(clippy::too_many_arguments)]
-    pub async fn put_env_metric_alarm(
+    pub(crate) async fn put_env_metric_alarm(
         &self,
         alarm_name: &str,
         env_name: &str,
@@ -184,7 +184,7 @@ impl AwsClient {
     /// the page size — the SDK enforces a server-side max of 100, so
     /// callers wanting more would need to follow the `next_token`
     /// (deferred until anyone needs it).
-    pub async fn fetch_alarm_history(
+    pub(crate) async fn fetch_alarm_history(
         &self,
         alarm_name: &str,
         max_records: i32,
@@ -213,7 +213,7 @@ impl AwsClient {
     }
 
     /// Delete one or more CloudWatch alarms by name.
-    pub async fn delete_alarms(&self, names: &[String]) -> Result<()> {
+    pub(crate) async fn delete_alarms(&self, names: &[String]) -> Result<()> {
         if names.is_empty() {
             return Ok(());
         }
@@ -227,7 +227,7 @@ impl AwsClient {
 
     /// Pull a handful of useful EB metrics for one env, from CloudWatch.
     /// Returns an empty Vec for queries the API filtered out.
-    pub async fn fetch_env_metrics(
+    pub(crate) async fn fetch_env_metrics(
         &self,
         env_name: &str,
         range_secs: i64,
@@ -316,7 +316,7 @@ impl AwsClient {
     /// `EnvironmentName=env_name` dimension (the common case for
     /// `AWS/ElasticBeanstalk` metrics). Returns the series in the same
     /// order as `specs` so operators see their additions in add-order.
-    pub async fn fetch_custom_env_metrics(
+    pub(crate) async fn fetch_custom_env_metrics(
         &self,
         env_name: &str,
         range_secs: i64,

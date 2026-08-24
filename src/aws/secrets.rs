@@ -8,7 +8,7 @@ use super::*;
 /// because every `GetSecretValue` call is a separate audit-loggable
 /// AWS event the operator should opt into explicitly.
 #[derive(Clone, Debug)]
-pub struct SecretSummary {
+pub(crate) struct SecretSummary {
     pub name: String,
     pub arn: String,
     pub description: Option<String>,
@@ -26,7 +26,10 @@ impl AwsClient {
     ///
     /// Paginates internally. Returns the metadata rows; no
     /// secret *values* are fetched here — see [`AwsClient::fetch_secret_value`].
-    pub async fn list_secrets(&self, name_filter: Option<&str>) -> Result<Vec<SecretSummary>> {
+    pub(crate) async fn list_secrets(
+        &self,
+        name_filter: Option<&str>,
+    ) -> Result<Vec<SecretSummary>> {
         let this = self;
         let page =
             super::paginate_capped("ListSecrets", super::SCAN_PAGES, move |token| async move {
@@ -82,7 +85,7 @@ impl AwsClient {
     /// Audit-loggable on the AWS side (CloudTrail logs every
     /// GetSecretValue); ebman additionally writes its own audit
     /// line via the caller path.
-    pub async fn fetch_secret_value(&self, secret_id: &str) -> Result<String> {
+    pub(crate) async fn fetch_secret_value(&self, secret_id: &str) -> Result<String> {
         let resp = self
             .secrets()
             .get_secret_value()

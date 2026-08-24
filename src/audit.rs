@@ -48,7 +48,7 @@
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AuditEntry {
+pub(crate) struct AuditEntry {
     pub when: String,
     pub account: Option<String>,
     pub profile: Option<String>,
@@ -67,7 +67,7 @@ pub struct AuditEntry {
 
 /// Parse one audit-log line. Returns `None` for blank lines or lines
 /// without an RFC3339-shaped timestamp as the first tab field.
-pub fn parse_audit_line(line: &str) -> Option<AuditEntry> {
+pub(crate) fn parse_audit_line(line: &str) -> Option<AuditEntry> {
     let line = line.trim_end_matches('\n').trim_end_matches('\r');
     if line.is_empty() {
         return None;
@@ -132,7 +132,7 @@ pub fn parse_audit_line(line: &str) -> Option<AuditEntry> {
 /// boundary or end-of-string). Naked spaces inside an unquoted value
 /// are preserved — e.g. `target=env-a ↔ env-b stage=dispatched`
 /// yields `target` = `"env-a ↔ env-b"` and `stage` = `"dispatched"`.
-pub fn parse_kv_pairs(text: &str) -> Vec<(String, String)> {
+pub(crate) fn parse_kv_pairs(text: &str) -> Vec<(String, String)> {
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
     let mut out: Vec<(String, String)> = Vec::new();
@@ -214,7 +214,7 @@ pub fn parse_kv_pairs(text: &str) -> Vec<(String, String)> {
 /// [`append_lint_fix`] (and the typed wrappers in `app.rs` that
 /// route to them) so the escape rules stay consistent across every
 /// writer.
-pub fn escape_value(s: &str) -> String {
+pub(crate) fn escape_value(s: &str) -> String {
     s.chars()
         .map(|c| match c {
             '"' => '\'',
@@ -227,7 +227,7 @@ pub fn escape_value(s: &str) -> String {
 /// Filter spec applied to a parsed audit log. Returned subset is sorted
 /// in the same order as the input.
 #[derive(Debug, Default, Clone)]
-pub struct AuditFilter<'a> {
+pub(crate) struct AuditFilter<'a> {
     pub since: Option<chrono::DateTime<chrono::Utc>>,
     pub env: Option<&'a str>,
     pub rule: Option<&'a str>,
@@ -235,7 +235,7 @@ pub struct AuditFilter<'a> {
 }
 
 impl<'a> AuditFilter<'a> {
-    pub fn matches(&self, entry: &AuditEntry) -> bool {
+    pub(crate) fn matches(&self, entry: &AuditEntry) -> bool {
         if let Some(since) = self.since {
             if let Ok(when) = chrono::DateTime::parse_from_rfc3339(&entry.when) {
                 if when.with_timezone(&chrono::Utc) < since {
@@ -268,7 +268,7 @@ impl<'a> AuditFilter<'a> {
 /// ACTION / TARGET / OUTCOME). Empty input yields a one-line `(no
 /// entries)` so the operator sees the empty result didn't silently
 /// match nothing.
-pub fn render_audit_entries_text(entries: &[AuditEntry]) -> String {
+pub(crate) fn render_audit_entries_text(entries: &[AuditEntry]) -> String {
     if entries.is_empty() {
         return "(no audit entries)\n".to_string();
     }
@@ -331,7 +331,7 @@ pub fn render_audit_entries_text(entries: &[AuditEntry]) -> String {
 /// Render audit entries as JSON Lines (one JSON object per line). Hand-
 /// rolled so we don't pull in `serde_json` for this one path; values
 /// are escaped per the JSON string-escape spec.
-pub fn render_audit_entries_json(entries: &[AuditEntry]) -> String {
+pub(crate) fn render_audit_entries_json(entries: &[AuditEntry]) -> String {
     let mut out = String::new();
     for e in entries {
         let mut first = true;
@@ -396,7 +396,7 @@ static NOTIFY_WEBHOOK_URL: std::sync::OnceLock<Option<String>> = std::sync::Once
 /// Configure the outbound webhook URL exactly once per process. Idempotent:
 /// subsequent calls are no-ops (the first call wins, matching the previous
 /// behaviour when this was an `OnceLock::set` site in `App::new`).
-pub fn set_notify_webhook(url: Option<String>) {
+pub(crate) fn set_notify_webhook(url: Option<String>) {
     let _ = NOTIFY_WEBHOOK_URL.set(url);
 }
 
@@ -422,7 +422,7 @@ pub fn init_from_config_disk() {
 /// newline can't split the line on disk. Use this for additional
 /// context the simple `action/target` shape doesn't carry (e.g.
 /// `version=build-900`, `summary="MinSize=2 MaxSize=4"`).
-pub fn append_action_dispatched(
+pub(crate) fn append_action_dispatched(
     account: Option<&str>,
     profile: Option<&str>,
     region: &str,
@@ -448,7 +448,7 @@ pub fn append_action_dispatched(
 /// option-settings update, `label=...` for a deploy, `cmd="..."`
 /// for an SSM RunCommand. Emitted between `target=` and `outcome=`
 /// so the wire shape stays stable.
-pub fn append_action_completed(
+pub(crate) fn append_action_completed(
     account: Option<&str>,
     profile: Option<&str>,
     region: &str,
@@ -506,7 +506,7 @@ fn append_extras(detail: &mut String, extras: &[(&str, &str)]) {
 /// (and emit `outcome=err` on completion). `rollout_id` correlates
 /// every per-region line within a single `ebman action rollout`
 /// invocation.
-pub fn append_rollout(
+pub(crate) fn append_rollout(
     rollout_id: &str,
     region: &str,
     env: &str,
@@ -534,7 +534,7 @@ pub fn append_rollout(
 /// --fix` dispatch. `rule_id` correlates back to which lint rule
 /// triggered the change so `ebman audit --rule EBL001` shows per-
 /// rule history.
-pub fn append_lint_fix(
+pub(crate) fn append_lint_fix(
     region: &str,
     env: &str,
     rule_id: &str,
@@ -571,7 +571,7 @@ pub fn append_lint_fix(
 /// view mid-run). `reason` is quoted via [`escape_value`]. Same wire
 /// shape the batch paths used to hand-roll; lifted here so the format
 /// lives in one place alongside the other typed audit helpers.
-pub fn append_action_skipped(
+pub(crate) fn append_action_skipped(
     account: Option<&str>,
     profile: Option<&str>,
     region: &str,
@@ -590,7 +590,7 @@ pub fn append_action_skipped(
 /// Append a `stage=undone` line — an operator-driven undo of a prior
 /// action. No outcome (the undo dispatch logs its own completion via the
 /// normal action path); this records that the undo was initiated.
-pub fn append_action_undone(
+pub(crate) fn append_action_undone(
     account: Option<&str>,
     profile: Option<&str>,
     region: &str,
@@ -610,7 +610,7 @@ pub fn append_action_undone(
 /// `dlq-purge` / `dlq-replay`); `extras` carry per-op context
 /// (`msg_id`, `queue`, `count`) and are encoded like every other typed
 /// helper. Centralizes the format the four DLQ spawn sites hand-rolled.
-pub fn append_dlq_op(
+pub(crate) fn append_dlq_op(
     account: Option<&str>,
     profile: Option<&str>,
     region: &str,
@@ -635,7 +635,7 @@ fn dlq_op_detail(op: &str, env: &str, extras: &[(&str, &str)]) -> String {
 /// gets the rendered audit line so the body is
 /// Slack-incoming-webhook-compatible out of the box; the other
 /// keys give consumers structured fields for routing / filtering.
-pub fn build_webhook_body(
+pub(crate) fn build_webhook_body(
     account: Option<&str>,
     profile: Option<&str>,
     region: &str,
@@ -667,7 +667,7 @@ pub fn build_webhook_body(
 /// don't fit. The `detail` string is appended verbatim after the
 /// `account/profile/region` opener — caller is responsible for the
 /// `key=value` shape + escaping.
-pub fn append_raw(account: Option<&str>, profile: Option<&str>, region: &str, detail: &str) {
+pub(crate) fn append_raw(account: Option<&str>, profile: Option<&str>, region: &str, detail: &str) {
     write_audit_line(account, profile, region, detail);
 }
 
