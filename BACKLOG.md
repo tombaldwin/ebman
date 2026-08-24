@@ -1516,10 +1516,19 @@ split wouldn't touch. Shipped from it:
 **Deferred, because they are breaking changes** and the queued fixes
 should ship as a patch first:
 
-- [x] **Narrow the public API.** DONE 2026-08-24 (0.34.0) — **2430 items
-  -> 126**, and the set of public items exposing a bumped dependency's
-  type from 38 -> 2. The estimate below said 500 items; `cargo
-  public-api` measured 2430, because a public module re-exports
+- [x] **Narrow the public API.** DONE 2026-08-24 (0.34.0) — **4565 items
+  -> 212** (`cargo public-api`, no flags; 67 omitting auto-derived and
+  blanket impls), and the set of public items exposing a bumped
+  dependency's type from 38 -> 2.
+
+  *Numbers corrected at the 0.34.0 release panel:* this first recorded
+  "2430 -> 126", which was a filtered count from an ad-hoc grep of mine
+  and reproduces only if you know the filter. A flagship figure has to
+  survive someone running the tool. The reduction is the same either
+  way; the citation was not.
+
+  The estimate below said 500 items; the tool measured 4565, because a
+  public module re-exports
   everything `pub` inside it and `pub mod app` alone held 1874.
   Narrowing *modules* was never going to do it — narrowing items did.
   Three fields with exactly one external reader became named accessors.

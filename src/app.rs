@@ -9,12 +9,12 @@
 //! Three invariants hold across every module listed below, and none of them
 //! are enforced by the compiler:
 //!
-//! 1. **Mutating view state means rebuilding the view.** [`ViewState`] now
+//! 1. **Mutating view state means rebuilding the view.** `ViewState` now
 //!    enforces most of this: its derived slices are private, changing
 //!    `filter` or `grouped` marks them stale, and reading a stale one is a
 //!    debug assertion. The inputs it does not own — `environments`,
 //!    `aliases`, `latest_stacks`, the theme palette — still need an explicit
-//!    `view.invalidate()` followed by [`App::rebuild_view`].
+//!    `view.invalidate()` followed by `App::rebuild_view`.
 //! 2. **Async results check `generation`.** A spawned task captures the
 //!    generation it launched at; if `App` has since switched region, profile
 //!    or account, the handler drops the result instead of applying it to the
@@ -23,7 +23,7 @@
 //!    precede the unguarded `KeyCode::Char(c)` arm for the same character.
 //!    The compiler does not warn when the unguarded one shadows it.
 //!
-//! Writes have a single choke point: [`App::deny_write`] in `safety`. Every
+//! Writes have a single choke point: `App::deny_write` in `safety`. Every
 //! mutating path — TUI, CLI and MCP — passes through it.
 
 use std::{
@@ -171,7 +171,7 @@ pub struct App {
     pub(crate) table_area: Rect,
     pub(crate) mode: Mode,
     /// Filter / sort / grouping and the cached projection of
-    /// `environments` that `ui` actually draws. See [`ViewState`] — its
+    /// `environments` that `ui` actually draws. See `ViewState` — its
     /// derived slices are private precisely so they cannot go stale
     /// unnoticed.
     pub(crate) view: ViewState,

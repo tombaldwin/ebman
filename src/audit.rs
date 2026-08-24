@@ -3,19 +3,19 @@
 //! Writers and parser are co-located so the line format has a single
 //! source of truth. The typed writer APIs cover every shape:
 //!
-//! - [`append_action_dispatched`] / [`append_action_completed`] —
+//! - `append_action_dispatched` / `append_action_completed` —
 //!   normal TUI action lines (rebuild / restart / deploy / etc.).
-//! - [`append_action_skipped`] / [`append_action_undone`] — one-shot
+//! - `append_action_skipped` / `append_action_undone` — one-shot
 //!   action lines with no completion pair (a batch member skipped
 //!   because its env left the view; an operator-driven undo).
-//! - [`append_rollout`] — cross-region rollout lines tagged with a
+//! - `append_rollout` — cross-region rollout lines tagged with a
 //!   per-run `rollout_id` for post-mortem correlation.
-//! - [`append_lint_fix`] — `ebman lint --fix` dispatches, tagged
+//! - `append_lint_fix` — `ebman lint --fix` dispatches, tagged
 //!   with the originating `rule_id`.
-//! - [`append_dlq_op`] — one-shot DLQ ops (delete / resend / purge /
+//! - `append_dlq_op` — one-shot DLQ ops (delete / resend / purge /
 //!   replay), recorded at fire time.
 //!
-//! Plus [`append_raw`] — the lower-level "I already have a detail
+//! Plus `append_raw` — the lower-level "I already have a detail
 //! string" entry point. As of 0.24 the hand-rolled `append_raw` action
 //! sites have all moved to the typed siblings above; the only remaining
 //! caller is the passive `stage=event kind=red_transition` health-log
@@ -37,11 +37,11 @@
 //! The parser handles all three shapes uniformly: split on tab, then
 //! tokenize every chunk as `key=value` pairs (with quoted-value
 //! support). Known keys get promoted into typed fields on
-//! [`AuditEntry`]; unknown keys land in `extras` so we don't drop
+//! `AuditEntry`; unknown keys land in `extras` so we don't drop
 //! information.
 //!
 //! [`ebman audit`](../bin/ebman/cli/audit/index.html) — the CLI — uses
-//! [`parse_audit_line`] + [`AuditFilter`] + the render helpers below
+//! `parse_audit_line` + `AuditFilter` + the render helpers below
 //! to surface entries for scripting / Slack-bot routing / on-call
 //! dashboards / CI gating.
 
@@ -210,8 +210,8 @@ pub(crate) fn parse_kv_pairs(text: &str) -> Vec<(String, String)> {
 ///   one audit entry into two on disk (the parser reads line-by-line,
 ///   so an embedded newline corrupts the next entry's RFC3339 prefix).
 ///
-/// Used by [`append_action_completed`], [`append_rollout`], and
-/// [`append_lint_fix`] (and the typed wrappers in `app.rs` that
+/// Used by `append_action_completed`, `append_rollout`, and
+/// `append_lint_fix` (and the typed wrappers in `app.rs` that
 /// route to them) so the escape rules stay consistent across every
 /// writer.
 pub(crate) fn escape_value(s: &str) -> String {
@@ -443,7 +443,7 @@ pub(crate) fn append_action_dispatched(
 /// error string goes through [`escape_value`] so a multi-line AWS
 /// error doesn't split the entry across two log lines.
 ///
-/// `extras` (same shape as in [`append_action_dispatched`]) lets
+/// `extras` (same shape as in `append_action_dispatched`) lets
 /// callers attach per-action context — e.g. `summary="..."` for an
 /// option-settings update, `label=...` for a deploy, `cmd="..."`
 /// for an SSM RunCommand. Emitted between `target=` and `outcome=`
@@ -621,7 +621,7 @@ pub(crate) fn append_dlq_op(
     write_audit_line(account, profile, region, &dlq_op_detail(op, env, extras));
 }
 
-/// Pure detail-builder behind [`append_dlq_op`] — `"{op} env={env}"`
+/// Pure detail-builder behind `append_dlq_op` — `"{op} env={env}"`
 /// plus encoded extras. Split out so the wire shape is unit-testable
 /// without the file-write side effect.
 fn dlq_op_detail(op: &str, env: &str, extras: &[(&str, &str)]) -> String {

@@ -10,14 +10,16 @@ the AI-assisted-contributor rules see [`CLAUDE.md`](CLAUDE.md).
 ## Shape of the crate
 
 `ebman` is lib + bin, but the library is not a general-purpose API. The
-public surface is **126 items**: `App` plus its seven methods, the ten
+public surface is **212 items** as `cargo public-api` counts them with
+no flags — 67 once auto-derived and blanket impls are omitted. In
+hand-written terms: `App` plus its seven methods, the ten
 `cli::*::run` entry points, `config::load`, and one function each from a
 handful of other modules. Everything else is `pub(crate)`.
 
 Count items, not modules. This section used to say "only the nine
 modules `src/main.rs` needs are public", which was true and misleading —
 a public module re-exports everything `pub` inside it, so those nine
-modules carried 2430 items, 1874 of them from `pub mod app` alone.
+modules carried 4565 items, the bulk of them from `pub mod app` alone.
 Narrowing the modules had barely moved the number.
 
 That is deliberate — a wide public surface made every internal refactor

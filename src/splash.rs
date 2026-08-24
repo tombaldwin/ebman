@@ -3,7 +3,7 @@
 //! Used by the boot splash and the `:about` overlay.
 //!
 //! Each glyph in a frame is a palette key, not a literal. The
-//! renderer ([`splash_scene_lines`]) paints every non-`.` key as a
+//! renderer (`splash_scene_lines`) paints every non-`.` key as a
 //! **two-cell** `██` block coloured via `splash_pixel` — two cells
 //! wide so each logical pixel is roughly square (terminal cells are
 //! ~1:2). The `.` key is transparent (rendered as two blank cells).
@@ -444,7 +444,7 @@ pub(crate) fn splash_shows_scene(w: u16, h: u16) -> bool {
 const SPLASH_SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// Draw one splash frame to the terminal. Composes the
-/// [`splash_scene_lines`] beanstalk-growth scene (when the terminal
+/// `splash_scene_lines` beanstalk-growth scene (when the terminal
 /// has room) with the tagline + byline + connecting-to-AWS spinner.
 /// In Powerline mode (resolved by `font_probe` before this runs)
 /// pills the tagline + byline + a `v{VERSION}` tab on the top
