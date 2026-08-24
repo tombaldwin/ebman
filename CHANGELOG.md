@@ -6,6 +6,79 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.34.1] — 2026-08-24 — the gates that weren't
+
+A patch, deliberately: 36 source files changed and `cargo public-api`
+reports the same 212 items before and after, byte-identical. No
+dependency moved either, so the blind spot that made 0.33.0's clean
+semver result untrustworthy does not apply here. Privatising four `App`
+fields and splitting `lint.rs` would both have been semver events a week
+ago — that they are not is what 0.34.0's narrowing bought.
+
+Substantial for a patch, because most of it is tooling. Two gates turned
+out not to be doing their job at all.
+
+### Fixed
+
+- **A drift guard was silently defeated, and had been.** Eight guards
+  shared a comment-stripper — `line.split("//").next()` — which
+  truncates at a `//` *inside a string literal*. `src/util.rs` has
+  `Some(format!("https://{}", …))`, so everything after `https:` was
+  invisible to all eight, including
+  `the_clipboard_is_only_reached_through_yank`, whose entire job is
+  stopping the suite writing to the developer's clipboard. Demonstrated:
+  an `arboard::Clipboard` call placed after a URL literal passed clean;
+  the same call before it failed. All eight now share
+  `app/tests/scan.rs`, which has accuracy tests of its own.
+- **The nightly mutation job had produced nothing, ever.** One run in
+  history, cancelled at the six-hour ceiling, with `continue-on-error`
+  so it never went red. The signal this project chose *over*
+  coverage-as-a-gate was emitting nothing. Replaced with
+  `cargo mutants --in-diff` on PRs (blocking, minutes not hours) plus an
+  8-way sharded nightly. On its first real run it found five surviving
+  mutants in code from the same day.
+- **`release.yml` could build from a commit CI never passed.** The build
+  matrix ran `cargo build --release` and nothing else. Now gated on a
+  successful `ci.yml` run for the exact tagged SHA.
+- **The candor gate grepped three hardcoded rule ids.** A fourth
+  violation class or an upstream renumber and it goes green on a real
+  violation — the same shape as the two guards above. Now fails on any
+  finding, with an empty accept-list and a canary proving the extractor
+  works on every run.
+- **A swap-target gap, an unreachable help screen, and 21 duplicated
+  lines**, all surfaced by the new mutation job. `Action::AbortUpdate`'s
+  match arm was byte-identical to the catch-all below it.
+
+### Added
+
+- **`tests/cli.rs`** — process-level tests for the one layer with none:
+  argv dispatch, exit codes, every advertised subcommand routing,
+  completions, and the non-TTY refusal.
+- **Compiler enforcement for ARCHITECTURE rule 5** —
+  `deny(print_stdout, print_stderr, dbg_macro)` on `app` and `ui`, where
+  the alternate screen swallows output and a stray `println!` corrupts
+  the frame. Zero violations existed, so it cost nothing.
+- **Doc-drift guards** for config keys and subcommands, closing two more
+  of the manual release checklist.
+
+### Changed
+
+- **`#[allow]` → `#[expect]`** throughout, which found five stale
+  suppressions and two pieces of genuinely dead code.
+- **`lint.rs` split** into framework / rules / tests (3308 lines → 576 /
+  1323 / 1441).
+- **The cost fields became a type that owns their invariant.** Four
+  `App` fields where three had to move together; a truncated Cost
+  Explorer walk could populate the map without marking it partial, so
+  the first failure's data survived the session while every retry paid
+  for twenty metered pages. `Costs::set_partial` now takes no timestamp,
+  because a timestamp is what suppresses the retry.
+- **`BACKLOG.md` 375KB → 51KB**, open items only.
+- **Three `CLAUDE.md` rules**: the definition of "green" was weaker than
+  CI's; widening an allowlist to silence a guard is now a stop
+  condition; and "mutation-verify every guard" was promoted from a
+  private memory file, where it applied to one agent on one machine.
+
 ## [0.34.0] — 2026-08-24 — the narrowing
 
 ### Breaking
