@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **Dependency majors**: `toml` 0.8 → 1.1 (TOML spec 1.1.0), `sha2`
+  0.10 → 0.11, `aws-smithy-mocks` 0.2 → 0.3, and the four pinned GitHub
+  Actions (`checkout` 4→7, `upload-artifact` 4→7, `download-artifact`
+  4→8, `action-gh-release` 2→3).
+
 - **ratatui 0.29 → 0.30.2, crossterm 0.28 → 0.29**, with
   `tb-tui-common` 0.1.3 → 0.2.0 to match. Neither crate needed a code
   change: ratatui 0.30's API is compatible with everything ebman uses,

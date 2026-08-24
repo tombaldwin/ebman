@@ -59,7 +59,7 @@ serde = { version = "1", features = ["derive"] }
 # MCP server (`ebman mcp serve`): incoming JSON-RPC must be *parsed*,
 # which the hand-rolled `util::json_string` emit path can't do.
 serde_json = "1"
-toml = "0.8"
+toml = "1"
 # YAML parsing for the EB CLI saved-configs format (`.elasticbeanstalk/
 # saved_configs/*.cfg.yml`) so `:config-diff-local` can compare a local
 # saved config against the deployed env. serde_yml is the actively-
@@ -74,7 +74,7 @@ serde_yml = "0.0"
 # the project's hand-rolled JSON output convention. We use serde_yml
 # for response parsing (JSON is a YAML subset).
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
-sha2 = "0.10"
+sha2 = "0.11"
 
 [lints.clippy]
 # Compiler-enforced versions of two rules this codebase already follows
@@ -107,7 +107,7 @@ proptest = "1"
 # Mocked AWS clients for unit-testing aws.rs without a live AWS account.
 # Used to assert on observed request shapes and exercise response variants
 # (e.g. EB autocreated worker queues, paginated SQS ReceiveMessage).
-aws-smithy-mocks = "0.2"
+aws-smithy-mocks = "0.3"
 aws-smithy-types = "1"
 # The `test-util` feature enables `with_test_defaults` on the SDK config
 # builders, which `aws-smithy-mocks::mock_client!` relies on. Only needed

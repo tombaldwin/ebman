@@ -312,4 +312,65 @@ disable = ["EBL001", "EBL003"]
         assert_eq!(find_root(&other), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// `toml` 1.x implements TOML **spec 1.1.0** — a change to the
+    /// language, not just to the crate's API. The bump compiled and the
+    /// suite stayed green, which is weaker evidence than it looks: a
+    /// spec change can only be observed through documents, and the
+    /// other tests here each poke at one key.
+    ///
+    /// What makes the bump safe is narrow and worth pinning rather than
+    /// re-deriving. TOML 1.1 is a widening — it accepts things 1.0
+    /// rejected (newlines and trailing commas in inline tables, more
+    /// escapes, unicode bare keys). Widening is only harmless in one
+    /// direction, and the direction that matters is that every
+    /// document an operator already has on disk still parses. There is
+    /// no round-trip risk to go with it because `parse` is the only
+    /// `toml::` call site in the crate and ebman never serialises TOML,
+    /// so it cannot emit 1.1 syntax that an older ebman would reject.
+    ///
+    /// So: one document, plain 1.0, exercising every field of the
+    /// schema at once — the case no single-key test covers.
+    #[test]
+    fn a_toml_1_0_document_using_the_whole_schema_still_parses() {
+        let cfg = parse(
+            r#"
+profile = "prod"
+region = "eu-west-1"
+application = "checkout"
+filter = "api"
+
+[runbooks]
+red = "https://runbooks.example.com/red"
+deploy = "https://runbooks.example.com/deploy"
+
+[lint]
+disable = ["EBL001", "EBL010"]
+fix_disable = ["EBL003"]
+"#,
+        )
+        .expect("a valid TOML 1.0 document must still parse under spec 1.1");
+
+        assert_eq!(cfg.profile.as_deref(), Some("prod"));
+        assert_eq!(cfg.region.as_deref(), Some("eu-west-1"));
+        assert_eq!(cfg.application.as_deref(), Some("checkout"));
+        assert_eq!(cfg.filter.as_deref(), Some("api"));
+        assert_eq!(
+            cfg.runbooks.get("red").map(String::as_str),
+            Some("https://runbooks.example.com/red")
+        );
+        assert_eq!(cfg.runbooks.len(), 2);
+        assert_eq!(cfg.lint.disable, ["EBL001", "EBL010"]);
+        assert_eq!(cfg.lint.fix_disable, ["EBL003"]);
+    }
+
+    /// The other half of the contract the bump could have moved: a
+    /// document that is malformed under *both* specs still returns
+    /// `None` rather than panicking or half-parsing, because the
+    /// caller's fallback-to-defaults path depends on it.
+    #[test]
+    fn malformed_toml_still_returns_none_under_spec_1_1() {
+        assert!(parse("profile = ").is_none());
+        assert!(parse("[lint\ndisable = []").is_none());
+    }
 }
