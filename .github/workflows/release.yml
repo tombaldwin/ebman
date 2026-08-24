@@ -74,16 +74,31 @@ jobs:
           set -euo pipefail
           sha="${{ github.sha }}"
           echo "checking CI for $sha"
-          # `gh run list` filters by commit; require at least one
-          # completed+success run of ci.yml against this exact SHA.
-          ok=$(gh run list --workflow=ci.yml --limit 50 \
-                 --json headSha,status,conclusion \
-                 --jq "[.[] | select(.headSha==\"$sha\" and .status==\"completed\" and .conclusion==\"success\")] | length")
+          # `--repo` is required: this job has no `actions/checkout`, so
+          # `gh` cannot infer the repository from the working directory
+          # and dies with "failed to determine base repo". Caught on this
+          # gate's first real tag, which it blocked.
+          runs=$(gh run list --repo "${{ github.repository }}" \
+                   --workflow=ci.yml --limit 50 \
+                   --json headSha,status,conclusion) || {
+            echo "::error::could not query CI runs — this is the GATE failing, not CI. Not a licence to release."
+            exit 1
+          }
+          # A failed query and a genuinely-red CI must not look the same.
+          # `gh` returning nothing at all means the gate did not run;
+          # treating that as "no green run found" would be correct here by
+          # accident and wrong the moment the failure mode changes.
+          total=$(echo "$runs" | jq 'length')
+          if [ "${total:-0}" -lt 1 ]; then
+            echo "::error::the CI-run query returned no runs at all — the gate is broken, not CI."
+            exit 1
+          fi
+          ok=$(echo "$runs" | jq "[.[] | select(.headSha==\"$sha\" and .status==\"completed\" and .conclusion==\"success\")] | length")
           if [ "${ok:-0}" -lt 1 ]; then
             echo "::error::no successful ci.yml run for $sha — refusing to build a release from an unverified commit. Push the branch, let CI go green, then tag."
             exit 1
           fi
-          echo "CI is green for $sha"
+          echo "CI is green for $sha ($total runs inspected)"
 
   build:
     name: build ${{ matrix.target }}
