@@ -1380,8 +1380,13 @@ mod parser_properties {
         /// It is a hand-written char scanner with 13 `chars[i]` sites
         /// guarded by a hand-maintained `while i < n`, and it runs over
         /// `audit.log` — a file on disk that a crash or a full disk can
-        /// leave truncated mid-write, including mid-UTF-8. Enumerating
-        /// examples cannot cover that input space; this can.
+        /// leave truncated mid-write. Enumerating examples cannot cover
+        /// that input space; this can.
+        ///
+        /// Scope, stated honestly: the parameter is `&str`, so a
+        /// truncation that splits a UTF-8 sequence is rejected at the
+        /// READ boundary and never reaches here. This covers malformed
+        /// records, not malformed encoding.
         #[test]
         fn parse_audit_line_never_panics(s in "(?s).{0,400}") {
             let _ = super::parse_audit_line(&s);

@@ -219,9 +219,16 @@ fn parse_action_args(args: &[String]) -> Result<ActionArgs, ActionArgError> {
 /// One function so the two call sites can't drift from each other,
 /// and so the ORDER is defined once — it used to be two bare calls in
 /// sequence, which is how it came to differ from the MCP gate's.
-fn refuse_write(prog: &'static str, env: &str) {
-    let profile = std::env::var("AWS_PROFILE").ok();
-    crate::cli::refuse_write(prog, env, env, profile.as_deref());
+/// `explicit` is the profile the write will actually run under, when
+/// the subcommand takes one. It is not optional politeness: the gate
+/// resolves `safety.accounts.NAME.read_only` against the profile it is
+/// given, so feeding it the ambient `AWS_PROFILE` while dispatching
+/// under `--profile X` checks the pin on the wrong account entirely.
+/// `rollout` did exactly that, and it is the biggest write the CLI has.
+fn refuse_write(prog: &'static str, env: &str, explicit: Option<&str>) {
+    let ambient = std::env::var("AWS_PROFILE").ok();
+    let profile = explicit.or(ambient.as_deref());
+    crate::cli::refuse_write(prog, env, env, profile);
 }
 
 pub async fn run(args: &[String]) -> Result<()> {
@@ -254,7 +261,7 @@ pub async fn run(args: &[String]) -> Result<()> {
     // got a different reason depending on which surface refused it —
     // and the freeze is the more urgent of the two: fleet-wide,
     // session-scoped, and the thing that just changed.
-    refuse_write("ebman action", &env);
+    refuse_write("ebman action", &env, None);
     let aws = aws::AwsClient::with(None, None).await?;
 
     let verb = match action {
@@ -687,7 +694,11 @@ async fn run_rollout(args: &[String]) -> Result<()> {
     }
     // Same pin gate as the single-env verbs — a rollout is a deploy
     // fan-out of one env name across regions.
-    refuse_write("ebman action rollout", &env);
+    // The profile this rollout will actually dispatch under —
+    // `--profile` if given, else ambient. Gating on the ambient
+    // one while dispatching under another checks the pin on the
+    // wrong account.
+    refuse_write("ebman action rollout", &env, profile.as_deref());
     let wait_for_green_secs = match wait_for_green.as_deref() {
         Some(s) => match aws::parse_window_ms(s) {
             Some(ms) => Some((ms / 1000) as u64),
