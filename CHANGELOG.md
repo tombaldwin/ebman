@@ -125,6 +125,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Internal
 
+- **Release binaries carry a signed build-provenance attestation**,
+  verifiable with `gh attestation verify`. The `*.sha256` files prove
+  integrity but say nothing about origin — they're produced by the same
+  run that would be compromised. Worth it here specifically because
+  ebman is a credentialed AWS tool shipped as a prebuilt binary whose
+  Homebrew SHAs are updated by hand.
+
+- **Nightly `cargo-mutants`**, non-blocking, with the surviving-mutant
+  report as an artefact. Automated specifically because the hand process
+  has failed repeatedly in ways that *look* like success — a `sed`
+  written against the pre-`fmt` shape silently no-ops, and a mutation
+  that doesn't compile prints no `test result:` line and reads as a
+  pass. `scripts/mutate.sh` guards one experiment; this guards the tree.
+
 - **Property tests for the four hand-rolled parsers.** `parse_audit_line`
   is a char scanner with 13 `chars[i]` sites behind a hand-maintained
   `while i < n`, reading a log a crash or a full disk can truncate

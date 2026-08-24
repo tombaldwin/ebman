@@ -1,0 +1,42 @@
+name: mutants
+
+# Nightly, not per-PR. Full-repo mutation testing is 30-60 minutes of
+# CPU; the suite itself is ~3s, so the cost is entirely in rebuilds.
+#
+# Worth automating specifically because the hand process has failed
+# repeatedly and in ways that LOOK like success: a `sed` written against
+# the pre-`fmt` shape silently no-ops and the test "passes" a mutation
+# that was never applied; a mutation that doesn't compile prints no
+# `test result:` line and reads as a pass. `scripts/mutate.sh` guards a
+# single experiment against both. This guards the whole tree.
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mutants:
+    name: cargo-mutants
+    runs-on: ubuntu-latest
+    # Non-blocking: surviving mutants are a reading list, not a build
+    # failure. Turning them into one would mean either chasing every
+    # equivalent mutant or switching the job off, and the second is what
+    # actually happens.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-mutants --locked
+      - name: Mutate
+        run: cargo mutants --no-shuffle --timeout 120 -- --lib
+      - name: Upload the surviving-mutant report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-report
+          path: mutants.out/
+          retention-days: 14
