@@ -27,7 +27,7 @@ impl App {
     /// fetch from a closed overlay can't clobber the Detail view.
     pub(super) fn spawn_detail_alarms(&mut self, env_name: String) {
         if let Some(d) = self.detail.as_mut() {
-            d.loading_cw_alarms = true;
+            d.cw_alarms.begin();
         }
         // Demo-mode short-circuit (same pattern as
         // spawn_detail_instances / spawn_detail_events). Inject
@@ -61,7 +61,7 @@ impl App {
     /// `spawn_why_red_deploys` but lands on `AppMsg::DetailRecentVersions`.
     pub(super) fn spawn_detail_recent_versions(&mut self, app_name: String, env_name: String) {
         if let Some(d) = self.detail.as_mut() {
-            d.loading_recent_versions = true;
+            d.recent_versions.begin();
         }
         if self.demo_mode {
             let result = Ok(crate::demo_fixture::deploys_for_app(&app_name));

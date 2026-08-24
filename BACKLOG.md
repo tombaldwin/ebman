@@ -1531,7 +1531,31 @@ should ship as a patch first:
   This is *why* 0.31.0 shipped an accidental breaking change, and it
   makes `cargo-semver-checks` a permanent tax rather than a safety net.
   The reviewer's highest-leverage 12-month item. ~2-4h, one big diff.
-- [ ] **Collapse the `Option<T>` + `loading_*: bool` pairs** — 14 of
+- [x] **Collapse the `Option<T>` + `loading_*: bool` pairs** — PARTLY
+  DONE 2026-08-24, and the entry below was wrong in two of its three
+  claims. There are **eight** pairs, not 14, in two different shapes.
+  `LogTailStage` is a five-stage pipeline for one fetch, not a generic
+  `Fetch<T>`. And the states are **not** redundant: all four
+  combinations are reachable because the two fields encode two
+  orthogonal facts — do we hold data, and is a request running. The
+  combination that proves it is settled-and-in-flight (a refresh with
+  the old result still displayed), which `spawn_detail_*` creates
+  deliberately so a refresh doesn't blank the panel. A four-variant enum
+  would have lost it and stopped the Health tab spinning on any refresh
+  where data was present.
+
+  So `Fetch<T>` shipped as a struct holding both facts. Converted the
+  two pairs with that shape (`cw_alarms`, `recent_versions`).
+  **Remaining: the six `Vec`-shaped ones** — they settle into a shared
+  error slot instead of their own `Result`, so wrapping them adds an
+  error arm nothing fills and changes what the footer shows. That is a
+  design call (per-section errors vs one panel error), not mechanical.
+
+  Reading them found a real bug, fixed separately in the same commit:
+  four concurrent fetches shared one error slot and every handler
+  cleared it on success, so a success erased an unrelated failure.
+
+  Original entry follows.  — 14 of
   them, 4 representable states for 3 real ones. `enum Fetch<T>` exists
   one file over as `LogTailStage` and isn't reused. ~~Touches `pub`
   fields, so it lands with the above.~~ **No longer a breaking change**

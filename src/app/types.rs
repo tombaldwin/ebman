@@ -964,3 +964,89 @@ pub(crate) struct ResolvedConfig {
     /// `theme` so a profile-themed session reverts cleanly.
     pub base_theme_name: String,
 }
+
+/// One asynchronous fetch: what we hold, and whether a request is in
+/// flight. Both, because they are independent.
+///
+/// This replaces the `Option<Result<T, String>>` + `loading_*: bool`
+/// pairs, which the BACKLOG described as "4 representable states for 3
+/// real ones". That was a misreading, and the correction is the reason
+/// this is a struct rather than the enum that entry implies. All four
+/// combinations are reachable and distinct:
+///
+/// | settled      | in_flight | meaning                              |
+/// |--------------|-----------|--------------------------------------|
+/// | `None`       | `false`   | never asked                          |
+/// | `None`       | `true`    | first load — draw a spinner          |
+/// | `Some(_)`    | `false`   | settled, ok or failed                |
+/// | `Some(_)`    | `true`    | **refreshing, previous result shown** |
+///
+/// That last row is what a four-variant enum would lose. `spawn_detail_*`
+/// sets the in-flight flag without clearing the data, deliberately, so a
+/// refresh does not blank the panel. `DetailState::tab_loading` still
+/// has to report it as in flight, and the render still has to *not*
+/// draw a spinner over data that is on screen. Pinned by
+/// `the_alarms_pair_encodes_two_orthogonal_facts_not_one_redundant_state`.
+///
+/// The win is not fewer states, then. It is that the two fields can no
+/// longer drift apart — `settle` sets both — and that
+/// `loading_x && x.is_none()`, repeated at each render site and easy to
+/// get subtly wrong, is now the named `is_first_load`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Fetch<T> {
+    settled: Option<Result<T, String>>,
+    in_flight: bool,
+}
+
+impl<T> Default for Fetch<T> {
+    fn default() -> Self {
+        Self {
+            settled: None,
+            in_flight: false,
+        }
+    }
+}
+
+impl<T> Fetch<T> {
+    /// Mark a request as started. Deliberately does NOT clear a previous
+    /// result: the panel keeps showing it until the new one lands.
+    pub(crate) fn begin(&mut self) {
+        self.in_flight = true;
+    }
+
+    /// Record a result and clear the in-flight flag together, which is
+    /// the pairing that used to be two statements in every message
+    /// handler.
+    pub(crate) fn settle(&mut self, result: Result<T, String>) {
+        self.settled = Some(result);
+        self.in_flight = false;
+    }
+
+    /// Is a request outstanding? True during a refresh even when a
+    /// previous result is still displayed — `tab_loading` needs that.
+    pub(crate) fn in_flight(&self) -> bool {
+        self.in_flight
+    }
+
+    /// In flight with nothing to show yet: the only case that should
+    /// draw a spinner.
+    pub(crate) fn is_first_load(&self) -> bool {
+        self.in_flight && self.settled.is_none()
+    }
+
+    /// The value, if the last attempt succeeded.
+    pub(crate) fn ready(&self) -> Option<&T> {
+        match &self.settled {
+            Some(Ok(v)) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// The message, if the last attempt failed.
+    pub(crate) fn error(&self) -> Option<&str> {
+        match &self.settled {
+            Some(Err(e)) => Some(e.as_str()),
+            _ => None,
+        }
+    }
+}
