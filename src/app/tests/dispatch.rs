@@ -1517,3 +1517,94 @@ mod docs_drift {
         );
     }
 }
+
+/// Gaps found by `cargo mutants --in-diff` on the 0.34.0 lineup.
+///
+/// Each of these survived the whole suite, which means the behaviour was
+/// asserted nowhere. They are grouped because they share a cause: the
+/// confirm-modal flow was tested for the paths that *do* something
+/// visible, and not for the deliberate exclusions and the routing.
+mod mutants_found_these {
+    use super::*;
+
+    /// Deleting the `Action::AbortUpdate` arm from `advance_action_flow`
+    /// survived: nothing asserted that `:abort` opens a confirm modal
+    /// at all. It would silently do nothing.
+    #[tokio::test]
+    async fn abort_opens_a_confirm_modal() {
+        let mut app = test_app();
+        app.environments = vec![mk_env("api-prod", "uflexi", "WebServer", "Updating")];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+
+        app.execute_command("abort");
+
+        let Some(crate::app::ActionFlow::Confirm(modal)) = &app.action_flow else {
+            panic!("`:abort` must open a confirm modal, got {:?}", app.mode);
+        };
+        assert_eq!(modal.action, Action::AbortUpdate);
+        assert_eq!(modal.target_env, "api-prod");
+    }
+
+    /// `loading_lint: !self.demo_mode && action != Action::SsmRun`.
+    /// Flipping the `&&` to `||` survived, so neither exclusion was
+    /// pinned — and both are deliberate. Running an ad-hoc shell command
+    /// is not gated by EB-config-health rules, and demo mode makes no
+    /// AWS calls at all.
+    #[tokio::test]
+    async fn the_confirm_lint_probe_skips_ssm_run_and_demo_mode() {
+        // SsmRun: excluded because the rules do not apply to it.
+        let mut app = test_app();
+        app.environments = vec![mk_env("api-prod", "uflexi", "WebServer", "Green")];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        app.open_parameterised_action(
+            Action::SsmRun,
+            crate::app::ParameterisedAction {
+                ssm_run_command: Some("uptime".into()),
+                ssm_run_instances: Some(vec!["i-1".into()]),
+                ..Default::default()
+            },
+        );
+        let Some(crate::app::ActionFlow::Confirm(modal)) = &app.action_flow else {
+            panic!("ssm-run should open a confirm modal");
+        };
+        assert!(
+            !modal.loading_lint,
+            "an ad-hoc shell command is not gated by EB-config-health rules"
+        );
+
+        // Demo mode never gets this far, which is worth pinning because
+        // it makes the `!self.demo_mode` half of that condition dead
+        // defensive code: `deny_write` refuses every write in demo mode,
+        // and `open_parameterised_action_on` consults it before building
+        // the modal. Belt and braces rather than a bug — but the belt is
+        // what actually holds.
+        let mut demo = test_app();
+        demo.demo_mode = true;
+        demo.environments = vec![mk_env("api-prod", "uflexi", "WebServer", "Green")];
+        demo.rebuild_view();
+        demo.table_state.select(Some(0));
+        demo.open_parameterised_action(Action::Rebuild, Default::default());
+        assert!(
+            demo.action_flow.is_none(),
+            "demo mode must refuse the write outright, not open a modal"
+        );
+
+        // And the normal path DOES arm it — or the two asserts above pass
+        // vacuously against a field that is never true.
+        let mut real = test_app();
+        real.environments = vec![mk_env("api-prod", "uflexi", "WebServer", "Green")];
+        real.rebuild_view();
+        real.table_state.select(Some(0));
+        real.open_parameterised_action(Action::Rebuild, Default::default());
+        let Some(crate::app::ActionFlow::Confirm(modal)) = &real.action_flow else {
+            panic!("rebuild should open a confirm modal");
+        };
+        assert!(
+            modal.loading_lint,
+            "a real rebuild SHOULD arm the lint probe — without this the \
+             exclusions above prove nothing"
+        );
+    }
+}
