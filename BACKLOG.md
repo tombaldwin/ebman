@@ -1532,8 +1532,21 @@ should ship as a patch first:
   makes `cargo-semver-checks` a permanent tax rather than a safety net.
   The reviewer's highest-leverage 12-month item. ~2-4h, one big diff.
 - [x] **Collapse the `Option<T>` + `loading_*: bool` pairs** — PARTLY
-  DONE 2026-08-24, and the entry below was wrong in two of its three
-  claims. There are **eight** pairs, not 14, in two different shapes.
+  DONE 2026-08-24.
+
+  **Correction, same day:** I first recorded here that there were
+  "eight pairs, not 14" and that the entry was wrong about the count.
+  That was my error, not the entry's. I had surveyed `DetailState` (8)
+  and never opened `ConfirmModal` (6). 8 + 6 = 14, exactly as written.
+  The count was right; I published a correction to a claim that did not
+  need correcting, which is worse than leaving it alone.
+
+  What the entry *was* wrong about still stands, because that part was
+  checked with a test rather than by counting: the states are not
+  redundant, and `LogTailStage` is not a generic `Fetch<T>`. Details
+  below.
+
+  The 14 are in two different shapes.
   `LogTailStage` is a five-stage pipeline for one fetch, not a generic
   `Fetch<T>`. And the states are **not** redundant: all four
   combinations are reachable because the two fields encode two
@@ -1562,8 +1575,22 @@ should ship as a patch first:
   as of 0.34.0 — those fields are `pub(crate)` now, so this and the item
   below became ordinary internal refactors that can land in any patch
   release. That sequencing was the point of doing the narrowing first.
-- [ ] `ConfirmModal`'s 11 action-gated `Option`s → payloads on `Action`'s
-  variants; `App::mode` + seven partner `Option`s → `Screen` + `Modal`.
+- [x] **`ConfirmModal`'s 11 action-gated `Option`s** — DONE 2026-08-24,
+  but NOT as payloads on `Action`'s variants. Reading it first found the
+  eleven existed *twice*: `ParameterisedAction` declared all eleven,
+  `ConfirmModal` declared the same eleven, and the funnel copied them
+  across a line at a time — so a new parameterised action was three
+  edits, and missing the third silently dropped the parameter. Now
+  `ConfirmModal` holds one `ParameterisedAction`; 28 fields to 18.
+  Moving them onto `Action` was the bigger hammer (`Action` is named at
+  244 sites, is `Copy`, keys the `ACTIONS` table) for the same win.
+
+  **It also turned up a live safety hole, fixed in the same commit:** a
+  CNAME swap writes to BOTH envs, but every `deny_write` on the path
+  checked the source, so `safety.envs.TARGET.read_only` was defeated by
+  selecting the other env first. Both entry points had it.
+
+- [ ] `App::mode` + seven partner `Option`s → `Screen` + `Modal`.
 
 **Not doing, with reasons** (the reviewer's own list, and I agree):
 miri (one `unsafe`, FFI it can't execute), `cargo-hack` (zero features),

@@ -137,8 +137,8 @@ pub(crate) fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
             // accent. (0.17.4 fix; the 0.17.2 patch added the SCALE-TO-
             // ZERO body copy without the matching modal styling.)
             let scale_to_zero = modal.action == Action::Scale
-                && modal.scale_min == Some(0)
-                && modal.scale_max == Some(0);
+                && modal.params.scale_min == Some(0)
+                && modal.params.scale_max == Some(0);
             let render_destructive = modal.action.destructive() || scale_to_zero;
             let accent = if render_destructive {
                 theme.health_red
@@ -163,7 +163,7 @@ pub(crate) fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                 Action::SwapCnames => format!(
                     "Swap CNAMEs between '{}' and '{}'?",
                     modal.target_env,
-                    modal.swap_with.as_deref().unwrap_or("?")
+                    modal.params.swap_with.as_deref().unwrap_or("?")
                 ),
                 Action::Terminate => format!(
                     "TERMINATE env '{}'. This cannot be undone.",
@@ -171,22 +171,26 @@ pub(crate) fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                 ),
                 Action::Deploy => format!(
                     "Deploy version '{}' to env '{}'? (rolling, reversible)",
-                    modal.deploy_version.as_deref().unwrap_or("?"),
+                    modal.params.deploy_version.as_deref().unwrap_or("?"),
                     modal.target_env
                 ),
                 Action::UpgradePlatform => format!(
                     "Upgrade '{}' to platform: {} (rolling, reversible)",
                     modal.target_env,
-                    modal.upgrade_platform_label.as_deref().unwrap_or("?")
+                    modal
+                        .params
+                        .upgrade_platform_label
+                        .as_deref()
+                        .unwrap_or("?")
                 ),
                 Action::Clone => format!(
                     "Clone '{}' into a new env named '{}'? (creates a new env)",
                     modal.target_env,
-                    modal.clone_target.as_deref().unwrap_or("?")
+                    modal.params.clone_target.as_deref().unwrap_or("?")
                 ),
                 Action::Scale => {
-                    let min = modal.scale_min.unwrap_or(0);
-                    let max = modal.scale_max.unwrap_or(0);
+                    let min = modal.params.scale_min.unwrap_or(0);
+                    let max = modal.params.scale_max.unwrap_or(0);
                     if min == 0 && max == 0 {
                         format!(
                             "SCALE TO ZERO: '{}' will serve 0 requests (`:start` to resume)",
@@ -201,8 +205,9 @@ pub(crate) fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
                 }
                 Action::AbortUpdate => format!("Abort current update on '{}'?", modal.target_env),
                 Action::SsmRun => {
-                    let cmd = modal.ssm_run_command.as_deref().unwrap_or("?");
+                    let cmd = modal.params.ssm_run_command.as_deref().unwrap_or("?");
                     let n = modal
+                        .params
                         .ssm_run_instances
                         .as_ref()
                         .map(|v| v.len())

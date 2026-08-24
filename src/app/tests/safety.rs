@@ -120,9 +120,9 @@ async fn rollback_to_label_opens_confirm_for_named_label() {
     // Confirm modal opened with the operator-named label.
     match &app.action_flow {
         Some(ActionFlow::Confirm(modal)) => {
-            assert_eq!(modal.deploy_version.as_deref(), Some("build-820"));
+            assert_eq!(modal.params.deploy_version.as_deref(), Some("build-820"));
             // No watchdog when --auto-rollback wasn't passed.
-            assert!(modal.auto_rollback_secs.is_none());
+            assert!(modal.params.auto_rollback_secs.is_none());
         }
         _ => panic!("expected confirm modal open"),
     }
@@ -235,7 +235,7 @@ async fn promote_env_opens_deploy_confirm_on_target_with_sources_version() {
     match &app.action_flow {
         Some(ActionFlow::Confirm(modal)) => {
             assert_eq!(modal.target_env, "prod");
-            assert_eq!(modal.deploy_version.as_deref(), Some("build-900"));
+            assert_eq!(modal.params.deploy_version.as_deref(), Some("build-900"));
             assert!(matches!(modal.action, Action::Deploy));
         }
         _ => panic!("expected confirm modal open on target"),
@@ -671,4 +671,102 @@ async fn ssm_run_is_refused_in_read_only_mode() {
     app.execute_command("ssm-run uptime");
     let err = app.error_message.as_deref().unwrap_or_default();
     assert!(err.contains("read-only mode"), ":ssm-run got {err:?}");
+}
+
+/// `safety.envs.NAME.read_only` must protect an env from being swapped
+/// INTO, not just out of.
+///
+/// A CNAME swap rewrites BOTH environments' DNS, so it is a write to the
+/// target as much as to the source. But the only `deny_write` on this
+/// path was in `open_action_menu`, against the *selected* env — and the
+/// target is chosen afterwards, from a picker. So a pin on `green` did
+/// nothing if you selected `blue` first and swapped towards it.
+///
+/// This drives the real flow — open the menu on the unpinned env, pick
+/// the pinned one — rather than calling `deny_write` directly, which
+/// would only prove the gate function works and not that anything calls
+/// it. The first version of this test made exactly that mistake and
+/// passed against the unfixed code.
+#[tokio::test]
+async fn a_read_only_env_cannot_be_swapped_into() {
+    let mut app = test_app();
+    app.environments = vec![
+        mk_env("blue", "shop", "WebServer", "Green"),
+        mk_env("green", "shop", "WebServer", "Green"),
+    ];
+    app.rebuild_view();
+    app.cfg.safety_envs.insert("green".into(), true);
+    assert!(app.is_read_only_for("green"), "the pin must be in effect");
+    assert!(!app.is_read_only_for("blue"), "the source is writable");
+
+    // Select the UNPINNED env; the menu opens because only it is checked.
+    app.table_state.select(Some(0));
+    assert!(app.open_action_menu(), "`blue` is writable");
+    app.advance_action_flow(crate::app::Action::SwapCnames);
+
+    // The picker should be offering `green` as the swap target.
+    let picking = matches!(
+        app.action_flow,
+        Some(crate::app::ActionFlow::SwapTarget { .. })
+    );
+    assert!(picking, "swap opens a target picker");
+
+    // Choose it. This is the moment the target becomes known.
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+
+    // It must NOT have reached a confirm modal.
+    let confirmed = matches!(app.action_flow, Some(crate::app::ActionFlow::Confirm(_)));
+    assert!(
+        !confirmed,
+        "a swap INTO a read-only env must be refused before the confirm \
+         modal, not dispatched"
+    );
+    let msg = app
+        .error_message
+        .clone()
+        .or_else(|| app.status_message.clone())
+        .unwrap_or_default();
+    assert!(
+        msg.contains("green"),
+        "the refusal must name the pinned env so the operator knows which \
+         pin stopped it, got: {msg:?}"
+    );
+}
+
+/// The command path has the same hole as the picker path, so it needs
+/// the same gate. `:swap TARGET` routes through
+/// `open_parameterised_action`, which checks the env it was handed —
+/// the SOURCE — and never looked at the target.
+///
+/// Separate test from the picker one because they are separate entry
+/// points into the same write, and fixing one is exactly how the other
+/// gets left behind.
+#[tokio::test]
+async fn swap_cnames_command_also_gates_the_target() {
+    let mut app = test_app();
+    app.environments = vec![
+        mk_env("blue", "shop", "WebServer", "Green"),
+        mk_env("green", "shop", "WebServer", "Green"),
+    ];
+    app.rebuild_view();
+    app.cfg.safety_envs.insert("green".into(), true);
+    app.table_state.select(Some(0)); // `blue` — writable
+
+    app.execute_command("swap green");
+
+    let confirmed = matches!(app.action_flow, Some(crate::app::ActionFlow::Confirm(_)));
+    assert!(
+        !confirmed,
+        "`:swap green` must be refused when `green` is pinned \
+         read-only, even though the selected env `blue` is writable"
+    );
+    let msg = app
+        .error_message
+        .clone()
+        .or_else(|| app.status_message.clone())
+        .unwrap_or_default();
+    assert!(
+        msg.contains("green"),
+        "the refusal must name the pinned env, got: {msg:?}"
+    );
 }

@@ -59,6 +59,19 @@ if ! grep -q "^test result:" <<<"$out"; then
     grep -E "^error" <<<"$out" | head -5
     exit 2
 fi
+# A filter that matches NOTHING produces `test result: ok. 0 passed`,
+# which is indistinguishable from a real pass unless you look at the
+# count. That is how a mutation gets reported NOT CAUGHT when in fact it
+# was never exercised — cargo's filter is a substring match, so a regex
+# like `foo|bar` silently selects zero tests. Caught in the 0.34.0 swap
+# work, one line away from concluding a real safety gate was untested.
+if grep -qE "^test result: ok\. 0 passed" <<<"$out"; then
+    echo "INCONCLUSIVE — the filter matched NO tests, so nothing ran."
+    echo "  \`cargo test\` filters by SUBSTRING, not regex: \`a|b\` matches"
+    echo "  neither. Zero tests passing is not the mutation surviving."
+    echo "  filter was: ${FILTER:-<none>}"
+    exit 2
+fi
 if grep -q "test result: FAILED" <<<"$out"; then
     echo "CAUGHT — a test fails under this mutation (what you want):"
     grep -E "^test .*FAILED|panicked at|assertion" <<<"$out" | head -5

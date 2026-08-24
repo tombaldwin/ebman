@@ -466,8 +466,8 @@ async fn rollback_to_label_with_auto_rollback_threads_secs_through() {
     app.execute_command("rollback --to build-820 --auto-rollback 5m");
     match &app.action_flow {
         Some(ActionFlow::Confirm(modal)) => {
-            assert_eq!(modal.deploy_version.as_deref(), Some("build-820"));
-            assert_eq!(modal.auto_rollback_secs, Some(300));
+            assert_eq!(modal.params.deploy_version.as_deref(), Some("build-820"));
+            assert_eq!(modal.params.auto_rollback_secs, Some(300));
         }
         _ => panic!("expected confirm modal open"),
     }
@@ -546,9 +546,9 @@ async fn deploy_with_both_flags_threads_both_through() {
     app.execute_command("deploy build-900 --auto-rollback 10m --wait-for-green 5m");
     match &app.action_flow {
         Some(ActionFlow::Confirm(modal)) => {
-            assert_eq!(modal.deploy_version.as_deref(), Some("build-900"));
-            assert_eq!(modal.auto_rollback_secs, Some(600));
-            assert_eq!(modal.wait_for_green_secs, Some(300));
+            assert_eq!(modal.params.deploy_version.as_deref(), Some("build-900"));
+            assert_eq!(modal.params.auto_rollback_secs, Some(600));
+            assert_eq!(modal.params.wait_for_green_secs, Some(300));
         }
         _ => panic!("expected confirm modal open"),
     }
@@ -969,9 +969,9 @@ async fn promote_env_composes_with_watchdog_flags() {
     match &app.action_flow {
         Some(ActionFlow::Confirm(modal)) => {
             assert_eq!(modal.target_env, "prod");
-            assert_eq!(modal.deploy_version.as_deref(), Some("build-900"));
-            assert_eq!(modal.auto_rollback_secs, Some(600));
-            assert_eq!(modal.wait_for_green_secs, Some(300));
+            assert_eq!(modal.params.deploy_version.as_deref(), Some("build-900"));
+            assert_eq!(modal.params.auto_rollback_secs, Some(600));
+            assert_eq!(modal.params.wait_for_green_secs, Some(300));
         }
         _ => panic!("expected confirm modal open"),
     }
