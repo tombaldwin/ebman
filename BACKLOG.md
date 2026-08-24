@@ -166,7 +166,6 @@ Three gates added to CI. Two of them found something on the first run, which is 
 Also queued from the 0.26 pre-tag architecture review: rewrite_credential_error + probe helpers out of app.rs; ui.rs submodule split; MCP registry unification (gate on v2 writes); EBL015 warnings surface in MCP; per-tool client dedup.
 
 #### Console parity — BONUS
-- [ ] **`:custom-platform-create <packer-config>`** — SKIPPED this run (2026-07-15): needs S3-bundle upload plumbing + minutes-scale `CreatePlatformVersion` polling with more than one reasonable shape (fire-and-forget vs poll), all unverifiable against live EB here. Was tagged "fine to slip to 0.26" — it slipped.
 
 ### Feature candidates — competitive scan (2026-05-24)
 
@@ -216,7 +215,23 @@ Gaps surfaced during the 2026-05-19 console-vs-ebman comparison. Each entry is a
 - [x] **Attach / detach RDS database** — Done (tasks #109 + #110, 0.6). `:rds` (2026-05-21) reads the env's `aws:rds:dbinstance.*` option settings (DBPassword redacted). `:rds-attach` is a 7-field modal form (engine / class / storage / master user+password / deletion policy / Multi-AZ) over `aws:rds:dbinstance`, pre-filling if a DB is already attached. `:rds-detach ENV` "safe-ifies" the coupled DB — sets `DBDeletionPolicy=Snapshot` so it survives env termination, behind a typed-name confirm (the `ENV` arg must repeat the env name). **Scope reality:** Elastic Beanstalk has *no* detach operation — an EB-created RDS instance lives in the env's CloudFormation stack and true decoupling needs an env rebuild; `:rds-detach` makes the data safe to keep, it doesn't move it (command help + toast say so). The separate immediate `rds:CreateDBSnapshot` from the original sketch was dropped: it needs DB-instance-id discovery via CloudFormation stack introspection plus an `aws-sdk-rds` dependency, neither verifiable here — and `DBDeletionPolicy=Snapshot` already guarantees a termination-time snapshot. Could be revisited if a point-in-time backup *before* termination is wanted.
 - [x] **ALB listener + TLS cert config** — Done (tasks #108 + #111, 0.6). `:listeners` (2026-05-21) reads the env's `aws:elbv2:listener:*` namespaces grouped by port. `:listener-edit PORT` is a modal cert-rotation form: a single MultiSelect field whose options are the region's ISSUED ACM certificates (loaded live via a new `aws-sdk-acm` dependency + `acm:ListCertificates`), pre-selected with the listener's current `SSLCertificateArns`; submit writes the new cert set to `aws:elbv2:listener:<PORT>` through the option-settings path. Scope notes: delivered as a command (`:listener-edit 443`), not a Detail "LB tab" — a whole new tab was disproportionate to the feature. Protocol / SSLPolicy / ListenerEnabled / rules stay on `:set-option`; the form is scoped to cert rotation, the dominant edit. The ACM call shape is unverified against a live account (the SDK compiles against it).
 - [x] **Capacity profile beyond min/max + instance type** — Done. `:capacity` modal form (MinSize / MaxSize / InstanceType / Cooldown) shipped in 0.3.0; `a → Capacity` menu entry shipped in 0.3.1. Multi-instance-type / spot-base / scheduled-scaling fleets still missing but those are niche enough to drop from this list — operators using them are mostly EB CLI / Terraform users.
-- [ ] **Custom platforms — create** — delete shipped as `:custom-platform-delete <arn>`. Create still missing: console offers a wizard that builds a new custom AMI from a Packer template (slow — minutes — needs polling); ours would be `:custom-platform-create <packer-config>` via `elasticbeanstalk:CreatePlatformVersion`. Niche but a real gap for operators who maintain in-house base AMIs.
+- [ ] **`:custom-platform-create <packer-config>`** — the last console
+  write-side gap. Delete already shipped as
+  `:custom-platform-delete <arn>`; create is the other half, via
+  `elasticbeanstalk:CreatePlatformVersion`. Niche, but a real gap for
+  operators who maintain in-house base AMIs — the console offers a
+  wizard that builds a new custom AMI from a Packer template.
+
+  **Why it keeps slipping** (skipped 2026-07-15, tagged "fine to slip to
+  0.26", and it slipped): it needs S3-bundle upload plumbing plus
+  minutes-scale polling of `CreatePlatformVersion`, and the polling has
+  more than one reasonable shape — fire-and-forget with a toast, or a
+  progress surface like the deploy watcher. None of it is verifiable
+  against live EB from here, which is the actual blocker rather than the
+  effort.
+
+  *Merged 2026-08-25 from two entries that were the same feature — one
+  carried why it was skipped, the other why it matters.*
 
 ### Tier 6 — power-user / scripting
 - [ ] **Embedded recorder** — record + replay sessions to `.cast` (asciinema). Deferred — needs its own input-capture + replay infrastructure.
