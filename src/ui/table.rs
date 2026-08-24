@@ -443,7 +443,7 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
     let theme = app.theme.clone();
     let compact = app.view.mode == ViewMode::Compact;
     let spacious = app.view.mode == ViewMode::Spacious;
-    let row_height: u16 = if spacious { 2 } else { 1 };
+    let row_height: u16 = app.view.mode.row_height();
     let block_padding: u16 = if spacious { 2 } else { 1 };
     let indexes = app.filtered_indexes();
 

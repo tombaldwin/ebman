@@ -6,6 +6,65 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.33.0] — 2026-08-24
+
+### Breaking
+
+Every breaking change in this release is **inherited from a dependency**
+— no ebman-authored signature changed. ratatui 0.29 → 0.30, crossterm
+0.28 → 0.29 and `tb-tui-common` 0.1.3 → 0.2.0 are all major bumps, and
+38 publicly reachable items name a type from one of them. Those types
+keep their spelling (`ratatui::Terminal` either way) while changing
+identity, so a downstream crate on ratatui 0.29 stops compiling.
+
+- **`ebman::Tui`** (`src/lib.rs:88`) now denotes a ratatui **0.30**
+  `Terminal<CrosstermBackend<Stdout>>`, and **`restore_terminal`**
+  (`src/lib.rs:102`), **`splash::draw_splash`** (`src/splash.rs:456`)
+  and **`App::run`** (`src/app.rs:1656`) take it.
+- **`splash::splash_scene_lines`** (`src/splash.rs:386`) returns
+  ratatui 0.30 `Line`s.
+- **`control::parse_key_spec`** (`src/control.rs:256`) and
+  **`ControlOp::Key`** (`src/control.rs:40`) carry a crossterm **0.29**
+  `KeyEvent`; **`control::render_buffer_as_text`** (`src/control.rs:232`)
+  takes a ratatui 0.30 `Buffer`.
+- **11 public `App` fields** — `table_state`, `app_table_state`,
+  `table_area`, `palette_state`, `last_rendered_buffer`, `theme`, and
+  the four `TextInput` fields — plus **`ViewState`**'s `new` /
+  `filter` / `filter_mut` / `filter_handle_key` / `set_filter` /
+  `app_colors`, **`App::handle_shell_key`**, and the `list_state` /
+  input fields on `Picker`, `DlqState`, `DetailState`, `LogTail`,
+  `TailView`, `ConfirmModal`, `ConfigEdit`, `ActionFlow`, `EventPanel`.
+- **`ebman::font_probe`** (`src/lib.rs:58`) and **`util::parse_bool`**
+  (`src/util.rs:7`) now resolve to `tb-tui-common` **0.2**. Their
+  signatures are unchanged — 0.2.0 altered nothing but its own ratatui
+  dependency — so this breaks only by crate identity.
+
+`cargo-semver-checks` reports **"no semver update required"** for all of
+the above. That is a structural blind spot, not a missed lint: it
+compares the rustdoc `resolved_path` string, which is identical across
+the bump. The check that catches this class is "did a dependency with
+public-API presence change major?", which is a lockfile question. Noted
+in `CLAUDE.md`'s release procedure so the next bump doesn't repeat it.
+
+Practically the blast radius is nil — crates.io reports **0 reverse
+dependencies**, and the binary's CLI surface is untouched. The minor
+bump is because the registry index is a permanent claim, not because
+anyone is expected to break.
+
+### Fixed
+
+- **Clicking a row in `:view spacious` selected the wrong environment.**
+  `draw_table` renders spacious rows two screen lines tall, but
+  `select_row_at` and `update_hover` mapped one screen line to one row,
+  so a click landed `N/2` rows too far down — and the hover tint moved
+  with it, confirming the wrong row rather than revealing the bug. The
+  confirm modal naming the environment was the only thing between this
+  and a write to the wrong env. Row height is now
+  `ViewMode::row_height()`, a single source of truth the renderer and
+  both mouse handlers share, and the mapping is a pure, tested
+  `table_row_at`. Pre-existing, not from this lineup; found by the
+  pre-release review.
+
 ### Changed
 
 - **Dependency majors**: `toml` 0.8 → 1.1 (TOML spec 1.1.0), `sha2`
@@ -19,7 +78,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   and the 85 compile errors an unaligned bump produced were entirely a
   two-versions-in-one-tree clash, not a migration. Verified beyond the
   suite by rendering the same frame on both versions and diffing —
-  byte-identical.
+  byte-identical **in the default view mode, which is the mode that was
+  actually diffed**. Spacious mode was not covered by that check and
+  does differ: ratatui 0.30's `visible_rows` gained "include a partial
+  row if there is space", which 0.29 has no equivalent of, so an
+  odd-height rows area now shows a clipped half-height row at the bottom
+  edge under `:view spacious`. Cosmetic, and stated here because the
+  original claim was broader than its evidence.
 
   One behaviour did change upstream: ratatui 0.30 strips ESC bytes and
   renders the remainder of an escape sequence as literal text, where

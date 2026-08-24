@@ -137,7 +137,7 @@ jobs:
           pattern: ebman-*
           merge-multiple: true
       - name: Attest the build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/ebman-*.tar.gz
       - name: Attach artefacts to release

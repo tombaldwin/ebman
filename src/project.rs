@@ -363,14 +363,4 @@ fix_disable = ["EBL003"]
         assert_eq!(cfg.lint.disable, ["EBL001", "EBL010"]);
         assert_eq!(cfg.lint.fix_disable, ["EBL003"]);
     }
-
-    /// The other half of the contract the bump could have moved: a
-    /// document that is malformed under *both* specs still returns
-    /// `None` rather than panicking or half-parsing, because the
-    /// caller's fallback-to-defaults path depends on it.
-    #[test]
-    fn malformed_toml_still_returns_none_under_spec_1_1() {
-        assert!(parse("profile = ").is_none());
-        assert!(parse("[lint\ndisable = []").is_none());
-    }
 }

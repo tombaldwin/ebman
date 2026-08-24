@@ -1427,6 +1427,13 @@ step will work at tag time.
   grouping on, a selected row, health colours, the group-separator summary
   — on 0.29 and on 0.30 and diffed. Byte-identical.
 
+  **Corrected in the pre-0.33.0 review:** that claim was broader than
+  its evidence. The frame diffed was the *default* view mode. Spacious
+  differs — ratatui 0.30's `visible_rows` gained "include a partial row
+  if there is space" with no 0.29 equivalent, so an odd-height rows area
+  renders a clipped half-height row at the bottom. Cosmetic, but
+  "byte-identical" was asserted about the bump and tested on one mode.
+
 - [x] **The candor gate in `tb-tui-common` moved underfoot.** It passed in
   June and failed on a commit that changed no code at all, because
   `cargo install candor-scan` was unversioned and a newer scanner

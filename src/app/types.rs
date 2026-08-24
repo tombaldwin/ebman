@@ -31,6 +31,22 @@ pub enum ViewMode {
 }
 
 impl ViewMode {
+    /// Screen lines per table row. **The single source of truth** — the
+    /// renderer sizes rows with it and the mouse handlers divide by it
+    /// to map a screen line back to a row index.
+    ///
+    /// It exists because those two disagreed. `draw_table` computed
+    /// `if spacious { 2 } else { 1 }` locally while `select_row_at` and
+    /// `update_hover` assumed one line per row, so in spacious mode a
+    /// click landed on the wrong environment — and the hover tint moved
+    /// with it, confirming the wrong row rather than exposing the bug.
+    pub fn row_height(self) -> u16 {
+        match self {
+            Self::Default | Self::Compact => 1,
+            Self::Spacious => 2,
+        }
+    }
+
     pub fn next(self) -> Self {
         match self {
             Self::Default => Self::Compact,
