@@ -65,6 +65,24 @@ ebman completions bash > ~/.local/share/bash-completion/completions/ebman
 ebman completions fish > ~/.config/fish/completions/ebman.fish
 ```
 
+### `ebman lint --json`, and knowing when a run was incomplete
+
+The payload is `{"issues": [...], "degraded": bool, "degraded_reasons": [...]}`.
+
+`degraded` is the field to check in CI. A probe that cannot run — an
+`AccessDenied` on `iam:SimulatePrincipalPolicy`, a region that fails to
+list — makes its rule **skip** rather than report a false positive,
+which is the right call but means an incomplete run can otherwise look
+like a clean one. `degraded_reasons` says which checks did not happen.
+
+A degraded run exits non-zero, and the reasons are printed to stderr
+**even under `--quiet`**. `--quiet` suppresses per-env chatter; it does
+not suppress the reason a run failed, because a CI step that exits
+non-zero with an empty log is the one outcome nobody can act on.
+
+`--baseline` refuses to snapshot a degraded run outright: adopting one
+would grandfather whatever the outage hid.
+
 ## MCP server (`ebman mcp serve`)
 
 A stdio MCP server exposing ebman's read surface as tools, so Claude Code (or any MCP client) can query fleet state first-class:

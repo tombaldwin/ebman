@@ -348,6 +348,48 @@ pub(crate) fn run_rules(rules: &[Box<dyn Rule>], ctx: &LintContext) -> Vec<Issue
 /// stable, and avoiding the dep keeps `ebman lint --json` fast
 /// to start. The same shape is what a future LLM explainer
 /// would ingest.
+/// The `ebman lint --json` report: the issues, plus whether the run was
+/// degraded and why.
+///
+/// Separate from [`render_issues_json`] on purpose. That one writes the
+/// `--baseline` snapshot, which `parse_baseline` reads back and which
+/// has round-trip tests — adding a field there would change a file
+/// format for the benefit of a different consumer.
+///
+/// The gap this closes: a probe that could not run (AccessDenied on
+/// `iam:SimulatePrincipalPolicy`, say) makes the rule skip rather than
+/// report a false positive, which is right — but it also meant a
+/// degraded run and a clean run produced byte-identical JSON. The human
+/// output distinguishes them; the machine output flattened it back,
+/// which is exactly the distinction `ProbeOutcome::Unknown` exists to
+/// preserve.
+pub(crate) fn render_report_json(issues: &[Issue], degraded_reasons: &[String]) -> String {
+    let issues_json = render_issues_json(issues);
+    // `render_issues_json` returns `{"issues":[…]}`; splice the extra
+    // fields in before the closing brace rather than rebuilding it.
+    let trimmed = issues_json
+        .strip_suffix('}')
+        .unwrap_or(issues_json.as_str());
+    let mut out = String::from(trimmed);
+    out.push_str(",\"degraded\":");
+    out.push_str(if degraded_reasons.is_empty() {
+        "false"
+    } else {
+        "true"
+    });
+    out.push_str(",\"degraded_reasons\":[");
+    for (i, r) in degraded_reasons.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push('"');
+        out.push_str(&json_escape(r));
+        out.push('"');
+    }
+    out.push_str("]}");
+    out
+}
+
 pub(crate) fn render_issues_json(issues: &[Issue]) -> String {
     let mut out = String::from("{\"issues\":[");
     for (i, issue) in issues.iter().enumerate() {
@@ -3204,5 +3246,63 @@ mod tests {
                 "value '{variant}' should be treated as enabled"
             );
         }
+    }
+
+    /// A degraded run and a clean run must not produce identical JSON.
+    ///
+    /// A probe that could not run makes its rule skip rather than report
+    /// a false positive — right, but it meant `--json` emitted the same
+    /// bytes whether every check ran or half were skipped on
+    /// AccessDenied. The human output made the distinction;
+    /// the machine output flattened it back, which is what
+    /// `ProbeOutcome::Unknown` exists to prevent.
+    #[test]
+    fn report_json_distinguishes_a_degraded_run_from_a_clean_one() {
+        let issues: Vec<Issue> = Vec::new();
+
+        let clean = render_report_json(&issues, &[]);
+        assert!(
+            clean.contains(r#""degraded":false"#),
+            "a clean run must say so: {clean}"
+        );
+        assert!(clean.contains(r#""degraded_reasons":[]"#), "{clean}");
+
+        let degraded = render_report_json(
+            &issues,
+            &["EBL020 on api-prod: AccessDenied: iam:SimulatePrincipalPolicy".to_string()],
+        );
+        assert!(
+            degraded.contains(r#""degraded":true"#),
+            "a degraded run must say so: {degraded}"
+        );
+        assert!(
+            degraded.contains("SimulatePrincipalPolicy"),
+            "and must say WHY, or a consumer can only guess: {degraded}"
+        );
+        assert_ne!(
+            clean, degraded,
+            "the whole point: these must not be byte-identical"
+        );
+    }
+
+    /// The report wraps the baseline renderer, so the issues themselves
+    /// must survive the wrapping and the result must still parse.
+    #[test]
+    fn report_json_is_valid_json_and_keeps_the_issues() {
+        let issues = vec![Issue {
+            rule_id: "EBL001".into(),
+            severity: Severity::Warn,
+            env_name: Some("api-prod".into()),
+            title: "single instance".into(),
+            detail: r#"quotes " and \ backslash"#.into(),
+            suggestion: None,
+            fields: Default::default(),
+        }];
+        let body = render_report_json(&issues, &["a \"quoted\" reason".to_string()]);
+        let parsed: serde_json::Value = serde_json::from_str(&body)
+            .unwrap_or_else(|e| panic!("must be valid JSON: {e}\n{body}"));
+        assert_eq!(parsed["issues"][0]["rule_id"], "EBL001");
+        assert_eq!(parsed["degraded"], true);
+        assert_eq!(parsed["degraded_reasons"][0], r#"a "quoted" reason"#);
     }
 }
