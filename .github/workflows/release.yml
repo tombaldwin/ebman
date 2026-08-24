@@ -78,7 +78,7 @@ jobs:
             runner: macos-latest
             archive_ext: tar.gz
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -126,7 +126,7 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -167,7 +167,7 @@ jobs:
     if: (github.event_name == 'release' || github.event_name == 'workflow_dispatch') && !github.event.repository.fork
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # The release event payload's `tag_name` is what was published;
           # workflow_dispatch passes the tag via `inputs.tag`. Either
@@ -212,7 +212,7 @@ jobs:
       id-token: write # GitHub OIDC → registry namespace auth
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.release.tag_name || inputs.tag }}
       - name: Sync server.json version to the release tag
