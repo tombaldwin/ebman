@@ -91,6 +91,39 @@ pub(crate) fn source_files() -> Vec<(String, String)> {
     out
 }
 
+/// Find every production line matching `needle`, as `path:line`.
+///
+/// The shape ten guards in this crate open-code: walk `src/`, skip test
+/// sources, strip comments, look for a string. Extracted so the
+/// *detector* can be tested independently of the tree it walks —
+/// previously the logic lived inside each `#[test]` body, so there was
+/// no way to ask "does this detector detect anything?", and for at least
+/// one of them the answer was "not always".
+///
+/// That is `CLAUDE.md`'s own rule turned on the guards: a guard is
+/// production code for the invariant it holds, so it needs a test of its
+/// own, not just the tree-walk that consumes it.
+pub(crate) fn find_in_production(needle: &str) -> Vec<String> {
+    let mut hits = Vec::new();
+    for (path, text) in source_files() {
+        if is_test_path(&path) {
+            continue;
+        }
+        for (n, line) in text.lines().enumerate() {
+            if strip_line_comment(line).contains(needle) {
+                hits.push(format!("{path}:{}", n + 1));
+            }
+        }
+    }
+    hits
+}
+
+/// Is this path test-only source? Kept beside the scan so every guard
+/// agrees on the answer.
+pub(crate) fn is_test_path(path: &str) -> bool {
+    path.contains("/tests/") || path.ends_with("/tests.rs") || path.ends_with("tests.rs")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,5 +178,37 @@ mod tests {
     fn the_walk_finds_the_tree() {
         let files = source_files();
         assert!(files.iter().any(|(p, _)| p.ends_with("util.rs")));
+    }
+
+    /// The detector must find a planted violation. Without this, a guard
+    /// that finds nothing is indistinguishable from a clean tree — which
+    /// is the exact failure the `split("//")` bug produced.
+    #[test]
+    fn the_detector_finds_something_that_is_there() {
+        // `arboard::` genuinely occurs once in production (inside `yank`).
+        let hits = find_in_production("arboard::");
+        assert!(
+            !hits.is_empty(),
+            "the detector found no `arboard::` anywhere — it is not detecting"
+        );
+        assert!(
+            hits.iter().all(|h| !h.contains("/tests/")),
+            "test sources must be excluded: {hits:?}"
+        );
+    }
+
+    /// And must find nothing for something that genuinely is not there,
+    /// or every guard built on it fires constantly and gets ignored.
+    #[test]
+    fn the_detector_finds_nothing_that_is_not_there() {
+        assert!(find_in_production("ThisIdentifierDoesNotExistAnywhere").is_empty());
+    }
+
+    #[test]
+    fn test_paths_are_recognised() {
+        assert!(is_test_path("src/app/tests/safety.rs"));
+        assert!(is_test_path("src/app/tests.rs"));
+        assert!(!is_test_path("src/app/safety.rs"));
+        assert!(!is_test_path("src/util.rs"));
     }
 }

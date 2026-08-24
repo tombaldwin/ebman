@@ -43,35 +43,18 @@ fn describe_env_dumps_known_fields() {
 
 #[test]
 fn the_clipboard_is_only_reached_through_yank() {
-    // `yank` is stubbed under `cfg(test)` so the suite can't clobber
-    // the clipboard of whoever runs it. That only holds while `yank`
-    // is the sole door: `:update` reached `arboard` directly and every
+    // `yank` is stubbed under `cfg(test)` so the suite can't clobber the
+    // clipboard of whoever runs it. That only holds while `yank` is the
+    // sole door: `:update` reached `arboard` directly once, and every
     // test that ran it wrote to the real clipboard.
-    let mut sites: Vec<String> = Vec::new();
-    let mut stack = vec![std::path::PathBuf::from("src")];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).expect("src dir") {
-            let path = entry.expect("entry").path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if path.extension().and_then(|e| e.to_str()) != Some("rs")
-                // Test code names it in its own assertions.
-                || is_test_source(&path)
-            {
-                continue;
-            }
-            let text = std::fs::read_to_string(&path).expect("read");
-            for (n, line) in text.lines().enumerate() {
-                // Skip the comments that discuss it by name.
-                let code = super::scan::strip_line_comment(line);
-                if code.contains("arboard::") {
-                    sites.push(format!("{}:{}", path.display(), n + 1));
-                }
-            }
-        }
-    }
+    //
+    // The walk and the comment-stripping live in `super::scan`, which
+    // has accuracy tests of its own. They used to be open-coded here,
+    // and the stripper was `line.split("//").next()` — which truncates
+    // inside a string literal, so a call placed after a URL literal on
+    // the same line was invisible to this guard. Demonstrated, not
+    // theorised.
+    let sites = super::scan::find_in_production("arboard::");
     assert_eq!(
         sites.len(),
         1,
