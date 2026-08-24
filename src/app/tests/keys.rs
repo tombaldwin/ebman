@@ -573,3 +573,31 @@ async fn unconsumed_key_in_filter_mode_leaves_the_view_fresh() {
     // The frame after must not trip the freshness assertion.
     let _ = render(&mut app, 120, 30);
 }
+
+#[tokio::test]
+async fn the_control_socket_screen_op_reports_the_last_frame() {
+    // `last_rendered_buffer` has exactly one reader — this — and the run
+    // loop now only populates it when a control socket is attached.
+    // Nothing covered either side of that, so a wrong condition would
+    // have made `ebman ctl screen` return the placeholder forever in
+    // silence.
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
+    app.view.invalidate();
+    app.rebuild_view();
+
+    // No frame captured yet — say so rather than lying with a blank screen.
+    assert!(
+        app.screen_text().contains("no frame rendered yet"),
+        "{}",
+        app.screen_text()
+    );
+
+    // With a frame captured, the op returns its text.
+    app.last_rendered_buffer = Some(render_buf(&mut app, 120, 20));
+    let text = app.screen_text();
+    assert!(
+        text.contains("api-prod"),
+        "the screenshot carries the rendered fleet:\n{text}"
+    );
+}

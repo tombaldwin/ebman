@@ -1363,6 +1363,52 @@ the upgrade command for the detected install channel — touches no AWS)
 and no-arg `:upgrade` (lists compatible platforms, a read; the ARN form
 gates).
 
+#### Structure + tooling review, acted on — 2026-08-24
+
+An invited Rust review of project structure and tooling. Its headline:
+**don't split the crate** — measured 13s incremental, 8s test build, 3.4s
+suite, with cold-build cost dominated by 17 AWS SDK crates a workspace
+split wouldn't touch. Shipped from it:
+
+- [x] Two live wrapped-literal bugs, and a lexer-based guard (five
+  hand-rolled scanners failed first).
+- [x] `tokio-stream` + `aws-types` dropped; `cargo-machete` in CI.
+- [x] MSRV job runs `cargo test`, not just `cargo build`.
+- [x] One CLI write gate + a convergence guard.
+- [x] AWS errors classified from the code AWS reported, not a `Debug`
+      dump — which had a reachable false positive.
+- [x] RAII terminal guard, best-effort restore, `panic = "abort"`.
+- [x] Cached view indices checked.
+- [x] Test suite stops mutating the process environment.
+- [x] Lint probes distinguish "couldn't check" from "clean".
+- [x] `unwrap_used` / `expect_used` denied.
+- [x] Property tests for the four hand-rolled parsers.
+- [x] Nightly `cargo-mutants`; release provenance attestation;
+      dependabot with the AWS crates grouped.
+- [x] Per-frame screen clone gated on the control socket.
+
+**Deferred, because they are breaking changes** and the queued fixes
+should ship as a patch first:
+
+- [ ] **Narrow the public API.** 500 pub items, 107 pub structs, 94% of
+  named-field structs all-`pub`, serving a `main.rs` that touches 12.
+  This is *why* 0.31.0 shipped an accidental breaking change, and it
+  makes `cargo-semver-checks` a permanent tax rather than a safety net.
+  The reviewer's highest-leverage 12-month item. ~2-4h, one big diff.
+- [ ] **Collapse the `Option<T>` + `loading_*: bool` pairs** — 14 of
+  them, 4 representable states for 3 real ones. `enum Fetch<T>` exists
+  one file over as `LogTailStage` and isn't reused. Touches `pub`
+  fields, so it lands with the above.
+- [ ] `ConfirmModal`'s 11 action-gated `Option`s → payloads on `Action`'s
+  variants; `App::mode` + seven partner `Option`s → `Screen` + `Modal`.
+
+**Not doing, with reasons** (the reviewer's own list, and I agree):
+miri (one `unsafe`, FFI it can't execute), `cargo-hack` (zero features),
+fuzzing (proptest covers the same ground for a tenth of the setup),
+`clippy::pedantic` (1712 warnings), coverage as a gate ("coverage
+answers *what's untested*; you're past that and into *are the tests
+load-bearing*, which is mutation's question"), reproducible builds.
+
 #### Terminal lifecycle — 2026-08-23
 
 RAII guard over the alternate screen, a shared best-effort

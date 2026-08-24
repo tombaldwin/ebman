@@ -1703,12 +1703,26 @@ impl App {
             }
             prev_mode = self.mode;
 
+            // The clone exists solely so the control socket's `screen`
+            // op can return the last frame — `last_rendered_buffer` has
+            // exactly one reader. Without a socket attached (the common
+            // case: it needs `--control-socket`) it was a full-screen
+            // allocation every frame that nothing ever read.
+            //
+            // Read `control_rx` directly rather than capturing a flag:
+            // a derived copy is one more thing that can disagree with
+            // the condition it stands for, and nothing tests this path.
+            let want_snapshot = control_rx.is_some();
             let mut snapshot: Option<ratatui::buffer::Buffer> = None;
             terminal.draw(|f| {
                 ui::draw(f, self);
-                snapshot = Some(f.buffer_mut().clone());
+                if want_snapshot {
+                    snapshot = Some(f.buffer_mut().clone());
+                }
             })?;
-            self.last_rendered_buffer = snapshot;
+            if want_snapshot {
+                self.last_rendered_buffer = snapshot;
+            }
             if self.quit {
                 break;
             }

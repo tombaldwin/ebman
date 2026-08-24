@@ -996,16 +996,27 @@ impl App {
     /// Apply a `ControlOp` received over the control socket. Snapshot ops
     /// read the terminal's current back-buffer; key/command ops dispatch
     /// through the normal handlers so all existing bindings still apply.
+    /// The text the control socket's `screen` op returns.
+    ///
+    /// Split out of `handle_control_op` so it can be tested: that
+    /// handler takes a real `Tui`, which a test cannot construct
+    /// without touching the developer's terminal. `last_rendered_buffer`
+    /// has exactly one reader — this — and the run loop only populates
+    /// it when a control socket is attached, so a wrong condition
+    /// either side would make `ebman ctl screen` return the placeholder
+    /// forever, silently.
+    pub(crate) fn screen_text(&self) -> String {
+        self.last_rendered_buffer
+            .as_ref()
+            .map(crate::control::render_buffer_as_text)
+            .unwrap_or_else(|| "(no frame rendered yet)".to_string())
+    }
+
     pub(crate) fn handle_control_op(&mut self, op: crate::control::ControlOp, _terminal: &mut Tui) {
         use crate::control::ControlOp;
         match op {
             ControlOp::Screen(reply) => {
-                let text = self
-                    .last_rendered_buffer
-                    .as_ref()
-                    .map(crate::control::render_buffer_as_text)
-                    .unwrap_or_else(|| "(no frame rendered yet)".to_string());
-                let _ = reply.send(text);
+                let _ = reply.send(self.screen_text());
             }
             ControlOp::Key(ke) => {
                 self.handle_event(Event::Key(ke));
