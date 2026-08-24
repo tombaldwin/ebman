@@ -125,6 +125,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Internal
 
+- **The TUI no longer clones the whole screen on every frame.**
+  `last_rendered_buffer` has exactly one reader — the control socket's
+  `screen` op — so without `--control-socket` it was a full-screen
+  allocation per frame that nothing read. Now gated on the receiver
+  itself rather than a copied flag, since a derived copy is one more
+  thing that can disagree with what it stands for. Both sides of that
+  op are covered for the first time.
+
 - **Release binaries carry a signed build-provenance attestation**,
   verifiable with `gh attestation verify`. The `*.sha256` files prove
   integrity but say nothing about origin — they're produced by the same
