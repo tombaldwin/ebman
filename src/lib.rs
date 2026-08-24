@@ -56,7 +56,7 @@ pub(crate) mod terraform;
 // so existing `crate::font_probe::*` / `crate::overlay::*` paths (and
 // the `ebman::*` paths from the bin) keep working unchanged.
 pub use tui_common::font_probe;
-pub use tui_common::overlay;
+pub(crate) use tui_common::overlay;
 pub(crate) mod demo_fixture;
 pub mod freeze;
 pub(crate) mod mode_action;

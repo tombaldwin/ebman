@@ -116,9 +116,6 @@ pub struct LintContext<'a> {
     /// Operator-set option_settings, flat `(namespace, name, value)`.
     /// Matches the shape `fetch_env_option_settings` returns.
     pub options: &'a [(String, String, String)],
-    /// Cost in USD per month, when `:cost on` has populated it.
-    /// `None` means cost data isn't available — cost-shape rules
-    /// skip rather than flag.
     /// Newer-platform-version available signal. `Some(version)` =
     /// the caller has checked `App.latest_stacks` and confirmed
     /// the env's family has a strictly-newer version (the value).
