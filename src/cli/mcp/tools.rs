@@ -350,7 +350,13 @@ impl Server {
                 // form trips rustc's HRTB inference (same as drift).
                 let mut fetches = Vec::with_capacity(targets.len());
                 for env in targets.iter().copied() {
-                    fetches.push(fetch_env_lint_inputs(&client, env, &latest_stacks, false));
+                    fetches.push(fetch_env_lint_inputs(
+                        &client,
+                        env,
+                        &latest_stacks,
+                        false,
+                        &disabled,
+                    ));
                 }
                 let fetched: Vec<Result<EnvLintInputs, String>> = futures::stream::iter(fetches)
                     .buffered(FETCH_CONCURRENCY)

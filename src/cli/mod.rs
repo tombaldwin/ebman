@@ -261,3 +261,100 @@ mod write_gate_guard {
         );
     }
 }
+
+#[cfg(test)]
+mod write_refusal_tests {
+    use super::write_refusal;
+    use crate::config::Config;
+
+    #[test]
+    fn an_account_pin_is_resolved_against_the_profile_passed_in() {
+        // The hole this pins: `ebman action rollout --profile prod-admin`
+        // dispatched under `prod-admin` while the gate was handed the
+        // ambient `AWS_PROFILE`. With that unset or different, the pin
+        // on `prod-admin` was never consulted — on a multi-region deploy
+        // fan-out, the biggest write the CLI has.
+        //
+        // The gate was correct all along; it was being fed the wrong
+        // input, which is why the convergence guard could not see it —
+        // that guard detects a path *bypassing* the gate, not one
+        // calling it with the wrong account.
+        let mut cfg = Config::default();
+        cfg.safety_accounts.insert("prod-admin".into(), true);
+
+        let refused = write_refusal(&cfg, "api-prod", &Some("prod-admin".into()), None);
+        assert!(
+            refused.is_some_and(|r| r.contains("prod-admin")),
+            "a pinned account must refuse when it is the profile the write runs under"
+        );
+
+        // A different profile is not pinned, and must not be refused —
+        // over-refusing would be its own bug.
+        assert_eq!(
+            write_refusal(&cfg, "api-prod", &Some("dev".into()), None),
+            None
+        );
+    }
+}
+
+#[cfg(test)]
+mod write_gate_input_guard {
+    /// A subcommand that takes `--profile` must feed it to the gate.
+    ///
+    /// `cli_write_paths_do_not_reach_past_the_shared_gate` catches a
+    /// path that skips the gate. It is structurally blind to one that
+    /// *calls* the gate with the wrong account — which is how
+    /// `action rollout` dispatched under `--profile X` while resolving
+    /// `safety.accounts.*.read_only` against the ambient `AWS_PROFILE`.
+    /// A pin on X was simply never consulted.
+    ///
+    /// Scanning is the only way to reach this: the CLI wrapper exits
+    /// the process, so its call sites cannot be exercised in-process.
+    #[test]
+    fn a_subcommand_with_its_own_profile_flag_passes_it_to_the_gate() {
+        let src = std::fs::read_to_string("src/cli/action.rs").expect("read action.rs");
+        // Split into top-level fn bodies so "does this fn parse
+        // --profile" and "what did this fn pass" are asked of the SAME
+        // function, not of the file.
+        let mut offenders: Vec<String> = Vec::new();
+        let mut current_fn = String::new();
+        let mut body = String::new();
+        let check = |name: &str, body: &str, offenders: &mut Vec<String>| {
+            if name.is_empty() || !body.contains("\"--profile\"") {
+                return;
+            }
+            for line in body.lines() {
+                let t = line.trim_start();
+                if t.starts_with("refuse_write(") && t.contains(", None)") {
+                    offenders.push(format!("{name}: {}", t.trim()));
+                }
+            }
+        };
+        for line in src.lines() {
+            if line.starts_with("fn ") || line.starts_with("async fn ") || line.starts_with("pub ")
+            {
+                check(&current_fn, &body, &mut offenders);
+                current_fn = line
+                    .split("fn ")
+                    .nth(1)
+                    .unwrap_or("")
+                    .split('(')
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                body.clear();
+            }
+            body.push('\n');
+            body.push_str(line);
+        }
+        check(&current_fn, &body, &mut offenders);
+
+        assert!(
+            offenders.is_empty(),
+            "these subcommands parse `--profile` but hand the write gate \
+             `None`, so the account pin is resolved against the ambient \
+             AWS_PROFILE instead of the account the write runs under: \
+             {offenders:?}"
+        );
+    }
+}

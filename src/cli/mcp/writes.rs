@@ -270,10 +270,15 @@ impl Server {
         }
         let env_name = arg_str(args, "env").ok_or("'env' is required")?;
 
-        // Freeze + pin gate — run at plan time AND re-run at confirm
-        // (the 60s token window is long enough for an operator to
-        // declare an incident or add a pin between the two; the whole
-        // point of the gates is to stop a write dispatching then).
+        // Freeze + pin gate — run at plan time AND re-run at confirm,
+        // because the 60s token window is long enough for an operator
+        // to declare an incident between the two and the whole point of
+        // the gates is to stop a write dispatching then.
+        //
+        // The FREEZE is what the re-run catches: it is re-read from
+        // disk each time. `safety_cfg` is snapshotted at server
+        // construction, so a *pin* added during a long-lived session is
+        // not seen until restart. This comment used to claim it was.
         let profile = arg_str(args, "profile");
         if let Some(msg) = crate::cli::write_refusal(
             &self.safety_cfg,

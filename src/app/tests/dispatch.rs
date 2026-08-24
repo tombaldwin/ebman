@@ -1044,9 +1044,30 @@ fn every_registry_command_is_covered_by_some_test() {
             test_src.replace_range(start..start + len, "");
         }
     }
+    // Match the command as a WORD, not a substring. A plain
+    // `contains` backed a fictional entry because the name occurred
+    // inside a longer word somewhere in 9k lines of tests, and a
+    // one-letter entry was backed by any occurrence of that letter.
+    //
+    // Residual limit, stated rather than pretended away: a name that
+    // appears as a word anywhere in the test PROSE still counts as
+    // backed. This check can only ask "is there any trace of this
+    // name"; it cannot ask "is there a test that exercises it". That is
+    // why COVERED_INDIVIDUALLY carries a written reason — the reason is
+    // for a human, and this is the tripwire for an entry invented out
+    // of nothing.
+    let word_appears = |needle: &str| {
+        test_src.match_indices(needle).any(|(i, _)| {
+            let before = test_src[..i].chars().next_back();
+            let after = test_src[i + needle.len()..].chars().next();
+            let boundary =
+                |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric() && c != '_' && c != '-');
+            boundary(before) && boundary(after)
+        })
+    };
     let unbacked: Vec<&str> = COVERED_INDIVIDUALLY
         .iter()
-        .filter(|(c, _)| !test_src.contains(*c))
+        .filter(|(c, _)| !word_appears(c))
         .map(|(c, _)| *c)
         .collect();
     assert!(

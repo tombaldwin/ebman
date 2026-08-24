@@ -73,9 +73,15 @@ impl App {
     }
 
     pub(crate) fn export_json(&mut self) {
-        let count = self.view.filtered().len();
-        let mut out = String::from("[\n");
-        for (idx, &i) in self.view.filtered().iter().enumerate() {
+        // Rows are collected and joined rather than emitted with a
+        // "comma unless last" test against the FILTERED length. Those
+        // two disagree the moment a row is skipped — and rows can be
+        // skipped, because a cached view index can outlive a mutation
+        // of `environments`. Skipping the last one left a trailing
+        // comma, i.e. invalid JSON handed to whatever consumes the
+        // clipboard. Joining cannot produce that by construction.
+        let mut rows: Vec<String> = Vec::new();
+        for &i in self.view.filtered() {
             let Some(e) = self.env_at(i) else { continue };
             let cname = if self.view.redact {
                 redact_block(&e.cname)
@@ -86,7 +92,7 @@ impl App {
                 .updated
                 .map(|u| format!("\"{}\"", u.to_rfc3339()))
                 .unwrap_or_else(|| "null".into());
-            out.push_str(&format!(
+            rows.push(format!(
                 "  {{\"name\":\"{}\",\"application\":\"{}\",\"tier\":\"{}\",\"status\":\"{}\",\"health\":\"{}\",\"platform\":\"{}\",\"version\":\"{}\",\"cname\":\"{}\",\"updated\":{}}}",
                 json_escape(&e.name),
                 json_escape(&e.application),
@@ -98,11 +104,11 @@ impl App {
                 json_escape(&cname),
                 updated,
             ));
-            if idx + 1 < count {
-                out.push(',');
-            }
-            out.push('\n');
         }
+        let count = rows.len();
+        let mut out = String::from("[\n");
+        out.push_str(&rows.join(",\n"));
+        out.push('\n');
         out.push(']');
         match yank(&out) {
             Ok(()) => {

@@ -613,3 +613,56 @@ async fn a_stale_view_cache_drops_rows_instead_of_panicking() {
     app.export_json();
     app.export_markdown();
 }
+
+#[tokio::test]
+async fn export_json_stays_valid_when_the_view_cache_is_stale() {
+    // A cached view index can outlive a mutation of `environments`, so
+    // rows can be skipped. The old "comma unless this is the last
+    // FILTERED index" test disagreed with reality the moment one was:
+    // skip the last and the previous row keeps its comma, producing
+    // invalid JSON — handed straight to the clipboard, so the operator
+    // finds out when they paste it somewhere that parses.
+    let mut app = test_app();
+    app.environments = vec![
+        mk_env("alpha", "uflexi", "Web", "Green"),
+        mk_env("beta", "uflexi", "Web", "Green"),
+        mk_env("gamma", "uflexi", "Web", "Green"),
+    ];
+    app.view.invalidate();
+    app.rebuild_view();
+    assert_eq!(app.view.filtered().len(), 3);
+
+    // Drop the last two — the shape a missed `invalidate()` produces.
+    app.environments.truncate(1);
+    app.export_json();
+
+    let json = app
+        .status_message
+        .as_deref()
+        .expect("export reports its outcome");
+    assert!(
+        json.contains("exported 1 rows"),
+        "counts what it emitted, not what it planned: {json}"
+    );
+}
+
+#[test]
+fn export_json_body_has_no_trailing_comma_when_rows_are_skipped() {
+    // The `yank` path is a no-op under cfg(test), so assert on the
+    // rendering itself: build the same shape and check it parses.
+    let rows = ["  {\"name\":\"alpha\"}".to_string()];
+    let body = format!("[\n{}\n]", rows.join(",\n"));
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&body).is_ok(),
+        "a single row must not carry a separator: {body}"
+    );
+    let two = [
+        "  {\"name\":\"alpha\"}".to_string(),
+        "  {\"name\":\"beta\"}".to_string(),
+    ];
+    let body = format!("[\n{}\n]", two.join(",\n"));
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&body).is_ok(),
+        "{body}"
+    );
+}

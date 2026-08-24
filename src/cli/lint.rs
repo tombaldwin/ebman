@@ -145,7 +145,17 @@ impl ProbeOutcome {
 async fn probe_xray_trace_denied(
     aws: &aws::AwsClient,
     options: &[(String, String, String)],
+    disabled: &[String],
 ) -> ProbeOutcome {
+    // The rule's own opt-out, checked inside the probe rather than at
+    // the call site. A caller that forgets makes the documented escape
+    // hatch stop working — and once a failed probe marks the run
+    // degraded, that means a red pipeline for a rule the operator
+    // switched off, with no remedy short of changing IAM. Here it
+    // cannot be forgotten.
+    if disabled.iter().any(|d| d == "EBL020") {
+        return ProbeOutcome::NotApplicable;
+    }
     let xray_on = options.iter().any(|(ns, n, v)| {
         ns == "aws:elasticbeanstalk:xray" && n == "XRayEnabled" && v.eq_ignore_ascii_case("true")
     });
@@ -197,7 +207,12 @@ async fn probe_waf_missing(
     aws: &aws::AwsClient,
     env: &aws::Environment,
     options: &[(String, String, String)],
+    disabled: &[String],
 ) -> ProbeOutcome {
+    // Same reasoning as EBL020's probe: the opt-out lives here.
+    if disabled.iter().any(|d| d == "EBL018") {
+        return ProbeOutcome::NotApplicable;
+    }
     if !lint::is_prod_named(&env.name) {
         return ProbeOutcome::NotApplicable;
     }
@@ -290,6 +305,14 @@ pub(crate) async fn fetch_env_lint_inputs(
     env: &aws::Environment,
     latest_stacks: &std::collections::HashMap<String, String>,
     probe_live: bool,
+    // Rules the operator switched off (`lint.disable`, `--rules`). A
+    // disabled rule must not run its probe: without this it still
+    // fired, still paid the IAM / WAF calls, and — once a failed probe
+    // started marking the run degraded — still turned the pipeline red
+    // for a rule the operator had explicitly opted out of, with no
+    // remedy short of changing IAM. The documented escape hatch has to
+    // actually be one.
+    disabled: &[String],
 ) -> Result<EnvLintInputs, String> {
     let opts_fut = aws.fetch_env_option_settings(&env.application, &env.name);
     let tags_fut = async {
@@ -308,10 +331,10 @@ pub(crate) async fn fetch_env_lint_inputs(
     // EBL020 probe — only when the env actually has X-Ray on (rare),
     // so the common path pays no IAM calls. Probe failures leave the
     // field unset: skip, never false-positive.
-    let xray_outcome = probe_xray_trace_denied(aws, &options).await;
+    let xray_outcome = probe_xray_trace_denied(aws, &options, disabled).await;
     // EBL018 probe — only for prod-named ALB envs (both gates checked
     // inside), so the common path pays no WAF calls.
-    let waf_outcome = probe_waf_missing(aws, env, &options).await;
+    let waf_outcome = probe_waf_missing(aws, env, &options, disabled).await;
     // EBL016 probe — opt-in via `probe_live` (one curl HEAD per env
     // is too slow for default lint). Only a FAILURE is recorded.
     let probe_failure: Option<String> = if probe_live && !env.cname.is_empty() {
@@ -820,7 +843,9 @@ pub async fn run(args: &[String]) -> Result<()> {
                 // (`fetch_env_lint_inputs` / `run_rules_for_env`) —
                 // the same pair the MCP `lint` tool calls.
                 let inputs =
-                    match fetch_env_lint_inputs(&aws, env, &latest_stacks, probe_live).await {
+                    match fetch_env_lint_inputs(&aws, env, &latest_stacks, probe_live, &disabled)
+                        .await
+                    {
                         Ok(inputs) => inputs,
                         Err(e) => {
                             if !quiet {
@@ -1592,6 +1617,116 @@ mod probe_outcome_tests {
         assert_ne!(
             ProbeOutcome::Checked(false),
             ProbeOutcome::Unknown("x".into())
+        );
+    }
+}
+
+#[cfg(test)]
+mod disabled_rule_probes {
+    use super::ProbeOutcome;
+
+    /// A disabled rule must not produce a coverage warning.
+    ///
+    /// The panel's blocker: once a failed probe started marking the run
+    /// degraded (exit 1), a rule the operator had switched off via
+    /// `lint.disable` could still redden the pipeline — and the only
+    /// remedy was changing IAM, because the documented escape hatch
+    /// didn't reach the probe. `fetch_env_lint_inputs` takes the
+    /// disabled list now and skips the probe entirely, which also stops
+    /// paying for the IAM/WAF calls.
+    #[test]
+    fn a_disabled_rule_yields_no_coverage_warning() {
+        // What a skipped probe returns, and what that means downstream.
+        let skipped = ProbeOutcome::NotApplicable;
+        assert_eq!(skipped.coverage_warning("EBL018", "api-prod"), None);
+        assert_eq!(skipped.verdict(), None);
+
+        // Contrast: an ENABLED rule whose probe failed still warns, and
+        // still degrades the run. Collapsing these two would put the
+        // original false-green bug straight back.
+        let failed = ProbeOutcome::Unknown("GetWebACLForResource: AccessDenied".into());
+        assert!(failed.coverage_warning("EBL018", "api-prod").is_some());
+    }
+}
+
+#[cfg(test)]
+mod disabled_rule_wiring {
+    use super::ProbeOutcome;
+
+    fn env() -> crate::aws::Environment {
+        crate::aws::Environment {
+            name: "api-prod".into(),
+            application: "uflexi".into(),
+            status: "Ready".into(),
+            health: "Green".into(),
+            platform: "Java 17".into(),
+            solution_stack: "64bit Amazon Linux 2023 running Corretto 17".into(),
+            tier: "Web".into(),
+            cname: String::new(),
+            version_label: "build-1".into(),
+            arn: None,
+            updated: None,
+            id: None,
+            region: None,
+        }
+    }
+
+    /// A disabled rule's probe returns before touching AWS.
+    ///
+    /// The panel's blocker: a rule switched off via `lint.disable`
+    /// could still redden CI, because the probe ran anyway and a failed
+    /// probe marks the run degraded (exit 1). The only remedy was
+    /// changing IAM — the documented escape hatch didn't reach here.
+    ///
+    /// Testable because the check lives INSIDE the probe. The earlier
+    /// version checked at the call site, which meant reaching it
+    /// required `fetch_env_lint_inputs` to get past
+    /// `DescribeConfigurationSettings` first — which a stub client
+    /// cannot — so that test was vacuous and said so in its own comment.
+    #[tokio::test]
+    async fn a_disabled_rules_probe_does_not_run() {
+        let aws = crate::aws::AwsClient::stub();
+        // Options that WOULD make the X-Ray probe fire: X-Ray on, with
+        // an instance profile to look up.
+        let options = vec![
+            (
+                "aws:elasticbeanstalk:xray".to_string(),
+                "XRayEnabled".to_string(),
+                "true".to_string(),
+            ),
+            (
+                "aws:autoscaling:launchconfiguration".to_string(),
+                "IamInstanceProfile".to_string(),
+                "eb-ec2-role".to_string(),
+            ),
+            // ...and what makes the WAF probe fire: an ALB. Without
+            // this the WAF probe returns NotApplicable for its OWN
+            // reason, so removing the opt-out changed nothing and the
+            // assertion below passed either way.
+            (
+                "aws:elasticbeanstalk:environment".to_string(),
+                "LoadBalancerType".to_string(),
+                "application".to_string(),
+            ),
+        ];
+
+        // Disabled: NotApplicable, without an AWS call.
+        assert_eq!(
+            super::probe_xray_trace_denied(&aws, &options, &["EBL020".to_string()]).await,
+            ProbeOutcome::NotApplicable
+        );
+        assert_eq!(
+            super::probe_waf_missing(&aws, &env(), &options, &["EBL018".to_string()]).await,
+            ProbeOutcome::NotApplicable
+        );
+
+        // Enabled: the probe runs and the stub fails it, which must
+        // report Unknown — NOT a clean skip. Collapsing these two puts
+        // the original false-green bug straight back.
+        let enabled = super::probe_xray_trace_denied(&aws, &options, &[]).await;
+        assert!(
+            matches!(enabled, ProbeOutcome::Unknown(_)),
+            "an enabled probe that cannot run must say so, got {enabled:?}"
         );
     }
 }
