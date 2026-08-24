@@ -925,6 +925,22 @@ The write/freeze pre-tag review (2 lenses) fixed 2 Critical + 2 Important + 1 Mi
 - [x] **Shared verb-dispatch helper** (arch M2) — DONE 2026-08-22 as `CliVerb`, ~40 lines. And it immediately paid for itself: the test asserting the CLI's audit label matches the TUI's for the same verb FAILED, because the CLI wrote `Restart` while the TUI writes `RestartAppServer`. Two consequences, both real — `ebman audit --action` matched half the history either way, and `audit replay` accepted only `Restart`, so **the most common restart in any log, the TUI's, was unreplayable**. The CLI writes the canonical name now and replay accepts both spellings. Original note:  — `dispatch_write` (writes.rs) and `action::run` (cli/action.rs) both hand-map verb→method + the audit pair; a shared `dispatch_verb()` removes the drift surface (~2h).
 - [x] **pin/freeze check-order + freeze-message rendering unified** (arch M3) — DONE 2026-08-22. `freeze::refusal_message` is the one sentence; the CLI's two sites go through `refuse_write`, which does freeze-then-pin like the MCP gate. The order lives in one function now rather than being two bare calls in sequence, which is how it came to differ. Original note:  — CLI checks pin-then-freeze, MCP checks freeze-then-pin; the freeze refusal string is rendered in two places. Cosmetic inconsistency for an operator comparing outputs.
 - [x] **Superseded-token message** (bugs/arch M1) — FIXED 2026-08-22. `WriteState::install` retires the token it replaces (bounded at 8), and `mismatched_token_message` tells a superseded token from an unknown one so the agent knows whether to re-read the newer plan or re-send what it holds. Past the cap it falls back to "unknown", which is honest. Was: CONFIRMED STILL REAL 2026-08-22 (`writes.rs:468`): there is one `pending` slot, so a newer plan replaces the old one and confirming the old token returns "unknown confirm_token", indistinguishable from a typo; distinguish "superseded by a newer plan".
+- [ ] **`lint --quiet` can exit non-zero with nothing to explain it.**
+  `src/cli/lint.rs:866` sets `cycle_degraded = true` when a probe could
+  not run, then gates only the `eprintln!` on `!quiet`. So `--quiet`
+  suppresses the reason while keeping the failing exit code — a red CI
+  step with an empty log. Either `--quiet` should also stop degrading
+  the exit, or the degrade reason needs a channel `--quiet` doesn't
+  silence. Noted 2026-08-24; verified still live at 0.33.0.
+
+- [ ] **`lint --json` has no degraded field.** `coverage_warnings`
+  reaches `eprintln!` only (`src/cli/lint.rs:866-872`) and never enters
+  the JSON payload, so a machine consumer cannot tell a clean run from
+  one where a probe was skipped on AccessDenied — which is exactly the
+  distinction `ProbeOutcome::Unknown` was introduced to preserve. The
+  human output makes it; the JSON output flattens it back. Noted
+  2026-08-24; verified still live at 0.33.0.
+
 - [ ] **CLI rollout/auto-rollback freeze is start-only** (bugs M3) — a freeze declared mid-rollout doesn't stop later regions; matches the pin start-gate semantics, flagged as a conscious choice.
 
 #### Also queued for 0.28
