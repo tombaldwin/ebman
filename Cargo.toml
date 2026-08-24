@@ -74,7 +74,7 @@ serde_yml = "0.0"
 # the project's hand-rolled JSON output convention. We use serde_yml
 # for response parsing (JSON is a YAML subset).
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
-sha2 = "0.10"
+sha2 = "0.11"
 
 [lints.clippy]
 # Compiler-enforced versions of two rules this codebase already follows
