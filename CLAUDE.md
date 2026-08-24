@@ -136,8 +136,8 @@ When the user asks to cut a release (e.g. "tag 0.X", "ship the release", "prepar
 
 1. **Audit `docs/` against the shipped code before tagging.** The `src/commands.rs` registry is the source of truth for command help — CI pins it to the dispatch arms, but it does *not* pin it to `docs/commands.md`. Diff the registry's command names against `docs/commands.md` and add any that shipped this cycle. Then walk:
    - `docs/keys.md` — every new keybinding added in the lineup is in the table (normal mode / Detail / DLQ section, whichever applies).
-   - `docs/configuration.md` — every new `config.toml` / `.ebman/ebman.toml` key in the lineup is documented; TOML examples actually parse.
-   - `docs/headless.md` — every new top-level `ebman <subcommand>` (from `src/main.rs`'s dispatch) is mentioned.
+   - `docs/configuration.md` — **automated** by `docs_drift::every_config_key_is_documented`; every key the parser accepts must appear there. Still check by hand that the TOML examples actually parse.
+   - `docs/headless.md` — **automated** by `docs_drift::every_subcommand_is_documented`. Still check by hand that flags and exit codes match.
    - `docs/fonts.md` / `docs/safety-and-privacy.md` / `docs/development.md` — spot-check for stale references to commands, files, or behaviours that changed this cycle.
    - `README.md` — any feature it specifically calls out (e.g. the Triage workflow's `:rollback`) still works as described.
 
