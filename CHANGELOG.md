@@ -8,7 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Breaking
 
-- **The public API is narrowed from 2430 items to 126.** Everything the
+- **The public API is narrowed from 4565 items to 212** — `cargo
+  public-api` with no flags, which is what the tool prints if you just
+  run it. Excluding auto-derived and blanket impls
+  (`--omit auto-derived-impls,auto-trait-impls,blanket-impls`) it is 67.
+  Everything the
   library exposed beyond what `src/main.rs` actually consumes is now
   `pub(crate)`. If you were using `ebman` as a library — and crates.io
   reports **0 reverse dependencies**, so this is hypothetical — anything

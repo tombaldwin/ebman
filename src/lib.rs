@@ -19,11 +19,12 @@
 //! **Read the module list below as modules, not as surface.** An
 //! earlier version of this note said "only the nine modules `main.rs`
 //! needs are public" and left the impression that the API was about
-//! nine things. It was 2430 items. `pub mod app` alone carried 1874 of
+//! nine things. It was 4565 items. `pub mod app` alone carried most of
 //! them, because a public module re-exports everything `pub` inside it
 //! — `App`'s 91 public fields, the mode types, `ViewState`, the lot.
 //! Narrowing the *modules* had barely moved the number; narrowing the
-//! items took it to 126.
+//! items took it to 212. (Both figures are `cargo public-api` with no
+//! flags; omitting auto-derived and blanket impls the surface is 67.)
 //!
 //! The cost of leaving it wide was not theoretical. Adding a field to
 //! an internal struct was a semver event twice in two releases —
