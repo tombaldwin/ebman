@@ -682,6 +682,25 @@ fn parse_lint_args(args: &[String]) -> Result<LintArgs, String> {
     })
 }
 
+/// Record why a lint cycle degraded.
+///
+/// Print it, keep it for `--json`, set the flag — all three together,
+/// because they were three separate statements and two of them kept
+/// getting missed. Every site gated its message on `!quiet` while still
+/// setting the flag, so `--quiet` produced a non-zero exit with an empty
+/// log; and none of them reached the JSON payload, so a machine consumer
+/// could not tell a degraded run from a clean one.
+///
+/// `--quiet` suppresses per-env chatter. It was never meant to suppress
+/// the reason a run failed, and a CI step that exits non-zero with
+/// nothing in the log is the one outcome nobody can act on. Pinned by
+/// `every_degrade_goes_through_the_helper`.
+fn degrade(reasons: &mut Vec<String>, degraded: &mut bool, reason: String) {
+    eprintln!("warning: {reason}");
+    reasons.push(reason);
+    *degraded = true;
+}
+
 pub async fn run(args: &[String]) -> Result<()> {
     let LintArgs {
         env_name,
@@ -772,30 +791,38 @@ pub async fn run(args: &[String]) -> Result<()> {
         // neither page on it (a shrunk set reads as a false all-clear
         // mid-outage) nor adopt it as the new baseline.
         let mut cycle_degraded = false;
+        // Why the cycle degraded, not just that it did.
+        //
+        // Every site that sets `cycle_degraded` used to gate its message
+        // on `!quiet` — so `--quiet` produced a NON-ZERO exit with an
+        // empty log, which is the one combination a CI step cannot act
+        // on. `--quiet` is for suppressing per-env chatter; it was never
+        // meant to suppress the reason a run failed. These are collected
+        // here so they can be printed unconditionally AND carried into
+        // the `--json` payload, which had no degraded field at all.
+        let mut degrade_reasons: Vec<String> = Vec::new();
         for region_opt in &regions {
             let aws = match aws::AwsClient::with(None, region_opt.clone()).await {
                 Ok(c) => c,
                 Err(e) => {
-                    if !quiet {
-                        let region_label = region_opt.as_deref().unwrap_or("default");
-                        eprintln!(
-                            "warning: skipping region '{region_label}' — AwsClient::with: {e}"
-                        );
-                    }
-                    cycle_degraded = true;
+                    let region_label = region_opt.as_deref().unwrap_or("default");
+                    degrade(
+                        &mut degrade_reasons,
+                        &mut cycle_degraded,
+                        format!("skipping region '{region_label}' — AwsClient::with: {e}"),
+                    );
                     continue;
                 }
             };
             let envs = match aws.list_environments().await {
                 Ok(envs) => envs,
                 Err(e) => {
-                    if !quiet {
-                        let region_label = region_opt.as_deref().unwrap_or("default");
-                        eprintln!(
-                            "warning: skipping region '{region_label}' — list_environments: {e}"
-                        );
-                    }
-                    cycle_degraded = true;
+                    let region_label = region_opt.as_deref().unwrap_or("default");
+                    degrade(
+                        &mut degrade_reasons,
+                        &mut cycle_degraded,
+                        format!("skipping region '{region_label}' — list_environments: {e}"),
+                    );
                     continue;
                 }
             };
@@ -848,13 +875,11 @@ pub async fn run(args: &[String]) -> Result<()> {
                     {
                         Ok(inputs) => inputs,
                         Err(e) => {
-                            if !quiet {
-                                eprintln!(
-                                    "warning: skipping {} — fetch_env_option_settings: {e}",
-                                    env.name
-                                );
-                            }
-                            cycle_degraded = true;
+                            degrade(
+                                &mut degrade_reasons,
+                                &mut cycle_degraded,
+                                format!("skipping {} — fetch_env_option_settings: {e}", env.name),
+                            );
                             continue;
                         }
                     };
@@ -863,13 +888,8 @@ pub async fn run(args: &[String]) -> Result<()> {
                 // false positive — but silence here made an
                 // AccessDenied on iam:SimulatePrincipalPolicy look
                 // identical to a passing check, in output that gates CI.
-                if !inputs.coverage_warnings.is_empty() {
-                    cycle_degraded = true;
-                    if !quiet {
-                        for w in &inputs.coverage_warnings {
-                            eprintln!("warning: {w}");
-                        }
-                    }
+                for w in &inputs.coverage_warnings {
+                    degrade(&mut degrade_reasons, &mut cycle_degraded, w.clone());
                 }
                 let mut issues = run_rules_for_env(&rules, env, &inputs, &safety_cfg.required_tags);
                 if let Some(min) = severity_filter {
@@ -1122,7 +1142,10 @@ pub async fn run(args: &[String]) -> Result<()> {
         let baseline_mode = baseline_write.is_some() || baseline_against.is_some();
         if !quiet && !baseline_mode {
             if json {
-                println!("{}", lint::render_issues_json(&all_issues));
+                println!(
+                    "{}",
+                    lint::render_report_json(&all_issues, &degrade_reasons)
+                );
             } else if all_issues.is_empty() {
                 println!("✓ No issues found");
             } else {
@@ -1728,5 +1751,56 @@ mod disabled_rule_wiring {
             matches!(enabled, ProbeOutcome::Unknown(_)),
             "an enabled probe that cannot run must say so, got {enabled:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod degrade_guard {
+    /// Every degrade must go through `degrade`, so that printing the
+    /// reason, keeping it for `--json`, and setting the flag cannot come
+    /// apart again.
+    ///
+    /// They were three separate statements and two kept getting missed:
+    /// all four sites gated the message on `!quiet` while still setting
+    /// the flag, giving a non-zero exit with an empty log, and none
+    /// reached the JSON payload. Consolidating fixed today's four; this
+    /// stops the fifth being written the old way.
+    ///
+    /// Two things about HOW it scans, both learned the hard way in this
+    /// codebase. The needle is assembled from fragments rather than
+    /// written as one literal, because a guard whose own source contains
+    /// what it searches for finds itself — the first version of this
+    /// test failed with three matches, all of them its own doc comment,
+    /// scan line and failure message. And it stops at the test module,
+    /// so a future test that quotes the pattern cannot trip it either.
+    #[test]
+    fn every_degrade_goes_through_the_helper() {
+        let src = std::fs::read_to_string("src/cli/lint.rs").expect("read lint.rs");
+        // Production source only: everything before the first test module.
+        let prod = match src.find("#[cfg(test)]") {
+            Some(i) => &src[..i],
+            None => src.as_str(),
+        };
+        // Assembled, so this line is not itself a match.
+        let needle = format!("cycle_degraded{}true", " = ");
+        let bare = prod.matches(needle.as_str()).count();
+        assert_eq!(
+            bare, 0,
+            "found {bare} bare assignment(s) to the degraded flag; route it \
+             through `degrade(&mut degrade_reasons, &mut cycle_degraded, reason)` \
+             so the reason reaches stderr and --json, not just the exit code"
+        );
+        // And the helper must still do all three things.
+        let helper = prod
+            .split("fn degrade(")
+            .nth(1)
+            .expect("the `degrade` helper must exist");
+        let body = &helper[..helper.find("\n}").unwrap_or(helper.len())];
+        assert!(body.contains("eprintln!"), "degrade must print the reason");
+        assert!(
+            body.contains("push(reason)"),
+            "degrade must keep the reason for --json"
+        );
+        assert!(body.contains("*degraded"), "degrade must set the flag");
     }
 }

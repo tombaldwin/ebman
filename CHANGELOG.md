@@ -51,6 +51,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **`ebman lint --quiet` could exit non-zero with an empty log.** Every
+  site that degraded a run gated its explanation on `!quiet` while still
+  failing the exit, so a CI step went red with nothing to act on.
+  `--quiet` suppresses per-env chatter; it never meant "suppress the
+  reason this failed". Degrade reasons now always reach stderr.
+- **`ebman lint --json` had no degraded field.** A run where probes were
+  skipped on `AccessDenied` emitted byte-identical JSON to a clean one —
+  flattening exactly the distinction `ProbeOutcome::Unknown` exists to
+  preserve. The payload now carries `degraded` and `degraded_reasons`.
+  The `--baseline` format is unchanged.
+
 - **A read-only env could still have its CNAME swapped.** A swap
   rewrites both environments' DNS, so it writes to the target as much as
   the source — but every gate on the path checked the source
