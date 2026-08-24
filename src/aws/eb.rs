@@ -160,7 +160,7 @@ pub(crate) struct ConfigOption {
     /// rendered (operator-set vs default distinction is enough
     /// signal); kept on the struct because a future "hide read-only
     /// options" filter would consume it.
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     pub user_defined: Option<bool>,
     pub min_value: Option<i32>,
     pub max_value: Option<i32>,

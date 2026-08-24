@@ -694,7 +694,7 @@ pub(crate) const PARTITIONS: &[Partition] = &[
 // exists, so this cannot be broken by an edit without a test failing
 // first. That test is what makes the `expect` honest rather than
 // hopeful.
-#[allow(clippy::expect_used)]
+#[expect(clippy::expect_used)]
 fn commercial() -> &'static Partition {
     PARTITIONS
         .iter()
@@ -889,7 +889,7 @@ mod partition_guard {
         // `commercial()` unwraps this lookup with an `expect`, which is
         // only honest while the table actually contains the entry. This
         // is what makes it so, rather than trusting a reading of the
-        // file — the `#[allow(clippy::expect_used)]` there points here.
+        // file — the `#[expect(clippy::expect_used)]` there points here.
         assert!(
             super::PARTITIONS.iter().any(|p| p.arn == "aws"),
             "the commercial partition is the fallback for every \

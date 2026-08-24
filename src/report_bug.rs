@@ -32,7 +32,7 @@ pub(crate) struct ScrubContext {
     /// already redacts the account ID from any payload text. Kept
     /// on the struct because future scrubbing rules (e.g. exact
     /// match against a `friendly_account_name`) will want it.
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     pub account_id: Option<String>,
     pub profile: Option<String>,
     pub region: Option<String>,

@@ -537,7 +537,7 @@ impl Server {
             // between. Restructuring to carry the value down from that
             // check would need the lock guard threaded through the
             // early-return arms for no safety gain.
-            #[allow(clippy::expect_used)]
+            #[expect(clippy::expect_used)]
             {
                 st.pending.take().expect("checked above under this lock")
             }

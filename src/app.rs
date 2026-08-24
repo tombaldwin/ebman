@@ -2904,7 +2904,7 @@ where
 /// so each of the four early-return paths in `spawn_deploy_from_local`
 /// stays one line. Free function (not a method) so it can be called from
 /// the async closure without borrowing `self`.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn finish_deploy_from_local(
     tx: &tokio::sync::mpsc::UnboundedSender<AppMsg>,
     gen: u64,
@@ -3021,7 +3021,7 @@ pub(crate) struct PendingDispatch {
 /// `Single` re-uses `App::spawn_action`; the batch variants
 /// re-use the per-env `spawn_batch_*` helpers in a loop.
 // See the matching allow on `ActionFlow` — same trade-off.
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant)]
 #[derive(Clone)]
 pub(crate) enum PendingDispatchKind {
     /// A single Y/TypeName-confirm dispatch — preserves the full

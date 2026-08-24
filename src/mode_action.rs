@@ -224,7 +224,7 @@ pub(crate) const ACTIONS: &[Action] = &[
 // pattern-match site for ~zero perceptible runtime benefit at
 // the modal's once-per-action allocation cadence. Allow rather
 // than absorb the churn.
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant)]
 pub(crate) enum ActionFlow {
     Menu {
         list_state: ListState,
