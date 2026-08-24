@@ -158,7 +158,7 @@ fn no_lint_caller_flattens_a_failed_tag_fetch_into_an_empty_list() {
     ] {
         let code: String = src
             .lines()
-            .map(|l| l.split("//").next().unwrap_or(""))
+            .map(super::scan::strip_line_comment)
             .collect::<Vec<_>>()
             .join("\n");
         // Find each tag-keys binding and check the WHOLE expression,

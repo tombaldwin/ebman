@@ -10,19 +10,65 @@ This file is read by Claude Code (and similar agents) on session start. Follow i
 
 When the user asks for autonomous work (e.g. "run autonomously", "build all the above", "next", or any directive to ship multiple items without per-step approval), you **must**:
 
-1. **Build green before claiming done.** `cargo build` must succeed with no new warnings. `cargo test` must pass. If either fails, fix it before moving on.
+1. **Build green before claiming done.** All three, in this order:
+
+   ```bash
+   cargo fmt --all
+   cargo clippy --all-targets -- -D warnings
+   cargo test
+   ```
+
+   Not `cargo build`. It does not run clippy, and it does not compile
+   test targets — which is where most of the recent work lives, so "no
+   new warnings" from a bare build covers none of it. CI runs fmt and
+   clippy and will reject what a build-only check passed.
+
+   Two gates run in CI that you cannot easily reproduce and should think
+   about before pushing, not after: **candor** (a render path that
+   reaches the network / LLM / filesystem fails the build) and
+   **cargo-deny**.
 
 2. **Self-review every meaningful change.** After each substantive feature or pass, perform a code review against the changes you made and surface bugs, design issues, dead code, missed edge cases, and inconsistencies. The review goes in your message back to the user — not just internal thinking.
 
-3. **Act on review findings — don't just list them.** Anything you identify in a self-review that is a bug, an inconsistency, dead code, or a borderline-design choice that could be tightened *must be fixed in the same turn*, unless the user has been asked and has explicitly deferred it. "I noticed X but left it" is not acceptable in autonomous mode.
+3. **Act on review findings — don't just list them, but keep them
+   separable.** Fix them in the same *run*; put them in *separate
+   commits*. "Same turn" was being read as "same commit", which mixed a
+   feature, three drive-by fixes and a refactor into one diff and
+   destroyed `git bisect` on precisely the class of subtle regression
+   this codebase keeps hitting. CONTRIBUTING.md asks contributors for a
+   change that does one thing; the same applies here.
 
-4. **Add tests for new pure logic.** Any new helper / parser / pure function (sorting, filtering, formatting, parsing config, etc.) needs at least one `#[cfg(test)]` test covering happy path and obvious failure modes. Extract pure logic out of UI/event handlers when needed to make it testable.
+   The original rule, which still holds: Anything you identify in a self-review that is a bug, an inconsistency, dead code, or a borderline-design choice that could be tightened *must be fixed in the same turn*, unless the user has been asked and has explicitly deferred it. "I noticed X but left it" is not acceptable in autonomous mode.
+
+4. **Show every guard can fail.** A test that cannot fail is worse than
+   none, because it reads as coverage. Any new guard or invariant test
+   must be demonstrated to fail against the thing it guards — use
+   `scripts/mutate.sh` and put the `CAUGHT` line in your report. This is
+   not ceremony: a guard in this repo was found passing clean against
+   the exact violation it existed to stop, and had been for months.
+
+   Also add tests for new pure logic. Any new helper / parser / pure function (sorting, filtering, formatting, parsing config, etc.) needs at least one `#[cfg(test)]` test covering happy path and obvious failure modes. Extract pure logic out of UI/event handlers when needed to make it testable.
 
 5. **Update `BACKLOG.md`** when items move from pending → done, or when new items are discovered. Keep the "Done" and "Backlog" sections in sync with reality.
 
 ## Stop conditions — skip and continue, don't halt
 
 If an autonomous-mode item hits any of these, **skip it and move to the next item in the run.** Don't halt the whole run; don't ask permission mid-stream. Record the skip in the final summary message so the user can pick it up later.
+
+- **Widening an allowlist to make a guard go quiet.** When a guard
+  fires, the fix is the code, not the list. Adding a name to
+  `HOME_CLIENT_IS_CORRECT_BECAUSE`, `ITEMS_IS_CORRECT_BECAUSE` or
+  `COVERED_INDIVIDUALLY`, bumping a `const KNOWN: usize`, adding a
+  RUSTSEC id to `deny.toml`'s `ignore`, or reaching for `#[allow(...)]`
+  — all of it is a stop condition, not a step.
+
+  This is here because it is the cheapest wrong path in the repo and it
+  always works. Every guard has an escape hatch; every hatch is shorter
+  than the fix; and a one-line addition with a plausible reason produces
+  a diff that reads as considered. Fluent justification is the easiest
+  thing to generate and the hardest to falsify, which is exactly why
+  this decision is not yours to make mid-run. Skip the item, say which
+  guard fired and what it would have taken, and let the maintainer rule.
 
 - A destructive AWS action that wasn't pre-authorised.
 - A refactor that touches more than ~3 modules and isn't clearly required by the current task.
@@ -50,6 +96,15 @@ The final message must explicitly list **skipped items** alongside what shipped,
 - **A mutation experiment must be proven to have applied.** `cargo fmt` reformats — a multi-line match arm becomes one line — so a `replace` written against the pre-fmt shape silently no-ops and the test "passes" the mutation. That happened here: a fix was reported as shipped while the code path still called the old function, and the test only proved a neighbouring property. Assert the string matched, or count occurrences before and after, before believing a mutation result.
 - **Use `scripts/mutate.sh` for mutation experiments.** It encodes the four rules below that each cost a real mistake: back up with `cp` (never `git checkout`), prove the mutation applied (a `sed` written against the pre-`fmt` shape silently no-ops and the test "passes" the mutation), treat a run with no `test result:` line as inconclusive rather than a pass (a mutation that doesn't compile looks identical to one the tests ignored — this was misread twice in one session), and restore on every exit path.
 - **Clean up after a mutation sweep.** Each experiment is a fresh compile and cargo never garbage-collects the dep artefacts left behind: one session accumulated **427 GiB** in `target/` and filled the disk mid-run. `scripts/mutate.sh` warns past 40G; `cargo clean` fixes it and a fresh `target/` is about 7G.
+- **Source-scanning guards go through `src/app/tests/scan.rs`.** Don't
+  hand-roll a tree walk or a comment stripper. Eight guards each carried
+  `line.split("//").next()`, which truncates at a `//` inside a string
+  literal — so everything after a URL literal was invisible to all of
+  them, including the guard that stops tests touching the developer's
+  clipboard. Five hand-rolled *literal* scanners had already taught this
+  lesson once; it wasn't generalised. The shared helper has its own
+  accuracy tests, including the URL case.
+
 - **Never `git checkout <file>` while it carries uncommitted work** — it is a silent destructive revert of everything unstaged in that file, not an undo of the last edit. To back out a mutation experiment, `cp` the file first and restore from that copy; back up the file the mutation actually edits, not the one you meant to edit. Commit before experimenting.
 
 ## What "done" looks like for each landed item

@@ -25,6 +25,16 @@ set -uo pipefail
 FILE=${1:?usage: mutate.sh <file> <sed-expr> [test-filter]}
 EXPR=${2:?usage: mutate.sh <file> <sed-expr> [test-filter]}
 FILTER=${3:-}
+# `cargo test --lib` below does not compile `src/main.rs`, so a mutation there
+# is unconditionally NOT CAUGHT no matter how well tested it is. Refuse rather
+# than report a false negative.
+case "$FILE" in
+  */main.rs|main.rs)
+    echo "REFUSED — $FILE is the binary, and this script runs \`cargo test --lib\`," >&2
+    echo "  which does not compile it. Every mutation here would report NOT CAUGHT" >&2
+    echo "  regardless of coverage. Use \`cargo test --all-targets\` by hand." >&2
+    exit 2 ;;
+esac
 BAK=$(mktemp -t "$(basename "$FILE")")
 cp "$FILE" "$BAK"
 # proptest records a seed for every failure it sees. A failure this
@@ -52,6 +62,7 @@ if [ "$before" = "$after" ]; then
 fi
 echo "mutation applied to $FILE"
 
+RESULT=0
 out=$(cargo test --lib ${FILTER:+"$FILTER"} 2>&1)
 if ! grep -q "^test result:" <<<"$out"; then
     echo "INCONCLUSIVE — no test result line. The mutation probably did not"
@@ -78,6 +89,12 @@ if grep -q "test result: FAILED" <<<"$out"; then
 else
     echo "NOT CAUGHT — the suite is green with this mutation applied."
     echo "  Whatever you were about to claim this code is covered by, it isn't."
+    # Exit NON-ZERO. This used to exit 0, identically to CAUGHT — so the one
+    # outcome meaning "your test is fiction" reported success to anything
+    # reading the status, including an `&&` chain or an agent. The preamble
+    # above lists three occasions a mutation result was misread; that made
+    # four.
+    RESULT=1
 fi
 
 # Disk. Each experiment is a fresh compile, and cargo never collects the
@@ -90,3 +107,5 @@ if [ -n "${size_gb:-}" ] && [ "$size_gb" -gt 40 ]; then
     echo "  Mutation sweeps accumulate dep artefacts that cargo does not"
     echo "  garbage-collect. A fresh target is about 7G."
 fi
+
+exit $RESULT

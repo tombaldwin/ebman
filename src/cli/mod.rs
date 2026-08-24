@@ -246,7 +246,7 @@ mod write_gate_guard {
                 // exercise `pin_reason` directly.
                 let prod = text.split("#[cfg(test)]").next().unwrap_or("");
                 for (n, line) in prod.lines().enumerate() {
-                    let code = line.split("//").next().unwrap_or("");
+                    let code = crate::app::tests::scan::strip_line_comment(line);
                     if code.contains(".pin_reason(") {
                         offenders.push(format!("{}:{}", path.display(), n + 1));
                     }

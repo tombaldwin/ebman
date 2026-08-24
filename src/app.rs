@@ -3505,4 +3505,4 @@ fn open_url(url: &str) -> std::result::Result<(), String> {
 use crate::util::json_escape;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
