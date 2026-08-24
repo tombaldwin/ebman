@@ -154,6 +154,12 @@ impl App {
                     let action = ACTIONS[idx];
                     self.advance_action_flow(action);
                 }
+                // Everything else — including `AbortUpdate`, which had its own
+                // arm above producing a byte-identical modal. `cargo mutants`
+                // flagged deleting that arm as surviving the suite, and the
+                // reason was not a missing test: the arm was redundant, so
+                // removing it genuinely changed nothing. An equivalent mutant
+                // pointing at real duplication.
                 _ => {}
             },
             ActionFlow::SwapTarget { picker, .. } => match key.code {
@@ -442,28 +448,6 @@ impl App {
                 // to the form opener.
                 self.close_action_flow();
                 self.cmd_capacity();
-            }
-            Action::AbortUpdate => {
-                self.action_flow = Some(ActionFlow::Confirm(ConfirmModal {
-                    params: ParameterisedAction::default(),
-                    action,
-                    target_env: env.name.clone(),
-                    typed: TextInput::new(),
-                    kind: ConfirmKind::YesNo,
-                    dryrun: None,
-                    loading_dryrun: false,
-                    recent_events: None,
-                    loading_events: false,
-                    traffic_warning: compute_traffic_warning(&env),
-                    version_preview: None,
-                    loading_version_preview: false,
-                    health_check_probe: None,
-                    loading_health_check: false,
-                    unavailability_line: None,
-                    loading_unavailability: false,
-                    lint_issues: None,
-                    loading_lint: false,
-                }));
             }
             _ => {
                 self.action_flow = Some(ActionFlow::Confirm(ConfirmModal {
