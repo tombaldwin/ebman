@@ -28,7 +28,7 @@ use portable_pty::{CommandBuilder, MasterPty, PtyPair, PtySize};
 /// `--demo` mode constructs a fake session that pre-loads canned content
 /// into the parser without spawning a real subprocess. For real sessions
 /// all three are populated; for demo sessions all three are `None`.
-pub struct ShellSession {
+pub(crate) struct ShellSession {
     pub parser: Arc<Mutex<vt100::Parser>>,
     pub writer: Option<Box<dyn Write + Send>>,
     pub master: Option<Box<dyn MasterPty + Send>>,
@@ -54,7 +54,7 @@ pub struct ShellSession {
 /// `CHARS_PER_TICK` bytes per tick, and after a chunk that contained a
 /// newline, hold for `NEWLINE_PAUSE_TICKS` ticks before resuming.
 /// Tuning targets ~3-5 seconds total for a typical session transcript.
-pub struct DemoTyperState {
+pub(crate) struct DemoTyperState {
     bytes: Vec<u8>,
     pos: usize,
     skip_ticks: u8,
@@ -77,7 +77,7 @@ impl ShellSession {
     /// Spawn `command` with the given `args` inside a fresh PTY sized for
     /// `rows × cols`. Returns once the subprocess has been launched; the
     /// background reader task continues feeding `vt100::Parser`.
-    pub fn spawn(
+    pub(crate) fn spawn(
         command: &str,
         args: &[&str],
         rows: u16,
@@ -158,7 +158,7 @@ impl ShellSession {
     /// Keystrokes into a demo session are silently dropped (`send()`
     /// no-ops when `writer` is `None`); F12 (and Esc, demo-only)
     /// detaches as usual.
-    pub fn demo(label: String, content: &str, rows: u16, cols: u16) -> Self {
+    pub(crate) fn demo(label: String, content: &str, rows: u16, cols: u16) -> Self {
         let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 1000)));
         let demo_typer = Some(Mutex::new(DemoTyperState {
             bytes: content.as_bytes().to_vec(),
@@ -183,7 +183,7 @@ impl ShellSession {
     /// content. The run loop's `shell_tick` (~30 fps when a shell is
     /// open) calls this every frame so the typewriter animates at the
     /// expected pace.
-    pub fn tick_demo_typer(&self) {
+    pub(crate) fn tick_demo_typer(&self) {
         let Some(typer_mtx) = self.demo_typer.as_ref() else {
             return;
         };
@@ -215,7 +215,7 @@ impl ShellSession {
 
     /// Forward bytes from a keyboard event to the PTY master. No-op on a
     /// demo session (no PTY behind it).
-    pub fn send(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+    pub(crate) fn send(&mut self, bytes: &[u8]) -> std::io::Result<()> {
         if let Some(writer) = self.writer.as_mut() {
             writer.write_all(bytes)?;
             writer.flush()?;
@@ -226,7 +226,7 @@ impl ShellSession {
     /// Resize the PTY to match a new pane size. No-op on failure. For a
     /// demo session, only the parser's `set_size` runs (no PTY to
     /// resize).
-    pub fn resize(&self, rows: u16, cols: u16) {
+    pub(crate) fn resize(&self, rows: u16, cols: u16) {
         if let Some(master) = self.master.as_ref() {
             let _ = master.resize(PtySize {
                 rows,
@@ -245,14 +245,14 @@ impl ShellSession {
     /// session when the user's `exit` / ^D propagates. Demo sessions
     /// never report dead (they're closed explicitly via F12 + the
     /// existing `close_shell_session` path).
-    pub fn is_dead(&self) -> bool {
+    pub(crate) fn is_dead(&self) -> bool {
         !self.reader_alive.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Best-effort kill of the subprocess. Called when the user explicitly
     /// closes the pane (vs. F12 detach which keeps the session live).
     /// No-op on a demo session.
-    pub fn kill(&mut self) {
+    pub(crate) fn kill(&mut self) {
         if let Some(child) = self.child.as_mut() {
             let _ = child.kill();
         }
@@ -265,7 +265,7 @@ impl ShellSession {
 ///   Ctrl-A..Z → 0x01..0x1A (xterm convention)
 ///   Alt-K     → ESC then K
 ///   Plain     → the character bytes
-pub fn key_event_to_bytes(key: &crossterm::event::KeyEvent) -> Option<Vec<u8>> {
+pub(crate) fn key_event_to_bytes(key: &crossterm::event::KeyEvent) -> Option<Vec<u8>> {
     use crossterm::event::{KeyCode, KeyModifiers};
     let mods = key.modifiers;
     let mut out = Vec::with_capacity(4);

@@ -21,7 +21,7 @@
 /// Logical grouping for the global help screen. Order here matches the
 /// section order rendered in `draw_help`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Category {
+pub(crate) enum Category {
     /// View / filter / sort / persistence / cosmetic toggles.
     View,
     /// Region / profile / account switchers + cross-account scan.
@@ -43,7 +43,7 @@ pub enum Category {
 impl Category {
     /// Section title rendered in the global help. Kept short so the
     /// header line doesn't wrap on narrow terminals.
-    pub fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::View => "View / filter / sort",
             Self::Navigation => "Multi-account / multi-region",
@@ -57,7 +57,7 @@ impl Category {
     }
 
     /// Iteration order used by `draw_help` — most-frequent surfaces first.
-    pub const ORDER: &'static [Self] = &[
+    pub(crate) const ORDER: &'static [Self] = &[
         Self::Navigation,
         Self::Inspection,
         Self::Lifecycle,
@@ -74,7 +74,7 @@ impl Category {
 /// the dead-code lint; re-add when there's a concrete plugin / overlay
 /// command that wants registry metadata without palette surfacing.
 #[derive(Debug, Clone, Copy)]
-pub enum CommandKind {
+pub(crate) enum CommandKind {
     /// No arguments — palette Enter dispatches immediately.
     ZeroArg,
     /// Takes arguments — palette Enter switches to command-bar mode
@@ -85,7 +85,7 @@ pub enum CommandKind {
 
 /// Static metadata for one built-in command.
 #[derive(Debug, Clone, Copy)]
-pub struct CommandSpec {
+pub(crate) struct CommandSpec {
     /// Canonical name (without the leading `:`).
     pub name: &'static str,
     /// Alternate names that dispatch to the same handler. Used by
@@ -161,7 +161,7 @@ const fn cmd_env_arg(
 /// The whole registry. Adding / removing a command means changing one
 /// entry here; the palette, the help screen, and the plugin-collision
 /// detector all read from this slice.
-pub const COMMANDS: &[CommandSpec] = &[
+pub(crate) const COMMANDS: &[CommandSpec] = &[
     // ── Navigation / multi-account ───────────────────────────────────────
     cmd_with_aliases(
         "region",
@@ -977,7 +977,7 @@ pub const COMMANDS: &[CommandSpec] = &[
 /// Flat name + alias list for plugin-collision detection. Generated
 /// lazily on first access; the registry is a `const` slice so this
 /// computation is pure + cheap (~90 entries).
-pub fn all_names() -> Vec<&'static str> {
+pub(crate) fn all_names() -> Vec<&'static str> {
     let mut out: Vec<&'static str> = Vec::with_capacity(COMMANDS.len() * 2);
     for c in COMMANDS {
         out.push(c.name);

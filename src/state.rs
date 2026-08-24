@@ -6,7 +6,7 @@ use std::{
 use crate::util::{config_file, parse_bool, write_atomic};
 
 #[derive(Debug, Default, Clone)]
-pub struct PersistedState {
+pub(crate) struct PersistedState {
     pub profile: Option<String>,
     pub region: Option<String>,
     pub filter: Option<String>,
@@ -45,7 +45,7 @@ pub struct PersistedState {
 /// The fourth pipe-separated field is optional; when absent the app
 /// defaults to the env-scoped `EnvironmentName=<env>` dimension.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CustomMetricSpec {
+pub(crate) struct CustomMetricSpec {
     pub namespace: String,
     pub name: String,
     pub stat: String,
@@ -58,7 +58,7 @@ impl CustomMetricSpec {
     /// loader silently drops bad lines instead of aborting startup. A
     /// missing 4th field means "use the env-scoped default dimension at
     /// fetch time".
-    pub fn parse(raw: &str) -> Option<Self> {
+    pub(crate) fn parse(raw: &str) -> Option<Self> {
         let parts: Vec<&str> = raw.split('|').collect();
         if !matches!(parts.len(), 3 | 4) {
             return None;
@@ -93,7 +93,7 @@ impl CustomMetricSpec {
         })
     }
 
-    pub fn serialize(&self) -> String {
+    pub(crate) fn serialize(&self) -> String {
         if self.dimensions.is_empty() {
             return format!("{}|{}|{}", self.namespace, self.name, self.stat);
         }
@@ -107,7 +107,7 @@ impl CustomMetricSpec {
     }
 }
 
-pub fn load() -> PersistedState {
+pub(crate) fn load() -> PersistedState {
     let path = state_path();
     let Ok(text) = std::fs::read_to_string(&path) else {
         return PersistedState::default();
@@ -120,11 +120,11 @@ pub fn load() -> PersistedState {
 /// help" hint at boot. Distinct from "state.toml exists but is
 /// empty" — the latter means the operator has run ebman before
 /// (we wrote the file) but everything got cleared.
-pub fn file_exists() -> bool {
+pub(crate) fn file_exists() -> bool {
     state_path().exists()
 }
 
-pub fn parse(text: &str) -> PersistedState {
+pub(crate) fn parse(text: &str) -> PersistedState {
     let mut state = PersistedState::default();
     for line in text.lines() {
         let line = line.trim();
@@ -216,7 +216,7 @@ pub fn parse(text: &str) -> PersistedState {
     state
 }
 
-pub fn save(state: &PersistedState) {
+pub(crate) fn save(state: &PersistedState) {
     let path = state_path();
     // Parent-dir creation is handled by `write_atomic`. We just build
     // the body here and hand it off.

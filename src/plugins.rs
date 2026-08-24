@@ -4,7 +4,7 @@ use crate::util::config_file;
 
 /// Parsed user-defined command template.
 #[derive(Debug, Clone)]
-pub struct Plugin {
+pub(crate) struct Plugin {
     pub template: String,
     pub description: Option<String>,
 }
@@ -12,12 +12,12 @@ pub struct Plugin {
 /// Result of parsing `commands.toml`: the keep-list plus any warnings the user
 /// should know about (collisions with built-ins, missing templates, …).
 #[derive(Debug, Default, Clone)]
-pub struct Loaded {
+pub(crate) struct Loaded {
     pub plugins: BTreeMap<String, Plugin>,
     pub warnings: Vec<String>,
 }
 
-pub fn load(reserved: &[&str]) -> Loaded {
+pub(crate) fn load(reserved: &[&str]) -> Loaded {
     let path = config_file("commands.toml");
     let Ok(text) = std::fs::read_to_string(&path) else {
         return Loaded::default();
@@ -41,7 +41,7 @@ pub fn load(reserved: &[&str]) -> Loaded {
 /// plugin defined with a colliding name is dropped, and a warning is recorded
 /// in [`Loaded::warnings`] so the app can surface it to the user instead of
 /// silently picking the built-in.
-pub fn parse(text: &str, reserved: &[&str]) -> Loaded {
+pub(crate) fn parse(text: &str, reserved: &[&str]) -> Loaded {
     let mut out: BTreeMap<String, Plugin> = BTreeMap::new();
     let mut current_name: Option<String> = None;
     for raw in text.lines() {
@@ -94,7 +94,7 @@ pub fn parse(text: &str, reserved: &[&str]) -> Loaded {
 
 /// Substitute `{name}`, `{cname}`, `{application}`, `{tier}`, `{region}`,
 /// `{profile}` placeholders. Unknown placeholders are left untouched.
-pub fn render(
+pub(crate) fn render(
     template: &str,
     env_name: &str,
     cname: &str,

@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-pub use tui_common::util::parse_bool;
+pub(crate) use tui_common::util::parse_bool;
 
 /// Atomic write (temp file + rename) with 0600 perms throughout.
 ///
@@ -22,7 +22,7 @@ pub use tui_common::util::parse_bool;
 /// rename, because the temp holds the same secrets for the same
 /// duration; a chmod afterwards leaves exactly the window this is
 /// meant to close.
-pub fn write_atomic(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+pub(crate) fn write_atomic(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
     use std::io::Write;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -78,7 +78,7 @@ pub fn write_atomic(path: &std::path::Path, contents: &str) -> std::io::Result<(
 /// XDG-style user config directory for ebman: `~/.config/ebman/`.
 /// Falls back to the current working directory when `$HOME` is
 /// unset (rare; mostly affects sandboxed test environments).
-pub fn config_dir() -> PathBuf {
+pub(crate) fn config_dir() -> PathBuf {
     // Same redirect as `cache_dir`, and for a worse reason: this one
     // holds `state.toml`, which `persist_state` rewrites wholesale.
     // `App::for_tests` sets `demo_mode: false`, and `persist_state`
@@ -139,7 +139,7 @@ pub fn cache_dir() -> PathBuf {
 }
 
 /// Convenience: `config_dir().join(name)`.
-pub fn config_file(name: &str) -> PathBuf {
+pub(crate) fn config_file(name: &str) -> PathBuf {
     config_dir().join(name)
 }
 
@@ -153,7 +153,7 @@ pub fn config_file(name: &str) -> PathBuf {
 /// there were six near-identical variants scattered across
 /// `audit.rs` / `cli/mod.rs` / `lint.rs` / `app.rs` / `llm.rs`;
 /// they're all routed through this now.
-pub fn json_escape(s: &str) -> String {
+pub(crate) fn json_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
@@ -175,7 +175,7 @@ pub fn json_escape(s: &str) -> String {
 /// Escape + wrap in `"..."` for use as a complete JSON string
 /// literal. Same escape semantics as [`json_escape`]; convenience
 /// wrapper that adds the surrounding quotes.
-pub fn json_string(s: &str) -> String {
+pub(crate) fn json_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     out.push_str(&json_escape(s));
@@ -189,7 +189,12 @@ pub fn json_string(s: &str) -> String {
 /// environment` carries DB URLs, API keys); keys stay visible so
 /// config shape is inspectable. `DBPassword` matches the `:rds`
 /// precedent. Everything else passes through.
-pub fn redact_option_value(namespace: &str, name: &str, value: &str, redact: bool) -> String {
+pub(crate) fn redact_option_value(
+    namespace: &str,
+    name: &str,
+    value: &str,
+    redact: bool,
+) -> String {
     if !redact {
         return value.to_string();
     }
@@ -398,7 +403,7 @@ mod tests {
 /// parsing, saved state, CLI flags, form input, EB option settings —
 /// with identical semantics every time. One implementation means one
 /// place to be sure about what happens to `"a,,b"` and `" a , b "`.
-pub fn split_csv(value: &str) -> Vec<String> {
+pub(crate) fn split_csv(value: &str) -> Vec<String> {
     value
         .split(',')
         .map(|s| s.trim().to_string())
@@ -447,7 +452,7 @@ mod split_csv_tests {
 /// versions and once in `update_check`, and only one of them learned
 /// the pre-release rule — so a binary running `0.30.0-rc1` was never
 /// told that `0.30.0` had shipped.
-pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+pub(crate) fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     // Split off any pre-release suffix at the first `-`. Solution-stack
     // versions never have one (`stack_family_version` only accepts
@@ -600,7 +605,7 @@ mod compare_versions_tests {
 /// One AWS partition: how its regions are named, how its ARNs are
 /// prefixed, where its global services endpoint, and where its console
 /// lives (if we can name it).
-pub struct Partition {
+pub(crate) struct Partition {
     /// The `arn:PARTITION:...` segment.
     pub arn: &'static str,
     /// Region-name prefixes belonging to this partition. Empty for the
@@ -626,7 +631,7 @@ pub struct Partition {
 ///
 /// The commercial entry carries no prefixes and is reached through
 /// `commercial()`, not by position.
-pub const PARTITIONS: &[Partition] = &[
+pub(crate) const PARTITIONS: &[Partition] = &[
     Partition {
         arn: "aws-us-gov",
         prefixes: &["us-gov-"],
@@ -708,7 +713,7 @@ impl Partition {
 /// The partition a region belongs to. Unknown regions fall back to the
 /// commercial partition, which is both the common case and the least
 /// surprising guess.
-pub fn partition_for_region(region: &str) -> &'static Partition {
+pub(crate) fn partition_for_region(region: &str) -> &'static Partition {
     // Resolved by identity, not by position. This used to fall back to
     // `PARTITIONS.last()`, so appending a new partition — the "one
     // edit" the table's own header advertises — would silently redirect
@@ -721,20 +726,20 @@ pub fn partition_for_region(region: &str) -> &'static Partition {
 }
 
 /// The partition segment of an ARN — `aws` from `arn:aws:iam::…`.
-pub fn arn_partition(arn: &str) -> Option<&str> {
+pub(crate) fn arn_partition(arn: &str) -> Option<&str> {
     let rest = arn.strip_prefix("arn:")?;
     let seg = rest.split(':').next()?;
     (!seg.is_empty()).then_some(seg)
 }
 
 /// Every `arn:PARTITION:` prefix, for scrubbing ARNs out of text.
-pub fn arn_prefixes() -> impl Iterator<Item = String> {
+pub(crate) fn arn_prefixes() -> impl Iterator<Item = String> {
     PARTITIONS.iter().map(|p| format!("arn:{}:", p.arn))
 }
 
 /// The AWS console URL for a region, or `None` when the partition's
 /// console host isn't one we can name.
-pub fn console_base_url(region: &str) -> Option<String> {
+pub(crate) fn console_base_url(region: &str) -> Option<String> {
     let host = partition_for_region(region).console_host?;
     Some(format!("https://{}", host.replace("{region}", region)))
 }

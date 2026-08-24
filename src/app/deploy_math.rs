@@ -14,7 +14,7 @@ use super::*;
 /// tags each event with the version current at the time, so walking
 /// back, the first label ≠ `current` is the one the env ran before
 /// this deploy. `None` when no prior version appears in the window.
-pub fn previous_version_label(events: &[EbEvent], current: &str) -> Option<String> {
+pub(crate) fn previous_version_label(events: &[EbEvent], current: &str) -> Option<String> {
     events
         .iter()
         .filter_map(|e| e.version_label.as_deref())
@@ -26,7 +26,7 @@ pub fn previous_version_label(events: &[EbEvent], current: &str) -> Option<Strin
 /// Pure: whether an event message looks like a deploy or a
 /// configuration change — the rows the `:changes` timeline keeps,
 /// filtering out routine health / scaling / launch noise.
-pub fn is_config_event(message: &str) -> bool {
+pub(crate) fn is_config_event(message: &str) -> bool {
     let m = message.to_ascii_lowercase();
     m.contains("version label")
         || m.contains("deploying")
@@ -47,7 +47,7 @@ pub fn is_config_event(message: &str) -> bool {
 /// - `RollingWithAdditionalBatch` — extra batch launched first
 /// - `Immutable` — new instances alongside (no current-fleet impact)
 /// - `TrafficSplitting` — new ASG receives % traffic (no impact)
-pub fn compute_unavailability_count(
+pub(crate) fn compute_unavailability_count(
     policy: &str,
     batch_size: i32,
     batch_size_type: &str,
@@ -75,7 +75,7 @@ pub fn compute_unavailability_count(
 /// concrete instance count, clamped to [1, asg_max]. `Percentage`
 /// rounds UP (a 33% batch on a 4-instance ASG is 2 instances; EB
 /// rounds up internally too, per the docs).
-pub fn compute_batch_count(batch_size: i32, batch_size_type: &str, asg_max: i32) -> i32 {
+pub(crate) fn compute_batch_count(batch_size: i32, batch_size_type: &str, asg_max: i32) -> i32 {
     if batch_size_type.eq_ignore_ascii_case("Percentage") {
         let pct = batch_size.clamp(1, 100);
         // Manual ceiling-divide: `i32::div_ceil` is still unstable
@@ -92,7 +92,11 @@ pub fn compute_batch_count(batch_size: i32, batch_size_type: &str, asg_max: i32)
 /// Pure: render the modal's unavailability line. Returns the
 /// human-readable text plus a severity flag for colouring (true
 /// = caution, false = green/no impact).
-pub fn format_unavailability_line(policy: &str, unavailable: i32, asg_max: i32) -> (String, bool) {
+pub(crate) fn format_unavailability_line(
+    policy: &str,
+    unavailable: i32,
+    asg_max: i32,
+) -> (String, bool) {
     let asg_max = asg_max.max(1);
     let caution = unavailable > 0;
     let plural = if unavailable == 1 {
@@ -112,7 +116,7 @@ pub fn format_unavailability_line(policy: &str, unavailable: i32, asg_max: i32) 
 /// estimate needs from the flat `(namespace, name, value)` shape
 /// `fetch_env_option_settings` returns. Defaults match EB's own
 /// defaults so the math degrades gracefully on partial reads.
-pub fn extract_unavailability_inputs(
+pub(crate) fn extract_unavailability_inputs(
     opts: &[(String, String, String)],
 ) -> (String, i32, String, i32) {
     let get = |ns: &str, name: &str| -> Option<&String> {
@@ -151,7 +155,7 @@ pub fn extract_unavailability_inputs(
 /// - `status` is `Ready` (case-insensitive, EB's settled state)
 /// - `health` is `Green` or `Ok` (case-insensitive, EB's two
 ///   "all-clear" terms across enhanced vs legacy reporting)
-pub fn deploy_settled_green(status: &str, health: &str) -> bool {
+pub(crate) fn deploy_settled_green(status: &str, health: &str) -> bool {
     status.eq_ignore_ascii_case("Ready")
         && (health.eq_ignore_ascii_case("Green") || health.eq_ignore_ascii_case("Ok"))
 }
@@ -197,7 +201,7 @@ pub(crate) fn merge_app_latest_versions(prev: &[Application], next: &mut [Applic
 /// this to render `Updating: deploying build-142` (or similar) instead
 /// of just the generic pill.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum UpdateKind {
+pub(crate) enum UpdateKind {
     /// `UpdateEnvironment(version_label)` — a version deploy in flight.
     /// `version_label` is extracted from the event message when present.
     Deploy { version_label: Option<String> },
@@ -217,7 +221,7 @@ pub enum UpdateKind {
 /// expected newest-first (as the EB API returns them); returns the kind
 /// from the first matching event. Returns `Generic` when nothing
 /// matches.
-pub fn classify_update_kind(events: &[crate::aws::Event]) -> UpdateKind {
+pub(crate) fn classify_update_kind(events: &[crate::aws::Event]) -> UpdateKind {
     for e in events {
         let lower = e.message.to_lowercase();
         // Deploy comes first — "version label" is the unambiguous signal.

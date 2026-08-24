@@ -68,7 +68,7 @@ use detail::*;
 use help::*;
 use overlays::*;
 
-pub fn draw(f: &mut Frame, app: &mut App) {
+pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     // Shell mode takes the whole screen; nothing else draws.
     if app.mode == Mode::Shell && app.current_shell.is_some() {
         draw_shell(f, f.area(), app);

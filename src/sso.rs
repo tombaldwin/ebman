@@ -16,7 +16,7 @@ fn cache_dir() -> PathBuf {
 
 /// Latest still-valid `expiresAt` across the SSO cache, or `None` if there are
 /// no unexpired tokens (or the cache directory doesn't exist).
-pub fn latest_session_expiry() -> Option<DateTime<Utc>> {
+pub(crate) fn latest_session_expiry() -> Option<DateTime<Utc>> {
     let dir = cache_dir();
     let entries = std::fs::read_dir(&dir).ok()?;
     let now = Utc::now();

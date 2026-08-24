@@ -33,7 +33,7 @@ use crate::util::{cache_dir, write_atomic};
 /// Cached Cost Explorer result. `fetched_at` lets the caller decide
 /// whether to refresh; the map itself is `env_name -> monthly USD`.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct CostCache {
+pub(crate) struct CostCache {
     pub fetched_at: Option<DateTime<Utc>>,
     pub costs: HashMap<String, f64>,
 }
@@ -41,13 +41,13 @@ pub struct CostCache {
 /// How long the cache is considered fresh before we trigger a
 /// re-fetch. Matches AWS's own ~24h data refresh — pulling sooner
 /// gives identical numbers + burns rate-limit budget.
-pub const CACHE_TTL_HOURS: i64 = 24;
+pub(crate) const CACHE_TTL_HOURS: i64 = 24;
 
 impl CostCache {
     /// True when the cache is stale (older than [`CACHE_TTL_HOURS`])
     /// or has never been fetched. Callers use this to decide
     /// whether to spawn a fresh fetch.
-    pub fn is_stale(&self, now: DateTime<Utc>) -> bool {
+    pub(crate) fn is_stale(&self, now: DateTime<Utc>) -> bool {
         let Some(t) = self.fetched_at else {
             return true;
         };
@@ -58,7 +58,7 @@ impl CostCache {
 /// File path for the cache keyed by (account, region). `account` is
 /// the 12-digit AWS account id (falls back to `"unknown"` when not
 /// yet resolved via STS). Same key shape as the audit log.
-pub fn cache_path(account: &str, region: &str) -> PathBuf {
+pub(crate) fn cache_path(account: &str, region: &str) -> PathBuf {
     let mut dir = cache_dir();
     dir.push(format!("cost-{account}-{region}.toml"));
     dir
@@ -67,7 +67,7 @@ pub fn cache_path(account: &str, region: &str) -> PathBuf {
 /// Parse the TOML format described in the module docs. Pure; tested
 /// below. Errors silently to a default cache so a malformed file
 /// can't block startup.
-pub fn parse(text: &str) -> CostCache {
+pub(crate) fn parse(text: &str) -> CostCache {
     let mut out = CostCache::default();
     for line in text.lines() {
         let line = line.trim();
@@ -105,7 +105,7 @@ pub fn parse(text: &str) -> CostCache {
 /// Serialise a cache to TOML. Float precision intentionally limited
 /// to 2 decimal places — Cost Explorer reports fractional cents
 /// (`1240.503125...`) and the apparent precision is misleading.
-pub fn serialize(cache: &CostCache) -> String {
+pub(crate) fn serialize(cache: &CostCache) -> String {
     let mut out = String::new();
     if let Some(t) = cache.fetched_at {
         out.push_str(&format!("fetched_at = \"{}\"\n", t.to_rfc3339()));
@@ -122,7 +122,7 @@ pub fn serialize(cache: &CostCache) -> String {
 /// a default `CostCache` if the file doesn't exist or is malformed
 /// — both shape up as "stale" via `is_stale`, so the caller will
 /// trigger a fresh fetch.
-pub fn load(account: &str, region: &str) -> CostCache {
+pub(crate) fn load(account: &str, region: &str) -> CostCache {
     let path = cache_path(account, region);
     match std::fs::read_to_string(&path) {
         Ok(text) => parse(&text),
@@ -133,7 +133,7 @@ pub fn load(account: &str, region: &str) -> CostCache {
 /// Atomically persist the cache. Same write-temp-then-rename pattern
 /// as `state.rs` to avoid leaving a half-written file behind on a
 /// crash mid-write.
-pub fn save(account: &str, region: &str, cache: &CostCache) -> std::io::Result<()> {
+pub(crate) fn save(account: &str, region: &str, cache: &CostCache) -> std::io::Result<()> {
     let path = cache_path(account, region);
     let text = serialize(cache);
     write_atomic(&path, &text)

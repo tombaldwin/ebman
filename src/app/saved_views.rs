@@ -38,7 +38,7 @@ pub(crate) fn encode_view(app: &App) -> String {
 /// Used by the legacy `:save` command (filter-only save) and by
 /// the state.toml backward-compat path that promotes old
 /// `filter.NAME = "..."` lines into saved_views.
-pub fn encode_filter_only_view(filter: &str) -> String {
+pub(crate) fn encode_filter_only_view(filter: &str) -> String {
     format!("filter={filter}")
 }
 
@@ -47,7 +47,7 @@ pub fn encode_filter_only_view(filter: &str) -> String {
 /// `filter=` part (which means "no filter" — operator wanted the
 /// view to clear whatever filter was set). Used by the chip-bar
 /// active-check + the cycle keybind.
-pub fn view_filter_value(encoded: &str) -> &str {
+pub(crate) fn view_filter_value(encoded: &str) -> &str {
     for part in encoded.split(';') {
         if let Some(rest) = part.trim().strip_prefix("filter=") {
             return rest;

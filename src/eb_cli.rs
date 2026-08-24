@@ -37,7 +37,7 @@ use serde::Deserialize;
 /// match the EB CLI's own field names so YAML on disk needs no
 /// rewriting.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
-pub struct EbCliConfig {
+pub(crate) struct EbCliConfig {
     /// AWS profile to use. Maps to the EB CLI's `global.profile`.
     pub profile: Option<String>,
     /// AWS region. Maps to the EB CLI's `global.default_region`.
@@ -67,7 +67,7 @@ struct RawGlobal {
 
 /// Walk from `start` toward the filesystem root looking for an
 /// `.elasticbeanstalk/` directory. Mirrors `project::find_root`.
-pub fn find_root(start: &Path) -> Option<PathBuf> {
+pub(crate) fn find_root(start: &Path) -> Option<PathBuf> {
     for ancestor in start.ancestors() {
         if ancestor.join(".elasticbeanstalk").is_dir() {
             return Some(ancestor.to_path_buf());
@@ -77,7 +77,7 @@ pub fn find_root(start: &Path) -> Option<PathBuf> {
 }
 
 /// Path to the config file given a project root.
-pub fn config_path(project_root: &Path) -> PathBuf {
+pub(crate) fn config_path(project_root: &Path) -> PathBuf {
     project_root.join(".elasticbeanstalk/config.yml")
 }
 
@@ -85,7 +85,7 @@ pub fn config_path(project_root: &Path) -> PathBuf {
 /// `None` on YAML syntax errors so the caller can fall back
 /// silently — a corrupt config shouldn't refuse to launch ebman.
 /// Empty / `null` fields collapse to `None`.
-pub fn parse(text: &str) -> Option<EbCliConfig> {
+pub(crate) fn parse(text: &str) -> Option<EbCliConfig> {
     // An empty file is "no settings", not a parse failure. The EB CLI
     // writes one sometimes, and this drives a soft filter prefill —
     // there is nothing to refuse. Stated here rather than relying on
@@ -107,7 +107,7 @@ pub fn parse(text: &str) -> Option<EbCliConfig> {
 /// Discover and load the EB CLI config starting from the current
 /// working directory. Same swallowing-on-error contract as
 /// `project::load_from_cwd`.
-pub fn load_from_cwd() -> Option<EbCliConfig> {
+pub(crate) fn load_from_cwd() -> Option<EbCliConfig> {
     let cwd = std::env::current_dir().ok()?;
     let root = find_root(&cwd)?;
     let path = config_path(&root);

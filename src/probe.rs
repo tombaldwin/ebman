@@ -13,7 +13,7 @@
 /// shouldn't false-positive on that). Operators with custom TLS
 /// can put their HTTPS CNAME directly into their LB listener
 /// config; the probe is a development-mode best-effort signal.
-pub fn build_health_check_probe_url(cname: &str, path: &str) -> String {
+pub(crate) fn build_health_check_probe_url(cname: &str, path: &str) -> String {
     let path = if path.starts_with('/') {
         path.to_string()
     } else if path.is_empty() {
@@ -30,7 +30,7 @@ pub fn build_health_check_probe_url(cname: &str, path: &str) -> String {
 /// 2xx; `Err(<short reason>)` for non-2xx, timeout, or transport
 /// errors. The reason string is surfaced in the modal so the
 /// operator can decide whether the warning matters.
-pub async fn run_health_check_probe(url: &str) -> Result<(), String> {
+pub(crate) async fn run_health_check_probe(url: &str) -> Result<(), String> {
     use tokio::process::Command;
     let out = Command::new("curl")
         .args([
@@ -73,7 +73,7 @@ pub async fn run_health_check_probe(url: &str) -> Result<(), String> {
 
 /// Pure status-code classifier — surfaced as a separate helper so
 /// the matrix is unit-testable without invoking curl.
-pub fn classify_health_check_status(code: u16) -> Result<(), String> {
+pub(crate) fn classify_health_check_status(code: u16) -> Result<(), String> {
     match code {
         200..=299 => Ok(()),
         0 => Err("no response (transport error)".into()),

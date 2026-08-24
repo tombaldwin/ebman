@@ -514,7 +514,7 @@ impl App {
     /// follow with a `tokio::spawn` that sends an `AppMsg::ActionResult`;
     /// the result handler finds the first matching unfinished row and
     /// stamps it with the outcome. Caps the list at `PENDING_CAP`.
-    pub fn push_pending(&mut self, label: impl Into<String>, target: impl Into<String>) {
+    pub(crate) fn push_pending(&mut self, label: impl Into<String>, target: impl Into<String>) {
         if self.pending_actions.len() >= PENDING_CAP {
             self.pending_actions.pop_front();
         }
@@ -531,7 +531,12 @@ impl App {
     /// dispatch order is preserved so this is correct without IDs as long
     /// as we don't have two concurrent dispatches of the same action to the
     /// same target (a deliberate operator wouldn't do that).
-    pub fn complete_pending(&mut self, label: &str, target: &str, result: Result<(), String>) {
+    pub(crate) fn complete_pending(
+        &mut self,
+        label: &str,
+        target: &str,
+        result: Result<(), String>,
+    ) {
         if let Some(entry) = self
             .pending_actions
             .iter_mut()
@@ -544,7 +549,7 @@ impl App {
     /// Drop completed entries older than `PENDING_COMPLETED_TTL`. Called
     /// from the run loop's per-frame housekeeping so the panel quietens
     /// after a minute of inactivity.
-    pub fn expire_pending(&mut self) {
+    pub(crate) fn expire_pending(&mut self) {
         let now = Instant::now();
         self.pending_actions.retain(|e| match e.completed {
             Some((c, _)) => now.duration_since(c) < PENDING_COMPLETED_TTL,

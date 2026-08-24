@@ -20,7 +20,7 @@ impl App {
     ///
     /// Any of these returning `true` blocks the action; the operator-
     /// facing error message can differentiate via `read_only_reason`.
-    pub fn is_read_only_for(&self, env_name: &str) -> bool {
+    pub(crate) fn is_read_only_for(&self, env_name: &str) -> bool {
         // Deliberately delegating rather than repeating the chain.
         // These were two separate four-branch cascades kept in the same
         // order by a comment asking a human to do it — and the ONE
@@ -45,7 +45,7 @@ impl App {
     ///
     /// Saves duplicating the `is_read_only_for` + `read_only_reason`
     /// + `error_message` triplet at every call site (~25 of them).
-    pub fn deny_write(&mut self, env_name: &str, verb: &str) -> bool {
+    pub(crate) fn deny_write(&mut self, env_name: &str, verb: &str) -> bool {
         // `--demo` mode refuses writes outright (see spawn_action's
         // matching guard for the rationale — synthetic fleet, fake
         // AwsClient, real audit log).
@@ -89,7 +89,7 @@ impl App {
     /// probe so those produce their normal whole-fleet message, then
     /// scans for per-env / per-account pins. Mirrors the precedence in
     /// [`App::is_read_only_for`]. `verb` names the op for the toast.
-    pub fn deny_write_batch(&mut self, env_names: &[String], verb: &str) -> bool {
+    pub(crate) fn deny_write_batch(&mut self, env_names: &[String], verb: &str) -> bool {
         // Demo mode + global/freeze gates are env-independent: probe
         // with the first env (or "") so the existing single-env path
         // produces the familiar "demo mode …" / "read-only mode …" /
@@ -126,7 +126,7 @@ impl App {
     /// Returns `None` when the env isn't locked (caller shouldn't have
     /// called this; defensive return). The three reasons are ordered
     /// to match `is_read_only_for`'s precedence.
-    pub fn read_only_reason(&self, env_name: &str) -> Option<String> {
+    pub(crate) fn read_only_reason(&self, env_name: &str) -> Option<String> {
         if self.read_only {
             return Some("read-only mode (global toggle)".into());
         }

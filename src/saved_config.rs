@@ -62,7 +62,7 @@ fn coerce_value(v: &serde_yml::Value) -> String {
 /// that the local YAML doesn't carry. The result feeds straight into
 /// `diff_config_options` so the diff renderer doesn't need a parallel
 /// code path.
-pub fn parse_saved_config(yaml: &str) -> Result<Vec<ConfigOption>> {
+pub(crate) fn parse_saved_config(yaml: &str) -> Result<Vec<ConfigOption>> {
     let parsed: SavedConfigFile =
         serde_yml::from_str(yaml).wrap_err("parsing saved-config YAML")?;
     let mut out = Vec::new();
@@ -95,7 +95,7 @@ pub fn parse_saved_config(yaml: &str) -> Result<Vec<ConfigOption>> {
 /// Returns absolute paths sorted alphabetically. Errors propagate (a
 /// missing directory is *not* an error — returns an empty Vec — but a
 /// permission failure on an existing directory does).
-pub fn discover_saved_configs(cwd: &Path) -> Result<Vec<PathBuf>> {
+pub(crate) fn discover_saved_configs(cwd: &Path) -> Result<Vec<PathBuf>> {
     let dir = cwd.join(".elasticbeanstalk").join("saved_configs");
     if !dir.exists() {
         return Ok(Vec::new());
@@ -124,7 +124,7 @@ pub fn discover_saved_configs(cwd: &Path) -> Result<Vec<PathBuf>> {
 /// Strip the `.cfg.yml` (or `.yml` / `.yaml`) suffix from a saved-config
 /// path to get the operator-facing name. EB CLI's `eb config save NAME`
 /// writes to `NAME.cfg.yml`, so the name is the file stem minus `.cfg`.
-pub fn saved_config_name(path: &Path) -> String {
+pub(crate) fn saved_config_name(path: &Path) -> String {
     let stem = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -138,7 +138,7 @@ pub fn saved_config_name(path: &Path) -> String {
 /// Resolve a saved-config file by name + cwd. Used by `:config-diff-local
 /// NAME`. Returns the path on hit, or an error listing what was
 /// available so the operator can re-issue with the right name.
-pub fn resolve_saved_config(cwd: &Path, name: &str) -> Result<PathBuf> {
+pub(crate) fn resolve_saved_config(cwd: &Path, name: &str) -> Result<PathBuf> {
     let configs = discover_saved_configs(cwd)?;
     if configs.is_empty() {
         return Err(eyre!(

@@ -246,7 +246,7 @@ fn truncate_armed_cell(s: &str, n: usize) -> String {
 /// `configured` is the set of friendly names from `config.toml`'s
 /// `accounts.*` section; matching is name-or-id-suffix so an operator
 /// who names their entries by account-id still gets the hint.
-pub fn format_org_accounts(
+pub(crate) fn format_org_accounts(
     accounts: &[crate::aws::OrgAccount],
     configured: &std::collections::HashMap<String, String>,
 ) -> String {
@@ -305,7 +305,7 @@ pub fn format_org_accounts(
     out
 }
 
-pub fn format_deploy_preview(
+pub(crate) fn format_deploy_preview(
     env_name: &str,
     current_label: &str,
     candidate_label: &str,
@@ -390,7 +390,7 @@ pub fn format_deploy_preview(
     out
 }
 
-pub fn format_app_versions(
+pub(crate) fn format_app_versions(
     versions: &[crate::aws::AppVersion],
     deployed_label: Option<&str>,
     limit: usize,
@@ -439,7 +439,7 @@ pub fn format_app_versions(
 /// Render a sorted `(namespace, option_name, value)` list as an aligned
 /// text block grouped by namespace. Empty values render as `""` so the
 /// reader can distinguish "explicitly empty" from "not present".
-pub fn format_template_settings(settings: &[(String, String, String)]) -> String {
+pub(crate) fn format_template_settings(settings: &[(String, String, String)]) -> String {
     if settings.is_empty() {
         return "(no option settings)".into();
     }
@@ -473,7 +473,7 @@ pub fn format_template_settings(settings: &[(String, String, String)]) -> String
 /// `(application, template)` vector, sorted by app then by template name so
 /// the overlay's cursor order is stable across refreshes. Pure so the unit
 /// tests don't need an AWS client.
-pub fn collect_saved_configs(apps: &[Application]) -> Vec<(String, String)> {
+pub(crate) fn collect_saved_configs(apps: &[Application]) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = apps
         .iter()
         .flat_map(|a| a.templates.iter().map(|t| (a.name.clone(), t.clone())))
@@ -649,7 +649,7 @@ pub(crate) fn format_alarms(result: Result<Vec<CwAlarm>, String>) -> String {
 /// Pure: render the `:promotions` overlay body. Newest-first
 /// ordering so the most-recent promotions sit at the top of the
 /// overlay (operators scan top-down).
-pub fn render_promotions(
+pub(crate) fn render_promotions(
     records: &[PromotionRecord],
     now: chrono::DateTime<chrono::Utc>,
 ) -> String {

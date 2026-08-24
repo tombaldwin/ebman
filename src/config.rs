@@ -4,18 +4,18 @@ use crate::util::{config_file, parse_bool};
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub refresh_interval: Duration,
-    pub extra_regions: Vec<String>,
-    pub redact_default: Option<bool>,
-    pub grouped_default: Option<bool>,
-    pub theme: String,
+    pub(crate) refresh_interval: Duration,
+    pub(crate) extra_regions: Vec<String>,
+    pub(crate) redact_default: Option<bool>,
+    pub(crate) grouped_default: Option<bool>,
+    pub(crate) theme: String,
     /// Glyph set: `"unicode"` (default), `"ascii"` for low-feature
     /// terminals, `"powerline"` (alias `"nerd"`) for Powerline-patched /
     /// Nerd Fonts, or `"auto"` to probe the terminal at startup and pick
     /// powerline if its support is detected, unicode otherwise.
-    pub icons: String,
-    pub notify_bell: bool,
-    pub required_tags: Vec<String>,
+    pub(crate) icons: String,
+    pub(crate) notify_bell: bool,
+    pub(crate) required_tags: Vec<String>,
     /// CloudWatch dimension names that identify an Elastic Beanstalk
     /// environment, for matching alarms to it (`alarm_dimensions`).
     ///
@@ -29,7 +29,7 @@ pub struct Config {
     /// tightening it to the canonical name silently dropped
     /// operator-authored alarms spelled differently. This is the way
     /// back without reinstating the false positive.
-    pub alarm_dimensions: Vec<String>,
+    pub(crate) alarm_dimensions: Vec<String>,
     /// Lines `parse` didn't recognise, kept verbatim.
     ///
     /// `:settings` save rewrites the whole file from `serialize`, so
@@ -37,36 +37,36 @@ pub struct Config {
     /// mistyped key — the very line an operator would otherwise spot
     /// and fix — and any key a newer release adds, which is the
     /// opposite of the graceful degradation the parser aims for.
-    pub passthrough: Vec<String>,
+    pub(crate) passthrough: Vec<String>,
     /// Per-profile theme override. Key = AWS profile name, value = theme
     /// name (matches the same names `theme = …` accepts). Lets the
     /// operator pin a high-contrast / dark / light theme to a specific
     /// profile so the visual cue says "you're in prod" without reading
     /// the breadcrumb. Most prod incidents start with "I thought I was
     /// in staging."
-    pub profile_themes: std::collections::HashMap<String, String>,
+    pub(crate) profile_themes: std::collections::HashMap<String, String>,
     /// Named accounts reachable via `sts:AssumeRole`. Key = the friendly
     /// name the operator uses with `:account NAME`; value is the full
     /// AssumeRole spec — `role_arn`, `source_profile`, optional
     /// `external_id`, optional `region` override. Lines in `config.toml`
     /// use the form `accounts.NAME.field = "value"`, mirroring the
     /// `metric.LABEL.field` shape that the rest of the config uses.
-    pub accounts: std::collections::HashMap<String, AccountSpec>,
+    pub(crate) accounts: std::collections::HashMap<String, AccountSpec>,
     /// Per-environment runbook URLs. Key = env name; value = a URL the
     /// operator wants surfaced during triage. Lines in `config.toml` use
     /// `runbooks.ENV = "https://…"`. Shown in the `:why` overlay.
-    pub runbooks: std::collections::HashMap<String, String>,
+    pub(crate) runbooks: std::collections::HashMap<String, String>,
     /// Per-env read-only locks. When `safety_envs.get(env_name) ==
     /// Some(true)`, destructive actions against that env are refused
     /// even when the global `--read-only` toggle is off. Borrowed from
     /// pgman's `safety.databases.NAME.read_only` pattern. Lines in
     /// `config.toml` use `safety.envs.NAME.read_only = true`.
-    pub safety_envs: std::collections::HashMap<String, bool>,
+    pub(crate) safety_envs: std::collections::HashMap<String, bool>,
     /// Per-account read-only locks. Same shape as `safety_envs` but
     /// matched against the *active account name* (the `:account NAME`
     /// key for AssumeRole'd accounts, or the AWS profile name
     /// otherwise). Lines use `safety.accounts.NAME.read_only = true`.
-    pub safety_accounts: std::collections::HashMap<String, bool>,
+    pub(crate) safety_accounts: std::collections::HashMap<String, bool>,
     /// Optional outbound webhook for audit-line fan-out. Each audit
     /// line written to `~/.cache/ebman/audit.log` is also POSTed to
     /// this URL as JSON (fire-and-forget; failures don't block or
@@ -75,7 +75,7 @@ pub struct Config {
     /// "...", "at": "<rfc3339>"}`. The top-level `text` makes the
     /// body Slack-incoming-webhook-compatible out of the box. Lines
     /// in `config.toml` use `notify_webhook = "https://..."`.
-    pub notify_webhook: Option<String>,
+    pub(crate) notify_webhook: Option<String>,
     /// User-defined command aliases. Key = the bare name typed
     /// after `:` (no leading colon); value = the full command line
     /// the alias expands to. Lines in `config.toml` use
@@ -89,37 +89,37 @@ pub struct Config {
     /// `:alias <env> <label>` env-rename feature (state.toml-
     /// persisted, lives on `App.aliases`). Command aliases are
     /// config.toml-only.
-    pub command_aliases: std::collections::HashMap<String, String>,
+    pub(crate) command_aliases: std::collections::HashMap<String, String>,
     /// Lint rule IDs to skip globally. CSV-in-string form in
     /// `config.toml`: `lint.disable = "EBL001,EBL006"`. Mirrors
     /// the existing `extra_regions` / `required_tags` conventions.
     /// Project-local `.ebman/ebman.toml` can extend (never
     /// override) this set via `[lint]\ndisable = ["EBL001"]`.
-    pub lint_disable: Vec<String>,
+    pub(crate) lint_disable: Vec<String>,
     /// Lint rule IDs whose auto-fix is suppressed even when
     /// `--fix` is passed. Same CSV-in-string form:
     /// `lint.fix_disable = "EBL004"`. Operators who want lint
     /// reports but don't want a specific rule's fix dispatched
     /// (e.g. they have a non-standard BatchSize for a reason)
     /// list it here.
-    pub lint_fix_disable: Vec<String>,
+    pub(crate) lint_fix_disable: Vec<String>,
     /// Master switch for the LLM-backed `ebman explain`
     /// subcommand. Off by default — operators must explicitly
     /// opt in via `explain.enabled = true`. Presence of an API
     /// key in the env is not implicit consent.
-    pub explain_enabled: bool,
+    pub(crate) explain_enabled: bool,
     /// Provider key — `"anthropic"` (default) or `"ollama"`.
-    pub explain_provider: String,
+    pub(crate) explain_provider: String,
     /// Model identifier. Anthropic default: `claude-haiku-4-5`.
-    pub explain_model: String,
+    pub(crate) explain_model: String,
     /// Env-var name to read the Anthropic API key from.
     /// Default `ANTHROPIC_API_KEY`.
-    pub explain_api_key_env: String,
+    pub(crate) explain_api_key_env: String,
     /// HTTP base URL for the Ollama provider. Default
     /// `http://localhost:11434`.
-    pub explain_ollama_url: String,
+    pub(crate) explain_ollama_url: String,
     /// Soft cap on response tokens. 0 = use default (1024).
-    pub explain_max_tokens: u32,
+    pub(crate) explain_max_tokens: u32,
 }
 
 /// A named `sts:AssumeRole` target. The operator typically pins one of
@@ -129,7 +129,7 @@ pub struct Config {
 /// trust policies, `region` is optional (falls back to the source
 /// profile's / env default).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct AccountSpec {
+pub(crate) struct AccountSpec {
     pub role_arn: String,
     pub source_profile: Option<String>,
     pub external_id: Option<String>,
@@ -150,7 +150,7 @@ impl Config {
     /// gates (global `--read-only`, `:freeze-deploys`, demo mode)
     /// with their own precedence and toast wording; only the
     /// config-pin layer is shared semantics.
-    pub fn pin_reason(&self, env: &str, profile: Option<&str>) -> Option<String> {
+    pub(crate) fn pin_reason(&self, env: &str, profile: Option<&str>) -> Option<String> {
         if self.safety_envs.get(env).copied().unwrap_or(false) {
             return Some(format!("safety.envs.{env}.read_only"));
         }
@@ -195,6 +195,22 @@ impl Default for Config {
     }
 }
 
+impl Config {
+    /// The resolved icon style. `main` reads this to run the Powerline
+    /// glyph probe and writes the answer back before the `App` is built,
+    /// which is the only reason `Config` has any public surface beyond
+    /// `load`. An accessor rather than a `pub` field so the other ~30
+    /// fields stay crate-private.
+    pub fn icons(&self) -> &str {
+        &self.icons
+    }
+
+    /// See [`Config::icons`]. Called once, with the probe's verdict.
+    pub fn set_icons(&mut self, icons: String) {
+        self.icons = icons;
+    }
+}
+
 pub fn load() -> Config {
     let path = config_path();
     let Ok(text) = std::fs::read_to_string(&path) else {
@@ -206,18 +222,18 @@ pub fn load() -> Config {
 /// Sugar for the `ebman lint` CLI: just the global
 /// `lint.disable` list, no other fields. Composed with the
 /// project-level disables in `project::load_lint_disables_from_cwd`.
-pub fn load_lint_disables() -> Vec<String> {
+pub(crate) fn load_lint_disables() -> Vec<String> {
     load().lint_disable
 }
 
 /// Same as [`load_lint_disables`] but for the auto-fix opt-out list.
 /// Rules in this list won't have their `fix()` dispatched by `ebman
 /// lint --fix` even when they're enabled for reporting.
-pub fn load_lint_fix_disables() -> Vec<String> {
+pub(crate) fn load_lint_fix_disables() -> Vec<String> {
     load().lint_fix_disable
 }
 
-pub fn parse(text: &str) -> Config {
+pub(crate) fn parse(text: &str) -> Config {
     let mut cfg = Config::default();
     for line in text.lines() {
         let line = line.trim();
@@ -425,7 +441,7 @@ pub fn parse(text: &str) -> Config {
     cfg
 }
 
-pub fn config_path() -> PathBuf {
+pub(crate) fn config_path() -> PathBuf {
     config_file("config.toml")
 }
 
@@ -433,7 +449,7 @@ pub fn config_path() -> PathBuf {
 /// over-writes the user's existing file. Used by the `:settings` form.
 /// Atomic — writes to a sibling `.tmp` and renames into place so a
 /// crash mid-write can't truncate `config.toml`.
-pub fn save(cfg: &Config) -> std::io::Result<()> {
+pub(crate) fn save(cfg: &Config) -> std::io::Result<()> {
     let path = config_path();
     let body = serialize(cfg);
     crate::util::write_atomic(&path, &body)
@@ -441,7 +457,7 @@ pub fn save(cfg: &Config) -> std::io::Result<()> {
 
 /// Pure: render a `Config` into the TOML-ish line-oriented format the
 /// parser reads. Used by `save` and unit tests.
-pub fn serialize(cfg: &Config) -> String {
+pub(crate) fn serialize(cfg: &Config) -> String {
     let mut out = String::new();
     out.push_str("# ebman configuration — written by :settings; hand-edits welcome\n\n");
     out.push_str(&format!(
@@ -631,7 +647,7 @@ pub fn serialize(cfg: &Config) -> String {
 /// -free / blank-key / blank-value tokens are skipped. Whitespace around
 /// each side of the colon is trimmed so the operator can format it for
 /// readability.
-pub fn parse_profile_themes(raw: &str) -> std::collections::HashMap<String, String> {
+pub(crate) fn parse_profile_themes(raw: &str) -> std::collections::HashMap<String, String> {
     let mut out = std::collections::HashMap::new();
     for token in raw.split(',') {
         let Some((k, v)) = token.split_once(':') else {

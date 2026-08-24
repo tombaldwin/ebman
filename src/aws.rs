@@ -77,19 +77,19 @@ mod sqs;
 mod ssm;
 mod waf;
 
-pub use cloudwatch::*;
-pub use cost::*;
-pub use eb::*;
-pub use iam::*;
-pub use logs::*;
-pub use org::*;
-pub use secrets::*;
-pub use sqs::*;
-pub use ssm::*;
+pub(crate) use cloudwatch::*;
+pub(crate) use cost::*;
+pub(crate) use eb::*;
+pub(crate) use iam::*;
+pub(crate) use logs::*;
+pub(crate) use org::*;
+pub(crate) use secrets::*;
+pub(crate) use sqs::*;
+pub(crate) use ssm::*;
 // `waf` contributes only an `impl AwsClient` method — no types to re-export.
 
 #[derive(Clone, Debug)]
-pub struct AwsContext {
+pub(crate) struct AwsContext {
     pub region: String,
     pub profile: Option<String>,
     pub account_id: Option<String>,
@@ -97,12 +97,12 @@ pub struct AwsContext {
 }
 
 #[derive(Clone, Debug)]
-pub struct Identity {
+pub(crate) struct Identity {
     pub account_id: Option<String>,
     pub caller_arn: Option<String>,
 }
 
-pub struct AwsClient {
+pub(crate) struct AwsClient {
     client: Client,
     sqs: SqsClient,
     cw: CwClient,
@@ -194,7 +194,7 @@ impl AwsClient {
     }
 
     /// Build the SDK client without making any network calls.
-    pub async fn with(profile: Option<String>, region: Option<String>) -> Result<Self> {
+    pub(crate) async fn with(profile: Option<String>, region: Option<String>) -> Result<Self> {
         let mut builder = aws_config::defaults(aws_config::BehaviorVersion::latest());
         if let Some(p) = profile.clone() {
             builder = builder.profile_name(p);
@@ -264,7 +264,10 @@ impl AwsClient {
     /// expected to swap clients again before expiry. We don't implement
     /// background refresh here — the operator's refresh tick will
     /// re-invoke this when the session dies.
-    pub async fn assume_role(target_name: &str, spec: &crate::config::AccountSpec) -> Result<Self> {
+    pub(crate) async fn assume_role(
+        target_name: &str,
+        spec: &crate::config::AccountSpec,
+    ) -> Result<Self> {
         // Stage 1: load the source-profile creds + region.
         let mut builder = aws_config::defaults(aws_config::BehaviorVersion::latest());
         if let Some(p) = spec.source_profile.as_ref() {
@@ -421,7 +424,7 @@ impl AwsClient {
 
     /// Verify credentials work and fetch the caller identity. Used at startup to
     /// detect invalid persisted profiles, and as a background task after rebuild.
-    pub async fn verify_identity(&self) -> Result<Identity> {
+    pub(crate) async fn verify_identity(&self) -> Result<Identity> {
         let ident = StsClient::new(&self.config)
             .get_caller_identity()
             .send()
@@ -446,7 +449,7 @@ impl AwsClient {
     ///   curl write to a local file and return an empty body.
     /// - `--proto =https` restricts the transfer to HTTPS, so a `file://` or
     ///   `ftp://` value can't be fetched and rendered into the log overlay.
-    pub async fn fetch_url_text(url: &str) -> Result<String> {
+    pub(crate) async fn fetch_url_text(url: &str) -> Result<String> {
         use tokio::process::Command;
         let out = Command::new("curl")
             .args([
@@ -741,7 +744,7 @@ fn role_cache() -> &'static RoleCache {
 /// An assumed-role client for `name` pointed at `spec.region`, built
 /// once and reused for the same five-minute TTL as the profile
 /// client cache (`CLIENT_CACHE_TTL`, private to this module).
-pub async fn cached_role_client(
+pub(crate) async fn cached_role_client(
     name: &str,
     spec: &crate::config::AccountSpec,
 ) -> Result<std::sync::Arc<AwsClient>> {
@@ -791,7 +794,7 @@ pub(crate) fn seed_role_cache_for_tests(
 /// Two callers racing on a cold key both build one; the loser's is
 /// dropped. That is cheaper than holding the lock across the `await`,
 /// and both clients work.
-pub async fn cached_client(
+pub(crate) async fn cached_client(
     profile: Option<String>,
     region: String,
 ) -> Result<std::sync::Arc<AwsClient>> {
@@ -885,7 +888,7 @@ pub(crate) fn cache_epoch_for_tests() -> u64 {
 /// Called when the operator signals that the world changed — a profile
 /// or account switch — since that is also when they may have re-run
 /// `aws sso login` or edited `~/.aws/config`.
-pub fn clear_client_cache() {
+pub(crate) fn clear_client_cache() {
     // Bumped BEFORE the lock, so any builder that acquires the lock
     // after this point sees the new value and declines to install.
     CACHE_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -955,7 +958,7 @@ fn sts_expiry_to_system_time(secs: i64) -> Result<std::time::SystemTime> {
 /// split so each caller can append its own surface-appropriate
 /// follow-up hint (TUI: Ctrl-R / `p`; MCP: nothing to press).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CredentialHint {
+pub(crate) enum CredentialHint {
     Expired(String),
     Invalid(String),
 }
@@ -974,7 +977,7 @@ pub enum CredentialHint {
 /// `aws sso login` is the correct first remediation. Do NOT reorder
 /// for "alphabetical tidiness". 0.17.4 review caught this as a
 /// latent risk.
-pub fn rewrite_credential_error(profile: &str, msg: &str) -> Option<CredentialHint> {
+pub(crate) fn rewrite_credential_error(profile: &str, msg: &str) -> Option<CredentialHint> {
     let lower = msg.to_lowercase();
     let sso_signals = [
         "expiredtoken",
@@ -1026,7 +1029,7 @@ mod tests;
 /// generic `ProvideErrorMetadata` cannot be downcast out of a chain of
 /// `dyn Error`, which is why the capture has to happen at the boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AwsErrorMeta {
+pub(crate) struct AwsErrorMeta {
     /// The service's error code, e.g. `ThrottlingException`.
     pub code: Option<String>,
     pub request_id: Option<String>,

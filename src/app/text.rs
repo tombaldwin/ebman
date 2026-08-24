@@ -15,7 +15,7 @@ use super::*;
 ///
 /// Owned `String` return so the caller can borrow `.as_str()`
 /// without lifetime gymnastics around the input slice.
-pub fn expand_command_alias(
+pub(crate) fn expand_command_alias(
     line: &str,
     aliases: &std::collections::HashMap<String, String>,
 ) -> String {
@@ -37,7 +37,7 @@ pub fn expand_command_alias(
     }
 }
 
-pub fn humanize_short_age(d: Duration) -> String {
+pub(crate) fn humanize_short_age(d: Duration) -> String {
     let secs = d.as_secs();
     if secs < 60 {
         format!("{secs}s")
@@ -54,7 +54,7 @@ pub fn humanize_short_age(d: Duration) -> String {
 /// value))` when there's at least a key and one value token. Value tokens
 /// are joined with a single space — there's no shell-style quoting, since
 /// we trust the operator and want the command bar to stay typeable.
-pub fn parse_tag_args(rest: &[&str]) -> Option<(String, String)> {
+pub(crate) fn parse_tag_args(rest: &[&str]) -> Option<(String, String)> {
     let key = (*rest.first()?).to_string();
     if rest.len() < 2 {
         return None;
@@ -70,7 +70,7 @@ pub fn parse_tag_args(rest: &[&str]) -> Option<(String, String)> {
 /// Returns `Some(bucket_name)` when the text is a status-delta toast and we
 /// want subsequent updates for the same bucket to replace rather than stack.
 /// Pure function so it's easy to pin down in tests.
-pub fn delta_toast_key(text: &str) -> Option<String> {
+pub(crate) fn delta_toast_key(text: &str) -> Option<String> {
     let trimmed = text.trim_start();
     let mut chars = trimmed.chars();
     let first = chars.next()?;
@@ -161,7 +161,7 @@ pub(crate) fn scroll_apply(current: u16, delta: i32) -> u16 {
 /// dimension list (`InstanceId=i-abc,Foo=bar`). Any token containing `=`
 /// is treated as dims; the other is stat. Returns `(stat, dims)` with
 /// `stat` defaulting to `Average` and `dims` to empty when absent. Pure.
-pub fn parse_metric_extra_args(args: &[&str]) -> (String, Vec<(String, String)>) {
+pub(crate) fn parse_metric_extra_args(args: &[&str]) -> (String, Vec<(String, String)>) {
     let mut stat: Option<String> = None;
     let mut dims: Vec<(String, String)> = Vec::new();
     for tok in args {
@@ -185,7 +185,7 @@ pub fn parse_metric_extra_args(args: &[&str]) -> (String, Vec<(String, String)>)
 /// Parse an `s3://bucket/key/with/slashes` URL into a `(bucket, key)`
 /// tuple. Returns `None` if the input isn't an `s3://` URL or the bucket
 /// or key is empty. Pure.
-pub fn parse_s3_url(raw: &str) -> Option<(String, String)> {
+pub(crate) fn parse_s3_url(raw: &str) -> Option<(String, String)> {
     let rest = raw.strip_prefix("s3://")?;
     let (bucket, key) = rest.split_once('/')?;
     if bucket.is_empty() || key.is_empty() {
@@ -197,7 +197,7 @@ pub fn parse_s3_url(raw: &str) -> Option<(String, String)> {
 /// Expand a leading `~/` to `$HOME/`. Other tilde forms (e.g. `~user`) are
 /// left as-is; the operator gets a clear "can't read" error if they pass
 /// something obscure. Pure for ease of testing.
-pub fn expand_tilde(path: &str) -> String {
+pub(crate) fn expand_tilde(path: &str) -> String {
     expand_tilde_from(std::env::var_os("HOME"), path)
 }
 
@@ -210,7 +210,7 @@ pub fn expand_tilde(path: &str) -> String {
 /// this one for the same variable. Several production paths read `HOME`
 /// live, so the race was reachable, not theoretical. `set_var` is also
 /// `unsafe` under the 2024 env API and a hard error on that edition.
-pub fn expand_tilde_from(home: Option<std::ffi::OsString>, path: &str) -> String {
+pub(crate) fn expand_tilde_from(home: Option<std::ffi::OsString>, path: &str) -> String {
     if let Some(rest) = path.strip_prefix("~/") {
         if let Some(home) = home {
             let mut p = std::path::PathBuf::from(home);
@@ -225,7 +225,7 @@ pub fn expand_tilde_from(home: Option<std::ffi::OsString>, path: &str) -> String
 /// filename stem (everything before the last `.`) so `./build.zip` becomes
 /// `build_1684512345`. Sanitises any chars EB rejects in version labels
 /// (anything outside `[A-Za-z0-9_.-]`). Pure for testability.
-pub fn derive_version_label(path: &str, unix_ts: i64) -> String {
+pub(crate) fn derive_version_label(path: &str, unix_ts: i64) -> String {
     let stem = std::path::Path::new(path)
         .file_stem()
         .and_then(|s| s.to_str())
@@ -248,7 +248,7 @@ pub fn derive_version_label(path: &str, unix_ts: i64) -> String {
 /// nginx access, eb-engine.log, …); we prefer the app stdout because that's
 /// where deploy / runtime output lives. Falls back to the first by name.
 /// Pure for testability.
-pub fn pick_default_log_group(groups: &[String]) -> Option<String> {
+pub(crate) fn pick_default_log_group(groups: &[String]) -> Option<String> {
     const PRIORITIES: &[&str] = &[
         "/var/log/web.stdout.log",
         "/var/log/eb-engine.log",
@@ -267,7 +267,7 @@ pub fn pick_default_log_group(groups: &[String]) -> Option<String> {
 /// slice and parse it. Returns `None` if the flag is absent, the value is
 /// missing, or parsing fails. Used by commands like `:logs-stream` that
 /// take optional flags alongside their positional args. Pure.
-pub fn parse_named_arg<T: std::str::FromStr>(rest: &[&str], flag: &str) -> Option<T> {
+pub(crate) fn parse_named_arg<T: std::str::FromStr>(rest: &[&str], flag: &str) -> Option<T> {
     let pos = rest.iter().position(|s| *s == flag)?;
     rest.get(pos + 1).and_then(|v| v.parse().ok())
 }
@@ -277,7 +277,9 @@ pub fn parse_named_arg<T: std::str::FromStr>(rest: &[&str], flag: &str) -> Optio
 /// reflect "what you'd reasonably alarm on for this metric" — e.g. drop in
 /// health (LE) vs spike in 5xx (GT). Pure so the unit tests don't need
 /// AWS.
-pub fn alarm_kind_to_metric(kind: &str) -> Option<(&'static str, &'static str, &'static str)> {
+pub(crate) fn alarm_kind_to_metric(
+    kind: &str,
+) -> Option<(&'static str, &'static str, &'static str)> {
     match kind {
         "health" => Some(("EnvironmentHealth", "LessThanOrEqualToThreshold", "Maximum")),
         "4xx" | "req4xx" => Some(("ApplicationRequests4xx", "GreaterThanThreshold", "Sum")),
@@ -292,7 +294,7 @@ pub fn alarm_kind_to_metric(kind: &str) -> Option<(&'static str, &'static str, &
 /// leader (e.g. `"↳ "` followed by aligned continuation). Greedy
 /// word-wrap; falls back to hard-break inside a word that won't fit on its
 /// own line. Pure for testability.
-pub fn wrap_with_hanging_indent(text: &str, width: usize, lead: &str, cont: &str) -> String {
+pub(crate) fn wrap_with_hanging_indent(text: &str, width: usize, lead: &str, cont: &str) -> String {
     if text.is_empty() {
         return lead.to_string();
     }

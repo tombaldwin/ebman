@@ -5,7 +5,7 @@ use super::*;
 
 /// One subnet in a VPC. Used by `:subnets` to populate the picker.
 #[derive(Clone, Debug)]
-pub struct SubnetInfo {
+pub(crate) struct SubnetInfo {
     pub id: String,
     pub availability_zone: String,
     pub cidr_block: String,
@@ -15,7 +15,7 @@ pub struct SubnetInfo {
 
 /// One security group in a VPC. Used by `:security-groups`.
 #[derive(Clone, Debug)]
-pub struct SecurityGroupInfo {
+pub(crate) struct SecurityGroupInfo {
     pub id: String,
     pub group_name: String,
     pub description: String,
@@ -25,7 +25,7 @@ impl AwsClient {
     /// List subnets in a VPC, ordered by AZ then CIDR for stable picker
     /// rows. Returns the wide rows the `:subnets` picker needs (id + AZ
     /// + CIDR + Name tag) so callers don't need a second round-trip.
-    pub async fn list_subnets_in_vpc(&self, vpc_id: &str) -> Result<Vec<SubnetInfo>> {
+    pub(crate) async fn list_subnets_in_vpc(&self, vpc_id: &str) -> Result<Vec<SubnetInfo>> {
         use aws_sdk_ec2::types::Filter;
         // Paginate: DescribeSubnets caps a page well below the size of a
         // shared VPC's subnet list, and a picker that silently shows a
@@ -77,7 +77,7 @@ impl AwsClient {
 
     /// List security groups in a VPC, ordered by name for stable picker
     /// rows.
-    pub async fn list_security_groups_in_vpc(
+    pub(crate) async fn list_security_groups_in_vpc(
         &self,
         vpc_id: &str,
     ) -> Result<Vec<SecurityGroupInfo>> {
@@ -121,7 +121,7 @@ impl AwsClient {
     /// a replacement automatically. The API returns immediately; the
     /// instance enters `shutting-down` and EB's events panel will surface
     /// the replacement within ~30 s.
-    pub async fn terminate_instance(&self, instance_id: &str) -> Result<()> {
+    pub(crate) async fn terminate_instance(&self, instance_id: &str) -> Result<()> {
         self.ec2
             .terminate_instances()
             .instance_ids(instance_id)

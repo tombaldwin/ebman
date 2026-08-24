@@ -61,10 +61,10 @@ use crate::{
 // Re-export action-cluster types so existing consumers (ui.rs, tests,
 // the sub-modules below) keep their `crate::app::Action` etc. paths
 // working after the move into `crate::mode_action`.
-pub use crate::mode_action::{
+pub(crate) use crate::mode_action::{
     Action, ActionFlow, ConfirmKind, ConfirmModal, DryRunInfo, ParameterisedAction, ACTIONS,
 };
-pub use crate::mode_detail::{
+pub(crate) use crate::mode_detail::{
     config_editable_items, health_items, ConfigEdit, ConfigEditMode, ConfigItem, ConfigItemKind,
     DetailState, DetailTab, EventLevel, EventWindow, HealthItem, LogTail, LogTailStage,
 };
@@ -136,19 +136,19 @@ mod tail; // the shared scroll/follow/filter surface
 mod text; // string, parse and format helpers
 mod types; // Focus / Overlay / Mode / SortKey / Picker / ...
 
-pub use config_diff::*;
-pub use cost::*;
-pub use deploy_math::*;
-pub use env_edit::*;
-pub use render::*;
-pub use saved_views::*;
-pub use text::*;
-pub use types::*;
-pub use view_state::ViewState;
+pub(crate) use config_diff::*;
+pub(crate) use cost::*;
+pub(crate) use deploy_math::*;
+pub(crate) use env_edit::*;
+pub(crate) use render::*;
+pub(crate) use saved_views::*;
+pub(crate) use text::*;
+pub(crate) use types::*;
+pub(crate) use view_state::ViewState;
 
-pub use crate::mode_dlq::{DlqState, QueueView};
+pub(crate) use crate::mode_dlq::{DlqState, QueueView};
 pub(crate) use tail::tail_window_start;
-pub use tail::TailView;
+pub(crate) use tail::TailView;
 
 /// Names of all built-in `:commands`. Used to detect collisions when loading
 /// user plugins from `commands.toml` — plugins that shadow a built-in are
@@ -157,27 +157,27 @@ pub use tail::TailView;
 /// Derived from `commands::COMMANDS` (crate-private) so adding a command only
 /// requires one edit (`commands.rs`). The list is built lazily on first
 /// access; the registry is a `const` slice so the work is O(N) with N≈90.
-pub fn builtin_commands() -> Vec<&'static str> {
+pub(crate) fn builtin_commands() -> Vec<&'static str> {
     crate::commands::all_names()
 }
 
 pub struct App {
-    pub context: AwsContext,
-    pub scope: Scope,
-    pub applications: Vec<Application>,
-    pub app_table_state: TableState,
-    pub environments: Vec<Environment>,
-    pub table_state: TableState,
-    pub table_area: Rect,
-    pub mode: Mode,
+    pub(crate) context: AwsContext,
+    pub(crate) scope: Scope,
+    pub(crate) applications: Vec<Application>,
+    pub(crate) app_table_state: TableState,
+    pub(crate) environments: Vec<Environment>,
+    pub(crate) table_state: TableState,
+    pub(crate) table_area: Rect,
+    pub(crate) mode: Mode,
     /// Filter / sort / grouping and the cached projection of
     /// `environments` that `ui` actually draws. See [`ViewState`] — its
     /// derived slices are private precisely so they cannot go stale
     /// unnoticed.
-    pub view: ViewState,
-    pub load_state: LoadState,
-    pub loading_since: Option<Instant>,
-    pub refresh_interval: Duration,
+    pub(crate) view: ViewState,
+    pub(crate) load_state: LoadState,
+    pub(crate) loading_since: Option<Instant>,
+    pub(crate) refresh_interval: Duration,
     /// Once the loading indicator has been visible (i.e. `loading_since`
     /// exceeded its display-threshold), keep showing it until this instant
     /// even after the load actually finishes. Smooths over the case where
@@ -185,53 +185,53 @@ pub struct App {
     /// and then completes ~100 ms later — without this, the status flashes
     /// yellow → green for a single frame which reads as a flicker. Cleared
     /// by the render path once `Instant::now() > t`.
-    pub loading_visible_until: Option<Instant>,
-    pub last_refresh: Option<chrono::DateTime<chrono::Utc>>,
-    pub status_message: Option<String>,
-    pub error_message: Option<String>,
-    pub picker: Option<Picker>,
-    pub override_profile: Option<String>,
-    pub override_region: Option<String>,
-    pub history: HashMap<String, VecDeque<String>>,
-    pub command_input: TextInput,
-    pub completion: CompletionState,
-    pub quickjump_input: TextInput,
-    pub extra_regions: Vec<String>,
-    pub event_panel: EventPanel,
+    pub(crate) loading_visible_until: Option<Instant>,
+    pub(crate) last_refresh: Option<chrono::DateTime<chrono::Utc>>,
+    pub(crate) status_message: Option<String>,
+    pub(crate) error_message: Option<String>,
+    pub(crate) picker: Option<Picker>,
+    pub(crate) override_profile: Option<String>,
+    pub(crate) override_region: Option<String>,
+    pub(crate) history: HashMap<String, VecDeque<String>>,
+    pub(crate) command_input: TextInput,
+    pub(crate) completion: CompletionState,
+    pub(crate) quickjump_input: TextInput,
+    pub(crate) extra_regions: Vec<String>,
+    pub(crate) event_panel: EventPanel,
     /// Env names the user has marked for batch action via `space`. Cleared on
     /// Esc, on context switch, and after a successful batch dispatch.
-    pub multi_selected: BTreeSet<String>,
+    pub(crate) multi_selected: BTreeSet<String>,
     /// Apps-scope multi-selection (parallel to `multi_selected`).
     /// `space` in Apps scope toggles an app in/out. Doesn't persist
     /// across sessions — selection is operator-intent for a single
     /// task. Apps-scope batch ops (future expansion) will fan across
     /// every env in every selected app.
-    pub apps_selected: BTreeSet<String>,
+    pub(crate) apps_selected: BTreeSet<String>,
     /// Currently-focused panel. Drives j/k routing and footer hints.
-    pub focus: Focus,
+    pub(crate) focus: Focus,
     /// Regions to fan refreshes across. Empty = single-region mode (only the
     /// AwsClient's region). Populated by `:region all`.
-    pub multi_regions: Vec<String>,
-    pub detail: Option<DetailState>,
-    pub action_flow: Option<ActionFlow>,
-    pub dlq: Option<DlqState>,
-    pub theme: Arc<Theme>,
-    pub help: HelpState,
-    pub hover_row: Option<usize>,
-    pub alerts: usize, // count of envs currently in Red, recomputed each refresh
+    pub(crate) multi_regions: Vec<String>,
+    pub(crate) detail: Option<DetailState>,
+    pub(crate) action_flow: Option<ActionFlow>,
+    pub(crate) dlq: Option<DlqState>,
+    pub(crate) theme: Arc<Theme>,
+    pub(crate) help: HelpState,
+    pub(crate) hover_row: Option<usize>,
+    pub(crate) alerts: usize, // count of envs currently in Red, recomputed each refresh
     /// Cached DLQ depth (`Visible` messages) for each Worker-tier env,
     /// keyed by env name. Populated by a per-refresh fan-out of
     /// `describe_worker_queues`. Used by the Red-alert calc + the table
     /// render's `⚠ DLQ:N` chip on Worker rows. Missing entry = "not
     /// checked yet" (don't fire an alert on cold state).
-    pub worker_dlq_depths: std::collections::HashMap<String, i64>,
+    pub(crate) worker_dlq_depths: std::collections::HashMap<String, i64>,
     /// Envs whose last worker-queue check FAILED — their entry in
     /// `worker_dlq_depths` is the last-known depth, kept so an
     /// AccessDenied/throttle can't silently clear an alert. The UI
     /// appends a staleness marker so the operator knows the number
     /// may be old. Cleared per-env on the next successful check and
     /// wholesale on context switch.
-    pub worker_dlq_stale: std::collections::HashSet<String>,
+    pub(crate) worker_dlq_stale: std::collections::HashSet<String>,
     /// Monotonic counter of context-switch spawns (`:region`,
     /// `:profile`, `:account`). Stamped into `AppMsg::Rebuild` so a
     /// slow older switch losing the race to a newer one is dropped in
@@ -357,28 +357,29 @@ pub struct App {
     /// other-tabs (`:why`, Detail/Events, …) still fire against the stub
     /// AwsClient and may return empty or errored data; closing that gap
     /// is a separate piece of work (spawn-site gating).
-    pub demo_mode: bool,
+    pub(crate) demo_mode: bool,
     /// Per-env `(healthy, total)` instance counts, populated by
     /// `spawn_env_instance_counts` after each refresh tick. Drives the
     /// `INST` column on the main env table. Missing entry = "not
     /// checked yet"; rendered as `—`. `EnvInstanceCounts { 0, 0 }` is
     /// a real value ("env reports no instances") and renders as `0/0`.
-    pub env_instance_counts: std::collections::HashMap<String, crate::aws::EnvInstanceCounts>,
+    pub(crate) env_instance_counts:
+        std::collections::HashMap<String, crate::aws::EnvInstanceCounts>,
     /// Cost Explorer integration is opt-in via `:cost on`. Toggling
     /// flips this + triggers a fetch (or a stale-cache load); the
     /// envs-table COST column renders only while this is true.
     /// Persisted to state.toml under `cost_enabled`.
-    pub cost_enabled: bool,
+    pub(crate) cost_enabled: bool,
     /// Per-env monthly USD spend, populated by `spawn_cost_fetch`
     /// after a `:cost on` opt-in. Empty when costs haven't been
     /// fetched yet or the cache file is missing. Cleared when the
     /// operator toggles `:cost off` so the column stops rendering
     /// stale numbers.
-    pub costs: std::collections::HashMap<String, f64>,
-    pub costs_fetched_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub(crate) costs: std::collections::HashMap<String, f64>,
+    pub(crate) costs_fetched_at: Option<chrono::DateTime<chrono::Utc>>,
     /// The last `:yank-cli` snippet, so a test can assert on what was
     /// copied without reaching into the system clipboard.
-    pub last_yanked_cli: Option<String>,
+    pub(crate) last_yanked_cli: Option<String>,
     /// Whether what's in `costs` came from a walk that finished.
     ///
     /// Without this, "do we already have costs?" was the only test
@@ -387,13 +388,13 @@ pub struct App {
     /// then saw a non-empty map and kept it — so the partial data from
     /// the first failure survived the whole session while each retry
     /// paid for twenty metered Cost Explorer pages and discarded them.
-    pub costs_complete: bool,
+    pub(crate) costs_complete: bool,
     /// `family_key → newest available version` from `ListAvailableSolutionStacks`,
     /// built by `spawn_solution_stacks`. Drives the envs-table stale-platform
     /// tint. Empty until the first fetch lands; cleared on context switch so a
     /// new account/region rebuilds it.
-    pub latest_stacks: std::collections::HashMap<String, String>,
-    pub frozen: bool, // when true, auto-refresh ticker is no-op
+    pub(crate) latest_stacks: std::collections::HashMap<String, String>,
+    pub(crate) frozen: bool, // when true, auto-refresh ticker is no-op
     /// `true` when ebman launched without a `state.toml` on disk —
     /// i.e. first-ever run on this machine. Renderer surfaces a
     /// one-line "press ? for help, : for commands, Ctrl-K for
@@ -401,130 +402,130 @@ pub struct App {
     /// Cleared on the operator's first input event so it never
     /// blocks; the persisted state.toml that every refresh writes
     /// also means subsequent launches won't re-trigger it.
-    pub first_run_hint: bool,
+    pub(crate) first_run_hint: bool,
     /// The currently visible overlay popup, if any. See [`Overlay`].
-    pub current_overlay: Option<Overlay>,
-    pub message_log: VecDeque<(chrono::DateTime<chrono::Utc>, MsgKind, String)>,
-    pub toasts: VecDeque<Toast>,
-    pub palette_input: TextInput,
-    pub palette_items: Vec<PaletteItem>,
-    pub palette_filtered: Vec<usize>,
-    pub palette_state: ListState,
-    pub read_only: bool,
-    pub pinned: BTreeSet<String>,
+    pub(crate) current_overlay: Option<Overlay>,
+    pub(crate) message_log: VecDeque<(chrono::DateTime<chrono::Utc>, MsgKind, String)>,
+    pub(crate) toasts: VecDeque<Toast>,
+    pub(crate) palette_input: TextInput,
+    pub(crate) palette_items: Vec<PaletteItem>,
+    pub(crate) palette_filtered: Vec<usize>,
+    pub(crate) palette_state: ListState,
+    pub(crate) read_only: bool,
+    pub(crate) pinned: BTreeSet<String>,
     /// Apps-scope pinned set — apps stay at the top of the Apps table
     /// regardless of sort. Persisted to state.toml's `pinned_apps`
     /// field. Parallel to `pinned` (which covers envs); the two
     /// surfaces have different cursor / sort behaviour so keeping
     /// them as separate sets is cleaner than a tagged union.
-    pub pinned_apps: BTreeSet<String>,
-    pub aliases: BTreeMap<String, String>,
-    pub saved_views: BTreeMap<String, String>,
+    pub(crate) pinned_apps: BTreeSet<String>,
+    pub(crate) aliases: BTreeMap<String, String>,
+    pub(crate) saved_views: BTreeMap<String, String>,
     /// User-defined extra metric charts for the Metrics tab. Keyed by the
     /// operator-chosen display label so re-adding the same label updates
     /// in place. Persisted in `state.toml` under `metric.LABEL`.
-    pub custom_metrics: BTreeMap<String, crate::state::CustomMetricSpec>,
-    pub log_reload: Option<crate::LogReloadHandle>,
-    pub log_directive: String,
-    pub plugins: BTreeMap<String, crate::plugins::Plugin>,
+    pub(crate) custom_metrics: BTreeMap<String, crate::state::CustomMetricSpec>,
+    pub(crate) log_reload: Option<crate::LogReloadHandle>,
+    pub(crate) log_directive: String,
+    pub(crate) plugins: BTreeMap<String, crate::plugins::Plugin>,
     /// Snapshot of `(status_message, error_message)` captured when the current
     /// refresh was spawned. apply_refresh clears messages only if they still
     /// match this snapshot, so user-initiated status set between kickoff and
     /// apply (e.g. pressing `s` to sort during the round-trip) is preserved.
-    pub status_snapshot_at_refresh: Option<(Option<String>, Option<String>)>,
+    pub(crate) status_snapshot_at_refresh: Option<(Option<String>, Option<String>)>,
     /// `true` when `status_message` was set by a user-facing command (e.g.
     /// `:pending`, `:metric add`) rather than a background spawn helper.
     /// Refresh-time auto-clear only touches non-pinned messages — without
     /// this, every 15s tick wipes out informational results the user just
     /// invoked.
-    pub status_message_pinned: bool,
+    pub(crate) status_message_pinned: bool,
     /// When set, the next ticker firing skips `spawn_refresh` until this
     /// instant has passed. Driven by exponential backoff in response to
     /// AWS throttling responses; the user can still force a refresh with
     /// `Ctrl-R` / `:refresh`.
-    pub throttle_until: Option<Instant>,
+    pub(crate) throttle_until: Option<Instant>,
     /// How many consecutive refreshes have come back throttled. Each one
     /// roughly doubles the back-off; resets to zero on the next success.
-    pub consecutive_throttles: u32,
+    pub(crate) consecutive_throttles: u32,
     /// Latest still-valid `expiresAt` discovered in `~/.aws/sso/cache`.
     /// Recomputed on every ticker tick — the file is cheap to read and the
     /// user may `aws sso login` from another shell while ebman is open.
-    pub sso_expiry: Option<chrono::DateTime<chrono::Utc>>,
+    pub(crate) sso_expiry: Option<chrono::DateTime<chrono::Utc>>,
     /// Rolling list of in-flight + recently-completed action dispatches.
     /// See `PendingAction`. Surfaced as a header chip + `:pending` overlay.
-    pub pending_actions: std::collections::VecDeque<PendingAction>,
+    pub(crate) pending_actions: std::collections::VecDeque<PendingAction>,
     /// Action queued for dispatch but inside the [`UNDO_WINDOW`] —
     /// see [`PendingDispatch`]. `tick_pending_dispatch` (called from
     /// the main loop) fires the AWS call when the deadline passes;
     /// `U` in Normal mode cancels.
-    pub pending_dispatch: Option<PendingDispatch>,
+    pub(crate) pending_dispatch: Option<PendingDispatch>,
     /// Active modal-form session (`:capacity`, future `:network`, etc.).
     /// Populated by `open_form`; cleared on cancel / submit completion.
-    pub form: Option<crate::form::Form>,
+    pub(crate) form: Option<crate::form::Form>,
     /// Handle to the `:logs-tail` polling task. Stored so we can `abort()`
     /// it when the overlay closes or the user switches context. None when
     /// no tail session is active.
-    pub log_tail_task: Option<tokio::task::JoinHandle<()>>,
+    pub(crate) log_tail_task: Option<tokio::task::JoinHandle<()>>,
     /// Monotonically increasing id for `:logs-tail` sessions. Lets late
     /// `AppMsg::LogTailEvents` from a previous session be dropped on arrival.
-    pub log_tail_session: u64,
+    pub(crate) log_tail_session: u64,
     /// Handle to the `:event-tail` polling task — same lifecycle as
     /// `log_tail_task` (aborted on overlay close / context switch).
-    pub event_tail_task: Option<tokio::task::JoinHandle<()>>,
+    pub(crate) event_tail_task: Option<tokio::task::JoinHandle<()>>,
     /// Monotonically increasing id for `:event-tail` sessions; late
     /// `AppMsg::EventTail*` from a previous session are dropped.
-    pub event_tail_session: u64,
+    pub(crate) event_tail_session: u64,
     /// Same pattern for `:why` diagnostic overlays. Late
     /// `AppMsg::WhyRed{Events,Alarms,Instances,Deploys}` for a prior
     /// invocation get dropped when this counter has moved on.
-    pub why_red_session: u64,
+    pub(crate) why_red_session: u64,
     /// Drillable items rendered in the active `:why` overlay, written by
     /// `draw_why_red_overlay` and read by the overlay's key handler on
     /// `Enter`. Empty whenever the overlay isn't a `WhyRed`.
-    pub why_items: Vec<WhyItem>,
+    pub(crate) why_items: Vec<WhyItem>,
     /// Newer ebman release advertised by crates.io, if any. Populated by the
     /// fire-and-forget update-check task that runs once at startup.
-    pub update_available: Option<crate::update_check::LatestRelease>,
+    pub(crate) update_available: Option<crate::update_check::LatestRelease>,
     /// When `true`, `run()` exits and `main()` re-execs the binary so the
     /// user keeps their terminal session across a code change. Driven by
     /// `ControlOp::Reload` over the control socket.
-    pub reload_requested: bool,
+    pub(crate) reload_requested: bool,
     /// When `Some`, the run loop spawns an embedded SSM shell session
     /// targeting this instance ID into `current_shell`. Keystrokes in
     /// `Mode::Shell` are forwarded to the PTY rather than dispatched as
     /// ebman key bindings.
-    pub pending_shell_target: Option<String>,
+    pub(crate) pending_shell_target: Option<String>,
     /// Set when `:env-edit` is mid-flight: the `fetch_env_vars`
     /// result arrived but the main loop hasn't yet shelled out to
     /// `$EDITOR` (which needs the `Tui` handle to leave + re-enter
     /// the alternate screen, only available in the main loop).
     /// Carries `(env_name, current_env_vars)` — the editor opens
     /// against these, diffs on save, dispatches the deltas.
-    pub pending_env_edit: Option<(String, Vec<(String, String)>)>,
+    pub(crate) pending_env_edit: Option<(String, Vec<(String, String)>)>,
     /// The live embedded shell pane, if any. `None` outside Mode::Shell.
-    pub current_shell: Option<Box<crate::shell::ShellSession>>,
+    pub(crate) current_shell: Option<Box<crate::shell::ShellSession>>,
     /// Mode to return to when the user detaches from a shell pane (F12).
-    pub shell_return_mode: Mode,
+    pub(crate) shell_return_mode: Mode,
     /// Snapshot of the last buffer we rendered, captured from inside the
     /// `terminal.draw` closure. ratatui swaps the front/back buffer after
     /// `draw()` returns, so a snapshot taken at SCREEN-request time via
     /// `current_buffer_mut()` would read the empty back-buffer; cloning
     /// during the render is the only reliable way to expose what's actually
     /// on screen to the control plane.
-    pub last_rendered_buffer: Option<ratatui::buffer::Buffer>,
-    pub notify_bell: bool,
+    pub(crate) last_rendered_buffer: Option<ratatui::buffer::Buffer>,
+    pub(crate) notify_bell: bool,
     /// Config-derived values resolved at startup — see ResolvedConfig.
-    pub cfg: ResolvedConfig,
-    pub newly_red: HashSet<String>,
+    pub(crate) cfg: ResolvedConfig,
+    pub(crate) newly_red: HashSet<String>,
     /// Env names that appeared for the first time on the most recent
     /// refresh (weren't in `prev_health` last cycle). Used by the env
     /// table to render a transient `+` marker on the NAME cell so a new
     /// env doesn't scroll past unnoticed. Cleared on context switch +
     /// rotated each refresh.
-    pub newly_added: HashSet<String>,
+    pub(crate) newly_added: HashSet<String>,
     /// Delta in counts vs. the previous refresh, e.g. {"Red" → +1, "Yellow" → -1}.
-    pub health_delta: Vec<(String, i32)>,
-    pub status_delta: Vec<(String, i32)>,
+    pub(crate) health_delta: Vec<(String, i32)>,
+    pub(crate) status_delta: Vec<(String, i32)>,
     prev_alerts: usize,
     prev_health: HashMap<String, String>,
     prev_status: HashMap<String, String>,
@@ -1018,7 +1019,7 @@ pub(crate) enum AppMsg {
 }
 
 #[derive(Debug, Clone)]
-pub enum DlqOp {
+pub(crate) enum DlqOp {
     Resent {
         message_id: String,
     },
@@ -1446,6 +1447,31 @@ impl App {
     /// instance counts / cost data so the main table renders with
     /// believable content. Synchronous — no AWS calls, no disk I/O
     /// (state.load is skipped via the for_tests path).
+    /// Mark the session read-only. Set by `main` from `--deny-write`
+    /// once argv is parsed, which is after `App` is built.
+    ///
+    /// A setter rather than a public field because `App`'s fields are
+    /// `pub(crate)`: `main.rs` is the only consumer of this crate as a
+    /// library, and it needs exactly three things from `App`'s state.
+    /// Narrowing that from 91 public fields to three named methods is
+    /// what stops an internal rename from being a semver event.
+    pub fn set_read_only(&mut self, read_only: bool) {
+        self.read_only = read_only;
+    }
+
+    /// Hand over the `tracing` reload handle so `:log-level` can
+    /// re-filter a running session. Owned by `main` because it comes
+    /// from subscriber setup, which happens before the `App` exists.
+    pub fn set_log_reload(&mut self, handle: crate::LogReloadHandle) {
+        self.log_reload = Some(handle);
+    }
+
+    /// Did the session ask to be restarted? `main` re-execs on this
+    /// after `run` returns, so it must outlive the `App`.
+    pub fn reload_requested(&self) -> bool {
+        self.reload_requested
+    }
+
     pub fn new_demo(config: Config) -> Self {
         // Demo's stub client fails every call by design — downgrade
         // those log lines from ERROR to debug so a demo session doesn't
@@ -1887,7 +1913,7 @@ impl App {
     /// (e.g. `:pending` outcome, `:metric add` ack); plain
     /// `self.status_message = Some(...)` writes are still ephemeral and
     /// get auto-cleared by `apply_refresh`.
-    pub fn pin_status(&mut self, msg: impl Into<String>) {
+    pub(crate) fn pin_status(&mut self, msg: impl Into<String>) {
         self.status_message = Some(msg.into());
         self.status_message_pinned = true;
     }
@@ -1900,7 +1926,7 @@ impl App {
     /// permanent-until-acknowledged conditions — e.g. dispatch_auto_rollback's
     /// "no pre-deploy snapshot" branch, which can fire from inside
     /// apply_refresh and would otherwise be cleared in the same tick.
-    pub fn pin_error(&mut self, msg: impl Into<String>) {
+    pub(crate) fn pin_error(&mut self, msg: impl Into<String>) {
         self.error_message = Some(msg.into());
         self.status_message_pinned = true;
     }
@@ -2143,7 +2169,7 @@ impl App {
         });
     }
 
-    pub fn selected_env(&self) -> Option<&Environment> {
+    pub(crate) fn selected_env(&self) -> Option<&Environment> {
         let sel = self.table_state.selected()?;
         match self.display_rows().get(sel)? {
             DisplayRow::Env(i) => self.environments.get(*i),
@@ -2180,13 +2206,13 @@ fn is_text_input(key: &KeyEvent) -> bool {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum YankKind {
+pub(crate) enum YankKind {
     Cname,
     Name,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum DisplayRow {
+pub(crate) enum DisplayRow {
     Env(usize),
     Separator,
 }
@@ -2264,7 +2290,7 @@ async fn collect_tail_logs(
 /// noteworthy is in progress (mid-deploy, recently updated, currently in
 /// Updating / Terminating). `None` for envs that look quiet. Pure function so
 /// the rule set can be pinned down with unit tests.
-pub fn compute_traffic_warning(env: &Environment) -> Option<String> {
+pub(crate) fn compute_traffic_warning(env: &Environment) -> Option<String> {
     let status_lower = env.status.to_lowercase();
     if status_lower.contains("updating") || status_lower.contains("launching") {
         return Some(format!("ACTIVE DEPLOY: status={}", env.status));
@@ -2341,7 +2367,7 @@ pub(crate) fn is_throttling_error(msg: &str) -> bool {
 /// the instant the loading indicator should remain visible until (if it
 /// was visible at all). Returns `None` when the load completed before the
 /// indicator's display threshold, signalling "no linger needed".
-pub fn compute_loading_linger_target(
+pub(crate) fn compute_loading_linger_target(
     loading_since: Option<Instant>,
     threshold: Duration,
     linger: Duration,
@@ -2965,7 +2991,7 @@ fn write_audit_outcome(
 /// One pending dispatch at a time. The `kind` carries the work
 /// shape; the deadline + display labels are shared.
 #[derive(Clone)]
-pub struct PendingDispatch {
+pub(crate) struct PendingDispatch {
     pub deadline: Instant,
     /// Label rendered in the header pill — `"Rebuild env"` or
     /// `"Batch rebuild × 5"`. Captured at queue time so the
@@ -2984,7 +3010,7 @@ pub struct PendingDispatch {
 // See the matching allow on `ActionFlow` — same trade-off.
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone)]
-pub enum PendingDispatchKind {
+pub(crate) enum PendingDispatchKind {
     /// A single Y/TypeName-confirm dispatch — preserves the full
     /// `ConfirmModal` because `spawn_action` reads params off it
     /// (deploy version, swap target, scale min/max, etc.).
@@ -3022,7 +3048,7 @@ pub enum PendingDispatchKind {
 /// can recover but short enough that operators don't notice it on a
 /// deliberate action. The UX review flagged the absence of any
 /// abort affordance after dispatch as a real safety gap.
-pub const UNDO_WINDOW: Duration = Duration::from_secs(5);
+pub(crate) const UNDO_WINDOW: Duration = Duration::from_secs(5);
 
 /// TTL for `App.env_tag_cache` + `App.env_health_cache` — the lazy
 /// caches that back `spawn_confirm_lint`'s parallel tag + health
@@ -3031,14 +3057,14 @@ pub const UNDO_WINDOW: Duration = Duration::from_secs(5);
 /// drift across rapid modal cycles is negligible; long enough that
 /// repeated modal-opens against the same env benefit. 0.21
 /// addition (lint input caching).
-pub const LINT_INPUT_CACHE_TTL: Duration = Duration::from_secs(60);
+pub(crate) const LINT_INPUT_CACHE_TTL: Duration = Duration::from_secs(60);
 
 /// Items the Apps-scope action overlay (`Overlay::AppsActionMenu`)
 /// offers when the operator presses `a` from the Apps table. Each
 /// dispatches via `cmd_batch_*` after seeding `multi_selected` with the
 /// envs captured at menu-open time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AppsActionItem {
+pub(crate) enum AppsActionItem {
     Drill,
     BatchRebuild,
     BatchRestart,
@@ -3047,7 +3073,7 @@ pub enum AppsActionItem {
 }
 
 impl AppsActionItem {
-    pub fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Drill => "Drill into envs",
             Self::BatchRebuild => "Rebuild all envs in app",
@@ -3061,7 +3087,7 @@ impl AppsActionItem {
 /// Menu order — Drill at the top because it's the default action
 /// operators reach for; OpenInConsole at the bottom so it's not the
 /// thumb-stroke option.
-pub const APPS_ACTION_ITEMS: &[AppsActionItem] = &[
+pub(crate) const APPS_ACTION_ITEMS: &[AppsActionItem] = &[
     AppsActionItem::Drill,
     AppsActionItem::BatchRebuild,
     AppsActionItem::BatchRestart,

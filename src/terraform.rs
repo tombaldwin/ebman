@@ -35,7 +35,7 @@ use serde::Deserialize;
 /// keeping it tolerant of tfstate schema additions in newer
 /// Terraform versions.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct TfEnv {
+pub(crate) struct TfEnv {
     /// The `name` attribute — must match `Environment.name` in
     /// ebman's cached fleet for the env to be considered tf-
     /// managed. Case-sensitive.
@@ -57,7 +57,7 @@ pub struct TfEnv {
 /// Parsed tfstate, narrowed to the envs ebman cares about. Other
 /// resource types (security groups, RDS, etc.) are walked past.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct TfState {
+pub(crate) struct TfState {
     pub envs: Vec<TfEnv>,
 }
 
@@ -66,14 +66,14 @@ impl TfState {
     /// `name` attributes across resources are theoretically
     /// possible but operationally meaningless (EB env names are
     /// unique per region anyway).
-    pub fn env_by_name(&self, name: &str) -> Option<&TfEnv> {
+    pub(crate) fn env_by_name(&self, name: &str) -> Option<&TfEnv> {
         self.envs.iter().find(|e| e.name == name)
     }
 
     /// Set of tf-managed env names. Used by the table-render
     /// badge — `HashSet` lookup is O(1) per row, which matters
     /// when the operator has 50+ envs.
-    pub fn managed_names(&self) -> std::collections::HashSet<String> {
+    pub(crate) fn managed_names(&self) -> std::collections::HashSet<String> {
         self.envs.iter().map(|e| e.name.clone()).collect()
     }
 }
@@ -124,7 +124,7 @@ struct RawSetting {
 /// Returns the FIRST match. Mirrors `project::find_root` and
 /// `eb_cli::find_root` shape so the discovery story is the
 /// same across .ebman/, .elasticbeanstalk/, and .terraform/.
-pub fn find_tfstate(start: &Path) -> Option<PathBuf> {
+pub(crate) fn find_tfstate(start: &Path) -> Option<PathBuf> {
     for ancestor in start.ancestors() {
         let backend = ancestor.join(".terraform").join("terraform.tfstate");
         if backend.is_file() && !file_is_backend_pointer(&backend) {
@@ -152,7 +152,7 @@ fn file_is_backend_pointer(path: &Path) -> bool {
 /// `ebman drift` (opt out via `--no-redact`), and the TUI `:drift`
 /// overlay (always on — the TUI has richer, deliberately-gated paths
 /// for reading real values).
-pub fn redact_drift_fields(fields: &mut [DriftField]) {
+pub(crate) fn redact_drift_fields(fields: &mut [DriftField]) {
     for f in fields.iter_mut() {
         if f.kind != "option_setting" {
             continue;
@@ -188,7 +188,7 @@ pub(crate) fn is_backend_pointer(text: &str) -> bool {
 /// any parse error so the caller falls back silently — a
 /// corrupt or non-tfstate JSON file at the discovery path
 /// shouldn't refuse to launch ebman.
-pub fn parse(text: &str) -> Option<TfState> {
+pub(crate) fn parse(text: &str) -> Option<TfState> {
     // A JSON parser for JSON: tfstate is JSON, and routing it through
     // a YAML parser meant YAML's anchor/alias expansion applied to a
     // file ebman discovers by walking up from cwd. `serde_json` is
@@ -271,7 +271,7 @@ fn extract_tags(v: Option<&serde_json::Value>) -> std::collections::BTreeMap<Str
 /// Discover and load tfstate from cwd. Returns `None` when no
 /// tfstate ancestor exists, the file is unreadable, or the JSON
 /// is malformed. Same swallowing contract as `project::load_from_cwd`.
-pub fn load_from_cwd() -> Option<TfState> {
+pub(crate) fn load_from_cwd() -> Option<TfState> {
     let cwd = std::env::current_dir().ok()?;
     let path = find_tfstate(&cwd)?;
     let text = std::fs::read_to_string(&path).ok()?;
@@ -280,7 +280,7 @@ pub fn load_from_cwd() -> Option<TfState> {
 
 /// As above but takes an explicit `--tfstate PATH` override
 /// (CLI flag). Skips discovery; reads the named file directly.
-pub fn load_from_path(path: &Path) -> Option<TfState> {
+pub(crate) fn load_from_path(path: &Path) -> Option<TfState> {
     let text = std::fs::read_to_string(path).ok()?;
     parse(&text)
 }
@@ -291,7 +291,7 @@ pub fn load_from_path(path: &Path) -> Option<TfState> {
 /// Each operator-actionable, structured so the CLI can emit it
 /// as JSON and the TUI overlay can render it as a row.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DriftField {
+pub(crate) struct DriftField {
     /// Stable kind discriminator: `"version_label"`,
     /// `"option_setting"`, `"tag"`. Used by JSON consumers to
     /// route on category.
@@ -323,7 +323,7 @@ pub struct DriftField {
 ///   `--strict` mode that flags both directions.)
 /// - `tags`: same direction-aware semantics — tf is the
 ///   declared set; live tags absent from tf aren't drift.
-pub fn compute_drift(
+pub(crate) fn compute_drift(
     tf: &TfEnv,
     live_env: &crate::aws::Environment,
     live_options: &[(String, String, String)],
@@ -394,7 +394,7 @@ pub fn compute_drift(
 ///   ]}
 /// ]}
 /// ```
-pub fn render_drift_json(
+pub(crate) fn render_drift_json(
     tfstate_path: Option<&Path>,
     reports: &[(String, bool, Vec<DriftField>)],
 ) -> String {
@@ -468,7 +468,7 @@ fn push_escaped(out: &mut String, s: &str) {
 /// TUI overlay shows and the CLI emits by default (without
 /// `--json`). Stable column-formatted output an operator can
 /// eyeball quickly.
-pub fn render_drift_text(env_name: &str, tf_managed: bool, drift: &[DriftField]) -> String {
+pub(crate) fn render_drift_text(env_name: &str, tf_managed: bool, drift: &[DriftField]) -> String {
     if !tf_managed {
         return format!(
             "drift — {env_name}\n\n\

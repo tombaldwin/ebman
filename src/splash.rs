@@ -363,13 +363,13 @@ fn splash_pixel(key: char) -> Option<(u8, u8, u8)> {
 
 /// Number of art rows in the splash scene (every frame is the same
 /// height). Used by callers to size the splash card / about popup.
-pub const SPLASH_SCENE_ROWS: usize = SPLASH_FRAME_0.len();
+pub(crate) const SPLASH_SCENE_ROWS: usize = SPLASH_FRAME_0.len();
 
 /// Number of art columns per frame. Every frame is exactly this
 /// wide; the renderer relies on that to avoid per-frame jitter when
 /// alignment recentres. Doubled (×2) at render time so logical
 /// pixels are roughly square in the terminal cell grid.
-pub const SPLASH_SCENE_COLS: usize = 20;
+pub(crate) const SPLASH_SCENE_COLS: usize = 20;
 
 /// Build the coloured lines for the splash scene at `frame`. Each
 /// non-transparent pixel is a **two-cell** `██` block in its palette
@@ -383,7 +383,7 @@ pub const SPLASH_SCENE_COLS: usize = 20;
 /// (`FINAL_FRAME_HOLD_TICKS`) before wrapping back to the empty pot
 /// — gives the bloom time to land visually in the looping `:about`
 /// view rather than snapping straight back to the empty pot.
-pub fn splash_scene_lines(frame: u64) -> Vec<ratatui::text::Line<'static>> {
+pub(crate) fn splash_scene_lines(frame: u64) -> Vec<ratatui::text::Line<'static>> {
     use ratatui::style::Color;
     const FRAMES: [&[&str]; 14] = [
         SPLASH_FRAME_0,
@@ -435,7 +435,7 @@ pub fn splash_scene_lines(frame: u64) -> Vec<ratatui::text::Line<'static>> {
 /// Below this it falls back to the compact text-only card. Scene is
 /// 40 cells wide (20 px × 2) and 20 rows tall; the threshold is the
 /// card chrome budget (+ borders / padding) on top.
-pub fn splash_shows_scene(w: u16, h: u16) -> bool {
+pub(crate) fn splash_shows_scene(w: u16, h: u16) -> bool {
     w >= 48 && h >= 30
 }
 

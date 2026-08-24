@@ -9,7 +9,7 @@ use super::*;
 /// Best-effort hourly USD price for an EC2 instance type, on-demand Linux,
 /// us-east-1 as the baseline. Returned in USD/hour. Returns None for unknown
 /// types — caller should label the estimate as "approximate (us-east-1)".
-pub fn instance_hourly_usd(instance_type: &str) -> Option<f64> {
+pub(crate) fn instance_hourly_usd(instance_type: &str) -> Option<f64> {
     // Hand-curated subset covering the families EB typically runs.
     // Prices are public list (on-demand Linux, us-east-1) as a baseline.
     match instance_type {
@@ -62,7 +62,7 @@ pub fn instance_hourly_usd(instance_type: &str) -> Option<f64> {
 
 /// Sum of hourly prices for a list of instance types, with a "missing" count
 /// of instances whose type wasn't in the table.
-pub fn estimate_cost(instances: &[Instance]) -> (f64, usize) {
+pub(crate) fn estimate_cost(instances: &[Instance]) -> (f64, usize) {
     let mut total = 0.0;
     let mut missing = 0;
     for i in instances {
@@ -79,7 +79,7 @@ pub fn estimate_cost(instances: &[Instance]) -> (f64, usize) {
 /// table can refresh as part of the same view-rebuild that touches
 /// the Envs table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct AppRollup {
+pub(crate) struct AppRollup {
     pub env_count: usize,
     pub red_count: usize,
     pub updating_count: usize,
@@ -95,7 +95,7 @@ pub struct AppRollup {
 /// `chrono::Utc::now()` for `now`. Renders a freshness warning when
 /// the cache is stale (> 24h) — Cost Explorer data has its own ~24h
 /// refresh lag anyway.
-pub fn render_fleet_cost(
+pub(crate) fn render_fleet_cost(
     envs: &[crate::aws::Environment],
     costs: &HashMap<String, f64>,
     fetched_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -180,7 +180,7 @@ pub fn render_fleet_cost(
     out
 }
 
-pub fn app_rollup(
+pub(crate) fn app_rollup(
     envs: &[crate::aws::Environment],
     app_name: &str,
     dlq_depths: &HashMap<String, i64>,

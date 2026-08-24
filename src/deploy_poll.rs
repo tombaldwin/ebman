@@ -17,7 +17,7 @@
 /// One tick's worth of decision for the deploy / rollout polling
 /// loop.
 #[derive(Debug, PartialEq, Eq)]
-pub enum PollDecision {
+pub(crate) enum PollDecision {
     /// Env hasn't crossed Green and no deadline has elapsed yet.
     KeepPolling,
     /// Env reached Green/Ok with status=Ready — exit 0.
@@ -38,7 +38,7 @@ pub enum PollDecision {
 /// status flips to Updating right after UpdateEnvironment, so a
 /// check on health alone false-positives during the transition.
 /// See [`crate::app::deploy_settled_green`].
-pub fn decide_poll(
+pub(crate) fn decide_poll(
     status: &str,
     health: &str,
     elapsed_secs: u64,

@@ -1407,7 +1407,7 @@ sha256, the tar member name, that the job is ubuntu-only so `sha256sum`
 exists, and that `-c -` is shell-correct — i.e. the untested release
 step will work at tag time.
 
-- [ ] **`app` is still a wide surface.** Keeping the module public keeps
+- [x] **`app` is still a wide surface.** DONE 2026-08-24 (0.34.0). Keeping the module public keeps
   `App`'s ~100 pub fields and the `mode_action` / `mode_detail` /
   `mode_dlq` re-exports (`DetailState`, `ConfirmModal`, `ViewState`,
   `TailView`) public with it — so a new field on `DetailState` will
@@ -1516,15 +1516,28 @@ split wouldn't touch. Shipped from it:
 **Deferred, because they are breaking changes** and the queued fixes
 should ship as a patch first:
 
-- [ ] **Narrow the public API.** 500 pub items, 107 pub structs, 94% of
+- [x] **Narrow the public API.** DONE 2026-08-24 (0.34.0) — **2430 items
+  -> 126**, and the set of public items exposing a bumped dependency's
+  type from 38 -> 2. The estimate below said 500 items; `cargo
+  public-api` measured 2430, because a public module re-exports
+  everything `pub` inside it and `pub mod app` alone held 1874.
+  Narrowing *modules* was never going to do it — narrowing items did.
+  Three fields with exactly one external reader became named accessors.
+  `#![warn(unreachable_pub)]` now holds the line: it flagged 377 sites
+  (`cargo fix` applied them) and surfaced two methods dead in production
+  that `pub` had hidden from `dead_code`. Original estimate follows.
+  — 500 pub items, 107 pub structs, 94% of
   named-field structs all-`pub`, serving a `main.rs` that touches 12.
   This is *why* 0.31.0 shipped an accidental breaking change, and it
   makes `cargo-semver-checks` a permanent tax rather than a safety net.
   The reviewer's highest-leverage 12-month item. ~2-4h, one big diff.
 - [ ] **Collapse the `Option<T>` + `loading_*: bool` pairs** — 14 of
   them, 4 representable states for 3 real ones. `enum Fetch<T>` exists
-  one file over as `LogTailStage` and isn't reused. Touches `pub`
-  fields, so it lands with the above.
+  one file over as `LogTailStage` and isn't reused. ~~Touches `pub`
+  fields, so it lands with the above.~~ **No longer a breaking change**
+  as of 0.34.0 — those fields are `pub(crate)` now, so this and the item
+  below became ordinary internal refactors that can land in any patch
+  release. That sequencing was the point of doing the narrowing first.
 - [ ] `ConfirmModal`'s 11 action-gated `Option`s → payloads on `Action`'s
   variants; `App::mode` + seven partner `Option`s → `Screen` + `Modal`.
 

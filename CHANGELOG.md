@@ -6,6 +6,61 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Breaking
+
+- **The public API is narrowed from 2430 items to 126.** Everything the
+  library exposed beyond what `src/main.rs` actually consumes is now
+  `pub(crate)`. If you were using `ebman` as a library — and crates.io
+  reports **0 reverse dependencies**, so this is hypothetical — anything
+  outside the list in `src/lib.rs`'s header is gone.
+
+  The number is the point. 0.33.0 shipped a Breaking section enumerating
+  38 items that inherited a type-identity change from the ratatui bump,
+  and not one of them was something a consumer could plausibly want:
+  `App`'s 91 public fields, the mode types, `ViewState`'s internals.
+  After this, the set of public items naming a ratatui, crossterm or
+  tb-tui-common type is **two** — the `Tui` alias and
+  `ControlOp::Key(KeyEvent)` — both irreducible, because `main.rs` owns
+  the alt-screen lifecycle and the control channel. The next ratatui
+  bump is a one-line changelog entry rather than a forensic audit.
+
+  Where a field had exactly one external reader, it became a named
+  accessor rather than staying `pub`: `App::set_read_only` /
+  `set_log_reload` / `reload_requested`, and `Config::icons` /
+  `set_icons`. Seven methods on `App` instead of 91 fields.
+
+  `pub use tui_common::font_probe` is now
+  `pub use tui_common::resolve_icons_setting` — the module re-export put
+  `AutoResolved` and two `detect_*` probes in ebman's API to serve a
+  single call site, and they are another crate's types.
+
+### Added
+
+- **`#![warn(unreachable_pub)]`**, which catches the leak an API listing
+  cannot show you: a `pub` item inside a `pub(crate)` module, still
+  reachable through any public signature that names it. `App::theme`
+  was exactly that — `Theme` is `pub` in a crate-private module, so its
+  ratatui `Color` fields were publicly readable while the type stayed
+  unnameable. It flagged 377 sites; `cargo fix` applied them.
+
+### Fixed
+
+- **Two methods that were dead in production and only `pub` was hiding
+  it.** `ViewState::is_stale` and `ConfigEdit::caret` are called solely
+  from `#[cfg(test)]` blocks — `dead_code` cannot see through `pub`, so
+  neither had ever been reported. `ConfigEdit::caret`'s own doc claimed
+  "used by tests + render split" after the render split stopped calling
+  it. Both are now `#[cfg(test)]`, which is what they are.
+- **A drift guard that drifted, and a safety guard one edit from going
+  silent.** `every_registry_command_is_covered_by_some_test` searched
+  source for the literal `"pub const COMMANDS"` and broke the moment
+  that became `pub(crate) const`. Worse, the CLI write-gate guard split
+  functions on `line.starts_with("pub ")`, which is false for
+  `pub(crate) fn` — narrowing one function there would have merged its
+  body into its neighbour's and quietly stopped checking the thing it
+  exists to check, while still passing. Both now match on structure
+  rather than on a visibility keyword.
+
 ## [0.33.0] — 2026-08-24
 
 ### Breaking

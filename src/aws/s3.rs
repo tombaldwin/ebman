@@ -9,16 +9,16 @@ use super::*;
 /// this threshold the multipart path's recoverability (partial parts can
 /// be retried) starts to matter, and the 5 GiB single-PutObject ceiling
 /// looms.
-pub const MULTIPART_THRESHOLD: u64 = 64 * 1024 * 1024;
+pub(super) const MULTIPART_THRESHOLD: u64 = 64 * 1024 * 1024;
 
 /// Per-part chunk size for multipart uploads. S3's minimum part size is
 /// 5 MiB (except the last part); 16 MiB gives us 320 GiB headroom under
 /// the 10,000-part ceiling, well above S3's 5 TiB object cap.
-pub const MULTIPART_PART_SIZE: u64 = 16 * 1024 * 1024;
+pub(super) const MULTIPART_PART_SIZE: u64 = 16 * 1024 * 1024;
 
 /// Decide whether a bundle of `size` bytes should go through multipart.
 /// Pure for tests; production code calls this with [`MULTIPART_THRESHOLD`].
-pub fn should_multipart(size: u64, threshold: u64) -> bool {
+pub(super) fn should_multipart(size: u64, threshold: u64) -> bool {
     size >= threshold
 }
 
@@ -27,7 +27,7 @@ pub fn should_multipart(size: u64, threshold: u64) -> bool {
 /// whatever's left (>= 1 byte, < part_size) unless `total_size` is an
 /// exact multiple. Empty input (`total_size == 0`) yields an empty plan.
 /// Pure — for tests and for the upload loop itself.
-pub fn plan_part_lengths(total_size: u64, part_size: u64) -> Vec<u64> {
+pub(super) fn plan_part_lengths(total_size: u64, part_size: u64) -> Vec<u64> {
     if total_size == 0 || part_size == 0 {
         return Vec::new();
     }
@@ -81,7 +81,7 @@ impl AwsClient {
     /// 5 GiB ceiling and bounding peak RAM at one part. On any failure
     /// during a multipart upload we issue `AbortMultipartUpload` so S3
     /// reclaims the partial parts rather than billing for orphans.
-    pub async fn upload_bundle(
+    pub(crate) async fn upload_bundle(
         &self,
         bucket: &str,
         key: &str,
@@ -94,7 +94,7 @@ impl AwsClient {
     /// Same as [`AwsClient::upload_bundle`] but lets the caller pin the threshold
     /// and part size. Intended for tests; production code calls
     /// `upload_bundle` which fixes both at module-level constants.
-    pub async fn upload_bundle_with(
+    pub(crate) async fn upload_bundle_with(
         &self,
         bucket: &str,
         key: &str,

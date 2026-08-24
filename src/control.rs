@@ -229,7 +229,7 @@ async fn handle_connection(
 
 /// Render a ratatui [`Buffer`] to plain text by walking its cells row by row.
 /// Trailing whitespace per line is stripped so the output is grep-friendly.
-pub fn render_buffer_as_text(buf: &Buffer) -> String {
+pub(crate) fn render_buffer_as_text(buf: &Buffer) -> String {
     let mut lines: Vec<String> = Vec::with_capacity(buf.area.height as usize);
     for y in 0..buf.area.height {
         let mut row = String::new();
@@ -245,7 +245,7 @@ pub fn render_buffer_as_text(buf: &Buffer) -> String {
 /// Default control-socket path if the user doesn't pass one explicitly.
 /// `~/.cache/ebman/control.sock`. The `ebman ctl` subcommand uses the same
 /// default so the two halves rendezvous without any flag.
-pub fn default_socket_path() -> PathBuf {
+pub(crate) fn default_socket_path() -> PathBuf {
     let mut p = crate::util::cache_dir();
     p.push("control.sock");
     p
@@ -253,7 +253,7 @@ pub fn default_socket_path() -> PathBuf {
 
 /// Parse a key spec into a crossterm `KeyEvent`. See the module-level docs
 /// for the grammar. Returns `None` if no terminal key code could be parsed.
-pub fn parse_key_spec(spec: &str) -> Option<KeyEvent> {
+pub(crate) fn parse_key_spec(spec: &str) -> Option<KeyEvent> {
     let trimmed = spec.trim();
     if trimmed.is_empty() {
         return None;

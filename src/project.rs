@@ -37,7 +37,7 @@ use serde::Deserialize;
 /// `None` means "fall back to the user-level config / AWS env defaults".
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
-pub struct ProjectConfig {
+pub(crate) struct ProjectConfig {
     /// AWS profile name to use. Overrides `AWS_PROFILE` and the
     /// `profile` from `~/.config/ebman/config.toml`.
     #[serde(deserialize_with = "deserialize_non_empty", default)]
@@ -72,7 +72,7 @@ pub struct ProjectConfig {
 /// severity overrides + per-env scoping can land here later.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
-pub struct LintProjectConfig {
+pub(crate) struct LintProjectConfig {
     pub disable: Vec<String>,
     /// Rules whose auto-fix is suppressed by `ebman lint --fix`,
     /// even when the rule itself is enabled for reporting.
@@ -95,7 +95,7 @@ where
 /// Walk from `start` toward the filesystem root looking for a
 /// `.ebman/` directory. Returns the path *containing* the dir (i.e.
 /// the project root). Mirrors the pgman discovery shape.
-pub fn find_root(start: &Path) -> Option<PathBuf> {
+pub(crate) fn find_root(start: &Path) -> Option<PathBuf> {
     for ancestor in start.ancestors() {
         if ancestor.join(".ebman").is_dir() {
             return Some(ancestor.to_path_buf());
@@ -105,7 +105,7 @@ pub fn find_root(start: &Path) -> Option<PathBuf> {
 }
 
 /// Path to the project config file given a project root.
-pub fn config_path(project_root: &Path) -> PathBuf {
+pub(crate) fn config_path(project_root: &Path) -> PathBuf {
     project_root.join(".ebman/ebman.toml")
 }
 
@@ -117,7 +117,7 @@ pub fn config_path(project_root: &Path) -> PathBuf {
 /// file, including committed profile/region pins — the operator must
 /// hear about that (tracing in the TUI, stderr in CLI runs that
 /// installed no subscriber wouldn't see it, so both).
-pub fn parse(text: &str) -> Option<ProjectConfig> {
+pub(crate) fn parse(text: &str) -> Option<ProjectConfig> {
     match toml::from_str(text) {
         Ok(cfg) => Some(cfg),
         Err(e) => {
@@ -148,7 +148,7 @@ pub fn warnings_to_stderr() {
 /// the file is unreadable, or the TOML is malformed. I/O errors and
 /// parse errors are both swallowed — a corrupt file shouldn't refuse
 /// to launch ebman, just silently fall back to user-level config.
-pub fn load_from_cwd() -> Option<ProjectConfig> {
+pub(crate) fn load_from_cwd() -> Option<ProjectConfig> {
     let cwd = std::env::current_dir().ok()?;
     let root = find_root(&cwd)?;
     let path = config_path(&root);
@@ -160,14 +160,14 @@ pub fn load_from_cwd() -> Option<ProjectConfig> {
 /// `lint.disable` list, no other fields. Returns an empty Vec
 /// when no project config exists — the caller composes it with
 /// the user-level disables.
-pub fn load_lint_disables_from_cwd() -> Vec<String> {
+pub(crate) fn load_lint_disables_from_cwd() -> Vec<String> {
     load_from_cwd().map(|c| c.lint.disable).unwrap_or_default()
 }
 
 /// Same as [`load_lint_disables_from_cwd`] but for the auto-fix
 /// opt-out list. Composed by `ebman lint --fix` with the user-level
 /// `lint.fix_disable`.
-pub fn load_lint_fix_disables_from_cwd() -> Vec<String> {
+pub(crate) fn load_lint_fix_disables_from_cwd() -> Vec<String> {
     load_from_cwd()
         .map(|c| c.lint.fix_disable)
         .unwrap_or_default()

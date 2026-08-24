@@ -4,10 +4,10 @@ use ratatui::style::Color;
 // so the sibling pgman repo can share the same vocabulary. Re-exported
 // here so existing `crate::theme::IconStyle` / `theme.contrast_text(bg)`
 // call sites keep working unchanged.
-pub use tui_common::theme::IconStyle;
+pub(crate) use tui_common::theme::IconStyle;
 
 #[derive(Debug, Clone)]
-pub struct Theme {
+pub(crate) struct Theme {
     pub name: &'static str,
 
     // Severity colours
@@ -51,7 +51,7 @@ impl Default for Theme {
 }
 
 impl Theme {
-    pub fn dark() -> Self {
+    pub(crate) fn dark() -> Self {
         Self {
             name: "dark",
             health_green: Color::Rgb(140, 220, 160),
@@ -101,7 +101,7 @@ impl Theme {
     }
 
     /// Lighter palette suited to light-background terminals.
-    pub fn light() -> Self {
+    pub(crate) fn light() -> Self {
         Self {
             name: "light",
             health_green: Color::Rgb(40, 130, 70),
@@ -152,7 +152,7 @@ impl Theme {
 
     /// High-contrast palette for accessibility. Pure black bg, pure white text,
     /// fully saturated severity colours, no greys-on-grey.
-    pub fn high_contrast() -> Self {
+    pub(crate) fn high_contrast() -> Self {
         Self {
             name: "high-contrast",
             health_green: Color::Rgb(0, 255, 80),
@@ -206,13 +206,13 @@ impl Theme {
     /// in `tui-common::theme`; the non-RGB fallback uses this theme's
     /// primary `text` colour so themed pill text stays readable across
     /// reflowed terminals that re-map the 16-colour palette.
-    pub fn contrast_text(&self, bg: Color) -> Color {
+    pub(crate) fn contrast_text(&self, bg: Color) -> Color {
         tui_common::theme::contrast_text_for(bg, self.text)
     }
 
     /// Parse a theme by name. Returns the matched theme plus an optional warning
     /// when the input didn't match a known preset.
-    pub fn resolve(name: &str) -> (Self, Option<String>) {
+    pub(crate) fn resolve(name: &str) -> (Self, Option<String>) {
         match name.trim().to_ascii_lowercase().as_str() {
             "" | "dark" => (Self::dark(), None),
             "light" => (Self::light(), None),

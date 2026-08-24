@@ -4,14 +4,14 @@
 use super::*;
 
 #[derive(Clone, Debug, Default)]
-pub struct QueueStats {
+pub(crate) struct QueueStats {
     pub visible: i64,
     pub in_flight: i64,
     pub delayed: i64,
 }
 
 #[derive(Clone, Debug)]
-pub struct QueueMessage {
+pub(crate) struct QueueMessage {
     pub id: String,
     pub receipt_handle: String,
     pub body: String,
@@ -32,7 +32,7 @@ pub(crate) fn derive_dlq_url(main: &str) -> Option<String> {
 }
 
 impl AwsClient {
-    pub async fn queue_stats(&self, queue_url: &str) -> Result<QueueStats> {
+    pub(crate) async fn queue_stats(&self, queue_url: &str) -> Result<QueueStats> {
         use aws_sdk_sqs::types::QueueAttributeName as Q;
         let resp = self
             .sqs
@@ -66,7 +66,11 @@ impl AwsClient {
     /// or until the per-call budget runs out. De-duplication is by message
     /// id — a partition can return the same message across calls within the
     /// visibility-timeout window if we're slow.
-    pub async fn peek_messages(&self, queue_url: &str, max: i32) -> Result<Vec<QueueMessage>> {
+    pub(crate) async fn peek_messages(
+        &self,
+        queue_url: &str,
+        max: i32,
+    ) -> Result<Vec<QueueMessage>> {
         use aws_sdk_sqs::types::MessageSystemAttributeName as M;
         let target = max.clamp(1, 100) as usize;
         let mut out: Vec<QueueMessage> = Vec::new();
@@ -133,7 +137,7 @@ impl AwsClient {
         Ok(out)
     }
 
-    pub async fn send_message(&self, queue_url: &str, body: &str) -> Result<()> {
+    pub(crate) async fn send_message(&self, queue_url: &str, body: &str) -> Result<()> {
         self.sqs
             .send_message()
             .queue_url(queue_url)
@@ -143,7 +147,7 @@ impl AwsClient {
         Ok(())
     }
 
-    pub async fn delete_message(&self, queue_url: &str, receipt_handle: &str) -> Result<()> {
+    pub(crate) async fn delete_message(&self, queue_url: &str, receipt_handle: &str) -> Result<()> {
         self.sqs
             .delete_message()
             .queue_url(queue_url)
@@ -153,7 +157,7 @@ impl AwsClient {
         Ok(())
     }
 
-    pub async fn purge_queue(&self, queue_url: &str) -> Result<()> {
+    pub(crate) async fn purge_queue(&self, queue_url: &str) -> Result<()> {
         self.sqs.purge_queue().queue_url(queue_url).send().await?;
         Ok(())
     }

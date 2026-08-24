@@ -6,7 +6,7 @@ use std::{collections::BTreeSet, path::PathBuf};
 /// resolve against. Without this, operators using `aws-vault`, corp
 /// env wrappers, or work-vs-personal splits via `AWS_CONFIG_FILE`
 /// had their valid profiles refused by the 0.17.2 pre-check.
-pub fn config_file_path() -> Option<PathBuf> {
+pub(crate) fn config_file_path() -> Option<PathBuf> {
     aws_file_path(
         std::env::var_os("AWS_CONFIG_FILE"),
         std::env::var_os("HOME"),
@@ -22,7 +22,7 @@ pub fn config_file_path() -> Option<PathBuf> {
 /// that ran afterwards in the same process saw the fake — and several
 /// production paths read `HOME` live. `ENV_LOCK` serialised the tests
 /// that knew to take it; it could not undo a value left behind.
-pub fn aws_file_path(
+pub(crate) fn aws_file_path(
     override_var: Option<std::ffi::OsString>,
     home: Option<std::ffi::OsString>,
     rel: &str,
@@ -36,7 +36,7 @@ pub fn aws_file_path(
 /// Same shape as [`config_file_path`] but for the credentials file —
 /// honours `AWS_SHARED_CREDENTIALS_FILE` with the standard
 /// `~/.aws/credentials` fallback.
-pub fn credentials_file_path() -> Option<PathBuf> {
+pub(crate) fn credentials_file_path() -> Option<PathBuf> {
     aws_file_path(
         std::env::var_os("AWS_SHARED_CREDENTIALS_FILE"),
         std::env::var_os("HOME"),
@@ -44,7 +44,7 @@ pub fn credentials_file_path() -> Option<PathBuf> {
     )
 }
 
-pub fn load_profiles() -> Vec<String> {
+pub(crate) fn load_profiles() -> Vec<String> {
     let mut names: BTreeSet<String> = BTreeSet::new();
     if let Some(p) = config_file_path() {
         read_profiles(&p, true, &mut names);
@@ -87,7 +87,7 @@ fn read_profiles(path: &PathBuf, config_style: bool, out: &mut BTreeSet<String>)
     }
 }
 
-pub const REGIONS: &[&str] = &[
+pub(crate) const REGIONS: &[&str] = &[
     "us-east-1",
     "us-east-2",
     "us-west-1",

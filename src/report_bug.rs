@@ -27,7 +27,7 @@ use std::collections::BTreeSet;
 /// account, but it's still PII for "this is the org running ebman" so
 /// gets the same treatment as the others.
 #[derive(Debug, Clone, Default)]
-pub struct ScrubContext {
+pub(crate) struct ScrubContext {
     /// Captured but currently unused — the 12-digit-number pass
     /// already redacts the account ID from any payload text. Kept
     /// on the struct because future scrubbing rules (e.g. exact
@@ -52,7 +52,7 @@ pub struct ScrubContext {
 /// pieces of context so this module stays free of `App` /
 /// `tokio` dependencies — pure string assembly, testable in
 /// isolation.
-pub struct ReportInput<'a> {
+pub(crate) struct ReportInput<'a> {
     pub ebman_version: &'a str,
     pub os: &'a str,
     pub os_release: &'a str,
@@ -85,7 +85,7 @@ pub struct ReportInput<'a> {
 ///
 /// Caller decides what to do with the payload — render in an
 /// overlay, copy to clipboard, or hand to a browser URL.
-pub fn build_report(input: &ReportInput<'_>, ctx: &ScrubContext) -> String {
+pub(crate) fn build_report(input: &ReportInput<'_>, ctx: &ScrubContext) -> String {
     let mut body = String::new();
     body.push_str("## ebman bug report\n\n");
     body.push_str("(Account IDs / ARNs / env names / profiles / CNAMEs are scrubbed.\n");
@@ -146,7 +146,7 @@ pub fn build_report(input: &ReportInput<'_>, ctx: &ScrubContext) -> String {
 /// Apply identifier scrubbing to `text`. Order matters: longer /
 /// more-specific patterns first so the shorter ones don't eat
 /// substrings of them. Pure; tested below.
-pub fn scrub(text: &str, ctx: &ScrubContext) -> String {
+pub(crate) fn scrub(text: &str, ctx: &ScrubContext) -> String {
     let mut out = text.to_string();
 
     // 1. ARNs — `arn:aws:<service>:<region>:<account>:<resource>`.
@@ -276,7 +276,7 @@ fn scrub_pattern(text: &str, prefix: &str, replacement: &str) -> String {
 /// URL-encode a body for GitHub's `issues/new?body=` URL. Lighter
 /// than pulling in `urlencoding` for one call site; only encodes
 /// the characters GitHub's URL parser is sensitive to.
-pub fn url_encode(s: &str) -> String {
+pub(crate) fn url_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 3);
     for byte in s.bytes() {
         match byte {
@@ -294,7 +294,7 @@ pub fn url_encode(s: &str) -> String {
 /// Build the GitHub `issues/new` URL with the report pre-filled.
 /// GitHub caps URL length at ~8192 chars; truncate the body if it
 /// would push us past 7900 so the title + URL params still fit.
-pub fn github_issue_url(repo: &str, title: &str, body: &str) -> String {
+pub(crate) fn github_issue_url(repo: &str, title: &str, body: &str) -> String {
     let max_body = 7900_usize.saturating_sub(title.len());
     let truncated = if body.len() > max_body {
         let truncated_at = body
@@ -319,7 +319,7 @@ pub fn github_issue_url(repo: &str, title: &str, body: &str) -> String {
 /// Read the most recent crash log written by the panic hook. Returns
 /// `None` when no crash logs exist. Helper so the report builder can
 /// stay synchronous + pure.
-pub fn latest_crash_log() -> Option<String> {
+pub(crate) fn latest_crash_log() -> Option<String> {
     let dir = crate::util::cache_dir();
     let mut crashes: Vec<std::fs::DirEntry> = std::fs::read_dir(&dir)
         .ok()?
@@ -334,7 +334,7 @@ pub fn latest_crash_log() -> Option<String> {
 /// Read the tail of `~/.cache/ebman/ebman.log` — up to `n` lines.
 /// Errors silently to an empty Vec; the report still ships, just
 /// without log context.
-pub fn tail_ebman_log(n: usize) -> Vec<String> {
+pub(crate) fn tail_ebman_log(n: usize) -> Vec<String> {
     let mut path = crate::util::cache_dir();
     path.push("ebman.log");
     let Ok(text) = std::fs::read_to_string(&path) else {

@@ -9,7 +9,7 @@
 use super::*;
 
 #[derive(Clone, Debug)]
-pub struct Event {
+pub(crate) struct Event {
     pub at: Option<DateTime<Utc>>,
     pub env: String,
     pub application: String,
@@ -23,7 +23,7 @@ pub struct Event {
 }
 
 #[derive(Clone, Debug)]
-pub struct Instance {
+pub(crate) struct Instance {
     pub id: String,
     pub health: String, // Ok / Warning / Degraded / Severe / Info / NoData / Unknown / Pending
     pub color: String,  // Green / Yellow / Red / Grey
@@ -34,7 +34,7 @@ pub struct Instance {
 }
 
 #[derive(Clone, Debug)]
-pub struct Application {
+pub(crate) struct Application {
     pub name: String,
     pub description: String,
     /// Surfaced in the `:apps-info` overlay (in operator timezone)
@@ -55,7 +55,7 @@ pub struct Application {
 }
 
 #[derive(Clone, Debug)]
-pub struct CustomPlatform {
+pub(crate) struct CustomPlatform {
     pub arn: String,
     pub branch: String,
     pub version: String,
@@ -64,14 +64,14 @@ pub struct CustomPlatform {
 }
 
 #[derive(Clone, Debug)]
-pub struct AppVersion {
+pub(crate) struct AppVersion {
     pub label: String,
     pub description: String,
     pub created: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug)]
-pub struct Environment {
+pub(crate) struct Environment {
     pub name: String,
     pub application: String,
     pub status: String,
@@ -103,7 +103,7 @@ pub struct Environment {
 /// is a real signal (env has no instances right now, e.g. mid-launch),
 /// rendered as `0/0` in the table.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct EnvInstanceCounts {
+pub(crate) struct EnvInstanceCounts {
     pub healthy: i32,
     pub total: i32,
 }
@@ -114,7 +114,7 @@ pub struct EnvInstanceCounts {
 /// (ASG → instances → LB → queues etc.) without re-traversing
 /// the raw API shape.
 #[derive(Clone, Debug, Default)]
-pub struct EnvResources {
+pub(crate) struct EnvResources {
     pub asgs: Vec<String>,
     pub instances: Vec<String>,
     pub launch_configs: Vec<String>,
@@ -125,7 +125,7 @@ pub struct EnvResources {
 }
 
 #[derive(Clone, Debug)]
-pub struct EnvResourceQueue {
+pub(crate) struct EnvResourceQueue {
     pub name: String,
     pub url: String,
 }
@@ -136,7 +136,7 @@ pub struct EnvResourceQueue {
 /// (default / constraints / change severity). `:options` uses this
 /// to render the full config vocabulary in one overlay.
 #[derive(Clone, Debug)]
-pub struct ConfigOption {
+pub(crate) struct ConfigOption {
     pub namespace: String,
     pub name: String,
     /// Current value, or `None` when the operator hasn't overridden
@@ -271,7 +271,7 @@ pub(crate) fn platform_branch_from(stack_or_arn: &str) -> String {
 /// `no_data` / `unknown` / `pending` so an env that's mid-launch
 /// reports `0/N` rather than `0/0`. Missing input (`None`) and
 /// all-None buckets render as `EnvInstanceCounts::default()` (0/0).
-pub fn summarise_instance_health(
+pub(crate) fn summarise_instance_health(
     summary: Option<&aws_sdk_elasticbeanstalk::types::InstanceHealthSummary>,
 ) -> EnvInstanceCounts {
     let Some(s) = summary else {
@@ -299,7 +299,7 @@ pub fn summarise_instance_health(
 /// `("64bit Amazon Linux 2023 running Node.js 18", "6.1.0")`). Returns
 /// `None` when no `vN.N…` token is present — platform-ARN / custom-platform
 /// envs have no solution stack and so can't be version-compared.
-pub fn stack_family_version(stack: &str) -> Option<(String, String)> {
+pub(crate) fn stack_family_version(stack: &str) -> Option<(String, String)> {
     let version_token = stack.split_whitespace().find(|tok| {
         tok.strip_prefix('v')
             .map(|rest| {
@@ -322,7 +322,9 @@ pub fn stack_family_version(stack: &str) -> Option<(String, String)> {
 /// Build a `family_key → newest version` map from a flat
 /// `ListAvailableSolutionStacks` listing. Stacks with no version token are
 /// skipped.
-pub fn latest_stack_versions(stacks: &[String]) -> std::collections::HashMap<String, String> {
+pub(crate) fn latest_stack_versions(
+    stacks: &[String],
+) -> std::collections::HashMap<String, String> {
     let mut out: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for s in stacks {
         if let Some((key, ver)) = stack_family_version(s) {
@@ -341,7 +343,7 @@ pub fn latest_stack_versions(stacks: &[String]) -> std::collections::HashMap<Str
 /// If a strictly-newer version of `env_stack`'s platform family exists in
 /// `latest`, return that version. `None` when the env is already current,
 /// has no parseable stack, or its family isn't in the listing.
-pub fn newer_stack_version(
+pub(crate) fn newer_stack_version(
     env_stack: &str,
     latest: &std::collections::HashMap<String, String>,
 ) -> Option<String> {
@@ -354,7 +356,7 @@ pub fn newer_stack_version(
     }
 }
 
-pub async fn list_environments_in_region(
+pub(crate) async fn list_environments_in_region(
     profile: Option<String>,
     region: String,
 ) -> Result<Vec<Environment>> {
@@ -399,7 +401,7 @@ pub(super) fn stamp_region(envs: &mut [Environment], resolved_region: &str) {
 /// AccountSpec's region when supplied; otherwise the spec's own region
 /// wins (or env default). Used by the multi-account fan-out in
 /// `:org-health` / `:find-env`.
-pub async fn list_environments_for_account(
+pub(crate) async fn list_environments_for_account(
     name: &str,
     spec: &crate::config::AccountSpec,
     region: Option<String>,
@@ -454,7 +456,7 @@ pub(crate) fn normalize_tier(name: &str) -> String {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct WorkerQueues {
+pub(crate) struct WorkerQueues {
     pub main_url: Option<String>,
     pub dlq_url: Option<String>,
     pub main_stats: Option<QueueStats>,
@@ -472,7 +474,7 @@ pub struct WorkerQueues {
 
 /// How a `WorkerQueues::dlq_url` was arrived at.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DlqOrigin {
+pub(crate) enum DlqOrigin {
     /// EB named it — `DescribeEnvironmentResources`'s
     /// `WorkerDeadLetterQueue`, or the `aws:elasticbeanstalk:sqsd`
     /// option settings.
@@ -488,7 +490,7 @@ pub enum DlqOrigin {
 /// env doesn't override that option (EB uses its account-default in that
 /// case).
 #[derive(Clone, Debug, Default)]
-pub struct EnvVpcContext {
+pub(crate) struct EnvVpcContext {
     pub vpc_id: Option<String>,
     pub subnets: Vec<String>,
     /// ELB subnets (`aws:ec2:vpc.ELBSubnets`). Web-tier envs typically
@@ -499,11 +501,11 @@ pub struct EnvVpcContext {
 }
 
 impl AwsClient {
-    pub async fn list_events(&self, max: i32) -> Result<Vec<Event>> {
+    pub(crate) async fn list_events(&self, max: i32) -> Result<Vec<Event>> {
         Ok(self.list_events_inner(None, None, max, 1).await?.0)
     }
 
-    pub async fn list_events_for_env(&self, env_name: &str, max: i32) -> Result<Vec<Event>> {
+    pub(crate) async fn list_events_for_env(&self, env_name: &str, max: i32) -> Result<Vec<Event>> {
         Ok(self
             .list_events_inner(Some(env_name.to_string()), None, max, 1)
             .await?
@@ -514,7 +516,11 @@ impl AwsClient {
     /// `:event-tail` polling primitive. `start_time` keeps each poll's
     /// batch small so a busy fleet doesn't re-ship its whole history
     /// every cycle.
-    pub async fn list_events_since(&self, since_ms: i64, max: i32) -> Result<(Vec<Event>, bool)> {
+    pub(crate) async fn list_events_since(
+        &self,
+        since_ms: i64,
+        max: i32,
+    ) -> Result<(Vec<Event>, bool)> {
         self.list_events_inner(None, Some(since_ms), max, EVENT_TAIL_MAX_PAGES)
             .await
     }
@@ -624,7 +630,7 @@ impl AwsClient {
     /// launch config/template, load balancers, triggers, queues).
     /// Returns the parsed shape so the renderer can format as a
     /// hierarchical tree rather than a flat dump.
-    pub async fn describe_env_resources(&self, env_name: &str) -> Result<EnvResources> {
+    pub(crate) async fn describe_env_resources(&self, env_name: &str) -> Result<EnvResources> {
         let resp = self
             .client
             .describe_environment_resources()
@@ -694,7 +700,7 @@ impl AwsClient {
     /// URLs under named entries (`WorkerQueue`, `WorkerDeadLetterQueue`).
     /// Falls back to the option-settings path for users who override the
     /// URL explicitly.
-    pub async fn describe_worker_queues(
+    pub(crate) async fn describe_worker_queues(
         &self,
         application_name: &str,
         env_name: &str,
@@ -867,7 +873,7 @@ impl AwsClient {
     /// pre-fill: callers filter the result down to the `(namespace, option_name)`
     /// pairs their form cares about. Returns `(namespace, option_name, value)`
     /// triples.
-    pub async fn fetch_env_option_settings(
+    pub(crate) async fn fetch_env_option_settings(
         &self,
         application_name: &str,
         env_name: &str,
@@ -901,7 +907,7 @@ impl AwsClient {
     /// `:subnets` and `:security-groups` both call this — VPC id drives
     /// the subsequent EC2 list call, the existing selections drive the
     /// MultiSelect pre-fill.
-    pub async fn fetch_env_vpc_context(
+    pub(crate) async fn fetch_env_vpc_context(
         &self,
         application_name: &str,
         env_name: &str,
@@ -950,7 +956,7 @@ impl AwsClient {
     ///
     /// Empty result = no RDS attached. Caller should distinguish
     /// "no RDS" from "fetch failed" via the Result type.
-    pub async fn fetch_env_rds_config(
+    pub(crate) async fn fetch_env_rds_config(
         &self,
         application_name: &str,
         env_name: &str,
@@ -1005,7 +1011,7 @@ impl AwsClient {
     /// Caller should treat as on-demand (run via `:options`), not
     /// part of the background refresh — both calls are slow for
     /// platforms with deep option trees.
-    pub async fn fetch_env_configuration_options(
+    pub(crate) async fn fetch_env_configuration_options(
         &self,
         application_name: &str,
         env_name: &str,
@@ -1102,7 +1108,7 @@ impl AwsClient {
     /// Result is empty when the env doesn't use an ALB (Classic LB
     /// or worker tier) — caller should distinguish from "no config"
     /// by checking the env's tier first.
-    pub async fn fetch_env_listeners(
+    pub(crate) async fn fetch_env_listeners(
         &self,
         application_name: &str,
         env_name: &str,
@@ -1149,7 +1155,7 @@ impl AwsClient {
         Ok(out)
     }
 
-    pub async fn fetch_env_vars(
+    pub(crate) async fn fetch_env_vars(
         &self,
         application_name: &str,
         env_name: &str,
@@ -1185,7 +1191,7 @@ impl AwsClient {
     /// value)` triples to add or overwrite; `to_remove` is `(namespace,
     /// option_name)` pairs to clear back to defaults. EB applies the change
     /// as a rolling update (or instantly for non-disruptive options).
-    pub async fn update_env_option_settings(
+    pub(crate) async fn update_env_option_settings(
         &self,
         env_name: &str,
         to_set: &[(String, String, String)],
@@ -1219,7 +1225,7 @@ impl AwsClient {
         Ok(())
     }
 
-    pub async fn list_tags(&self, resource_arn: &str) -> Result<Vec<(String, String)>> {
+    pub(crate) async fn list_tags(&self, resource_arn: &str) -> Result<Vec<(String, String)>> {
         let resp = self
             .client
             .list_tags_for_resource()
@@ -1241,7 +1247,7 @@ impl AwsClient {
     /// UpdateTagsForResource — add/update tags listed in `to_add` and remove
     /// keys listed in `to_remove`. Empty lists are allowed but at least one
     /// side must be non-empty (the API rejects no-op calls).
-    pub async fn update_tags(
+    pub(crate) async fn update_tags(
         &self,
         resource_arn: &str,
         to_add: &[(String, String)],
@@ -1262,7 +1268,7 @@ impl AwsClient {
         Ok(())
     }
 
-    pub async fn rebuild_env(&self, env_name: &str) -> Result<()> {
+    pub(crate) async fn rebuild_env(&self, env_name: &str) -> Result<()> {
         self.client
             .rebuild_environment()
             .environment_name(env_name)
@@ -1271,7 +1277,7 @@ impl AwsClient {
         Ok(())
     }
 
-    pub async fn restart_app_server(&self, env_name: &str) -> Result<()> {
+    pub(crate) async fn restart_app_server(&self, env_name: &str) -> Result<()> {
         self.client
             .restart_app_server()
             .environment_name(env_name)
@@ -1280,7 +1286,7 @@ impl AwsClient {
         Ok(())
     }
 
-    pub async fn swap_cnames(&self, source: &str, dest: &str) -> Result<()> {
+    pub(crate) async fn swap_cnames(&self, source: &str, dest: &str) -> Result<()> {
         self.client
             .swap_environment_cnames()
             .source_environment_name(source)
@@ -1293,7 +1299,7 @@ impl AwsClient {
     /// Snapshot an env's current configuration as a named template under the
     /// same application. Idempotent for the user — if a template with the
     /// same name already exists, the API returns an error which we surface.
-    pub async fn create_config_template(
+    pub(crate) async fn create_config_template(
         &self,
         application_name: &str,
         template_name: &str,
@@ -1312,7 +1318,7 @@ impl AwsClient {
 
     /// Delete a configuration template by name. AWS will refuse if the
     /// template is currently in use; we pass the error back unchanged.
-    pub async fn delete_config_template(
+    pub(crate) async fn delete_config_template(
         &self,
         application_name: &str,
         template_name: &str,
@@ -1331,7 +1337,10 @@ impl AwsClient {
     /// env's current platform. Filtered server-side to `Ready` platforms;
     /// branch matching is best-effort using the current ARN's branch suffix
     /// (e.g. `Tomcat 9 with Corretto 17`). Sorted newest version first.
-    pub async fn list_compatible_platforms(&self, env_name: &str) -> Result<Vec<CustomPlatform>> {
+    pub(crate) async fn list_compatible_platforms(
+        &self,
+        env_name: &str,
+    ) -> Result<Vec<CustomPlatform>> {
         use aws_sdk_elasticbeanstalk::types::{PlatformFilter, PlatformStatus};
         // Read the env's current platform ARN.
         let desc = self
@@ -1400,7 +1409,7 @@ impl AwsClient {
     /// Migrate the env to a new platform ARN via UpdateEnvironment. EB
     /// performs this as a rolling update; the API returns immediately and
     /// the event log carries progress.
-    pub async fn upgrade_platform(&self, env_name: &str, platform_arn: &str) -> Result<()> {
+    pub(crate) async fn upgrade_platform(&self, env_name: &str, platform_arn: &str) -> Result<()> {
         self.client
             .update_environment()
             .environment_name(env_name)
@@ -1415,7 +1424,11 @@ impl AwsClient {
     /// configuration template, spin up a new env from it, then clean the
     /// template up. The new env starts the usual EB launch process — the
     /// caller can monitor via DescribeEvents.
-    pub async fn clone_env(&self, source_env_name: &str, target_env_name: &str) -> Result<()> {
+    pub(crate) async fn clone_env(
+        &self,
+        source_env_name: &str,
+        target_env_name: &str,
+    ) -> Result<()> {
         // Snapshot the source env's application + ID.
         let desc = self
             .client
@@ -1476,7 +1489,7 @@ impl AwsClient {
     /// reaches `count` instances. Passing `Some(0)` is the "stop" pattern
     /// (no instances, env keeps its config). The API returns immediately;
     /// EB performs the scale as a rolling change.
-    pub async fn scale_env(&self, env_name: &str, min: i32, max: i32) -> Result<()> {
+    pub(crate) async fn scale_env(&self, env_name: &str, min: i32, max: i32) -> Result<()> {
         use aws_sdk_elasticbeanstalk::types::ConfigurationOptionSetting;
         let opts = vec![
             ConfigurationOptionSetting::builder()
@@ -1502,7 +1515,7 @@ impl AwsClient {
 
     /// Stop an in-flight environment update. Useful to bail out of a hung
     /// deploy. No-op if EB sees no operation in progress.
-    pub async fn abort_environment_update(&self, env_name: &str) -> Result<()> {
+    pub(crate) async fn abort_environment_update(&self, env_name: &str) -> Result<()> {
         self.client
             .abort_environment_update()
             .environment_name(env_name)
@@ -1516,7 +1529,7 @@ impl AwsClient {
     /// `PlatformOwner=self` so we only show platforms the caller built, not
     /// the AWS-managed ones. Returns the ARN, platform branch name, and
     /// lifecycle state per entry.
-    pub async fn list_custom_platforms(&self) -> Result<Vec<CustomPlatform>> {
+    pub(crate) async fn list_custom_platforms(&self) -> Result<Vec<CustomPlatform>> {
         use aws_sdk_elasticbeanstalk::types::PlatformFilter;
         let filter = PlatformFilter::builder()
             .r#type("PlatformOwner")
@@ -1547,7 +1560,7 @@ impl AwsClient {
     /// version ARNs, via per-version `DescribePlatformVersion` (the
     /// only API that carries dates — `ListPlatformVersions` doesn't).
     /// `None` when no version reported a date. Feeds EBL015.
-    pub async fn latest_platform_version_date(
+    pub(crate) async fn latest_platform_version_date(
         &self,
         version_arns: &[String],
     ) -> Result<Option<DateTime<Utc>>> {
@@ -1576,7 +1589,7 @@ impl AwsClient {
     /// Delete a custom platform by ARN. EB returns success immediately even
     /// though the underlying AMI / EBS cleanup runs async. Will fail if any
     /// envs are still using the platform.
-    pub async fn delete_custom_platform(&self, platform_arn: &str) -> Result<()> {
+    pub(crate) async fn delete_custom_platform(&self, platform_arn: &str) -> Result<()> {
         self.client
             .delete_platform_version()
             .platform_arn(platform_arn)
@@ -1592,7 +1605,7 @@ impl AwsClient {
     /// `next_token` so orgs with hundreds of historical versions see
     /// everything in `:versions` and `:rollback` can find labels that
     /// fall past the first page.
-    pub async fn list_application_versions(
+    pub(crate) async fn list_application_versions(
         &self,
         application_name: &str,
     ) -> Result<Vec<AppVersion>> {
@@ -1637,7 +1650,7 @@ impl AwsClient {
     /// away. EB rejects the call if the version is currently deployed to any
     /// env — surfaced as `SourceBundleDeletionException` /
     /// `OperationInProgressException` in the error chain.
-    pub async fn delete_application_version(
+    pub(crate) async fn delete_application_version(
         &self,
         application_name: &str,
         version_label: &str,
@@ -1660,7 +1673,7 @@ impl AwsClient {
     /// `CreateApplicationVersion` can reference an `S3Location`. EB
     /// auto-creates the bucket on first call; subsequent calls return the
     /// same name.
-    pub async fn create_storage_location(&self) -> Result<String> {
+    pub(crate) async fn create_storage_location(&self) -> Result<String> {
         let resp = self
             .client
             .create_storage_location()
@@ -1674,7 +1687,7 @@ impl AwsClient {
     /// Register a new application version pointing at an S3 source bundle.
     /// `auto_create_app` is `false` because we only create versions for
     /// existing applications; the env's application is the source of truth.
-    pub async fn create_app_version(
+    pub(crate) async fn create_app_version(
         &self,
         application_name: &str,
         version_label: &str,
@@ -1705,7 +1718,7 @@ impl AwsClient {
 
     /// `UpdateEnvironment(version_label)`. Returns immediately — the env
     /// will mutate in the background.
-    pub async fn deploy_version(&self, env_name: &str, version_label: &str) -> Result<()> {
+    pub(crate) async fn deploy_version(&self, env_name: &str, version_label: &str) -> Result<()> {
         self.client
             .update_environment()
             .environment_name(env_name)
@@ -1722,7 +1735,7 @@ impl AwsClient {
     /// preserved (operators sometimes care that a setting is explicitly
     /// empty vs. unset; the call only returns settings the template actually
     /// defines, so "missing" already means "use platform default").
-    pub async fn describe_template_settings(
+    pub(crate) async fn describe_template_settings(
         &self,
         application_name: &str,
         template_name: &str,
@@ -1755,7 +1768,11 @@ impl AwsClient {
     /// Apply a saved configuration template to an existing env via
     /// `UpdateEnvironment(template_name)`. The env will start mutating in
     /// the background; surface the launch via the events panel.
-    pub async fn apply_config_template(&self, env_name: &str, template_name: &str) -> Result<()> {
+    pub(crate) async fn apply_config_template(
+        &self,
+        env_name: &str,
+        template_name: &str,
+    ) -> Result<()> {
         self.client
             .update_environment()
             .environment_name(env_name)
@@ -1766,7 +1783,7 @@ impl AwsClient {
         Ok(())
     }
 
-    pub async fn terminate_env(&self, env_name: &str) -> Result<()> {
+    pub(crate) async fn terminate_env(&self, env_name: &str) -> Result<()> {
         self.client
             .terminate_environment()
             .environment_name(env_name)
@@ -1778,7 +1795,7 @@ impl AwsClient {
     /// Ask EB to start collecting the tail log for an env. Per-instance log
     /// snapshots become available via `retrieve_env_info` once each instance
     /// has uploaded its sample to S3 (usually 5-15 seconds).
-    pub async fn request_env_info_tail(&self, env_name: &str) -> Result<()> {
+    pub(crate) async fn request_env_info_tail(&self, env_name: &str) -> Result<()> {
         use aws_sdk_elasticbeanstalk::types::EnvironmentInfoType;
         self.client
             .request_environment_info()
@@ -1793,7 +1810,10 @@ impl AwsClient {
     /// Read whatever tail-log samples EB has on file for the env, mapped to
     /// pre-signed S3 URLs. Empty vec means no samples have been uploaded yet —
     /// poll again. Each entry is `(ec2_instance_id, pre_signed_url)`.
-    pub async fn retrieve_env_info_tail(&self, env_name: &str) -> Result<Vec<(String, String)>> {
+    pub(crate) async fn retrieve_env_info_tail(
+        &self,
+        env_name: &str,
+    ) -> Result<Vec<(String, String)>> {
         use aws_sdk_elasticbeanstalk::types::EnvironmentInfoType;
         let resp = self
             .client
@@ -1818,7 +1838,10 @@ impl AwsClient {
     /// per-instance attributes). Fanned across every env on each refresh
     /// tick — typical accounts have ≤ 50 envs which is well under the
     /// EB API's per-second budget.
-    pub async fn fetch_env_instance_counts(&self, env_name: &str) -> Result<EnvInstanceCounts> {
+    pub(crate) async fn fetch_env_instance_counts(
+        &self,
+        env_name: &str,
+    ) -> Result<EnvInstanceCounts> {
         let resp = self
             .client
             .describe_environment_health()
@@ -1832,7 +1855,7 @@ impl AwsClient {
         Ok(summarise_instance_health(resp.instances_health.as_ref()))
     }
 
-    pub async fn list_instances(&self, env_name: &str) -> Result<Vec<Instance>> {
+    pub(crate) async fn list_instances(&self, env_name: &str) -> Result<Vec<Instance>> {
         // Paginated: this list is `:ssm-run`'s target set and
         // `spawn_dry_run`'s blast-radius count, so a truncated one means
         // the shell command silently never reaches the missing
@@ -1878,7 +1901,7 @@ impl AwsClient {
         Ok(instances)
     }
 
-    pub async fn list_applications(&self) -> Result<Vec<Application>> {
+    pub(crate) async fn list_applications(&self) -> Result<Vec<Application>> {
         let resp = self.client.describe_applications().send().await?;
         let apps = resp
             .applications
@@ -1903,7 +1926,7 @@ impl AwsClient {
         Ok(apps)
     }
 
-    pub async fn list_environments(&self) -> Result<Vec<Environment>> {
+    pub(crate) async fn list_environments(&self) -> Result<Vec<Environment>> {
         let this = self;
         let raw = super::paginate("DescribeEnvironments", move |token| async move {
             let mut req = this.client.describe_environments().include_deleted(false);
@@ -1930,7 +1953,7 @@ impl AwsClient {
     /// (`ListAvailableSolutionStacks`). Drives the stale-platform check:
     /// an env whose stack has a lower version than the newest stack in
     /// the same family is flagged in the table.
-    pub async fn list_solution_stacks(&self) -> Result<Vec<String>> {
+    pub(crate) async fn list_solution_stacks(&self) -> Result<Vec<String>> {
         let resp = self
             .client
             .list_available_solution_stacks()
