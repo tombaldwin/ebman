@@ -49,7 +49,18 @@ When the user asks for autonomous work (e.g. "run autonomously", "build all the 
 
    Also add tests for new pure logic. Any new helper / parser / pure function (sorting, filtering, formatting, parsing config, etc.) needs at least one `#[cfg(test)]` test covering happy path and obvious failure modes. Extract pure logic out of UI/event handlers when needed to make it testable.
 
-5. **Update `BACKLOG.md`** when items move from pending → done, or when new items are discovered. Keep the "Done" and "Backlog" sections in sync with reality.
+5. **Update `BACKLOG.md`** when items move from pending → done, or when
+   new items are discovered.
+
+   It holds **open items only** — completed work lives in
+   `docs/backlog/archive.md`, which you do not need to read. When you
+   finish something, move it there rather than leaving a `[x]` behind;
+   the file was 375KB of mostly-done entries and became one nobody could
+   hold in context, so it got read in fragments and entries duplicated.
+
+   And a follow-up recorded *inside* a completed entry is invisible —
+   anyone scanning for `- [ ]` will miss it. If work remains, it gets its
+   own open item, not a sentence in a `[x]`.
 
 ## Stop conditions — skip and continue, don't halt
 
