@@ -1,0 +1,21 @@
+--- src/app/action_flow.rs
++++ delete field swap_with from struct ParameterisedAction expression in App::handle_action_key
+@@ -182,17 +182,17 @@
+                     // `open_action_menu`, against the *selected* env —
+                     // and the target is picked afterwards, from this
+                     // list. So `safety.envs.TARGET.read_only` did not
+                     // protect an env from having production traffic
+                     // swapped onto or off it; you just had to select the
+                     // other env first. Gate the target here, where it is
+                     // first known.
+                     if self.deny_swap_target(&ParameterisedAction {
+-                        swap_with: Some(target.clone()),
++                         /* ~ changed by cargo-mutants ~ */
+                         ..Default::default()
+                     }) {
+                         self.close_action_flow();
+                         return;
+                     }
+                     let warning = self
+                         .environments
+                         .iter()

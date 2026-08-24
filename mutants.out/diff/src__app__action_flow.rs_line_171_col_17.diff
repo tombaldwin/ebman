@@ -1,0 +1,75 @@
+--- src/app/action_flow.rs
++++ delete match arm KeyCode::Enter in App::handle_action_key
+@@ -163,71 +163,17 @@
+                 {
+                     picker.move_selection(1);
+                 }
+                 KeyCode::Up | KeyCode::Char('k')
+                     if !key.modifiers.contains(KeyModifiers::CONTROL) =>
+                 {
+                     picker.move_selection(-1);
+                 }
+-                KeyCode::Enter => {
+-                    let Some(target) = picker.selected_value() else {
+-                        return;
+-                    };
+-                    let source = match flow {
+-                        ActionFlow::SwapTarget { source, .. } => source.clone(),
+-                        _ => return,
+-                    };
+-                    // A CNAME swap rewrites BOTH environments' DNS, so
+-                    // it is a write to the target as much as to the
+-                    // source. The only `deny_write` on this path is in
+-                    // `open_action_menu`, against the *selected* env —
+-                    // and the target is picked afterwards, from this
+-                    // list. So `safety.envs.TARGET.read_only` did not
+-                    // protect an env from having production traffic
+-                    // swapped onto or off it; you just had to select the
+-                    // other env first. Gate the target here, where it is
+-                    // first known.
+-                    if self.deny_swap_target(&ParameterisedAction {
+-                        swap_with: Some(target.clone()),
+-                        ..Default::default()
+-                    }) {
+-                        self.close_action_flow();
+-                        return;
+-                    }
+-                    let warning = self
+-                        .environments
+-                        .iter()
+-                        .find(|e| e.name == source)
+-                        .map(compute_traffic_warning)
+-                        .unwrap_or(None);
+-                    self.action_flow = Some(ActionFlow::Confirm(ConfirmModal {
+-                        params: ParameterisedAction {
+-                            swap_with: Some(target),
+-                            ..Default::default()
+-                        },
+-                        action: Action::SwapCnames,
+-                        target_env: source,
+-                        typed: TextInput::new(),
+-                        kind: ConfirmKind::YesNo,
+-                        dryrun: None,
+-                        loading_dryrun: false,
+-                        recent_events: None,
+-                        loading_events: false,
+-                        traffic_warning: warning,
+-                        version_preview: None,
+-                        loading_version_preview: false,
+-                        health_check_probe: None,
+-                        loading_health_check: false,
+-                        unavailability_line: None,
+-                        loading_unavailability: false,
+-                        lint_issues: None,
+-                        loading_lint: false,
+-                    }));
+-                }
++                 /* ~ changed by cargo-mutants ~ */
+                 // TextInput consumes editing keys (incl. Backspace);
+                 // reselect a still-matching row after any accepted edit.
+                 _ => {
+                     if picker.filter.handle_key(key) {
+                         let filt = picker.filtered();
+                         if !filt
+                             .iter()
+                             .any(|i| Some(*i) == picker.list_state.selected())

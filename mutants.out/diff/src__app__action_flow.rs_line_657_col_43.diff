@@ -1,0 +1,21 @@
+--- src/app/action_flow.rs
++++ replace && with || in App::open_parameterised_action_on
+@@ -649,17 +649,17 @@
+             // sees AllAtOnce / health-check-empty / cooldown-low etc.
+             // before confirming any destructive action. Skipped in
+             // demo mode (same gate as the other probes — no AWS
+             // round-trip in demo).
+             //
+             // SsmRun also skips lint — running an ad-hoc shell command
+             // isn't gated by EB-config-health rules; firing them here
+             // would be noise.
+-            loading_lint: !self.demo_mode && action != Action::SsmRun,
++            loading_lint: !self.demo_mode || /* ~ changed by cargo-mutants ~ */ action != Action::SsmRun,
+         };
+         let needs_health_check_probe = modal.loading_health_check;
+         let needs_unavailability = modal.loading_unavailability;
+         let needs_lint = modal.loading_lint;
+         self.action_flow = Some(ActionFlow::Confirm(modal));
+         self.mode = Mode::Action;
+         if wants_preflight {
+             self.spawn_dry_run(env.name.clone());

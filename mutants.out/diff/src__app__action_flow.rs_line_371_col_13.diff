@@ -1,0 +1,51 @@
+--- src/app/action_flow.rs
++++ delete match arm Action::Terminate in App::advance_action_flow
+@@ -363,47 +363,17 @@
+                     return;
+                 }
+                 let picker = Picker::new(PickerKind::Region, candidates, None); // kind unused here
+                 self.action_flow = Some(ActionFlow::SwapTarget {
+                     source: env.name.clone(),
+                     picker,
+                 });
+             }
+-            Action::Terminate => {
+-                // Terminate is the only Action that uses TypeName confirm;
+-                // every other entry routes through `open_parameterised_action`.
+-                // Preflight gating still flows from `Action::wants_preflight()`
+-                // so the rule lives in exactly one place.
+-                let wants_preflight = action.wants_preflight();
+-                self.action_flow = Some(ActionFlow::Confirm(ConfirmModal {
+-                    params: ParameterisedAction::default(),
+-                    action,
+-                    target_env: env.name.clone(),
+-                    typed: TextInput::new(),
+-                    kind: ConfirmKind::TypeName,
+-                    dryrun: None,
+-                    loading_dryrun: wants_preflight,
+-                    recent_events: None,
+-                    loading_events: wants_preflight,
+-                    traffic_warning: compute_traffic_warning(&env),
+-                    version_preview: None,
+-                    loading_version_preview: false,
+-                    health_check_probe: None,
+-                    loading_health_check: false,
+-                    unavailability_line: None,
+-                    loading_unavailability: false,
+-                    lint_issues: None,
+-                    loading_lint: false,
+-                }));
+-                if wants_preflight {
+-                    self.spawn_dry_run(env.name.clone());
+-                    self.spawn_preflight_events(env.name.clone());
+-                }
+-            }
++             /* ~ changed by cargo-mutants ~ */
+             Action::Rebuild => {
+                 self.open_parameterised_action(action, ParameterisedAction::default());
+             }
+             // Parameterised actions need user input before the confirm can
+             // be built. The menu closes itself and pre-fills the command
+             // bar so the user types `<arg>` and Enter, which routes through
+             // the existing `:deploy` / `:upgrade` / `:clone` / `:scale`
+             // handlers (all of which open a confirm modal).

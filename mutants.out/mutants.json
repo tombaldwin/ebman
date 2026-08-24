@@ -1,0 +1,482 @@
+[
+  {
+    "diff": "--- src/app/action_flow.rs\n+++ replace App::handle_action_key with ()\n@@ -122,222 +122,17 @@\n         if self.detail.is_some() {\n             self.mode = Mode::Detail;\n         } else {\n             self.mode = Mode::Normal;\n         }\n     }\n \n     pub(crate) fn handle_action_key(&mut self, key: KeyEvent) {\n-        let Some(flow) = self.action_flow.as_mut() else {\n-            self.mode = Mode::Normal;\n-            return;\n-        };\n-        match flow {\n-            ActionFlow::Menu { list_state } => match key.code {\n-                // Menu has j/k cursor + Enter to pick — no text input, so\n-                // `q` as close is unambiguous and matches every other\n-                // overlay's pattern.\n-                KeyCode::Esc | KeyCode::Char('q') => self.close_action_flow(),\n-                KeyCode::Char('j') | KeyCode::Down => {\n-                    let cur = list_state.selected().unwrap_or(0);\n-                    let next = (cur + 1) % ACTIONS.len();\n-                    list_state.select(Some(next));\n-                }\n-                KeyCode::Char('k') | KeyCode::Up => {\n-                    let cur = list_state.selected().unwrap_or(0);\n-                    let next = (cur + ACTIONS.len() - 1) % ACTIONS.len();\n-                    list_state.select(Some(next));\n-                }\n-                KeyCode::Enter => {\n-                    let Some(idx) = list_state.selected() else {\n-                        return;\n-                    };\n-                    let action = ACTIONS[idx];\n-                    self.advance_action_flow(action);\n-                }\n-                _ => {}\n-            },\n-            ActionFlow::SwapTarget { picker, .. } => match key.code {\n-                KeyCode::Esc => self.close_action_flow(),\n-                KeyCode::Down | KeyCode::Char('j')\n-                    if !key.modifiers.contains(KeyModifiers::CONTROL) =>\n-                {\n-                    picker.move_selection(1);\n-                }\n-                KeyCode::Up | KeyCode::Char('k')\n-                    if !key.modifiers.contains(KeyModifiers::CONTROL) =>\n-                {\n-                    picker.move_selection(-1);\n-                }\n-                KeyCode::Enter => {\n-                    let Some(target) = picker.selected_value() else {\n-                        return;\n-                    };\n-                    let source = match flow {\n-                        ActionFlow::SwapTarget { source, .. } => source.clone(),\n-                        _ => return,\n-                    };\n-                    // A CNAME swap rewrites BOTH environments' DNS, so\n-                    // it is a write to the target as much as to the\n-                    // source. The only `deny_write` on this path is in\n-                    // `open_action_menu`, against the *selected* env —\n-                    // and the target is picked afterwards, from this\n-                    // list. So `safety.envs.TARGET.read_only` did not\n-                    // protect an env from having production traffic\n-                    // swapped onto or off it; you just had to select the\n-                    // other env first. Gate the target here, where it is\n-                    // first known.\n-                    if self.deny_swap_target(&ParameterisedAction {\n-                        swap_with: Some(target.clone()),\n-                        ..Default::default()\n-                    }) {\n-                        self.close_action_flow();\n-                        return;\n-                    }\n-                    let warning = self\n-                        .environments\n-                        .iter()\n-                        .find(|e| e.name == source)\n-                        .map(compute_traffic_warning)\n-                        .unwrap_or(None);\n-                    self.action_flow = Some(ActionFlow::Confirm(ConfirmModal {\n-                        params: ParameterisedAction {\n-                            swap_with: Some(target),\n-                            ..Default::default()\n-                        },\n-                        action: Action::SwapCnames,\n-                        target_env: source,\n-                        typed: TextInput::new(),\n-                        kind: ConfirmKind::YesNo,\n-                        dryrun: None,\n-                        loading_dryrun: false,\n-                        recent_events: None,\n-                        loading_events: false,\n-                        traffic_warning: warning,\n-                        version_preview: None,\n-                        loading_version_preview: false,\n-                        health_check_probe: None,\n-                        loading_health_check: false,\n-                        unavailability_line: None,\n-                        loading_unavailability: false,\n-                        lint_issues: None,\n-                        loading_lint: false,\n-                    }));\n-                }\n-                // TextInput consumes editing keys (incl. Backspace);\n-                // reselect a still-matching row after any accepted edit.\n-                _ => {\n-                    if picker.filter.handle_key(key) {\n-                        let filt = picker.filtered();\n-                        if !filt\n-                            .iter()\n-                            .any(|i| Some(*i) == picker.list_state.selected())\n-                        {\n-                            picker.list_state.select(filt.first().copied());\n-                        }\n-                    }\n-                }\n-            },\n-            ActionFlow::Confirm(modal) => match (key.code, modal.kind) {\n-                (KeyCode::Esc, _) => self.close_action_flow(),\n-                // `q` cancels Y/N confirms (n / esc are the others). TypeName\n-                // confirms intentionally don't bind q since the user is\n-                // typing the env name and `q` might be part of it.\n-                (KeyCode::Char('q'), ConfirmKind::YesNo) => self.close_action_flow(),\n-                (KeyCode::Char('y'), ConfirmKind::YesNo) | (KeyCode::Enter, ConfirmKind::YesNo) => {\n-                    // Queue with a 5s cancel window instead of dispatching\n-                    // immediately. The action flow closes (modal gone)\n-                    // and a countdown lands in `status_message`; `U` in\n-                    // Normal mode undoes it before the deadline.\n-                    let m = modal.clone();\n-                    self.close_action_flow();\n-                    self.queue_action_dispatch(m);\n-                }\n-                (KeyCode::Char('n'), ConfirmKind::YesNo) => self.close_action_flow(),\n-                (KeyCode::Enter, ConfirmKind::TypeName)\n-                    if modal.typed.text() == modal.target_env.as_str() =>\n-                {\n-                    // Same cancel-window treatment as Y-confirms. Terminate\n-                    // is the loudest example — the typed-name guard already\n-                    // prevents accidental dispatch, but the 5s window is a\n-                    // last-ditch \"oh god no\" rescue.\n-                    let m = modal.clone();\n-                    self.close_action_flow();\n-                    self.queue_action_dispatch(m);\n-                }\n-                // TextInput consumes editing keys for the type-to-confirm\n-                // field (cursor move / Ctrl-W included).\n-                (_, ConfirmKind::TypeName) => {\n-                    modal.typed.handle_key(key);\n-                }\n-                _ => {}\n-            },\n-            ActionFlow::Rollout(flow) => match (key.code, &flow.state) {\n-                // Esc / q close the rollout at any state — even\n-                // during Dispatching the operator can abort\n-                // further regions. The dispatched ones have\n-                // already fired (each region's UpdateEnvironment\n-                // is a non-reversible AWS write), but the loop\n-                // halts so regions queued behind the current\n-                // one don't fire.\n-                (KeyCode::Esc, _) | (KeyCode::Char('q'), _) => self.close_action_flow(),\n-                // `y` confirms a fully-pre-flighted plan. Only\n-                // valid in AwaitingConfirm. Switches state to\n-                // Dispatching and fires the first region.\n-                (KeyCode::Char('y'), crate::mode_action::RolloutState::AwaitingConfirm)\n-                | (KeyCode::Enter, crate::mode_action::RolloutState::AwaitingConfirm) => {\n-                    // Refuse to dispatch if no regions passed\n-                    // pre-flight — there's nothing safe to send.\n-                    let any_ok = flow.regions.iter().any(|r| r.env_found == Some(true));\n-                    if !any_ok {\n-                        self.error_message = Some(\n-                            \"rollout: no regions passed pre-flight — fix or `esc` to abort\".into(),\n-                        );\n-                        return;\n-                    }\n-                    // Find the first region that passed pre-\n-                    // flight. Failed regions are skipped (their\n-                    // outcome stays None — surfaced as\n-                    // \"skipped\" in the final report).\n-                    let Some((first_idx, _)) = flow\n-                        .regions\n-                        .iter()\n-                        .enumerate()\n-                        .find(|(_, r)| r.env_found == Some(true))\n-                    else {\n-                        return;\n-                    };\n-                    flow.state = crate::mode_action::RolloutState::Dispatching {\n-                        next_index: first_idx,\n-                    };\n-                    let region = flow.regions[first_idx].region.clone();\n-                    let env_name = flow.env_name.clone();\n-                    let version_label = flow.version_label.clone();\n-                    let wait_for_green_secs = flow.wait_for_green_secs;\n-                    let rollout_id = flow.rollout_id.clone();\n-                    let profile = self.context.profile.clone();\n-                    self.spawn_rollout_dispatch(\n-                        rollout_id,\n-                        profile,\n-                        region,\n-                        env_name,\n-                        version_label,\n-                        wait_for_green_secs,\n-                    );\n-                }\n-                // `n` aborts before any dispatch fires. Same as\n-                // esc but matches the y/n posture of the\n-                // standard ConfirmModal.\n-                (KeyCode::Char('n'), crate::mode_action::RolloutState::AwaitingConfirm) => {\n-                    self.close_action_flow();\n-                }\n-                _ => {}\n-            },\n-        }\n+        () /* ~ changed by cargo-mutants ~ */\n     }\n \n     pub(crate) fn advance_action_flow(&mut self, action: Action) {\n         let Some(env) = self.target_env_for_action() else {\n             self.close_action_flow();\n             return;\n         };\n         match action {\n",
+    "file": "src/app/action_flow.rs",
+    "function": {
+      "function_name": "App::handle_action_key",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 336
+        },
+        "start": {
+          "column": 5,
+          "line": 129
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/app/action_flow.rs:130:9: replace App::handle_action_key with ()",
+    "package": "ebman",
+    "replacement": "()",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 335
+      },
+      "start": {
+        "column": 9,
+        "line": 130
+      }
+    }
+  },
+  {
+    "diff": "--- src/app/action_flow.rs\n+++ delete match arm KeyCode::Enter in App::handle_action_key\n@@ -163,71 +163,17 @@\n                 {\n                     picker.move_selection(1);\n                 }\n                 KeyCode::Up | KeyCode::Char('k')\n                     if !key.modifiers.contains(KeyModifiers::CONTROL) =>\n                 {\n                     picker.move_selection(-1);\n                 }\n-                KeyCode::Enter => {\n-                    let Some(target) = picker.selected_value() else {\n-                        return;\n-                    };\n-                    let source = match flow {\n-                        ActionFlow::SwapTarget { source, .. } => source.clone(),\n-                        _ => return,\n-                    };\n-                    // A CNAME swap rewrites BOTH environments' DNS, so\n-                    // it is a write to the target as much as to the\n-                    // source. The only `deny_write` on this path is in\n-                    // `open_action_menu`, against the *selected* env —\n-                    // and the target is picked afterwards, from this\n-                    // list. So `safety.envs.TARGET.read_only` did not\n-                    // protect an env from having production traffic\n-                    // swapped onto or off it; you just had to select the\n-                    // other env first. Gate the target here, where it is\n-                    // first known.\n-                    if self.deny_swap_target(&ParameterisedAction {\n-                        swap_with: Some(target.clone()),\n-                        ..Default::default()\n-                    }) {\n-                        self.close_action_flow();\n-                        return;\n-                    }\n-                    let warning = self\n-                        .environments\n-                        .iter()\n-                        .find(|e| e.name == source)\n-                        .map(compute_traffic_warning)\n-                        .unwrap_or(None);\n-                    self.action_flow = Some(ActionFlow::Confirm(ConfirmModal {\n-                        params: ParameterisedAction {\n-                            swap_with: Some(target),\n-                            ..Default::default()\n-                        },\n-                        action: Action::SwapCnames,\n-                        target_env: source,\n-                        typed: TextInput::new(),\n-                        kind: ConfirmKind::YesNo,\n-                        dryrun: None,\n-                        loading_dryrun: false,\n-                        recent_events: None,\n-                        loading_events: false,\n-                        traffic_warning: warning,\n-                        version_preview: None,\n-                        loading_version_preview: false,\n-                        health_check_probe: None,\n-                        loading_health_check: false,\n-                        unavailability_line: None,\n-                        loading_unavailability: false,\n-                        lint_issues: None,\n-                        loading_lint: false,\n-                    }));\n-                }\n+                 /* ~ changed by cargo-mutants ~ */\n                 // TextInput consumes editing keys (incl. Backspace);\n                 // reselect a still-matching row after any accepted edit.\n                 _ => {\n                     if picker.filter.handle_key(key) {\n                         let filt = picker.filtered();\n                         if !filt\n                             .iter()\n                             .any(|i| Some(*i) == picker.list_state.selected())\n",
+    "file": "src/app/action_flow.rs",
+    "function": {
+      "function_name": "App::handle_action_key",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 336
+        },
+        "start": {
+          "column": 5,
+          "line": 129
+        }
+      }
+    },
+    "genre": "MatchArm",
+    "name": "src/app/action_flow.rs:171:17: delete match arm KeyCode::Enter in App::handle_action_key",
+    "package": "ebman",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 18,
+        "line": 225
+      },
+      "start": {
+        "column": 17,
+        "line": 171
+      }
+    }
+  },
+  {
+    "diff": "--- src/app/action_flow.rs\n+++ delete field swap_with from struct ParameterisedAction expression in App::handle_action_key\n@@ -182,17 +182,17 @@\n                     // `open_action_menu`, against the *selected* env —\n                     // and the target is picked afterwards, from this\n                     // list. So `safety.envs.TARGET.read_only` did not\n                     // protect an env from having production traffic\n                     // swapped onto or off it; you just had to select the\n                     // other env first. Gate the target here, where it is\n                     // first known.\n                     if self.deny_swap_target(&ParameterisedAction {\n-                        swap_with: Some(target.clone()),\n+                         /* ~ changed by cargo-mutants ~ */\n                         ..Default::default()\n                     }) {\n                         self.close_action_flow();\n                         return;\n                     }\n                     let warning = self\n                         .environments\n                         .iter()\n",
+    "file": "src/app/action_flow.rs",
+    "function": {
+      "function_name": "App::handle_action_key",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 336
+        },
+        "start": {
+          "column": 5,
+          "line": 129
+        }
+      }
+    },
+    "genre": "StructField",
+    "name": "src/app/action_flow.rs:190:25: delete field swap_with from struct ParameterisedAction expression in App::handle_action_key",
+    "package": "ebman",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 57,
+        "line": 190
+      },
+      "start": {
+        "column": 25,
+        "line": 190
+      }
+    }
+  },
+  {
+    "diff": "--- src/app/action_flow.rs\n+++ delete field swap_with from struct ParameterisedAction expression in App::handle_action_key\n@@ -196,17 +196,17 @@\n                     let warning = self\n                         .environments\n                         .iter()\n                         .find(|e| e.name == source)\n                         .map(compute_traffic_warning)\n                         .unwrap_or(None);\n                     self.action_flow = Some(ActionFlow::Confirm(ConfirmModal {\n                         params: ParameterisedAction {\n-                            swap_with: Some(target),\n+                             /* ~ changed by cargo-mutants ~ */\n                             ..Default::default()\n                         },\n                         action: Action::SwapCnames,\n                         target_env: source,\n                         typed: TextInput::new(),\n                         kind: ConfirmKind::YesNo,\n                         dryrun: None,\n                         loading_dryrun: false,\n",
+    "file": "src/app/action_flow.rs",
+    "function": {
+      "function_name": "App::handle_action_key",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 336
+        },
+        "start": {
+          "column": 5,
+          "line": 129
+        }
+      }
+    },
+    "genre": "StructField",
+    "name": "src/app/action_flow.rs:204:29: delete field swap_with from struct ParameterisedAction expression in App::handle_action_key",
+    "package": "ebman",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 53,
+        "line": 204
+      },
+      "start": {
+        "column": 29,
+        "line": 204
+      }
+    }
+  },
+  {
+    "diff": "--- src/app/action_flow.rs\n+++ replace App::advance_action_flow with ()\n@@ -331,168 +331,17 @@\n                     self.close_action_flow();\n                 }\n                 _ => {}\n             },\n         }\n     }\n \n     pub(crate) fn advance_action_flow(&mut self, action: Action) {\n-        let Some(env) = self.target_env_for_action() else {\n-            self.close_action_flow();\n-            return;\n-        };\n-        match action {\n-            Action::SwapCnames => {\n-                // Build a list of envs in the same application (excluding the source).\n-                let candidates: Vec<String> = self\n-                    .environments\n-                    .iter()\n-                    .filter(|e| e.application == env.application && e.name != env.name)\n-                    .map(|e| e.name.clone())\n-                    .collect();\n-                if candidates.is_empty() {\n-                    self.action_flow = None;\n-                    self.mode = if self.detail.is_some() {\n-                        Mode::Detail\n-                    } else {\n-                        Mode::Normal\n-                    };\n-                    self.error_message = Some(format!(\n-                        \"no swap candidates: app '{}' has only one env\",\n-                        env.application\n-                    ));\n-                    return;\n-                }\n-                let picker = Picker::new(PickerKind::Region, candidates, None); // kind unused here\n-                self.action_flow = Some(ActionFlow::SwapTarget {\n-                    source: env.name.clone(),\n-                    picker,\n-                });\n-            }\n-            Action::Terminate => {\n-                // Terminate is the only Action that uses TypeName confirm;\n-                // every other entry routes through `open_parameterised_action`.\n-                // Preflight gating still flows from `Action::wants_preflight()`\n-                // so the rule lives in exactly one place.\n-                let wants_preflight = action.wants_preflight();\n-                self.action_flow = Some(ActionFlow::Confirm(ConfirmModal {\n-                    params: ParameterisedAction::default(),\n-                    action,\n-                    target_env: env.name.clone(),\n-                    typed: TextInput::new(),\n-                    kind: ConfirmKind::TypeName,\n-                    dryrun: None,\n-                    loading_dryrun: wants_preflight,\n-                    recent_events: None,\n-                    loading_events: wants_preflight,\n-                    traffic_warning: compute_traffic_warning(&env),\n-                    version_preview: None,\n-                    loading_version_preview: false,\n-                    health_check_probe: None,\n-                    loading_health_check: false,\n-                    unavailability_line: None,\n-                    loading_unavailability: false,\n-                    lint_issues: None,\n-                    loading_lint: false,\n-                }));\n-                if wants_preflight {\n-                    self.spawn_dry_run(env.name.clone());\n-                    self.spawn_preflight_events(env.name.clone());\n-                }\n-            }\n-            Action::Rebuild => {\n-                self.open_parameterised_action(action, ParameterisedAction::default());\n-            }\n-            // Parameterised actions need user input before the confirm can\n-            // be built. The menu closes itself and pre-fills the command\n-            // bar so the user types `<arg>` and Enter, which routes through\n-            // the existing `:deploy` / `:upgrade` / `:clone` / `:scale`\n-            // handlers (all of which open a confirm modal).\n-            Action::Deploy => {\n-                self.close_action_flow();\n-                self.mode = Mode::Command;\n-                self.command_input = \"deploy \".into();\n-                self.status_message = Some(\"type a version label and press enter\".into());\n-            }\n-            Action::UpgradePlatform => {\n-                self.close_action_flow();\n-                self.spawn_list_compatible_platforms(env.name.clone());\n-                self.mode = Mode::Command;\n-                self.command_input = \"upgrade \".into();\n-                self.status_message =\n-                    Some(\"listing platforms in overlay; paste an ARN and press enter\".into());\n-            }\n-            Action::Clone => {\n-                self.close_action_flow();\n-                self.mode = Mode::Command;\n-                self.command_input = \"clone \".into();\n-                self.status_message = Some(\"type a new env name and press enter\".into());\n-            }\n-            Action::Scale => {\n-                self.close_action_flow();\n-                self.mode = Mode::Command;\n-                self.command_input = \"scale \".into();\n-                self.status_message = Some(\n-                    \"scale N (instances), or `scale min N` / `scale max N`; enter to apply\".into(),\n-                );\n-            }\n-            Action::Capacity => {\n-                // `:capacity` opens a modal form pre-filled from\n-                // DescribeConfigurationSettings — no command-bar args\n-                // needed, so we close the menu and dispatch straight\n-                // to the form opener.\n-                self.close_action_flow();\n-                self.cmd_capacity();\n-            }\n-            Action::AbortUpdate => {\n-                self.action_flow = Some(ActionFlow::Confirm(ConfirmModal {\n-                    params: ParameterisedAction::default(),\n-                    action,\n-                    target_env: env.name.clone(),\n-                    typed: TextInput::new(),\n-                    kind: ConfirmKind::YesNo,\n-                    dryrun: None,\n-                    loading_dryrun: false,\n-                    recent_events: None,\n-                    loading_events: false,\n-                    traffic_warning: compute_traffic_warning(&env),\n-                    version_preview: None,\n-                    loading_version_preview: false,\n-                    health_check_probe: None,\n-                    loading_health_check: false,\n-                    unavailability_line: None,\n-                    loading_unavailability: false,\n-                    lint_issues: None,\n-                    loading_lint: false,\n-                }));\n-            }\n-            _ => {\n-                self.action_flow = Some(ActionFlow::Confirm(ConfirmModal {\n-                    params: ParameterisedAction::default(),\n-                    action,\n-                    target_env: env.name.clone(),\n-                    typed: TextInput::new(),\n-                    kind: ConfirmKind::YesNo,\n-                    dryrun: None,\n-                    loading_dryrun: false,\n-                    recent_events: None,\n-                    loading_events: false,\n-                    traffic_warning: compute_traffic_warning(&env),\n-                    version_preview: None,\n-                    loading_version_preview: false,\n-                    health_check_probe: None,\n-                    loading_health_check: false,\n-                    unavailability_line: None,\n-                    loading_unavailability: false,\n-                    lint_issues: None,\n-                    loading_lint: false,\n-                }));\n-            }\n-        }\n+        () /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Add a row to the pending-actions panel before dispatching. Callers\n     /// follow with a `tokio::spawn` that sends an `AppMsg::ActionResult`;\n     /// the result handler finds the first matching unfinished row and\n     /// stamps it with the outcome. Caps the list at `PENDING_CAP`.\n     pub(crate) fn push_pending(&mut self, label: impl Into<String>, target: impl Into<String>) {\n         if self.pending_actions.len() >= PENDING_CAP {\n",
+    "file": "src/app/action_flow.rs",
+    "function": {
+      "function_name": "App::advance_action_flow",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 491
+        },
+        "start": {
+          "column": 5,
+          "line": 338
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/app/action_flow.rs:339:9: replace App::advance_action_flow with ()",
+    "package": "ebman",
+    "replacement": "()",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 490
+      },
+      "start": {
+        "column": 9,
+        "line": 339
+      }
+    }
+  },
+  {
+    "diff": "--- src/app/action_flow.rs\n+++ delete match arm Action::Terminate in App::advance_action_flow\n@@ -363,47 +363,17 @@\n                     return;\n                 }\n                 let picker = Picker::new(PickerKind::Region, candidates, None); // kind unused here\n                 self.action_flow = Some(ActionFlow::SwapTarget {\n                     source: env.name.clone(),\n                     picker,\n                 });\n             }\n-            Action::Terminate => {\n-                // Terminate is the only Action that uses TypeName confirm;\n-                // every other entry routes through `open_parameterised_action`.\n-                // Preflight gating still flows from `Action::wants_preflight()`\n-                // so the rule lives in exactly one place.\n-                let wants_preflight = action.wants_preflight();\n-                self.action_flow = Some(ActionFlow::Confirm(ConfirmModal {\n-                    params: ParameterisedAction::default(),\n-                    action,\n-                    target_env: env.name.clone(),\n-                    typed: TextInput::new(),\n-                    kind: ConfirmKind::TypeName,\n-                    dryrun: None,\n-                    loading_dryrun: wants_preflight,\n-                    recent_events: None,\n-                    loading_events: wants_preflight,\n-                    traffic_warning: compute_traffic_warning(&env),\n-                    version_preview: None,\n-                    loading_version_preview: false,\n-                    health_check_probe: None,\n-                    loading_health_check: false,\n-                    unavailability_line: None,\n-                    loading_unavailability: false,\n-                    lint_issues: None,\n-                    loading_lint: false,\n-                }));\n-                if wants_preflight {\n-                    self.spawn_dry_run(env.name.clone());\n-                    self.spawn_preflight_events(env.name.clone());\n-                }\n-            }\n+             /* ~ changed by cargo-mutants ~ */\n             Action::Rebuild => {\n                 self.open_parameterised_action(action, ParameterisedAction::default());\n             }\n             // Parameterised actions need user input before the confirm can\n             // be built. The menu closes itself and pre-fills the command\n             // bar so the user types `<arg>` and Enter, which routes through\n             // the existing `:deploy` / `:upgrade` / `:clone` / `:scale`\n             // handlers (all of which open a confirm modal).\n",
+    "file": "src/app/action_flow.rs",
+    "function": {
+      "function_name": "App::advance_action_flow",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 491
+        },
+        "start": {
+          "column": 5,
+          "line": 338
+        }
+      }
+    },
+    "genre": "MatchArm",
+    "name": "src/app/action_flow.rs:371:13: delete match arm Action::Terminate in App::advance_action_flow",
+    "package": "ebman",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 14,
+        "line": 401
+      },
+      "start": {
+        "column": 13,
+        "line": 371
+      }
+    }
+  },
+  {
+    "diff": "--- src/app/action_flow.rs\n+++ delete match arm Action::AbortUpdate in App::advance_action_flow\n@@ -438,38 +438,17 @@\n             Action::Capacity => {\n                 // `:capacity` opens a modal form pre-filled from\n                 // DescribeConfigurationSettings — no command-bar args\n                 // needed, so we close the menu and dispatch straight\n                 // to the form opener.\n                 self.close_action_flow();\n                 self.cmd_capacity();\n             }\n-            Action::AbortUpdate => {\n-                self.action_flow = Some(ActionFlow::Confirm(ConfirmModal {\n-                    params: ParameterisedAction::default(),\n-                    action,\n-                    target_env: env.name.clone(),\n-                    typed: TextInput::new(),\n-                    kind: ConfirmKind::YesNo,\n-                    dryrun: None,\n-                    loading_dryrun: false,\n-                    recent_events: None,\n-                    loading_events: false,\n-                    traffic_warning: compute_traffic_warning(&env),\n-                    version_preview: None,\n-                    loading_version_preview: false,\n-                    health_check_probe: None,\n-                    loading_health_check: false,\n-                    unavailability_line: None,\n-                    loading_unavailability: false,\n-                    lint_issues: None,\n-                    loading_lint: false,\n-                }));\n-            }\n+             /* ~ changed by cargo-mutants ~ */\n             _ => {\n                 self.action_flow = Some(ActionFlow::Confirm(ConfirmModal {\n                     params: ParameterisedAction::default(),\n                     action,\n                     target_env: env.name.clone(),\n                     typed: TextInput::new(),\n                     kind: ConfirmKind::YesNo,\n                     dryrun: None,\n",
+    "file": "src/app/action_flow.rs",
+    "function": {
+      "function_name": "App::advance_action_flow",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 491
+        },
+        "start": {
+          "column": 5,
+          "line": 338
+        }
+      }
+    },
+    "genre": "MatchArm",
+    "name": "src/app/action_flow.rs:446:13: delete match arm Action::AbortUpdate in App::advance_action_flow",
+    "package": "ebman",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 14,
+        "line": 467
+      },
+      "start": {
+        "column": 13,
+        "line": 446
+      }
+    }
+  },
+  {
+    "diff": "--- src/app/action_flow.rs\n+++ replace App::deny_swap_target -> bool with true\n@@ -546,20 +546,17 @@\n     /// The target arrives later, from a picker or a command argument, and\n     /// nothing looked at it. So `safety.envs.TARGET.read_only` could be\n     /// defeated by selecting the other env first.\n     ///\n     /// One helper, called from both swap entry points, so the two cannot\n     /// drift. Pinned by `a_read_only_env_cannot_be_swapped_into` and\n     /// `swap_cnames_command_also_gates_the_target`.\n     pub(crate) fn deny_swap_target(&mut self, params: &ParameterisedAction) -> bool {\n-        match params.swap_with.as_deref() {\n-            Some(target) => self.deny_write(target, \"swap-cnames target\"),\n-            None => false,\n-        }\n+        true /* ~ changed by cargo-mutants ~ */\n     }\n \n     pub(crate) fn open_parameterised_action(\n         &mut self,\n         action: Action,\n         params: ParameterisedAction,\n     ) {\n         let Some(env) = self.selected_env().cloned() else {\n",
+    "file": "src/app/action_flow.rs",
+    "function": {
+      "function_name": "App::deny_swap_target",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 558
+        },
+        "start": {
+          "column": 5,
+          "line": 540
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/app/action_flow.rs:554:9: replace App::deny_swap_target -> bool with true",
+    "package": "ebman",
+    "replacement": "true",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 557
+      },
+      "start": {
+        "column": 9,
+        "line": 554
+      }
+    }
+  },
+  {
+    "diff": "--- src/app/action_flow.rs\n+++ replace App::deny_swap_target -> bool with false\n@@ -546,20 +546,17 @@\n     /// The target arrives later, from a picker or a command argument, and\n     /// nothing looked at it. So `safety.envs.TARGET.read_only` could be\n     /// defeated by selecting the other env first.\n     ///\n     /// One helper, called from both swap entry points, so the two cannot\n     /// drift. Pinned by `a_read_only_env_cannot_be_swapped_into` and\n     /// `swap_cnames_command_also_gates_the_target`.\n     pub(crate) fn deny_swap_target(&mut self, params: &ParameterisedAction) -> bool {\n-        match params.swap_with.as_deref() {\n-            Some(target) => self.deny_write(target, \"swap-cnames target\"),\n-            None => false,\n-        }\n+        false /* ~ changed by cargo-mutants ~ */\n     }\n \n     pub(crate) fn open_parameterised_action(\n         &mut self,\n         action: Action,\n         params: ParameterisedAction,\n     ) {\n         let Some(env) = self.selected_env().cloned() else {\n",
+    "file": "src/app/action_flow.rs",
+    "function": {
+      "function_name": "App::deny_swap_target",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 558
+        },
+        "start": {
+          "column": 5,
+          "line": 540
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/app/action_flow.rs:554:9: replace App::deny_swap_target -> bool with false",
+    "package": "ebman",
+    "replacement": "false",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 557
+      },
+      "start": {
+        "column": 9,
+        "line": 554
+      }
+    }
+  },
+  {
+    "diff": "--- src/app/action_flow.rs\n+++ replace App::open_parameterised_action_on with ()\n@@ -577,122 +577,17 @@\n     /// the table cursor. The `selected_env()`-based wrapper is the\n     /// common path; this is the cursor-independent escape hatch.\n     pub(crate) fn open_parameterised_action_on(\n         &mut self,\n         env: crate::aws::Environment,\n         action: Action,\n         params: ParameterisedAction,\n     ) {\n-        if self.deny_write(&env.name, action.label()) {\n-            return;\n-        }\n-        // A swap also writes to its target; see `deny_swap_target`.\n-        if self.deny_swap_target(&params) {\n-            return;\n-        }\n-        // The preflight (impact preview + last-3 events) is gated by\n-        // `Action::wants_preflight()` — single source of truth, see\n-        // `mode_action.rs`. Every ConfirmModal construction site must\n-        // route through here so the rule can't drift.\n-        let wants_preflight = action.wants_preflight();\n-        // For Deploy with a candidate label, pull the version\n-        // metadata (label / age / description) and inline the\n-        // existing `:deploy --preview` body in the modal. Saves\n-        // the operator the separate `:deploy LABEL --preview`\n-        // round-trip.\n-        let wants_version_preview = action == Action::Deploy && params.deploy_version.is_some();\n-        // Taken before `params` moves into the modal below. Cloning one\n-        // field is cheaper than keeping eleven copies alive to avoid it.\n-        let preview_label = params.deploy_version.clone();\n-        let modal = ConfirmModal {\n-            // The whole point of the consolidation: one move, not eleven\n-            // copies. Adding a parameterised field is now one edit.\n-            params,\n-            action,\n-            target_env: env.name.clone(),\n-            typed: TextInput::new(),\n-            kind: ConfirmKind::YesNo,\n-            dryrun: None,\n-            loading_dryrun: wants_preflight,\n-            recent_events: None,\n-            loading_events: wants_preflight,\n-            // Skip traffic_warning for SsmRun — operators frequently\n-            // run diagnostic shells on Red envs (it's how they diagnose\n-            // Red), so showing \"env is currently Red\" in the modal\n-            // would suggest they shouldn't dispatch the very command\n-            // they're using to investigate. Other write actions get\n-            // the warning because Red+write is genuinely risky.\n-            // (0.17.4 review)\n-            traffic_warning: if action == Action::SsmRun {\n-                None\n-            } else {\n-                compute_traffic_warning(&env)\n-            },\n-            version_preview: None,\n-            loading_version_preview: wants_version_preview,\n-            health_check_probe: None,\n-            // Pre-deploy health-check probe only runs for Deploy\n-            // confirms — we want to warn the operator if the env's\n-            // current health-check-url is dead BEFORE they ship a\n-            // new build over it. For non-Deploy actions, the probe\n-            // is meaningless. Skipped in `--demo` mode because the\n-            // synthetic CNAMEs would always fail DNS and pollute\n-            // screencasts with a fake-warning red herring.\n-            loading_health_check: wants_version_preview && !env.cname.is_empty() && !self.demo_mode,\n-            unavailability_line: None,\n-            // Same gate as the health-check probe — only useful for\n-            // Deploy confirms; --demo mode skips the AWS call.\n-            loading_unavailability: wants_version_preview && !self.demo_mode,\n-            lint_issues: None,\n-            // Lint at confirm time runs against every confirm modal,\n-            // not just Deploy. The health-check probe + unavailability\n-            // pill specialise on deploys; lint is universal — operator\n-            // sees AllAtOnce / health-check-empty / cooldown-low etc.\n-            // before confirming any destructive action. Skipped in\n-            // demo mode (same gate as the other probes — no AWS\n-            // round-trip in demo).\n-            //\n-            // SsmRun also skips lint — running an ad-hoc shell command\n-            // isn't gated by EB-config-health rules; firing them here\n-            // would be noise.\n-            loading_lint: !self.demo_mode && action != Action::SsmRun,\n-        };\n-        let needs_health_check_probe = modal.loading_health_check;\n-        let needs_unavailability = modal.loading_unavailability;\n-        let needs_lint = modal.loading_lint;\n-        self.action_flow = Some(ActionFlow::Confirm(modal));\n-        self.mode = Mode::Action;\n-        if wants_preflight {\n-            self.spawn_dry_run(env.name.clone());\n-            self.spawn_preflight_events(env.name.clone());\n-        }\n-        if wants_version_preview {\n-            if let Some(label) = preview_label {\n-                self.spawn_version_preview(\n-                    env.application.clone(),\n-                    env.name.clone(),\n-                    env.version_label.clone(),\n-                    label,\n-                );\n-            }\n-        }\n-        if needs_health_check_probe {\n-            self.spawn_health_check_probe(\n-                env.application.clone(),\n-                env.name.clone(),\n-                env.cname.clone(),\n-            );\n-        }\n-        if needs_unavailability {\n-            self.spawn_unavailability_estimate(env.application.clone(), env.name.clone());\n-        }\n-        if needs_lint {\n-            self.spawn_confirm_lint(env.clone());\n-        }\n+        () /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Fetch `list_compatible_platforms` for `env` and surface them in an\n     /// overlay so the user can copy the desired ARN into `:upgrade <arn>`.\n     pub(crate) fn spawn_list_compatible_platforms(&mut self, env_name: String) {\n         let client = self.client_for_env(&env_name);\n         let tx = self.msg_tx.clone();\n         let gen = self.generation;\n",
+    "file": "src/app/action_flow.rs",
+    "function": {
+      "function_name": "App::open_parameterised_action_on",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 691
+        },
+        "start": {
+          "column": 5,
+          "line": 573
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/app/action_flow.rs:585:9: replace App::open_parameterised_action_on with ()",
+    "package": "ebman",
+    "replacement": "()",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 690
+      },
+      "start": {
+        "column": 9,
+        "line": 585
+      }
+    }
+  },
+  {
+    "diff": "--- src/app/action_flow.rs\n+++ replace && with || in App::open_parameterised_action_on\n@@ -649,17 +649,17 @@\n             // sees AllAtOnce / health-check-empty / cooldown-low etc.\n             // before confirming any destructive action. Skipped in\n             // demo mode (same gate as the other probes — no AWS\n             // round-trip in demo).\n             //\n             // SsmRun also skips lint — running an ad-hoc shell command\n             // isn't gated by EB-config-health rules; firing them here\n             // would be noise.\n-            loading_lint: !self.demo_mode && action != Action::SsmRun,\n+            loading_lint: !self.demo_mode || /* ~ changed by cargo-mutants ~ */ action != Action::SsmRun,\n         };\n         let needs_health_check_probe = modal.loading_health_check;\n         let needs_unavailability = modal.loading_unavailability;\n         let needs_lint = modal.loading_lint;\n         self.action_flow = Some(ActionFlow::Confirm(modal));\n         self.mode = Mode::Action;\n         if wants_preflight {\n             self.spawn_dry_run(env.name.clone());\n",
+    "file": "src/app/action_flow.rs",
+    "function": {
+      "function_name": "App::open_parameterised_action_on",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 691
+        },
+        "start": {
+          "column": 5,
+          "line": 573
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/app/action_flow.rs:657:43: replace && with || in App::open_parameterised_action_on",
+    "package": "ebman",
+    "replacement": "||",
+    "span": {
+      "end": {
+        "column": 45,
+        "line": 657
+      },
+      "start": {
+        "column": 43,
+        "line": 657
+      }
+    }
+  },
+  {
+    "diff": "--- src/app/action_flow.rs\n+++ delete ! in App::open_parameterised_action_on\n@@ -649,17 +649,17 @@\n             // sees AllAtOnce / health-check-empty / cooldown-low etc.\n             // before confirming any destructive action. Skipped in\n             // demo mode (same gate as the other probes — no AWS\n             // round-trip in demo).\n             //\n             // SsmRun also skips lint — running an ad-hoc shell command\n             // isn't gated by EB-config-health rules; firing them here\n             // would be noise.\n-            loading_lint: !self.demo_mode && action != Action::SsmRun,\n+            loading_lint:  /* ~ changed by cargo-mutants ~ */self.demo_mode && action != Action::SsmRun,\n         };\n         let needs_health_check_probe = modal.loading_health_check;\n         let needs_unavailability = modal.loading_unavailability;\n         let needs_lint = modal.loading_lint;\n         self.action_flow = Some(ActionFlow::Confirm(modal));\n         self.mode = Mode::Action;\n         if wants_preflight {\n             self.spawn_dry_run(env.name.clone());\n",
+    "file": "src/app/action_flow.rs",
+    "function": {
+      "function_name": "App::open_parameterised_action_on",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 691
+        },
+        "start": {
+          "column": 5,
+          "line": 573
+        }
+      }
+    },
+    "genre": "UnaryOperator",
+    "name": "src/app/action_flow.rs:657:27: delete ! in App::open_parameterised_action_on",
+    "package": "ebman",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 28,
+        "line": 657
+      },
+      "start": {
+        "column": 27,
+        "line": 657
+      }
+    }
+  },
+  {
+    "diff": "--- src/app/action_flow.rs\n+++ replace != with == in App::open_parameterised_action_on\n@@ -649,17 +649,17 @@\n             // sees AllAtOnce / health-check-empty / cooldown-low etc.\n             // before confirming any destructive action. Skipped in\n             // demo mode (same gate as the other probes — no AWS\n             // round-trip in demo).\n             //\n             // SsmRun also skips lint — running an ad-hoc shell command\n             // isn't gated by EB-config-health rules; firing them here\n             // would be noise.\n-            loading_lint: !self.demo_mode && action != Action::SsmRun,\n+            loading_lint: !self.demo_mode && action == /* ~ changed by cargo-mutants ~ */ Action::SsmRun,\n         };\n         let needs_health_check_probe = modal.loading_health_check;\n         let needs_unavailability = modal.loading_unavailability;\n         let needs_lint = modal.loading_lint;\n         self.action_flow = Some(ActionFlow::Confirm(modal));\n         self.mode = Mode::Action;\n         if wants_preflight {\n             self.spawn_dry_run(env.name.clone());\n",
+    "file": "src/app/action_flow.rs",
+    "function": {
+      "function_name": "App::open_parameterised_action_on",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 691
+        },
+        "start": {
+          "column": 5,
+          "line": 573
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/app/action_flow.rs:657:53: replace != with == in App::open_parameterised_action_on",
+    "package": "ebman",
+    "replacement": "==",
+    "span": {
+      "end": {
+        "column": 55,
+        "line": 657
+      },
+      "start": {
+        "column": 53,
+        "line": 657
+      }
+    }
+  },
+  {
+    "diff": "--- src/app/action_flow.rs\n+++ replace App::spawn_action with ()\n@@ -909,227 +909,11 @@\n \n     pub(crate) fn spawn_action(&mut self, modal: ConfirmModal) {\n         // `--demo` mode runs against a synthetic fleet on a fake\n         // AwsClient. Destructive dispatch against that client would\n         // fail at the SDK layer but still write `stage=dispatched`\n         // audit lines to the real audit log. Refuse outright so a\n         // fat-fingered keypress during a demo / screencast doesn't\n         // touch operator state.\n-        if self.demo_mode {\n-            self.error_message = Some(format!(\n-                \"demo mode — {} not dispatched (writes are inert; press q to exit)\",\n-                modal.action.label()\n-            ));\n-            return;\n-        }\n-        // Per-env / per-account read-only locks short-circuit the\n-        // dispatch before any AWS call. `read_only_reason` returns\n-        // the specific cause (global toggle vs. config-pinned env vs.\n-        // pinned account) so the toast tells the operator exactly\n-        // which knob is keeping them safe.\n-        if self.is_read_only_for(&modal.target_env) {\n-            let reason = self\n-                .read_only_reason(&modal.target_env)\n-                .unwrap_or_else(|| \"read-only mode\".into());\n-            self.error_message = Some(format!(\"{reason} — {} disabled\", modal.action.label()));\n-            return;\n-        }\n-        // For Deploy actions: snapshot the env's pre-deploy version\n-        // label before dispatching, so :rollback-deploy and the\n-        // optional `--auto-rollback Nm` watchdog know what to roll\n-        // back TO. Skip if we don't have the env in our cached\n-        // fleet (e.g. assume-role race where the modal opened\n-        // before the refresh landed) — the existing :rollback can\n-        // scan events as a fallback.\n-        if modal.action == Action::Deploy {\n-            if let Some(env) = self\n-                .environments\n-                .iter()\n-                .find(|e| e.name == modal.target_env)\n-            {\n-                if !env.version_label.is_empty() {\n-                    self.deploy_snapshots.insert(\n-                        env.name.clone(),\n-                        DeploySnapshot {\n-                            env_name: env.name.clone(),\n-                            previous_version_label: env.version_label.clone(),\n-                            taken_at: chrono::Utc::now(),\n-                        },\n-                    );\n-                }\n-            }\n-            // Arm the auto-rollback watchdog if requested. Two signals\n-            // can fire: the env reaching Green on the next refresh\n-            // tick (early disarm via apply_refresh — most common\n-            // outcome) or the deadline timer firing AutoRollbackCheck.\n-            // `armed_watchdogs` carries the in-flight state for both\n-            // surfaces.\n-            if let Some(secs) = modal.params.auto_rollback_secs {\n-                let tx = self.msg_tx.clone();\n-                let env_name = modal.target_env.clone();\n-                let gen = self.generation;\n-                // Snapshot the rollback target now so the watchdog\n-                // doesn't have to re-look it up later. The pre-deploy\n-                // snapshot we just inserted is the source of truth.\n-                let target_label = self\n-                    .deploy_snapshots\n-                    .get(&modal.target_env)\n-                    .map(|s| s.previous_version_label.clone())\n-                    .unwrap_or_default();\n-                let armed_at = chrono::Utc::now();\n-                let deadline_at = armed_at + chrono::Duration::seconds(secs as i64);\n-                self.armed_watchdogs.insert(\n-                    modal.target_env.clone(),\n-                    ArmedWatchdog {\n-                        env_name: modal.target_env.clone(),\n-                        target_label,\n-                        armed_at,\n-                        deadline_at,\n-                    },\n-                );\n-                self.status_message = Some(format!(\n-                    \"auto-rollback armed: {secs}s to reach Green or revert\"\n-                ));\n-                tokio::spawn(async move {\n-                    tokio::time::sleep(std::time::Duration::from_secs(secs)).await;\n-                    let _ = tx.send(AppMsg::AutoRollbackCheck { gen, env_name });\n-                });\n-            }\n-            // Arm the wait-for-green tracker if requested. Pure\n-            // observability — `apply_refresh` watches `watching_deploys`\n-            // and pins the outcome (success on Green, error on timeout).\n-            // No tokio task needed: apply_refresh runs on every refresh\n-            // tick anyway and checks deadlines there. Orthogonal to\n-            // auto-rollback so both flags can coexist.\n-            if let Some(secs) = modal.params.wait_for_green_secs {\n-                let target_label = modal.params.deploy_version.clone().unwrap_or_default();\n-                let armed_at = chrono::Utc::now();\n-                let deadline_at = armed_at + chrono::Duration::seconds(secs as i64);\n-                self.watching_deploys.insert(\n-                    modal.target_env.clone(),\n-                    WatchingDeploy {\n-                        env_name: modal.target_env.clone(),\n-                        target_label,\n-                        armed_at,\n-                        deadline_at,\n-                    },\n-                );\n-                // Don't clobber a \"auto-rollback armed\" message if\n-                // both flags were set — append instead.\n-                if let Some(existing) = self.status_message.as_mut() {\n-                    existing.push_str(&format!(\"; watching for Green ({secs}s)\"));\n-                } else {\n-                    self.status_message = Some(format!(\n-                        \"watching deploy: {secs}s to reach Green or report timeout\"\n-                    ));\n-                }\n-            }\n-        }\n-        // SsmRun's dispatch shape doesn't fit the standard\n-        // `Result<(), _>` + `ActionResult` pipeline below — the SDK\n-        // call returns per-instance rows that surface in a\n-        // TextOverlay. Short-circuit to a dedicated helper that\n-        // carries the audit / pending / spawn dance with the right\n-        // payload. Everything ABOVE this point (read-only check, demo\n-        // guard, deploy-only auto-rollback / wait-for-green arming —\n-        // none of which fires for SsmRun) still runs uniformly.\n-        if modal.action == Action::SsmRun {\n-            let command = modal.params.ssm_run_command.clone().unwrap_or_default();\n-            let instances = modal.params.ssm_run_instances.clone().unwrap_or_default();\n-            self.spawn_ssm_run_impl(modal.target_env.clone(), command, instances);\n-            return;\n-        }\n-        // The ROW's region, not the home one. Under a multi-region\n-        // fan-out `self.aws` points wherever the operator started, so a\n-        // restart / terminate / deploy on a row from another region\n-        // either failed as \"environment not found\" or — with a\n-        // same-named env at home, which is exactly what a fleet with\n-        // per-region copies has — dispatched a destructive action\n-        // against the wrong environment. The audit line takes the same\n-        // region so the journal names where the write actually went.\n-        let region = self.region_for_name(&modal.target_env);\n-        let client = self.client_for_region(&region);\n-        let tx = self.msg_tx.clone();\n-        let gen = self.generation;\n-        let action = modal.action;\n-        let env = modal.target_env.clone();\n-        let swap_with = modal.params.swap_with.clone();\n-        let deploy_version = modal.params.deploy_version.clone();\n-        let upgrade_arn = modal.params.upgrade_platform_arn.clone();\n-        let clone_target = modal.params.clone_target.clone();\n-        let scale_min = modal.params.scale_min;\n-        let scale_max = modal.params.scale_max;\n-        write_audit_entry(\n-            self.context.account_id.as_deref(),\n-            self.context.profile.as_deref(),\n-            &region,\n-            action,\n-            &env,\n-            swap_with.as_deref(),\n-        );\n-        self.push_pending(action.label(), env.clone());\n-        tokio::spawn(async move {\n-            let aws = match client.resolve().await {\n-                Ok(aws) => aws,\n-                Err(e) => {\n-                    let _ = tx.send(AppMsg::ActionResult {\n-                        gen,\n-                        action,\n-                        env_name: env,\n-                        result: Err(flatten_err(\"cached_client\", e)),\n-                    });\n-                    return;\n-                }\n-            };\n-            let result = match action {\n-                Action::Rebuild => aws.rebuild_env(&env).await,\n-                Action::RestartAppServer => aws.restart_app_server(&env).await,\n-                Action::Terminate => aws.terminate_env(&env).await,\n-                Action::SwapCnames => match swap_with {\n-                    Some(dest) => aws.swap_cnames(&env, &dest).await,\n-                    None => Err(color_eyre::eyre::eyre!(\"swap target missing\")),\n-                },\n-                Action::Deploy => match deploy_version {\n-                    Some(ver) => aws.deploy_version(&env, &ver).await,\n-                    None => Err(color_eyre::eyre::eyre!(\"deploy version missing\")),\n-                },\n-                Action::UpgradePlatform => match upgrade_arn {\n-                    Some(arn) => aws.upgrade_platform(&env, &arn).await,\n-                    None => Err(color_eyre::eyre::eyre!(\"upgrade platform ARN missing\")),\n-                },\n-                Action::Clone => match clone_target {\n-                    Some(target) => aws.clone_env(&env, &target).await,\n-                    None => Err(color_eyre::eyre::eyre!(\"clone target name missing\")),\n-                },\n-                Action::Scale => match (scale_min, scale_max) {\n-                    (Some(mn), Some(mx)) => aws.scale_env(&env, mn, mx).await,\n-                    _ => Err(color_eyre::eyre::eyre!(\"scale min/max missing\")),\n-                },\n-                Action::AbortUpdate => aws.abort_environment_update(&env).await,\n-                // Capacity opens a modal form (cmd_capacity) and dispatches\n-                // via spawn_option_settings_update — it never reaches\n-                // spawn_action's ConfirmModal path. Same for Config* and\n-                // TerminateInstance which have dedicated spawn paths.\n-                // SsmRun is short-circuited above via spawn_ssm_run_impl\n-                // and never reaches this match — included here for\n-                // exhaustiveness with a defensive error in case the\n-                // short-circuit is ever removed.\n-                Action::Capacity\n-                | Action::ConfigSave\n-                | Action::ConfigDelete\n-                | Action::ConfigApply\n-                | Action::TerminateInstance\n-                | Action::SsmRun => Err(color_eyre::eyre::eyre!(\n-                    \"internal: {} dispatched through spawn_action path\",\n-                    action.label()\n-                )),\n-            }\n-            .map_err(|e| flatten_err(\"action\", e));\n-            let _ = tx.send(AppMsg::ActionResult {\n-                gen,\n-                action,\n-                env_name: env,\n-                result,\n-            });\n-        });\n+        () /* ~ changed by cargo-mutants ~ */\n     }\n }\n",
+    "file": "src/app/action_flow.rs",
+    "function": {
+      "function_name": "App::spawn_action",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 1134
+        },
+        "start": {
+          "column": 5,
+          "line": 910
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/app/action_flow.rs:917:9: replace App::spawn_action with ()",
+    "package": "ebman",
+    "replacement": "()",
+    "span": {
+      "end": {
+        "column": 12,
+        "line": 1133
+      },
+      "start": {
+        "column": 9,
+        "line": 917
+      }
+    }
+  },
+  {
+    "diff": "--- src/app/action_flow.rs\n+++ replace == with != in App::spawn_action\n@@ -1027,17 +1027,17 @@\n         // SsmRun's dispatch shape doesn't fit the standard\n         // `Result<(), _>` + `ActionResult` pipeline below — the SDK\n         // call returns per-instance rows that surface in a\n         // TextOverlay. Short-circuit to a dedicated helper that\n         // carries the audit / pending / spawn dance with the right\n         // payload. Everything ABOVE this point (read-only check, demo\n         // guard, deploy-only auto-rollback / wait-for-green arming —\n         // none of which fires for SsmRun) still runs uniformly.\n-        if modal.action == Action::SsmRun {\n+        if modal.action != /* ~ changed by cargo-mutants ~ */ Action::SsmRun {\n             let command = modal.params.ssm_run_command.clone().unwrap_or_default();\n             let instances = modal.params.ssm_run_instances.clone().unwrap_or_default();\n             self.spawn_ssm_run_impl(modal.target_env.clone(), command, instances);\n             return;\n         }\n         // The ROW's region, not the home one. Under a multi-region\n         // fan-out `self.aws` points wherever the operator started, so a\n         // restart / terminate / deploy on a row from another region\n",
+    "file": "src/app/action_flow.rs",
+    "function": {
+      "function_name": "App::spawn_action",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 1134
+        },
+        "start": {
+          "column": 5,
+          "line": 910
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/app/action_flow.rs:1035:25: replace == with != in App::spawn_action",
+    "package": "ebman",
+    "replacement": "!=",
+    "span": {
+      "end": {
+        "column": 27,
+        "line": 1035
+      },
+      "start": {
+        "column": 25,
+        "line": 1035
+      }
+    }
+  }
+]

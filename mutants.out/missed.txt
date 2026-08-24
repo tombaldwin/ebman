@@ -1,0 +1,5 @@
+src/app/action_flow.rs:204:29: delete field swap_with from struct ParameterisedAction expression in App::handle_action_key
+src/app/action_flow.rs:446:13: delete match arm Action::AbortUpdate in App::advance_action_flow
+src/app/action_flow.rs:657:43: replace && with || in App::open_parameterised_action_on
+src/app/action_flow.rs:917:9: replace App::spawn_action with ()
+src/app/action_flow.rs:1035:25: replace == with != in App::spawn_action
