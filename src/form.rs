@@ -87,7 +87,6 @@ pub(crate) struct FormField {
 // code lint at the enum level; the Boolean variant is referenced by the
 // renderer and key handler match arms which gives them real call sites
 // once a form uses it.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FieldKind {
     /// Free-form text. No validation on shape.
@@ -214,7 +213,7 @@ impl Form {
     /// setting alone" and is dropped from the update — empty `allow_empty`
     /// integers, and empty text fields. Pre-validation is the caller's
     /// responsibility.
-    #[allow(clippy::type_complexity)]
+    #[expect(clippy::type_complexity)]
     pub(crate) fn to_option_settings(
         &self,
     ) -> (Vec<(String, String, String)>, Vec<(String, String)>) {
@@ -349,7 +348,6 @@ impl FormField {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn boolean(
         key: impl Into<String>,
         label: impl Into<String>,
@@ -421,7 +419,7 @@ impl FormField {
     // `FormMultiSelectLoaded` handler, which writes `option_annotations`
     // directly — leaving this builder unused for now. Kept around as a
     // convenience for forms that have their option list up-front.
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     pub(crate) fn with_annotations(mut self, annotations: Vec<String>) -> Self {
         if let FieldKind::MultiSelect { options } = &self.kind {
             if annotations.len() == options.len() {

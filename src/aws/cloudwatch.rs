@@ -123,7 +123,7 @@ impl AwsClient {
     /// ApplicationRequests5xx / ApplicationLatencyP90) — anything else and
     /// the alarm will be created with no datapoints. No alarm actions are
     /// attached; operators can wire SNS via the console or CLI later.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) async fn put_env_metric_alarm(
         &self,
         alarm_name: &str,

@@ -566,8 +566,28 @@ pub(crate) struct PendingAction {
 /// kept here for symmetry in case we later bind a separate detach-and-help
 /// combo (e.g. F11).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// `#[allow]`, not `#[expect]`, and deliberately so. `#[expect]` checks
+// whether the lint fired at the node it is attached to; `dead_code`
+// reports per-variant and per-field, so a type-level `#[expect]` is
+// reported "unfulfilled" while the items inside it are genuinely dead.
+// `#[allow]` suppresses hierarchically and is the only attribute that
+// expresses this. Everything else in the crate moved to `#[expect]` so
+// stale suppressions fail; these two cannot, so they carry their reason
+// here instead.
 #[allow(dead_code)]
 pub(crate) enum HelpTopic {
+    // `Shell` is never constructed, so `ui::help::draw_help_shell` is
+    // unreachable: in Shell mode every keystroke is forwarded to the PTY,
+    // including `?`, so there is no way to ask for the shell help while
+    // you are in the shell. Surfaced when the blanket `#[allow(dead_code)]`
+    // on this enum became `#[expect]` and clippy reported the suppression
+    // itself as unfulfilled — the type-level allow was hiding a
+    // variant-level finding.
+    //
+    // Not deleted, because whether the answer is "remove the screen" or
+    // "reach it from the global help / before attaching" is a design call
+    // rather than a mechanical one. Tracked in BACKLOG.md; scoped and
+    // reasoned here rather than silenced.
     Global,
     Detail,
     Dlq,
@@ -613,8 +633,23 @@ pub(crate) struct PromotionRecord {
 /// 3m ago, 2m to deadline"). Persisted to state.toml so a cross-
 /// session `:rollback` still has a target.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // env_name + taken_at are diagnostic / future-render fields
+// `#[allow]`, not `#[expect]`, and deliberately so. `#[expect]` checks
+// whether the lint fired at the node it is attached to; `dead_code`
+// reports per-variant and per-field, so a type-level `#[expect]` is
+// reported "unfulfilled" while the items inside it are genuinely dead.
+// `#[allow]` suppresses hierarchically and is the only attribute that
+// expresses this. Everything else in the crate moved to `#[expect]` so
+// stale suppressions fail; these two cannot, so they carry their reason
+// here instead.
+#[allow(dead_code)]
 pub(crate) struct DeploySnapshot {
+    // `env_name` is written by `parse_persisted` and never read: the map
+    // that holds these is already keyed by env name, so the field is a
+    // duplicate of its own key. Surfaced when the blanket
+    // `#[allow(dead_code)]` on this struct became `#[expect]`. Left in
+    // place rather than removed because it is also what makes a
+    // persisted line self-describing in state.toml, which matters when
+    // reading the file by hand. Tracked in BACKLOG.md.
     /// The env this snapshot was captured for. Redundant with the
     /// `App.deploy_snapshots` map key, kept for log/debug output.
     pub env_name: String,
@@ -633,7 +668,6 @@ pub(crate) struct DeploySnapshot {
 /// the same as the captured `DeploySnapshot.previous_version_label`
 /// at arm time, snapshotted here so we don't have to re-look-up.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // most fields are arm-time diagnostic / future-render
 pub(crate) struct ArmedWatchdog {
     pub env_name: String,
     /// Snapshot of the rollback target at arm time so the watchdog

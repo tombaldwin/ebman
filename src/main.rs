@@ -186,7 +186,7 @@ async fn main() -> Result<()> {
                         // Infallible: guarded by `app_ready.is_some()`
                         // on the line above, in the same synchronous
                         // block — nothing runs between them.
-                        #[allow(clippy::expect_used)]
+                        #[expect(clippy::expect_used)]
                         break app_ready
                             .take()
                             .expect("app_ready was Some, just checked above");

@@ -77,6 +77,25 @@ The write/freeze pre-tag review (2 lenses) fixed 2 Critical + 2 Important + 1 Mi
   borrow `app.environments` and it defeats the field-level split that
   lets `&mut app.table_state` coexist).
 
+- [ ] **`HelpTopic::Shell` is never constructed, so `draw_help_shell` is
+  unreachable.** Found 2026-08-24 by converting `#[allow]` to
+  `#[expect]`: the type-level suppression on `HelpTopic` was hiding a
+  variant-level finding. Every other variant is assigned somewhere;
+  `Shell` is not. In Shell mode every keystroke goes to the PTY —
+  including `?` — so there is no way to ask for the shell help while you
+  are in the shell.
+
+  The screen exists and is written. The question is whether to delete it
+  or reach it another way (from the global help, or before attaching),
+  which is a design call rather than a mechanical one.
+
+- [ ] **`DeploySnapshot::env_name` is written and never read.** Same
+  discovery. The map holding these is keyed by env name, so the field
+  duplicates its own key — but it is also what makes a persisted line
+  self-describing in `state.toml`, which matters when reading that file
+  by hand. Decide: drop it, or document it as an on-disk-format field
+  and stop treating it as dead.
+
 - [ ] **CLI rollout/auto-rollback freeze is start-only** (bugs M3) — a freeze declared mid-rollout doesn't stop later regions; matches the pin start-gate semantics, flagged as a conscious choice.
 
 #### `aws/` fourth review pass — 2026-08-22
