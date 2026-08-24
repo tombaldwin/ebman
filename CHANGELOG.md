@@ -36,6 +36,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **The mode/state pairing is now enforced.** `Mode::Detail` with
+  `detail == None` was representable and silent: input routes by mode
+  while the background renders by state, so it showed the envs table
+  while keystrokes went to Detail handlers. Now panics in debug and logs
+  once per surface in release, covering all six mode/state pairs.
+
 - **`#![warn(unreachable_pub)]`**, which catches the leak an API listing
   cannot show you: a `pub` item inside a `pub(crate)` module, still
   reachable through any public signature that names it. `App::theme`

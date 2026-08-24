@@ -68,7 +68,51 @@ use detail::*;
 use help::*;
 use overlays::*;
 
+/// `App::mode` is a `Copy` tag and each mode's state lives in its own
+/// `Option` beside it, so `Mode::Detail` with `detail == None` is
+/// representable — and means a bug.
+///
+/// The implication runs ONE way. Being in a mode requires its state;
+/// holding the state does not require the mode, deliberately: the
+/// background layer dispatches on `detail.is_some()` so that opening
+/// Help or the action menu over Detail keeps Detail behind the popup
+/// instead of flashing the main table. See `draw` below.
+///
+/// So the violation is mode-without-state, and it is worth catching
+/// because of how it fails rather than how often: input routes by mode
+/// while the background renders by state, so the operator gets the
+/// envs table on screen with their keystrokes going to Detail
+/// handlers. Nothing panics and nothing is logged — it just behaves
+/// like the wrong screen.
+///
+/// Same treatment `ViewState::assert_fresh` gives the view cache, for
+/// the same reason: the types are not enforcing this, so be loud the
+/// moment it breaks. Panics in debug, logs once per surface in release
+/// — a panic in the TUI is worse than a wrong frame.
+///
+/// Merging the state INTO `Mode` would make it unrepresentable and was
+/// considered. It does not fit. `Mode` is `Copy`, and
+/// `shell_return_mode = self.mode` stores one to return to on F12, so a
+/// payload-carrying `Mode` would copy a 42-field `DetailState` on every
+/// shell attach and force a lightweight tag to be reinvented for the
+/// uses `Mode` already serves.
+fn assert_mode_state_coherent(app: &App) {
+    let missing = match app.mode {
+        Mode::Detail if app.detail.is_none() => Some("Detail"),
+        Mode::Dlq if app.dlq.is_none() => Some("Dlq"),
+        Mode::Action if app.action_flow.is_none() => Some("Action"),
+        Mode::Form if app.form.is_none() => Some("Form"),
+        Mode::Picker if app.picker.is_none() => Some("Picker"),
+        Mode::Shell if app.current_shell.is_none() => Some("Shell"),
+        _ => return,
+    };
+    if let Some(surface) = missing {
+        missing_mode_state(surface);
+    }
+}
+
 pub(crate) fn draw(f: &mut Frame, app: &mut App) {
+    assert_mode_state_coherent(app);
     // Shell mode takes the whole screen; nothing else draws.
     if app.mode == Mode::Shell && app.current_shell.is_some() {
         draw_shell(f, f.area(), app);
@@ -191,6 +235,47 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     // Toasts render last so they overlay everything else.
     if !app.toasts.is_empty() {
         draw_toasts(f, f.area(), app);
+    }
+}
+
+/// The mode said a surface was active but its state was `None`.
+///
+/// `App::mode` is a `Copy` tag and each mode's state lives in its own
+/// `Option` field beside it, so `Mode::Detail` with `detail == None` is
+/// representable and means a bug. Every draw entry point handled it by
+/// returning early — silently, so the symptom was a blank pane with
+/// nothing in the log and no way to tell it from "nothing to show".
+///
+/// This is the same treatment `ViewState::assert_fresh` gives the view
+/// cache, for the same reason: the type system is not enforcing the
+/// invariant here, so the next best thing is to be loud the moment it
+/// breaks rather than to paper over it. Panics in debug; logs once per
+/// surface in release, because a panic in the TUI is worse than a wrong
+/// frame.
+///
+/// Merging the state INTO `Mode` would make this unrepresentable, and
+/// was considered. It does not fit: `Mode` is `Copy` and
+/// `shell_return_mode = self.mode` stores one to return to on F12, so a
+/// payload-carrying `Mode` would copy a 42-field `DetailState` on every
+/// shell attach and force a separate lightweight tag to be reinvented
+/// for exactly the uses `Mode` already serves.
+pub(crate) fn missing_mode_state(surface: &'static str) {
+    debug_assert!(
+        false,
+        "mode is {surface} but its state is None — a mode was entered \
+         without its state, or the state was cleared without leaving the \
+         mode"
+    );
+    static LOGGED: std::sync::Mutex<Option<std::collections::BTreeSet<&'static str>>> =
+        std::sync::Mutex::new(None);
+    if let Ok(mut g) = LOGGED.lock() {
+        let seen = g.get_or_insert_with(std::collections::BTreeSet::new);
+        if seen.insert(surface) {
+            tracing::error!(
+                surface,
+                "mode is active but its state is None — rendering an empty pane"
+            );
+        }
     }
 }
 

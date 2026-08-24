@@ -666,3 +666,86 @@ fn export_json_body_has_no_trailing_comma_when_rows_are_skipped() {
         "{body}"
     );
 }
+
+/// The mode/state pairing is an invariant the types do not enforce, so
+/// it is enforced by assertion instead. These prove the assertion is
+/// live — a guard that never fires is worse than none, because it reads
+/// as coverage.
+///
+/// One test per surface, deliberately. The first version of this
+/// instrumented the four *draw* functions, and three of four fired:
+/// `draw_detail` is unreachable in the broken state because the
+/// background layer dispatches on `detail.is_some()` rather than on the
+/// mode. Had the surfaces shared one test, Detail's dead guard would
+/// have looked covered.
+mod mode_state_invariant {
+    use super::*;
+
+    async fn app_in(mode: Mode) -> App {
+        let mut app = test_app();
+        app.environments = vec![mk_env("api-prod", "uflexi", "WebServer", "Green")];
+        app.rebuild_view();
+        app.mode = mode;
+        app
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "mode is Detail but its state is None")]
+    async fn detail_mode_without_its_state_is_loud() {
+        let mut app = app_in(Mode::Detail).await;
+        app.detail = None;
+        let _ = render(&mut app, 120, 40);
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "mode is Action but its state is None")]
+    async fn action_mode_without_its_state_is_loud() {
+        let mut app = app_in(Mode::Action).await;
+        app.action_flow = None;
+        let _ = render(&mut app, 120, 40);
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "mode is Form but its state is None")]
+    async fn form_mode_without_its_state_is_loud() {
+        let mut app = app_in(Mode::Form).await;
+        app.form = None;
+        let _ = render(&mut app, 120, 40);
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "mode is Picker but its state is None")]
+    async fn picker_mode_without_its_state_is_loud() {
+        let mut app = app_in(Mode::Picker).await;
+        app.picker = None;
+        let _ = render(&mut app, 120, 40);
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "mode is Dlq but its state is None")]
+    async fn dlq_mode_without_its_state_is_loud() {
+        let mut app = app_in(Mode::Dlq).await;
+        app.dlq = None;
+        let _ = render(&mut app, 120, 40);
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "mode is Shell but its state is None")]
+    async fn shell_mode_without_its_state_is_loud() {
+        let mut app = app_in(Mode::Shell).await;
+        app.current_shell = None;
+        let _ = render(&mut app, 120, 40);
+    }
+
+    /// The converse must NOT fire: holding Detail state while the mode
+    /// is Help is how a popup keeps Detail behind it, and asserting
+    /// both directions would make that legitimate state panic.
+    #[tokio::test]
+    async fn holding_state_without_the_mode_is_fine() {
+        let mut app = app_in(Mode::Normal).await;
+        app.table_state.select(Some(0));
+        app.open_detail();
+        app.mode = Mode::Help; // `?` over an open Detail view
+        let _ = render(&mut app, 120, 40);
+    }
+}
