@@ -100,8 +100,9 @@ The compiler won't catch you breaking these, so each has something else
 behind it. Rule 1 is enforced by the type system — the story of how that came
 about is in `src/app/view_state.rs`. Rules 2, 4 and 5 each have a test that
 walks the tree (`every_spawn_declares_whether_it_is_per_env`,
-`key_arm_order.rs`). Rule 3 is the weakest of the five: individual handlers
-are tested, but nothing sweeps for an `AppMsg` handler that forgot the check. Four of the five have bitten.
+`key_arm_order.rs`, `no_tui_stdout.rs`). Rule 3 is the weakest of the five:
+individual handlers are tested, but nothing sweeps for an `AppMsg` handler that
+forgot the check. Four of the five have bitten.
 
 **1. Mutating view state means rebuilding the view.**
 The table `ui` draws is a filtered, optionally grouped projection of
@@ -159,6 +160,13 @@ The alternate screen swallows `println!`/`eprintln!` and they corrupt the
 display. Use `tracing::*`; output goes to `~/.cache/ebman/ebman.log`. The same
 reason is why a panic in the TUI is worse than a wrong frame — see the release
 note in `ViewState::assert_fresh`.
+
+Checked by [`app/tests/no_tui_stdout.rs`](src/app/tests/no_tui_stdout.rs) over
+`src/app`, `src/ui` and `src/aws`. Not over `src/cli` or `src/main.rs`: the
+headless subcommands print by design, and that same fact is what keeps the
+guard honest — a companion test points the detector at the CLI and requires it
+to find plenty, so "the TUI is clean" can't be confused with "the detector is
+broken".
 
 ### Clusters that own their invariant
 
