@@ -244,6 +244,32 @@ jobs:
           # (tombaldwin/tb-tui-common) and publishes from there, so it's
           # already on crates.io by the time ebman resolves it.
           #
+          # A manual re-run is the documented use of the workflow_dispatch
+          # trigger above, and for anything but a first publish the version
+          # is already up. `cargo publish` exits non-zero on that, which
+          # failed the job — and mcp_registry `needs: crates_io`, so the
+          # registry publish was skipped too. That is how the registry came
+          # to have 0.34.1 as `latest` after 0.34.1 was yanked.
+          #
+          # Asking crates.io first rather than pattern-matching the error:
+          # a grep for "already uploaded" swallows whatever else cargo
+          # might say, and this job is the last gate before a release is
+          # public.
+          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          VERSION="${TAG#v}"
+          code=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H 'User-Agent: ebman-release-workflow' \
+            "https://crates.io/api/v1/crates/ebman/$VERSION")
+          if [ "$code" = "200" ]; then
+            echo "ebman $VERSION is already on crates.io — nothing to publish."
+            echo "Later jobs still run: this is the re-run path."
+            exit 0
+          fi
+          if [ "$code" != "404" ]; then
+            echo "crates.io returned HTTP $code for ebman/$VERSION; refusing"
+            echo "to guess whether it is published."
+            exit 1
+          fi
           # `--locked` matches the build matrix's lockfile pinning so a
           # workflow that built clean from Cargo.lock publishes the same
           # resolved dependency graph.

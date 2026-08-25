@@ -3,7 +3,7 @@
   "name": "io.github.tombaldwin/ebman",
   "title": "ebman",
   "description": "MCP server for AWS Elastic Beanstalk: read the fleet; --allow-writes adds two-phase writes.",
-  "version": "0.32.0",
+  "version": "0.34.2",
   "websiteUrl": "https://www.poly.io/products/ebman/",
   "repository": {
     "url": "https://github.com/tombaldwin/ebman",
@@ -13,7 +13,7 @@
     {
       "registryType": "cargo",
       "identifier": "ebman",
-      "version": "0.32.0",
+      "version": "0.34.2",
       "transport": {
         "type": "stdio"
       },

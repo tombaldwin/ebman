@@ -138,6 +138,7 @@ When the user asks to cut a release (e.g. "tag 0.X", "ship the release", "prepar
    - `docs/keys.md` — every new keybinding added in the lineup is in the table (normal mode / Detail / DLQ section, whichever applies).
    - `docs/configuration.md` — **automated** by `docs_drift::every_config_key_is_documented`; every key the parser accepts must appear there. Still check by hand that the TOML examples actually parse.
    - `docs/headless.md` — **automated** by `docs_drift::every_subcommand_is_documented`. Still check by hand that flags and exit codes match.
+   - `server.json` — **automated** by `docs_drift::server_json_version_matches_the_crate`. The release workflow rewrites the version from the tag before publishing, so a stale value never reaches the registry and nothing used to complain: it sat at `0.32.0` while the crate was at `0.34.2`.
    - `docs/fonts.md` / `docs/safety-and-privacy.md` / `docs/development.md` — spot-check for stale references to commands, files, or behaviours that changed this cycle.
    - `README.md` — any feature it specifically calls out (e.g. the Triage workflow's `:rollback`) still works as described.
 
