@@ -96,6 +96,30 @@ The write/freeze pre-tag review (2 lenses) fixed 2 Critical + 2 Important + 1 Mi
   by hand. Decide: drop it, or document it as an on-disk-format field
   and stop treating it as dead.
 
+- [ ] **Whole-tree mutation sweep: triage the remaining survivors.**
+  The first complete-ish sweep (2026-08-25, 16 shards, ~95% of the tree)
+  produced 2832 caught / 2599 missed — a 52% kill rate on viable
+  mutants. Artifacts and the triage list are reproducible by re-running
+  the `mutants` workflow.
+
+  Worked so far, all in the write/safety cluster: the `:rollback`
+  wrong-env guard, the Terminate type-the-name guard, `AuditFilter`,
+  `parse_kv_pairs` boundaries, and the deploy watchdog conditions.
+
+  **Remaining, by consequence rather than count:**
+  - `src/app/input.rs` (228) — the keymap. A surviving "delete match
+    arm" means a key silently stops working. User-visible, not
+    dangerous.
+  - `src/ui/*` (~539 across detail / header / overlays / table /
+    chrome) — render code; mostly a wrong pixel.
+  - `src/aws/eb.rs` (105) — response parsing.
+  - the rest of `src/cli/lint.rs` (87) and `src/app.rs` (82).
+
+  Expect a large equivalent-mutant tail: two of the first six
+  investigated were equivalent (the byte-identical `AbortUpdate` arm,
+  the redundant whitespace skip in `parse_kv_pairs`), and both pointed
+  at real duplication rather than missing tests.
+
 - [ ] **CLI rollout/auto-rollback freeze is start-only** (bugs M3) — a freeze declared mid-rollout doesn't stop later regions; matches the pin start-gate semantics, flagged as a conscious choice.
 
 #### `aws/` fourth review pass — 2026-08-22
