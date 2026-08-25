@@ -103,7 +103,22 @@ expect_used = "deny"
 # inside a URL, `'\"'` char literals, the closing half of a
 # `\\`-continued literal, raw strings). Already in the lock file
 # transitively, so this costs nothing to build.
-proc-macro2 = "1"
+proc-macro2 = { version = "1", features = ["span-locations"] }
+# ARCHITECTURE rule 4 — a guarded `KeyCode::Char(c) if ctrl` arm must
+# precede the unguarded arm for the same character — is the one rule in
+# that file with NO mechanism behind it. Source-scanning guards cannot
+# express it: judging arm ORDER requires knowing which `match` an arm
+# belongs to, and a line-level scan cannot tell (a naive attempt reported
+# four violations, all false, by comparing arms in different matches and
+# even different functions). Mutation testing cannot either — it deletes
+# bodies and flips operators, it does not permute arms.
+#
+# So: parse. `syn` with `full` gives `Expr::Match` -> `Arm { pat, guard }`
+# directly, which is the question the rule asks. Hand-rolling it on
+# proc-macro2 token trees would be a sixth hand-rolled parser in a
+# codebase that has been wrong five times, which is the argument against
+# doing it that way. Already in the lock file transitively.
+syn = { version = "2", features = ["full", "visit"] }
 # Property tests for the four hand-rolled parsers. `parse_audit_line` is
 # a char scanner with 13 `chars[i]` sites, hand-guarded by `while i < n`,
 # running over a file on disk that can be truncated mid-write — the one

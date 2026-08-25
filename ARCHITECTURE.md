@@ -96,9 +96,12 @@ every call is a spawned task that reports back as an `AppMsg`.
 
 ## The five rules
 
-The compiler won't catch you breaking these. Rule 1 is the exception — the
-type system now does most of the work there, and the story of how that came
-about is in `src/app/view_state.rs`. Four of the five have bitten.
+The compiler won't catch you breaking these, so each has something else
+behind it. Rule 1 is enforced by the type system — the story of how that came
+about is in `src/app/view_state.rs`. Rules 2, 4 and 5 each have a test that
+walks the tree (`every_spawn_declares_whether_it_is_per_env`,
+`key_arm_order.rs`). Rule 3 is the weakest of the five: individual handlers
+are tested, but nothing sweeps for an `AppMsg` handler that forgot the check. Four of the five have bitten.
 
 **1. Mutating view state means rebuilding the view.**
 The table `ui` draws is a filtered, optionally grouped projection of
@@ -138,7 +141,18 @@ old context to the new one. Every new `AppMsg` variant must do this.
 **4. Guarded key arms come first.**
 A `KeyCode::Char(c) if ctrl` arm must precede the unguarded `KeyCode::Char(c)`
 arm for the same character. The compiler does not warn when the unguarded one
-shadows it.
+shadows it — both arms are reachable *patterns*, and it is only the guard that
+makes one a subset of the other, so the chord silently does the unmodified
+thing.
+
+This one is checked by
+[`app/tests/key_arm_order.rs`](src/app/tests/key_arm_order.rs), which parses
+the tree with `syn` and compares arm positions *within each `match`*. It parses
+rather than greps for a reason: judging order means knowing which `match` an
+arm belongs to. A line-level scan can't tell, and the one written first
+reported four violations in `input.rs`, every one of them false. Six
+characters currently carry both forms (`r g y ] [ k`), so the rule has real
+surface to police.
 
 **5. Never print to stdout from the running app.**
 The alternate screen swallows `println!`/`eprintln!` and they corrupt the
