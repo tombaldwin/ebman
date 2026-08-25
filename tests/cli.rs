@@ -21,10 +21,19 @@
 use std::process::{Command, Output};
 
 fn ebman(args: &[&str]) -> Output {
+    // HOME is redirected even for the cases that do not care about
+    // config. `util::test_or_home`'s cfg(test) redirect does NOT reach a
+    // spawned release binary — it resolves `$HOME/.config/ebman` — so
+    // without this these tests read the developer's real config and
+    // cache. That is the side channel CLAUDE.md forbids, and it has
+    // already been the cause of three separate incidents in this repo.
+    let home = std::env::temp_dir().join(format!("ebman-cli-bare-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&home);
     Command::new(env!("CARGO_BIN_EXE_ebman"))
         .args(args)
         // Deterministic regardless of the developer's shell.
         .env("NO_COLOR", "1")
+        .env("HOME", &home)
         .env_remove("AWS_PROFILE")
         .env_remove("AWS_REGION")
         .output()
@@ -211,10 +220,17 @@ fn the_tui_refuses_a_non_tty_with_a_useful_message() {
 /// The binary resolves `~/.config/ebman` via `$HOME` in a non-test
 /// build, which is what makes this reachable at all.
 fn ebman_with_config(config: &str, args: &[&str]) -> Output {
+    // A unique directory PER CALL. The first version keyed on
+    // `config.len()`, and both callers pass the same 39-byte config — so
+    // they shared one `config.toml`, in one process, on parallel test
+    // threads. `fs::write` truncates before writing, so one test could
+    // truncate the file the other's child was about to read, and the
+    // failure would read as "the safety gate is broken".
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let home = std::env::temp_dir().join(format!(
         "ebman-cli-test-{}-{}",
         std::process::id(),
-        config.len()
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     let cfg_dir = home.join(".config/ebman");
     // Plain panics rather than `.expect()`: `expect_used` is denied

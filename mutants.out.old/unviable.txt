@@ -1,1 +1,0 @@
-src/audit.rs:71:5: replace parse_audit_line -> Option<AuditEntry> with Some(Default::default())

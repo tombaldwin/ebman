@@ -1,4 +1,0 @@
-src/freeze.rs:106:5: replace read_active -> Option<FreezeMarker> with Some(Default::default())
-src/freeze.rs:111:5: replace read_active_with -> Option<FreezeMarker> with Some(Default::default())
-src/freeze.rs:127:5: replace parse_file -> Option<FreezeMarker> with Some(Default::default())
-src/freeze.rs:136:5: replace parse_marker -> Option<FreezeMarker> with Some(Default::default())

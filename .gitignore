@@ -25,3 +25,12 @@ crash-*.log
 .candor/report.*.json
 .candor/deps/
 .candor/cache/
+
+# cargo-mutants working directories. Never commit these: a local sweep
+# writes `lock.json` containing the machine's hostname and username, and
+# the whole tree is regenerated output that rotates to `mutants.out.old/`
+# on each run — so committing it grows history permanently AND ships
+# personal detail to crates.io. Both happened: v0.34.1 published 22 of
+# these files, lock.json included.
+mutants.out/
+mutants.out.old/
