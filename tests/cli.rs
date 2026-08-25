@@ -203,3 +203,98 @@ fn the_tui_refuses_a_non_tty_with_a_useful_message() {
         "and should point at the headless path for scripting: {text:?}"
     );
 }
+
+/// Run the binary with `HOME` pointed at a throwaway directory holding
+/// `config.toml`, so the safety config under test is the one we wrote
+/// and never the developer's.
+///
+/// The binary resolves `~/.config/ebman` via `$HOME` in a non-test
+/// build, which is what makes this reachable at all.
+fn ebman_with_config(config: &str, args: &[&str]) -> Output {
+    let home = std::env::temp_dir().join(format!(
+        "ebman-cli-test-{}-{}",
+        std::process::id(),
+        config.len()
+    ));
+    let cfg_dir = home.join(".config/ebman");
+    // Plain panics rather than `.expect()`: `expect_used` is denied
+    // crate-wide and an integration test is a separate crate, so
+    // `lib.rs`'s cfg(test) exemption does not reach here. Same call as
+    // the spawn helper above — reaching for `#[allow]` is what the
+    // stop-condition rule exists to prevent.
+    if let Err(e) = std::fs::create_dir_all(&cfg_dir) {
+        panic!(
+            "could not create the temp config dir {}: {e}",
+            cfg_dir.display()
+        );
+    }
+    if let Err(e) = std::fs::write(cfg_dir.join("config.toml"), config) {
+        panic!("could not write the temp config.toml: {e}");
+    }
+    Command::new(env!("CARGO_BIN_EXE_ebman"))
+        .args(args)
+        .env("NO_COLOR", "1")
+        .env("HOME", &home)
+        .env_remove("AWS_PROFILE")
+        .env_remove("AWS_REGION")
+        .output()
+        .unwrap_or_else(|e| panic!("could not run ebman: {e}"))
+}
+
+/// A `safety.envs.NAME.read_only` pin must stop a headless write, and
+/// must do so BEFORE any AWS call.
+///
+/// `cargo mutants` found `cli::refuse_write` and `cli::refuse_if_frozen`
+/// entirely uncovered — replacing either with `()` survived the suite.
+/// They could not be covered in-process, because both end in
+/// `std::process::exit`; `src/cli/mod.rs` says exactly that, and stands
+/// a source-scanning guard in their place. A process-level test can
+/// assert the real thing.
+///
+/// No credentials needed, and that is the point: the gate runs before
+/// `AwsClient::with`, so a refusal is reachable with no AWS at all. If
+/// this ever needs credentials to pass, the gate has moved to the wrong
+/// side of the connection.
+#[test]
+fn a_read_only_env_pin_refuses_a_headless_write() {
+    let out = ebman_with_config(
+        "safety.envs.locked-prod.read_only = true
+",
+        &["action", "rebuild", "--env", "locked-prod"],
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "a pinned env must exit 3 (the documented refusal code), got {:?}: {:?}",
+        out.status.code(),
+        stderr(&out)
+    );
+    let text = stdout(&out) + &stderr(&out);
+    assert!(
+        text.contains("locked-prod"),
+        "the refusal must name the env: {text:?}"
+    );
+    assert!(
+        text.to_lowercase().contains("read") || text.contains("safety"),
+        "and say why: {text:?}"
+    );
+}
+
+/// The same pin must NOT refuse a different env — or the gate is just
+/// "refuse everything", which would pass the test above for the wrong
+/// reason.
+#[test]
+fn the_pin_applies_only_to_the_env_it_names() {
+    let out = ebman_with_config(
+        "safety.envs.locked-prod.read_only = true
+",
+        &["action", "rebuild", "--env", "some-other-env"],
+    );
+    assert_ne!(
+        out.status.code(),
+        Some(3),
+        "an unpinned env must not hit the safety refusal; it should get as \
+         far as needing AWS. stderr: {:?}",
+        stderr(&out)
+    );
+}
