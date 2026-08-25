@@ -181,6 +181,20 @@ pub(crate) fn parse_kv_pairs(text: &str) -> Vec<(String, String)> {
                     // Lookahead: does the next non-whitespace chunk
                     // look like `ident=`? If so, stop here.
                     let mut j = i + 1;
+                    // Redundant, and deliberately kept. `cargo mutants`
+                    // reports this loop's `||` as survivable, and it is:
+                    // the outer scan advances one character at a time, so
+                    // it reaches the position immediately before the key
+                    // anyway, and `.trim()` below erases the extra
+                    // whitespace either way. Verified by deleting the loop
+                    // outright — all 1222 tests still pass.
+                    //
+                    // Not deleted, because this parser is what `ebman
+                    // audit replay` reconstructs an AWS action from, and
+                    // three redundant lines are a better trade than the
+                    // chance that the reasoning above misses an input the
+                    // suite does not cover. Treat the mutant as
+                    // equivalent rather than as a coverage gap.
                     while j < n && (chars[j] == ' ' || chars[j] == '\t') {
                         j += 1;
                     }
@@ -1559,5 +1573,73 @@ mod parser_properties {
         // above could pass against a filter that rejects nothing.
         let all = super::AuditFilter::default();
         assert!(all.matches(&api) && all.matches(&worker));
+    }
+
+    /// Boundary cases in `parse_kv_pairs`'s unquoted-value lookahead.
+    ///
+    /// The existing tests cover the happy shapes; `cargo mutants` found
+    /// eleven survivors in the lookahead that decides where an unquoted
+    /// value ends. That lookahead is the whole difficulty of this
+    /// format: values may contain spaces, so a space only terminates a
+    /// value when what follows looks like `ident=`.
+    ///
+    /// It matters beyond display. `ebman audit replay` reconstructs an
+    /// action from these fields and re-dispatches it, so a value that
+    /// swallows the next key, or stops early, changes what gets replayed.
+    #[test]
+    fn unquoted_values_end_only_at_a_real_key_boundary() {
+        let get = |s: &str, k: &str| -> Option<String> {
+            super::parse_kv_pairs(s)
+                .into_iter()
+                .find(|(kk, _)| kk == k)
+                .map(|(_, v)| v)
+        };
+
+        // A space followed by something that is NOT `ident=` stays in
+        // the value. `=b` has a zero-length identifier before the `=`,
+        // which is exactly the case the `j > ident_start` bound exists
+        // for.
+        assert_eq!(
+            get("target=a =b stage=x", "target").as_deref(),
+            Some("a =b"),
+            "`=b` is not a key — a zero-length identifier must not end the value"
+        );
+        assert_eq!(get("target=a =b stage=x", "stage").as_deref(), Some("x"));
+
+        // Repeated whitespace before a real key is still a boundary.
+        assert_eq!(
+            get("target=a  \t stage=x", "target").as_deref(),
+            Some("a"),
+            "the lookahead must skip ALL whitespace before testing for `ident=`"
+        );
+        assert_eq!(get("target=a  \t stage=x", "stage").as_deref(), Some("x"));
+
+        // A value that runs to end-of-line keeps everything.
+        assert_eq!(
+            get("stage=dispatched target=env with spaces", "target").as_deref(),
+            Some("env with spaces")
+        );
+
+        // Underscores and digits are identifier characters, so
+        // `rollout_id=` terminates the previous value.
+        assert_eq!(
+            get("target=env-a rollout_id=r1", "target").as_deref(),
+            Some("env-a")
+        );
+        assert_eq!(
+            get("target=env-a rollout_id=r1", "rollout_id").as_deref(),
+            Some("r1")
+        );
+
+        // A quoted value may contain both spaces and `=` without ending.
+        assert_eq!(
+            get(r#"err="denied: a=b c=d" stage=completed"#, "err").as_deref(),
+            Some("denied: a=b c=d"),
+            "quoting suspends the key-boundary lookahead entirely"
+        );
+        assert_eq!(
+            get(r#"err="denied: a=b c=d" stage=completed"#, "stage").as_deref(),
+            Some("completed")
+        );
     }
 }
