@@ -1,0 +1,21 @@
+--- src/audit.rs
++++ replace < with > in parse_kv_pairs
+@@ -142,17 +142,17 @@
+         while i < n && (chars[i] == ' ' || chars[i] == '\t') {
+             i += 1;
+         }
+         if i >= n {
+             break;
+         }
+         // Read key: ident chars.
+         let key_start = i;
+-        while i < n && (chars[i].is_alphanumeric() || chars[i] == '_') {
++        while i > /* ~ changed by cargo-mutants ~ */ n && (chars[i].is_alphanumeric() || chars[i] == '_') {
+             i += 1;
+         }
+         if i == key_start || i >= n || chars[i] != '=' {
+             // Not a key=value pair; skip to next whitespace.
+             while i < n && chars[i] != ' ' && chars[i] != '\t' {
+                 i += 1;
+             }
+             continue;

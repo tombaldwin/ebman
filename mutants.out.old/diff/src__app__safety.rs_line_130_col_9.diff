@@ -1,0 +1,57 @@
+--- src/app/safety.rs
++++ replace App::read_only_reason -> Option<String> with None
+@@ -122,53 +122,11 @@
+     }
+ 
+     /// Human-readable explanation of *why* an env is read-only, used
+     /// in the toast / footer when a destructive action is blocked.
+     /// Returns `None` when the env isn't locked (caller shouldn't have
+     /// called this; defensive return). The three reasons are ordered
+     /// to match `is_read_only_for`'s precedence.
+     pub(crate) fn read_only_reason(&self, env_name: &str) -> Option<String> {
+-        if self.read_only {
+-            return Some("read-only mode (global toggle)".into());
+-        }
+-        if let Some(freeze) = self.deploy_freeze.as_ref() {
+-            let age = (chrono::Utc::now() - freeze.frozen_at).num_seconds().max(0);
+-            let age = crate::app::humanize_short_age(std::time::Duration::from_secs(age as u64));
+-            // When the freeze came from `:incident START`, point the
+-            // operator at the gesture that actually closes it — a bare
+-            // :thaw-deploys would lift the lock but leave the incident
+-            // banner up, which is rarely what they meant.
+-            let unlock_hint = if self.incident.is_some() {
+-                ":incident END to close"
+-            } else {
+-                ":thaw-deploys to unfreeze"
+-            };
+-            return Some(if freeze.reason.is_empty() {
+-                format!("deploys frozen ({age} ago) — {unlock_hint}")
+-            } else {
+-                format!(
+-                    "deploys frozen ({age} ago): {} — {unlock_hint}",
+-                    freeze.reason
+-                )
+-            });
+-        }
+-        if self.cfg.safety_envs.get(env_name).copied().unwrap_or(false) {
+-            return Some(format!(
+-                "read-only mode (env pinned via safety.envs.{env_name})"
+-            ));
+-        }
+-        if let Some(profile) = self.context.profile.as_deref() {
+-            if self
+-                .cfg
+-                .safety_accounts
+-                .get(profile)
+-                .copied()
+-                .unwrap_or(false)
+-            {
+-                return Some(format!(
+-                    "read-only mode (account pinned via safety.accounts.{profile})"
+-                ));
+-            }
+-        }
+-        None
++        None /* ~ changed by cargo-mutants ~ */
+     }
+ }

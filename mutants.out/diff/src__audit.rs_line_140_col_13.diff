@@ -1,0 +1,21 @@
+--- src/audit.rs
++++ replace < with == in parse_kv_pairs
+@@ -132,17 +132,17 @@
+ /// boundary or end-of-string). Naked spaces inside an unquoted value
+ /// are preserved — e.g. `target=env-a ↔ env-b stage=dispatched`
+ /// yields `target` = `"env-a ↔ env-b"` and `stage` = `"dispatched"`.
+ pub(crate) fn parse_kv_pairs(text: &str) -> Vec<(String, String)> {
+     let chars: Vec<char> = text.chars().collect();
+     let n = chars.len();
+     let mut out: Vec<(String, String)> = Vec::new();
+     let mut i = 0;
+-    while i < n {
++    while i == /* ~ changed by cargo-mutants ~ */ n {
+         // Skip whitespace (space or tab).
+         while i < n && (chars[i] == ' ' || chars[i] == '\t') {
+             i += 1;
+         }
+         if i >= n {
+             break;
+         }
+         // Read key: ident chars.

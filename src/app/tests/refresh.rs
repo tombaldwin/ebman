@@ -1926,3 +1926,45 @@ fn every_spawn_declares_whether_it_is_per_env() {
          with a reason: {offenders:?}"
     );
 }
+
+/// A TTL home-client refresh picks up new credentials but never
+/// re-fetches the identity, so the account shown in the header goes
+/// stale.
+///
+/// `spawn_home_client_refresh` exists so credentials edited on disk take
+/// effect — that is its documented purpose. But `apply_client_refresh`
+/// deliberately leaves `context` alone (it carries `account_id` and
+/// `caller_arn`, which a bare `AwsClient::with` does not populate), and
+/// `spawn_identity()` is called only from `apply_rebuild`, on an
+/// explicit context switch.
+///
+/// So the scenario the feature serves — an operator repointing a profile
+/// at a different account — is exactly the scenario that leaves the
+/// header naming the previous account while every call goes to the new
+/// one. Not a safety bypass: `safety.accounts.*` keys on the profile
+/// NAME, which does not change. But the header is what tells an operator
+/// which account they are about to terminate an environment in.
+#[tokio::test]
+async fn a_home_client_refresh_refetches_the_identity() {
+    let mut app = test_app();
+    app.context.profile = Some("prod".into());
+    app.context.region = "us-east-1".into();
+    app.context.account_id = Some("111111111111".into());
+
+    let epoch = app.rebuild_epoch;
+    let mut refreshed = crate::aws::AwsClient::stub();
+    refreshed.context.region = "us-east-1".into();
+    refreshed.context.profile = Some("prod".into());
+    // As built by `AwsClient::with`: no identity fetched.
+    refreshed.context.account_id = None;
+
+    app.apply_client_refresh(epoch, Ok(Box::new(refreshed)));
+
+    assert_eq!(
+        app.context.account_id, None,
+        "the identity we held was resolved by the PREVIOUS credentials, so \
+         after a refresh it must not still be rendered as fact — the header \
+         would name the account the old credentials pointed at"
+    );
+    assert_eq!(app.context.caller_arn, None, "same for the caller ARN");
+}

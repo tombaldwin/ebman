@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **A home-client refresh left the account in the header stale.**
+  `spawn_home_client_refresh` exists so credentials edited on disk take
+  effect, but `apply_client_refresh` deliberately leaves `context`
+  alone — and `context` holds `account_id` / `caller_arn`, which a bare
+  `AwsClient::with` never populates. `spawn_identity()` was called only
+  on an explicit context switch. So the case the feature serves (an
+  operator repointing a profile at another account) was exactly the case
+  that left the header naming the previous account while every call went
+  to the new one. The identity is now cleared and re-fetched on refresh.
+
+  Not a safety bypass — `safety.accounts.*` keys on the profile *name*,
+  which does not change — but the header is what tells an operator which
+  account they are about to terminate an environment in.
+
 ## [0.34.1] — 2026-08-24 — the gates that weren't
 
 A patch, deliberately: 36 source files changed and `cargo public-api`

@@ -1,0 +1,945 @@
+{
+  "outcomes": [
+    {
+      "scenario": "Baseline",
+      "summary": "Success",
+      "log_path": "log/baseline.log",
+      "diff_path": null,
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 170.25043625,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.947232875,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/app/safety.rs:33:9: replace App::is_read_only_for -> bool with true",
+          "package": "ebman",
+          "file": "src/app/safety.rs",
+          "function": {
+            "function_name": "App::is_read_only_for",
+            "return_type": "-> bool",
+            "span": {
+              "start": {
+                "line": 12,
+                "column": 5
+              },
+              "end": {
+                "line": 34,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 33,
+              "column": 9
+            },
+            "end": {
+              "line": 33,
+              "column": 50
+            }
+          },
+          "replacement": "true",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__app__safety.rs_line_33_col_9.log",
+      "diff_path": "diff/src__app__safety.rs_line_33_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 6.7113905,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.402896208,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/app/safety.rs:33:9: replace App::is_read_only_for -> bool with false",
+          "package": "ebman",
+          "file": "src/app/safety.rs",
+          "function": {
+            "function_name": "App::is_read_only_for",
+            "return_type": "-> bool",
+            "span": {
+              "start": {
+                "line": 12,
+                "column": 5
+              },
+              "end": {
+                "line": 34,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 33,
+              "column": 9
+            },
+            "end": {
+              "line": 33,
+              "column": 50
+            }
+          },
+          "replacement": "false",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__app__safety.rs_line_33_col_9_001.log",
+      "diff_path": "diff/src__app__safety.rs_line_33_col_9_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.882049208,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.343381041,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/app/safety.rs:58:9: replace App::deny_write -> bool with true",
+          "package": "ebman",
+          "file": "src/app/safety.rs",
+          "function": {
+            "function_name": "App::deny_write",
+            "return_type": "-> bool",
+            "span": {
+              "start": {
+                "line": 36,
+                "column": 5
+              },
+              "end": {
+                "line": 77,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 58,
+              "column": 9
+            },
+            "end": {
+              "line": 76,
+              "column": 13
+            }
+          },
+          "replacement": "true",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__app__safety.rs_line_58_col_9.log",
+      "diff_path": "diff/src__app__safety.rs_line_58_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 7.659240125,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.278650459,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/app/safety.rs:58:9: replace App::deny_write -> bool with false",
+          "package": "ebman",
+          "file": "src/app/safety.rs",
+          "function": {
+            "function_name": "App::deny_write",
+            "return_type": "-> bool",
+            "span": {
+              "start": {
+                "line": 36,
+                "column": 5
+              },
+              "end": {
+                "line": 77,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 58,
+              "column": 9
+            },
+            "end": {
+              "line": 76,
+              "column": 13
+            }
+          },
+          "replacement": "false",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__app__safety.rs_line_58_col_9_001.log",
+      "diff_path": "diff/src__app__safety.rs_line_58_col_9_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.750567959,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.298681583,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/app/safety.rs:69:12: delete ! in App::deny_write",
+          "package": "ebman",
+          "file": "src/app/safety.rs",
+          "function": {
+            "function_name": "App::deny_write",
+            "return_type": "-> bool",
+            "span": {
+              "start": {
+                "line": 36,
+                "column": 5
+              },
+              "end": {
+                "line": 77,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 69,
+              "column": 12
+            },
+            "end": {
+              "line": 69,
+              "column": 13
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__app__safety.rs_line_69_col_12.log",
+      "diff_path": "diff/src__app__safety.rs_line_69_col_12.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 7.675826417,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.353786334,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/app/safety.rs:97:9: replace App::deny_write_batch -> bool with true",
+          "package": "ebman",
+          "file": "src/app/safety.rs",
+          "function": {
+            "function_name": "App::deny_write_batch",
+            "return_type": "-> bool",
+            "span": {
+              "start": {
+                "line": 79,
+                "column": 5
+              },
+              "end": {
+                "line": 122,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 97,
+              "column": 9
+            },
+            "end": {
+              "line": 121,
+              "column": 13
+            }
+          },
+          "replacement": "true",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__app__safety.rs_line_97_col_9.log",
+      "diff_path": "diff/src__app__safety.rs_line_97_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 7.9363202919999996,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.314959459,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/app/safety.rs:97:9: replace App::deny_write_batch -> bool with false",
+          "package": "ebman",
+          "file": "src/app/safety.rs",
+          "function": {
+            "function_name": "App::deny_write_batch",
+            "return_type": "-> bool",
+            "span": {
+              "start": {
+                "line": 79,
+                "column": 5
+              },
+              "end": {
+                "line": 122,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 97,
+              "column": 9
+            },
+            "end": {
+              "line": 121,
+              "column": 13
+            }
+          },
+          "replacement": "false",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__app__safety.rs_line_97_col_9_001.log",
+      "diff_path": "diff/src__app__safety.rs_line_97_col_9_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.693008375,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.325019791,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/app/safety.rs:98:45: replace || with && in App::deny_write_batch",
+          "package": "ebman",
+          "file": "src/app/safety.rs",
+          "function": {
+            "function_name": "App::deny_write_batch",
+            "return_type": "-> bool",
+            "span": {
+              "start": {
+                "line": 79,
+                "column": 5
+              },
+              "end": {
+                "line": 122,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 98,
+              "column": 45
+            },
+            "end": {
+              "line": 98,
+              "column": 47
+            }
+          },
+          "replacement": "&&",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__app__safety.rs_line_98_col_45.log",
+      "diff_path": "diff/src__app__safety.rs_line_98_col_45.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 8.01128775,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.374358917,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/app/safety.rs:98:27: replace || with && in App::deny_write_batch",
+          "package": "ebman",
+          "file": "src/app/safety.rs",
+          "function": {
+            "function_name": "App::deny_write_batch",
+            "return_type": "-> bool",
+            "span": {
+              "start": {
+                "line": 79,
+                "column": 5
+              },
+              "end": {
+                "line": 122,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 98,
+              "column": 27
+            },
+            "end": {
+              "line": 98,
+              "column": 29
+            }
+          },
+          "replacement": "&&",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__app__safety.rs_line_98_col_27.log",
+      "diff_path": "diff/src__app__safety.rs_line_98_col_27.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.654324042,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.36584075,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/app/safety.rs:130:9: replace App::read_only_reason -> Option<String> with None",
+          "package": "ebman",
+          "file": "src/app/safety.rs",
+          "function": {
+            "function_name": "App::read_only_reason",
+            "return_type": "-> Option<String>",
+            "span": {
+              "start": {
+                "line": 124,
+                "column": 5
+              },
+              "end": {
+                "line": 173,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 130,
+              "column": 9
+            },
+            "end": {
+              "line": 172,
+              "column": 13
+            }
+          },
+          "replacement": "None",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__app__safety.rs_line_130_col_9.log",
+      "diff_path": "diff/src__app__safety.rs_line_130_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.683339292,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.83362675,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/app/safety.rs:130:9: replace App::read_only_reason -> Option<String> with Some(String::new())",
+          "package": "ebman",
+          "file": "src/app/safety.rs",
+          "function": {
+            "function_name": "App::read_only_reason",
+            "return_type": "-> Option<String>",
+            "span": {
+              "start": {
+                "line": 124,
+                "column": 5
+              },
+              "end": {
+                "line": 173,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 130,
+              "column": 9
+            },
+            "end": {
+              "line": 172,
+              "column": 13
+            }
+          },
+          "replacement": "Some(String::new())",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__app__safety.rs_line_130_col_9_001.log",
+      "diff_path": "diff/src__app__safety.rs_line_130_col_9_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.574193459,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.29258325,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/app/safety.rs:130:9: replace App::read_only_reason -> Option<String> with Some(\"xyzzy\".into())",
+          "package": "ebman",
+          "file": "src/app/safety.rs",
+          "function": {
+            "function_name": "App::read_only_reason",
+            "return_type": "-> Option<String>",
+            "span": {
+              "start": {
+                "line": 124,
+                "column": 5
+              },
+              "end": {
+                "line": 173,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 130,
+              "column": 9
+            },
+            "end": {
+              "line": 172,
+              "column": 13
+            }
+          },
+          "replacement": "Some(\"xyzzy\".into())",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__app__safety.rs_line_130_col_9_002.log",
+      "diff_path": "diff/src__app__safety.rs_line_130_col_9_002.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.703221708,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.35440225,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/app/safety.rs:134:43: replace - with + in App::read_only_reason",
+          "package": "ebman",
+          "file": "src/app/safety.rs",
+          "function": {
+            "function_name": "App::read_only_reason",
+            "return_type": "-> Option<String>",
+            "span": {
+              "start": {
+                "line": 124,
+                "column": 5
+              },
+              "end": {
+                "line": 173,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 134,
+              "column": 43
+            },
+            "end": {
+              "line": 134,
+              "column": 44
+            }
+          },
+          "replacement": "+",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/src__app__safety.rs_line_134_col_43.log",
+      "diff_path": "diff/src__app__safety.rs_line_134_col_43.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.7136709589999999,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/app/safety.rs:134:43: replace - with / in App::read_only_reason",
+          "package": "ebman",
+          "file": "src/app/safety.rs",
+          "function": {
+            "function_name": "App::read_only_reason",
+            "return_type": "-> Option<String>",
+            "span": {
+              "start": {
+                "line": 124,
+                "column": 5
+              },
+              "end": {
+                "line": 173,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 134,
+              "column": 43
+            },
+            "end": {
+              "line": 134,
+              "column": 44
+            }
+          },
+          "replacement": "/",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/src__app__safety.rs_line_134_col_43_001.log",
+      "diff_path": "diff/src__app__safety.rs_line_134_col_43_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.586689542,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        }
+      ]
+    }
+  ],
+  "total_mutants": 14,
+  "missed": 0,
+  "caught": 12,
+  "timeout": 0,
+  "unviable": 2,
+  "success": 0,
+  "start_time": "2026-08-25T07:24:28.418875Z",
+  "end_time": "2026-08-25T07:29:39.66743Z",
+  "cargo_mutants_version": "27.1.0"
+}

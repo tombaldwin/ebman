@@ -1,0 +1,21 @@
+--- src/audit.rs
++++ replace != with == in parse_audit_line
+@@ -70,17 +70,17 @@
+ pub(crate) fn parse_audit_line(line: &str) -> Option<AuditEntry> {
+     let line = line.trim_end_matches('\n').trim_end_matches('\r');
+     if line.is_empty() {
+         return None;
+     }
+     let mut tabs = line.splitn(2, '\t');
+     let when = tabs.next()?.trim().to_string();
+     // Sanity: timestamp should at least look RFC3339-ish (`YYYY-MM-DDT...`).
+-    if when.len() < 10 || when.chars().nth(4) != Some('-') {
++    if when.len() < 10 || when.chars().nth(4) == /* ~ changed by cargo-mutants ~ */ Some('-') {
+         return None;
+     }
+     let rest = tabs.next().unwrap_or("");
+     // Tokenize the whole rest-of-line as key=value pairs. Tab and
+     // space both function as separators; the kv parser walks until
+     // the next `key=` boundary regardless of which one delimits.
+     let pairs = parse_kv_pairs(rest);
+ 

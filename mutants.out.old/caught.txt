@@ -1,0 +1,12 @@
+src/app/safety.rs:33:9: replace App::is_read_only_for -> bool with true
+src/app/safety.rs:33:9: replace App::is_read_only_for -> bool with false
+src/app/safety.rs:58:9: replace App::deny_write -> bool with true
+src/app/safety.rs:58:9: replace App::deny_write -> bool with false
+src/app/safety.rs:69:12: delete ! in App::deny_write
+src/app/safety.rs:97:9: replace App::deny_write_batch -> bool with true
+src/app/safety.rs:97:9: replace App::deny_write_batch -> bool with false
+src/app/safety.rs:98:45: replace || with && in App::deny_write_batch
+src/app/safety.rs:98:27: replace || with && in App::deny_write_batch
+src/app/safety.rs:130:9: replace App::read_only_reason -> Option<String> with None
+src/app/safety.rs:130:9: replace App::read_only_reason -> Option<String> with Some(String::new())
+src/app/safety.rs:130:9: replace App::read_only_reason -> Option<String> with Some("xyzzy".into())

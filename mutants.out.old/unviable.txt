@@ -1,0 +1,2 @@
+src/app/safety.rs:134:43: replace - with + in App::read_only_reason
+src/app/safety.rs:134:43: replace - with / in App::read_only_reason

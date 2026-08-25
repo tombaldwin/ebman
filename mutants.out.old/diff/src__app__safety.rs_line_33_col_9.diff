@@ -1,0 +1,21 @@
+--- src/app/safety.rs
++++ replace App::is_read_only_for -> bool with true
+@@ -25,17 +25,17 @@
+         // These were two separate four-branch cascades kept in the same
+         // order by a comment asking a human to do it — and the ONE
+         // difference between them would have been invisible: a
+         // predicate that says "allowed" while the reason function has
+         // something to say is a write that slips through, and the
+         // reverse is a refusal with no explanation. The allocation is
+         // irrelevant here (this runs on a confirm, or once per env in a
+         // batch of tens — never per frame).
+-        self.read_only_reason(env_name).is_some()
++        true /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Enforce the read-only gate for a destructive action against
+     /// `env_name`. Returns `true` (and sets `self.error_message` to a
+     /// `"<reason> — <verb> disabled"` toast) when the env is locked;
+     /// `false` (no side effects) otherwise. Designed to be the single
+     /// guard at the top of every `spawn_*`-style destructive helper:
+     ///
