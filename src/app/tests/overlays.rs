@@ -669,14 +669,9 @@ async fn the_apps_scope_renders_its_own_table() {
     let mut app = test_app();
     app.environments = vec![mk_env("api-prod", "APPCANARY", "Web", "Green")];
     app.applications = vec![crate::aws::Application {
-        name: "APPCANARY".into(),
         description: "the one app".into(),
-        date_created: None,
-        date_updated: None,
         version_count: 3,
-        templates: Vec::new(),
-        latest_version_created: None,
-        latest_version_label: None,
+        ..mk_application("APPCANARY")
     }];
     app.view.invalidate();
     app.rebuild_view();

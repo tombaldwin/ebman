@@ -488,28 +488,7 @@ async fn picker_filter_is_cursor_aware_via_shared_textinput() {
 async fn apps_scope_space_toggles_apps_selected() {
     let mut app = test_app();
     // Seed two apps + select Apps scope.
-    app.applications = vec![
-        crate::aws::Application {
-            name: "billing".into(),
-            description: String::new(),
-            date_created: None,
-            date_updated: None,
-            version_count: 0,
-            templates: vec![],
-            latest_version_label: None,
-            latest_version_created: None,
-        },
-        crate::aws::Application {
-            name: "checkout".into(),
-            description: String::new(),
-            date_created: None,
-            date_updated: None,
-            version_count: 0,
-            templates: vec![],
-            latest_version_label: None,
-            latest_version_created: None,
-        },
-    ];
+    app.applications = vec![mk_application("billing"), mk_application("checkout")];
     app.set_scope(Scope::Apps);
     app.app_table_state.select(Some(0));
     // First space adds; second space removes.
@@ -522,16 +501,7 @@ async fn apps_scope_space_toggles_apps_selected() {
 #[tokio::test]
 async fn apps_scope_star_pins_and_unpins_app() {
     let mut app = test_app();
-    app.applications = vec![crate::aws::Application {
-        name: "billing".into(),
-        description: String::new(),
-        date_created: None,
-        date_updated: None,
-        version_count: 0,
-        templates: vec![],
-        latest_version_label: None,
-        latest_version_created: None,
-    }];
+    app.applications = vec![mk_application("billing")];
     app.set_scope(Scope::Apps);
     app.app_table_state.select(Some(0));
     assert!(!app.pinned_apps.contains("billing"));

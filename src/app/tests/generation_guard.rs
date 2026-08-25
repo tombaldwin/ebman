@@ -29,7 +29,7 @@
 //! And behaviourally, because the structural half says nothing about whether
 //! `handle_msg` still *acts* on the classification.
 
-use super::support::test_app;
+use super::support::{mk_application, test_app};
 use crate::app::AppMsg;
 use syn::visit::Visit;
 
@@ -62,19 +62,6 @@ const UNGUARDED: &[(&str, &str)] = &[
 // Behavioural: the enforcement point still enforces.
 // ---------------------------------------------------------------------------
 
-fn an_application(name: &str) -> crate::aws::Application {
-    crate::aws::Application {
-        name: name.into(),
-        description: String::new(),
-        date_created: None,
-        date_updated: None,
-        version_count: 0,
-        templates: vec![],
-        latest_version_label: None,
-        latest_version_created: None,
-    }
-}
-
 /// Both halves in one test on purpose. "Stale results are dropped" passes
 /// vacuously if the handler never applies anything, so the fresh delivery has
 /// to be shown working with the same message shape first.
@@ -85,7 +72,7 @@ fn a_result_from_a_superseded_context_is_dropped() {
     let gen_at_launch = app.generation;
     app.handle_msg(AppMsg::Applications {
         gen: gen_at_launch,
-        result: Ok(vec![an_application("delivered")]),
+        result: Ok(vec![mk_application("delivered")]),
     });
     assert_eq!(
         app.applications
@@ -102,7 +89,7 @@ fn a_result_from_a_superseded_context_is_dropped() {
 
     app.handle_msg(AppMsg::Applications {
         gen: gen_at_launch,
-        result: Ok(vec![an_application("from-the-old-context")]),
+        result: Ok(vec![mk_application("from-the-old-context")]),
     });
     assert_eq!(
         app.applications
@@ -230,6 +217,22 @@ fn every_variant_carrying_a_generation_is_checked_against_it() {
     );
 
     let mut problems = Vec::new();
+
+    // A variant listed in both arms would be classified by whichever comes
+    // first, so the lookup below could report it as fine while the `None` arm
+    // also names it. `-D warnings` catches this as an unreachable pattern,
+    // but only in CI and only if the arms are in that order.
+    for (name, _) in &variants {
+        let n = classified.iter().filter(|(c, _)| c == name).count();
+        if n > 1 {
+            problems.push(format!(
+                "AppMsg::{name} is classified {n} times by `generation()` — one \
+                 of them is unreachable and the other decides the \
+                 behaviour."
+            ));
+        }
+    }
+
     for (name, has_gen) in &variants {
         let Some((_, guarded)) = classified.iter().find(|(n, _)| n == name) else {
             problems.push(format!(
