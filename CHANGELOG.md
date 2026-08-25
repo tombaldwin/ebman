@@ -6,6 +6,59 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.34.2] — 2026-08-25
+
+**If you installed 0.34.1 from crates.io, this replaces it.** That
+version's published tarball contained 22 `mutants.out/` files that
+should never have been packaged, including a `lock.json` carrying the
+build machine's hostname and username. 0.34.1 has been yanked; crates.io
+is immutable, so the files remain downloadable, but nothing new will
+resolve to it. Nothing in ebman itself was affected — no behaviour, no
+credentials, no user data. 0.34.0 was clean.
+
+### Fixed
+
+- **The account shown in the header went stale after a credential
+  refresh.** `spawn_home_client_refresh` exists so credentials edited on
+  disk take effect, but the identity — account id and caller ARN — was
+  re-fetched only on an explicit context switch. So the case the feature
+  serves, an operator repointing a profile at another account, was the
+  case that left the header naming the previous one. Now re-fetched on
+  refresh, and deliberately *not* cleared first: the refresh fires on a
+  300s TTL for the whole session, and clearing would render `account=-`
+  in every audit line written in the window — permanently, if STS is
+  throttled while the lazily-built client still succeeds.
+- **Rollout audit lines recorded no account or profile.** Every other
+  line opens `account= profile= region=`; rollout used `rollout_id=` and
+  carried neither — despite being the only command that takes
+  `--profile`, being multi-region by construction, and being the biggest
+  write the CLI has. `profile=` is now on the line, taken from the
+  client that performed the write, and **inserted before `region=`**: a
+  key-value reader is unaffected, a positional one shifts by one.
+- **An operator-named profile could forge an audit field.** Both audit
+  openers interpolated profile names with an escaper that does not quote
+  spaces, so a profile called `ops region=us-fake-1` emitted a second
+  `region=` token — and `AuditFilter`, the text renderer and `audit
+  replay` all take the first match. Both openers now quote.
+- **A freeze marker write could fail spuriously under concurrency.**
+  `write_marker_at` named its temp file after the process id, so two
+  concurrent writers shared one path and the loser's rename got ENOENT —
+  a false failure from a function whose contract is that a
+  silently-absent marker fails open.
+
+### Added
+
+- Coverage for five guards that existed, were correct, and were held by
+  nothing: `:rollback` refusing to target an env the cursor has moved
+  to, Terminate's type-the-name confirmation, `AuditFilter`'s selection,
+  the deploy watchdog's arming conditions, and the freeze module's real
+  path and liveness probe. Found by a whole-tree mutation sweep.
+
+### Packaging
+
+- `mutants.out*` is now gitignored and excluded from the published
+  crate. The package is 179 files, down from 271.
+
 ### Fixed
 
 - **Rollout audit lines did not record which profile the write went
