@@ -70,15 +70,24 @@ jobs:
           path: mutants.out/
           retention-days: 14
 
-  # Whole-tree sweep, sharded SIXTEEN ways — a number that was measured
-  # rather than guessed, after the first guess was wrong.
+  # Whole-tree sweep, sharded TWENTY-FOUR ways. Third number, and the
+  # first one derived from a completed run rather than an estimate.
   #
-  # The tree holds 6097 mutants. At ~11s each locally that is ~19 hours
-  # of testing, and a GitHub `ubuntu-latest` runner is roughly 2.5x
-  # slower than the machine that measured it. So 8 shards is ~6.1h per
-  # shard against a 320-minute cap — it does not fit, and the first
-  # scheduled run confirmed it by sitting at 4h50m with no end in sight.
-  # 16 shards is ~3.1h, comfortably inside.
+  # The tree holds 6097 mutants. Guessing the runner's speed got this
+  # wrong twice: 8 shards did not fit, and 16 only fit for 5 of them —
+  # the other 11 were cancelled at the cap having got 81-99% of the way
+  # through, which is the most annoying possible outcome.
+  #
+  # Measured from that run instead of estimated. The SLOWEST shard
+  # managed 309 mutants in 320 minutes: 0.97 mutants/min. At that rate a
+  # 16th of the tree needs 395 minutes, so no plausible cap rescues 16
+  # shards. 24 shards is 254 mutants each, ~263 minutes — real headroom
+  # under a 350 cap rather than the 20 minutes that turned out to be
+  # noise.
+  #
+  # Prefer more shards over a longer cap: GitHub kills a job at 6h no
+  # matter what this says, so headroom has to come from doing less work
+  # per shard.
   #
   # Re-measure before changing this. `cargo mutants --list | wc -l` gives
   # the count; the per-mutant cost is dominated by the rebuild, so it
@@ -88,7 +97,7 @@ jobs:
   # equivalent mutant or switching the job off — and the second is what
   # actually happens.
   full:
-    name: cargo-mutants (shard ${{ matrix.shard }}/16)
+    name: cargo-mutants (shard ${{ matrix.shard }}/24)
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     # 350, not 320. The first real run's shards finished at 298-300
@@ -101,7 +110,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -122,7 +131,7 @@ jobs:
         # suite for all 6097 mutants; the shards already finish only ~20
         # minutes under the cap.
         run: >
-          cargo mutants --shard ${{ matrix.shard }}/16
+          cargo mutants --shard ${{ matrix.shard }}/24
           --exclude src/main.rs
           --no-shuffle --timeout 120 -- --lib
       - uses: actions/upload-artifact@v7
