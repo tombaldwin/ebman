@@ -377,7 +377,6 @@ fn deploy_snapshot_round_trips_through_persisted_form() {
     // doesn't collide with any legal version-label character.
     use chrono::TimeZone;
     let original = DeploySnapshot {
-        env_name: "prod-api".into(),
         previous_version_label: "build-825".into(),
         taken_at: chrono::Utc
             .with_ymd_and_hms(2026, 5, 25, 14, 30, 0)
@@ -385,8 +384,11 @@ fn deploy_snapshot_round_trips_through_persisted_form() {
     };
     let raw = original.to_persisted();
     assert_eq!(raw, "build-825|2026-05-25T14:30:00+00:00");
-    let parsed = DeploySnapshot::parse_persisted("prod-api", &raw).expect("parses");
-    assert_eq!(parsed.env_name, original.env_name);
+    let parsed = DeploySnapshot::parse_persisted(&raw).expect("parses");
+    // No env name to compare: the value doesn't carry one. It is the TOML
+    // key — `deploy_snapshot.<env> = "..."` — which is what keeps a
+    // hand-read state.toml line labelled. Pinned in
+    // `state::tests::a_persisted_deploy_snapshot_line_names_its_env`.
     assert_eq!(
         parsed.previous_version_label,
         original.previous_version_label
@@ -399,10 +401,10 @@ fn deploy_snapshot_parse_persisted_rejects_garbage() {
     // No pipe, missing timestamp, malformed RFC3339 — all return
     // None so the App-init loop silently drops bad lines rather
     // than aborting startup.
-    assert!(DeploySnapshot::parse_persisted("e", "nopipe").is_none());
-    assert!(DeploySnapshot::parse_persisted("e", "|2026-05-25T14:30:00Z").is_none());
-    assert!(DeploySnapshot::parse_persisted("e", "label|not-a-timestamp").is_none());
-    assert!(DeploySnapshot::parse_persisted("e", "label|").is_none());
+    assert!(DeploySnapshot::parse_persisted("nopipe").is_none());
+    assert!(DeploySnapshot::parse_persisted("|2026-05-25T14:30:00Z").is_none());
+    assert!(DeploySnapshot::parse_persisted("label|not-a-timestamp").is_none());
+    assert!(DeploySnapshot::parse_persisted("label|").is_none());
 }
 
 #[tokio::test]
@@ -429,7 +431,6 @@ async fn rebuild_clears_armed_watchdogs_and_snapshots() {
     app.deploy_snapshots.insert(
         "prod".into(),
         DeploySnapshot {
-            env_name: "prod".into(),
             previous_version_label: "build-old".into(),
             taken_at: now,
         },
@@ -597,7 +598,6 @@ async fn apply_refresh_keeps_armed_watchdog_when_status_is_updating_even_if_heal
     app.deploy_snapshots.insert(
         "prod".into(),
         DeploySnapshot {
-            env_name: "prod".into(),
             previous_version_label: "build-820".into(),
             taken_at: now,
         },
@@ -1300,7 +1300,6 @@ async fn auto_rollback_check_is_noop_when_no_watchdog_armed() {
     app.deploy_snapshots.insert(
         "prod".into(),
         DeploySnapshot {
-            env_name: "prod".into(),
             previous_version_label: "build-old".into(),
             taken_at: chrono::Utc::now(),
         },
@@ -1375,7 +1374,6 @@ async fn apply_refresh_keeps_watchdog_armed_before_deadline_even_when_non_green(
     app.deploy_snapshots.insert(
         "prod".into(),
         DeploySnapshot {
-            env_name: "prod".into(),
             previous_version_label: "build-old".into(),
             taken_at: now,
         },

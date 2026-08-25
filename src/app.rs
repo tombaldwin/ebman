@@ -1269,24 +1269,22 @@ impl App {
             deploy_snapshots: persisted
                 .deploy_snapshots
                 .iter()
-                .filter_map(
-                    |(env, raw)| match DeploySnapshot::parse_persisted(env, raw) {
-                        Some(snap) => Some((env.clone(), snap)),
-                        None => {
-                            // Log the malformed line so the operator can spot
-                            // a corrupted state.toml entry. We still skip the
-                            // entry — better to lose one stale snapshot than
-                            // to abort App init.
-                            tracing::warn!(
-                                target: "ebman::state",
-                                env = %env,
-                                raw = %raw,
-                                "malformed deploy_snapshot entry in state.toml — skipping"
-                            );
-                            None
-                        }
-                    },
-                )
+                .filter_map(|(env, raw)| match DeploySnapshot::parse_persisted(raw) {
+                    Some(snap) => Some((env.clone(), snap)),
+                    None => {
+                        // Log the malformed line so the operator can spot
+                        // a corrupted state.toml entry. We still skip the
+                        // entry — better to lose one stale snapshot than
+                        // to abort App init.
+                        tracing::warn!(
+                            target: "ebman::state",
+                            env = %env,
+                            raw = %raw,
+                            "malformed deploy_snapshot entry in state.toml — skipping"
+                        );
+                        None
+                    }
+                })
                 .collect(),
             armed_watchdogs: std::collections::HashMap::new(),
             watching_deploys: std::collections::HashMap::new(),

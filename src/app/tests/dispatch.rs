@@ -409,7 +409,6 @@ async fn dispatch_auto_rollback_also_drains_watching_deploys() {
     app.deploy_snapshots.insert(
         "prod".into(),
         DeploySnapshot {
-            env_name: "prod".into(),
             previous_version_label: "build-820".into(),
             taken_at: chrono::Utc::now(),
         },
@@ -462,7 +461,6 @@ async fn apply_refresh_dispatches_rollback_when_deadline_passed_and_env_non_gree
     app.deploy_snapshots.insert(
         "prod".into(),
         DeploySnapshot {
-            env_name: "prod".into(),
             previous_version_label: "build-old".into(),
             taken_at: now - chrono::Duration::seconds(600),
         },

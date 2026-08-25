@@ -111,7 +111,6 @@ async fn rollback_to_label_opens_confirm_for_named_label() {
     app.deploy_snapshots.insert(
         "prod".into(),
         DeploySnapshot {
-            env_name: "prod".into(),
             previous_version_label: "build-snap".into(),
             taken_at: chrono::Utc::now(),
         },

@@ -663,26 +663,7 @@ pub(crate) struct PromotionRecord {
 /// 3m ago, 2m to deadline"). Persisted to state.toml so a cross-
 /// session `:rollback` still has a target.
 #[derive(Debug, Clone)]
-// `#[allow]`, not `#[expect]`, and deliberately so. `#[expect]` checks
-// whether the lint fired at the node it is attached to; `dead_code`
-// reports per-variant and per-field, so a type-level `#[expect]` is
-// reported "unfulfilled" while the items inside it are genuinely dead.
-// `#[allow]` suppresses hierarchically and is the only attribute that
-// expresses this. Everything else in the crate moved to `#[expect]` so
-// stale suppressions fail; these two cannot, so they carry their reason
-// here instead.
-#[allow(dead_code)]
 pub(crate) struct DeploySnapshot {
-    // `env_name` is written by `parse_persisted` and never read: the map
-    // that holds these is already keyed by env name, so the field is a
-    // duplicate of its own key. Surfaced when the blanket
-    // `#[allow(dead_code)]` on this struct became `#[expect]`. Left in
-    // place rather than removed because it is also what makes a
-    // persisted line self-describing in state.toml, which matters when
-    // reading the file by hand. Tracked in BACKLOG.md.
-    /// The env this snapshot was captured for. Redundant with the
-    /// `App.deploy_snapshots` map key, kept for log/debug output.
-    pub env_name: String,
     pub previous_version_label: String,
     /// Capture timestamp. Available for "snapshot taken Xs ago"
     /// status messages on `:rollback` (already used by cmd_rollback)
@@ -801,7 +782,13 @@ impl DeploySnapshot {
     /// Inverse of `to_persisted`. Returns `None` for malformed lines
     /// so the loader can silently drop them — better to lose one
     /// stale entry than to abort the App-init path.
-    pub(crate) fn parse_persisted(env_name: &str, raw: &str) -> Option<Self> {
+    ///
+    /// Takes no env name, because the value doesn't carry one and doesn't
+    /// need to: the line is written as `deploy_snapshot.<env> = "..."`, so
+    /// the env is the TOML key both on disk and in the map this parses
+    /// into. A field for it was a third copy of the same string, which is
+    /// why it's gone — `state.toml` stays readable by hand either way.
+    pub(crate) fn parse_persisted(raw: &str) -> Option<Self> {
         let (label, ts_str) = raw.split_once('|')?;
         let label = label.trim();
         if label.is_empty() {
@@ -811,7 +798,6 @@ impl DeploySnapshot {
             .ok()?
             .with_timezone(&chrono::Utc);
         Some(Self {
-            env_name: env_name.to_string(),
             previous_version_label: label.to_string(),
             taken_at,
         })
