@@ -321,4 +321,57 @@ mod tests {
              would leave a crashed session's freeze in place forever"
         );
     }
+
+    /// The three thin wrappers — `marker_path`, `write_marker`,
+    /// `read_active` — round-trip a real marker.
+    ///
+    /// `cargo mutants` reported all three as survivors, for the same
+    /// reason `pid_alive` was one: the parameterised cores
+    /// (`write_marker_at`, `read_active_with`, `clear_if_pid_at`) are
+    /// well tested against explicit paths and fake probes, while the
+    /// wrappers that supply the REAL path and the REAL probe are
+    /// exercised by nothing.
+    ///
+    /// `write_marker`'s own doc comment names the stakes: a silently
+    /// absent marker "fails OPEN (agent + CLI writes are NOT blocked)
+    /// while the operator believes the fleet is frozen". Each survivor
+    /// produces exactly that — `write_marker -> Ok(())` reports success
+    /// having written nothing, and `read_active -> None` never sees a
+    /// marker that is there.
+    ///
+    /// Safe against the shared test cache dir: `cache_dir()` is
+    /// per-process under `cfg(test)`, `:freeze-deploys` tests already
+    /// write real markers, and this clears up after itself.
+    #[test]
+    fn a_written_marker_is_readable_through_the_real_path() {
+        super::clear_marker_if_own();
+
+        super::write_marker("incident #4321", true).expect("marker must be written");
+
+        let path = super::marker_path();
+        assert!(
+            path.ends_with("freeze.json"),
+            "the marker must land at the real path, not a default: {}",
+            path.display()
+        );
+        assert!(path.exists(), "nothing was written to {}", path.display());
+
+        let found = super::read_active().expect(
+            "a marker written by THIS live process must read back as active — \
+             otherwise a freeze silently fails open while the operator \
+             believes the fleet is frozen",
+        );
+        assert_eq!(found.reason, "incident #4321");
+        assert!(
+            found.incident,
+            "the incident flag must survive the round trip"
+        );
+        assert_eq!(found.pid, std::process::id());
+
+        super::clear_marker_if_own();
+        assert!(
+            super::read_active().is_none(),
+            "clearing our own marker must lift the freeze"
+        );
+    }
 }
