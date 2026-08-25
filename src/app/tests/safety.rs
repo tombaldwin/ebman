@@ -130,6 +130,10 @@ async fn rollback_to_label_opens_confirm_for_named_label() {
 
 #[tokio::test]
 async fn freeze_deploys_blocks_writes_with_reason_surfaced() {
+    // Shared freeze-marker path; see `freeze::MARKER_LOCK`.
+    let _marker_guard = crate::freeze::MARKER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     // Operator dispatches `:freeze-deploys incident #1234` →
     // every destructive action refuses, with the reason
     // surfaced in the toast. Same gate as the read-only pins
@@ -150,6 +154,10 @@ async fn freeze_deploys_blocks_writes_with_reason_surfaced() {
 
 #[tokio::test]
 async fn freeze_deploys_with_no_reason_still_blocks() {
+    // Shared freeze-marker path; see `freeze::MARKER_LOCK`.
+    let _marker_guard = crate::freeze::MARKER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     // Reason is optional — empty-reason freeze still blocks
     // but the toast wording shifts.
     let mut app = test_app();
@@ -164,6 +172,10 @@ async fn freeze_deploys_with_no_reason_still_blocks() {
 
 #[tokio::test]
 async fn thaw_deploys_clears_the_freeze() {
+    // Shared freeze-marker path; see `freeze::MARKER_LOCK`.
+    let _marker_guard = crate::freeze::MARKER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let mut app = test_app();
     app.execute_command("freeze-deploys testing");
     assert!(app.deploy_freeze.is_some());
@@ -177,6 +189,10 @@ async fn thaw_deploys_clears_the_freeze() {
 
 #[tokio::test]
 async fn freeze_overrides_per_env_pin_in_read_only_reason() {
+    // Shared freeze-marker path; see `freeze::MARKER_LOCK`.
+    let _marker_guard = crate::freeze::MARKER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     // When BOTH a freeze AND a per-env safety pin are active,
     // the freeze reason wins in the toast — it's the more-
     // recent operator gesture and the more informative message.
@@ -192,6 +208,10 @@ async fn freeze_overrides_per_env_pin_in_read_only_reason() {
 
 #[tokio::test]
 async fn incident_start_freezes_and_end_thaws() {
+    // Shared freeze-marker path; see `freeze::MARKER_LOCK`.
+    let _marker_guard = crate::freeze::MARKER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let mut app = test_app();
     app.execute_command("incident START \"checkout 5xx spike\"");
     assert!(app.incident.is_some(), "incident should be active");

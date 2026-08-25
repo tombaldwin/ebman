@@ -764,6 +764,10 @@ async fn batch_set_option_skips_envs_no_longer_in_view() {
 
 #[tokio::test]
 async fn re_freezing_updates_the_reason_in_place() {
+    // Shared freeze-marker path; see `freeze::MARKER_LOCK`.
+    let _marker_guard = crate::freeze::MARKER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     // Operator refines the reason mid-incident; replace not stack.
     let mut app = test_app();
     app.execute_command("freeze-deploys rolling back");

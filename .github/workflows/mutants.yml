@@ -73,7 +73,7 @@ jobs:
   # Whole-tree sweep, sharded TWENTY-FOUR ways. Third number, and the
   # first one derived from a completed run rather than an estimate.
   #
-  # The tree holds 6097 mutants. Guessing the runner's speed got this
+  # The tree holds 6097 mutants (about 6040 after `--exclude src/main.rs`). Guessing the runner's speed got this
   # wrong twice: 8 shards did not fit, and 16 only fit for 5 of them —
   # the other 11 were cancelled at the cap having got 81-99% of the way
   # through, which is the most annoying possible outcome.
@@ -128,8 +128,7 @@ jobs:
         # exactly the "delete match arm" mutants this was reporting —
         # verified by hand. Covering it here instead would mean
         # `--all-targets`, which recompiles and re-runs the process-level
-        # suite for all 6097 mutants; the shards already finish only ~20
-        # minutes under the cap.
+        # suite for every mutant in the tree.
         run: >
           cargo mutants --shard ${{ matrix.shard }}/24
           --exclude src/main.rs

@@ -29,13 +29,12 @@ fn ebman(args: &[&str]) -> Output {
     // already been the cause of three separate incidents in this repo.
     let home = std::env::temp_dir().join(format!("ebman-cli-bare-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&home);
-    Command::new(env!("CARGO_BIN_EXE_ebman"))
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ebman"));
+    no_aws_credentials(&mut cmd)
         .args(args)
         // Deterministic regardless of the developer's shell.
         .env("NO_COLOR", "1")
         .env("HOME", &home)
-        .env_remove("AWS_PROFILE")
-        .env_remove("AWS_REGION")
         .output()
         // Not `.expect()`: `expect_used` is denied crate-wide, and
         // `lib.rs`'s `cfg_attr(test, allow(...))` exemption does not
@@ -247,14 +246,51 @@ fn ebman_with_config(config: &str, args: &[&str]) -> Output {
     if let Err(e) = std::fs::write(cfg_dir.join("config.toml"), config) {
         panic!("could not write the temp config.toml: {e}");
     }
-    Command::new(env!("CARGO_BIN_EXE_ebman"))
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ebman"));
+    no_aws_credentials(&mut cmd)
         .args(args)
         .env("NO_COLOR", "1")
         .env("HOME", &home)
-        .env_remove("AWS_PROFILE")
-        .env_remove("AWS_REGION")
         .output()
         .unwrap_or_else(|e| panic!("could not run ebman: {e}"))
+}
+
+/// Cut every link in the AWS credential chain.
+///
+/// `the_pin_applies_only_to_the_env_it_names` deliberately gets PAST the
+/// safety gate — that is what it asserts — and the code immediately past
+/// that gate is `AwsClient::with(None, None)` followed by
+/// `rebuild_env(env)`. So a developer with exported session credentials
+/// (aws-vault, saml2aws, `eval $(...)` — routine in an AWS shop) running
+/// `cargo test` would have issued a real `elasticbeanstalk:RebuildEnvironment`
+/// against their live account. On a CI runner with an instance role, the
+/// same.
+///
+/// Removing `AWS_PROFILE` and overriding `HOME` closes the
+/// `~/.aws/credentials` path and nothing else: env-var credentials,
+/// `AWS_CONTAINER_CREDENTIALS_*`, and IMDS all still resolve. This
+/// poisons all of them, and points the endpoint at a closed port so even
+/// a chain we failed to think of cannot reach AWS.
+///
+/// The "tests must not touch the developer's machine" rule, reaching
+/// past the machine into their account, with a write.
+fn no_aws_credentials(cmd: &mut Command) -> &mut Command {
+    cmd.env("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        .env(
+            "AWS_SECRET_ACCESS_KEY",
+            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        )
+        .env("AWS_SESSION_TOKEN", "invalid-for-tests")
+        .env("AWS_REGION", "us-east-1")
+        .env("AWS_DEFAULT_REGION", "us-east-1")
+        .env("AWS_EC2_METADATA_DISABLED", "true")
+        // Unroutable: a closed port on loopback fails fast rather than
+        // hanging, and cannot reach a real endpoint by any path.
+        .env("AWS_ENDPOINT_URL", "http://127.0.0.1:1")
+        .env_remove("AWS_PROFILE")
+        .env_remove("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI")
+        .env_remove("AWS_CONTAINER_CREDENTIALS_FULL_URI")
+        .env_remove("AWS_CONTAINER_AUTHORIZATION_TOKEN")
 }
 
 /// A `safety.envs.NAME.read_only` pin must stop a headless write, and

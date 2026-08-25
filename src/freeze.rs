@@ -56,7 +56,19 @@ fn write_marker_at(path: &Path, pid: u32, reason: &str, incident: bool) -> std::
     );
     // Atomic: write a temp then rename, so a concurrent reader never
     // catches a half-written (fail-open) marker (M1). Same 0600.
-    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    // Unique per WRITE, not per process. Two concurrent writers in one
+    // process shared a temp path, so one's `rename` moved the file out
+    // from under the other's and the loser got ENOENT — a spurious `Err`
+    // from a function whose doc says the caller MUST surface failure,
+    // because a silently-absent marker fails open. Found as a ~30% flake
+    // in the freeze tests (12 failures in 40 runs); the flake was the
+    // symptom, this is the defect.
+    static WRITE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp = path.with_extension(format!(
+        "tmp.{}.{}",
+        std::process::id(),
+        WRITE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     crate::util::write_secure(&tmp, body.as_bytes())?;
     if let Err(e) = std::fs::rename(&tmp, path) {
         let _ = std::fs::remove_file(&tmp);
@@ -145,6 +157,21 @@ pub(crate) fn parse_marker(text: &str) -> Option<FreezeMarker> {
             .to_string(),
     })
 }
+
+/// Serialises tests that touch the REAL freeze-marker path.
+///
+/// `util::cache_dir()` is per-process under `cfg(test)`, not per-test,
+/// and `clear_marker_if_own` matches on `pid == process::id()` — true
+/// for every test in the binary. So any test driving `:freeze-deploys`,
+/// `:thaw-deploys` or `:incident` shares one marker file with all the
+/// others, running on parallel threads: one clears while another is
+/// mid-round-trip.
+///
+/// They have always raced; the round-trip test added in 0.34.2 just made
+/// it visible (12 failures in 40 runs of `cargo test freeze`). Every
+/// test that writes or clears the real marker takes this.
+#[cfg(test)]
+pub(crate) static MARKER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(unix)]
 fn pid_alive(pid: u32) -> bool {
@@ -344,6 +371,8 @@ mod tests {
     /// write real markers, and this clears up after itself.
     #[test]
     fn a_written_marker_is_readable_through_the_real_path() {
+        // Exclusive access to the shared marker path; see MARKER_LOCK.
+        let _guard = super::MARKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         super::clear_marker_if_own();
 
         super::write_marker("incident #4321", true).expect("marker must be written");

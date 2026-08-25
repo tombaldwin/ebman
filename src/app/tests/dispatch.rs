@@ -1608,3 +1608,46 @@ mod mutants_found_these {
         );
     }
 }
+
+/// Every `append_rollout` call must pass a profile.
+///
+/// The 0.34.2 review verified all four call sites pass the RIGHT value —
+/// the profile the client was built from — but mutation showed nothing
+/// holds them there: replacing `self.context.profile.as_deref()` with
+/// `None` in `spawn_rollout.rs` left the whole suite green.
+///
+/// Rollout is the only command taking `--profile`, is multi-region by
+/// construction, and its audit lines are the record of which account a
+/// fleet-wide deploy landed in. A `None` here renders `profile=-`, which
+/// is the state the field was added to remove.
+///
+/// Source-scanned in the shape of
+/// `every_spawn_declares_whether_it_is_per_env`: the call sites are in
+/// spawned async paths that need AWS, so this is the reachable check.
+#[test]
+fn every_rollout_audit_call_passes_a_profile() {
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, text) in crate::app::tests::scan::source_files() {
+        if crate::app::tests::scan::is_test_path(&path) || path.ends_with("audit.rs") {
+            continue;
+        }
+        // `append_rollout(` then its next non-empty argument line.
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, l) in lines.iter().enumerate() {
+            if !crate::app::tests::scan::strip_line_comment(l).contains("append_rollout(") {
+                continue;
+            }
+            // Second argument is `profile`; scan the next few lines for
+            // a bare `None` in that position.
+            let window = lines[i..(i + 4).min(lines.len())].join(" ");
+            if window.contains("None,") && !window.contains("profile") {
+                offenders.push(format!("{path}:{}", i + 1));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these `append_rollout` calls pass no profile, so their audit lines \
+         read `profile=-` — the state the field exists to remove: {offenders:?}"
+    );
+}
