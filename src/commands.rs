@@ -936,7 +936,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     cmd_with_aliases(
         "help",
         &["?"],
-        ":help / ? — toggle this help screen",
+        ":help / ? — toggle this help screen; :help <topic> opens one by name",
         Category::View,
         CommandKind::ZeroArg,
     ),

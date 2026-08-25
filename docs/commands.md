@@ -176,5 +176,14 @@ goes to *that environment's* region, and the audit line says so.
 - `:report-bug` — scrubbed bug-report overlay. `y` copies the payload, `b` opens a GitHub issue with the body pre-filled. No outbound HTTP from ebman. See [safety-and-privacy](safety-and-privacy.md) for the redactor scope.
 - `:plugins` — list user plugin commands defined in `commands.toml`.
 - `:loglevel LEVEL` — live-reload the tracing filter (trace / debug / info / warn / error).
-- `:help` / `:?` — toggle the global help screen (also `?`).
+- `:help` / `:?` — toggle the help screen (also `?`). Scoped to where you
+  are: Detail, the action menu, the queue viewer and the saved-configs
+  overlay each get their own keymap rather than the full wall of help.
+- `:help <topic>` — open one topic by name: `global`, `detail`, `dlq`,
+  `action`, `shell`, `saved-configs`. Case-insensitive.
+
+  `:help shell` is the only way to read the embedded-shell keys. Once you
+  attach, every keystroke belongs to the subprocess — `?` included, since
+  it's a legitimate globbing character — so the screen telling you that
+  `F12` detaches has to be readable before you go in.
 - `:quit` / `:q` — exit ebman (also `q`, `Ctrl-C`).

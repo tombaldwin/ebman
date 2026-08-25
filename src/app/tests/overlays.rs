@@ -705,25 +705,43 @@ async fn every_help_topic_renders_something_of_its_own() {
     // footer keystrip draws it in every mode) and then on "the frame
     // differs from Normal mode" (the footer changes with mode on its
     // own). Both passed with every help renderer stubbed out.
-    for (topic, title) in [
-        (HelpTopic::Global, "ebman — keybindings"),
-        (HelpTopic::Detail, "Detail view — keybindings"),
-        (HelpTopic::Dlq, "Queue viewer — keybindings"),
-        (HelpTopic::Action, "Action menu — keybindings"),
-        (HelpTopic::Shell, "Embedded shell — keybindings"),
-        (
-            HelpTopic::SavedConfigs,
-            "Saved configurations — keybindings",
-        ),
-    ] {
+    //
+    // It now also pins REACHABILITY, and that distinction is the point.
+    // This test used to set `app.help.topic` directly, so it passed for
+    // years while `HelpTopic::Shell` was never constructed anywhere in
+    // production — a renderer proven to work down a path nothing could
+    // take. Driving `:help <topic>` instead exercises the wiring.
+    for &topic in HelpTopic::ALL {
+        // Exhaustive on purpose: a new topic has to declare its title
+        // here, and therefore has to have one.
+        let title = match topic {
+            HelpTopic::Global => "ebman — keybindings",
+            HelpTopic::Detail => "Detail view — keybindings",
+            HelpTopic::Dlq => "Queue viewer — keybindings",
+            HelpTopic::Action => "Action menu — keybindings",
+            HelpTopic::Shell => "Embedded shell — keybindings",
+            HelpTopic::SavedConfigs => "Saved configurations — keybindings",
+        };
         let mut app = test_app();
         app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
         app.view.invalidate();
         app.rebuild_view();
         app.table_state.select(Some(0));
-        app.help.topic = topic;
         app.help.scroll = 0;
-        app.mode = crate::app::Mode::Help;
+
+        app.execute_command(&format!("help {}", topic.arg_name()));
+        assert_eq!(
+            app.mode,
+            crate::app::Mode::Help,
+            "`:help {}` did not open the help screen",
+            topic.arg_name()
+        );
+        assert_eq!(
+            app.help.topic,
+            topic,
+            "`:help {}` opened the wrong topic",
+            topic.arg_name()
+        );
 
         let out = render(&mut app, 200, 44);
         assert!(

@@ -27,6 +27,27 @@ impl App {
             "q" | "quit" => self.quit = true,
             "refresh" => self.manual_refresh(),
             "help" | "?" => {
+                // A named topic wins over the inference below. That is the
+                // only way to reach `HelpTopic::Shell`: in the embedded
+                // shell every keystroke goes to the subprocess, `?`
+                // included, so the screen explaining how to get back out
+                // cannot be opened from inside it.
+                if let Some(name) = rest.first() {
+                    match HelpTopic::from_arg(name) {
+                        Some(topic) => {
+                            self.help.topic = topic;
+                            self.help.pre_mode = Some(self.mode);
+                            self.mode = Mode::Help;
+                        }
+                        None => {
+                            self.error_message = Some(format!(
+                                "unknown help topic {name:?} — try one of: {}",
+                                HelpTopic::names()
+                            ));
+                        }
+                    }
+                    return;
+                }
                 // Mirror the `?` keybind: scope help to the screen the user
                 // was on before opening the command bar. The Command-mode
                 // transition doesn't leave a breadcrumb, so we infer from
