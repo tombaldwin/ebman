@@ -374,16 +374,19 @@ both guards were mutation-verified before being believed.
   both ways, including the vacuous case where the guard stops finding any
   `version` field at all.
 
-- [ ] **The registry still lists 0.34.1 as `latest`** — and 0.34.1 is the
-  yanked release, the one that packaged `mutants.out/` including a
-  `lock.json` carrying the machine's hostname and username. Anyone
-  discovering ebman through the MCP Registry is pointed at it. Nine
-  versions are published, 0.29.2 through 0.34.1; 0.34.2 never made it
-  because the registry was degraded that evening (19.6s health check) and
-  the retry path was broken as described above. Fixed now — needs
-  `gh workflow run release.yml -f tag=v0.34.2`, which publishes to an
-  external service and so wants a deliberate go-ahead rather than an
-  autonomous one.
+- [x] **The registry listed the yanked 0.34.1 as `latest`** — FIXED
+  2026-08-25 21:32 UTC. 0.34.2 is published and is now `latest`, so
+  discovery no longer points at the release that packaged `mutants.out/`
+  with the machine's hostname and username. Ten versions listed, 0.29.2
+  through 0.34.2.
+
+  It took two fixes, not one. The registry being degraded that evening
+  (19.6s health check) is why 0.34.2 missed its window; the reason every
+  retry since had failed silently was the `needs: crates_io` chain
+  above. Health is back to 0.49s. The dispatched run confirmed both:
+  `cargo publish` exited 0 on the already-published version instead of
+  failing the job, and `publish to MCP Registry` ran for the first time
+  on a re-run.
 
 #### Console parity — BONUS
 
