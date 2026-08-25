@@ -250,17 +250,39 @@ both guards were mutation-verified before being believed.
   collapsed to almost nothing, which is the vacuous shape this codebase
   keeps finding. Raised to 10.
 
-- [ ] **Rule 3 — async results check `generation`** — the weakest of
-  the five now, and the only one with no tree-walking guard. Individual
-  handlers are tested, but nothing sweeps for an `AppMsg` handler that
-  forgot the check, which is exactly the shape that has bitten before:
-  a guard that is correct, commented, and deletable without any test
-  noticing. Likely the same `syn` approach — visit `App::handle_msg`'s
-  match arms and require each to reach a `generation` comparison before
-  mutating state. Harder than rule 4 because the check is sometimes
-  delegated to a helper, so expect an allowlist with reasons, like
-  `every_spawn_declares_whether_it_is_per_env`. Widening that allowlist
-  to silence the guard is a stop condition, not a fix.
+- [x] **Rule 3 — async results check `generation`** — DONE
+  2026-08-25, and the premise of this entry was wrong. It was written as
+  "the weakest of the five, nothing sweeps for a handler that forgot the
+  check". In fact rule 3 is the *best*-defended of the five
+  structurally: there is one enforcement point, not a convention each
+  handler follows. `AppMsg::generation()` classifies all 59 variants,
+  `handle_msg` drops the message once before dispatching, and the match
+  is exhaustive, so the compiler forces a new variant to be classified.
+  The planned "visit every handler and require a generation comparison"
+  guard would have been looking for something that isn't there — the
+  handlers correctly don't check, because the router already did.
+
+  The real gap was one level up, and it is the familiar shape: the
+  compiler forces you to classify, but the cheapest way to satisfy it is
+  to append the new variant to the `None` arm — a one-line change with a
+  plausible reason that exempts a whole result path from the invariant.
+  That arm was documented and completely untested.
+
+  `src/app/tests/generation_guard.rs` closes it from both ends. The
+  structural half needs **no allowlist and no judgement**: carrying a
+  `gen: u64` field and being classified `Some` have to agree, because a
+  variant that carries a generation and is exempted from the generation
+  check is unambiguously wrong. Only the three variants with no `gen` at
+  all need a recorded reason (`Rebuild` and `ClientRefreshed` carry
+  epochs instead; `UpdateCheck` isn't context-bound), and a reason naming
+  a variant that no longer qualifies fails too. A behavioural test covers
+  what neither says — whether `handle_msg` still *acts* on the
+  classification — with both halves in one test so "stale results are
+  dropped" can't pass on a handler that applies nothing.
+
+  Mutation-verified four ways, all CAUGHT: neutralising the early return
+  in `handle_msg`; moving a gen-carrying variant into the `None` arm;
+  deleting a recorded reason; and adding a stale one.
 
 #### Console parity — BONUS
 

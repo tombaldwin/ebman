@@ -19,9 +19,9 @@ fleet. Real credentials are only needed to exercise a live account.
 
 Read [`ARCHITECTURE.md`](ARCHITECTURE.md) first. It's short, and it covers the
 five rules the compiler doesn't enforce — breaking one of those is the most
-likely way for an otherwise-good change to be wrong. Four of them will fail the
-test suite if you break them; rule 3 (async results check `generation`) is the
-one you have to hold in your head.
+likely way for an otherwise-good change to be wrong. All five will fail the
+test suite if you break them, but the failure message is a poor substitute for
+knowing why the rule exists.
 
 ## Before you open a PR
 
