@@ -602,6 +602,23 @@ impl App {
                 }
                 self.aws = Arc::new(*client);
                 self.aws_built_at = Instant::now();
+                // The identity we hold was resolved by the PREVIOUS
+                // credentials. This refresh exists so credential edits on
+                // disk take effect — which means the very case it serves
+                // (an operator repointing a profile) is the case where
+                // `account_id` and `caller_arn` become wrong, silently,
+                // while the header keeps rendering them.
+                //
+                // Not a safety bypass: `safety.accounts.*` keys on the
+                // profile NAME, which has not changed. But the header is
+                // what tells an operator which account they are about to
+                // terminate an environment in, so "unknown" beats
+                // "confidently the previous one". Cleared here and
+                // re-fetched below; `spawn_identity` carries a
+                // generation, so a context switch mid-flight discards it.
+                self.context.account_id = None;
+                self.context.caller_arn = None;
+                self.spawn_identity();
                 tracing::debug!(target: "ebman", "home client refreshed");
             }
             Err(e) => {

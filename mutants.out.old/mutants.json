@@ -1,0 +1,450 @@
+[
+  {
+    "diff": "--- src/app/safety.rs\n+++ replace App::is_read_only_for -> bool with true\n@@ -25,17 +25,17 @@\n         // These were two separate four-branch cascades kept in the same\n         // order by a comment asking a human to do it — and the ONE\n         // difference between them would have been invisible: a\n         // predicate that says \"allowed\" while the reason function has\n         // something to say is a write that slips through, and the\n         // reverse is a refusal with no explanation. The allocation is\n         // irrelevant here (this runs on a confirm, or once per env in a\n         // batch of tens — never per frame).\n-        self.read_only_reason(env_name).is_some()\n+        true /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Enforce the read-only gate for a destructive action against\n     /// `env_name`. Returns `true` (and sets `self.error_message` to a\n     /// `\"<reason> — <verb> disabled\"` toast) when the env is locked;\n     /// `false` (no side effects) otherwise. Designed to be the single\n     /// guard at the top of every `spawn_*`-style destructive helper:\n     ///\n",
+    "file": "src/app/safety.rs",
+    "function": {
+      "function_name": "App::is_read_only_for",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 34
+        },
+        "start": {
+          "column": 5,
+          "line": 12
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/app/safety.rs:33:9: replace App::is_read_only_for -> bool with true",
+    "package": "ebman",
+    "replacement": "true",
+    "span": {
+      "end": {
+        "column": 50,
+        "line": 33
+      },
+      "start": {
+        "column": 9,
+        "line": 33
+      }
+    }
+  },
+  {
+    "diff": "--- src/app/safety.rs\n+++ replace App::is_read_only_for -> bool with false\n@@ -25,17 +25,17 @@\n         // These were two separate four-branch cascades kept in the same\n         // order by a comment asking a human to do it — and the ONE\n         // difference between them would have been invisible: a\n         // predicate that says \"allowed\" while the reason function has\n         // something to say is a write that slips through, and the\n         // reverse is a refusal with no explanation. The allocation is\n         // irrelevant here (this runs on a confirm, or once per env in a\n         // batch of tens — never per frame).\n-        self.read_only_reason(env_name).is_some()\n+        false /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Enforce the read-only gate for a destructive action against\n     /// `env_name`. Returns `true` (and sets `self.error_message` to a\n     /// `\"<reason> — <verb> disabled\"` toast) when the env is locked;\n     /// `false` (no side effects) otherwise. Designed to be the single\n     /// guard at the top of every `spawn_*`-style destructive helper:\n     ///\n",
+    "file": "src/app/safety.rs",
+    "function": {
+      "function_name": "App::is_read_only_for",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 34
+        },
+        "start": {
+          "column": 5,
+          "line": 12
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/app/safety.rs:33:9: replace App::is_read_only_for -> bool with false",
+    "package": "ebman",
+    "replacement": "false",
+    "span": {
+      "end": {
+        "column": 50,
+        "line": 33
+      },
+      "start": {
+        "column": 9,
+        "line": 33
+      }
+    }
+  },
+  {
+    "diff": "--- src/app/safety.rs\n+++ replace App::deny_write -> bool with true\n@@ -50,35 +50,17 @@\n         // matching guard for the rationale — synthetic fleet, fake\n         // AwsClient, real audit log).\n         //\n         // When BOTH demo_mode and a safety-pin / read-only lock apply,\n         // mention both in the toast — operators using `--demo` to\n         // validate their `safety.envs.*` / `safety.accounts.*` config\n         // before going live shouldn't have to exit demo to confirm\n         // the pin is wired correctly. (0.17.4 review)\n-        if self.demo_mode {\n-            let pin_reason = self.read_only_reason(env_name);\n-            let suffix = match pin_reason {\n-                Some(reason) => format!(\" — would also refuse: {reason}\"),\n-                None => String::new(),\n-            };\n-            self.error_message = Some(format!(\n-                \"demo mode — {verb} not dispatched (writes are inert; press q to exit){suffix}\"\n-            ));\n-            return true;\n-        }\n-        if !self.is_read_only_for(env_name) {\n-            return false;\n-        }\n-        let reason = self\n-            .read_only_reason(env_name)\n-            .unwrap_or_else(|| \"read-only mode\".into());\n-        self.error_message = Some(format!(\"{reason} — {verb} disabled\"));\n-        true\n+        true /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Read-only gate for a *batch* destructive op over `env_names`.\n     /// Returns `true` (and sets `self.error_message`) when the op must\n     /// be refused. Unlike single-env [`App::deny_write`], a batch is gated\n     /// per-env: if ANY selected env is locked the whole batch is\n     /// refused (refuse-all, not skip-some — a safety pin shouldn't be\n     /// silently routed around for the unpinned remainder), with the\n",
+    "file": "src/app/safety.rs",
+    "function": {
+      "function_name": "App::deny_write",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 77
+        },
+        "start": {
+          "column": 5,
+          "line": 36
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/app/safety.rs:58:9: replace App::deny_write -> bool with true",
+    "package": "ebman",
+    "replacement": "true",
+    "span": {
+      "end": {
+        "column": 13,
+        "line": 76
+      },
+      "start": {
+        "column": 9,
+        "line": 58
+      }
+    }
+  },
+  {
+    "diff": "--- src/app/safety.rs\n+++ replace App::deny_write -> bool with false\n@@ -50,35 +50,17 @@\n         // matching guard for the rationale — synthetic fleet, fake\n         // AwsClient, real audit log).\n         //\n         // When BOTH demo_mode and a safety-pin / read-only lock apply,\n         // mention both in the toast — operators using `--demo` to\n         // validate their `safety.envs.*` / `safety.accounts.*` config\n         // before going live shouldn't have to exit demo to confirm\n         // the pin is wired correctly. (0.17.4 review)\n-        if self.demo_mode {\n-            let pin_reason = self.read_only_reason(env_name);\n-            let suffix = match pin_reason {\n-                Some(reason) => format!(\" — would also refuse: {reason}\"),\n-                None => String::new(),\n-            };\n-            self.error_message = Some(format!(\n-                \"demo mode — {verb} not dispatched (writes are inert; press q to exit){suffix}\"\n-            ));\n-            return true;\n-        }\n-        if !self.is_read_only_for(env_name) {\n-            return false;\n-        }\n-        let reason = self\n-            .read_only_reason(env_name)\n-            .unwrap_or_else(|| \"read-only mode\".into());\n-        self.error_message = Some(format!(\"{reason} — {verb} disabled\"));\n-        true\n+        false /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Read-only gate for a *batch* destructive op over `env_names`.\n     /// Returns `true` (and sets `self.error_message`) when the op must\n     /// be refused. Unlike single-env [`App::deny_write`], a batch is gated\n     /// per-env: if ANY selected env is locked the whole batch is\n     /// refused (refuse-all, not skip-some — a safety pin shouldn't be\n     /// silently routed around for the unpinned remainder), with the\n",
+    "file": "src/app/safety.rs",
+    "function": {
+      "function_name": "App::deny_write",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 77
+        },
+        "start": {
+          "column": 5,
+          "line": 36
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/app/safety.rs:58:9: replace App::deny_write -> bool with false",
+    "package": "ebman",
+    "replacement": "false",
+    "span": {
+      "end": {
+        "column": 13,
+        "line": 76
+      },
+      "start": {
+        "column": 9,
+        "line": 58
+      }
+    }
+  },
+  {
+    "diff": "--- src/app/safety.rs\n+++ delete ! in App::deny_write\n@@ -61,17 +61,17 @@\n                 Some(reason) => format!(\" — would also refuse: {reason}\"),\n                 None => String::new(),\n             };\n             self.error_message = Some(format!(\n                 \"demo mode — {verb} not dispatched (writes are inert; press q to exit){suffix}\"\n             ));\n             return true;\n         }\n-        if !self.is_read_only_for(env_name) {\n+        if  /* ~ changed by cargo-mutants ~ */self.is_read_only_for(env_name) {\n             return false;\n         }\n         let reason = self\n             .read_only_reason(env_name)\n             .unwrap_or_else(|| \"read-only mode\".into());\n         self.error_message = Some(format!(\"{reason} — {verb} disabled\"));\n         true\n     }\n",
+    "file": "src/app/safety.rs",
+    "function": {
+      "function_name": "App::deny_write",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 77
+        },
+        "start": {
+          "column": 5,
+          "line": 36
+        }
+      }
+    },
+    "genre": "UnaryOperator",
+    "name": "src/app/safety.rs:69:12: delete ! in App::deny_write",
+    "package": "ebman",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 13,
+        "line": 69
+      },
+      "start": {
+        "column": 12,
+        "line": 69
+      }
+    }
+  },
+  {
+    "diff": "--- src/app/safety.rs\n+++ replace App::deny_write_batch -> bool with true\n@@ -89,41 +89,17 @@\n     /// probe so those produce their normal whole-fleet message, then\n     /// scans for per-env / per-account pins. Mirrors the precedence in\n     /// [`App::is_read_only_for`]. `verb` names the op for the toast.\n     pub(crate) fn deny_write_batch(&mut self, env_names: &[String], verb: &str) -> bool {\n         // Demo mode + global/freeze gates are env-independent: probe\n         // with the first env (or \"\") so the existing single-env path\n         // produces the familiar \"demo mode …\" / \"read-only mode …\" /\n         // \"deploys frozen …\" toast rather than a per-env list.\n-        let probe = env_names.first().map(|s| s.as_str()).unwrap_or(\"\");\n-        if self.demo_mode || self.read_only || self.deploy_freeze.is_some() {\n-            return self.deny_write(probe, verb);\n-        }\n-        let locked: Vec<String> = env_names\n-            .iter()\n-            .filter(|n| self.is_read_only_for(n))\n-            .cloned()\n-            .collect();\n-        if locked.is_empty() {\n-            return false;\n-        }\n-        // Use the first locked env's reason as the headline (per-env\n-        // and per-account pins read the same regardless of which env);\n-        // list the locked names so the operator knows what to deselect.\n-        let reason = self\n-            .read_only_reason(&locked[0])\n-            .unwrap_or_else(|| \"read-only mode\".into());\n-        self.error_message = Some(format!(\n-            \"{reason} — {verb} refused: {} of {} selected env(s) locked ({})\",\n-            locked.len(),\n-            env_names.len(),\n-            locked.join(\", \")\n-        ));\n-        true\n+        true /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Human-readable explanation of *why* an env is read-only, used\n     /// in the toast / footer when a destructive action is blocked.\n     /// Returns `None` when the env isn't locked (caller shouldn't have\n     /// called this; defensive return). The three reasons are ordered\n     /// to match `is_read_only_for`'s precedence.\n     pub(crate) fn read_only_reason(&self, env_name: &str) -> Option<String> {\n",
+    "file": "src/app/safety.rs",
+    "function": {
+      "function_name": "App::deny_write_batch",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 122
+        },
+        "start": {
+          "column": 5,
+          "line": 79
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/app/safety.rs:97:9: replace App::deny_write_batch -> bool with true",
+    "package": "ebman",
+    "replacement": "true",
+    "span": {
+      "end": {
+        "column": 13,
+        "line": 121
+      },
+      "start": {
+        "column": 9,
+        "line": 97
+      }
+    }
+  },
+  {
+    "diff": "--- src/app/safety.rs\n+++ replace App::deny_write_batch -> bool with false\n@@ -89,41 +89,17 @@\n     /// probe so those produce their normal whole-fleet message, then\n     /// scans for per-env / per-account pins. Mirrors the precedence in\n     /// [`App::is_read_only_for`]. `verb` names the op for the toast.\n     pub(crate) fn deny_write_batch(&mut self, env_names: &[String], verb: &str) -> bool {\n         // Demo mode + global/freeze gates are env-independent: probe\n         // with the first env (or \"\") so the existing single-env path\n         // produces the familiar \"demo mode …\" / \"read-only mode …\" /\n         // \"deploys frozen …\" toast rather than a per-env list.\n-        let probe = env_names.first().map(|s| s.as_str()).unwrap_or(\"\");\n-        if self.demo_mode || self.read_only || self.deploy_freeze.is_some() {\n-            return self.deny_write(probe, verb);\n-        }\n-        let locked: Vec<String> = env_names\n-            .iter()\n-            .filter(|n| self.is_read_only_for(n))\n-            .cloned()\n-            .collect();\n-        if locked.is_empty() {\n-            return false;\n-        }\n-        // Use the first locked env's reason as the headline (per-env\n-        // and per-account pins read the same regardless of which env);\n-        // list the locked names so the operator knows what to deselect.\n-        let reason = self\n-            .read_only_reason(&locked[0])\n-            .unwrap_or_else(|| \"read-only mode\".into());\n-        self.error_message = Some(format!(\n-            \"{reason} — {verb} refused: {} of {} selected env(s) locked ({})\",\n-            locked.len(),\n-            env_names.len(),\n-            locked.join(\", \")\n-        ));\n-        true\n+        false /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Human-readable explanation of *why* an env is read-only, used\n     /// in the toast / footer when a destructive action is blocked.\n     /// Returns `None` when the env isn't locked (caller shouldn't have\n     /// called this; defensive return). The three reasons are ordered\n     /// to match `is_read_only_for`'s precedence.\n     pub(crate) fn read_only_reason(&self, env_name: &str) -> Option<String> {\n",
+    "file": "src/app/safety.rs",
+    "function": {
+      "function_name": "App::deny_write_batch",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 122
+        },
+        "start": {
+          "column": 5,
+          "line": 79
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/app/safety.rs:97:9: replace App::deny_write_batch -> bool with false",
+    "package": "ebman",
+    "replacement": "false",
+    "span": {
+      "end": {
+        "column": 13,
+        "line": 121
+      },
+      "start": {
+        "column": 9,
+        "line": 97
+      }
+    }
+  },
+  {
+    "diff": "--- src/app/safety.rs\n+++ replace || with && in App::deny_write_batch\n@@ -90,17 +90,17 @@\n     /// scans for per-env / per-account pins. Mirrors the precedence in\n     /// [`App::is_read_only_for`]. `verb` names the op for the toast.\n     pub(crate) fn deny_write_batch(&mut self, env_names: &[String], verb: &str) -> bool {\n         // Demo mode + global/freeze gates are env-independent: probe\n         // with the first env (or \"\") so the existing single-env path\n         // produces the familiar \"demo mode …\" / \"read-only mode …\" /\n         // \"deploys frozen …\" toast rather than a per-env list.\n         let probe = env_names.first().map(|s| s.as_str()).unwrap_or(\"\");\n-        if self.demo_mode || self.read_only || self.deploy_freeze.is_some() {\n+        if self.demo_mode || self.read_only && /* ~ changed by cargo-mutants ~ */ self.deploy_freeze.is_some() {\n             return self.deny_write(probe, verb);\n         }\n         let locked: Vec<String> = env_names\n             .iter()\n             .filter(|n| self.is_read_only_for(n))\n             .cloned()\n             .collect();\n         if locked.is_empty() {\n",
+    "file": "src/app/safety.rs",
+    "function": {
+      "function_name": "App::deny_write_batch",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 122
+        },
+        "start": {
+          "column": 5,
+          "line": 79
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/app/safety.rs:98:45: replace || with && in App::deny_write_batch",
+    "package": "ebman",
+    "replacement": "&&",
+    "span": {
+      "end": {
+        "column": 47,
+        "line": 98
+      },
+      "start": {
+        "column": 45,
+        "line": 98
+      }
+    }
+  },
+  {
+    "diff": "--- src/app/safety.rs\n+++ replace || with && in App::deny_write_batch\n@@ -90,17 +90,17 @@\n     /// scans for per-env / per-account pins. Mirrors the precedence in\n     /// [`App::is_read_only_for`]. `verb` names the op for the toast.\n     pub(crate) fn deny_write_batch(&mut self, env_names: &[String], verb: &str) -> bool {\n         // Demo mode + global/freeze gates are env-independent: probe\n         // with the first env (or \"\") so the existing single-env path\n         // produces the familiar \"demo mode …\" / \"read-only mode …\" /\n         // \"deploys frozen …\" toast rather than a per-env list.\n         let probe = env_names.first().map(|s| s.as_str()).unwrap_or(\"\");\n-        if self.demo_mode || self.read_only || self.deploy_freeze.is_some() {\n+        if self.demo_mode && /* ~ changed by cargo-mutants ~ */ self.read_only || self.deploy_freeze.is_some() {\n             return self.deny_write(probe, verb);\n         }\n         let locked: Vec<String> = env_names\n             .iter()\n             .filter(|n| self.is_read_only_for(n))\n             .cloned()\n             .collect();\n         if locked.is_empty() {\n",
+    "file": "src/app/safety.rs",
+    "function": {
+      "function_name": "App::deny_write_batch",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 122
+        },
+        "start": {
+          "column": 5,
+          "line": 79
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/app/safety.rs:98:27: replace || with && in App::deny_write_batch",
+    "package": "ebman",
+    "replacement": "&&",
+    "span": {
+      "end": {
+        "column": 29,
+        "line": 98
+      },
+      "start": {
+        "column": 27,
+        "line": 98
+      }
+    }
+  },
+  {
+    "diff": "--- src/app/safety.rs\n+++ replace App::read_only_reason -> Option<String> with None\n@@ -122,53 +122,11 @@\n     }\n \n     /// Human-readable explanation of *why* an env is read-only, used\n     /// in the toast / footer when a destructive action is blocked.\n     /// Returns `None` when the env isn't locked (caller shouldn't have\n     /// called this; defensive return). The three reasons are ordered\n     /// to match `is_read_only_for`'s precedence.\n     pub(crate) fn read_only_reason(&self, env_name: &str) -> Option<String> {\n-        if self.read_only {\n-            return Some(\"read-only mode (global toggle)\".into());\n-        }\n-        if let Some(freeze) = self.deploy_freeze.as_ref() {\n-            let age = (chrono::Utc::now() - freeze.frozen_at).num_seconds().max(0);\n-            let age = crate::app::humanize_short_age(std::time::Duration::from_secs(age as u64));\n-            // When the freeze came from `:incident START`, point the\n-            // operator at the gesture that actually closes it — a bare\n-            // :thaw-deploys would lift the lock but leave the incident\n-            // banner up, which is rarely what they meant.\n-            let unlock_hint = if self.incident.is_some() {\n-                \":incident END to close\"\n-            } else {\n-                \":thaw-deploys to unfreeze\"\n-            };\n-            return Some(if freeze.reason.is_empty() {\n-                format!(\"deploys frozen ({age} ago) — {unlock_hint}\")\n-            } else {\n-                format!(\n-                    \"deploys frozen ({age} ago): {} — {unlock_hint}\",\n-                    freeze.reason\n-                )\n-            });\n-        }\n-        if self.cfg.safety_envs.get(env_name).copied().unwrap_or(false) {\n-            return Some(format!(\n-                \"read-only mode (env pinned via safety.envs.{env_name})\"\n-            ));\n-        }\n-        if let Some(profile) = self.context.profile.as_deref() {\n-            if self\n-                .cfg\n-                .safety_accounts\n-                .get(profile)\n-                .copied()\n-                .unwrap_or(false)\n-            {\n-                return Some(format!(\n-                    \"read-only mode (account pinned via safety.accounts.{profile})\"\n-                ));\n-            }\n-        }\n-        None\n+        None /* ~ changed by cargo-mutants ~ */\n     }\n }\n",
+    "file": "src/app/safety.rs",
+    "function": {
+      "function_name": "App::read_only_reason",
+      "return_type": "-> Option<String>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 173
+        },
+        "start": {
+          "column": 5,
+          "line": 124
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/app/safety.rs:130:9: replace App::read_only_reason -> Option<String> with None",
+    "package": "ebman",
+    "replacement": "None",
+    "span": {
+      "end": {
+        "column": 13,
+        "line": 172
+      },
+      "start": {
+        "column": 9,
+        "line": 130
+      }
+    }
+  },
+  {
+    "diff": "--- src/app/safety.rs\n+++ replace App::read_only_reason -> Option<String> with Some(String::new())\n@@ -122,53 +122,11 @@\n     }\n \n     /// Human-readable explanation of *why* an env is read-only, used\n     /// in the toast / footer when a destructive action is blocked.\n     /// Returns `None` when the env isn't locked (caller shouldn't have\n     /// called this; defensive return). The three reasons are ordered\n     /// to match `is_read_only_for`'s precedence.\n     pub(crate) fn read_only_reason(&self, env_name: &str) -> Option<String> {\n-        if self.read_only {\n-            return Some(\"read-only mode (global toggle)\".into());\n-        }\n-        if let Some(freeze) = self.deploy_freeze.as_ref() {\n-            let age = (chrono::Utc::now() - freeze.frozen_at).num_seconds().max(0);\n-            let age = crate::app::humanize_short_age(std::time::Duration::from_secs(age as u64));\n-            // When the freeze came from `:incident START`, point the\n-            // operator at the gesture that actually closes it — a bare\n-            // :thaw-deploys would lift the lock but leave the incident\n-            // banner up, which is rarely what they meant.\n-            let unlock_hint = if self.incident.is_some() {\n-                \":incident END to close\"\n-            } else {\n-                \":thaw-deploys to unfreeze\"\n-            };\n-            return Some(if freeze.reason.is_empty() {\n-                format!(\"deploys frozen ({age} ago) — {unlock_hint}\")\n-            } else {\n-                format!(\n-                    \"deploys frozen ({age} ago): {} — {unlock_hint}\",\n-                    freeze.reason\n-                )\n-            });\n-        }\n-        if self.cfg.safety_envs.get(env_name).copied().unwrap_or(false) {\n-            return Some(format!(\n-                \"read-only mode (env pinned via safety.envs.{env_name})\"\n-            ));\n-        }\n-        if let Some(profile) = self.context.profile.as_deref() {\n-            if self\n-                .cfg\n-                .safety_accounts\n-                .get(profile)\n-                .copied()\n-                .unwrap_or(false)\n-            {\n-                return Some(format!(\n-                    \"read-only mode (account pinned via safety.accounts.{profile})\"\n-                ));\n-            }\n-        }\n-        None\n+        Some(String::new()) /* ~ changed by cargo-mutants ~ */\n     }\n }\n",
+    "file": "src/app/safety.rs",
+    "function": {
+      "function_name": "App::read_only_reason",
+      "return_type": "-> Option<String>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 173
+        },
+        "start": {
+          "column": 5,
+          "line": 124
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/app/safety.rs:130:9: replace App::read_only_reason -> Option<String> with Some(String::new())",
+    "package": "ebman",
+    "replacement": "Some(String::new())",
+    "span": {
+      "end": {
+        "column": 13,
+        "line": 172
+      },
+      "start": {
+        "column": 9,
+        "line": 130
+      }
+    }
+  },
+  {
+    "diff": "--- src/app/safety.rs\n+++ replace App::read_only_reason -> Option<String> with Some(\"xyzzy\".into())\n@@ -122,53 +122,11 @@\n     }\n \n     /// Human-readable explanation of *why* an env is read-only, used\n     /// in the toast / footer when a destructive action is blocked.\n     /// Returns `None` when the env isn't locked (caller shouldn't have\n     /// called this; defensive return). The three reasons are ordered\n     /// to match `is_read_only_for`'s precedence.\n     pub(crate) fn read_only_reason(&self, env_name: &str) -> Option<String> {\n-        if self.read_only {\n-            return Some(\"read-only mode (global toggle)\".into());\n-        }\n-        if let Some(freeze) = self.deploy_freeze.as_ref() {\n-            let age = (chrono::Utc::now() - freeze.frozen_at).num_seconds().max(0);\n-            let age = crate::app::humanize_short_age(std::time::Duration::from_secs(age as u64));\n-            // When the freeze came from `:incident START`, point the\n-            // operator at the gesture that actually closes it — a bare\n-            // :thaw-deploys would lift the lock but leave the incident\n-            // banner up, which is rarely what they meant.\n-            let unlock_hint = if self.incident.is_some() {\n-                \":incident END to close\"\n-            } else {\n-                \":thaw-deploys to unfreeze\"\n-            };\n-            return Some(if freeze.reason.is_empty() {\n-                format!(\"deploys frozen ({age} ago) — {unlock_hint}\")\n-            } else {\n-                format!(\n-                    \"deploys frozen ({age} ago): {} — {unlock_hint}\",\n-                    freeze.reason\n-                )\n-            });\n-        }\n-        if self.cfg.safety_envs.get(env_name).copied().unwrap_or(false) {\n-            return Some(format!(\n-                \"read-only mode (env pinned via safety.envs.{env_name})\"\n-            ));\n-        }\n-        if let Some(profile) = self.context.profile.as_deref() {\n-            if self\n-                .cfg\n-                .safety_accounts\n-                .get(profile)\n-                .copied()\n-                .unwrap_or(false)\n-            {\n-                return Some(format!(\n-                    \"read-only mode (account pinned via safety.accounts.{profile})\"\n-                ));\n-            }\n-        }\n-        None\n+        Some(\"xyzzy\".into()) /* ~ changed by cargo-mutants ~ */\n     }\n }\n",
+    "file": "src/app/safety.rs",
+    "function": {
+      "function_name": "App::read_only_reason",
+      "return_type": "-> Option<String>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 173
+        },
+        "start": {
+          "column": 5,
+          "line": 124
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/app/safety.rs:130:9: replace App::read_only_reason -> Option<String> with Some(\"xyzzy\".into())",
+    "package": "ebman",
+    "replacement": "Some(\"xyzzy\".into())",
+    "span": {
+      "end": {
+        "column": 13,
+        "line": 172
+      },
+      "start": {
+        "column": 9,
+        "line": 130
+      }
+    }
+  },
+  {
+    "diff": "--- src/app/safety.rs\n+++ replace - with + in App::read_only_reason\n@@ -126,17 +126,17 @@\n     /// Returns `None` when the env isn't locked (caller shouldn't have\n     /// called this; defensive return). The three reasons are ordered\n     /// to match `is_read_only_for`'s precedence.\n     pub(crate) fn read_only_reason(&self, env_name: &str) -> Option<String> {\n         if self.read_only {\n             return Some(\"read-only mode (global toggle)\".into());\n         }\n         if let Some(freeze) = self.deploy_freeze.as_ref() {\n-            let age = (chrono::Utc::now() - freeze.frozen_at).num_seconds().max(0);\n+            let age = (chrono::Utc::now() + /* ~ changed by cargo-mutants ~ */ freeze.frozen_at).num_seconds().max(0);\n             let age = crate::app::humanize_short_age(std::time::Duration::from_secs(age as u64));\n             // When the freeze came from `:incident START`, point the\n             // operator at the gesture that actually closes it — a bare\n             // :thaw-deploys would lift the lock but leave the incident\n             // banner up, which is rarely what they meant.\n             let unlock_hint = if self.incident.is_some() {\n                 \":incident END to close\"\n             } else {\n",
+    "file": "src/app/safety.rs",
+    "function": {
+      "function_name": "App::read_only_reason",
+      "return_type": "-> Option<String>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 173
+        },
+        "start": {
+          "column": 5,
+          "line": 124
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/app/safety.rs:134:43: replace - with + in App::read_only_reason",
+    "package": "ebman",
+    "replacement": "+",
+    "span": {
+      "end": {
+        "column": 44,
+        "line": 134
+      },
+      "start": {
+        "column": 43,
+        "line": 134
+      }
+    }
+  },
+  {
+    "diff": "--- src/app/safety.rs\n+++ replace - with / in App::read_only_reason\n@@ -126,17 +126,17 @@\n     /// Returns `None` when the env isn't locked (caller shouldn't have\n     /// called this; defensive return). The three reasons are ordered\n     /// to match `is_read_only_for`'s precedence.\n     pub(crate) fn read_only_reason(&self, env_name: &str) -> Option<String> {\n         if self.read_only {\n             return Some(\"read-only mode (global toggle)\".into());\n         }\n         if let Some(freeze) = self.deploy_freeze.as_ref() {\n-            let age = (chrono::Utc::now() - freeze.frozen_at).num_seconds().max(0);\n+            let age = (chrono::Utc::now() / /* ~ changed by cargo-mutants ~ */ freeze.frozen_at).num_seconds().max(0);\n             let age = crate::app::humanize_short_age(std::time::Duration::from_secs(age as u64));\n             // When the freeze came from `:incident START`, point the\n             // operator at the gesture that actually closes it — a bare\n             // :thaw-deploys would lift the lock but leave the incident\n             // banner up, which is rarely what they meant.\n             let unlock_hint = if self.incident.is_some() {\n                 \":incident END to close\"\n             } else {\n",
+    "file": "src/app/safety.rs",
+    "function": {
+      "function_name": "App::read_only_reason",
+      "return_type": "-> Option<String>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 173
+        },
+        "start": {
+          "column": 5,
+          "line": 124
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/app/safety.rs:134:43: replace - with / in App::read_only_reason",
+    "package": "ebman",
+    "replacement": "/",
+    "span": {
+      "end": {
+        "column": 44,
+        "line": 134
+      },
+      "start": {
+        "column": 43,
+        "line": 134
+      }
+    }
+  }
+]

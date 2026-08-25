@@ -1,0 +1,39 @@
+--- src/app/safety.rs
++++ replace App::deny_write -> bool with false
+@@ -50,35 +50,17 @@
+         // matching guard for the rationale — synthetic fleet, fake
+         // AwsClient, real audit log).
+         //
+         // When BOTH demo_mode and a safety-pin / read-only lock apply,
+         // mention both in the toast — operators using `--demo` to
+         // validate their `safety.envs.*` / `safety.accounts.*` config
+         // before going live shouldn't have to exit demo to confirm
+         // the pin is wired correctly. (0.17.4 review)
+-        if self.demo_mode {
+-            let pin_reason = self.read_only_reason(env_name);
+-            let suffix = match pin_reason {
+-                Some(reason) => format!(" — would also refuse: {reason}"),
+-                None => String::new(),
+-            };
+-            self.error_message = Some(format!(
+-                "demo mode — {verb} not dispatched (writes are inert; press q to exit){suffix}"
+-            ));
+-            return true;
+-        }
+-        if !self.is_read_only_for(env_name) {
+-            return false;
+-        }
+-        let reason = self
+-            .read_only_reason(env_name)
+-            .unwrap_or_else(|| "read-only mode".into());
+-        self.error_message = Some(format!("{reason} — {verb} disabled"));
+-        true
++        false /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Read-only gate for a *batch* destructive op over `env_names`.
+     /// Returns `true` (and sets `self.error_message`) when the op must
+     /// be refused. Unlike single-env [`App::deny_write`], a batch is gated
+     /// per-env: if ANY selected env is locked the whole batch is
+     /// refused (refuse-all, not skip-some — a safety pin shouldn't be
+     /// silently routed around for the unpinned remainder), with the

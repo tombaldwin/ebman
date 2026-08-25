@@ -1,0 +1,21 @@
+--- src/audit.rs
++++ delete match arm "account" in parse_audit_line
+@@ -100,17 +100,17 @@
+         extras: BTreeMap::new(),
+         raw: line.to_string(),
+     };
+     for (k, v) in pairs {
+         // Treat literal "-" as missing — same convention
+         // `write_audit_line` uses for absent account / profile.
+         let v_opt = if v == "-" { None } else { Some(v) };
+         match k.as_str() {
+-            "account" => entry.account = v_opt,
++             /* ~ changed by cargo-mutants ~ */
+             "profile" => entry.profile = v_opt,
+             "region" => entry.region = v_opt,
+             "rollout_id" => entry.rollout_id = v_opt,
+             "stage" => entry.stage = v_opt,
+             "action" => entry.action = v_opt,
+             "target" => entry.target = v_opt,
+             "version" => entry.version = v_opt,
+             "rule_id" => entry.rule_id = v_opt,

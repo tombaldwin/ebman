@@ -1,0 +1,87 @@
+--- src/audit.rs
++++ replace parse_kv_pairs -> Vec<(String, String)> with vec![("xyzzy".into(), String::new())]
+@@ -128,83 +128,17 @@
+ 
+ /// Tokenize a string into `key=value` pairs. Keys are `[A-Za-z0-9_]+`.
+ /// Values are either `"quoted"` (everything between matched `"`s) or
+ /// unquoted (everything from `=` to the next whitespace-then-key=
+ /// boundary or end-of-string). Naked spaces inside an unquoted value
+ /// are preserved — e.g. `target=env-a ↔ env-b stage=dispatched`
+ /// yields `target` = `"env-a ↔ env-b"` and `stage` = `"dispatched"`.
+ pub(crate) fn parse_kv_pairs(text: &str) -> Vec<(String, String)> {
+-    let chars: Vec<char> = text.chars().collect();
+-    let n = chars.len();
+-    let mut out: Vec<(String, String)> = Vec::new();
+-    let mut i = 0;
+-    while i < n {
+-        // Skip whitespace (space or tab).
+-        while i < n && (chars[i] == ' ' || chars[i] == '\t') {
+-            i += 1;
+-        }
+-        if i >= n {
+-            break;
+-        }
+-        // Read key: ident chars.
+-        let key_start = i;
+-        while i < n && (chars[i].is_alphanumeric() || chars[i] == '_') {
+-            i += 1;
+-        }
+-        if i == key_start || i >= n || chars[i] != '=' {
+-            // Not a key=value pair; skip to next whitespace.
+-            while i < n && chars[i] != ' ' && chars[i] != '\t' {
+-                i += 1;
+-            }
+-            continue;
+-        }
+-        let key: String = chars[key_start..i].iter().collect();
+-        i += 1; // consume '='
+-
+-        // Read value.
+-        let value: String = if i < n && chars[i] == '"' {
+-            // Quoted: everything until the next `"`.
+-            i += 1;
+-            let val_start = i;
+-            while i < n && chars[i] != '"' {
+-                i += 1;
+-            }
+-            let v: String = chars[val_start..i].iter().collect();
+-            if i < n {
+-                i += 1;
+-            } // consume closing "
+-            v
+-        } else {
+-            // Unquoted: extend until the next `key=` boundary or EOL.
+-            let val_start = i;
+-            while i < n {
+-                if chars[i] == ' ' || chars[i] == '\t' {
+-                    // Lookahead: does the next non-whitespace chunk
+-                    // look like `ident=`? If so, stop here.
+-                    let mut j = i + 1;
+-                    while j < n && (chars[j] == ' ' || chars[j] == '\t') {
+-                        j += 1;
+-                    }
+-                    let ident_start = j;
+-                    while j < n && (chars[j].is_alphanumeric() || chars[j] == '_') {
+-                        j += 1;
+-                    }
+-                    if j > ident_start && j < n && chars[j] == '=' {
+-                        break;
+-                    }
+-                }
+-                i += 1;
+-            }
+-            let raw: String = chars[val_start..i].iter().collect();
+-            raw.trim().to_string()
+-        };
+-        out.push((key, value));
+-    }
+-    out
++    vec![("xyzzy".into(), String::new())] /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Sanitize a value-string for embedding in an audit-log line as the
+ /// inner content of a quoted `key="..."` pair. Replaces:
+ ///
+ /// - `"` → `'` so the closing quote is unambiguous;
+ /// - `\n`, `\r`, `\t` → ` ` so a multi-line AWS error doesn't split
+ ///   one audit entry into two on disk (the parser reads line-by-line,

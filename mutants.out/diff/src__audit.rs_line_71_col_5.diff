@@ -1,0 +1,76 @@
+--- src/audit.rs
++++ replace parse_audit_line -> Option<AuditEntry> with None
+@@ -63,72 +63,17 @@
+     pub err: Option<String>,
+     pub extras: BTreeMap<String, String>,
+     pub raw: String,
+ }
+ 
+ /// Parse one audit-log line. Returns `None` for blank lines or lines
+ /// without an RFC3339-shaped timestamp as the first tab field.
+ pub(crate) fn parse_audit_line(line: &str) -> Option<AuditEntry> {
+-    let line = line.trim_end_matches('\n').trim_end_matches('\r');
+-    if line.is_empty() {
+-        return None;
+-    }
+-    let mut tabs = line.splitn(2, '\t');
+-    let when = tabs.next()?.trim().to_string();
+-    // Sanity: timestamp should at least look RFC3339-ish (`YYYY-MM-DDT...`).
+-    if when.len() < 10 || when.chars().nth(4) != Some('-') {
+-        return None;
+-    }
+-    let rest = tabs.next().unwrap_or("");
+-    // Tokenize the whole rest-of-line as key=value pairs. Tab and
+-    // space both function as separators; the kv parser walks until
+-    // the next `key=` boundary regardless of which one delimits.
+-    let pairs = parse_kv_pairs(rest);
+-
+-    let mut entry = AuditEntry {
+-        when,
+-        account: None,
+-        profile: None,
+-        region: None,
+-        rollout_id: None,
+-        stage: None,
+-        action: None,
+-        target: None,
+-        version: None,
+-        rule_id: None,
+-        outcome: None,
+-        err: None,
+-        extras: BTreeMap::new(),
+-        raw: line.to_string(),
+-    };
+-    for (k, v) in pairs {
+-        // Treat literal "-" as missing — same convention
+-        // `write_audit_line` uses for absent account / profile.
+-        let v_opt = if v == "-" { None } else { Some(v) };
+-        match k.as_str() {
+-            "account" => entry.account = v_opt,
+-            "profile" => entry.profile = v_opt,
+-            "region" => entry.region = v_opt,
+-            "rollout_id" => entry.rollout_id = v_opt,
+-            "stage" => entry.stage = v_opt,
+-            "action" => entry.action = v_opt,
+-            "target" => entry.target = v_opt,
+-            "version" => entry.version = v_opt,
+-            "rule_id" => entry.rule_id = v_opt,
+-            "outcome" => entry.outcome = v_opt,
+-            "err" => entry.err = v_opt,
+-            _ => {
+-                if let Some(v) = v_opt {
+-                    entry.extras.insert(k, v);
+-                }
+-            }
+-        }
+-    }
+-    Some(entry)
++    None /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Tokenize a string into `key=value` pairs. Keys are `[A-Za-z0-9_]+`.
+ /// Values are either `"quoted"` (everything between matched `"`s) or
+ /// unquoted (everything from `=` to the next whitespace-then-key=
+ /// boundary or end-of-string). Naked spaces inside an unquoted value
+ /// are preserved — e.g. `target=env-a ↔ env-b stage=dispatched`
+ /// yields `target` = `"env-a ↔ env-b"` and `stage` = `"dispatched"`.
