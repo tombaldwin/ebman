@@ -12,6 +12,12 @@ homepage = "https://github.com/tombaldwin/ebman"
 keywords = ["aws", "elasticbeanstalk", "tui", "ratatui"]
 categories = ["command-line-utilities"]
 
+# Belt as well as braces. `.gitignore` keeps these out of git; this keeps
+# them out of the published tarball even if one is ever committed again.
+# v0.34.1 shipped 92 files it should not have, including a lock.json
+# carrying the build machine's hostname and username.
+exclude = ["mutants.out*", "target"]
+
 [dependencies]
 # `tb-tui-common` — shared TUI helpers (font_probe / overlay / theme /
 # splash / util), now its own repo + crate:

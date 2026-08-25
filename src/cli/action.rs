@@ -494,12 +494,6 @@ async fn run_deploy(
     }
 }
 
-/// Per-region dispatch helper shared by sequential + parallel paths.
-/// Calls `deploy_version`; optionally polls until Green (or the
-/// `--wait-for-green` deadline elapses). Emits the per-region
-/// `stage=dispatched` and `stage=completed` audit-log lines. Returns
-/// `Ok(())` on Green (or just dispatched if no wait); `Err(msg)`
-/// when dispatch fails or the deadline elapses without Green.
 /// Pure: does this deploy need watching after dispatch?
 ///
 /// `--wait-for-green` and `--auto-rollback` are independent opt-ins and
@@ -526,6 +520,12 @@ fn auto_rollback_impossible(auto_rollback_secs: Option<u64>, snapshot_label: &st
     auto_rollback_secs.is_some() && snapshot_label.is_empty()
 }
 
+/// Per-region dispatch helper shared by sequential + parallel paths.
+/// Calls `deploy_version`; optionally polls until Green (or the
+/// `--wait-for-green` deadline elapses). Emits the per-region
+/// `stage=dispatched` and `stage=completed` audit-log lines. Returns
+/// `Ok(())` on Green (or just dispatched if no wait); `Err(msg)`
+/// when dispatch fails or the deadline elapses without Green.
 async fn dispatch_one_region(
     client: &aws::AwsClient,
     env: &str,

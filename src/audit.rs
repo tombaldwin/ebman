@@ -30,7 +30,12 @@
 //! - Normal action:
 //!   `{rfc3339}\taccount=A\tprofile=P\tregion=R\tstage=S action=Act target=Env [outcome=ok|err="..."]`
 //! - Rollout:
-//!   `{rfc3339}\trollout_id=ID\tregion=R\tstage=S action=Rollout target=Env version=V [outcome=ok|err="..."]`
+//!   `{rfc3339}\trollout_id=ID\tprofile=P\tregion=R\tstage=S action=Rollout target=Env version=V [outcome=ok|err="..."]`
+//!   — `profile` was INSERTED BEFORE `region` in 0.34.2, so a
+//!   positional/tab-index reader of rollout lines shifts by one. Nothing
+//!   advertised parses positionally (`ebman audit --json` is the
+//!   supported consumer and `parse_kv_pairs` is key-value), but it is
+//!   the sentence a log-shipper owner needs.
 //! - Lint fix:
 //!   `{rfc3339}\tregion=R\tstage=fix action=SetOption target=Env rule_id=ID namespace=NS name=N value="V" outcome=ok|err="..."`
 //!
@@ -766,11 +771,22 @@ fn write_audit_line_raw(tail: &str) {
         // Strip the leading tab so the detail string is the same
         // shape webhook consumers expect (key=value space-separated).
         let detail = tail.trim_start_matches('\t').replace('\t', " ");
-        let region = detail
-            .split(' ')
-            .find_map(|tok| tok.strip_prefix("region="))
-            .unwrap_or("-");
-        fire_webhook(url, None, None, region, &detail, &when);
+        // Same extraction for `profile` as for `region`, and for the
+        // same reason. Rollout lines gained a `profile=` field but this
+        // still passed `None`, so a rollout webhook contradicted itself:
+        // the structured `profile` was empty while `detail` right beside
+        // it read `profile=prod`. The `region` line above is the
+        // precedent — a field added to the line shape has to be chased
+        // here too, or the webhook and the log disagree.
+        let field = |k: &str| {
+            detail
+                .split(' ')
+                .find_map(|tok| tok.strip_prefix(k))
+                .filter(|v| !v.is_empty() && *v != "-")
+        };
+        let region = field("region=").unwrap_or("-");
+        let profile = field("profile=");
+        fire_webhook(url, None, profile, region, &detail, &when);
     }
 }
 
@@ -1641,5 +1657,44 @@ mod parser_properties {
             get(r#"err="denied: a=b c=d" stage=completed"#, "stage").as_deref(),
             Some("completed")
         );
+    }
+
+    /// The module doc at the top of this file claims the writers and the
+    /// parser are co-located so the line format has "a single source of
+    /// truth". That claim went stale the moment `profile=` was added to
+    /// rollout lines and the doc was not updated — which is exactly how
+    /// the 0.34.2 review caught it.
+    ///
+    /// So the claim is now checked rather than asserted: every field the
+    /// rollout writer emits must appear in the documented shape.
+    #[test]
+    fn the_documented_rollout_shape_matches_what_the_writer_emits() {
+        let line = super::rollout_line(
+            "rid",
+            Some("prod"),
+            "eu-west-1",
+            "api",
+            "v9",
+            "dispatched",
+            None,
+        );
+        let doc = include_str!("audit.rs");
+        let doc_shape = doc
+            .lines()
+            .find(|l| l.contains("rollout_id=ID"))
+            .expect("the module doc must describe the rollout line shape");
+
+        for key in line
+            .split(['\t', ' '])
+            .filter_map(|tok| tok.split_once('=').map(|(k, _)| k))
+            .filter(|k| !k.is_empty())
+        {
+            assert!(
+                doc_shape.contains(&format!("{key}=")),
+                "the writer emits `{key}=` but the module doc's rollout shape \
+                 does not mention it — the 'single source of truth' comment is \
+                 only true if this holds:\n  doc: {doc_shape}\n  line: {line}"
+            );
+        }
     }
 }
