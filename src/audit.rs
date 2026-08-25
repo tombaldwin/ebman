@@ -506,28 +506,56 @@ fn append_extras(detail: &mut String, extras: &[(&str, &str)]) {
 /// (and emit `outcome=err` on completion). `rollout_id` correlates
 /// every per-region line within a single `ebman action rollout`
 /// invocation.
-pub(crate) fn append_rollout(
+/// Pure: the tail of a rollout audit line. Extracted so the field set
+/// can be asserted without writing to the log — `append_rollout` is the
+/// I/O wrapper around it.
+fn rollout_line(
     rollout_id: &str,
+    profile: Option<&str>,
     region: &str,
     env: &str,
     version: &str,
     stage: &str,
     err: Option<&str>,
-) {
+) -> String {
     let outcome_suffix = match (stage, err) {
         ("completed", None) => " outcome=ok".to_string(),
         ("completed", Some(e)) => format!(" outcome=err err=\"{}\"", escape_value(e)),
         (_, Some(e)) => format!(" err=\"{}\"", escape_value(e)),
         (_, None) => String::new(),
     };
-    let line = format!(
-        "\trollout_id={}\tregion={}\tstage={stage} action=Rollout {} {}{outcome_suffix}",
+    // `profile` rides along even though this shape does not use the
+    // standard `account=/profile=/region=` opener.
+    //
+    // Rollout is the only CLI command that takes `--profile`, it is
+    // multi-region by construction, and the file that dispatches it
+    // calls it "the biggest write the CLI has". So it was the one
+    // command whose audit lines did not record which account the write
+    // landed in — precisely the question you ask the audit log after an
+    // incident. Additive and safe: the parser is key-value and keeps
+    // unrecognised keys in `extras`.
+    format!(
+        "\trollout_id={}\tprofile={}\tregion={}\tstage={stage} action=Rollout {} {}{outcome_suffix}",
         escape_value(rollout_id),
+        escape_value(profile.unwrap_or("-")),
         escape_value(region),
         field_token("target", env),
         field_token("version", version)
-    );
-    write_audit_line_raw(&line);
+    )
+}
+
+pub(crate) fn append_rollout(
+    rollout_id: &str,
+    profile: Option<&str>,
+    region: &str,
+    env: &str,
+    version: &str,
+    stage: &str,
+    err: Option<&str>,
+) {
+    write_audit_line_raw(&rollout_line(
+        rollout_id, profile, region, env, version, stage, err,
+    ));
 }
 
 /// Append a `stage=fix action=SetOption` line for an `ebman lint
@@ -1239,7 +1267,10 @@ mod tests {
         // a separate, replayable entry.
         let path = crate::util::cache_dir().join("audit.log");
         super::append_action_dispatched(Some(FORGE), Some(FORGE), FORGE, "Restart", FORGE, &[]);
-        super::append_rollout(FORGE, FORGE, FORGE, FORGE, "dispatched", None);
+        // `profile` is FORGE too: it is a new field on this line shape, and
+        // an unescaped field is an injection vector. Passing the forged
+        // value here is what makes this guard cover it.
+        super::append_rollout(FORGE, Some(FORGE), FORGE, FORGE, FORGE, "dispatched", None);
         super::append_lint_fix(FORGE, FORGE, FORGE, FORGE, FORGE, FORGE, None);
 
         let body = std::fs::read_to_string(&path).expect("audit log written");
@@ -1418,5 +1449,39 @@ mod parser_properties {
                 prop_assert!(!k.is_empty());
             }
         }
+    }
+
+    /// A rollout audit line must record which profile the write went
+    /// through.
+    ///
+    /// Rollout is the only CLI command that takes `--profile`, it is
+    /// multi-region by construction, and `cli/action.rs` calls it "the
+    /// biggest write the CLI has" — and its lines were the only ones
+    /// carrying no account or profile, because this shape uses
+    /// `rollout_id=` as its opener and went through the raw writer.
+    /// "Which account did that rollout land in" is the first question
+    /// the audit log is asked after an incident.
+    #[test]
+    fn a_rollout_line_records_the_profile() {
+        let line = super::rollout_line(
+            "rid-1",
+            Some("prod"),
+            "eu-west-1",
+            "api",
+            "v9",
+            "dispatched",
+            None,
+        );
+        assert!(
+            line.contains("profile=prod"),
+            "the profile the write went through must be on the line: {line}"
+        );
+        assert!(line.contains("rollout_id=rid-1"), "{line}");
+        assert!(line.contains("region=eu-west-1"), "{line}");
+
+        // Absent renders as `-`, matching the standard opener, rather
+        // than vanishing and shifting the field order for a parser.
+        let anon = super::rollout_line("rid-1", None, "eu-west-1", "api", "v9", "dispatched", None);
+        assert!(anon.contains("profile=-"), "{anon}");
     }
 }

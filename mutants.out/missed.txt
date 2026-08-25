@@ -1,3 +1,10 @@
-src/audit.rs:78:19: replace < with == in parse_audit_line
-src/audit.rs:78:19: replace < with <= in parse_audit_line
-src/audit.rs:140:13: replace < with <= in parse_kv_pairs
+src/cli/mod.rs:80:5: replace refuse_if_frozen with ()
+src/cli/mod.rs:127:5: replace refuse_write with ()
+src/cli/mod.rs:178:5: replace drain_before_return with ()
+src/freeze.rs:40:5: replace marker_path -> PathBuf with Default::default()
+src/freeze.rs:48:5: replace write_marker -> std::io::Result<()> with Ok(())
+src/freeze.rs:106:5: replace read_active -> Option<FreezeMarker> with None
+src/freeze.rs:153:5: replace pid_alive -> bool with true
+src/freeze.rs:153:5: replace pid_alive -> bool with false
+src/freeze.rs:154:12: replace || with && in pid_alive
+src/freeze.rs:154:7: replace == with != in pid_alive

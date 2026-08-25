@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **Rollout audit lines did not record which profile the write went
+  through.** Every other audit line opens
+  `account=…  profile=…  region=…`; rollout uses `rollout_id=` as its
+  opener and went through the raw writer, so it carried neither. Rollout
+  is the only CLI command that takes `--profile`, it is multi-region by
+  construction, and `cli/action.rs` calls it "the biggest write the CLI
+  has" — so the one command where "which account did that land in"
+  matters most was the one that didn't say. The profile is now on the
+  line, taken from the client that performed the write rather than from
+  the flag, and covered by the audit injection guard.
+
 - **A home-client refresh left the account in the header stale.**
   `spawn_home_client_refresh` exists so credentials edited on disk take
   effect, but `apply_client_refresh` deliberately leaves `context`

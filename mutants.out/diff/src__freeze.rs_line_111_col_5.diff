@@ -1,0 +1,33 @@
+--- src/freeze.rs
++++ replace read_active_with -> Option<FreezeMarker> with None
+@@ -103,29 +103,17 @@
+ /// alive. A dead-pid marker is stale (crashed TUI) — ignored and
+ /// removed so it can't confuse later readers.
+ pub(crate) fn read_active() -> Option<FreezeMarker> {
+     read_active_with(&marker_path(), pid_alive)
+ }
+ 
+ /// Testable core: liveness probe injected.
+ fn read_active_with(path: &Path, alive: impl Fn(u32) -> bool) -> Option<FreezeMarker> {
+-    let m = parse_file(path)?;
+-    if alive(m.pid) {
+-        return Some(m);
+-    }
+-    // Dead pid → stale. Re-read immediately before removing and only
+-    // delete if the on-disk pid is STILL the dead one (I1): between
+-    // our read and here, another session could have overwritten the
+-    // file with a live-pid freeze, and a blind remove would silently
+-    // drop a VALID cross-process freeze.
+-    if parse_file(path).map(|m2| m2.pid) == Some(m.pid) {
+-        let _ = std::fs::remove_file(path);
+-    }
+-    None
++    None /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn parse_file(path: &Path) -> Option<FreezeMarker> {
+     let text = std::fs::read_to_string(path).ok()?;
+     parse_marker(&text)
+ }
+ 
+ /// Pure parse of the marker body. Tolerant of unknown keys; missing

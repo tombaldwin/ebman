@@ -1,0 +1,21 @@
+--- src/cli/mod.rs
++++ replace drain_before_return with ()
+@@ -170,17 +170,17 @@
+ pub(crate) async fn exit_after_drain(code: i32) -> ! {
+     crate::audit::drain_webhooks(std::time::Duration::from_secs(12)).await;
+     std::process::exit(code);
+ }
+ 
+ /// Drain in-flight webhook POSTs before a CLI command's Ok return —
+ /// same rationale as [`exit_after_drain`], for the success paths.
+ pub(crate) async fn drain_before_return() {
+-    crate::audit::drain_webhooks(std::time::Duration::from_secs(12)).await;
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+ 
+     // decide_poll matrix tests live in `src/deploy_poll.rs`
+     // alongside the function itself (0.16 move).

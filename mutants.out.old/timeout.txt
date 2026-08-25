@@ -1,0 +1,8 @@
+src/audit.rs:142:17: replace < with == in parse_kv_pairs
+src/audit.rs:142:17: replace < with > in parse_kv_pairs
+src/audit.rs:142:41: replace || with && in parse_kv_pairs
+src/audit.rs:142:34: replace == with != in parse_kv_pairs
+src/audit.rs:142:53: replace == with != in parse_kv_pairs
+src/audit.rs:143:15: replace += with -= in parse_kv_pairs
+src/audit.rs:143:15: replace += with *= in parse_kv_pairs
+src/audit.rs:151:15: replace += with -= in parse_kv_pairs

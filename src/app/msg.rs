@@ -927,6 +927,7 @@ impl App {
             // arrival means the region's outcome is known.
             crate::audit::append_rollout(
                 &flow.rollout_id,
+                self.context.profile.as_deref(),
                 &region,
                 &flow.env_name,
                 &flow.version_label,

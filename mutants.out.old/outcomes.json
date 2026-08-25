@@ -8,7 +8,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 170.25043625,
+          "duration": 163.764041,
           "process_status": "Success",
           "argv": [
             "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -20,7 +20,7 @@
         },
         {
           "phase": "Test",
-          "duration": 4.947232875,
+          "duration": 4.823242417,
           "process_status": "Success",
           "argv": [
             "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -35,625 +35,31 @@
     {
       "scenario": {
         "Mutant": {
-          "name": "src/app/safety.rs:33:9: replace App::is_read_only_for -> bool with true",
+          "name": "src/audit.rs:71:5: replace parse_audit_line -> Option<AuditEntry> with None",
           "package": "ebman",
-          "file": "src/app/safety.rs",
+          "file": "src/audit.rs",
           "function": {
-            "function_name": "App::is_read_only_for",
-            "return_type": "-> bool",
+            "function_name": "parse_audit_line",
+            "return_type": "-> Option<AuditEntry>",
             "span": {
               "start": {
-                "line": 12,
-                "column": 5
+                "line": 68,
+                "column": 1
               },
               "end": {
-                "line": 34,
-                "column": 6
+                "line": 127,
+                "column": 2
               }
             }
           },
           "span": {
             "start": {
-              "line": 33,
-              "column": 9
+              "line": 71,
+              "column": 5
             },
             "end": {
-              "line": 33,
-              "column": 50
-            }
-          },
-          "replacement": "true",
-          "genre": "FnValue"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/src__app__safety.rs_line_33_col_9.log",
-      "diff_path": "diff/src__app__safety.rs_line_33_col_9.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 6.7113905,
-          "process_status": "Success",
-          "argv": [
-            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "test",
-            "--no-run",
-            "--verbose",
-            "--package=ebman@0.34.1"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 4.402896208,
-          "process_status": {
-            "Failure": 101
-          },
-          "argv": [
-            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "test",
-            "--verbose",
-            "--package=ebman@0.34.1",
-            "--lib"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "src/app/safety.rs:33:9: replace App::is_read_only_for -> bool with false",
-          "package": "ebman",
-          "file": "src/app/safety.rs",
-          "function": {
-            "function_name": "App::is_read_only_for",
-            "return_type": "-> bool",
-            "span": {
-              "start": {
-                "line": 12,
-                "column": 5
-              },
-              "end": {
-                "line": 34,
-                "column": 6
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 33,
-              "column": 9
-            },
-            "end": {
-              "line": 33,
-              "column": 50
-            }
-          },
-          "replacement": "false",
-          "genre": "FnValue"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/src__app__safety.rs_line_33_col_9_001.log",
-      "diff_path": "diff/src__app__safety.rs_line_33_col_9_001.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 5.882049208,
-          "process_status": "Success",
-          "argv": [
-            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "test",
-            "--no-run",
-            "--verbose",
-            "--package=ebman@0.34.1"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 4.343381041,
-          "process_status": {
-            "Failure": 101
-          },
-          "argv": [
-            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "test",
-            "--verbose",
-            "--package=ebman@0.34.1",
-            "--lib"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "src/app/safety.rs:58:9: replace App::deny_write -> bool with true",
-          "package": "ebman",
-          "file": "src/app/safety.rs",
-          "function": {
-            "function_name": "App::deny_write",
-            "return_type": "-> bool",
-            "span": {
-              "start": {
-                "line": 36,
-                "column": 5
-              },
-              "end": {
-                "line": 77,
-                "column": 6
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 58,
-              "column": 9
-            },
-            "end": {
-              "line": 76,
-              "column": 13
-            }
-          },
-          "replacement": "true",
-          "genre": "FnValue"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/src__app__safety.rs_line_58_col_9.log",
-      "diff_path": "diff/src__app__safety.rs_line_58_col_9.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 7.659240125,
-          "process_status": "Success",
-          "argv": [
-            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "test",
-            "--no-run",
-            "--verbose",
-            "--package=ebman@0.34.1"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 4.278650459,
-          "process_status": {
-            "Failure": 101
-          },
-          "argv": [
-            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "test",
-            "--verbose",
-            "--package=ebman@0.34.1",
-            "--lib"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "src/app/safety.rs:58:9: replace App::deny_write -> bool with false",
-          "package": "ebman",
-          "file": "src/app/safety.rs",
-          "function": {
-            "function_name": "App::deny_write",
-            "return_type": "-> bool",
-            "span": {
-              "start": {
-                "line": 36,
-                "column": 5
-              },
-              "end": {
-                "line": 77,
-                "column": 6
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 58,
-              "column": 9
-            },
-            "end": {
-              "line": 76,
-              "column": 13
-            }
-          },
-          "replacement": "false",
-          "genre": "FnValue"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/src__app__safety.rs_line_58_col_9_001.log",
-      "diff_path": "diff/src__app__safety.rs_line_58_col_9_001.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 5.750567959,
-          "process_status": "Success",
-          "argv": [
-            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "test",
-            "--no-run",
-            "--verbose",
-            "--package=ebman@0.34.1"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 4.298681583,
-          "process_status": {
-            "Failure": 101
-          },
-          "argv": [
-            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "test",
-            "--verbose",
-            "--package=ebman@0.34.1",
-            "--lib"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "src/app/safety.rs:69:12: delete ! in App::deny_write",
-          "package": "ebman",
-          "file": "src/app/safety.rs",
-          "function": {
-            "function_name": "App::deny_write",
-            "return_type": "-> bool",
-            "span": {
-              "start": {
-                "line": 36,
-                "column": 5
-              },
-              "end": {
-                "line": 77,
-                "column": 6
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 69,
-              "column": 12
-            },
-            "end": {
-              "line": 69,
-              "column": 13
-            }
-          },
-          "replacement": "",
-          "genre": "UnaryOperator"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/src__app__safety.rs_line_69_col_12.log",
-      "diff_path": "diff/src__app__safety.rs_line_69_col_12.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 7.675826417,
-          "process_status": "Success",
-          "argv": [
-            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "test",
-            "--no-run",
-            "--verbose",
-            "--package=ebman@0.34.1"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 4.353786334,
-          "process_status": {
-            "Failure": 101
-          },
-          "argv": [
-            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "test",
-            "--verbose",
-            "--package=ebman@0.34.1",
-            "--lib"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "src/app/safety.rs:97:9: replace App::deny_write_batch -> bool with true",
-          "package": "ebman",
-          "file": "src/app/safety.rs",
-          "function": {
-            "function_name": "App::deny_write_batch",
-            "return_type": "-> bool",
-            "span": {
-              "start": {
-                "line": 79,
-                "column": 5
-              },
-              "end": {
-                "line": 122,
-                "column": 6
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 97,
-              "column": 9
-            },
-            "end": {
-              "line": 121,
-              "column": 13
-            }
-          },
-          "replacement": "true",
-          "genre": "FnValue"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/src__app__safety.rs_line_97_col_9.log",
-      "diff_path": "diff/src__app__safety.rs_line_97_col_9.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 7.9363202919999996,
-          "process_status": "Success",
-          "argv": [
-            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "test",
-            "--no-run",
-            "--verbose",
-            "--package=ebman@0.34.1"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 4.314959459,
-          "process_status": {
-            "Failure": 101
-          },
-          "argv": [
-            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "test",
-            "--verbose",
-            "--package=ebman@0.34.1",
-            "--lib"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "src/app/safety.rs:97:9: replace App::deny_write_batch -> bool with false",
-          "package": "ebman",
-          "file": "src/app/safety.rs",
-          "function": {
-            "function_name": "App::deny_write_batch",
-            "return_type": "-> bool",
-            "span": {
-              "start": {
-                "line": 79,
-                "column": 5
-              },
-              "end": {
-                "line": 122,
-                "column": 6
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 97,
-              "column": 9
-            },
-            "end": {
-              "line": 121,
-              "column": 13
-            }
-          },
-          "replacement": "false",
-          "genre": "FnValue"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/src__app__safety.rs_line_97_col_9_001.log",
-      "diff_path": "diff/src__app__safety.rs_line_97_col_9_001.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 5.693008375,
-          "process_status": "Success",
-          "argv": [
-            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "test",
-            "--no-run",
-            "--verbose",
-            "--package=ebman@0.34.1"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 4.325019791,
-          "process_status": {
-            "Failure": 101
-          },
-          "argv": [
-            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "test",
-            "--verbose",
-            "--package=ebman@0.34.1",
-            "--lib"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "src/app/safety.rs:98:45: replace || with && in App::deny_write_batch",
-          "package": "ebman",
-          "file": "src/app/safety.rs",
-          "function": {
-            "function_name": "App::deny_write_batch",
-            "return_type": "-> bool",
-            "span": {
-              "start": {
-                "line": 79,
-                "column": 5
-              },
-              "end": {
-                "line": 122,
-                "column": 6
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 98,
-              "column": 45
-            },
-            "end": {
-              "line": 98,
-              "column": 47
-            }
-          },
-          "replacement": "&&",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/src__app__safety.rs_line_98_col_45.log",
-      "diff_path": "diff/src__app__safety.rs_line_98_col_45.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 8.01128775,
-          "process_status": "Success",
-          "argv": [
-            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "test",
-            "--no-run",
-            "--verbose",
-            "--package=ebman@0.34.1"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 4.374358917,
-          "process_status": {
-            "Failure": 101
-          },
-          "argv": [
-            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "test",
-            "--verbose",
-            "--package=ebman@0.34.1",
-            "--lib"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "src/app/safety.rs:98:27: replace || with && in App::deny_write_batch",
-          "package": "ebman",
-          "file": "src/app/safety.rs",
-          "function": {
-            "function_name": "App::deny_write_batch",
-            "return_type": "-> bool",
-            "span": {
-              "start": {
-                "line": 79,
-                "column": 5
-              },
-              "end": {
-                "line": 122,
-                "column": 6
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 98,
-              "column": 27
-            },
-            "end": {
-              "line": 98,
-              "column": 29
-            }
-          },
-          "replacement": "&&",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/src__app__safety.rs_line_98_col_27.log",
-      "diff_path": "diff/src__app__safety.rs_line_98_col_27.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 5.654324042,
-          "process_status": "Success",
-          "argv": [
-            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "test",
-            "--no-run",
-            "--verbose",
-            "--package=ebman@0.34.1"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 4.36584075,
-          "process_status": {
-            "Failure": 101
-          },
-          "argv": [
-            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "test",
-            "--verbose",
-            "--package=ebman@0.34.1",
-            "--lib"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "src/app/safety.rs:130:9: replace App::read_only_reason -> Option<String> with None",
-          "package": "ebman",
-          "file": "src/app/safety.rs",
-          "function": {
-            "function_name": "App::read_only_reason",
-            "return_type": "-> Option<String>",
-            "span": {
-              "start": {
-                "line": 124,
-                "column": 5
-              },
-              "end": {
-                "line": 173,
-                "column": 6
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 130,
-              "column": 9
-            },
-            "end": {
-              "line": 172,
-              "column": 13
+              "line": 126,
+              "column": 16
             }
           },
           "replacement": "None",
@@ -661,12 +67,12 @@
         }
       },
       "summary": "CaughtMutant",
-      "log_path": "log/src__app__safety.rs_line_130_col_9.log",
-      "diff_path": "diff/src__app__safety.rs_line_130_col_9.diff",
+      "log_path": "log/src__audit.rs_line_71_col_5.log",
+      "diff_path": "diff/src__audit.rs_line_71_col_5.diff",
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 5.683339292,
+          "duration": 12.705207625,
           "process_status": "Success",
           "argv": [
             "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -678,7 +84,7 @@
         },
         {
           "phase": "Test",
-          "duration": 4.83362675,
+          "duration": 4.485863542,
           "process_status": {
             "Failure": 101
           },
@@ -695,44 +101,1216 @@
     {
       "scenario": {
         "Mutant": {
-          "name": "src/app/safety.rs:130:9: replace App::read_only_reason -> Option<String> with Some(String::new())",
+          "name": "src/audit.rs:71:5: replace parse_audit_line -> Option<AuditEntry> with Some(Default::default())",
           "package": "ebman",
-          "file": "src/app/safety.rs",
+          "file": "src/audit.rs",
           "function": {
-            "function_name": "App::read_only_reason",
-            "return_type": "-> Option<String>",
+            "function_name": "parse_audit_line",
+            "return_type": "-> Option<AuditEntry>",
             "span": {
               "start": {
-                "line": 124,
-                "column": 5
+                "line": 68,
+                "column": 1
               },
               "end": {
-                "line": 173,
-                "column": 6
+                "line": 127,
+                "column": 2
               }
             }
           },
           "span": {
             "start": {
-              "line": 130,
-              "column": 9
+              "line": 71,
+              "column": 5
             },
             "end": {
-              "line": 172,
-              "column": 13
+              "line": 126,
+              "column": 16
             }
           },
-          "replacement": "Some(String::new())",
+          "replacement": "Some(Default::default())",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/src__audit.rs_line_71_col_5_001.log",
+      "diff_path": "diff/src__audit.rs_line_71_col_5_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.870445958,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:78:24: replace || with && in parse_audit_line",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_audit_line",
+            "return_type": "-> Option<AuditEntry>",
+            "span": {
+              "start": {
+                "line": 68,
+                "column": 1
+              },
+              "end": {
+                "line": 127,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 78,
+              "column": 24
+            },
+            "end": {
+              "line": 78,
+              "column": 26
+            }
+          },
+          "replacement": "&&",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__audit.rs_line_78_col_24.log",
+      "diff_path": "diff/src__audit.rs_line_78_col_24.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 12.04774175,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.604906667,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:78:19: replace < with == in parse_audit_line",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_audit_line",
+            "return_type": "-> Option<AuditEntry>",
+            "span": {
+              "start": {
+                "line": 68,
+                "column": 1
+              },
+              "end": {
+                "line": 127,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 78,
+              "column": 19
+            },
+            "end": {
+              "line": 78,
+              "column": 20
+            }
+          },
+          "replacement": "==",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/src__audit.rs_line_78_col_19.log",
+      "diff_path": "diff/src__audit.rs_line_78_col_19.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.436920125,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.404915709,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:78:19: replace < with > in parse_audit_line",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_audit_line",
+            "return_type": "-> Option<AuditEntry>",
+            "span": {
+              "start": {
+                "line": 68,
+                "column": 1
+              },
+              "end": {
+                "line": 127,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 78,
+              "column": 19
+            },
+            "end": {
+              "line": 78,
+              "column": 20
+            }
+          },
+          "replacement": ">",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__audit.rs_line_78_col_19_001.log",
+      "diff_path": "diff/src__audit.rs_line_78_col_19_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.300419584,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.974119958,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:78:19: replace < with <= in parse_audit_line",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_audit_line",
+            "return_type": "-> Option<AuditEntry>",
+            "span": {
+              "start": {
+                "line": 68,
+                "column": 1
+              },
+              "end": {
+                "line": 127,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 78,
+              "column": 19
+            },
+            "end": {
+              "line": 78,
+              "column": 20
+            }
+          },
+          "replacement": "<=",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/src__audit.rs_line_78_col_19_002.log",
+      "diff_path": "diff/src__audit.rs_line_78_col_19_002.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.6440062090000005,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.424859458,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:78:47: replace != with == in parse_audit_line",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_audit_line",
+            "return_type": "-> Option<AuditEntry>",
+            "span": {
+              "start": {
+                "line": 68,
+                "column": 1
+              },
+              "end": {
+                "line": 127,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 78,
+              "column": 47
+            },
+            "end": {
+              "line": 78,
+              "column": 49
+            }
+          },
+          "replacement": "==",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__audit.rs_line_78_col_47.log",
+      "diff_path": "diff/src__audit.rs_line_78_col_47.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.268000833,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.355742,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:106:26: replace == with != in parse_audit_line",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_audit_line",
+            "return_type": "-> Option<AuditEntry>",
+            "span": {
+              "start": {
+                "line": 68,
+                "column": 1
+              },
+              "end": {
+                "line": 127,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 106,
+              "column": 26
+            },
+            "end": {
+              "line": 106,
+              "column": 28
+            }
+          },
+          "replacement": "!=",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__audit.rs_line_106_col_26.log",
+      "diff_path": "diff/src__audit.rs_line_106_col_26.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.211969542,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.312335083,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:108:13: delete match arm \"account\" in parse_audit_line",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_audit_line",
+            "return_type": "-> Option<AuditEntry>",
+            "span": {
+              "start": {
+                "line": 68,
+                "column": 1
+              },
+              "end": {
+                "line": 127,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 108,
+              "column": 13
+            },
+            "end": {
+              "line": 108,
+              "column": 48
+            }
+          },
+          "replacement": "",
+          "genre": "MatchArm"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__audit.rs_line_108_col_13.log",
+      "diff_path": "diff/src__audit.rs_line_108_col_13.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.2980505,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.988291916,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:109:13: delete match arm \"profile\" in parse_audit_line",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_audit_line",
+            "return_type": "-> Option<AuditEntry>",
+            "span": {
+              "start": {
+                "line": 68,
+                "column": 1
+              },
+              "end": {
+                "line": 127,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 109,
+              "column": 13
+            },
+            "end": {
+              "line": 109,
+              "column": 48
+            }
+          },
+          "replacement": "",
+          "genre": "MatchArm"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__audit.rs_line_109_col_13.log",
+      "diff_path": "diff/src__audit.rs_line_109_col_13.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.224278209,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.794867791,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:110:13: delete match arm \"region\" in parse_audit_line",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_audit_line",
+            "return_type": "-> Option<AuditEntry>",
+            "span": {
+              "start": {
+                "line": 68,
+                "column": 1
+              },
+              "end": {
+                "line": 127,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 110,
+              "column": 13
+            },
+            "end": {
+              "line": 110,
+              "column": 46
+            }
+          },
+          "replacement": "",
+          "genre": "MatchArm"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__audit.rs_line_110_col_13.log",
+      "diff_path": "diff/src__audit.rs_line_110_col_13.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.213668708,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.369063792,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:111:13: delete match arm \"rollout_id\" in parse_audit_line",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_audit_line",
+            "return_type": "-> Option<AuditEntry>",
+            "span": {
+              "start": {
+                "line": 68,
+                "column": 1
+              },
+              "end": {
+                "line": 127,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 111,
+              "column": 13
+            },
+            "end": {
+              "line": 111,
+              "column": 54
+            }
+          },
+          "replacement": "",
+          "genre": "MatchArm"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__audit.rs_line_111_col_13.log",
+      "diff_path": "diff/src__audit.rs_line_111_col_13.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.209712875,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.5211179999999995,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:112:13: delete match arm \"stage\" in parse_audit_line",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_audit_line",
+            "return_type": "-> Option<AuditEntry>",
+            "span": {
+              "start": {
+                "line": 68,
+                "column": 1
+              },
+              "end": {
+                "line": 127,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 112,
+              "column": 13
+            },
+            "end": {
+              "line": 112,
+              "column": 44
+            }
+          },
+          "replacement": "",
+          "genre": "MatchArm"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__audit.rs_line_112_col_13.log",
+      "diff_path": "diff/src__audit.rs_line_112_col_13.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.2334885,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.279724292,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:113:13: delete match arm \"action\" in parse_audit_line",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_audit_line",
+            "return_type": "-> Option<AuditEntry>",
+            "span": {
+              "start": {
+                "line": 68,
+                "column": 1
+              },
+              "end": {
+                "line": 127,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 113,
+              "column": 13
+            },
+            "end": {
+              "line": 113,
+              "column": 46
+            }
+          },
+          "replacement": "",
+          "genre": "MatchArm"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__audit.rs_line_113_col_13.log",
+      "diff_path": "diff/src__audit.rs_line_113_col_13.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.3448825,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.388555125,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:114:13: delete match arm \"target\" in parse_audit_line",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_audit_line",
+            "return_type": "-> Option<AuditEntry>",
+            "span": {
+              "start": {
+                "line": 68,
+                "column": 1
+              },
+              "end": {
+                "line": 127,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 114,
+              "column": 13
+            },
+            "end": {
+              "line": 114,
+              "column": 46
+            }
+          },
+          "replacement": "",
+          "genre": "MatchArm"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__audit.rs_line_114_col_13.log",
+      "diff_path": "diff/src__audit.rs_line_114_col_13.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.518608334,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.553507875,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:115:13: delete match arm \"version\" in parse_audit_line",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_audit_line",
+            "return_type": "-> Option<AuditEntry>",
+            "span": {
+              "start": {
+                "line": 68,
+                "column": 1
+              },
+              "end": {
+                "line": 127,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 115,
+              "column": 13
+            },
+            "end": {
+              "line": 115,
+              "column": 48
+            }
+          },
+          "replacement": "",
+          "genre": "MatchArm"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__audit.rs_line_115_col_13.log",
+      "diff_path": "diff/src__audit.rs_line_115_col_13.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.387029083,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.36988425,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:116:13: delete match arm \"rule_id\" in parse_audit_line",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_audit_line",
+            "return_type": "-> Option<AuditEntry>",
+            "span": {
+              "start": {
+                "line": 68,
+                "column": 1
+              },
+              "end": {
+                "line": 127,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 116,
+              "column": 13
+            },
+            "end": {
+              "line": 116,
+              "column": 48
+            }
+          },
+          "replacement": "",
+          "genre": "MatchArm"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__audit.rs_line_116_col_13.log",
+      "diff_path": "diff/src__audit.rs_line_116_col_13.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.328571458,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.378004875,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:117:13: delete match arm \"outcome\" in parse_audit_line",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_audit_line",
+            "return_type": "-> Option<AuditEntry>",
+            "span": {
+              "start": {
+                "line": 68,
+                "column": 1
+              },
+              "end": {
+                "line": 127,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 117,
+              "column": 13
+            },
+            "end": {
+              "line": 117,
+              "column": 48
+            }
+          },
+          "replacement": "",
+          "genre": "MatchArm"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__audit.rs_line_117_col_13.log",
+      "diff_path": "diff/src__audit.rs_line_117_col_13.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.271802042,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.338869042,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:118:13: delete match arm \"err\" in parse_audit_line",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_audit_line",
+            "return_type": "-> Option<AuditEntry>",
+            "span": {
+              "start": {
+                "line": 68,
+                "column": 1
+              },
+              "end": {
+                "line": 127,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 118,
+              "column": 13
+            },
+            "end": {
+              "line": 118,
+              "column": 40
+            }
+          },
+          "replacement": "",
+          "genre": "MatchArm"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__audit.rs_line_118_col_13.log",
+      "diff_path": "diff/src__audit.rs_line_118_col_13.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.363877209,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.396949958,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:136:5: replace parse_kv_pairs -> Vec<(String, String)> with vec![]",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_kv_pairs",
+            "return_type": "-> Vec<(String, String)>",
+            "span": {
+              "start": {
+                "line": 129,
+                "column": 1
+              },
+              "end": {
+                "line": 203,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 136,
+              "column": 5
+            },
+            "end": {
+              "line": 202,
+              "column": 8
+            }
+          },
+          "replacement": "vec![]",
           "genre": "FnValue"
         }
       },
       "summary": "CaughtMutant",
-      "log_path": "log/src__app__safety.rs_line_130_col_9_001.log",
-      "diff_path": "diff/src__app__safety.rs_line_130_col_9_001.diff",
+      "log_path": "log/src__audit.rs_line_136_col_5.log",
+      "diff_path": "diff/src__audit.rs_line_136_col_5.diff",
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 5.574193459,
+          "duration": 11.648057583,
           "process_status": "Success",
           "argv": [
             "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -744,7 +1322,7 @@
         },
         {
           "phase": "Test",
-          "duration": 4.29258325,
+          "duration": 4.3788209590000005,
           "process_status": {
             "Failure": 101
           },
@@ -761,44 +1339,44 @@
     {
       "scenario": {
         "Mutant": {
-          "name": "src/app/safety.rs:130:9: replace App::read_only_reason -> Option<String> with Some(\"xyzzy\".into())",
+          "name": "src/audit.rs:136:5: replace parse_kv_pairs -> Vec<(String, String)> with vec![(String::new(), String::new())]",
           "package": "ebman",
-          "file": "src/app/safety.rs",
+          "file": "src/audit.rs",
           "function": {
-            "function_name": "App::read_only_reason",
-            "return_type": "-> Option<String>",
+            "function_name": "parse_kv_pairs",
+            "return_type": "-> Vec<(String, String)>",
             "span": {
               "start": {
-                "line": 124,
-                "column": 5
+                "line": 129,
+                "column": 1
               },
               "end": {
-                "line": 173,
-                "column": 6
+                "line": 203,
+                "column": 2
               }
             }
           },
           "span": {
             "start": {
-              "line": 130,
-              "column": 9
+              "line": 136,
+              "column": 5
             },
             "end": {
-              "line": 172,
-              "column": 13
+              "line": 202,
+              "column": 8
             }
           },
-          "replacement": "Some(\"xyzzy\".into())",
+          "replacement": "vec![(String::new(), String::new())]",
           "genre": "FnValue"
         }
       },
       "summary": "CaughtMutant",
-      "log_path": "log/src__app__safety.rs_line_130_col_9_002.log",
-      "diff_path": "diff/src__app__safety.rs_line_130_col_9_002.diff",
+      "log_path": "log/src__audit.rs_line_136_col_5_001.log",
+      "diff_path": "diff/src__audit.rs_line_136_col_5_001.diff",
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 5.703221708,
+          "duration": 5.405140416,
           "process_status": "Success",
           "argv": [
             "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -810,7 +1388,7 @@
         },
         {
           "phase": "Test",
-          "duration": 4.35440225,
+          "duration": 4.361369292,
           "process_status": {
             "Failure": 101
           },
@@ -827,47 +1405,45 @@
     {
       "scenario": {
         "Mutant": {
-          "name": "src/app/safety.rs:134:43: replace - with + in App::read_only_reason",
+          "name": "src/audit.rs:136:5: replace parse_kv_pairs -> Vec<(String, String)> with vec![(String::new(), \"xyzzy\".into())]",
           "package": "ebman",
-          "file": "src/app/safety.rs",
+          "file": "src/audit.rs",
           "function": {
-            "function_name": "App::read_only_reason",
-            "return_type": "-> Option<String>",
+            "function_name": "parse_kv_pairs",
+            "return_type": "-> Vec<(String, String)>",
             "span": {
               "start": {
-                "line": 124,
-                "column": 5
+                "line": 129,
+                "column": 1
               },
               "end": {
-                "line": 173,
-                "column": 6
+                "line": 203,
+                "column": 2
               }
             }
           },
           "span": {
             "start": {
-              "line": 134,
-              "column": 43
+              "line": 136,
+              "column": 5
             },
             "end": {
-              "line": 134,
-              "column": 44
+              "line": 202,
+              "column": 8
             }
           },
-          "replacement": "+",
-          "genre": "BinaryOperator"
+          "replacement": "vec![(String::new(), \"xyzzy\".into())]",
+          "genre": "FnValue"
         }
       },
-      "summary": "Unviable",
-      "log_path": "log/src__app__safety.rs_line_134_col_43.log",
-      "diff_path": "diff/src__app__safety.rs_line_134_col_43.diff",
+      "summary": "CaughtMutant",
+      "log_path": "log/src__audit.rs_line_136_col_5_002.log",
+      "diff_path": "diff/src__audit.rs_line_136_col_5_002.diff",
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 1.7136709589999999,
-          "process_status": {
-            "Failure": 101
-          },
+          "duration": 5.26799575,
+          "process_status": "Success",
           "argv": [
             "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
             "test",
@@ -875,71 +1451,1465 @@
             "--verbose",
             "--package=ebman@0.34.1"
           ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "src/app/safety.rs:134:43: replace - with / in App::read_only_reason",
-          "package": "ebman",
-          "file": "src/app/safety.rs",
-          "function": {
-            "function_name": "App::read_only_reason",
-            "return_type": "-> Option<String>",
-            "span": {
-              "start": {
-                "line": 124,
-                "column": 5
-              },
-              "end": {
-                "line": 173,
-                "column": 6
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 134,
-              "column": 43
-            },
-            "end": {
-              "line": 134,
-              "column": 44
-            }
-          },
-          "replacement": "/",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "Unviable",
-      "log_path": "log/src__app__safety.rs_line_134_col_43_001.log",
-      "diff_path": "diff/src__app__safety.rs_line_134_col_43_001.diff",
-      "phase_results": [
+        },
         {
-          "phase": "Build",
-          "duration": 1.586689542,
+          "phase": "Test",
+          "duration": 4.469632625,
           "process_status": {
             "Failure": 101
           },
           "argv": [
             "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
             "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:136:5: replace parse_kv_pairs -> Vec<(String, String)> with vec![(\"xyzzy\".into(), String::new())]",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_kv_pairs",
+            "return_type": "-> Vec<(String, String)>",
+            "span": {
+              "start": {
+                "line": 129,
+                "column": 1
+              },
+              "end": {
+                "line": 203,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 136,
+              "column": 5
+            },
+            "end": {
+              "line": 202,
+              "column": 8
+            }
+          },
+          "replacement": "vec![(\"xyzzy\".into(), String::new())]",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__audit.rs_line_136_col_5_003.log",
+      "diff_path": "diff/src__audit.rs_line_136_col_5_003.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.175173542,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
             "--no-run",
             "--verbose",
             "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.387612833,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:136:5: replace parse_kv_pairs -> Vec<(String, String)> with vec![(\"xyzzy\".into(), \"xyzzy\".into())]",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_kv_pairs",
+            "return_type": "-> Vec<(String, String)>",
+            "span": {
+              "start": {
+                "line": 129,
+                "column": 1
+              },
+              "end": {
+                "line": 203,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 136,
+              "column": 5
+            },
+            "end": {
+              "line": 202,
+              "column": 8
+            }
+          },
+          "replacement": "vec![(\"xyzzy\".into(), \"xyzzy\".into())]",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__audit.rs_line_136_col_5_004.log",
+      "diff_path": "diff/src__audit.rs_line_136_col_5_004.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.291244083,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.384978792,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:140:13: replace < with == in parse_kv_pairs",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_kv_pairs",
+            "return_type": "-> Vec<(String, String)>",
+            "span": {
+              "start": {
+                "line": 129,
+                "column": 1
+              },
+              "end": {
+                "line": 203,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 140,
+              "column": 13
+            },
+            "end": {
+              "line": 140,
+              "column": 14
+            }
+          },
+          "replacement": "==",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__audit.rs_line_140_col_13.log",
+      "diff_path": "diff/src__audit.rs_line_140_col_13.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 11.724998583,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.345407459,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:140:13: replace < with > in parse_kv_pairs",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_kv_pairs",
+            "return_type": "-> Vec<(String, String)>",
+            "span": {
+              "start": {
+                "line": 129,
+                "column": 1
+              },
+              "end": {
+                "line": 203,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 140,
+              "column": 13
+            },
+            "end": {
+              "line": 140,
+              "column": 14
+            }
+          },
+          "replacement": ">",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__audit.rs_line_140_col_13_001.log",
+      "diff_path": "diff/src__audit.rs_line_140_col_13_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.53115775,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.389796542,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:140:13: replace < with <= in parse_kv_pairs",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_kv_pairs",
+            "return_type": "-> Vec<(String, String)>",
+            "span": {
+              "start": {
+                "line": 129,
+                "column": 1
+              },
+              "end": {
+                "line": 203,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 140,
+              "column": 13
+            },
+            "end": {
+              "line": 140,
+              "column": 14
+            }
+          },
+          "replacement": "<=",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/src__audit.rs_line_140_col_13_002.log",
+      "diff_path": "diff/src__audit.rs_line_140_col_13_002.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.072770709,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.415905542,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:142:21: replace && with || in parse_kv_pairs",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_kv_pairs",
+            "return_type": "-> Vec<(String, String)>",
+            "span": {
+              "start": {
+                "line": 129,
+                "column": 1
+              },
+              "end": {
+                "line": 203,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 142,
+              "column": 21
+            },
+            "end": {
+              "line": 142,
+              "column": 23
+            }
+          },
+          "replacement": "||",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__audit.rs_line_142_col_21.log",
+      "diff_path": "diff/src__audit.rs_line_142_col_21.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.312763375,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.398559208,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:142:17: replace < with == in parse_kv_pairs",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_kv_pairs",
+            "return_type": "-> Vec<(String, String)>",
+            "span": {
+              "start": {
+                "line": 129,
+                "column": 1
+              },
+              "end": {
+                "line": 203,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 142,
+              "column": 17
+            },
+            "end": {
+              "line": 142,
+              "column": 18
+            }
+          },
+          "replacement": "==",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "Timeout",
+      "log_path": "log/src__audit.rs_line_142_col_17.log",
+      "diff_path": "diff/src__audit.rs_line_142_col_17.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.245581167,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 120.040109541,
+          "process_status": "Timeout",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:142:17: replace < with > in parse_kv_pairs",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_kv_pairs",
+            "return_type": "-> Vec<(String, String)>",
+            "span": {
+              "start": {
+                "line": 129,
+                "column": 1
+              },
+              "end": {
+                "line": 203,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 142,
+              "column": 17
+            },
+            "end": {
+              "line": 142,
+              "column": 18
+            }
+          },
+          "replacement": ">",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "Timeout",
+      "log_path": "log/src__audit.rs_line_142_col_17_001.log",
+      "diff_path": "diff/src__audit.rs_line_142_col_17_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.461046041,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 120.026080625,
+          "process_status": "Timeout",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:142:17: replace < with <= in parse_kv_pairs",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_kv_pairs",
+            "return_type": "-> Vec<(String, String)>",
+            "span": {
+              "start": {
+                "line": 129,
+                "column": 1
+              },
+              "end": {
+                "line": 203,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 142,
+              "column": 17
+            },
+            "end": {
+              "line": 142,
+              "column": 18
+            }
+          },
+          "replacement": "<=",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__audit.rs_line_142_col_17_002.log",
+      "diff_path": "diff/src__audit.rs_line_142_col_17_002.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.698906375,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.505476375,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:142:41: replace || with && in parse_kv_pairs",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_kv_pairs",
+            "return_type": "-> Vec<(String, String)>",
+            "span": {
+              "start": {
+                "line": 129,
+                "column": 1
+              },
+              "end": {
+                "line": 203,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 142,
+              "column": 41
+            },
+            "end": {
+              "line": 142,
+              "column": 43
+            }
+          },
+          "replacement": "&&",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "Timeout",
+      "log_path": "log/src__audit.rs_line_142_col_41.log",
+      "diff_path": "diff/src__audit.rs_line_142_col_41.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.306686958,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 120.021672625,
+          "process_status": "Timeout",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:142:34: replace == with != in parse_kv_pairs",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_kv_pairs",
+            "return_type": "-> Vec<(String, String)>",
+            "span": {
+              "start": {
+                "line": 129,
+                "column": 1
+              },
+              "end": {
+                "line": 203,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 142,
+              "column": 34
+            },
+            "end": {
+              "line": 142,
+              "column": 36
+            }
+          },
+          "replacement": "!=",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "Timeout",
+      "log_path": "log/src__audit.rs_line_142_col_34.log",
+      "diff_path": "diff/src__audit.rs_line_142_col_34.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.432211583,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 120.039501208,
+          "process_status": "Timeout",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:142:53: replace == with != in parse_kv_pairs",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_kv_pairs",
+            "return_type": "-> Vec<(String, String)>",
+            "span": {
+              "start": {
+                "line": 129,
+                "column": 1
+              },
+              "end": {
+                "line": 203,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 142,
+              "column": 53
+            },
+            "end": {
+              "line": 142,
+              "column": 55
+            }
+          },
+          "replacement": "!=",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "Timeout",
+      "log_path": "log/src__audit.rs_line_142_col_53.log",
+      "diff_path": "diff/src__audit.rs_line_142_col_53.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.41447025,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 120.045652833,
+          "process_status": "Timeout",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:143:15: replace += with -= in parse_kv_pairs",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_kv_pairs",
+            "return_type": "-> Vec<(String, String)>",
+            "span": {
+              "start": {
+                "line": 129,
+                "column": 1
+              },
+              "end": {
+                "line": 203,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 143,
+              "column": 15
+            },
+            "end": {
+              "line": 143,
+              "column": 17
+            }
+          },
+          "replacement": "-=",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "Timeout",
+      "log_path": "log/src__audit.rs_line_143_col_15.log",
+      "diff_path": "diff/src__audit.rs_line_143_col_15.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.984771958,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 120.012596167,
+          "process_status": "Timeout",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:143:15: replace += with *= in parse_kv_pairs",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_kv_pairs",
+            "return_type": "-> Vec<(String, String)>",
+            "span": {
+              "start": {
+                "line": 129,
+                "column": 1
+              },
+              "end": {
+                "line": 203,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 143,
+              "column": 15
+            },
+            "end": {
+              "line": 143,
+              "column": 17
+            }
+          },
+          "replacement": "*=",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "Timeout",
+      "log_path": "log/src__audit.rs_line_143_col_15_001.log",
+      "diff_path": "diff/src__audit.rs_line_143_col_15_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.999671292,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 120.046484542,
+          "process_status": "Timeout",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:145:14: replace >= with < in parse_kv_pairs",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_kv_pairs",
+            "return_type": "-> Vec<(String, String)>",
+            "span": {
+              "start": {
+                "line": 129,
+                "column": 1
+              },
+              "end": {
+                "line": 203,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 145,
+              "column": 14
+            },
+            "end": {
+              "line": 145,
+              "column": 16
+            }
+          },
+          "replacement": "<",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__audit.rs_line_145_col_14.log",
+      "diff_path": "diff/src__audit.rs_line_145_col_14.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 7.400248583,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.454883833,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:150:21: replace && with || in parse_kv_pairs",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_kv_pairs",
+            "return_type": "-> Vec<(String, String)>",
+            "span": {
+              "start": {
+                "line": 129,
+                "column": 1
+              },
+              "end": {
+                "line": 203,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 150,
+              "column": 21
+            },
+            "end": {
+              "line": 150,
+              "column": 23
+            }
+          },
+          "replacement": "||",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__audit.rs_line_150_col_21.log",
+      "diff_path": "diff/src__audit.rs_line_150_col_21.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.603740667,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.5041795,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:150:17: replace < with == in parse_kv_pairs",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_kv_pairs",
+            "return_type": "-> Vec<(String, String)>",
+            "span": {
+              "start": {
+                "line": 129,
+                "column": 1
+              },
+              "end": {
+                "line": 203,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 150,
+              "column": 17
+            },
+            "end": {
+              "line": 150,
+              "column": 18
+            }
+          },
+          "replacement": "==",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__audit.rs_line_150_col_17.log",
+      "diff_path": "diff/src__audit.rs_line_150_col_17.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.416123333,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.556709875,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:150:17: replace < with > in parse_kv_pairs",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_kv_pairs",
+            "return_type": "-> Vec<(String, String)>",
+            "span": {
+              "start": {
+                "line": 129,
+                "column": 1
+              },
+              "end": {
+                "line": 203,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 150,
+              "column": 17
+            },
+            "end": {
+              "line": 150,
+              "column": 18
+            }
+          },
+          "replacement": ">",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__audit.rs_line_150_col_17_001.log",
+      "diff_path": "diff/src__audit.rs_line_150_col_17_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 7.408586958,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.557869375,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:150:17: replace < with <= in parse_kv_pairs",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_kv_pairs",
+            "return_type": "-> Vec<(String, String)>",
+            "span": {
+              "start": {
+                "line": 129,
+                "column": 1
+              },
+              "end": {
+                "line": 203,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 150,
+              "column": 17
+            },
+            "end": {
+              "line": 150,
+              "column": 18
+            }
+          },
+          "replacement": "<=",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__audit.rs_line_150_col_17_002.log",
+      "diff_path": "diff/src__audit.rs_line_150_col_17_002.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 6.534746875,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.4733603330000005,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:150:52: replace || with && in parse_kv_pairs",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_kv_pairs",
+            "return_type": "-> Vec<(String, String)>",
+            "span": {
+              "start": {
+                "line": 129,
+                "column": 1
+              },
+              "end": {
+                "line": 203,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 150,
+              "column": 52
+            },
+            "end": {
+              "line": 150,
+              "column": 54
+            }
+          },
+          "replacement": "&&",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__audit.rs_line_150_col_52.log",
+      "diff_path": "diff/src__audit.rs_line_150_col_52.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 6.951926958,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 5.193110709,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:150:64: replace == with != in parse_kv_pairs",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_kv_pairs",
+            "return_type": "-> Vec<(String, String)>",
+            "span": {
+              "start": {
+                "line": 129,
+                "column": 1
+              },
+              "end": {
+                "line": 203,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 150,
+              "column": 64
+            },
+            "end": {
+              "line": 150,
+              "column": 66
+            }
+          },
+          "replacement": "!=",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__audit.rs_line_150_col_64.log",
+      "diff_path": "diff/src__audit.rs_line_150_col_64.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.914578,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.453102334,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/audit.rs:151:15: replace += with -= in parse_kv_pairs",
+          "package": "ebman",
+          "file": "src/audit.rs",
+          "function": {
+            "function_name": "parse_kv_pairs",
+            "return_type": "-> Vec<(String, String)>",
+            "span": {
+              "start": {
+                "line": 129,
+                "column": 1
+              },
+              "end": {
+                "line": 203,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 151,
+              "column": 15
+            },
+            "end": {
+              "line": 151,
+              "column": 17
+            }
+          },
+          "replacement": "-=",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "Timeout",
+      "log_path": "log/src__audit.rs_line_151_col_15.log",
+      "diff_path": "diff/src__audit.rs_line_151_col_15.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.424250375,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 120.035361792,
+          "process_status": "Timeout",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
           ]
         }
       ]
     }
   ],
-  "total_mutants": 14,
-  "missed": 0,
-  "caught": 12,
-  "timeout": 0,
-  "unviable": 2,
+  "total_mutants": 44,
+  "missed": 3,
+  "caught": 32,
+  "timeout": 8,
+  "unviable": 1,
   "success": 0,
-  "start_time": "2026-08-25T07:24:28.418875Z",
-  "end_time": "2026-08-25T07:29:39.66743Z",
+  "start_time": "2026-08-25T07:30:02.537909Z",
+  "end_time": null,
   "cargo_mutants_version": "27.1.0"
 }

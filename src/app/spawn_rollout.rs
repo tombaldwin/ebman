@@ -84,6 +84,7 @@ impl App {
         }
         crate::audit::append_rollout(
             &rollout_id,
+            self.context.profile.as_deref(),
             &region,
             &env_name,
             &version_label,

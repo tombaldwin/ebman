@@ -1,0 +1,25 @@
+--- src/freeze.rs
++++ replace clear_if_pid_at with ()
+@@ -68,21 +68,17 @@
+ 
+ /// Remove the marker, but only if THIS process owns it — a thaw in
+ /// one TUI session must not silently clear another session's freeze.
+ pub fn clear_marker_if_own() {
+     clear_if_pid_at(&marker_path(), std::process::id());
+ }
+ 
+ fn clear_if_pid_at(path: &Path, own_pid: u32) {
+-    if let Some(m) = parse_file(path) {
+-        if m.pid == own_pid {
+-            let _ = std::fs::remove_file(path);
+-        }
+-    }
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// The one refusal sentence for an active fleet freeze.
+ ///
+ /// Shared because it was written twice — once in `cli::refuse_if_frozen`
+ /// and once in the MCP write gate — with the same body and different
+ /// framing, so the two surfaces disagreed in wording about the same
+ /// condition and either could drift on the next edit.

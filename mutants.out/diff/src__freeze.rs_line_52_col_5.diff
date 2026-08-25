@@ -1,0 +1,35 @@
+--- src/freeze.rs
++++ replace write_marker_at -> std::io::Result<()> with Ok(())
+@@ -44,31 +44,17 @@
+ /// when persistence failed — the caller MUST surface that, because a
+ /// silently-absent marker fails OPEN (agent + CLI writes are NOT
+ /// blocked) while the operator believes the fleet is frozen.
+ pub(crate) fn write_marker(reason: &str, incident: bool) -> std::io::Result<()> {
+     write_marker_at(&marker_path(), std::process::id(), reason, incident)
+ }
+ 
+ fn write_marker_at(path: &Path, pid: u32, reason: &str, incident: bool) -> std::io::Result<()> {
+-    let body = format!(
+-        "{{\"pid\":{pid},\"reason\":{},\"incident\":{incident},\"at\":{}}}\n",
+-        crate::util::json_string(reason),
+-        crate::util::json_string(&chrono::Utc::now().to_rfc3339()),
+-    );
+-    // Atomic: write a temp then rename, so a concurrent reader never
+-    // catches a half-written (fail-open) marker (M1). Same 0600.
+-    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+-    crate::util::write_secure(&tmp, body.as_bytes())?;
+-    if let Err(e) = std::fs::rename(&tmp, path) {
+-        let _ = std::fs::remove_file(&tmp);
+-        tracing::warn!(error = %e, "could not persist freeze marker — cross-process enforcement inactive");
+-        return Err(e);
+-    }
+-    Ok(())
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Remove the marker, but only if THIS process owns it — a thaw in
+ /// one TUI session must not silently clear another session's freeze.
+ pub fn clear_marker_if_own() {
+     clear_if_pid_at(&marker_path(), std::process::id());
+ }
+ 
