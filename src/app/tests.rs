@@ -18,6 +18,7 @@ mod formatting;
 mod key_arm_order;
 mod keys;
 mod lint;
+mod no_tui_stdout;
 mod overlays;
 mod parsing;
 mod pure;
