@@ -580,10 +580,13 @@ impl App {
         }
         match result {
             Ok(client) => {
-                // `context` is deliberately left alone: it carries the
-                // account id and caller ARN from the identity fetch,
-                // which a fresh `AwsClient::with` hasn't done. The
-                // profile and region should be the same by
+                // `context` is not overwritten from the new client: it
+                // carries the account id and caller ARN from the
+                // identity fetch, which a fresh `AwsClient::with` has
+                // not done — so copying its `None`s over would erase
+                // what we know. The identity is refreshed separately
+                // below instead. The profile and region should be the
+                // same by
                 // construction — we asked for the region we already
                 // had — but CHECK rather than assert it: a client
                 // pointing somewhere else while `context.region` says
@@ -602,22 +605,31 @@ impl App {
                 }
                 self.aws = Arc::new(*client);
                 self.aws_built_at = Instant::now();
-                // The identity we hold was resolved by the PREVIOUS
-                // credentials. This refresh exists so credential edits on
-                // disk take effect — which means the very case it serves
-                // (an operator repointing a profile) is the case where
-                // `account_id` and `caller_arn` become wrong, silently,
-                // while the header keeps rendering them.
+                // Re-fetch the identity, but do NOT clear it first.
                 //
-                // Not a safety bypass: `safety.accounts.*` keys on the
-                // profile NAME, which has not changed. But the header is
-                // what tells an operator which account they are about to
-                // terminate an environment in, so "unknown" beats
-                // "confidently the previous one". Cleared here and
-                // re-fetched below; `spawn_identity` carries a
-                // generation, so a context switch mid-flight discards it.
-                self.context.account_id = None;
-                self.context.caller_arn = None;
+                // This refresh exists so credential edits on disk take
+                // effect, and the case it serves — an operator
+                // repointing a profile at another account — is the case
+                // where `account_id` / `caller_arn` go stale. So it has
+                // to be re-fetched, or the header keeps naming the
+                // previous account forever.
+                //
+                // Clearing first was the obvious "unknown beats wrong",
+                // and it is wrong here. `should_refresh_home_client`
+                // fires on a 300s TTL for the whole session, not only
+                // when credentials changed, so a clear makes the COMMON
+                // case worse: ~30 sites feed `context.account_id`
+                // straight into `audit::append_action_*`, which renders
+                // `None` as `account=-`. Every five minutes there would
+                // be a window where a dispatch is audited against no
+                // account at all — and if STS is throttled or the SSO
+                // session has expired, `AwsClient::with` still succeeds
+                // (it builds lazily) while `verify_identity` fails, so
+                // that window never closes.
+                //
+                // Keeping the previous value trades a rare stale reading
+                // for never an unknown one. The stale case self-corrects
+                // the moment the fetch lands; the unknown case does not.
                 self.spawn_identity();
                 tracing::debug!(target: "ebman", "home client refreshed");
             }

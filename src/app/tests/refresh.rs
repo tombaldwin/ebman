@@ -795,6 +795,10 @@ fn incident_args_parse_start_end_and_reject_garbage() {
 
 #[tokio::test]
 async fn incident_restart_updates_headline_but_keeps_start_time() {
+    // Shared freeze-marker path; see `freeze::MARKER_LOCK`.
+    let _marker_guard = crate::freeze::MARKER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let mut app = test_app();
     app.execute_command("incident START first");
     let t0 = app.incident.as_ref().unwrap().started_at;
@@ -809,6 +813,10 @@ async fn incident_restart_updates_headline_but_keeps_start_time() {
 
 #[tokio::test]
 async fn incident_end_without_active_incident_errors() {
+    // Shared freeze-marker path; see `freeze::MARKER_LOCK`.
+    let _marker_guard = crate::freeze::MARKER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let mut app = test_app();
     app.execute_command("incident END");
     assert!(app.incident.is_none());
@@ -818,6 +826,10 @@ async fn incident_end_without_active_incident_errors() {
 
 #[tokio::test]
 async fn incident_banner_renders_red_in_header() {
+    // Shared freeze-marker path; see `freeze::MARKER_LOCK`.
+    let _marker_guard = crate::freeze::MARKER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let mut app = test_app();
     app.execute_command("incident START \"db failover\"");
     let theme = app.theme.clone();
@@ -1927,29 +1939,37 @@ fn every_spawn_declares_whether_it_is_per_env() {
     );
 }
 
-/// A TTL home-client refresh picks up new credentials but never
-/// re-fetches the identity, so the account shown in the header goes
-/// stale.
+/// A home-client refresh must re-fetch the identity, and must NOT clear
+/// what it already holds.
 ///
-/// `spawn_home_client_refresh` exists so credentials edited on disk take
-/// effect — that is its documented purpose. But `apply_client_refresh`
-/// deliberately leaves `context` alone (it carries `account_id` and
-/// `caller_arn`, which a bare `AwsClient::with` does not populate), and
-/// `spawn_identity()` is called only from `apply_rebuild`, on an
-/// explicit context switch.
+/// The refresh exists so credential edits on disk take effect, and that
+/// is exactly the case where `account_id` / `caller_arn` go stale — the
+/// operator repointed a profile at another account. `spawn_identity()`
+/// was called only from `apply_rebuild`, on an explicit context switch,
+/// so nothing refreshed it here and the header kept naming the previous
+/// account.
 ///
-/// So the scenario the feature serves — an operator repointing a profile
-/// at a different account — is exactly the scenario that leaves the
-/// header naming the previous account while every call goes to the new
-/// one. Not a safety bypass: `safety.accounts.*` keys on the profile
-/// NAME, which does not change. But the header is what tells an operator
-/// which account they are about to terminate an environment in.
+/// The first version of this fix ALSO cleared the identity first, on
+/// "unknown beats wrong". The 0.34.2 review showed that is wrong here:
+/// the refresh fires on a 300s TTL for the whole session, ~30 sites feed
+/// `context.account_id` into `audit::append_action_*` as `account=`, and
+/// `None` renders as `account=-`. That is a routine unknown traded for a
+/// rare stale — and if STS is throttled the window never closes, because
+/// `AwsClient::with` succeeds lazily while `verify_identity` fails.
+///
+/// So this pins BOTH halves: the identity survives the refresh, and a
+/// re-fetch is dispatched. The re-fetch is checked by source scan, in
+/// the shape of `every_spawn_declares_whether_it_is_per_env` — the
+/// spawned task cannot be observed in-process, and a test that asserted
+/// only the surviving value would pass with the `spawn_identity()` call
+/// deleted, which is the strictly worse outcome.
 #[tokio::test]
-async fn a_home_client_refresh_refetches_the_identity() {
+async fn a_home_client_refresh_refetches_the_identity_without_clearing_it() {
     let mut app = test_app();
     app.context.profile = Some("prod".into());
     app.context.region = "us-east-1".into();
     app.context.account_id = Some("111111111111".into());
+    app.context.caller_arn = Some("arn:aws:sts::111111111111:assumed-role/x/y".into());
 
     let epoch = app.rebuild_epoch;
     let mut refreshed = crate::aws::AwsClient::stub();
@@ -1957,14 +1977,43 @@ async fn a_home_client_refresh_refetches_the_identity() {
     refreshed.context.profile = Some("prod".into());
     // As built by `AwsClient::with`: no identity fetched.
     refreshed.context.account_id = None;
+    refreshed.context.caller_arn = None;
 
     app.apply_client_refresh(epoch, Ok(Box::new(refreshed)));
 
     assert_eq!(
-        app.context.account_id, None,
-        "the identity we held was resolved by the PREVIOUS credentials, so \
-         after a refresh it must not still be rendered as fact — the header \
-         would name the account the old credentials pointed at"
+        app.context.account_id.as_deref(),
+        Some("111111111111"),
+        "the previous identity must survive the refresh — clearing it makes \
+         every audit line in the window read `account=-`, and if STS fails \
+         the window never closes"
     );
-    assert_eq!(app.context.caller_arn, None, "same for the caller ARN");
+    assert!(
+        app.context.caller_arn.is_some(),
+        "same for the caller ARN — it is not overwritten from a client that \
+         never fetched one"
+    );
+}
+
+/// The other half of the above: a refresh must actually dispatch the
+/// re-fetch. Source-scanned because the spawn is not observable
+/// in-process, and mutation showed a value-only assertion passes with
+/// the call deleted.
+#[test]
+fn apply_client_refresh_dispatches_an_identity_refetch() {
+    let src = std::fs::read_to_string("src/app/spawn_refresh.rs").expect("read spawn_refresh.rs");
+    let start = src
+        .find("fn apply_client_refresh")
+        .expect("apply_client_refresh must exist");
+    let end = src[start..]
+        .find("\n    pub(crate) fn apply_rebuild")
+        .map(|i| start + i)
+        .unwrap_or(src.len());
+    let body = &src[start..end];
+    assert!(
+        body.contains("self.spawn_identity()"),
+        "apply_client_refresh must re-fetch the identity. Without it the \
+         header keeps naming the account the PREVIOUS credentials resolved \
+         to, for the rest of the session — the bug this exists to fix."
+    );
 }

@@ -520,11 +520,6 @@ fn append_extras(detail: &mut String, extras: &[(&str, &str)]) {
     }
 }
 
-/// Append a rollout-shaped line. `stage` is `"dispatched"` or
-/// `"completed"`; pass `err = Some(...)` to attach an error message
-/// (and emit `outcome=err` on completion). `rollout_id` correlates
-/// every per-region line within a single `ebman action rollout`
-/// invocation.
 /// Pure: the tail of a rollout audit line. Extracted so the field set
 /// can be asserted without writing to the log — `append_rollout` is the
 /// I/O wrapper around it.
@@ -553,16 +548,33 @@ fn rollout_line(
     // landed in — precisely the question you ask the audit log after an
     // incident. Additive and safe: the parser is key-value and keeps
     // unrecognised keys in `extras`.
+    // `field_token`, not bare `escape_value`. `escape_value` maps quotes
+    // and newlines but leaves SPACES alone, and these fields are
+    // space/tab separated — so a profile literally named
+    // `ops region=us-fake-1` would emit a second `region=` token, and
+    // every consumer takes the first match. `field_token` quotes
+    // anything containing whitespace, `=` or `"`, which `parse_kv_pairs`
+    // then reads back as one value.
+    //
+    // Self-inflicted (the operator names their own profiles) and
+    // pre-existing in the header opener, which is fixed the same way
+    // below — adding a new field to a shape with this flaw means fixing
+    // the class rather than shipping the precedent.
     format!(
-        "\trollout_id={}\tprofile={}\tregion={}\tstage={stage} action=Rollout {} {}{outcome_suffix}",
-        escape_value(rollout_id),
-        escape_value(profile.unwrap_or("-")),
-        escape_value(region),
+        "\t{}\t{}\t{}\tstage={stage} action=Rollout {} {}{outcome_suffix}",
+        field_token("rollout_id", rollout_id),
+        field_token("profile", profile.unwrap_or("-")),
+        field_token("region", region),
         field_token("target", env),
         field_token("version", version)
     )
 }
 
+/// Append a rollout-shaped line. `stage` is `"dispatched"` or
+/// `"completed"`; pass `err = Some(...)` to attach an error message
+/// (and emit `outcome=err` on completion). `rollout_id` correlates
+/// every per-region line within a single `ebman action rollout`
+/// invocation.
 pub(crate) fn append_rollout(
     rollout_id: &str,
     profile: Option<&str>,
@@ -730,11 +742,15 @@ fn write_audit_line(account: Option<&str>, profile: Option<&str>, region: &str, 
     // `region` are AWS-constrained, but `profile` is whatever the
     // operator named a section in `~/.aws/config` — free text, and
     // `\t` is the field separator this format is parsed on.
+    // See `rollout_line`: `escape_value` does not quote spaces, and a
+    // profile name is operator-chosen free text, so a bare interpolation
+    // here can forge a `region=` token that every consumer reads instead
+    // of the real one.
     let line = format!(
-        "{when}\taccount={}\tprofile={}\tregion={}\t{detail}\n",
-        escape_value(account.unwrap_or("-")),
-        escape_value(profile.unwrap_or("-")),
-        escape_value(region),
+        "{when}\t{}\t{}\t{}\t{detail}\n",
+        field_token("account", account.unwrap_or("-")),
+        field_token("profile", profile.unwrap_or("-")),
+        field_token("region", region),
     );
     use std::io::Write;
     if let Ok(mut f) = crate::util::open_append_secure(&path) {
@@ -1696,5 +1712,54 @@ mod parser_properties {
                  only true if this holds:\n  doc: {doc_shape}\n  line: {line}"
             );
         }
+    }
+
+    /// A profile name is operator-chosen free text, and these fields are
+    /// space/tab separated — so a profile called `ops region=us-fake-1`
+    /// could emit a second `region=` token that every consumer reads
+    /// instead of the real one. `AuditFilter`'s `--region`, the text
+    /// renderer, and `audit replay`'s region resolution all take the
+    /// first match.
+    ///
+    /// Self-inflicted and pre-existing in the header opener, but 0.34.2
+    /// added `profile=` to a NEW line shape, so it is fixed as a class:
+    /// both openers now go through `field_token`, which quotes anything
+    /// containing whitespace, `=` or `"`.
+    #[test]
+    fn a_profile_name_cannot_forge_another_field() {
+        let hostile = "ops region=us-fake-1";
+        let line = super::rollout_line(
+            "rid",
+            Some(hostile),
+            "eu-west-1",
+            "api",
+            "v9",
+            "dispatched",
+            None,
+        );
+
+        let pairs = super::parse_kv_pairs(line.trim_start_matches('\t'));
+        let regions: Vec<&String> = pairs
+            .iter()
+            .filter(|(k, _)| k == "region")
+            .map(|(_, v)| v)
+            .collect();
+        assert_eq!(
+            regions.len(),
+            1,
+            "a hostile profile name must not produce a second `region` key: \
+             {line}\n  parsed: {pairs:?}"
+        );
+        assert_eq!(regions[0], "eu-west-1", "and the real region must win");
+
+        let profile = pairs
+            .iter()
+            .find(|(k, _)| k == "profile")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(
+            profile,
+            Some(hostile),
+            "the whole profile name must survive as ONE value"
+        );
     }
 }
