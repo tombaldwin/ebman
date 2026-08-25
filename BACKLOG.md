@@ -352,6 +352,39 @@ both guards were mutation-verified before being believed.
   table header, which is a guard people route around. Worth someone
   picking a shape deliberately; not worth guessing one mid-run.
 
+#### MCP Registry — 2026-08-25
+
+- [x] **The registry publish couldn't be retried** — DONE 2026-08-25.
+  `workflow_dispatch` exists on `release.yml` precisely so a failed
+  publish can be re-run, but `mcp_registry` has `needs: crates_io`, and
+  `cargo publish --locked` exits non-zero once the version is already up.
+  So every re-run failed at the crates.io step and skipped the registry
+  entirely. The job now asks crates.io whether the version exists and
+  exits 0 if it does — asked rather than pattern-matched out of the error
+  text, because a grep for "already uploaded" swallows whatever else
+  cargo might have said, and this is the last gate before a release is
+  public.
+
+- [x] **`server.json` had drifted to 0.32.0** — DONE 2026-08-25, with a
+  guard. Harmless in effect (the workflow rewrites the version from the
+  tag before publishing) which is exactly why nothing noticed for three
+  releases, but it is a checked-in file that reads as authoritative.
+  Bumped to 0.34.2 and pinned by
+  `docs_drift::server_json_version_matches_the_crate`; mutation-verified
+  both ways, including the vacuous case where the guard stops finding any
+  `version` field at all.
+
+- [ ] **The registry still lists 0.34.1 as `latest`** — and 0.34.1 is the
+  yanked release, the one that packaged `mutants.out/` including a
+  `lock.json` carrying the machine's hostname and username. Anyone
+  discovering ebman through the MCP Registry is pointed at it. Nine
+  versions are published, 0.29.2 through 0.34.1; 0.34.2 never made it
+  because the registry was degraded that evening (19.6s health check) and
+  the retry path was broken as described above. Fixed now — needs
+  `gh workflow run release.yml -f tag=v0.34.2`, which publishes to an
+  external service and so wants a deliberate go-ahead rather than an
+  autonomous one.
+
 #### Console parity — BONUS
 
 ### Feature candidates — competitive scan (2026-05-24)

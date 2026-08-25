@@ -1436,6 +1436,41 @@ fn the_test_suite_does_not_mutate_the_environment() {
 /// not a gate. Both pass today, so they cost nothing now and catch the
 /// next addition at commit time instead of at release time.
 mod docs_drift {
+    /// `server.json`'s version must match the crate's.
+    ///
+    /// The release workflow rewrites this field from the tag before
+    /// publishing, so a stale value never reaches the MCP Registry — which
+    /// is exactly why it drifted to `0.32.0` while the crate was at
+    /// `0.34.2` and nothing complained. It is still a checked-in file that
+    /// reads as authoritative to anyone opening the repo, and the release
+    /// procedure already bumps `Cargo.toml`.
+    #[test]
+    fn server_json_version_matches_the_crate() {
+        let raw = std::fs::read_to_string("server.json").expect("read server.json");
+        let crate_version = env!("CARGO_PKG_VERSION");
+
+        // Deliberately not a JSON dependency for one field: the shape is
+        // `"version": "x.y.z"` and the file is ours.
+        let versions: Vec<&str> = raw
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("\"version\":"))
+            .map(|v| v.trim().trim_matches(|c| c == '"' || c == ',').trim())
+            .collect();
+
+        assert!(
+            !versions.is_empty(),
+            "no `version` field found in server.json — this guard is \
+             looking at the wrong shape"
+        );
+        for v in &versions {
+            assert_eq!(
+                *v, crate_version,
+                "server.json declares version {v:?} but the crate is \
+                 {crate_version:?}. Bump server.json alongside Cargo.toml."
+            );
+        }
+    }
+
     /// Every key `config::parse` accepts must appear in
     /// `docs/configuration.md`. An operator cannot use a key they cannot
     /// find, and a key that silently exists is indistinguishable from a
