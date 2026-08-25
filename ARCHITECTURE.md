@@ -98,11 +98,10 @@ every call is a spawned task that reports back as an `AppMsg`.
 
 The compiler won't catch you breaking these, so each has something else
 behind it. Rule 1 is enforced by the type system — the story of how that came
-about is in `src/app/view_state.rs`. Rules 2, 4 and 5 each have a test that
+about is in `src/app/view_state.rs`. Rules 2, 3, 4 and 5 each have a test that
 walks the tree (`every_spawn_declares_whether_it_is_per_env`,
-`key_arm_order.rs`, `no_tui_stdout.rs`). Rule 3 is the weakest of the five:
-individual handlers are tested, but nothing sweeps for an `AppMsg` handler that
-forgot the check. Four of the five have bitten.
+`generation_guard.rs`, `key_arm_order.rs`, `no_tui_stdout.rs`). Four of the
+five have bitten.
 
 **1. Mutating view state means rebuilding the view.**
 The table `ui` draws is a filtered, optionally grouped projection of
@@ -136,8 +135,23 @@ it.
 **3. Async results check `generation`.**
 Every spawned task captures the `generation` it launched at. If the operator
 switches region, profile or account while it's in flight, `generation`
-advances and the handler drops the result rather than applying data from the
-old context to the new one. Every new `AppMsg` variant must do this.
+advances and the result is dropped rather than applied to the new context.
+
+Structurally this is the best-defended of the five: there is one enforcement
+point rather than a convention each handler follows. `AppMsg::generation()`
+classifies every variant, `handle_msg` drops the message once before
+dispatching, and the match is exhaustive — so the compiler *forces* a new
+variant to be classified.
+
+What the compiler can't force is classifying it *correctly*, and the cheapest
+way to satisfy it is to append the variant to the `None` arm. That is a
+one-line change with a plausible reason that quietly exempts a whole result
+path. [`app/tests/generation_guard.rs`](src/app/tests/generation_guard.rs)
+closes it from both ends: carrying a `gen: u64` field and being classified
+`Some` have to agree, which needs no allowlist at all, and the three variants
+carrying no `gen` each have a recorded reason that has to still be true. A
+behavioural test covers the rest, since none of that says whether `handle_msg`
+still acts on the classification.
 
 **4. Guarded key arms come first.**
 A `KeyCode::Char(c) if ctrl` arm must precede the unguarded `KeyCode::Char(c)`

@@ -15,6 +15,7 @@ mod detail;
 mod dispatch;
 mod dlq;
 mod formatting;
+mod generation_guard;
 mod key_arm_order;
 mod keys;
 mod lint;
