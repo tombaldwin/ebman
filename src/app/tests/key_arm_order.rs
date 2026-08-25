@@ -79,12 +79,20 @@ fn is_modifier_guard(guard: &syn::Expr) -> bool {
 fn chars_in_pattern(pat: &syn::Pat, out: &mut Vec<char>) {
     match pat {
         syn::Pat::TupleStruct(ts) => {
-            let is_char_ctor = ts.path.segments.last().is_some_and(|s| s.ident == "Char")
-                && ts
-                    .path
-                    .segments
-                    .iter()
-                    .any(|s| s.ident == "KeyCode" || s.ident == "Char");
+            // `KeyCode::Char(..)`, or a bare `Char(..)` under a glob
+            // import. The qualifier check has to look at the segment
+            // immediately before `Char`: written as "is KeyCode anywhere in
+            // the path" it is satisfied by the `Char` segment itself and so
+            // excludes nothing, which would admit some unrelated enum's
+            // `Char(char)` variant into the rule.
+            let segs: Vec<String> = ts
+                .path
+                .segments
+                .iter()
+                .map(|s| s.ident.to_string())
+                .collect();
+            let is_char_ctor = segs.last().is_some_and(|s| s == "Char")
+                && segs.iter().rev().nth(1).is_none_or(|q| q == "KeyCode");
             if is_char_ctor {
                 for elem in &ts.elems {
                     if let syn::Pat::Lit(lit) = elem {
@@ -290,6 +298,26 @@ fn chars_are_found_through_tuples_and_alternations() {
     assert_eq!(both, vec!['y']);
 }
 
+/// Some other enum's `Char(char)` variant is not a key. Before the qualifier
+/// check looked at the segment immediately before `Char`, it asked whether
+/// `KeyCode` appeared anywhere in the path — which the `Char` segment itself
+/// satisfies, so the check excluded nothing.
+#[test]
+fn an_unrelated_char_variant_is_not_a_key_arm() {
+    let src = r#"
+        fn f() {
+            match token {
+                Token::Char('d') => self.a(),
+                Token::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => self.b(),
+                _ => {}
+            }
+        }
+    "#;
+    let (v, both) = shadowed_key_arms(src);
+    assert!(v.is_empty(), "Token::Char is not KeyCode::Char: {v:?}");
+    assert!(both.is_empty(), "and it is not part of the policed surface");
+}
+
 /// A file that will not parse must be loud, not "clean".
 #[test]
 #[should_panic(expected = "could not parse source")]
@@ -334,6 +362,8 @@ fn the_keymap_puts_guarded_key_arms_first() {
 #[test]
 fn every_source_file_puts_guarded_key_arms_first() {
     let mut offenders: Vec<String> = Vec::new();
+    // 20 files match today. A floor of 2 would still have passed on a
+    // walk that had collapsed to almost nothing.
     let mut checked = 0usize;
     for (path, src) in super::scan::source_files() {
         if !src.contains("KeyCode::Char") {
@@ -349,9 +379,9 @@ fn every_source_file_puts_guarded_key_arms_first() {
         }
     }
     assert!(
-        checked >= 2,
-        "expected more than one module to match on KeyCode::Char; the sweep \
-         found {checked} and may be looking in the wrong place"
+        checked >= 10,
+        "expected at least 10 modules to match on KeyCode::Char; the sweep \
+         found {checked} and is probably looking in the wrong place"
     );
     assert!(
         offenders.is_empty(),
