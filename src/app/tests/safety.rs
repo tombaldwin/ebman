@@ -919,3 +919,79 @@ async fn a_rollback_result_opens_the_modal_when_the_cursor_stayed_put() {
         "and it must offer the PREVIOUS version, not the current one"
     );
 }
+
+/// The type-the-env-name confirmation must actually compare the text.
+///
+/// Terminate opens a `ConfirmKind::TypeName` modal: the operator has to
+/// type the environment's name and press Enter. `cargo mutants` found
+/// THREE survivors on that comparison — the guard replaced with `true`,
+/// with `false`, and the `==` flipped to `!=` — so neither direction was
+/// tested.
+///
+/// Replaced with `true` it is the worst outcome in this codebase:
+/// pressing Enter with an empty field, or with any text at all,
+/// dispatches a terminate. The comment beside it calls the typed-name
+/// guard the thing that "already prevents accidental dispatch", with the
+/// 5s cancel window as a last-ditch rescue — so this is the primary
+/// protection, not the backup.
+#[tokio::test]
+async fn terminate_requires_the_env_name_typed_exactly() {
+    async fn modal_for_terminate() -> App {
+        let mut app = test_app();
+        app.environments = vec![mk_env("api-prod", "shop", "WebServer", "Green")];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        // Via the menu, so `mode` becomes `Mode::Action` — without it the
+        // typed characters route to the NORMAL keymap and never reach the
+        // confirm field.
+        assert!(app.open_action_menu(), "the action menu should open");
+        app.advance_action_flow(crate::app::Action::Terminate);
+        let Some(crate::app::ActionFlow::Confirm(m)) = &app.action_flow else {
+            panic!("terminate should open a confirm modal");
+        };
+        assert_eq!(
+            m.kind,
+            crate::app::ConfirmKind::TypeName,
+            "terminate must be type-to-confirm, not Y/N"
+        );
+        app
+    }
+
+    // Nothing typed: Enter must not dispatch.
+    let mut app = modal_for_terminate().await;
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(
+        app.pending_dispatch.is_none(),
+        "Enter on an EMPTY type-to-confirm field must not queue a terminate"
+    );
+    assert!(app.action_flow.is_some(), "and the modal must stay open");
+
+    // Wrong name: Enter must not dispatch.
+    let mut app = modal_for_terminate().await;
+    for c in "api-prd".chars() {
+        press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(
+        app.pending_dispatch.is_none(),
+        "a MISTYPED env name must not queue a terminate — this is the guard \
+         the modal's own comment calls the thing that prevents accidental \
+         dispatch"
+    );
+
+    // Exact name: Enter dispatches. Without this the guard could be
+    // "never confirm" and the two assertions above would still pass.
+    let mut app = modal_for_terminate().await;
+    for c in "api-prod".chars() {
+        press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(
+        app.pending_dispatch.is_some(),
+        "the EXACT env name must confirm, or terminate is unreachable"
+    );
+    assert!(
+        app.action_flow.is_none(),
+        "and the modal closes into the cancel window"
+    );
+}
