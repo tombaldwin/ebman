@@ -70,13 +70,25 @@ jobs:
           path: mutants.out/
           retention-days: 14
 
-  # Whole-tree sweep, sharded so each shard finishes. Non-blocking:
+  # Whole-tree sweep, sharded SIXTEEN ways — a number that was measured
+  # rather than guessed, after the first guess was wrong.
+  #
+  # The tree holds 6097 mutants. At ~11s each locally that is ~19 hours
+  # of testing, and a GitHub `ubuntu-latest` runner is roughly 2.5x
+  # slower than the machine that measured it. So 8 shards is ~6.1h per
+  # shard against a 320-minute cap — it does not fit, and the first
+  # scheduled run confirmed it by sitting at 4h50m with no end in sight.
+  # 16 shards is ~3.1h, comfortably inside.
+  #
+  # Re-measure before changing this. `cargo mutants --list | wc -l` gives
+  # the count; the per-mutant cost is dominated by the rebuild, so it
+  # scales with compile time rather than test count. Non-blocking:
   # across the full surface, surviving mutants are a reading list, and
   # turning them into a build failure means either chasing every
   # equivalent mutant or switching the job off — and the second is what
   # actually happens.
   full:
-    name: cargo-mutants (shard ${{ matrix.shard }}/8)
+    name: cargo-mutants (shard ${{ matrix.shard }}/16)
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 320
@@ -84,14 +96,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-mutants --locked
       - name: Mutate this shard
-        run: cargo mutants --shard ${{ matrix.shard }}/8 --no-shuffle --timeout 120 -- --lib
+        run: cargo mutants --shard ${{ matrix.shard }}/16 --no-shuffle --timeout 120 -- --lib
       - uses: actions/upload-artifact@v7
         if: always()
         with:
