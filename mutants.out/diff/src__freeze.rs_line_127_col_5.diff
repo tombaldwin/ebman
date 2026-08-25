@@ -1,0 +1,22 @@
+--- src/freeze.rs
++++ replace parse_file -> Option<FreezeMarker> with None
+@@ -119,18 +119,17 @@
+     // drop a VALID cross-process freeze.
+     if parse_file(path).map(|m2| m2.pid) == Some(m.pid) {
+         let _ = std::fs::remove_file(path);
+     }
+     None
+ }
+ 
+ fn parse_file(path: &Path) -> Option<FreezeMarker> {
+-    let text = std::fs::read_to_string(path).ok()?;
+-    parse_marker(&text)
++    None /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Pure parse of the marker body. Tolerant of unknown keys; missing
+ /// required keys yield `None` (a corrupt marker never blocks writes —
+ /// it also never *enables* enforcement, which the writer's warn line
+ /// covers).
+ pub(crate) fn parse_marker(text: &str) -> Option<FreezeMarker> {
+     let v: serde_json::Value = serde_json::from_str(text).ok()?;

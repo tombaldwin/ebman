@@ -1,0 +1,3 @@
+src/audit.rs:78:19: replace < with == in parse_audit_line
+src/audit.rs:78:19: replace < with <= in parse_audit_line
+src/audit.rs:140:13: replace < with <= in parse_kv_pairs

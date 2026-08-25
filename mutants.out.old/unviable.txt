@@ -1,2 +1,1 @@
-src/app/safety.rs:134:43: replace - with + in App::read_only_reason
-src/app/safety.rs:134:43: replace - with / in App::read_only_reason
+src/audit.rs:71:5: replace parse_audit_line -> Option<AuditEntry> with Some(Default::default())

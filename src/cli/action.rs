@@ -512,7 +512,18 @@ async fn dispatch_one_region(
     if !quiet {
         eprintln!("rollout: dispatching to {region} (env={env}, version={version})");
     }
-    audit::append_rollout(rollout_id, region, env, version, "dispatched", None);
+    audit::append_rollout(
+        rollout_id,
+        // From the CLIENT, not the `--profile` flag: this records the
+        // profile the write actually went through, which is the question
+        // the audit log is asked.
+        client.context.profile.as_deref(),
+        region,
+        env,
+        version,
+        "dispatched",
+        None,
+    );
     let mut outcome: Result<(), String> = match client.deploy_version(env, version).await {
         Ok(()) => Ok(()),
         Err(e) => {
@@ -574,6 +585,7 @@ async fn dispatch_one_region(
     }
     audit::append_rollout(
         rollout_id,
+        client.context.profile.as_deref(),
         region,
         env,
         version,

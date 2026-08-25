@@ -1,32 +1,17 @@
-src/audit.rs:71:5: replace parse_audit_line -> Option<AuditEntry> with None
-src/audit.rs:78:24: replace || with && in parse_audit_line
-src/audit.rs:78:19: replace < with > in parse_audit_line
-src/audit.rs:78:47: replace != with == in parse_audit_line
-src/audit.rs:106:26: replace == with != in parse_audit_line
-src/audit.rs:108:13: delete match arm "account" in parse_audit_line
-src/audit.rs:109:13: delete match arm "profile" in parse_audit_line
-src/audit.rs:110:13: delete match arm "region" in parse_audit_line
-src/audit.rs:111:13: delete match arm "rollout_id" in parse_audit_line
-src/audit.rs:112:13: delete match arm "stage" in parse_audit_line
-src/audit.rs:113:13: delete match arm "action" in parse_audit_line
-src/audit.rs:114:13: delete match arm "target" in parse_audit_line
-src/audit.rs:115:13: delete match arm "version" in parse_audit_line
-src/audit.rs:116:13: delete match arm "rule_id" in parse_audit_line
-src/audit.rs:117:13: delete match arm "outcome" in parse_audit_line
-src/audit.rs:118:13: delete match arm "err" in parse_audit_line
-src/audit.rs:136:5: replace parse_kv_pairs -> Vec<(String, String)> with vec![]
-src/audit.rs:136:5: replace parse_kv_pairs -> Vec<(String, String)> with vec![(String::new(), String::new())]
-src/audit.rs:136:5: replace parse_kv_pairs -> Vec<(String, String)> with vec![(String::new(), "xyzzy".into())]
-src/audit.rs:136:5: replace parse_kv_pairs -> Vec<(String, String)> with vec![("xyzzy".into(), String::new())]
-src/audit.rs:136:5: replace parse_kv_pairs -> Vec<(String, String)> with vec![("xyzzy".into(), "xyzzy".into())]
-src/audit.rs:140:13: replace < with == in parse_kv_pairs
-src/audit.rs:140:13: replace < with > in parse_kv_pairs
-src/audit.rs:142:21: replace && with || in parse_kv_pairs
-src/audit.rs:142:17: replace < with <= in parse_kv_pairs
-src/audit.rs:145:14: replace >= with < in parse_kv_pairs
-src/audit.rs:150:21: replace && with || in parse_kv_pairs
-src/audit.rs:150:17: replace < with == in parse_kv_pairs
-src/audit.rs:150:17: replace < with > in parse_kv_pairs
-src/audit.rs:150:17: replace < with <= in parse_kv_pairs
-src/audit.rs:150:52: replace || with && in parse_kv_pairs
-src/audit.rs:150:64: replace == with != in parse_kv_pairs
+src/cli/mod.rs:109:5: replace write_refusal -> Option<String> with None
+src/cli/mod.rs:109:5: replace write_refusal -> Option<String> with Some(String::new())
+src/cli/mod.rs:109:5: replace write_refusal -> Option<String> with Some("xyzzy".into())
+src/cli/mod.rs:156:5: replace take_value -> Result<String, String> with Ok(String::new())
+src/cli/mod.rs:156:5: replace take_value -> Result<String, String> with Ok("xyzzy".into())
+src/freeze.rs:31:9: replace FreezeMarker::remedy -> &'static str with ""
+src/freeze.rs:31:9: replace FreezeMarker::remedy -> &'static str with "xyzzy"
+src/freeze.rs:52:5: replace write_marker_at -> std::io::Result<()> with Ok(())
+src/freeze.rs:72:5: replace clear_marker_if_own with ()
+src/freeze.rs:76:5: replace clear_if_pid_at with ()
+src/freeze.rs:77:18: replace == with != in clear_if_pid_at
+src/freeze.rs:90:5: replace refusal_message -> String with String::new()
+src/freeze.rs:90:5: replace refusal_message -> String with "xyzzy".into()
+src/freeze.rs:111:5: replace read_active_with -> Option<FreezeMarker> with None
+src/freeze.rs:120:42: replace == with != in read_active_with
+src/freeze.rs:127:5: replace parse_file -> Option<FreezeMarker> with None
+src/freeze.rs:136:5: replace parse_marker -> Option<FreezeMarker> with None

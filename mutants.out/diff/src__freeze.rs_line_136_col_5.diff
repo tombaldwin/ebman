@@ -1,0 +1,31 @@
+--- src/freeze.rs
++++ replace parse_marker -> Option<FreezeMarker> with None
+@@ -128,27 +128,17 @@
+     parse_marker(&text)
+ }
+ 
+ /// Pure parse of the marker body. Tolerant of unknown keys; missing
+ /// required keys yield `None` (a corrupt marker never blocks writes —
+ /// it also never *enables* enforcement, which the writer's warn line
+ /// covers).
+ pub(crate) fn parse_marker(text: &str) -> Option<FreezeMarker> {
+-    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+-    Some(FreezeMarker {
+-        pid: v.get("pid")?.as_u64()? as u32,
+-        reason: v.get("reason")?.as_str()?.to_string(),
+-        incident: v.get("incident").and_then(|b| b.as_bool()).unwrap_or(false),
+-        at: v
+-            .get("at")
+-            .and_then(|s| s.as_str())
+-            .unwrap_or("")
+-            .to_string(),
+-    })
++    None /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(unix)]
+ fn pid_alive(pid: u32) -> bool {
+     // kill(pid, 0): signal 0 performs the permission/existence check
+     // without delivering anything. EPERM still means "exists".
+     let r = unsafe { libc::kill(pid as libc::pid_t, 0) };
+     r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
