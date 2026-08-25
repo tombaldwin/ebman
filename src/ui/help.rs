@@ -95,6 +95,21 @@ pub(super) fn draw_help(f: &mut Frame, area: Rect, app: &mut App) {
         ),
         help_line("?", "toggle this help", theme),
         help_line("q / Ctrl-C", "quit", theme),
+        Line::from(""),
+        // Built from `HelpTopic::names()` rather than spelled out: a
+        // hardcoded list here would drift the moment a topic is added,
+        // and the whole point of this line is that every topic is
+        // reachable.
+        help_line(
+            ":help <topic>",
+            &format!("open one topic by name: {}", crate::app::HelpTopic::names()),
+            theme,
+        ),
+        Line::from(Span::styled(
+            "`:help shell` is the only way to read the embedded-shell keys — \
+             once attached, every keystroke belongs to the subprocess.",
+            Style::default().fg(theme.muted),
+        )),
     ];
     // Apps-scope keys — pressed when Tab has swapped the main table to
     // the Applications view. Distinct from Envs-scope behaviour so the

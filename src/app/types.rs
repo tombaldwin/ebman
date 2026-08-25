@@ -561,41 +561,71 @@ pub(crate) struct PendingAction {
 /// avoiding the "wall of help" problem when the user just needs a reminder
 /// about the screen they're on. Set when entering `Mode::Help`.
 ///
-/// `Shell` is currently unreachable — `?` in the embedded shell is a
-/// legitimate character to forward to the subprocess (e.g. globbing) — but
-/// kept here for symmetry in case we later bind a separate detach-and-help
-/// combo (e.g. F11).
+/// `Shell` is the one topic `?` can't reach, and can't be made to: in the
+/// embedded shell every keystroke belongs to the subprocess, `?` included
+/// (globbing). It is reached by name instead — `:help shell` — which is the
+/// useful moment for it anyway, since what it documents is how to get *out*
+/// of the shell. `:help <topic>` works for every topic; see
+/// `HelpTopic::from_arg`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-// `#[allow]`, not `#[expect]`, and deliberately so. `#[expect]` checks
-// whether the lint fired at the node it is attached to; `dead_code`
-// reports per-variant and per-field, so a type-level `#[expect]` is
-// reported "unfulfilled" while the items inside it are genuinely dead.
-// `#[allow]` suppresses hierarchically and is the only attribute that
-// expresses this. Everything else in the crate moved to `#[expect]` so
-// stale suppressions fail; these two cannot, so they carry their reason
-// here instead.
-#[allow(dead_code)]
 pub(crate) enum HelpTopic {
-    // `Shell` is never constructed, so `ui::help::draw_help_shell` is
-    // unreachable: in Shell mode every keystroke is forwarded to the PTY,
-    // including `?`, so there is no way to ask for the shell help while
-    // you are in the shell. Surfaced when the blanket `#[allow(dead_code)]`
-    // on this enum became `#[expect]` and clippy reported the suppression
-    // itself as unfulfilled — the type-level allow was hiding a
-    // variant-level finding.
-    //
-    // Not deleted, because whether the answer is "remove the screen" or
-    // "reach it from the global help / before attaching" is a design call
-    // rather than a mechanical one. Tracked in BACKLOG.md; scoped and
-    // reasoned here rather than silenced.
     Global,
     Detail,
     Dlq,
     Action,
+    /// Reachable only as `:help shell` — see the type doc.
     Shell,
     /// Help for the interactive `:saved-configs` overlay (j/k cursor +
     /// a/c/x dispatch keys).
     SavedConfigs,
+}
+
+impl HelpTopic {
+    /// Every topic, in the order `:help` lists them when given a name it
+    /// doesn't know.
+    ///
+    /// A guard test reads the variants out of this file and requires them
+    /// all to be here, so a new topic can't be added without becoming
+    /// reachable — which is how `Shell` sat unreachable for as long as it
+    /// did.
+    pub(crate) const ALL: &'static [HelpTopic] = &[
+        HelpTopic::Global,
+        HelpTopic::Detail,
+        HelpTopic::Dlq,
+        HelpTopic::Action,
+        HelpTopic::Shell,
+        HelpTopic::SavedConfigs,
+    ];
+
+    /// The name `:help <topic>` accepts for this topic.
+    pub(crate) fn arg_name(self) -> &'static str {
+        match self {
+            HelpTopic::Global => "global",
+            HelpTopic::Detail => "detail",
+            HelpTopic::Dlq => "dlq",
+            HelpTopic::Action => "action",
+            HelpTopic::Shell => "shell",
+            HelpTopic::SavedConfigs => "saved-configs",
+        }
+    }
+
+    /// Parse a `:help <topic>` argument. Case-insensitive; `None` for a
+    /// name no topic answers to.
+    pub(crate) fn from_arg(arg: &str) -> Option<Self> {
+        HelpTopic::ALL
+            .iter()
+            .copied()
+            .find(|t| t.arg_name().eq_ignore_ascii_case(arg))
+    }
+
+    /// `global, detail, dlq, …` — for the unknown-topic message.
+    pub(crate) fn names() -> String {
+        HelpTopic::ALL
+            .iter()
+            .map(|t| t.arg_name())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 /// Cap on the in-flight + recently-completed list. Older entries fall off

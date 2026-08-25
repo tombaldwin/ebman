@@ -1,6 +1,6 @@
 # Keys
 
-Press `?` in-app for a per-context keymap — Detail, DLQ, Action menu, and the Saved-configs overlay all have scoped help.
+Press `?` in-app for a per-context keymap — Detail, DLQ, Action menu, and the Saved-configs overlay all have scoped help. `:help <topic>` opens one by name; `:help shell` is the only way to reach the embedded-shell keys, since once you attach every keystroke goes to the subprocess.
 
 ## Normal mode (env table)
 

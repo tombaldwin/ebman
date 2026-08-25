@@ -77,17 +77,35 @@ The write/freeze pre-tag review (2 lenses) fixed 2 Critical + 2 Important + 1 Mi
   borrow `app.environments` and it defeats the field-level split that
   lets `&mut app.table_state` coexist).
 
-- [ ] **`HelpTopic::Shell` is never constructed, so `draw_help_shell` is
-  unreachable.** Found 2026-08-24 by converting `#[allow]` to
-  `#[expect]`: the type-level suppression on `HelpTopic` was hiding a
-  variant-level finding. Every other variant is assigned somewhere;
-  `Shell` is not. In Shell mode every keystroke goes to the PTY —
-  including `?` — so there is no way to ask for the shell help while you
-  are in the shell.
+- [x] **`HelpTopic::Shell` is never constructed, so `draw_help_shell` is
+  unreachable** — DONE 2026-08-25. Reached by name: `:help <topic>` takes
+  any of `global`, `detail`, `dlq`, `action`, `shell`, `saved-configs`,
+  case-insensitively; a name no topic answers to reports what was typed
+  and what is available rather than opening whatever the inference would
+  have picked. Bare `:help` / `?` still infer from context — the arg form
+  is additive.
 
-  The screen exists and is written. The question is whether to delete it
-  or reach it another way (from the global help, or before attaching),
-  which is a design call rather than a mechanical one.
+  `:help shell` is the right shape for this particular screen rather
+  than a workaround. What it documents is how to get *out* of the shell
+  (`F12` detaches, `^D` closes), which is only useful before you attach —
+  and unreachable after, since `?` is a legitimate globbing character
+  that belongs to the subprocess.
+
+  Two things fell out of it. The type-level `#[allow(dead_code)]` on
+  `HelpTopic` is **gone** — it existed to hide this one dead variant, and
+  with `Shell` live nothing in the enum is dead, so the lint is back on.
+  And `every_help_topic_renders_something_of_its_own` was assigning
+  `app.help.topic` directly, so it had been proving the Shell renderer
+  worked down a path production could not take — precisely the
+  "test a data structure the production path doesn't reach" case. It
+  drives `:help <topic>` now, and iterates `HelpTopic::ALL` with an
+  exhaustive `match` for the titles, so a new topic must declare one.
+
+  Guarded: `every_help_topic_variant_is_in_all` reads the variants out of
+  `types.rs` and requires each to be in `HelpTopic::ALL`, since a variant
+  missing from `ALL` cannot be named and would sit unreachable exactly as
+  `Shell` did. Mutation-verified both ways — dropping `Shell` from `ALL`,
+  and deleting the named-topic branch from dispatch: CAUGHT.
 
 - [ ] **`DeploySnapshot::env_name` is written and never read.** Same
   discovery. The map holding these is keyed by env name, so the field
