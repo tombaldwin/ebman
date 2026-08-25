@@ -424,3 +424,21 @@ pub(super) const GATED_COMMANDS: &[&str] = &[
     "elb-subnets",
     "security-groups",
 ];
+
+/// An `Application` with nothing but a name.
+///
+/// Five tests were carrying their own eight-field literal, four of them
+/// identical apart from the name. Override what a test actually cares about
+/// with struct-update syntax: `Application { version_count: 3, ..mk_application("x") }`.
+pub(super) fn mk_application(name: &str) -> crate::aws::Application {
+    crate::aws::Application {
+        name: name.into(),
+        description: String::new(),
+        date_created: None,
+        date_updated: None,
+        version_count: 0,
+        templates: Vec::new(),
+        latest_version_label: None,
+        latest_version_created: None,
+    }
+}

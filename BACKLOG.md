@@ -284,6 +284,29 @@ both guards were mutation-verified before being believed.
   in `handle_msg`; moving a gen-carrying variant into the `None` arm;
   deleting a recorded reason; and adding a stale one.
 
+- [ ] **The wrapped-literal guard can't see the collapsed form** —
+  found 2026-08-25 by introducing the defect. `CLAUDE.md` records this
+  class shipping three times;
+  `no_wrapped_string_literal_leaves_an_indentation_hole` now catches the
+  *wrapped* shape (a literal split across lines with no `\`
+  continuation, which embeds the newline and the next line's indent).
+  It cannot see the same defect once collapsed onto one line — a single
+  literal carrying a bare 18-space run mid-sentence — which is exactly
+  what a tool-assisted edit produces when something eats the
+  continuations. That is how it happened: a Python heredoc treated the
+  `\` as its own line continuation and emitted the collapsed form,
+  which every existing check passed.
+
+  Not built, because the shape is a real trade-off rather than an
+  oversight. Measured over production sources, a run of N spaces
+  mid-literal matches: **28** at N=3, **7** at N=6, **3** at N=8, **2**
+  at N=12 — and at every threshold the survivors are legitimate column
+  alignment (`REGION  ENV  CURRENT  TARGET`, `Tags  loading…`, the
+  rollout header in `render.rs`). So the guard needs either a threshold
+  that misses shallow holes or an allowlist that grows with every new
+  table header, which is a guard people route around. Worth someone
+  picking a shape deliberately; not worth guessing one mid-run.
+
 #### Console parity — BONUS
 
 ### Feature candidates — competitive scan (2026-05-24)
