@@ -78,3 +78,74 @@ fn the_tui_areas_exist_and_hold_source() {
         );
     }
 }
+
+/// Print macros are not the only way to reach the terminal. `writeln!` into
+/// `std::io::stdout()` does the same damage and would sail past the sweep
+/// above, so the handles themselves are checked too — with an allowlist,
+/// because there is one legitimate use and forbidding it outright would be
+/// wrong.
+const TERMINAL_HANDLES: &[&str] = &["stdout()", "stderr()"];
+
+/// `(path, how many sites, why they're allowed)`.
+///
+/// The count is part of the pin. File-level granularity would let a second,
+/// unjustified write hide behind the first one's reason — which is the shape
+/// `every_spawn_declares_whether_it_is_per_env` exists to prevent, and the
+/// same rule applies here: widening this list to quiet the guard is a stop
+/// condition, not a fix.
+const HANDLE_EXCEPTIONS: &[(&str, usize, &str)] = &[(
+    "src/app/spawn_refresh.rs",
+    1,
+    "BEL (0x07), written to ring the terminal bell when a new env goes red. \
+     A control character rather than display text, so it cannot corrupt the \
+     alternate screen — which is the whole of what rule 5 protects.",
+)];
+
+fn handle_sites() -> std::collections::BTreeMap<String, usize> {
+    let mut per_file: std::collections::BTreeMap<String, usize> = Default::default();
+    for h in TERMINAL_HANDLES {
+        for site in super::scan::find_in_production(h) {
+            let path = site
+                .rsplit_once(':')
+                .map_or(site.clone(), |(p, _)| p.to_string());
+            if TUI_AREAS.iter().any(|a| path.starts_with(a)) {
+                *per_file.entry(path).or_default() += 1;
+            }
+        }
+    }
+    per_file
+}
+
+#[test]
+fn every_direct_terminal_write_in_the_tui_is_justified() {
+    let sites = handle_sites();
+    let mut problems = Vec::new();
+
+    for (path, found) in &sites {
+        match HANDLE_EXCEPTIONS.iter().find(|(p, _, _)| p == path) {
+            None => problems.push(format!(
+                "{path}: {found} direct terminal write(s) with no justification. \
+                 Rule 5 — use `tracing::*`, or add an entry here saying why this \
+                 one cannot corrupt the alternate screen."
+            )),
+            Some((_, expected, why)) if expected != found => problems.push(format!(
+                "{path}: {found} direct terminal write(s), but the allowlist \
+                 justifies {expected}. The justification on record is: {why}"
+            )),
+            Some(_) => {}
+        }
+    }
+
+    // A justification for a site that no longer exists is a lie the next
+    // reader will believe.
+    for (path, _, _) in HANDLE_EXCEPTIONS {
+        if !sites.contains_key(*path) {
+            problems.push(format!(
+                "{path} is allowlisted for a direct terminal write but has none \
+                 — drop the entry."
+            ));
+        }
+    }
+
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}

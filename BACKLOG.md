@@ -227,6 +227,29 @@ both guards were mutation-verified before being believed.
   Mutation-verified by planting a `println!` in `src/ui/action.rs`:
   CAUGHT.
 
+  Self-review of that guard then found a gap in it: print macros are
+  not the only way to reach the terminal, and a `writeln!` into
+  `std::io::stdout()` would have sailed straight past. Direct handle
+  writes are now checked against an allowlist of `(path, count, why)`,
+  with exactly one entry — the BEL byte `spawn_refresh.rs` writes to
+  ring the bell on a new red alert, a control character rather than
+  display text. The count is part of the pin: file-level granularity
+  would let a second, unjustified write shelter behind the first one's
+  recorded reason. Verified in both directions — a second write in the
+  allowlisted file, and a write in a file with no entry — plus a stale
+  entry naming a site that no longer exists.
+
+- [x] **Two defects in the rule-4 guard, found reviewing it** — fixed
+  2026-08-25 in the same run. (a) The `KeyCode` qualifier check asked
+  whether `KeyCode` appeared *anywhere* in the path, which the `Char`
+  segment itself satisfies, so it excluded nothing and would have
+  admitted an unrelated enum's `Char(char)` variant. It reads the
+  segment immediately before `Char` now, pinned by a test that fails
+  against the old form. (b) The tree sweep's non-vacuity floor was
+  `>= 2` files when 20 match — loose enough to pass on a walk that had
+  collapsed to almost nothing, which is the vacuous shape this codebase
+  keeps finding. Raised to 10.
+
 - [ ] **Rule 3 — async results check `generation`** — the weakest of
   the five now, and the only one with no tree-walking guard. Individual
   handlers are tested, but nothing sweeps for an `AppMsg` handler that

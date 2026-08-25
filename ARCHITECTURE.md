@@ -168,6 +168,14 @@ guard honest — a companion test points the detector at the CLI and requires it
 to find plenty, so "the TUI is clean" can't be confused with "the detector is
 broken".
 
+Print macros aren't the only way to reach the terminal, so direct writes to
+`stdout()` / `stderr()` are checked too, against an allowlist of `(path, count,
+why)`. There is one entry: the BEL byte `spawn_refresh.rs` writes to ring the
+bell on a new red alert, which is a control character rather than display text
+and so can't corrupt the screen. The count is part of the pin — file-level
+granularity would let a second, unjustified write shelter behind the first
+one's reason.
+
 ### Clusters that own their invariant
 
 Two of `App`'s field groups are types rather than loose fields, and both
