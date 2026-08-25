@@ -8,3 +8,5 @@ src/freeze.rs:153:5: replace pid_alive -> bool with true
 src/freeze.rs:153:5: replace pid_alive -> bool with false
 src/freeze.rs:154:12: replace || with && in pid_alive
 src/freeze.rs:154:7: replace == with != in pid_alive
+src/freeze.rs:154:62: replace == with != in pid_alive
+src/freeze.rs:161:5: replace pid_alive -> bool with false
