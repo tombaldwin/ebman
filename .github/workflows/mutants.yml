@@ -91,7 +91,12 @@ jobs:
     name: cargo-mutants (shard ${{ matrix.shard }}/16)
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 320
+    # 350, not 320. The first real run's shards finished at 298-300
+    # minutes — 20 minutes of headroom on a 320 cap, which is close
+    # enough that a marginally slower runner tips a shard into a
+    # timeout, and a timed-out shard reports nothing useful. Measured,
+    # not guessed: see the shard-count note above.
+    timeout-minutes: 350
     continue-on-error: true
     strategy:
       fail-fast: false
@@ -103,7 +108,23 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-mutants --locked
       - name: Mutate this shard
-        run: cargo mutants --shard ${{ matrix.shard }}/16 --no-shuffle --timeout 120 -- --lib
+        # `--exclude src/main.rs`: the test command below is `-- --lib`,
+        # which does not compile the binary target at all — so every
+        # main.rs mutant is reported MISSED regardless of coverage, and
+        # 57 of them were, in the first real run. They are noise, and
+        # they cost compute to produce.
+        #
+        # main.rs is not untested: `tests/cli.rs` drives the real binary
+        # and its `every_advertised_subcommand_routes_somewhere` catches
+        # exactly the "delete match arm" mutants this was reporting —
+        # verified by hand. Covering it here instead would mean
+        # `--all-targets`, which recompiles and re-runs the process-level
+        # suite for all 6097 mutants; the shards already finish only ~20
+        # minutes under the cap.
+        run: >
+          cargo mutants --shard ${{ matrix.shard }}/16
+          --exclude src/main.rs
+          --no-shuffle --timeout 120 -- --lib
       - uses: actions/upload-artifact@v7
         if: always()
         with:
