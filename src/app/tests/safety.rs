@@ -824,3 +824,98 @@ async fn the_swap_picker_carries_its_target_into_the_confirm_modal() {
         "and the source must be the selected env, not the picked one"
     );
 }
+
+/// `:rollback` must not roll back the env the cursor happens to be on
+/// when the result lands.
+///
+/// `:rollback` fetches the target env's recent events, finds the
+/// previously-deployed version, then opens the deploy-confirm modal —
+/// and that modal targets the SELECTED env. So if the cursor moved
+/// while the fetch was in flight, the modal would offer env A's previous
+/// version for deployment to env B. `handle_rollback_target` guards
+/// against it and says so in a comment.
+///
+/// `cargo mutants` found both directions of that guard surviving, so
+/// nothing tested it. The generation guard does not help here: the
+/// generation only advances on a context switch (profile/region), not on
+/// moving the cursor between envs in the same account.
+#[tokio::test]
+async fn a_rollback_result_does_not_target_whatever_env_is_selected_now() {
+    let mut app = test_app();
+    app.environments = vec![
+        mk_env("api-prod", "shop", "WebServer", "Green"),
+        mk_env("worker-prod", "shop", "Worker", "Green"),
+    ];
+    app.rebuild_view();
+    app.table_state.select(Some(0)); // `:rollback` issued for api-prod
+
+    let ev = |vl: Option<&str>| crate::aws::Event {
+        at: None,
+        env: "api-prod".into(),
+        application: "shop".into(),
+        message: "Deploying new version".into(),
+        severity: "INFO".into(),
+        version_label: vl.map(String::from),
+    };
+    // Newest first: current is v2, so the prior version is v1.
+    let events = vec![ev(Some("v2")), ev(Some("v1"))];
+
+    // The operator moves the cursor while the fetch is in flight.
+    app.table_state.select(Some(1)); // now on worker-prod
+
+    let gen = app.generation;
+    app.handle_msg(crate::app::AppMsg::RollbackTarget {
+        gen,
+        env_name: "api-prod".to_string(),
+        current_version: "v2".to_string(),
+        result: Ok(events),
+    });
+
+    assert!(
+        app.action_flow.is_none(),
+        "no confirm modal may open: the modal targets the SELECTED env, \
+         which is now worker-prod, and this result is about api-prod"
+    );
+    let msg = app.error_message.clone().unwrap_or_default();
+    assert!(
+        msg.contains("selection moved"),
+        "and the operator must be told why nothing happened, got: {msg:?}"
+    );
+}
+
+/// The other half: with the cursor still on the target env, the rollback
+/// must actually proceed — or the guard above could be "never roll back"
+/// and still pass.
+#[tokio::test]
+async fn a_rollback_result_opens_the_modal_when_the_cursor_stayed_put() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "shop", "WebServer", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+
+    let ev = |vl: Option<&str>| crate::aws::Event {
+        at: None,
+        env: "api-prod".into(),
+        application: "shop".into(),
+        message: "Deploying new version".into(),
+        severity: "INFO".into(),
+        version_label: vl.map(String::from),
+    };
+    let gen = app.generation;
+    app.handle_msg(crate::app::AppMsg::RollbackTarget {
+        gen,
+        env_name: "api-prod".to_string(),
+        current_version: "v2".to_string(),
+        result: Ok(vec![ev(Some("v2")), ev(Some("v1"))]),
+    });
+
+    let Some(crate::app::ActionFlow::Confirm(modal)) = &app.action_flow else {
+        panic!("the rollback should open a deploy-confirm modal");
+    };
+    assert_eq!(modal.target_env, "api-prod");
+    assert_eq!(
+        modal.params.deploy_version.as_deref(),
+        Some("v1"),
+        "and it must offer the PREVIOUS version, not the current one"
+    );
+}
