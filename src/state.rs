@@ -216,10 +216,25 @@ pub(crate) fn parse(text: &str) -> PersistedState {
     state
 }
 
+/// Write `state` to disk. A thin I/O wrapper — the body is built by
+/// [`serialize`], which is pure and therefore testable.
 pub(crate) fn save(state: &PersistedState) {
     let path = state_path();
-    // Parent-dir creation is handled by `write_atomic`. We just build
-    // the body here and hand it off.
+    // Parent-dir creation is handled by `write_atomic`.
+    let out = serialize(state);
+    if let Err(e) = write_atomic(&path, &out) {
+        tracing::warn!(error = %e, path = %path.display(), "failed to write state");
+    }
+}
+
+/// The `state.toml` body, as text.
+///
+/// Split out of `save` for the same reason `parse` is a free function:
+/// the writer is worth testing and the filesystem is not. Before this
+/// split the only test of the emitted shape hand-wrote the line it
+/// expected, so it pinned a copy of the format while `save` was free to
+/// drift away from it.
+pub(crate) fn serialize(state: &PersistedState) -> String {
     let mut out = String::new();
     out.push_str("# ebman persisted state — managed by the app, edits will be overwritten\n");
     if let Some(p) = &state.profile {
@@ -278,9 +293,7 @@ pub(crate) fn save(state: &PersistedState) {
         let joined: Vec<&str> = state.hidden_cols.iter().map(String::as_str).collect();
         out.push_str(&format!("hidden_cols = \"{}\"\n", joined.join(",")));
     }
-    if let Err(e) = write_atomic(&path, &out) {
-        tracing::warn!(error = %e, path = %path.display(), "failed to write state");
-    }
+    out
 }
 
 fn state_path() -> PathBuf {
@@ -434,25 +447,44 @@ deploy_snapshot.staging-api = "build-825|2026-05-25T15:00:00+00:00"
 
     #[test]
     fn serialize_deploy_snapshots_round_trips() {
-        // save() should emit deploy_snapshot.ENV lines that parse()
-        // recognises. The intermediate file content isn't asserted
-        // directly (avoids brittle string matching); instead we
-        // round-trip via parse-after-save semantics.
+        // Round-trips through the REAL writer. This test used to
+        // hand-construct the line it expected, so it pinned a copy of the
+        // format: `save` could have stopped emitting the key entirely and
+        // this would still have passed.
         let mut state = PersistedState::default();
         state.deploy_snapshots.insert(
             "prod-api".into(),
             "build-823|2026-05-25T14:30:00+00:00".into(),
         );
-        // Hand-construct the line save() would write so we can verify
-        // it parses back without needing filesystem access.
-        let line = format!(
-            "deploy_snapshot.prod-api = \"{}\"\n",
-            state.deploy_snapshots["prod-api"]
-        );
-        let reparsed = parse(&line);
+        let reparsed = parse(&serialize(&state));
         assert_eq!(
             reparsed.deploy_snapshots.get("prod-api"),
             state.deploy_snapshots.get("prod-api")
+        );
+    }
+
+    /// `DeploySnapshot` carries no env name — it was a third copy of a
+    /// string the map key and the TOML key already hold, and it was
+    /// removed. What made removing it safe is that the *line* still names
+    /// its env, which is what matters when someone reads `state.toml` by
+    /// hand. Nothing was checking that, so this does.
+    #[test]
+    fn a_persisted_deploy_snapshot_line_names_its_env() {
+        let mut state = PersistedState::default();
+        state.deploy_snapshots.insert(
+            "prod-api".into(),
+            "build-823|2026-05-25T14:30:00+00:00".into(),
+        );
+        let line = serialize(&state)
+            .lines()
+            .find(|l| l.contains("build-823"))
+            .expect("the snapshot was not written at all")
+            .to_string();
+        assert!(
+            line.contains("prod-api"),
+            "a hand-read state.toml line must say which env it belongs to, \
+             and the value doesn't carry the name — only the key does: \
+             {line:?}"
         );
     }
 

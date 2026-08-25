@@ -934,7 +934,6 @@ impl App {
                     self.deploy_snapshots.insert(
                         env.name.clone(),
                         DeploySnapshot {
-                            env_name: env.name.clone(),
                             previous_version_label: env.version_label.clone(),
                             taken_at: chrono::Utc::now(),
                         },

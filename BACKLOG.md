@@ -107,12 +107,39 @@ The write/freeze pre-tag review (2 lenses) fixed 2 Critical + 2 Important + 1 Mi
   `Shell` did. Mutation-verified both ways — dropping `Shell` from `ALL`,
   and deleting the named-topic branch from dispatch: CAUGHT.
 
-- [ ] **`DeploySnapshot::env_name` is written and never read.** Same
-  discovery. The map holding these is keyed by env name, so the field
-  duplicates its own key — but it is also what makes a persisted line
-  self-describing in `state.toml`, which matters when reading that file
-  by hand. Decide: drop it, or document it as an on-disk-format field
-  and stop treating it as dead.
+- [x] **`DeploySnapshot::env_name` is written and never read** — DONE
+  2026-08-25, **field removed**, which is the opposite of what this entry
+  proposed. The entry said it was "what makes a persisted line
+  self-describing in state.toml". It isn't: `to_persisted` emits
+  `"label|RFC3339"` and nothing else. The env name is the TOML key —
+  `deploy_snapshot.prod-api = "build-823|…"` — so the line is
+  self-describing with or without the field, and the field was a third
+  copy of a string the map key and the file key already carry. Nothing
+  read it anywhere.
+
+  `parse_persisted` lost its `env_name` parameter with it: it was taking
+  a name only to store it.
+
+  What the entry was actually protecting — a hand-read `state.toml` line
+  saying which env it belongs to — had no test at all, so it has one now,
+  and getting there turned up two more things:
+
+  - **`save()` had no pure writer.** `CLAUDE.md` requires `parse` to be a
+    pure function so it stays unit-testable; the writer never got the same
+    treatment, so the body was built inline against the filesystem.
+    Extracted as `state::serialize(&PersistedState) -> String`, with
+    `save` now a thin I/O wrapper.
+  - **`serialize_deploy_snapshots_round_trips` was testing a copy.** It
+    hand-constructed the line it expected `save` to write, so `save`
+    could have stopped emitting the key entirely and it would still have
+    passed. It drives `serialize` now — and the mutation below fails it,
+    which it could not have done before.
+
+  Mutation-verified: making the writer emit `deploy_snapshot = "…"`
+  without the env key is CAUGHT.
+
+  Also removed: the type-level `#[allow(dead_code)]` on `DeploySnapshot`,
+  which existed only to hide this field.
 
 - [ ] **Whole-tree mutation sweep: triage the remaining survivors.**
   The first complete-ish sweep (2026-08-25, 16 shards, ~95% of the tree)
