@@ -189,6 +189,56 @@ Three gates added to CI. Two of them found something on the first run, which is 
 
 Also queued from the 0.26 pre-tag architecture review: rewrite_credential_error + probe helpers out of app.rs; ui.rs submodule split; MCP registry unification (gate on v2 writes); EBL015 warnings surface in MCP; per-tool client dedup.
 
+#### ARCHITECTURE rule guards — 2026-08-25
+
+The five rules in `ARCHITECTURE.md` are the ones the compiler doesn't
+enforce. Rules 4 and 5 had nothing behind them at all; both do now, and
+both guards were mutation-verified before being believed.
+
+- [x] **Rule 4 — guarded key arms come first** — DONE 2026-08-25.
+  `src/app/tests/key_arm_order.rs` parses the tree with `syn` and
+  compares arm positions *within each `match`*. It parses rather than
+  greps because judging order requires knowing which `match` an arm
+  belongs to: the line-level detector written first reported four
+  violations in `input.rs` (`k`, `x`, `d`, `y`) and **every one was
+  false** — it compared arms in different `match` blocks and in
+  different functions, and misattributed both `'k'` arms to a free
+  function at the top of the file. Neither existing mechanism could
+  express this rule: source scans can't see scope, and `cargo-mutants`
+  deletes bodies and flips operators but does not permute arms. Six
+  characters carry both forms today (`r g y ] [ k`) — not the nine an
+  earlier grep claimed, which was the same cross-match miscount.
+  Mutation-verified by relocating the guarded `Ctrl-y` arm below the
+  unguarded `'y'` arm: CAUGHT, with the offending line numbers and a
+  fix instruction in the failure message. Adds `syn` (`full`, `visit`)
+  and `proc-macro2/span-locations` as dev-dependencies.
+
+- [x] **Rule 5 — the TUI never prints to the terminal** — DONE
+  2026-08-25, found while checking whether the rule-4 claim in
+  `CONTRIBUTING.md` was true. `src/app/tests/no_tui_stdout.rs` scans
+  `src/app`, `src/ui` and `src/aws` for `println!` / `eprintln!` /
+  `print!` / `eprint!`, comments stripped. Deliberately *not*
+  `src/cli` or `src/main.rs`: the headless subcommands print by design
+  (162 sites), and that is what keeps the guard honest — a companion
+  test points the same detector at the CLI and requires it to find
+  more than 20, so "the TUI is clean" cannot be confused with "the
+  detector is broken". A third test asserts the three area prefixes
+  still match source, so a module move can't silently empty the sweep.
+  Mutation-verified by planting a `println!` in `src/ui/action.rs`:
+  CAUGHT.
+
+- [ ] **Rule 3 — async results check `generation`** — the weakest of
+  the five now, and the only one with no tree-walking guard. Individual
+  handlers are tested, but nothing sweeps for an `AppMsg` handler that
+  forgot the check, which is exactly the shape that has bitten before:
+  a guard that is correct, commented, and deletable without any test
+  noticing. Likely the same `syn` approach — visit `App::handle_msg`'s
+  match arms and require each to reach a `generation` comparison before
+  mutating state. Harder than rule 4 because the check is sometimes
+  delegated to a helper, so expect an allowlist with reasons, like
+  `every_spawn_declares_whether_it_is_per_env`. Widening that allowlist
+  to silence the guard is a stop condition, not a fix.
+
 #### Console parity — BONUS
 
 ### Feature candidates — competitive scan (2026-05-24)
