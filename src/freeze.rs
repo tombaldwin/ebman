@@ -282,4 +282,43 @@ mod tests {
         assert!(msg.contains("no reason given"), "{msg}");
         assert!(!msg.contains("()"), "{msg}");
     }
+
+    /// `pid_alive` itself was untested — `cargo mutants` reported four
+    /// survivors here, including "replace with false".
+    ///
+    /// The logic that consumes it is well covered, because
+    /// `read_active_with` takes the probe as a parameter and the tests
+    /// pass a fake. That is exactly the seam mutation testing exists to
+    /// find: the pure logic is exercised against a stub while the real
+    /// implementation is exercised by nothing.
+    ///
+    /// It matters because the freeze marker is a fleet-wide write lock.
+    /// A probe stuck on `false` treats a live session's freeze as stale
+    /// and lifts it out from under them; stuck on `true`, a marker left
+    /// by a crashed process never clears and deploys stay blocked with
+    /// no way to release them.
+    #[cfg(unix)]
+    #[test]
+    fn pid_alive_says_yes_to_this_process_and_no_to_a_reaped_one() {
+        assert!(
+            super::pid_alive(std::process::id()),
+            "this very process is alive; a probe that says otherwise would \
+             lift a live session's freeze"
+        );
+
+        // A pid that definitely no longer exists: spawn a child, wait for
+        // it, and let `status()` reap it. Deterministic, unlike guessing
+        // at a high pid number that might have been recycled.
+        let child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn a trivial child");
+        let pid = child.id();
+        let mut child = child;
+        let _ = child.wait().expect("reap the child");
+        assert!(
+            !super::pid_alive(pid),
+            "pid {pid} exited and was reaped; a probe that still says alive \
+             would leave a crashed session's freeze in place forever"
+        );
+    }
 }

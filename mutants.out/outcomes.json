@@ -2009,15 +2009,143 @@
           ]
         }
       ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/freeze.rs:154:62: replace == with != in pid_alive",
+          "package": "ebman",
+          "file": "src/freeze.rs",
+          "function": {
+            "function_name": "pid_alive",
+            "return_type": "-> bool",
+            "span": {
+              "start": {
+                "line": 149,
+                "column": 1
+              },
+              "end": {
+                "line": 155,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 154,
+              "column": 62
+            },
+            "end": {
+              "line": 154,
+              "column": 64
+            }
+          },
+          "replacement": "!=",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/src__freeze.rs_line_154_col_62.log",
+      "diff_path": "diff/src__freeze.rs_line_154_col_62.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.509003292,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.586947625,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/freeze.rs:161:5: replace pid_alive -> bool with false",
+          "package": "ebman",
+          "file": "src/freeze.rs",
+          "function": {
+            "function_name": "pid_alive",
+            "return_type": "-> bool",
+            "span": {
+              "start": {
+                "line": 157,
+                "column": 1
+              },
+              "end": {
+                "line": 162,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 161,
+              "column": 5
+            },
+            "end": {
+              "line": 161,
+              "column": 9
+            }
+          },
+          "replacement": "false",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/src__freeze.rs_line_161_col_5.log",
+      "diff_path": "diff/src__freeze.rs_line_161_col_5.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.501061083,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=ebman@0.34.1"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 4.351969125,
+          "process_status": "Success",
+          "argv": [
+            "/Users/tom/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=ebman@0.34.1",
+            "--lib"
+          ]
+        }
+      ]
     }
   ],
-  "total_mutants": 31,
-  "missed": 10,
+  "total_mutants": 33,
+  "missed": 12,
   "caught": 17,
   "timeout": 0,
   "unviable": 4,
   "success": 0,
   "start_time": "2026-08-25T07:56:59.847828Z",
-  "end_time": null,
+  "end_time": "2026-08-25T08:05:55.266177Z",
   "cargo_mutants_version": "27.1.0"
 }
