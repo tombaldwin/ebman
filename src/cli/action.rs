@@ -366,7 +366,7 @@ async fn run_deploy(
         eprintln!("ebman action deploy: env '{env}' not found");
         std::process::exit(2);
     };
-    if auto_rollback_secs.is_some() && snapshot_label.is_empty() {
+    if auto_rollback_impossible(auto_rollback_secs, &snapshot_label) {
         eprintln!(
             "ebman action deploy: --auto-rollback requested but env '{env}' has no prior version to roll back to"
         );
@@ -407,7 +407,7 @@ async fn run_deploy(
         &[("version", &version)],
     );
 
-    if wait_for_green_secs.is_none() && auto_rollback_secs.is_none() {
+    if !deploy_needs_watching(wait_for_green_secs, auto_rollback_secs) {
         println!("ok: deploy on {env} dispatched (version={version})");
         crate::cli::drain_before_return().await;
         return Ok(());
@@ -500,6 +500,32 @@ async fn run_deploy(
 /// `stage=dispatched` and `stage=completed` audit-log lines. Returns
 /// `Ok(())` on Green (or just dispatched if no wait); `Err(msg)`
 /// when dispatch fails or the deadline elapses without Green.
+/// Pure: does this deploy need watching after dispatch?
+///
+/// `--wait-for-green` and `--auto-rollback` are independent opt-ins and
+/// either one means we stay and poll. Extracted from `run_deploy` so the
+/// condition can be tested — it lives inside an async fn that needs AWS,
+/// and `cargo mutants` found the `&&` survivable. Flipped to `||`, a
+/// deploy with `--auto-rollback 5m` returns immediately and never arms
+/// the watchdog: the operator asked for a safety net and silently did
+/// not get one.
+fn deploy_needs_watching(
+    wait_for_green_secs: Option<u64>,
+    auto_rollback_secs: Option<u64>,
+) -> bool {
+    wait_for_green_secs.is_some() || auto_rollback_secs.is_some()
+}
+
+/// Pure: `--auto-rollback` needs a prior version to roll back TO.
+///
+/// An env deployed for the first time has an empty current-version
+/// label, so there is nothing to restore. Refusing up front beats arming
+/// a watchdog that can only fail. Same extraction rationale as
+/// [`deploy_needs_watching`].
+fn auto_rollback_impossible(auto_rollback_secs: Option<u64>, snapshot_label: &str) -> bool {
+    auto_rollback_secs.is_some() && snapshot_label.is_empty()
+}
+
 async fn dispatch_one_region(
     client: &aws::AwsClient,
     env: &str,
@@ -1193,5 +1219,60 @@ mod tests {
                 "{name} is advertised but not routable"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod deploy_flag_tests {
+    use super::{auto_rollback_impossible, deploy_needs_watching};
+
+    /// Either opt-in means we stay and watch. `cargo mutants` found the
+    /// original `&&` survivable, and the `||` form is the one that
+    /// matters: with it flipped, `--auto-rollback 5m` alone returns
+    /// immediately and the watchdog is never armed. The operator asked
+    /// for a rollback net, the command said "ok: deploy dispatched",
+    /// and nothing was watching.
+    #[test]
+    fn either_flag_alone_means_the_deploy_is_watched() {
+        assert!(
+            deploy_needs_watching(Some(300), None),
+            "--wait-for-green alone must be watched"
+        );
+        assert!(
+            deploy_needs_watching(None, Some(300)),
+            "--auto-rollback alone must be watched — this is the case an \
+             `&&` gets wrong"
+        );
+        assert!(
+            deploy_needs_watching(Some(300), Some(300)),
+            "both, obviously"
+        );
+        assert!(
+            !deploy_needs_watching(None, None),
+            "and a plain deploy returns immediately rather than polling \
+             forever"
+        );
+    }
+
+    /// `--auto-rollback` with nothing to roll back to is refused up
+    /// front. Both halves matter: refusing without the flag would block
+    /// ordinary first deploys, and accepting with an empty label arms a
+    /// watchdog that can only fail.
+    #[test]
+    fn auto_rollback_is_refused_only_when_there_is_no_prior_version() {
+        assert!(
+            auto_rollback_impossible(Some(300), ""),
+            "asked for auto-rollback with no prior version — refuse"
+        );
+        assert!(
+            !auto_rollback_impossible(Some(300), "v1"),
+            "asked for it WITH a prior version — allow"
+        );
+        assert!(
+            !auto_rollback_impossible(None, ""),
+            "a first deploy with no auto-rollback is perfectly ordinary and \
+             must not be refused"
+        );
+        assert!(!auto_rollback_impossible(None, "v1"));
     }
 }

@@ -1484,4 +1484,80 @@ mod parser_properties {
         let anon = super::rollout_line("rid-1", None, "eu-west-1", "api", "v9", "dispatched", None);
         assert!(anon.contains("profile=-"), "{anon}");
     }
+
+    /// `AuditFilter` is what `ebman audit --env X --rule Y --action Z`
+    /// resolves to, and it had no test at all — `cargo mutants` found
+    /// both of its comparisons surviving.
+    ///
+    /// The `!=` flip is the one that matters: inverted, `--env api-prod`
+    /// returns every entry EXCEPT api-prod's. An audit tool that
+    /// confidently shows you the wrong subset is worse than one that
+    /// errors, because you act on what it shows.
+    ///
+    /// The `<` on `since` is a boundary: an entry exactly ON the cutoff
+    /// must be included, or `--since 1h` silently drops the oldest
+    /// entry in its own window.
+    #[test]
+    fn the_audit_filter_selects_rather_than_excludes() {
+        let entry = |target: &str, action: &str, when: &str| super::AuditEntry {
+            when: when.to_string(),
+            account: None,
+            profile: None,
+            region: None,
+            rollout_id: None,
+            stage: None,
+            action: Some(action.to_string()),
+            target: Some(target.to_string()),
+            version: None,
+            rule_id: None,
+            outcome: None,
+            err: None,
+            extras: Default::default(),
+            raw: String::new(),
+        };
+        let t0 = "2026-08-25T12:00:00Z";
+        let api = entry("api-prod", "Deploy", t0);
+        let worker = entry("worker-prod", "Restart", t0);
+
+        // env: selects the named env, excludes the others.
+        let f = super::AuditFilter {
+            env: Some("api-prod"),
+            ..Default::default()
+        };
+        assert!(f.matches(&api), "--env api-prod must MATCH api-prod");
+        assert!(
+            !f.matches(&worker),
+            "--env api-prod must not match worker-prod — inverted, the tool \
+             shows you everything except what you asked for"
+        );
+
+        // action: same shape, separate field.
+        let f = super::AuditFilter {
+            action: Some("Deploy"),
+            ..Default::default()
+        };
+        assert!(f.matches(&api));
+        assert!(!f.matches(&worker));
+
+        // since: an entry exactly on the cutoff is IN the window.
+        let cutoff = chrono::DateTime::parse_from_rfc3339(t0)
+            .expect("fixed timestamp parses")
+            .with_timezone(&chrono::Utc);
+        let f = super::AuditFilter {
+            since: Some(cutoff),
+            ..Default::default()
+        };
+        assert!(
+            f.matches(&api),
+            "an entry exactly ON the --since cutoff must be included, or the \
+             oldest entry in the requested window is silently dropped"
+        );
+        let older = entry("api-prod", "Deploy", "2026-08-25T11:59:59Z");
+        assert!(!f.matches(&older), "and anything before it must not be");
+
+        // An empty filter matches everything — otherwise the assertions
+        // above could pass against a filter that rejects nothing.
+        let all = super::AuditFilter::default();
+        assert!(all.matches(&api) && all.matches(&worker));
+    }
 }
