@@ -839,6 +839,34 @@ than a wrong action. Working top-down by count is the wrong order.
   arithmetic (`Instant::now() + backoff`, two survivors) and the
   whole-function seam.
 
+- [x] **`src/control.rs` — the control socket's peer authorisation** —
+  2026-08-26. The most security-relevant survivors in the sweep. The
+  socket's own comment says it "drives arbitrary TUI commands including
+  `readonly off`", and every operator in its authorisation check was
+  alive:
+
+  - `cred.uid() == own` flipped to `!=` admits **everyone except the
+    owner**.
+  - `cred.uid() == 0` flipped to `!= 0` admits every non-root uid.
+  - `||` flipped to `&&` refuses the owner (fails closed — annoying,
+    not dangerous).
+  - and at the call site, `if !peer_is_owner(..)` had its `!` deletable,
+    which inverts the gate so only *other* users are served.
+
+  `uid_is_allowed(peer_uid, own_uid)` is the decision, extracted because
+  the socket around it made it unreachable. Covered exhaustively, plus a
+  `UnixStream::pair()` test that reads real peer credentials through
+  `peer_is_owner` (skipping the mismatch case under root, where the
+  `uid == 0` arm legitimately allows everything), plus a source guard on
+  the call site.
+
+  Mutation-verified four ways: CAUGHT — **after fixing the guard, which
+  could not fail.** It anchored on `pub(crate) fn spawn_listener`; the
+  function is `pub fn`, so `split_once` matched the occurrence inside
+  the test itself and the slice it checked was its own assertion string.
+  It now anchors at column zero and asserts the slice didn't run into
+  the test module.
+
 - [ ] **The SDK seam — 75 survivors in `aws/eb.rs` alone** — every one
   of the form `replace AwsClient::fetch_x with Ok(vec![])`. No test can
   kill these: the function *is* the AWS call, and `AwsClient::stub()`

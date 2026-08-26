@@ -116,6 +116,21 @@ fn socket_owner_uid(_path: &Path) -> Option<u32> {
     None
 }
 
+/// Whether a peer uid may drive this socket: the owner, or root.
+///
+/// Root is allowed because it could read the socket regardless, so
+/// refusing it buys nothing.
+///
+/// Split out of [`peer_is_owner`] because it is the whole authorisation
+/// decision and the socket around it made it unreachable. The
+/// 2026-08-26 mutation sweep left every operator in it alive, including
+/// `==` flipped to `!=` — which admits everyone EXCEPT the owner, on a
+/// socket whose own comment notes it "drives arbitrary TUI commands
+/// including `readonly off`".
+pub(crate) fn uid_is_allowed(peer_uid: u32, own_uid: u32) -> bool {
+    peer_uid == own_uid || peer_uid == 0
+}
+
 /// SO_PEERCRED check: the connecting process must run as the same uid
 /// that owns the socket. Root (uid 0) is also allowed — it could read
 /// the socket regardless.
@@ -123,7 +138,7 @@ fn socket_owner_uid(_path: &Path) -> Option<u32> {
 fn peer_is_owner(stream: &tokio::net::UnixStream, own_uid: Option<u32>) -> bool {
     let Some(own) = own_uid else { return true };
     match stream.peer_cred() {
-        Ok(cred) => cred.uid() == own || cred.uid() == 0,
+        Ok(cred) => uid_is_allowed(cred.uid(), own),
         // Can't read peer creds: refuse rather than trust.
         Err(_) => false,
     }
@@ -363,5 +378,98 @@ mod tests {
     fn parse_empty_is_none() {
         assert!(parse_key_spec("").is_none());
         assert!(parse_key_spec("   ").is_none());
+    }
+}
+
+#[cfg(test)]
+mod peer_auth_tests {
+    use super::{peer_is_owner, uid_is_allowed};
+
+    // ── mutation-sweep triage, 2026-08-26 ────────────────────────────
+    //
+    // The peer-credential check is the authorisation on a socket that,
+    // by its own comment, "drives arbitrary TUI commands including
+    // `readonly off`". Every operator in it survived the sweep.
+
+    /// The owner and root, and nobody else.
+    #[test]
+    fn only_the_owner_and_root_may_drive_the_socket() {
+        assert!(uid_is_allowed(501, 501), "the owner");
+        assert!(uid_is_allowed(0, 501), "root could read the socket anyway");
+        assert!(uid_is_allowed(0, 0), "root owning it is still root");
+
+        // `==` flipped to `!=` on the first comparison admits everyone
+        // EXCEPT the owner. This is the case that catches it.
+        assert!(
+            !uid_is_allowed(502, 501),
+            "another user must not drive this socket"
+        );
+        assert!(!uid_is_allowed(1, 501), "nor another system account");
+        // `||` flipped to `&&` would refuse the owner — checked by the
+        // first assertion — and `== 0` flipped to `!= 0` would admit
+        // every non-root uid, checked by these.
+        assert!(!uid_is_allowed(65534, 501), "nor nobody(65534)");
+    }
+
+    /// The wiring: a real socket pair, with the check reading real peer
+    /// credentials rather than a number we passed in.
+    #[tokio::test]
+    async fn peer_is_owner_reads_real_peer_credentials() {
+        let (a, _b) = tokio::net::UnixStream::pair().expect("socket pair");
+        // Safe: getuid() cannot fail and takes no arguments.
+        let me = unsafe { libc::getuid() };
+
+        assert!(peer_is_owner(&a, Some(me)), "our own uid owns this socket");
+        assert!(
+            peer_is_owner(&a, None),
+            "no owner recorded (non-unix socket_owner_uid) means no check \
+             to make — the file permissions are the only gate there"
+        );
+
+        // A different uid is refused. Skipped when running as root,
+        // where the `uid == 0` arm legitimately allows everything.
+        if me != 0 {
+            assert!(
+                !peer_is_owner(&a, Some(me.wrapping_add(1))),
+                "a socket owned by someone else must refuse us"
+            );
+        }
+    }
+
+    /// The listener must still refuse before handing the connection on.
+    ///
+    /// `if !peer_is_owner(..)` had its `!` deletable, which inverts the
+    /// gate: only *non*-owners would get through. Neither test above
+    /// notices — they exercise the decision, not the call site.
+    #[test]
+    fn the_listener_refuses_before_serving() {
+        let src = std::fs::read_to_string("src/control.rs").expect("read control.rs");
+        // Anchor on the definition at column zero. The first version of
+        // this guard searched for `pub(crate) fn spawn_listener` — the
+        // wrong visibility — and `split_once` happily matched the
+        // occurrence inside THIS test, so the slice it checked was its
+        // own assertion string. It passed against the very mutation it
+        // exists to catch.
+        let listener = src
+            .split_once("\npub fn spawn_listener")
+            .expect("spawn_listener moved or was renamed")
+            .1;
+        let listener = listener.split("\n}\n").next().unwrap_or(listener);
+        assert!(
+            !listener.contains("mod peer_auth_tests"),
+            "the slice ran past the function into this test module, so it \
+             would be checking its own source"
+        );
+        assert!(
+            listener.contains("if !peer_is_owner(&stream, own_uid) {"),
+            "spawn_listener must refuse a connection whose peer is not the \
+             socket owner, BEFORE spawning handle_connection. Dropping the \
+             `!` inverts the gate and serves only other users."
+        );
+        assert!(
+            listener.contains("continue;"),
+            "and the refusal must skip the connection rather than fall \
+             through to serving it"
+        );
     }
 }
