@@ -979,14 +979,40 @@ than a wrong action. Working top-down by count is the wrong order.
   Also: the `n`/`N`/`Esc` decline arm was deletable, and `x` arms the
   confirm rather than deleting outright.
 
-  Note for the standing guard: this is a **y/n** confirm, so
-  `every_typed_confirmation_gate_names_its_test` does not reach it. That
-  guard's scope is typed confirmations, which is narrower than
-  "confirmation gates on irreversible operations". Widening it would
-  need a way to enumerate y/n gates, which is not obviously mechanical.
+  Note for the standing guard: this was a **y/n** confirm, and the guard
+  covered only *typed* confirmations, so it sat outside entirely.
+  Widened the same day — see below.
 
   Mutation-verified four ways: CAUGHT — after widening the test, which
   initially missed one. See the commit message.
+
+- [x] **The confirmation guard covered half of what its name claimed** —
+  widened 2026-08-26. `every_typed_confirmation_gate_names_its_test`
+  enumerated `X.text() == Y` comparisons only, so the saved-configs
+  delete confirm — a y/n gate — was outside it, with every arm
+  survivable including one where `Enter` applied a config instead of
+  deleting it. I had recorded widening as "not obviously mechanical";
+  that was wrong. Confirmation state is consistently named, so
+  `confirm_*` field **declarations** enumerate cleanly once they are
+  distinguished from initialisers by whether the right-hand side is a
+  type or a value.
+
+  Now covers both surfaces under one table, renamed
+  `every_confirmation_gate_names_its_test`. Four entries in the state
+  half: the DLQ purge, the DLQ single-delete, the saved-configs delete,
+  and one `NotAGate` (a render function's parameter).
+
+  Mutation-verified three ways: CAUGHT — a new unclassified `confirm_*`
+  surface, a gate's covering test renamed away, and a stale entry. The
+  first attempt planted a field on an existing struct and did not
+  compile, which is inconclusive rather than a pass; redone on a new
+  type.
+
+  Boundary, stated so the next reader doesn't over-trust it: this
+  enumerates typed comparisons and `confirm_*` state. It does **not**
+  reach confirmation encoded purely in an enum state
+  (`RolloutState::AwaitingConfirm`, `ConfirmKind::YesNo`) — those are
+  covered by tests, but not by this guard.
 
 - [ ] **The SDK seam — 75 survivors in `aws/eb.rs` alone** — every one
   of the form `replace AwsClient::fetch_x with Ok(vec![])`. No test can

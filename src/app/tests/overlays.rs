@@ -853,10 +853,11 @@ async fn the_apps_action_menu_renders_its_actions() {
 // ── mutation-sweep triage, 2026-08-26 ────────────────────────────────
 //
 // `handle_saved_configs_interactive_key` had 18 survivors around a
-// delete confirm. It is a y/n gate rather than a typed one, so the
-// standing `every_typed_confirmation_gate_names_its_test` guard doesn't
-// reach it — worth noting, because that guard's scope is narrower than
-// "confirmation gates" generally.
+// delete confirm. It is a y/n gate rather than a typed one, and the
+// standing guard did not reach it — which is why that guard now
+// enumerates `confirm_*` state as well as typed comparisons, and is
+// named `every_confirmation_gate_names_its_test` rather than
+// `..._typed_...`. This gate is one of its entries.
 
 fn saved_configs_overlay(confirm_delete: bool) -> App {
     let mut app = test_app();
