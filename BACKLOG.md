@@ -914,10 +914,6 @@ than a wrong action. Working top-down by count is the wrong order.
   modifier, undoing the shift+tab fix, and a name vanishing from the
   docs.
 
-- [ ] **The freeze marker's liveness check is PID-reuse vulnerable, and
-  the docs over-claim** — found 2026-08-26 by max code review, NOT
-  fixed.
-
   `read_active` honours a marker whose pid is alive, and `pid_alive` is
   a bare `kill(pid, 0)` existence probe — it does not check the process
   is ebman. So a stale marker whose pid gets reused by *any* unrelated
@@ -1112,7 +1108,11 @@ than a wrong action. Working top-down by count is the wrong order.
 
 - [ ] **The freeze marker's PID-reuse hole** — the doc claim is narrowed
   (2026-08-26) to what `kill(pid, 0)` actually checks; the underlying
-  hole stands. Options unchanged: advisory `flock` held for the
+  hole stands. `pid_alive` is a bare existence probe and does not check
+  the process is ebman, so a stale marker whose pid is reused reads as a
+  live fleet freeze across TUI, CLI and MCP until the file is removed by
+  hand. Evidence: this machine held `~/.cache/ebman/freeze.json` from
+  22 Aug, pid 3683, five days stale. Options unchanged: advisory `flock` held for the
   session's lifetime (the OS releases it on death — robust, but changes
   a safety mechanism), pid + process start time, or an age bound. Fails
   closed, so confusing rather than dangerous.
@@ -1180,15 +1180,6 @@ than a wrong action. Working top-down by count is the wrong order.
   If this is ever picked up, the useful shape is a small number of
   golden-frame snapshots at fixed terminal sizes, not per-survivor
   tests. `pgman` already uses `insta` for exactly that.
-
-- [ ] **(superseded) The SDK seam — 75 survivors in `aws/eb.rs` alone** — every one
-  of the form `replace AwsClient::fetch_x with Ok(vec![])`. No test can
-  kill these: the function *is* the AWS call, and `AwsClient::stub()`
-  doesn't intercept at that level. This is an architecture question, not
-  a test-writing one — a fake client layer, or a decision to accept the
-  seam and stop counting it. Worth deciding, because it is ~3% of the
-  whole tree's mutants and it silently drags the headline score down;
-  quoting 53.1% without this footnote overstates the gap.
 
 #### Console parity — BONUS
 
