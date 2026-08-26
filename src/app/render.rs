@@ -315,14 +315,7 @@ pub(crate) fn format_deploy_preview(
     let humanize = |d: Option<chrono::DateTime<chrono::Utc>>| -> String {
         d.map(|t| {
             let dur = now.signed_duration_since(t);
-            let secs = dur.num_seconds().max(0);
-            if secs < 3600 {
-                format!("{}m ago", secs / 60)
-            } else if secs < 86_400 {
-                format!("{}h ago", secs / 3600)
-            } else {
-                format!("{}d ago", secs / 86_400)
-            }
+            format!("{} ago", coarse_age(dur.num_seconds().max(0)))
         })
         .unwrap_or_else(|| "—".into())
     };
@@ -371,14 +364,7 @@ pub(crate) fn format_deploy_preview(
         current.and_then(|v| v.created),
     ) {
         if cand < curr {
-            let secs = curr.signed_duration_since(cand).num_seconds().max(0) as u32;
-            let diff = if secs < 3600 {
-                format!("{}m", secs / 60)
-            } else if secs < 86_400 {
-                format!("{}h", secs / 3600)
-            } else {
-                format!("{}d", secs / 86_400)
-            };
+            let diff = coarse_age(curr.signed_duration_since(cand).num_seconds().max(0));
             out.push('\n');
             out.push_str(&format!(
                 "⚠ candidate is {diff} older than the currently-deployed version — \
@@ -761,6 +747,43 @@ pub(crate) fn render_explain_overlay(
     out
 }
 
+/// True for the final item of `n`.
+///
+/// `i + 1 == n` was written six times inside `render_env_resources_tree`
+/// alone. The 2026-08-26 mutation sweep reported each copy's `+` and `==`
+/// as independently survivable — twelve survivors on one expression — so
+/// the duplication was also twelve places for the tree to lose its corner.
+pub(crate) fn is_last(i: usize, n: usize) -> bool {
+    i + 1 == n
+}
+
+/// `└─` for the last item in a tree section, `├─` for the rest.
+pub(crate) fn tree_glyph(i: usize, n: usize) -> &'static str {
+    if is_last(i, n) {
+        "└─"
+    } else {
+        "├─"
+    }
+}
+
+/// Coarse relative duration: minutes below an hour, hours below a day,
+/// then days. No seconds bucket — deliberately not `humanize_short_age`,
+/// which has one: "45s ago" beside a version date reads as noise in a
+/// deploy preview.
+///
+/// Written out twice in `format_deploy_preview`, once with an " ago"
+/// suffix and once without, which is why both ladders carried the same
+/// six survivors.
+pub(crate) fn coarse_age(secs: i64) -> String {
+    if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h", secs / 3600)
+    } else {
+        format!("{}d", secs / 86_400)
+    }
+}
+
 /// Pure: render the env's underlying AWS resources as a tree.
 /// Replaces the previous flat-section dump. The hierarchy mirrors
 /// the conceptual graph an operator builds in their head:
@@ -822,8 +845,7 @@ pub(crate) fn render_env_resources_tree(
         let mut lines: Vec<String> = Vec::new();
         let n = res.instances.len();
         for (i, id) in res.instances.iter().enumerate() {
-            let last = i + 1 == n;
-            let glyph = if last { "└─" } else { "├─" };
+            let glyph = tree_glyph(i, n);
             lines.push(format!("  {glyph} {id}"));
         }
         sections.push((format!("Instances ({n}) — orphan (no ASG attached)"), lines));
@@ -833,7 +855,7 @@ pub(crate) fn render_env_resources_tree(
         let mut lines: Vec<String> = Vec::new();
         let n = res.launch_templates.len();
         for (i, t) in res.launch_templates.iter().enumerate() {
-            let glyph = if i + 1 == n { "└─" } else { "├─" };
+            let glyph = tree_glyph(i, n);
             lines.push(format!("  {glyph} {t}"));
         }
         sections.push((format!("Launch templates ({n})"), lines));
@@ -842,7 +864,7 @@ pub(crate) fn render_env_resources_tree(
         let mut lines: Vec<String> = Vec::new();
         let n = res.launch_configs.len();
         for (i, lc) in res.launch_configs.iter().enumerate() {
-            let glyph = if i + 1 == n { "└─" } else { "├─" };
+            let glyph = tree_glyph(i, n);
             lines.push(format!("  {glyph} {lc}"));
         }
         sections.push((format!("Launch configurations ({n})"), lines));
@@ -851,7 +873,7 @@ pub(crate) fn render_env_resources_tree(
         let mut lines: Vec<String> = Vec::new();
         let n = res.load_balancers.len();
         for (i, lb) in res.load_balancers.iter().enumerate() {
-            let glyph = if i + 1 == n { "└─" } else { "├─" };
+            let glyph = tree_glyph(i, n);
             lines.push(format!("  {glyph} {lb}"));
         }
         sections.push((format!("Load balancers ({n})"), lines));
@@ -860,7 +882,7 @@ pub(crate) fn render_env_resources_tree(
         let mut lines: Vec<String> = Vec::new();
         let n = res.triggers.len();
         for (i, t) in res.triggers.iter().enumerate() {
-            let glyph = if i + 1 == n { "└─" } else { "├─" };
+            let glyph = tree_glyph(i, n);
             lines.push(format!("  {glyph} {t}"));
         }
         sections.push((format!("Triggers ({n})"), lines));
@@ -869,8 +891,8 @@ pub(crate) fn render_env_resources_tree(
         let mut lines: Vec<String> = Vec::new();
         let n = res.queues.len();
         for (i, q) in res.queues.iter().enumerate() {
-            let last = i + 1 == n;
-            let glyph = if last { "└─" } else { "├─" };
+            let last = is_last(i, n);
+            let glyph = tree_glyph(i, n);
             lines.push(format!("  {glyph} {}", q.name));
             if !q.url.is_empty() {
                 let url_prefix = if last { "       " } else { "  │    " };
@@ -885,8 +907,8 @@ pub(crate) fn render_env_resources_tree(
     } else {
         let n_sections = sections.len();
         for (idx, (label, lines)) in sections.iter().enumerate() {
-            let last_section = idx + 1 == n_sections;
-            let section_glyph = if last_section { "└─" } else { "├─" };
+            let last_section = is_last(idx, n_sections);
+            let section_glyph = tree_glyph(idx, n_sections);
             out.push_str(&format!("{section_glyph} {label}\n"));
             let prefix = if last_section { "  " } else { "│ " };
             for line in lines {

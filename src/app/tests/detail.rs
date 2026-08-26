@@ -161,9 +161,60 @@ fn alarm_kind_to_metric_covers_known_kinds() {
     let (m, op, _) = alarm_kind_to_metric("5xx").unwrap();
     assert_eq!(m, "ApplicationRequests5xx");
     assert_eq!(op, "GreaterThanThreshold");
-    // Aliases.
-    assert_eq!(alarm_kind_to_metric("req5xx"), alarm_kind_to_metric("5xx"));
-    assert_eq!(alarm_kind_to_metric("p90"), alarm_kind_to_metric("latency"));
+    // Absolute, per kind. Comparing two aliases to each other passes
+    // when BOTH resolve to None, which is exactly what deleting their
+    // shared arm does — that is how the 4xx and latency arms came to be
+    // deletable, and 4xx was never mentioned at all.
+    for (kind, metric, op, stat) in [
+        (
+            "health",
+            "EnvironmentHealth",
+            "LessThanOrEqualToThreshold",
+            "Maximum",
+        ),
+        (
+            "4xx",
+            "ApplicationRequests4xx",
+            "GreaterThanThreshold",
+            "Sum",
+        ),
+        (
+            "req4xx",
+            "ApplicationRequests4xx",
+            "GreaterThanThreshold",
+            "Sum",
+        ),
+        (
+            "5xx",
+            "ApplicationRequests5xx",
+            "GreaterThanThreshold",
+            "Sum",
+        ),
+        (
+            "req5xx",
+            "ApplicationRequests5xx",
+            "GreaterThanThreshold",
+            "Sum",
+        ),
+        (
+            "latency",
+            "ApplicationLatencyP90",
+            "GreaterThanThreshold",
+            "Average",
+        ),
+        (
+            "p90",
+            "ApplicationLatencyP90",
+            "GreaterThanThreshold",
+            "Average",
+        ),
+    ] {
+        assert_eq!(
+            alarm_kind_to_metric(kind),
+            Some((metric, op, stat)),
+            "alarm_kind_to_metric({kind:?})"
+        );
+    }
     // Unknown.
     assert!(alarm_kind_to_metric("cpu").is_none());
     assert!(alarm_kind_to_metric("").is_none());

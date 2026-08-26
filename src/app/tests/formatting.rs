@@ -97,13 +97,59 @@ fn try_pretty_json_preserves_strings_with_braces() {
 
 #[test]
 fn format_age_buckets() {
+    // Exact values at each boundary, not `ends_with`. Every `<` in this
+    // ladder survived the mutation sweep as `<=`, because the old test
+    // sampled the middle of each bucket (120s, 5h, 10d) where an
+    // off-by-one at the edge is invisible.
     let now = chrono::Utc::now();
-    assert!(crate::app::format_age(now, now).ends_with("s ago"));
-    assert!(crate::app::format_age(now, now - chrono::Duration::seconds(120)).ends_with("m ago"));
-    assert!(crate::app::format_age(now, now - chrono::Duration::hours(5)).ends_with("h ago"));
-    assert!(crate::app::format_age(now, now - chrono::Duration::days(10)).ends_with("d ago"));
-    let body = crate::app::format_age(now, now - chrono::Duration::days(120));
-    assert!(body.starts_with('~') && body.contains("mo"));
+    let at = |d: chrono::Duration| crate::app::format_age(now, now - d);
+    use chrono::Duration as D;
+
+    for (d, want) in [
+        (D::seconds(0), "0s ago"),
+        (D::seconds(30), "30s ago"),
+        (D::seconds(59), "59s ago"),
+        (D::seconds(60), "1m ago"), // `secs < 60`
+        (D::seconds(3599), "59m ago"),
+        (D::seconds(3600), "1h ago"), // `mins < 60`
+        (D::hours(47), "47h ago"),
+        (D::hours(48), "2d ago"), // `hrs < 48`
+        (D::days(59), "59d ago"),
+        (D::days(60), "~2mo ago"), // `days < 60`
+        (D::days(90), "~3mo ago"), // `days / 30`, not `days % 30`
+        (D::days(719), "~23mo ago"),
+        (D::days(720), "~1y ago"), // `months < 24`
+    ] {
+        assert_eq!(at(d), want, "format_age at {d}");
+    }
+
+    // A future timestamp clamps rather than going negative.
+    assert_eq!(crate::app::format_age(now, now + D::hours(1)), "0s ago");
+}
+
+#[test]
+fn humanize_short_age_buckets() {
+    // Untested before the 2026-08-26 sweep: seven survivors, every
+    // comparison in the ladder. Each bucket needs a value at its edge
+    // AND one inside it — the edge kills `<=`, the interior kills the
+    // `==` and `>` forms, which otherwise fall through to the next arm.
+    use crate::app::humanize_short_age as h;
+    use std::time::Duration;
+    for (secs, want) in [
+        (0, "0s"),
+        (30, "30s"),
+        (59, "59s"),
+        (60, "1m"), // `secs < 60`
+        (1800, "30m"),
+        (3599, "59m"),
+        (3600, "1h"), // `secs < 3600`
+        (43_200, "12h"),
+        (86_399, "23h"),
+        (86_400, "1d"), // `secs < 86_400`
+        (259_200, "3d"),
+    ] {
+        assert_eq!(h(Duration::from_secs(secs)), want, "{secs}s");
+    }
 }
 
 #[test]
@@ -179,7 +225,41 @@ fn wrap_with_hanging_indent_hard_breaks_oversize_words() {
     let big_word = "x".repeat(50);
     let out = crate::app::wrap_with_hanging_indent(&big_word, 20, "    ", "    ");
     let lines: Vec<&str> = out.lines().collect();
-    assert!(lines.len() >= 3);
+    assert_eq!(lines.len(), 4, "50 chars in 16-wide chunks");
+    assert_eq!(lines[0], "    ".to_string() + &"x".repeat(16));
+    assert_eq!(lines[3], "    ".to_string() + &"x".repeat(2));
+}
+
+#[test]
+fn wrap_with_hanging_indent_wraps_exactly_at_the_body_width() {
+    // Distinct lead and cont so which line is which is visible.
+    let w = |text: &str, width: usize| crate::app::wrap_with_hanging_indent(text, width, "A", "B");
+    // width 10, 1-char lead → body width 9.
+    //
+    // "abcd efgh" is exactly 9 including the space, so it must stay on
+    // one line: `candidate_len > body_width` is a strict `>`, and the
+    // sweep found both `==` and `>=` survivable here.
+    assert_eq!(w("abcd efgh", 10), "Aabcd efgh");
+    // One char more and it wraps.
+    assert_eq!(w("abcd efghi", 10), "Aabcd\nBefghi");
+    // The candidate length is `current + 1 + word` — the joining space
+    // counts. "abcd efg" is 8, still one line; the arithmetic mutants
+    // (`-`, `*`) change where that tips.
+    assert_eq!(w("abcd efg", 10), "Aabcd efg");
+}
+
+#[test]
+fn wrap_with_hanging_indent_flushes_pending_text_before_a_hard_break() {
+    // A short word followed by one too long to fit: the pending "ab"
+    // must be emitted FIRST, on its own line, before the oversize word
+    // is chunked. Deleting the `!` on that emptiness check survived —
+    // it inverts the guard, so the pending text is held back and comes
+    // out after the chunks, in the wrong order.
+    let out = crate::app::wrap_with_hanging_indent(&format!("ab {}", "z".repeat(12)), 10, "A", "B");
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines[0], "Aab", "the pending word leads");
+    assert_eq!(lines[1], "B".to_string() + &"z".repeat(9));
+    assert_eq!(lines[2], "B".to_string() + &"z".repeat(3));
 }
 
 #[test]

@@ -21,16 +21,34 @@ fn parse_sort_handles_directions() {
 
 #[test]
 fn parse_toggle_explicit_and_default() {
-    assert!(parse_toggle(Some("on"), false));
-    assert!(parse_toggle(Some("yes"), false));
-    assert!(parse_toggle(Some("1"), false));
-    assert!(!parse_toggle(Some("off"), true));
-    assert!(!parse_toggle(Some("no"), true));
+    // Every explicit word is checked from the state it does NOT toggle
+    // to. That is the whole test: the fallback arm is `_ => !current`,
+    // so `parse_toggle(Some("on"), false)` returns true whether the
+    // "on" arm exists or not. This test used to do exactly that for
+    // every case, and both arms survived the mutation sweep as
+    // deletable.
+    for word in ["on", "true", "yes", "1", "ON", "True"] {
+        assert!(
+            parse_toggle(Some(word), true),
+            "{word:?} from `true` must stay true — from `false` the \
+             fallback would produce true anyway"
+        );
+        assert!(parse_toggle(Some(word), false), "{word:?} turns it on");
+    }
+    for word in ["off", "false", "no", "0", "OFF", "False"] {
+        assert!(
+            !parse_toggle(Some(word), false),
+            "{word:?} from `false` must stay false — from `true` the \
+             fallback would produce false anyway"
+        );
+        assert!(!parse_toggle(Some(word), true), "{word:?} turns it off");
+    }
     // No arg → toggle current.
     assert!(parse_toggle(None, false));
     assert!(!parse_toggle(None, true));
-    // Garbage → toggle current.
+    // Garbage → toggle current, in both directions.
     assert!(parse_toggle(Some("maybe"), false));
+    assert!(!parse_toggle(Some("maybe"), true));
 }
 
 #[test]
@@ -382,4 +400,117 @@ fn json_surfaces_are_parsed_by_a_json_parser() {
         include_str!("../../saved_config.rs").contains("serde_yml"),
         "saved configs are genuinely YAML — if this flipped, check why"
     );
+}
+
+// ── mutation-sweep triage, 2026-08-26 ────────────────────────────────
+//
+// `src/app/text.rs` is pure `&str`-in / `String`-out and had 39
+// survivors — the most of any non-UI file. It has no `#[cfg(test)]`
+// block of its own; its tests live here and in `pure.rs`,
+// `formatting.rs` and `dispatch.rs`, and several were asserting the
+// shape of an answer rather than the answer.
+
+/// `expand_tilde` reads `$HOME` and hands off to `expand_tilde_from`.
+/// Only the pure half was tested, so replacing the whole wrapper with
+/// `String::new()` survived.
+///
+/// A path with no leading `~` needs no `$HOME` to answer, which makes
+/// the wrapper testable without touching the developer's environment —
+/// the reason the split exists in the first place.
+#[test]
+fn expand_tilde_wrapper_passes_through_a_plain_path() {
+    assert_eq!(crate::app::expand_tilde("/abs/path"), "/abs/path");
+    assert_eq!(crate::app::expand_tilde("relative/path"), "relative/path");
+    // `~user` is deliberately left alone.
+    assert_eq!(crate::app::expand_tilde("~other/file"), "~other/file");
+}
+
+/// The offset after the needle is `find(..)? + needle.len()`. Turning
+/// that `+` into `-` still produced the right answer for every message
+/// where the needle sits far enough in that the earlier text contains no
+/// quote — so the needle goes first here.
+#[test]
+fn extract_quoted_after_starts_from_the_end_of_the_needle() {
+    use crate::app::extract_quoted_after as x;
+    assert_eq!(
+        x("role 'arn:aws:iam::1:role/app' is not authorized", "role"),
+        Some("arn:aws:iam::1:role/app".to_string())
+    );
+    // Case-insensitive needle match, original-case value.
+    assert_eq!(
+        x("Role 'MixedCase' denied", "role"),
+        Some("MixedCase".to_string())
+    );
+    // The needle's own quotes must not be picked up: searching for
+    // `user` must skip the role's value entirely.
+    assert_eq!(
+        x("role 'admin' and user 'bob' differ", "user"),
+        Some("bob".to_string())
+    );
+    assert_eq!(x("no needle here", "role"), None);
+    assert_eq!(x("role but no quotes", "role"), None);
+    assert_eq!(x("role 'unterminated", "role"), None);
+}
+
+/// `key.is_empty() || value.is_empty()` — one case per operand. With
+/// `&&` a half-empty pair is accepted, and a tag with an empty key is a
+/// malformed AWS call rather than a no-op.
+#[test]
+fn parse_tag_args_rejects_either_half_empty() {
+    use crate::app::parse_tag_args as t;
+    assert_eq!(
+        t(&["Owner", "platform", "team"]),
+        Some(("Owner".to_string(), "platform team".to_string())),
+        "the value is everything after the key"
+    );
+    assert_eq!(t(&["", "platform"]), None, "empty key");
+    assert_eq!(t(&["Owner", ""]), None, "empty value");
+    assert_eq!(t(&["Owner"]), None, "no value at all");
+    assert_eq!(t(&[]), None);
+}
+
+/// `!k.is_empty() && !v.is_empty()` — one case per operand. With `||` a
+/// dimension with no name, or no value, reaches CloudWatch.
+#[test]
+fn parse_metric_extra_args_rejects_half_empty_dimensions() {
+    use crate::app::parse_metric_extra_args as m;
+    let (stat, dims) = m(&["Average", "InstanceId=i-123,Env=prod"]);
+    assert_eq!(stat, "Average");
+    assert_eq!(
+        dims,
+        vec![
+            ("InstanceId".to_string(), "i-123".to_string()),
+            ("Env".to_string(), "prod".to_string())
+        ]
+    );
+
+    let (_, dims) = m(&["=novalue"]);
+    assert!(
+        dims.is_empty(),
+        "a dimension with no name is not a dimension"
+    );
+    let (_, dims) = m(&["noname="]);
+    assert!(
+        dims.is_empty(),
+        "a dimension with no value is not a dimension"
+    );
+}
+
+/// `bucket.is_empty() || !bucket.starts_with(alphabetic)`. The empty
+/// half doesn't discriminate — an empty bucket also fails the
+/// starts-with test — so the non-alphabetic case is the one that has to
+/// be here.
+#[test]
+fn delta_toast_key_requires_an_alphabetic_bucket() {
+    use crate::app::delta_toast_key as k;
+    assert_eq!(k("▲2 Red"), Some("Red".to_string()));
+    assert_eq!(k("▼1 Yellow"), Some("Yellow".to_string()));
+    assert_eq!(k("  ▲10 Severe now"), Some("Severe".to_string()));
+
+    // Non-alphabetic bucket: without the guard this yields `Some("")`,
+    // a toast key that matches nothing and suppresses nothing.
+    assert_eq!(k("▲2 -Red"), None, "bucket must start with a letter");
+    assert_eq!(k("▲2 "), None, "no bucket at all");
+    assert_eq!(k("▲Red"), None, "no count");
+    assert_eq!(k("Red 2"), None, "no arrow");
 }

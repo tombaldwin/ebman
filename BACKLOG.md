@@ -484,6 +484,42 @@ than a wrong action. Working top-down by count is the wrong order.
   that distinguishes *that* guard from its default. Sharing one case
   across siblings is how a test reads as coverage while checking one.
 
+- [x] **`src/app/text.rs` + `src/app/render.rs` — 94 survivors** —
+  worked 2026-08-26. Both are pure logic that `ARCHITECTURE.md` says is
+  "deliberately extracted so it can be tested directly", and both were
+  the *most* survivor-dense non-UI files in the tree. `text.rs` has no
+  `#[cfg(test)]` block of its own; its tests live across four modules in
+  `app/tests/`, and several were asserting the shape of an answer rather
+  than the answer.
+
+  The recurring cause was tests sampling the middle of a bucket:
+  - `format_age` was checked at 120s, 5h and 10d with `ends_with`, so
+    every `<` in the ladder was interchangeable with `<=`. Boundary-exact
+    now, both sides of each edge.
+  - `humanize_short_age` had no test at all (7 survivors).
+  - `parse_toggle` checked every word from the state it toggles *away*
+    from — and the fallback is `_ => !current`, so `parse_toggle(Some
+    ("on"), false)` returns true whether the arm exists or not. Both arms
+    were deletable. Each word is now checked from both states.
+  - `health_rank` asserted only relative order, which survives a bucket
+    falling through to `_ => 4`. Absolute ranks now.
+  - `alarm_kind_to_metric` compared aliases to each other
+    (`p90 == latency`), which passes when both resolve to `None` — i.e.
+    when their shared arm is deleted. `4xx` was never mentioned.
+  - `edit_distance` missed that turning `prev[j+1] + 1` into `* 1` makes
+    deletion free; every existing case's minimum came from another term.
+    A pure-suffix pair (`abc` / `abcdef`) is the one that bites.
+
+  Two extractions were needed. `suggest_from` splits the candidate
+  selection from the live registry, because testing the tie-break through
+  `suggest_command` pins the registry's contents and ordering rather than
+  the rule. And in `render.rs`, `tree_glyph` / `is_last` / `coarse_age`
+  collapse duplication the sweep surfaced: `i + 1 == n` appeared **six
+  times** in `render_env_resources_tree` (12 survivors on one
+  expression, and twelve places for the tree to lose its corner), and the
+  same three-branch duration ladder was written out twice in
+  `format_deploy_preview`.
+
 - [ ] **The SDK seam — 75 survivors in `aws/eb.rs` alone** — every one
   of the form `replace AwsClient::fetch_x with Ok(vec![])`. No test can
   kill these: the function *is* the AWS call, and `AwsClient::stub()`
