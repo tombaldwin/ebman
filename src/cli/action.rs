@@ -696,6 +696,23 @@ pub(crate) fn unattempted_regions<'a>(
         .collect()
 }
 
+/// The fleet freeze, re-read for a rollout already in flight.
+///
+/// `refuse_if_frozen` exits the process, which is right for a write
+/// that has not started. A rollout that is part-way through has regions
+/// already dispatched and a report to emit, so it needs the reason
+/// rather than an exit — it halts through the same path a failed region
+/// takes, and the untouched regions come out as `skipped`.
+///
+/// Re-read per region on purpose. The gate at the top of `run_rollout`
+/// fires once, before pre-flight; with no cap on `--wait-for-green` and
+/// none on region count, a sequential rollout can dispatch its last
+/// region hours later. A freeze is not static config like a pin — it is
+/// a live incident signal, and it arrives mid-flight by definition.
+pub(crate) fn rollout_freeze_halt() -> Option<String> {
+    crate::freeze::read_active().map(|m| crate::freeze::refusal_message(&m))
+}
+
 /// — cross-region deploy with pre-flight + per-region dispatch +
 /// audit-log correlation. Sequential by default (halt on first
 /// failure); `--parallel` fans out concurrently with optional
@@ -957,6 +974,17 @@ async fn run_rollout(args: &[String]) -> Result<()> {
                 }
             };
             outcomes.push((region, outcome));
+            // A freeze declared mid-rollout stops un-started waves.
+            // Regions already in flight cannot be cancelled server-side,
+            // so they run to completion and report normally; draining
+            // the queue leaves the rest to `unattempted_regions`, which
+            // reports them as skipped.
+            if !queue.is_empty() {
+                if let Some(reason) = rollout_freeze_halt() {
+                    eprintln!("ebman action rollout: halting — {reason}");
+                    queue.clear();
+                }
+            }
             if let Some((next_region, next_client)) = queue.pop_front() {
                 let env_for = env.clone();
                 let version_for = version.clone();
@@ -994,6 +1022,11 @@ async fn run_rollout(args: &[String]) -> Result<()> {
                 }
             }
             first_region = false;
+            // A freeze declared since the last region halts the rest.
+            if let Some(reason) = rollout_freeze_halt() {
+                eprintln!("ebman action rollout: halting — {reason}");
+                break;
+            }
             let outcome = dispatch_one_region(
                 client,
                 &env,
@@ -1419,5 +1452,82 @@ mod rollout_flag_tests {
             ("us-east-1".to_string(), Ok(())),
         ];
         assert_eq!(unattempted_regions(&regions, &jumbled), vec!["eu-west-1"]);
+    }
+}
+
+#[cfg(test)]
+mod rollout_freeze_tests {
+    use super::rollout_freeze_halt;
+
+    /// Both dispatch loops must actually consult the halt.
+    ///
+    /// The behavioural test above proves the predicate answers
+    /// correctly; it says nothing about anything calling it. Deleting
+    /// the sequential loop's check leaves that test green — verified —
+    /// which is the same shape as a renderer proven to work down a path
+    /// production never takes. This pins the wiring.
+    #[test]
+    fn both_dispatch_loops_consult_the_freeze() {
+        let src = std::fs::read_to_string("src/cli/action.rs").expect("read action.rs");
+        let body = src
+            .split_once("\nasync fn run_rollout")
+            .expect("run_rollout moved or was renamed")
+            .1;
+        // Stop at the next top-level item so the test module below
+        // cannot pad the count.
+        let body = body.split("\n#[cfg(test)]").next().unwrap_or(body);
+        let calls = body.matches("rollout_freeze_halt()").count();
+        assert_eq!(
+            calls, 2,
+            "run_rollout must consult rollout_freeze_halt in BOTH dispatch \
+             loops — the sequential one between regions, the parallel one \
+             before reseeding an un-started wave. Found {calls}."
+        );
+    }
+
+    /// A freeze declared *during* a rollout has to stop the regions
+    /// that haven't dispatched yet.
+    ///
+    /// The gate at the top of `run_rollout` fires once, before
+    /// pre-flight. There is no cap on `--wait-for-green` and none on
+    /// region count, so a sequential rollout can dispatch its last
+    /// region hours after that check — and the backlog justified the
+    /// single check as "matches the pin start-gate semantics", which
+    /// doesn't hold: a pin is static config, a freeze is a live
+    /// incident signal that arrives mid-flight by definition.
+    ///
+    /// Both dispatch loops now consult this between regions. The
+    /// halt reuses the path a failed region already takes, so the
+    /// untouched regions come out through `unattempted_regions` as
+    /// `skipped (rollout halted)`.
+    #[test]
+    fn a_live_freeze_halts_a_rollout_in_flight() {
+        // Exclusive access to the shared marker path; see MARKER_LOCK.
+        let _guard = crate::freeze::MARKER_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::freeze::clear_marker_if_own();
+
+        assert!(
+            rollout_freeze_halt().is_none(),
+            "no freeze declared — a rollout must be free to continue, or \
+             this check would halt every rollout it is asked about"
+        );
+
+        crate::freeze::write_marker("incident #4321", true).expect("marker written");
+        let reason = rollout_freeze_halt().expect(
+            "a freeze declared mid-rollout must halt the remaining regions — \
+             this is the window the single start-gate left open",
+        );
+        assert!(
+            reason.contains("incident #4321"),
+            "the halt must name the freeze the operator declared: {reason}"
+        );
+
+        crate::freeze::clear_marker_if_own();
+        assert!(
+            rollout_freeze_halt().is_none(),
+            "lifting the freeze releases the halt"
+        );
     }
 }
