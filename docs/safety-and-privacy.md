@@ -18,6 +18,9 @@
   cannot be cancelled server-side and run to completion. This matters
   because there is no cap on `--wait-for-green` or on region count, so a
   sequential rollout can dispatch its last region hours after it began.
+  A rollout halted this way exits **3**, the same code a failed region
+  produces — it did not do what was asked, and a CI gate must not read
+  it as success.
 - **`ebman audit replay`** re-dispatches a previously-audited action and is itself audit-logged (`replay_of=`-tagged dispatched/completed lines); destructive verbs still require `--yes`.
 - **`ebman mcp serve` is reads-only** (v1): no tool can dispatch a write. Redaction-by-default covers every tool that can carry option values — `get_option_settings`, `drift` (tf + live values of drifted secrets), and `audit_log` (`value=` extras from `:set-option` / `lint --fix` lines) — so an MCP client sees config *keys*, not secrets, with `--no-redact` as the explicit opt-out.
 - **Drift redaction everywhere** (0.27+): the same contract covers `ebman drift` (`--no-redact` opts out — piped CI logs shouldn't collect drifted secrets by default) and the TUI `:drift` overlay (always on; the deliberate paths for reading real values are the Config tab / `:env list`).

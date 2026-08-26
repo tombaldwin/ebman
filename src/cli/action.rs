@@ -904,6 +904,10 @@ async fn run_rollout(args: &[String]) -> Result<()> {
         .collect();
 
     let mut outcomes: Vec<(String, Result<(), String>)> = Vec::new();
+    // A freeze halt has no failed region, so `any_failure` below stays
+    // false and the run would exit 0 — reporting success to CI while
+    // regions sit un-dispatched. Tracked separately.
+    let mut halted_by_freeze = false;
     if parallel {
         // Parallel dispatch — one task per region, all started
         // immediately (or capped at `max_concurrency` if set).
@@ -983,6 +987,7 @@ async fn run_rollout(args: &[String]) -> Result<()> {
                 if let Some(reason) = rollout_freeze_halt() {
                     eprintln!("ebman action rollout: halting — {reason}");
                     queue.clear();
+                    halted_by_freeze = true;
                 }
             }
             if let Some((next_region, next_client)) = queue.pop_front() {
@@ -1025,6 +1030,7 @@ async fn run_rollout(args: &[String]) -> Result<()> {
             // A freeze declared since the last region halts the rest.
             if let Some(reason) = rollout_freeze_halt() {
                 eprintln!("ebman action rollout: halting — {reason}");
+                halted_by_freeze = true;
                 break;
             }
             let outcome = dispatch_one_region(
@@ -1112,7 +1118,10 @@ async fn run_rollout(args: &[String]) -> Result<()> {
         }
     }
 
-    if any_failure {
+    // 3 covers both: regions failed, or regions were never attempted
+    // because a freeze halted the run. Either way the rollout did not
+    // do what was asked, and a CI gate must not read it as success.
+    if any_failure || halted_by_freeze {
         crate::cli::exit_after_drain(3).await;
     }
     crate::cli::drain_before_return().await;
@@ -1458,6 +1467,40 @@ mod rollout_flag_tests {
 #[cfg(test)]
 mod rollout_freeze_tests {
     use super::rollout_freeze_halt;
+
+    /// A freeze halt must not exit 0.
+    ///
+    /// `any_failure` is computed from the outcomes, and a freeze halt
+    /// produces none — the regions it stops were never dispatched, so
+    /// they have no outcome to be an error. Without a separate flag the
+    /// run exits 0 and a CI gate reads a rollout that stopped mid-way
+    /// as a rollout that completed.
+    ///
+    /// Found reviewing this change rather than writing it: the halt
+    /// itself was correct and its exit code was not.
+    #[test]
+    fn a_freeze_halt_is_tracked_separately_from_failures() {
+        let src = std::fs::read_to_string("src/cli/action.rs").expect("read action.rs");
+        let body = src
+            .split_once("\nasync fn run_rollout")
+            .expect("run_rollout moved or was renamed")
+            .1;
+        let body = body.split("\n#[cfg(test)]").next().unwrap_or(body);
+
+        // Both halt sites set it...
+        assert_eq!(
+            body.matches("halted_by_freeze = true;").count(),
+            2,
+            "both dispatch loops must record that they halted — the \
+             sequential one and the parallel one"
+        );
+        // ...and the exit consults it alongside any_failure.
+        assert!(
+            body.contains("if any_failure || halted_by_freeze {"),
+            "the exit code must account for a freeze halt; otherwise a \
+             rollout stopped part-way reports success"
+        );
+    }
 
     /// Both dispatch loops must actually consult the halt.
     ///

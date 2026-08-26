@@ -902,6 +902,35 @@ than a wrong action. Working top-down by count is the wrong order.
   modifier, undoing the shift+tab fix, and a name vanishing from the
   docs.
 
+- [ ] **The freeze marker's liveness check is PID-reuse vulnerable, and
+  the docs over-claim** — found 2026-08-26 by max code review, NOT
+  fixed.
+
+  `read_active` honours a marker whose pid is alive, and `pid_alive` is
+  a bare `kill(pid, 0)` existence probe — it does not check the process
+  is ebman. So a stale marker whose pid gets reused by *any* unrelated
+  process reads as a live fleet freeze, refusing every write across TUI,
+  CLI and MCP until someone deletes the file by hand.
+
+  Not theoretical: this machine currently holds
+  `~/.cache/ebman/freeze.json` from 22 Aug, pid 3683, five days old.
+  That pid is dead right now, so the next reader will clean it up — but
+  macOS allocates pids sequentially and wraps at ~99999, so over days
+  reuse is likely rather than exotic.
+
+  `docs/safety-and-privacy.md` says the pid scoping means a crashed
+  TUI's marker "can't leave a phantom freeze". That claim is wider than
+  the implementation supports.
+
+  It fails CLOSED — a phantom freeze refuses writes rather than allowing
+  them — so this is confusing, not dangerous. Options, none obviously
+  best: hold an advisory `flock` on the marker for the session's
+  lifetime (the OS releases it on death, which is the robust answer but
+  changes a safety mechanism); record process start time alongside the
+  pid and require both to match (portable-ish, fiddly); bound the marker
+  by age; or just narrow the documented claim. Wants a deliberate
+  decision.
+
 - [ ] **The SDK seam — 75 survivors in `aws/eb.rs` alone** — every one
   of the form `replace AwsClient::fetch_x with Ok(vec![])`. No test can
   kill these: the function *is* the AWS call, and `AwsClient::stub()`
