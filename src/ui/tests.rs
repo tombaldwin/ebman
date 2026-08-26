@@ -1042,3 +1042,155 @@ fn osc8_still_cannot_round_trip_through_ratatui() {
     // ESC handling asserted above, not whether the text fits.
     assert!(rendered.contains("Click"), "{rendered:?}");
 }
+
+// ── mutation-sweep triage, 2026-08-26 ────────────────────────────────
+//
+// The `ui/` pure helpers. These are the render-layer functions where a
+// mutation changes what an operator *concludes*, not just where a pixel
+// lands — a severity that renders in the ordinary colour is one an
+// operator scanning for red does not see.
+
+#[test]
+fn severity_style_distinguishes_every_level() {
+    use crate::ui::events::severity_style;
+    let theme = crate::theme::Theme::default();
+
+    let red = severity_style("ERROR", &theme);
+    let yellow = severity_style("WARN", &theme);
+    let info = severity_style("INFO", &theme);
+    let debug = severity_style("DEBUG", &theme);
+
+    assert_eq!(red.fg, Some(theme.health_red), "ERROR must read as red");
+    assert_eq!(
+        severity_style("FATAL", &theme).fg,
+        Some(theme.health_red),
+        "FATAL shares the ERROR arm"
+    );
+    assert_eq!(
+        yellow.fg,
+        Some(theme.health_yellow),
+        "WARN must read as yellow"
+    );
+    assert_eq!(info.fg, Some(theme.text));
+    assert_eq!(debug.fg, Some(theme.muted), "DEBUG is de-emphasised");
+    assert_eq!(severity_style("TRACE", &theme).fg, Some(theme.muted));
+
+    // The distinctions that matter: an ERROR must not look like an INFO,
+    // and a WARN must not look like either. Deleting an arm sends it to
+    // `_ => theme.text`, which is exactly INFO.
+    assert_ne!(
+        red.fg, info.fg,
+        "an ERROR rendering as ordinary text is one nobody scanning for \
+         red would see"
+    );
+    assert_ne!(yellow.fg, info.fg);
+    assert_ne!(red.fg, yellow.fg);
+
+    // Case-insensitive, and an unknown level falls back rather than
+    // panicking.
+    assert_eq!(severity_style("error", &theme).fg, red.fg);
+    assert_eq!(severity_style("NOTICE", &theme).fg, Some(theme.text));
+}
+
+#[test]
+fn event_severity_style_marks_the_tail_gap() {
+    use crate::ui::events::event_severity_style;
+    let theme = crate::theme::Theme::default();
+
+    assert_eq!(
+        event_severity_style("ERROR", &theme).fg,
+        Some(theme.health_red)
+    );
+    assert_eq!(
+        event_severity_style("WARN", &theme).fg,
+        Some(theme.health_yellow)
+    );
+    // The synthetic gap marker is its own case — it borrows WARN's
+    // colour but is bold, so a dropped-events notice can't be mistaken
+    // for an ordinary line.
+    let gap = event_severity_style(crate::app::EVENT_TAIL_GAP_SEVERITY, &theme);
+    assert_eq!(gap.fg, Some(theme.health_yellow));
+    assert!(
+        gap.add_modifier.contains(ratatui::style::Modifier::BOLD),
+        "the tail-gap marker must stand out from an ordinary WARN"
+    );
+    assert_eq!(
+        event_severity_style("INFO", &theme).fg,
+        Some(theme.muted),
+        "everything else is de-emphasised in the event pane"
+    );
+}
+
+#[test]
+fn humanize_age_buckets_at_the_boundaries() {
+    use crate::ui::events::humanize_age;
+    use chrono::Duration as D;
+    for (d, want) in [
+        (D::seconds(0), "0s"),
+        (D::seconds(59), "59s"),
+        (D::seconds(60), "1m"),
+        (D::seconds(3599), "59m"),
+        (D::seconds(3600), "1h"),
+        (D::seconds(86_399), "23h"),
+        (D::seconds(86_400), "1d"),
+        (D::days(9), "9d"),
+    ] {
+        assert_eq!(humanize_age(d), want, "at {d}");
+    }
+    // Negative (clock skew) clamps rather than rendering a negative age.
+    assert_eq!(humanize_age(D::seconds(-5)), "0s");
+}
+
+#[test]
+fn age_color_bands_by_recency() {
+    use crate::ui::events::age_color;
+    let theme = crate::theme::Theme::default();
+    let now = chrono::Utc::now();
+    let at = |d: chrono::Duration| age_color(Some(now - d), now, &theme);
+
+    assert_eq!(age_color(None, now, &theme), theme.muted, "never updated");
+    assert_eq!(at(chrono::Duration::hours(1)), theme.title_alt, "fresh");
+    assert_eq!(
+        at(chrono::Duration::hours(23)),
+        theme.title_alt,
+        "still inside the 24h band"
+    );
+    assert_eq!(
+        at(chrono::Duration::hours(25)),
+        theme.text,
+        "past a day is ordinary, not fresh"
+    );
+    assert_eq!(at(chrono::Duration::days(29)), theme.text);
+    assert_eq!(
+        at(chrono::Duration::days(31)),
+        theme.muted,
+        "over a month is stale"
+    );
+    // A future timestamp (clock skew) reads as fresh rather than stale.
+    assert_eq!(
+        age_color(Some(now + chrono::Duration::hours(1)), now, &theme),
+        theme.title_alt
+    );
+}
+
+#[test]
+fn hsl_to_rgb_covers_every_hue_sextant() {
+    use crate::splash::hsl_to_rgb;
+    // One per branch of the sextant chain, plus the wrap.
+    for (h, want) in [
+        (0.0, (255, 0, 0)),
+        (60.0, (255, 255, 0)),
+        (120.0, (0, 255, 0)),
+        (180.0, (0, 255, 255)),
+        (240.0, (0, 0, 255)),
+        (300.0, (255, 0, 255)),
+        (360.0, (255, 0, 0)),
+        (-60.0, (255, 0, 255)),
+    ] {
+        assert_eq!(hsl_to_rgb(h, 1.0, 0.5), want, "hue {h}");
+    }
+    // Saturation and lightness extremes are greys, not colours.
+    assert_eq!(hsl_to_rgb(210.0, 0.0, 0.5), (128, 128, 128));
+    assert_eq!(hsl_to_rgb(210.0, 1.0, 0.0), (0, 0, 0));
+    assert_eq!(hsl_to_rgb(210.0, 1.0, 1.0), (255, 255, 255));
+}
