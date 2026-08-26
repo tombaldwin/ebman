@@ -142,6 +142,10 @@ pub(crate) fn parse_kv_pairs(text: &str) -> Vec<(String, String)> {
     let n = chars.len();
     let mut out: Vec<(String, String)> = Vec::new();
     let mut i = 0;
+    // `i < n` reads as survivable (`<=` passes the sweep) and is: at
+    // `i == n` the skip-whitespace loop below does nothing and the
+    // `if i >= n { break }` fires immediately, so the extra iteration has
+    // no effect. Equivalent, not a coverage gap.
     while i < n {
         // Skip whitespace (space or tab).
         while i < n && (chars[i] == ' ' || chars[i] == '\t') {
@@ -174,6 +178,13 @@ pub(crate) fn parse_kv_pairs(text: &str) -> Vec<(String, String)> {
                 i += 1;
             }
             let v: String = chars[val_start..i].iter().collect();
+            // `<` vs `<=` here is equivalent: the only way to reach this
+            // with `i == n` is an unterminated quote, and `i = n + 1`
+            // exits the outer loop exactly as `i = n` does. The `==` and
+            // `>` forms are NOT equivalent — they skip consuming the
+            // closing quote, which swallows the rest of the line when the
+            // next key butts straight against it. Pinned by
+            // `a_quoted_value_can_butt_against_the_next_key`.
             if i < n {
                 i += 1;
             } // consume closing "
@@ -185,6 +196,9 @@ pub(crate) fn parse_kv_pairs(text: &str) -> Vec<(String, String)> {
                 if chars[i] == ' ' || chars[i] == '\t' {
                     // Lookahead: does the next non-whitespace chunk
                     // look like `ident=`? If so, stop here.
+                    // `i + 1` vs `i * 1`: chars[i] is the whitespace just
+                    // matched and the loop below skips it either way, so
+                    // both land on the same character. Equivalent.
                     let mut j = i + 1;
                     // Redundant, and deliberately kept. `cargo mutants`
                     // reports this loop's `||` as survivable, and it is:
@@ -192,7 +206,11 @@ pub(crate) fn parse_kv_pairs(text: &str) -> Vec<(String, String)> {
                     // it reaches the position immediately before the key
                     // anyway, and `.trim()` below erases the extra
                     // whitespace either way. Verified by deleting the loop
-                    // outright — all 1222 tests still pass.
+                    // outright — all 1222 tests still pass. The
+                    // 2026-08-26 sweep reports this loop's `<`, its `||`
+                    // and its `+=` as survivable for the same reason —
+                    // `.trim()` below absorbs the difference in every
+                    // case. All equivalent.
                     //
                     // Not deleted, because this parser is what `ebman
                     // audit replay` reconstructs an AWS action from, and
@@ -1423,16 +1441,42 @@ mod tests {
     /// containing `=` parses back as two fields, which is field forgery
     /// in a log `audit replay` acts on.
     #[test]
-    fn a_value_containing_an_equals_sign_is_quoted() {
-        let token = field_token("target", "a=b");
-        assert_eq!(token, r#"target="a=b""#);
+    fn field_token_quotes_on_every_trigger() {
+        // Each trigger needs a value that trips ONLY that one. The first
+        // version of this test used "a=b" for the `=` case and stopped
+        // there, and the mutation run showed why that is not enough:
+        // flipping the first `||` to `&&` collapses the predicate to
+        // "contains `=`" — `c.is_whitespace() && c == \'"\'` can never be
+        // true — and a value containing `=` is quoted either way. A case
+        // per trigger, with no overlap.
+        for (label, value) in [
+            ("whitespace", "env-a ↔ env-b"),
+            ("embedded quote", r#"say "hi""#),
+            ("equals", "a=b"),
+            ("empty", ""),
+        ] {
+            let token = field_token("target", value);
+            assert!(
+                token.starts_with(r#"target=""#) && token.ends_with('"'),
+                "{label}: {value:?} must be quoted, got {token}"
+            );
+        }
+
+        // A value tripping none of them stays bare — otherwise "always
+        // quote" would pass everything above.
+        assert_eq!(field_token("target", "api-prod"), "target=api-prod");
 
         // The property that matters, stated against the parser rather
         // than the spelling: one field in, one field out.
         assert_eq!(
-            parse_kv_pairs(&token),
+            parse_kv_pairs(&field_token("target", "a=b")),
             vec![("target".into(), "a=b".into())],
             "an unquoted `=` would forge a second field"
+        );
+        assert_eq!(
+            parse_kv_pairs(&field_token("target", "env-a env-b")),
+            vec![("target".into(), "env-a env-b".into())],
+            "an unquoted space is at best fragile and at worst a second field"
         );
     }
 
