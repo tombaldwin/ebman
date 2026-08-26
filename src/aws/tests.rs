@@ -4015,18 +4015,42 @@ fn an_empty_option_value_does_not_clear_the_vpc_context() {
     assert!(ctx.elb_subnets.is_empty());
     assert!(ctx.security_groups.is_empty());
 
-    // And the ordering case that matters: a real value followed by the
-    // same key empty. EB lists keys once, but the guard is what makes
-    // that assumption safe to stop relying on.
-    let ctx = super::eb::vpc_context_from_settings([
-        setting("aws:ec2:vpc", "Subnets", "subnet-a"),
-        setting("aws:ec2:vpc", "Subnets", ""),
-    ]);
-    assert_eq!(
-        ctx.subnets,
-        vec!["subnet-a"],
-        "an empty value must not blank a list already resolved"
-    );
+    // The ordering case, for EVERY list field.
+    //
+    // This is the case that actually discriminates, and the first version
+    // of this test wrote it for `Subnets` only — so the `ELBSubnets` and
+    // `SecurityGroups` guards survived the verification run. For a list,
+    // the all-empty case above proves nothing: `split_csv("")` yields an
+    // empty vec, which is what the default already is. Only overwriting a
+    // resolved value tells the two apart. `VPCId` is the exception, since
+    // `Some("")` is distinguishable from `None`.
+    for (ns, key, get) in [
+        (
+            "aws:ec2:vpc",
+            "Subnets",
+            (|c: &super::eb::EnvVpcContext| c.subnets.clone()) as fn(&_) -> Vec<String>,
+        ),
+        (
+            "aws:ec2:vpc",
+            "ELBSubnets",
+            |c: &super::eb::EnvVpcContext| c.elb_subnets.clone(),
+        ),
+        (
+            "aws:autoscaling:launchconfiguration",
+            "SecurityGroups",
+            |c: &super::eb::EnvVpcContext| c.security_groups.clone(),
+        ),
+    ] {
+        let ctx = super::eb::vpc_context_from_settings([
+            setting(ns, key, "resolved-a,resolved-b"),
+            setting(ns, key, ""),
+        ]);
+        assert_eq!(
+            get(&ctx),
+            vec!["resolved-a", "resolved-b"],
+            "{key}: an empty value must not blank a list already resolved"
+        );
+    }
 }
 
 /// `default` is the port-80 listener and sorts first; the rest go by
