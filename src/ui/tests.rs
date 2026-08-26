@@ -1194,3 +1194,49 @@ fn hsl_to_rgb_covers_every_hue_sextant() {
     assert_eq!(hsl_to_rgb(210.0, 1.0, 0.0), (0, 0, 0));
     assert_eq!(hsl_to_rgb(210.0, 1.0, 1.0), (255, 255, 255));
 }
+
+/// `micro_bar` renders a proportion as eighth-block glyphs.
+///
+/// Seventeen survivors, mostly on the guards and the eighths
+/// arithmetic. The guards matter: `max <= 0` protects a divide, and a
+/// negative value would otherwise render a bar going the wrong way.
+#[test]
+fn micro_bar_is_proportional_and_guards_its_edges() {
+    use crate::ui::chrome::micro_bar;
+
+    // Degenerate inputs produce nothing rather than panicking or
+    // rendering a bar.
+    assert_eq!(micro_bar(5, 0, 10), "", "a zero maximum has no proportion");
+    assert_eq!(micro_bar(5, -1, 10), "", "nor a negative one");
+    assert_eq!(micro_bar(5, 10, 0), "", "nor a zero width");
+    assert_eq!(micro_bar(-1, 10, 10), "", "a negative value draws nothing");
+
+    // Full and empty.
+    assert_eq!(micro_bar(10, 10, 4), "████", "full bar fills the width");
+    assert_eq!(micro_bar(0, 10, 4), "", "zero draws nothing");
+
+    // Over-full clamps rather than overflowing the width.
+    assert_eq!(
+        micro_bar(999, 10, 4),
+        "████",
+        "a value past the maximum clamps to the full width"
+    );
+
+    // Proportional in between, and never wider than `width`.
+    for value in 0..=10 {
+        let bar = micro_bar(value, 10, 8);
+        assert!(
+            bar.chars().count() <= 8,
+            "micro_bar({value}, 10, 8) overflowed its width: {bar:?}"
+        );
+    }
+    // Half of eight cells is four full blocks.
+    assert_eq!(micro_bar(5, 10, 8), "████");
+    // And a partial cell renders as a fractional glyph rather than
+    // rounding away — that is the whole point of the eighths.
+    let quarter = micro_bar(1, 8, 4);
+    assert!(
+        !quarter.is_empty() && quarter.chars().count() == 1,
+        "an eighth of the range is one partial glyph: {quarter:?}"
+    );
+}

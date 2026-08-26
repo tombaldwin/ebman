@@ -145,6 +145,15 @@ pub(crate) fn tab_icon(t: DetailTab, icons: IconStyle) -> &'static str {
 }
 
 pub(crate) fn micro_bar(value: i64, max: i64, width: usize) -> String {
+    // `value < 0` and the `full.min(width)` below are both redundant
+    // given the `clamp(0.0, 1.0)`: a negative value clamps to 0.0 and
+    // yields no glyphs, and `frac <= 1.0` bounds `full` by `width`. The
+    // 2026-08-26 sweep reports both as survivable and is right.
+    //
+    // Kept anyway, and not as an oversight: they are belt-and-braces on
+    // float arithmetic feeding a `usize` loop count, and deleting them
+    // to move a mutation score would trade a real safety margin for a
+    // number. `max <= 0` is NOT redundant — it guards the divide.
     if max <= 0 || width == 0 || value < 0 {
         return String::new();
     }

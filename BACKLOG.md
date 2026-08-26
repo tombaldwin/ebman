@@ -1131,6 +1131,44 @@ than a wrong action. Working top-down by count is the wrong order.
   with the empty `mappings` I first wrote, the "matching env applies"
   half passed vacuously and the test told me so.
 
+- [x] **`ui/` pure helpers** — 2026-08-26. `severity_style` (an ERROR
+  rendering as ordinary text is one nobody scanning for red sees — the
+  fallback is `theme.text`, which is exactly INFO), `event_severity_style`
+  (including the bold tail-gap marker that had nothing on it),
+  `humanize_age` and `age_color` (boundary ladders sampled mid-bucket,
+  so every `<` was interchangeable with `<=`; both now have a value
+  either side of each edge plus the clock-skew cases), `hsl_to_rgb`
+  (six-way sextant chain, one hue per branch plus the wrap), and
+  `micro_bar`. Mutation-verified seven ways.
+
+  Two `micro_bar` mutants are genuine equivalents and are documented at
+  the code rather than removed: `value < 0` and `full.min(width)` are
+  both implied by the `clamp(0.0, 1.0)`. Unlike the `(Some("ok"), _)`
+  arm deleted earlier — pure duplication — these are belt-and-braces on
+  float arithmetic feeding a `usize` loop count, and deleting them to
+  move a score would trade a safety margin for a number.
+
+- [ ] **`ui/` draw functions — ~440 survivors, deliberately not
+  covered.** Everything left in `ui/` sits inside a `draw_*` that writes
+  to a ratatui `Frame`: `draw_table` (43), `draw_detail_health` (38),
+  `estimated_info_row_width` (35), `draw_why_red_overlay` (31),
+  `draw_header` (31), and a long tail. The survivors are layout
+  arithmetic — column widths, truncation points, padding, elision
+  thresholds.
+
+  Reaching them means asserting on rendered frames, and the value per
+  survivor is low: a mutation moves a pixel, and a test that pins a
+  pixel breaks on every legitimate layout change. The project already
+  has render tests for the things that matter (each help topic draws its
+  own title, the resources tree, the overlays), and the one render
+  surface with real consequence — **redaction** — has **zero
+  survivors**, which was worth checking and is the headline result of
+  looking at `ui/` at all.
+
+  If this is ever picked up, the useful shape is a small number of
+  golden-frame snapshots at fixed terminal sizes, not per-survivor
+  tests. `pgman` already uses `insta` for exactly that.
+
 - [ ] **(superseded) The SDK seam — 75 survivors in `aws/eb.rs` alone** — every one
   of the form `replace AwsClient::fetch_x with Ok(vec![])`. No test can
   kill these: the function *is* the AWS call, and `AwsClient::stub()`
