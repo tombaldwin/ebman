@@ -1745,3 +1745,199 @@ fn every_rollout_audit_call_passes_a_profile() {
          read `profile=-` — the state the field exists to remove: {offenders:?}"
     );
 }
+
+// ── mutation-sweep triage, 2026-08-26 ────────────────────────────────
+//
+// `app/action_flow.rs` had 69 reachable survivors — the confirm-modal →
+// undo-window → dispatch path for destructive actions, so the
+// highest-consequence logic left in the sweep.
+
+/// The undo window has to actually hold the dispatch back.
+///
+/// `tick_pending_dispatch_fires_after_deadline` covers only the elapsed
+/// direction, so `if now < pd.deadline` was interchangeable with
+/// `now == pd.deadline` — under which the dispatch fires on the very
+/// next tick and the operator's cancel window does not exist. That is
+/// the whole point of the feature, and nothing tested it.
+#[tokio::test]
+async fn tick_pending_dispatch_holds_until_the_deadline() {
+    let mut app = test_app();
+    let modal = mk_modal(Action::Rebuild, "waiting");
+    app.pending_dispatch = Some(PendingDispatch {
+        deadline: std::time::Instant::now() + Duration::from_secs(30),
+        label: "Rebuild env".into(),
+        target: "waiting".into(),
+        kind: PendingDispatchKind::Single { modal },
+    });
+
+    // Several ticks, all well inside the window.
+    for _ in 0..3 {
+        app.tick_pending_dispatch();
+        assert!(
+            app.pending_dispatch.is_some(),
+            "the dispatch fired before its cancel window elapsed"
+        );
+    }
+}
+
+/// `push_pending` caps the panel at `PENDING_CAP`, dropping the oldest.
+/// `len() >= CAP` flipped to `<` pops on every push instead, so the
+/// panel never holds more than one row.
+#[tokio::test]
+async fn push_pending_caps_the_panel_and_drops_the_oldest() {
+    let mut app = test_app();
+    let cap = crate::app::PENDING_CAP;
+    for i in 0..cap {
+        app.push_pending(format!("Action{i}"), format!("env{i}"));
+    }
+    assert_eq!(app.pending_actions.len(), cap, "fills to the cap");
+    assert_eq!(app.pending_actions.front().unwrap().label, "Action0");
+
+    // One more evicts the oldest, and only the oldest.
+    app.push_pending("Overflow", "envN");
+    assert_eq!(app.pending_actions.len(), cap, "stays at the cap");
+    assert_eq!(
+        app.pending_actions.front().unwrap().label,
+        "Action1",
+        "the oldest row is the one dropped"
+    );
+    assert_eq!(app.pending_actions.back().unwrap().label, "Overflow");
+}
+
+/// `complete_pending` matches on *unfinished* AND label AND target.
+/// Four survivors sat on that predicate, so each conjunct needs a case
+/// where it alone is what rejects the row.
+#[tokio::test]
+async fn complete_pending_matches_on_all_three_conditions() {
+    let seed = || {
+        let mut app = test_app();
+        app.push_pending("Restart", "api-prod");
+        app
+    };
+    let done = |app: &App| app.pending_actions[0].completed.is_some();
+
+    // Happy path.
+    let mut app = seed();
+    app.complete_pending("Restart", "api-prod", Ok(()));
+    assert!(done(&app), "the matching row completes");
+
+    // Wrong label.
+    let mut app = seed();
+    app.complete_pending("Rebuild", "api-prod", Ok(()));
+    assert!(!done(&app), "a different action must not complete this row");
+
+    // Wrong target — the case that matters most, since the same action
+    // against a different env is the realistic collision.
+    let mut app = seed();
+    app.complete_pending("Restart", "worker-prod", Ok(()));
+    assert!(!done(&app), "a different env must not complete this row");
+
+    // Already finished: a second result must not re-stamp it. Two rows,
+    // the first already complete, so the second is the one to take it.
+    let mut app = seed();
+    app.push_pending("Restart", "api-prod");
+    app.complete_pending("Restart", "api-prod", Ok(()));
+    app.complete_pending("Restart", "api-prod", Err("second".into()));
+    assert!(
+        app.pending_actions[0].completed.as_ref().unwrap().1.is_ok(),
+        "the first row keeps its original outcome"
+    );
+    assert!(
+        app.pending_actions[1].completed.is_some(),
+        "the second result lands on the second row"
+    );
+}
+
+/// Completed rows linger for `PENDING_COMPLETED_TTL`, then go. Both
+/// directions, because keeping everything and dropping everything each
+/// pass a one-sided test.
+#[tokio::test]
+async fn expire_pending_drops_only_rows_past_the_ttl() {
+    let mut app = test_app();
+    app.push_pending("Old", "env-old");
+    app.push_pending("Fresh", "env-fresh");
+    app.push_pending("Running", "env-running");
+
+    let ttl = crate::app::PENDING_COMPLETED_TTL;
+    let now = std::time::Instant::now();
+    app.pending_actions[0].completed = Some((now - ttl - Duration::from_secs(1), Ok(())));
+    app.pending_actions[1].completed = Some((now, Ok(())));
+    // [2] stays in flight — `completed: None` must never be expired.
+
+    app.expire_pending();
+    let labels: Vec<&str> = app
+        .pending_actions
+        .iter()
+        .map(|e| e.label.as_str())
+        .collect();
+    assert_eq!(
+        labels,
+        vec!["Fresh", "Running"],
+        "only the row past its TTL is dropped"
+    );
+}
+
+/// Every action the menu offers has its own arm in `advance_action_flow`,
+/// and the sweep found six of them individually deletable — Rebuild,
+/// Deploy, UpgradePlatform, Clone, Scale and Capacity. Deleting one drops
+/// it into the catch-all, so the menu entry silently does the wrong
+/// thing (or nothing) while every other action still works.
+///
+/// The parameterised ones are distinguishable by what they pre-fill into
+/// the command bar, which is exactly what the operator then types into.
+#[tokio::test]
+async fn every_menu_action_advances_to_its_own_next_step() {
+    use crate::app::{Action, ActionFlow};
+
+    let open_on_env = || {
+        let mut app = test_app();
+        app.environments = vec![mk_env("api-prod", "shop", "WebServer", "Green")];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        assert!(app.open_action_menu(), "the env is writable");
+        app
+    };
+
+    // Command-bar hand-offs: each closes the menu and pre-fills its own
+    // prefix. A deleted arm leaves the prefix empty or wrong.
+    for (action, prefix) in [
+        (Action::Deploy, "deploy "),
+        (Action::UpgradePlatform, "upgrade "),
+        (Action::Clone, "clone "),
+        (Action::Scale, "scale "),
+    ] {
+        let mut app = open_on_env();
+        app.advance_action_flow(action);
+        assert_eq!(
+            app.mode,
+            crate::app::Mode::Command,
+            "{action:?} hands off to the command bar"
+        );
+        assert_eq!(app.command_input.text(), prefix, "{action:?} pre-fill");
+        assert!(
+            app.action_flow.is_none(),
+            "{action:?} closes the menu behind it"
+        );
+        assert!(
+            app.status_message.is_some(),
+            "{action:?} tells the operator what to type"
+        );
+    }
+
+    // Rebuild takes no arguments, so it goes straight to the confirm
+    // modal rather than the command bar.
+    let mut app = open_on_env();
+    app.advance_action_flow(Action::Rebuild);
+    assert!(
+        matches!(app.action_flow, Some(ActionFlow::Confirm(_))),
+        "Rebuild opens a confirm modal, not the command bar: {:?}",
+        app.action_flow.is_some()
+    );
+    assert_ne!(app.mode, crate::app::Mode::Command);
+
+    // Capacity opens the pre-filled form instead.
+    let mut app = open_on_env();
+    app.advance_action_flow(Action::Capacity);
+    assert!(app.form.is_some(), "Capacity opens the capacity form");
+    assert!(app.action_flow.is_none(), "and closes the menu");
+}
