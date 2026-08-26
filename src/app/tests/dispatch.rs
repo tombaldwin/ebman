@@ -32,6 +32,19 @@ fn edit_distance_basic_cases() {
     assert_eq!(crate::app::edit_distance("abcdef", "abc"), 3);
     assert_eq!(crate::app::edit_distance("a", "aaaa"), 3);
 
+    // Transpositions cost TWO. Plain Levenshtein has no swap operation,
+    // so `ab` → `ba` is a delete plus an insert.
+    //
+    // This is the only shape that notices `curr[j] + 1` becoming
+    // `curr[j] * 1` — free insertion lets a swap be done in one step.
+    // Every other pair above agrees under that mutation, including the
+    // suffix cases added for the neighbouring `+`, which is why it
+    // survived a run that killed 197 of 206. Transposed characters are
+    // also one of the commonest real typos, and this function is what
+    // `suggest_command` ranks with.
+    assert_eq!(crate::app::edit_distance("ab", "ba"), 2);
+    assert_eq!(crate::app::edit_distance("restart", "restrat"), 2);
+
     // Symmetric, in both argument orders. The implementation picks a
     // `short`/`long` pair purely to bound the DP row's memory, so which
     // one it picks must not change the answer.
