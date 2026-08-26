@@ -6,6 +6,16 @@ This file is read by Claude Code (and similar agents) on session start. Follow i
 
 `ebman` is a Rust + ratatui TUI for AWS Elastic Beanstalk, k9s-styled. Source under `src/`. Backlog in `BACKLOG.md`. Tests live alongside the code in `#[cfg(test)] mod tests` blocks.
 
+## Where to start
+
+`PLAN.md` is the rolling window of active work — read it first, work it
+top-down, prune and refill it before finishing. `BACKLOG.md` is the
+reservoir behind it. **An item lives in exactly one of the two.**
+
+`PLAN.md` also carries the item classes (which stages an item needs) and
+the verify-the-claim gate. This file stays what it has always been: how
+to build, what green means, and the stop conditions.
+
 ## Mandatory loop for autonomous work
 
 When the user asks for autonomous work (e.g. "run autonomously", "build all the above", "next", or any directive to ship multiple items without per-step approval), you **must**:
