@@ -165,7 +165,32 @@ The write/freeze pre-tag review (2 lenses) fixed 2 Critical + 2 Important + 1 Mi
   the redundant whitespace skip in `parse_kv_pairs`), and both pointed
   at real duplication rather than missing tests.
 
-- [ ] **CLI rollout/auto-rollback freeze is start-only** (bugs M3) — a freeze declared mid-rollout doesn't stop later regions; matches the pin start-gate semantics, flagged as a conscious choice.
+- [x] **CLI rollout freeze is start-only** (bugs M3) — FIXED 2026-08-26,
+  reversing the recorded "conscious choice" with the maintainer's
+  go-ahead. The justification on file was "matches the pin start-gate
+  semantics", and that doesn't hold: a pin is static config, a freeze is
+  a live incident signal that arrives mid-flight by definition. The
+  exposure was real — no cap on `--wait-for-green`, none on region
+  count, so a sequential rollout can dispatch its last region hours
+  after the single check.
+
+  The objection that halting leaves partial state was not new: the
+  rollout already halts mid-way when a region fails under
+  `continue_on_fail=false`, and already reports untouched regions as
+  `skipped (rollout halted)`. The freeze halt reuses that exact path.
+
+  `rollout_freeze_halt()` returns the reason rather than exiting, since
+  a part-way rollout has a report to emit. Both dispatch loops consult
+  it — the sequential one between regions, the parallel one before
+  reseeding an un-started wave (in-flight regions can't be cancelled
+  server-side, so they finish and report normally).
+
+  Two tests, because the first alone was not enough: the behavioural one
+  proves the predicate, and deleting a call site left it **green** — so
+  a source guard pins that both loops actually consult it. Verified by
+  removing each gate in turn: CAUGHT.
+
+  Documented in `docs/safety-and-privacy.md`.
 
 #### `aws/` fourth review pass — 2026-08-22
 

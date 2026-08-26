@@ -9,6 +9,15 @@
 - **Everything about one environment uses that environment's region** (0.30) — Detail's tabs, `:why`, the DLQ viewer, the lint and drift reports, and every write. Before 0.30 these used the session's region, which under a fan-out showed another region's data under the right environment's name, and could dispatch a destructive action against a same-named environment at home.
 - **Per-env / per-account safety pins** in `config.toml` (`safety.envs.NAME.read_only = true` / `safety.accounts.NAME.read_only = true`) refuse destructive actions even when the global `--read-only` toggle is off. Enforced CLI-side too: `ebman action` (rebuild / restart / terminate / deploy / rollout), `ebman audit replay`, and `ebman lint --fix` all refuse pinned targets before dispatch (exit 3).
 - **Session-scoped fleet freeze**: `:freeze-deploys [REASON]` (or `:incident START "headline"`, which sets the same lock plus a header banner and audit lines) makes every destructive op refuse until `:thaw-deploys` / `:incident END` or exit. Since 0.28 it also persists a **pid-scoped marker** at `~/.cache/ebman/freeze.json` (0600) so *other processes* honour it — the MCP write tools and the CLI write paths (`ebman action`, `audit replay`, `lint --fix`) refuse while a live TUI session holds a freeze. The pid keeps the semantics session-scoped: a crashed TUI's marker is ignored (and cleaned up) by the next reader, so it can't leave a phantom freeze. Deleting the file is the manual unfreeze of last resort. Not durable policy — it lives and dies with the TUI session that set it.
+
+  A multi-region `ebman action rollout` re-reads the freeze **between
+  regions**, not just at the start. Declaring a freeze part-way through
+  halts the regions that haven't dispatched yet; they are reported as
+  `skipped (rollout halted)` alongside the ones that ran. Under
+  `--parallel` it stops un-started waves — regions already in flight
+  cannot be cancelled server-side and run to completion. This matters
+  because there is no cap on `--wait-for-green` or on region count, so a
+  sequential rollout can dispatch its last region hours after it began.
 - **`ebman audit replay`** re-dispatches a previously-audited action and is itself audit-logged (`replay_of=`-tagged dispatched/completed lines); destructive verbs still require `--yes`.
 - **`ebman mcp serve` is reads-only** (v1): no tool can dispatch a write. Redaction-by-default covers every tool that can carry option values — `get_option_settings`, `drift` (tf + live values of drifted secrets), and `audit_log` (`value=` extras from `:set-option` / `lint --fix` lines) — so an MCP client sees config *keys*, not secrets, with `--no-redact` as the explicit opt-out.
 - **Drift redaction everywhere** (0.27+): the same contract covers `ebman drift` (`--no-redact` opts out — piped CI logs shouldn't collect drifted secrets by default) and the TUI `:drift` overlay (always on; the deliberate paths for reading real values are the Config tab / `:env list`).
