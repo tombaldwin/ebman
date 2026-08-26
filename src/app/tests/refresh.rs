@@ -2275,3 +2275,88 @@ async fn the_health_history_is_capped_and_keeps_the_newest() {
         "history is dropped for an env no longer in the fleet"
     );
 }
+
+/// A context switch tears down every overlay whose data it just
+/// invalidated — and leaves the others alone.
+///
+/// Eleven survivors sat on this one condition chain. It matters because
+/// the modes it lists all hold data the switch has just dropped:
+/// `Mode::Detail` with `detail == None` is the ghost state the comment
+/// above it names, and `Mode::Dlq` / `Action` / `Form` / `Picker` are
+/// the same shape. As `&&` the chain is unsatisfiable and nothing is
+/// ever reset; with any `==` flipped, modes that should survive get
+/// reset instead.
+#[tokio::test]
+async fn a_context_switch_closes_the_overlays_it_invalidated() {
+    use crate::app::Mode;
+
+    let after_switch = |mode: Mode| {
+        let mut app = test_app();
+        app.mode = mode;
+        app.apply_rebuild(
+            app.rebuild_epoch,
+            Ok(Box::new(crate::aws::AwsClient::stub())),
+        );
+        app.mode
+    };
+
+    let _cache_guard = crate::aws::CACHE_TEST_LOCK.lock().await;
+
+    // Every mode holding context-scoped data goes back to Normal.
+    for mode in [
+        Mode::Detail,
+        Mode::Dlq,
+        Mode::Action,
+        Mode::Picker,
+        Mode::Form,
+        Mode::Help,
+    ] {
+        assert_eq!(
+            after_switch(mode),
+            Mode::Normal,
+            "{mode:?} holds data the context switch just dropped, so it \
+             must close rather than render a ghost"
+        );
+    }
+
+    // And the modes that hold nothing context-scoped survive. Without
+    // this half, "reset everything" passes the loop above — and
+    // resetting Shell would strand a live PTY subprocess with no way
+    // back to it.
+    for mode in [
+        Mode::Normal,
+        Mode::Filter,
+        Mode::Command,
+        Mode::QuickJump,
+        Mode::Palette,
+        Mode::Shell,
+    ] {
+        assert_eq!(
+            after_switch(mode),
+            mode,
+            "{mode:?} holds nothing the switch invalidated and must survive it"
+        );
+    }
+}
+
+/// Help's stash points at modes and overlays the switch tore down, so a
+/// later `esc` out of help must not restore them.
+#[tokio::test]
+async fn a_context_switch_drops_helps_restore_stash() {
+    let _cache_guard = crate::aws::CACHE_TEST_LOCK.lock().await;
+    let mut app = test_app();
+    app.mode = crate::app::Mode::Help;
+    app.help.pre_mode = Some(crate::app::Mode::Detail);
+
+    app.apply_rebuild(
+        app.rebuild_epoch,
+        Ok(Box::new(crate::aws::AwsClient::stub())),
+    );
+
+    assert!(
+        app.help.pre_mode.is_none(),
+        "closing help would otherwise restore Mode::Detail with no detail \
+         to render"
+    );
+    assert!(app.help.pre_overlay.is_none());
+}
