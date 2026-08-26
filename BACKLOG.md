@@ -570,10 +570,24 @@ than a wrong action. Working top-down by count is the wrong order.
   two expressions carried ten survivors between them because nothing
   walked the cursor off either end. Mutation-verified four ways: CAUGHT.
 
-- [ ] **`src/app/action_flow.rs` — the rest of `handle_action_key`**,
-  chiefly the swap-target and rollout-approval pickers
-  (`env_found == Some(true)` filters, the `!CONTROL` guards on picker
-  j/k), plus `open_parameterised_action_on` (8) and `spawn_action` (7).
+  **Verified**: 114 mutants, 69 caught, 40 missed (was 72).
+  `handle_action_key` 35 → 18, with zero `ConfirmKind::YesNo` survivors.
+
+- [x] **The TUI rollout-approval gate** — 2026-08-26. The twin of the
+  CLI's `--yes` gate, and unlike that one it *is* reachable from a test.
+  `any(|r| r.env_found == Some(true))` followed by `if !any_ok` carried
+  survivors on both the comparison and the negation; inverted, a plan
+  where **every** region failed pre-flight is the one that dispatches.
+  Both halves covered — no passing region refuses, one passing region is
+  enough — because "always refuse" passes the first alone. The `n` /
+  `esc` / `q` decline arms were separately deletable too, so an ignored
+  keypress leaves a multi-region dispatch armed on screen.
+  Mutation-verified three ways: CAUGHT.
+
+- [ ] **`src/app/action_flow.rs` — what's left**: the swap-target picker
+  branches (the `!CONTROL` guards on picker j/k, the `env_found` filters
+  in `open_parameterised_action_on`, 8) and `spawn_action` (7, mostly
+  the whole-function seam).
 
 - [x] **`app/msg.rs` — the DLQ handlers** — 2026-08-26, eleven
   survivors. Worth the attention because the DLQ view is the one place a

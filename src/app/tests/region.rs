@@ -782,3 +782,110 @@ async fn detail_header_names_the_rows_region_not_the_sessions() {
         "the header would be describing a different region than the fetch"
     );
 }
+
+// ── mutation-sweep triage, 2026-08-26 ────────────────────────────────
+//
+// The TUI rollout-approval arms in `handle_action_key` were the last
+// cluster left in `action_flow.rs`. They are the twin of the CLI's
+// `--yes` gate — the difference being that this one is reachable from a
+// test, so it gets one.
+
+fn awaiting_confirm(regions: Vec<(&str, Option<bool>)>) -> crate::mode_action::RolloutFlow {
+    crate::mode_action::RolloutFlow {
+        rollout_id: "rollout-20260826T120000Z".into(),
+        env_name: "api-prod".into(),
+        version_label: "build-900".into(),
+        regions: regions
+            .into_iter()
+            .map(|(r, found)| crate::mode_action::RolloutRegion {
+                region: r.into(),
+                current_version: Some("build-899".into()),
+                env_found: found,
+                preflight_error: if found == Some(false) {
+                    Some("env not found".into())
+                } else {
+                    None
+                },
+                outcome: None,
+            })
+            .collect(),
+        state: crate::mode_action::RolloutState::AwaitingConfirm,
+        wait_for_green_secs: None,
+    }
+}
+
+fn armed_rollout(regions: Vec<(&str, Option<bool>)>) -> App {
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "shop", "WebServer", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.mode = crate::app::Mode::Action;
+    app.action_flow = Some(crate::mode_action::ActionFlow::Rollout(awaiting_confirm(
+        regions,
+    )));
+    app
+}
+
+/// A rollout with nothing to dispatch to must refuse, not proceed.
+///
+/// `let any_ok = regions.iter().any(|r| r.env_found == Some(true))`
+/// followed by `if !any_ok` carried survivors on both the comparison and
+/// the negation. Inverted, a plan where *every* region failed pre-flight
+/// is the one that dispatches.
+#[tokio::test]
+async fn a_rollout_with_no_passing_regions_refuses_to_dispatch() {
+    // Every region failed pre-flight.
+    let mut app = armed_rollout(vec![("us-east-1", Some(false)), ("eu-west-1", Some(false))]);
+    press(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+    assert!(
+        app.error_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("no regions passed pre-flight"),
+        "a plan with nothing to dispatch to must say so: {:?}",
+        app.error_message
+    );
+    assert!(
+        matches!(
+            app.action_flow,
+            Some(crate::mode_action::ActionFlow::Rollout(_))
+        ),
+        "and must stay open so the operator can fix it or abort"
+    );
+
+    // One region passing IS enough — without this half, "always refuse"
+    // would pass the case above.
+    let mut app = armed_rollout(vec![("us-east-1", Some(false)), ("eu-west-1", Some(true))]);
+    press(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+    assert!(
+        !app.error_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("no regions passed pre-flight"),
+        "one passing region is enough to dispatch: {:?}",
+        app.error_message
+    );
+}
+
+/// Every key that declines a rollout at the confirm step. Each arm was
+/// separately deletable, so an ignored keypress leaves a multi-region
+/// dispatch sitting armed on screen.
+#[tokio::test]
+async fn a_rollout_confirm_can_be_declined_by_every_documented_key() {
+    for decline in [KeyCode::Char('n'), KeyCode::Esc, KeyCode::Char('q')] {
+        let mut app = armed_rollout(vec![("us-east-1", Some(true))]);
+        press(&mut app, decline, KeyModifiers::NONE);
+        assert!(
+            app.action_flow.is_none(),
+            "{decline:?} must abort the rollout before anything dispatches"
+        );
+    }
+
+    // And `y` on a passing plan does NOT abort — it advances.
+    let mut app = armed_rollout(vec![("us-east-1", Some(true))]);
+    press(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+    assert!(
+        app.action_flow.is_some(),
+        "`y` starts the dispatch rather than closing the flow"
+    );
+}
