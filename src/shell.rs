@@ -356,3 +356,144 @@ mod tests {
         assert_eq!(key_event_to_bytes(&k).unwrap(), vec![0x7f]);
     }
 }
+
+#[cfg(test)]
+mod key_bytes_tests {
+    use super::key_event_to_bytes;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    // ── mutation-sweep triage, 2026-08-26 ────────────────────────────
+    //
+    // 26 survivors, every one a deletable arm. The fallback is
+    // `_ => return None`, so a deleted arm means the key is silently
+    // SWALLOWED — press Home in the embedded shell and nothing happens,
+    // with no error and no clue why.
+    //
+    // Asserting 26 key→sequence pairs would be a copy of the table.
+    // These are published xterm/VT100 sequences with real structure, so
+    // the properties are pinned instead, and only the handful whose
+    // exact value is load-bearing are spelled out.
+
+    /// Every key the embedded shell forwards.
+    const FORWARDED: &[KeyCode] = &[
+        KeyCode::Enter,
+        KeyCode::Tab,
+        KeyCode::BackTab,
+        KeyCode::Backspace,
+        KeyCode::Esc,
+        KeyCode::Up,
+        KeyCode::Down,
+        KeyCode::Right,
+        KeyCode::Left,
+        KeyCode::Home,
+        KeyCode::End,
+        KeyCode::PageUp,
+        KeyCode::PageDown,
+        KeyCode::Delete,
+        KeyCode::Insert,
+        KeyCode::F(1),
+        KeyCode::F(2),
+        KeyCode::F(3),
+        KeyCode::F(4),
+        KeyCode::F(5),
+        KeyCode::F(6),
+        KeyCode::F(7),
+        KeyCode::F(8),
+        KeyCode::F(9),
+        KeyCode::F(10),
+        KeyCode::F(11),
+    ];
+
+    fn bytes(code: KeyCode) -> Vec<u8> {
+        key_event_to_bytes(&KeyEvent::new(code, KeyModifiers::NONE))
+            .unwrap_or_else(|| panic!("{code:?} produced nothing — the shell would swallow it"))
+    }
+
+    /// No forwarded key may be swallowed. This is what catches all 26
+    /// deletable arms: a deleted arm falls to `_ => return None`.
+    #[test]
+    fn every_forwarded_key_produces_bytes() {
+        for &code in FORWARDED {
+            let b = bytes(code);
+            assert!(!b.is_empty(), "{code:?} produced an empty sequence");
+        }
+    }
+
+    /// And no two produce the SAME bytes — the shell could not tell them
+    /// apart, so Home and End doing the same thing would look like a
+    /// terminal bug rather than ours.
+    #[test]
+    fn no_two_forwarded_keys_collide() {
+        let mut seen: Vec<(KeyCode, Vec<u8>)> = Vec::new();
+        for &code in FORWARDED {
+            let b = bytes(code);
+            if let Some((other, _)) = seen.iter().find(|(_, prev)| *prev == b) {
+                panic!("{code:?} and {other:?} both send {b:?}");
+            }
+            seen.push((code, b));
+        }
+        assert_eq!(seen.len(), FORWARDED.len());
+    }
+
+    /// The handful whose exact value is load-bearing, each with why.
+    #[test]
+    fn the_sequences_that_have_to_be_exact() {
+        // CR, not LF. A shell's line discipline submits on carriage
+        // return; `\n` leaves the line sitting there unexecuted.
+        assert_eq!(bytes(KeyCode::Enter), b"\r");
+        // DEL (0x7f), not BS (0x08) — what terminals actually send, and
+        // what readline binds to backward-delete-char.
+        assert_eq!(bytes(KeyCode::Backspace), vec![0x7f]);
+        // Bare ESC introduces every other sequence below, so it must be
+        // exactly one byte or they all shift.
+        assert_eq!(bytes(KeyCode::Esc), vec![0x1b]);
+        assert_eq!(bytes(KeyCode::Tab), b"\t");
+    }
+
+    /// Structure rather than values: everything but Enter/Tab/Backspace
+    /// is an escape sequence, F1–F4 use SS3 and F5 upward use CSI. That
+    /// split is the xterm convention, and getting it backwards sends a
+    /// function key no shell recognises.
+    #[test]
+    fn escape_sequences_follow_the_xterm_shape() {
+        for &code in FORWARDED {
+            let b = bytes(code);
+            match code {
+                KeyCode::Enter | KeyCode::Tab | KeyCode::Backspace => {
+                    assert_eq!(b.len(), 1, "{code:?} is a bare control byte");
+                }
+                KeyCode::Esc => assert_eq!(b, vec![0x1b]),
+                _ => assert_eq!(b[0], 0x1b, "{code:?} must start with ESC: {b:?}"),
+            }
+        }
+        for n in 1..=4u8 {
+            assert_eq!(&bytes(KeyCode::F(n))[..2], b"\x1bO", "F{n} uses SS3");
+        }
+        for n in 5..=11u8 {
+            assert_eq!(&bytes(KeyCode::F(n))[..2], b"\x1b[", "F{n} uses CSI");
+        }
+    }
+
+    /// Ctrl-Space is NUL, and Ctrl with anything that isn't a letter or
+    /// space sends nothing rather than a wrong byte.
+    #[test]
+    fn ctrl_combinations_outside_the_alphabet() {
+        let ctrl =
+            |c: char| key_event_to_bytes(&KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
+        assert_eq!(ctrl(' ').unwrap(), vec![0x00], "Ctrl-Space is NUL");
+        assert_eq!(ctrl('a').unwrap(), vec![0x01], "Ctrl-A is 0x01");
+        assert_eq!(ctrl('z').unwrap(), vec![0x1a], "Ctrl-Z is 0x1a");
+        assert_eq!(ctrl('A').unwrap(), vec![0x01], "case-insensitive");
+        // Not in A..Z and not space → nothing, rather than a byte the
+        // shell would act on.
+        assert!(ctrl('1').is_none());
+        assert!(ctrl('/').is_none());
+    }
+
+    /// Alt prefixes with ESC, which is how a terminal encodes Meta.
+    #[test]
+    fn alt_prefixes_with_escape() {
+        let k = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT);
+        assert_eq!(key_event_to_bytes(&k).unwrap(), b"\x1bb");
+    }
+}

@@ -1014,6 +1014,30 @@ than a wrong action. Working top-down by count is the wrong order.
   (`RolloutState::AwaitingConfirm`, `ConfirmKind::YesNo`) — those are
   covered by tests, but not by this guard.
 
+- [x] **`shell.rs::key_event_to_bytes` — 26 survivors, every one a
+  deletable arm** — 2026-08-26. The fallback is `_ => return None`, so a
+  deleted arm means the key is **silently swallowed**: press Home in the
+  embedded shell and nothing happens, with no error and no clue why.
+
+  Third lookup table this sweep, third time not copying it. Asserting 26
+  key→sequence pairs pins nothing; these are published xterm/VT100
+  sequences with real structure, so the properties are pinned instead:
+  every forwarded key produces bytes (which catches all 26 deletions at
+  once), no two produce the *same* bytes (Home and End sending the same
+  thing would read as a terminal bug rather than ours), and everything
+  but Enter/Tab/Backspace is an escape sequence with F1–F4 on SS3 and
+  F5+ on CSI — the actual xterm split.
+
+  Only four values are spelled out, each with why it has to be exact:
+  Enter is CR not LF (a shell's line discipline submits on carriage
+  return; LF leaves the line unexecuted), Backspace is DEL 0x7f not BS
+  0x08 (what terminals send and what readline binds), ESC is exactly one
+  byte (it introduces every other sequence), and Tab is `\t`.
+
+  Mutation-verified five ways: CAUGHT — a deleted arm, Enter as LF, F5
+  on the wrong prefix, End colliding with Home, and the Ctrl-Space guard
+  inverted.
+
 - [ ] **The SDK seam — 75 survivors in `aws/eb.rs` alone** — every one
   of the form `replace AwsClient::fetch_x with Ok(vec![])`. No test can
   kill these: the function *is* the AWS call, and `AwsClient::stub()`
