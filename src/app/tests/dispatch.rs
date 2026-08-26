@@ -2251,3 +2251,112 @@ async fn an_empty_select_field_is_inert_rather_than_fatal() {
     press(&mut app, KeyCode::Char('h'), KeyModifiers::NONE);
     assert_eq!(app.form.as_ref().unwrap().fields[0].value, "dark");
 }
+
+/// `handle_alarm_op`'s verb→label and verb→past-tense mapping.
+///
+/// The label is what `complete_pending` matches on, so a wrong one
+/// leaves the pending row unfinished forever; the past tense is what
+/// the operator reads. Both arms and the `verb == "create"` test were
+/// deletable.
+#[tokio::test]
+async fn an_alarm_op_reports_the_operation_it_performed() {
+    use crate::app::AppMsg;
+
+    let run = |verb: &'static str, label: &str| {
+        let mut app = test_app();
+        // Seed the pending row the handler is expected to complete.
+        app.push_pending(label, "api-prod/cpu-high");
+        app.handle_msg(AppMsg::AlarmOp {
+            gen: app.generation,
+            verb,
+            alarm_name: "cpu-high".into(),
+            env_name: "api-prod".into(),
+            result: Ok(()),
+        });
+        app
+    };
+
+    let app = run("create", "Create alarm");
+    assert!(
+        app.pending_actions[0].completed.is_some(),
+        "the create label must match what push_pending used, or the row \
+         never finishes"
+    );
+    let toasts: String = app.toasts.iter().map(|t| t.text.clone()).collect();
+    assert!(
+        toasts.contains("created"),
+        "a create reports 'created': {toasts}"
+    );
+    assert!(!toasts.contains("deleted"));
+
+    let app = run("delete", "Delete alarm");
+    assert!(
+        app.pending_actions[0].completed.is_some(),
+        "and the delete label likewise"
+    );
+    let toasts: String = app.toasts.iter().map(|t| t.text.clone()).collect();
+    assert!(
+        toasts.contains("deleted"),
+        "a delete reports 'deleted': {toasts}"
+    );
+    assert!(!toasts.contains("created"));
+}
+
+/// The Apps table's selection is clamped when the list shrinks.
+///
+/// `s >= self.applications.len()` is the out-of-bounds test — index
+/// `len` is already past the end. `<` there leaves the selection
+/// pointing past the list after a refresh drops an application.
+#[tokio::test]
+async fn the_apps_selection_is_clamped_when_the_list_shrinks() {
+    use crate::app::AppMsg;
+
+    let app_named = |n: &str| crate::aws::Application {
+        name: n.into(),
+        description: String::new(),
+        date_created: None,
+        date_updated: None,
+        version_count: 0,
+        templates: vec![],
+        latest_version_label: None,
+        latest_version_created: None,
+    };
+
+    let mut app = test_app();
+    app.handle_msg(AppMsg::Applications {
+        gen: app.generation,
+        result: Ok(vec![app_named("a"), app_named("b"), app_named("c")]),
+    });
+    app.app_table_state.select(Some(2));
+
+    // The list shrinks to two: index 2 is now out of bounds.
+    app.handle_msg(AppMsg::Applications {
+        gen: app.generation,
+        result: Ok(vec![app_named("a"), app_named("b")]),
+    });
+    assert_eq!(
+        app.app_table_state.selected(),
+        Some(0),
+        "a selection at or past the new length must reset — index len is \
+         already off the end"
+    );
+
+    // A selection still inside the list is kept, so "always reset" fails.
+    app.app_table_state.select(Some(1));
+    app.handle_msg(AppMsg::Applications {
+        gen: app.generation,
+        result: Ok(vec![app_named("a"), app_named("b")]),
+    });
+    assert_eq!(
+        app.app_table_state.selected(),
+        Some(1),
+        "a valid selection survives a refresh"
+    );
+
+    // An empty list selects nothing at all.
+    app.handle_msg(AppMsg::Applications {
+        gen: app.generation,
+        result: Ok(vec![]),
+    });
+    assert_eq!(app.app_table_state.selected(), None);
+}
