@@ -203,6 +203,13 @@ impl App {
             }
             DetailTab::Queue => {
                 // Cursor wraps between the two queue rows (Main / DLQ).
+                //
+                // With exactly two rows, `+ delta` and `- delta` are the
+                // same operation mod 2, so the sweep reports flipping
+                // that sign as survivable — correctly. Equivalent, not a
+                // coverage gap. It stops being equivalent the moment a
+                // third row appears here, and the wrap test would then
+                // need a direction assertion.
                 let n: i32 = 2;
                 let cur = detail.queue_cursor as i32;
                 detail.queue_cursor = (cur + delta).rem_euclid(n) as usize;

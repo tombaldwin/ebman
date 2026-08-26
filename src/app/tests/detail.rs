@@ -850,3 +850,160 @@ async fn a_successful_fetch_does_not_erase_another_fetchs_error() {
          a clean panel and never learn the events fetch was denied"
     );
 }
+
+// ── mutation-sweep triage, 2026-08-26 ────────────────────────────────
+//
+// `detail_scroll` holds five more cursor implementations (a sixth in
+// `detail_cycle_tab`), all on `rem_euclid` — which is the correct idiom,
+// and notably NOT what three other modules hand-roll. See the
+// cursor-wrap backlog item.
+//
+// The `if n == 0` guards are the load-bearing part: `rem_euclid(0)`
+// panics, so an empty list without its guard takes the TUI down on a
+// keypress. Same class as the empty-Select panic.
+
+fn detail_on(env: &str) -> App {
+    let mut app = test_app();
+    app.environments = vec![mk_env(env, "uflexi", "Web", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+    app.mode = crate::app::Mode::Detail;
+    app
+}
+
+fn focus_tab(app: &mut App, tab: DetailTab) {
+    let detail = app.detail.as_mut().expect("detail open");
+    detail.tab_idx = detail
+        .tabs
+        .iter()
+        .position(|t| *t == tab)
+        .unwrap_or_else(|| panic!("{tab:?} not present"));
+}
+
+/// An empty list must not take the TUI down.
+///
+/// `rem_euclid(0)` panics, and each of these tabs guards with
+/// `if n == 0 { return }`. The sweep left all three guards survivable —
+/// inverted, the empty case is exactly the one that reaches the
+/// division.
+#[tokio::test]
+async fn scrolling_an_empty_detail_list_is_inert_not_fatal() {
+    for tab in [DetailTab::Instances, DetailTab::Health, DetailTab::Config] {
+        for delta in [1, -1] {
+            let mut app = detail_on("api-prod");
+            {
+                let d = app.detail.as_mut().expect("detail open");
+                d.instances.clear();
+                d.tags.clear();
+                d.env_vars = Vec::new();
+                d.events = Vec::new();
+            }
+            focus_tab(&mut app, tab);
+            // Must not panic, and must leave the cursor where it was.
+            app.detail_scroll(delta);
+            let d = app.detail.as_ref().expect("detail still open");
+            let cursor = match tab {
+                DetailTab::Instances => d.instances_cursor,
+                DetailTab::Health => d.health_cursor,
+                DetailTab::Config => d.config_cursor,
+                _ => 0,
+            };
+            assert_eq!(
+                cursor, 0,
+                "{tab:?} with delta {delta}: cursor moved on an empty list"
+            );
+        }
+    }
+}
+
+/// The Queue tab's cursor wraps between exactly two rows, and the Config
+/// tab's *clamps* instead — a deliberate difference the comment calls
+/// out, because wrapping a long editable list past the bottom is
+/// disorienting.
+#[tokio::test]
+async fn the_queue_cursor_wraps_and_the_config_cursor_clamps() {
+    // Queue: two rows, wraps in both directions.
+    let mut app = detail_on("worker-prod");
+    {
+        let d = app.detail.as_mut().expect("detail open");
+        if !d.tabs.contains(&DetailTab::Queue) {
+            d.tabs.push(DetailTab::Queue);
+        }
+    }
+    focus_tab(&mut app, DetailTab::Queue);
+    app.detail_scroll(1);
+    assert_eq!(app.detail.as_ref().unwrap().queue_cursor, 1);
+    app.detail_scroll(1);
+    assert_eq!(
+        app.detail.as_ref().unwrap().queue_cursor,
+        0,
+        "the queue cursor wraps past the last row"
+    );
+    app.detail_scroll(-1);
+    assert_eq!(
+        app.detail.as_ref().unwrap().queue_cursor,
+        1,
+        "and wraps backwards off the first"
+    );
+
+    // Config: clamps at both ends rather than wrapping.
+    let mut app = detail_on("api-prod");
+    {
+        let d = app.detail.as_mut().expect("detail open");
+        d.tags = vec![
+            ("Owner".into(), "platform".into()),
+            ("Team".into(), "infra".into()),
+        ];
+        d.env_vars = Vec::new();
+        d.config_cursor = 0;
+    }
+    focus_tab(&mut app, DetailTab::Config);
+    let n = crate::app::config_editable_items(app.detail.as_ref().unwrap()).len();
+    assert!(n >= 2, "the fixture needs at least two editable rows");
+
+    app.detail_scroll(-1);
+    assert_eq!(
+        app.detail.as_ref().unwrap().config_cursor,
+        0,
+        "the config cursor clamps at the top rather than wrapping to the end"
+    );
+    for _ in 0..(n + 3) {
+        app.detail_scroll(1);
+    }
+    assert_eq!(
+        app.detail.as_ref().unwrap().config_cursor,
+        n - 1,
+        "and clamps at the bottom rather than wrapping to the top"
+    );
+}
+
+/// Tab cycling wraps both ways — and the tab list is never empty, which
+/// is what makes `detail_cycle_tab`'s un-guarded `rem_euclid` safe.
+#[tokio::test]
+async fn detail_tab_cycling_wraps_both_ways() {
+    let mut app = detail_on("api-prod");
+    let n = app.detail.as_ref().unwrap().tabs.len();
+    assert!(
+        n >= 4,
+        "detail_cycle_tab calls rem_euclid(tabs.len()) with no zero guard; \
+         it is safe only because the list is built non-empty and only \
+         grows. Found {n} tabs."
+    );
+
+    app.detail.as_mut().unwrap().tab_idx = 0;
+    app.detail_cycle_tab(-1);
+    assert_eq!(
+        app.detail.as_ref().unwrap().tab_idx,
+        n - 1,
+        "cycling back off the first tab wraps to the last"
+    );
+    app.detail_cycle_tab(1);
+    assert_eq!(
+        app.detail.as_ref().unwrap().tab_idx,
+        0,
+        "and forward off the last wraps to the first"
+    );
+    app.detail_cycle_tab(1);
+    assert_eq!(app.detail.as_ref().unwrap().tab_idx, 1, "plain forward");
+}

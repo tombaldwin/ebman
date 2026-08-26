@@ -1038,6 +1038,26 @@ than a wrong action. Working top-down by count is the wrong order.
   on the wrong prefix, End colliding with Home, and the Ctrl-Space guard
   inverted.
 
+- [x] **`detail_nav.rs` — three `rem_euclid(0)` panics waiting on an
+  empty list** — 2026-08-26. `rem_euclid(0)` panics, and the Instances,
+  Health and Config tabs each guard with `if n == 0 { return }`. All
+  three guards were survivable: inverted, the empty case is exactly the
+  one that reaches the division, and the TUI goes down on `j`. Same
+  class as the empty-`Select` panic found in review.
+
+  Also pinned: the Queue cursor wraps while the Config cursor **clamps**
+  — a deliberate difference the code comments but nothing checked, and
+  swapping them is a real UX change on a long editable list. And tab
+  cycling wraps both ways; the test asserts the tab list is non-empty,
+  which is what makes `detail_cycle_tab`'s *un-guarded* `rem_euclid`
+  safe (it is built with four entries and only grows).
+
+  Mutation-verified four ways, three CAUGHT. The fourth — flipping the
+  queue cursor's `+ delta` to `- delta` — is a genuine **equivalent
+  mutant**: `n` is hardcoded to 2 there, and ±1 are the same operation
+  mod 2. Documented at the code, including the note that it stops being
+  equivalent if a third queue row is ever added.
+
 - [ ] **The SDK seam — 75 survivors in `aws/eb.rs` alone** — every one
   of the form `replace AwsClient::fetch_x with Ok(vec![])`. No test can
   kill these: the function *is* the AWS call, and `AwsClient::stub()`
