@@ -178,14 +178,27 @@ impl App {
             (FieldKind::Boolean, KeyCode::Char('f')) => {
                 field.value = "false".into();
             }
+            // `!options.is_empty()` is load-bearing, not defensive noise:
+            // `% options.len()` on an empty list is a divide-by-zero and
+            // the backward form underflows `i + len - 1` first. Every
+            // Select in the tree today is built from a hardcoded `vec![]`
+            // so it cannot happen — but `FormField::select` takes any
+            // `Vec<String>`, and the first Select fed a fetched list
+            // (subnets, platform ARNs, log groups) would panic the TUI on
+            // a keypress. ARCHITECTURE.md: a panic in the TUI is worse
+            // than a wrong frame.
             (FieldKind::Select { options }, KeyCode::Left)
-            | (FieldKind::Select { options }, KeyCode::Char('h')) => {
+            | (FieldKind::Select { options }, KeyCode::Char('h'))
+                if !options.is_empty() =>
+            {
                 let i = options.iter().position(|o| o == &field.value).unwrap_or(0);
                 let next = (i + options.len() - 1) % options.len();
                 field.value = options[next].clone();
             }
             (FieldKind::Select { options }, KeyCode::Right)
-            | (FieldKind::Select { options }, KeyCode::Char('l')) => {
+            | (FieldKind::Select { options }, KeyCode::Char('l'))
+                if !options.is_empty() =>
+            {
                 let i = options.iter().position(|o| o == &field.value).unwrap_or(0);
                 let next = (i + 1) % options.len();
                 field.value = options[next].clone();
