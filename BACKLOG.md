@@ -545,8 +545,35 @@ than a wrong action. Working top-down by count is the wrong order.
 
   Mutation-verified, five re-applied by hand: CAUGHT on each.
 
-- [ ] **`src/app/action_flow.rs` — 35 survivors in `handle_action_key`**
-  left, plus `open_parameterised_action_on` (8) and `spawn_action` (7).
+  **Verified** for `text.rs`: 206 mutants, 197 caught, 6 missed (was 39).
+  Five of the six are equivalents documented at the code; the sixth was a
+  test of mine pointed at the wrong `+` — see the transposition note in
+  `edit_distance`.
+
+  **Verified** for `render.rs`: 172 mutants, 132 caught, 27 missed (was
+  55). The extraction did the work it was meant to:
+  `render_env_resources_tree` 18 → 2, `format_deploy_preview` 13 → 1,
+  and `tree_glyph` / `is_last` / `coarse_age` have **no** survivors
+  between them. What is left is spread thin — `format_lineage` (6),
+  `render_explain_overlay` (5), `format_ssm_results` (4) — with no
+  cluster worth a dedicated pass.
+
+- [x] **`handle_action_key` — the confirm-modal keys** — 2026-08-26.
+  Every key that answers a destructive Y/N confirm was individually
+  deletable: `y`, `Enter`, `n`, `Esc`, `q`. Nothing checked that
+  answering the modal did anything at all. The decline keys are the ones
+  that matter — a deleted arm falls into the catch-all, so the modal
+  ignores the keypress and stays open over a destructive action the
+  operator has just tried to back out of. Also covered: `q` is
+  deliberately NOT bound on type-the-name confirms (it may be a
+  character in the env name), and the menu cursor's wrap-around, whose
+  two expressions carried ten survivors between them because nothing
+  walked the cursor off either end. Mutation-verified four ways: CAUGHT.
+
+- [ ] **`src/app/action_flow.rs` — the rest of `handle_action_key`**,
+  chiefly the swap-target and rollout-approval pickers
+  (`env_found == Some(true)` filters, the `!CONTROL` guards on picker
+  j/k), plus `open_parameterised_action_on` (8) and `spawn_action` (7).
 
 - [ ] **The SDK seam — 75 survivors in `aws/eb.rs` alone** — every one
   of the form `replace AwsClient::fetch_x with Ok(vec![])`. No test can

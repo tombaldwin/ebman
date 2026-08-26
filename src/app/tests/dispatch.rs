@@ -1941,3 +1941,117 @@ async fn every_menu_action_advances_to_its_own_next_step() {
     assert!(app.form.is_some(), "Capacity opens the capacity form");
     assert!(app.action_flow.is_none(), "and closes the menu");
 }
+
+/// Every key that answers a destructive Y/N confirm.
+///
+/// The sweep found each of these arms individually deletable —
+/// `y`, `Enter`, `n`, `Esc` and `q` — which is to say nothing checked
+/// that answering the modal does anything at all. The `n` and `Esc`
+/// cases matter most: a deleted arm falls into the catch-all, so the
+/// modal simply ignores the keypress and stays open over a destructive
+/// action the operator has just tried to back out of.
+#[tokio::test]
+async fn a_yes_no_confirm_answers_to_every_documented_key() {
+    use crate::app::{ActionFlow, ConfirmKind};
+
+    let armed = || {
+        let mut app = test_app();
+        app.environments = vec![mk_env("api-prod", "shop", "WebServer", "Green")];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        app.mode = crate::app::Mode::Action;
+        app.action_flow = Some(ActionFlow::Confirm(mk_modal(Action::Rebuild, "api-prod")));
+        app
+    };
+
+    // Confirming queues the dispatch behind the cancel window.
+    for confirm in [KeyCode::Char('y'), KeyCode::Enter] {
+        let mut app = armed();
+        press(&mut app, confirm, KeyModifiers::NONE);
+        assert!(app.action_flow.is_none(), "{confirm:?} closes the modal");
+        assert!(
+            app.pending_dispatch.is_some(),
+            "{confirm:?} must queue the dispatch — a deleted arm leaves \
+             the modal doing nothing"
+        );
+    }
+
+    // Declining closes it and queues NOTHING. This is the direction that
+    // has to work: an ignored `n` leaves a destructive confirm on screen.
+    for decline in [KeyCode::Char('n'), KeyCode::Esc, KeyCode::Char('q')] {
+        let mut app = armed();
+        press(&mut app, decline, KeyModifiers::NONE);
+        assert!(app.action_flow.is_none(), "{decline:?} closes the modal");
+        assert!(
+            app.pending_dispatch.is_none(),
+            "{decline:?} must NOT dispatch anything"
+        );
+    }
+
+    // `q` is deliberately NOT bound on type-the-name confirms, because
+    // the operator is typing an env name and `q` may be part of it.
+    let mut app = armed();
+    if let Some(ActionFlow::Confirm(m)) = app.action_flow.as_mut() {
+        m.kind = ConfirmKind::TypeName;
+    }
+    press(&mut app, KeyCode::Char('q'), KeyModifiers::NONE);
+    assert!(
+        app.action_flow.is_some(),
+        "`q` must not cancel a type-the-name confirm — it is a character \
+         in the env name being typed"
+    );
+}
+
+/// The action menu's cursor wraps in both directions.
+///
+/// `(cur + 1) % n` and `(cur + n - 1) % n` carried ten survivors between
+/// them — every operator on both expressions — because nothing walked
+/// the cursor off either end.
+#[tokio::test]
+async fn the_action_menu_cursor_wraps_at_both_ends() {
+    use crate::app::{ActionFlow, ACTIONS};
+
+    let selected = |app: &App| match app.action_flow.as_ref() {
+        Some(ActionFlow::Menu { list_state }) => list_state.selected(),
+        _ => panic!("the menu should still be open"),
+    };
+
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "shop", "WebServer", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    assert!(app.open_action_menu());
+    app.mode = crate::app::Mode::Action;
+
+    let n = ACTIONS.len();
+    assert!(n > 2, "the wrap test needs more than two entries");
+    assert_eq!(selected(&app), Some(0), "opens on the first entry");
+
+    // Down through the whole list and one past the end.
+    for expected in 1..n {
+        press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(selected(&app), Some(expected));
+    }
+    press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+    assert_eq!(selected(&app), Some(0), "j wraps past the last entry");
+
+    // And back off the front.
+    press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+    assert_eq!(
+        selected(&app),
+        Some(n - 1),
+        "k wraps past the first entry to the last"
+    );
+    press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+    assert_eq!(selected(&app), Some(n - 2));
+
+    // The arrow keys are the same arms.
+    press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    assert_eq!(selected(&app), Some(n - 1));
+    press(&mut app, KeyCode::Up, KeyModifiers::NONE);
+    assert_eq!(selected(&app), Some(n - 2));
+
+    // Esc closes the menu.
+    press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(app.action_flow.is_none(), "Esc closes the action menu");
+}
