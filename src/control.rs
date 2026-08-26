@@ -292,7 +292,7 @@ pub(crate) fn parse_key_spec(spec: &str) -> Option<KeyEvent> {
             "enter" | "return" => code = Some(KeyCode::Enter),
             "esc" | "escape" => code = Some(KeyCode::Esc),
             "tab" => code = Some(KeyCode::Tab),
-            "backtab" | "shift+tab" => code = Some(KeyCode::BackTab),
+            "backtab" => code = Some(KeyCode::BackTab),
             "backspace" => code = Some(KeyCode::Backspace),
             "delete" | "del" => code = Some(KeyCode::Delete),
             "home" => code = Some(KeyCode::Home),
@@ -326,6 +326,18 @@ pub(crate) fn parse_key_spec(spec: &str) -> Option<KeyEvent> {
                 }
             }
         }
+    }
+    // `shift+tab` means BackTab. The loop splits on `+` before matching,
+    // so the `"shift+tab"` alternative that used to sit beside
+    // `"backtab"` was unreachable — the pieces are `shift` and `tab`, and
+    // the spec came out as Tab+SHIFT. That is not a cosmetic difference:
+    // the form handler matches `KeyCode::BackTab` to move BACK a field
+    // and `KeyCode::Tab` to move forward, so `ebman ctl key shift+tab`
+    // walked the wrong way. Normalising here rather than special-casing
+    // the string keeps `Shift+Tab`, `tab+shift` and `SHIFT+TAB` all
+    // working.
+    if code == Some(KeyCode::Tab) && mods.contains(KeyModifiers::SHIFT) {
+        code = Some(KeyCode::BackTab);
     }
     code.map(|c| KeyEvent::new(c, mods))
 }
@@ -471,5 +483,187 @@ mod peer_auth_tests {
             "and the refusal must skip the connection rather than fall \
              through to serving it"
         );
+    }
+}
+
+#[cfg(test)]
+mod key_spec_tests {
+    use super::parse_key_spec;
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    // ── mutation-sweep triage, 2026-08-26 ────────────────────────────
+    //
+    // 16 survivors, 14 of them deletable name→KeyCode arms. Asserting
+    // twenty pairs would be a copy of the table; instead the table is
+    // now documented in docs/headless.md as the contract a script
+    // writes against, and this pins the parser to it in both
+    // directions. Deleting an arm makes a multi-character name fall
+    // through to the single-char fallback, which rejects it — so
+    // "every documented name parses" catches all fourteen.
+
+    /// Every name the docs advertise must parse.
+    #[test]
+    fn every_documented_key_name_parses() {
+        let docs = std::fs::read_to_string("docs/headless.md").expect("read headless.md");
+        let table = docs
+            .split_once("### `ctl key` spec vocabulary")
+            .expect("the ctl key vocabulary section is gone from the docs")
+            .1;
+        let table = table.split("\n##").next().unwrap_or(table);
+
+        // Pull every `backtick`-quoted token out of the table rows,
+        // remembering which row it came from: a modifier is not a spec
+        // on its own — `ctrl` alone names no key and is correctly
+        // rejected — so those are tested as `<mod>+x`.
+        let mut names: Vec<(String, bool)> = Vec::new();
+        for line in table.lines().filter(|l| l.trim_start().starts_with('|')) {
+            let is_modifier_row = line.contains("| modifiers |");
+            let mut rest = line;
+            while let Some((_, after)) = rest.split_once('`') {
+                let Some((tok, tail)) = after.split_once('`') else {
+                    break;
+                };
+                rest = tail;
+                // Skip prose tokens and the placeholder forms.
+                if tok.contains(' ') || tok.contains('…') || tok == "Char(x)" {
+                    continue;
+                }
+                names.push((tok.to_string(), is_modifier_row));
+            }
+        }
+        assert!(
+            names.len() > 20,
+            "only {} names scraped from the docs table — the scrape is \
+             broken and this test would pass on nothing: {names:?}",
+            names.len()
+        );
+
+        for (name, is_modifier) in &names {
+            let spec = if *is_modifier {
+                format!("{name}+x")
+            } else {
+                name.clone()
+            };
+            assert!(
+                parse_key_spec(&spec).is_some(),
+                "docs/headless.md advertises `{name}` as a ctl key spec, \
+                 and the parser rejects {spec:?}"
+            );
+        }
+
+        // A modifier on its own names no key and must stay rejected —
+        // otherwise the `+x` above would be hiding a parser that accepts
+        // anything.
+        for (name, is_modifier) in &names {
+            if *is_modifier {
+                assert!(
+                    parse_key_spec(name).is_none(),
+                    "`{name}` is a modifier, not a key — it must not parse alone"
+                );
+            }
+        }
+    }
+
+    /// And nothing the parser accepts is missing from the docs.
+    #[test]
+    fn every_key_name_the_parser_accepts_is_documented() {
+        let src = std::fs::read_to_string("src/control.rs").expect("read control.rs");
+        let body = src
+            .split_once("\npub(crate) fn parse_key_spec")
+            .expect("parse_key_spec moved or was renamed")
+            .1;
+        let body = body.split("\n}\n").next().unwrap_or(body);
+        assert!(
+            !body.contains("mod key_spec_tests"),
+            "the slice ran past the function into this test module"
+        );
+
+        let docs = std::fs::read_to_string("docs/headless.md").expect("read headless.md");
+        let mut undocumented = Vec::new();
+        // Match-arm literals: `"name" =>` and `"a" | "b" =>`.
+        for line in body.lines() {
+            let trimmed = line.trim();
+            if !trimmed.contains("=>") || !trimmed.starts_with('"') {
+                continue;
+            }
+            let pat = trimmed.split("=>").next().unwrap_or("");
+            for tok in pat.split('|') {
+                let name = tok.trim().trim_matches('"').trim();
+                if name.is_empty() {
+                    continue;
+                }
+                if !docs.contains(&format!("`{name}`")) {
+                    undocumented.push(name.to_string());
+                }
+            }
+        }
+        assert!(
+            undocumented.is_empty(),
+            "parse_key_spec accepts these and docs/headless.md doesn't \
+             mention them, so a script author can only find them by \
+             reading the source: {undocumented:?}"
+        );
+    }
+
+    /// Modifiers accumulate. `|=` flipped to `&=` drops everything set
+    /// before it, so a combo silently loses a modifier.
+    #[test]
+    fn modifiers_accumulate_in_any_order() {
+        let k = parse_key_spec("ctrl+shift+alt+x").expect("parses");
+        assert_eq!(k.code, KeyCode::Char('x'));
+        assert!(k.modifiers.contains(KeyModifiers::CONTROL), "ctrl kept");
+        assert!(k.modifiers.contains(KeyModifiers::SHIFT), "shift kept");
+        assert!(k.modifiers.contains(KeyModifiers::ALT), "alt kept");
+
+        // Order must not matter.
+        let k = parse_key_spec("alt+ctrl+r").expect("parses");
+        assert!(k.modifiers.contains(KeyModifiers::CONTROL));
+        assert!(k.modifiers.contains(KeyModifiers::ALT));
+        assert!(
+            !k.modifiers.contains(KeyModifiers::SHIFT),
+            "and only what was asked for"
+        );
+    }
+
+    /// `shift+tab` is BackTab, not Tab-with-shift.
+    ///
+    /// The `"shift+tab"` alternative used to sit beside `"backtab"` in
+    /// the match, where `split('+')` made it unreachable — so the spec
+    /// produced Tab+SHIFT. The TUI binds BackTab to reverse cycling in
+    /// three places (form fields, detail tabs, scope), all of which
+    /// match `KeyCode::Tab` for the forward direction, so
+    /// `ebman ctl key shift+tab` walked forwards.
+    #[test]
+    fn shift_tab_is_backtab() {
+        for spec in [
+            "shift+tab",
+            "Shift+Tab",
+            "tab+shift",
+            "SHIFT+TAB",
+            "backtab",
+        ] {
+            let k = parse_key_spec(spec).unwrap_or_else(|| panic!("{spec} must parse"));
+            assert_eq!(
+                k.code,
+                KeyCode::BackTab,
+                "{spec} must be BackTab — the TUI moves BACKWARD on it and \
+                 forward on Tab"
+            );
+        }
+        // A plain tab is still forward.
+        assert_eq!(parse_key_spec("tab").unwrap().code, KeyCode::Tab);
+    }
+
+    /// A spec that names no key, or names one that doesn't exist, is
+    /// rejected rather than guessed at.
+    #[test]
+    fn a_spec_with_no_key_is_rejected() {
+        assert!(parse_key_spec("ctrl").is_none(), "modifiers alone");
+        assert!(parse_key_spec("ctrl+shift").is_none());
+        assert!(parse_key_spec("").is_none());
+        assert!(parse_key_spec("   ").is_none());
+        assert!(parse_key_spec("f13").is_none(), "out of the F1..F12 range");
+        assert!(parse_key_spec("f0").is_none());
+        assert!(parse_key_spec("pgup").is_none(), "not a name we accept");
     }
 }
