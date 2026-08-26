@@ -638,6 +638,64 @@ fn rollout_value<'a, I: Iterator<Item = &'a String>>(
     }
 }
 
+/// Validate the mutually-exclusive rollout flags, and resolve the
+/// effective `continue_on_fail`.
+///
+/// Extracted from `run_rollout`, where each check sat inline against an
+/// `eprintln!` + `std::process::exit(2)` — so none was reachable from a
+/// test, and the 2026-08-26 sweep reported every one of the conjunctions
+/// as survivable. A rollout is the widest-blast-radius thing this binary
+/// does; which flag combinations it refuses is worth being able to
+/// assert.
+///
+/// `Err` is the operator-facing message; the caller prints it and exits 2.
+pub(crate) fn validate_rollout_flags(
+    parallel: bool,
+    staggered_secs: Option<u64>,
+    max_concurrency: Option<usize>,
+    wait_for_green_secs: Option<u64>,
+    continue_on_fail: bool,
+) -> Result<bool, &'static str> {
+    if parallel && staggered_secs.is_some() {
+        return Err(
+            "ebman action rollout: --parallel and --staggered are mutually exclusive (--staggered requires sequential ordering)",
+        );
+    }
+    if !parallel && max_concurrency.is_some() {
+        return Err("ebman action rollout: --max-concurrency only applies with --parallel");
+    }
+    if staggered_secs.is_some() && wait_for_green_secs.is_none() {
+        return Err(
+            "ebman action rollout: --staggered requires --wait-for-green (staggering is timed from each region's Green observation)",
+        );
+    }
+    // --parallel implies --continue-on-fail. In-flight regions can't be
+    // cancelled server-side, so "halt remaining" only makes sense for
+    // un-started waves under --max-concurrency. For v1 simplicity,
+    // --parallel always attempts all regions.
+    Ok(continue_on_fail || parallel)
+}
+
+/// Regions that never got a dispatch attempt, in the operator's original
+/// order — reported as `skipped (rollout halted)`.
+///
+/// Written out twice in `run_rollout`, once for the JSON renderer and
+/// once for the text one, and both copies carried the same survivor. A
+/// region silently vanishing from a rollout report is the class of bug
+/// 0.14.1 shipped a fix for.
+pub(crate) fn unattempted_regions<'a>(
+    regions: &'a [String],
+    outcomes: &[(String, Result<(), String>)],
+) -> Vec<&'a str> {
+    let attempted: std::collections::HashSet<&str> =
+        outcomes.iter().map(|(r, _)| r.as_str()).collect();
+    regions
+        .iter()
+        .map(String::as_str)
+        .filter(|r| !attempted.contains(r))
+        .collect()
+}
+
 /// — cross-region deploy with pre-flight + per-region dispatch +
 /// audit-log correlation. Sequential by default (halt on first
 /// failure); `--parallel` fans out concurrently with optional
@@ -763,27 +821,19 @@ async fn run_rollout(args: &[String]) -> Result<()> {
     };
 
     // Flag combination validation.
-    if parallel && staggered_secs.is_some() {
-        eprintln!(
-            "ebman action rollout: --parallel and --staggered are mutually exclusive (--staggered requires sequential ordering)"
-        );
-        std::process::exit(2);
-    }
-    if !parallel && max_concurrency.is_some() {
-        eprintln!("ebman action rollout: --max-concurrency only applies with --parallel");
-        std::process::exit(2);
-    }
-    if staggered_secs.is_some() && wait_for_green_secs.is_none() {
-        eprintln!(
-            "ebman action rollout: --staggered requires --wait-for-green (staggering is timed from each region's Green observation)"
-        );
-        std::process::exit(2);
-    }
-    // --parallel implies --continue-on-fail. In-flight regions can't
-    // be cancelled server-side, so "halt remaining" only makes sense
-    // for un-started waves under --max-concurrency. For v1
-    // simplicity, --parallel always attempts all regions.
-    let continue_on_fail = continue_on_fail || parallel;
+    let continue_on_fail = match validate_rollout_flags(
+        parallel,
+        staggered_secs,
+        max_concurrency,
+        wait_for_green_secs,
+        continue_on_fail,
+    ) {
+        Ok(v) => v,
+        Err(msg) => {
+            eprintln!("{msg}");
+            std::process::exit(2);
+        }
+    };
 
     if !quiet {
         eprintln!(
@@ -1007,15 +1057,11 @@ async fn run_rollout(args: &[String]) -> Result<()> {
                     }
                 }
             }
-            let attempted: std::collections::HashSet<&str> =
-                outcomes.iter().map(|(r, _)| r.as_str()).collect();
-            for region in &regions {
-                if !attempted.contains(region.as_str()) {
-                    out.push_str(&format!(
-                        ",{{\"region\":\"{}\",\"ok\":false,\"err\":\"skipped (rollout halted)\"}}",
-                        cli_esc(region)
-                    ));
-                }
+            for region in unattempted_regions(&regions, &outcomes) {
+                out.push_str(&format!(
+                    ",{{\"region\":\"{}\",\"ok\":false,\"err\":\"skipped (rollout halted)\"}}",
+                    cli_esc(region)
+                ));
             }
             out.push_str("]}");
             println!("{}", out);
@@ -1027,12 +1073,8 @@ async fn run_rollout(args: &[String]) -> Result<()> {
                     Err(e) => println!("{region}\terr\t{e}"),
                 }
             }
-            let attempted: std::collections::HashSet<&str> =
-                outcomes.iter().map(|(r, _)| r.as_str()).collect();
-            for region in &regions {
-                if !attempted.contains(region.as_str()) {
-                    println!("{region}\tskipped (rollout halted)");
-                }
+            for region in unattempted_regions(&regions, &outcomes) {
+                println!("{region}\tskipped (rollout halted)");
             }
         }
     }
@@ -1274,5 +1316,108 @@ mod deploy_flag_tests {
              must not be refused"
         );
         assert!(!auto_rollback_impossible(None, "v1"));
+    }
+}
+
+#[cfg(test)]
+mod rollout_flag_tests {
+    use super::{unattempted_regions, validate_rollout_flags};
+
+    // ── mutation-sweep triage, 2026-08-26 ────────────────────────────
+    //
+    // `run_rollout` held most of this file's 37 reachable survivors, all
+    // of them inline against `eprintln!` + `exit(2)` and so unreachable
+    // from a test. These cover what came out of it.
+
+    /// Which flag combinations a rollout refuses.
+    #[test]
+    fn rollout_flags_refuse_the_combinations_that_cannot_work() {
+        // The legal baselines first, so "refuse everything" can't pass.
+        assert_eq!(
+            validate_rollout_flags(false, None, None, None, false),
+            Ok(false),
+            "a plain sequential rollout is fine"
+        );
+        assert_eq!(
+            validate_rollout_flags(true, None, Some(3), None, false),
+            Ok(true),
+            "--parallel with --max-concurrency is the point of the flag"
+        );
+        assert_eq!(
+            validate_rollout_flags(false, Some(30), None, Some(300), false),
+            Ok(false),
+            "--staggered with --wait-for-green is fine"
+        );
+
+        // --staggered needs sequential ordering.
+        assert!(
+            validate_rollout_flags(true, Some(30), None, Some(300), false)
+                .unwrap_err()
+                .contains("mutually exclusive"),
+            "--parallel + --staggered must be refused"
+        );
+        // --max-concurrency is meaningless without --parallel.
+        assert!(validate_rollout_flags(false, None, Some(3), None, false)
+            .unwrap_err()
+            .contains("--max-concurrency only applies"),);
+        // Staggering is timed from each region's Green observation, so
+        // there has to be one.
+        assert!(validate_rollout_flags(false, Some(30), None, None, false)
+            .unwrap_err()
+            .contains("--staggered requires --wait-for-green"),);
+    }
+
+    /// `--parallel` implies `--continue-on-fail`, because in-flight
+    /// regions can't be cancelled server-side. The `||` matters in one
+    /// direction only, so both are checked.
+    #[test]
+    fn parallel_implies_continue_on_fail() {
+        assert_eq!(
+            validate_rollout_flags(true, None, None, None, false),
+            Ok(true),
+            "--parallel alone still continues on failure"
+        );
+        assert_eq!(
+            validate_rollout_flags(false, None, None, None, true),
+            Ok(true),
+            "and an explicit --continue-on-fail is honoured without it"
+        );
+        assert_eq!(
+            validate_rollout_flags(false, None, None, None, false),
+            Ok(false),
+            "neither means neither — `&&` here would swallow both cases"
+        );
+    }
+
+    /// A halted rollout still has to report the regions it never
+    /// reached. Losing those lines is what 0.14.1 shipped a fix for.
+    #[test]
+    fn unattempted_regions_are_reported_in_operator_order() {
+        let regions: Vec<String> = ["us-east-1", "eu-west-1", "ap-south-1"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        // Halted after the first region failed.
+        let outcomes = vec![("us-east-1".to_string(), Err("boom".to_string()))];
+        assert_eq!(
+            unattempted_regions(&regions, &outcomes),
+            vec!["eu-west-1", "ap-south-1"],
+            "both un-reached regions, in the order the operator gave them"
+        );
+
+        // Everything attempted → nothing to report. Without this, a
+        // function that returned every region would pass the case above.
+        let all: Vec<(String, Result<(), String>)> =
+            regions.iter().map(|r| (r.clone(), Ok(()))).collect();
+        assert!(unattempted_regions(&regions, &all).is_empty());
+
+        // Out-of-order completions (the parallel path) still resolve by
+        // name, not by position.
+        let jumbled = vec![
+            ("ap-south-1".to_string(), Ok(())),
+            ("us-east-1".to_string(), Ok(())),
+        ];
+        assert_eq!(unattempted_regions(&regions, &jumbled), vec!["eu-west-1"]);
     }
 }

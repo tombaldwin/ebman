@@ -642,6 +642,39 @@ than a wrong action. Working top-down by count is the wrong order.
 - [ ] **`app/forms.rs` — the rest of `handle_form_key`**, chiefly
   Select/Boolean arms and the submit path.
 
+- [x] **`src/app/safety.rs` and `src/cli/writes.rs` have ZERO
+  survivors** — noted 2026-08-26, no work needed. The write gate that
+  `CONTRIBUTING.md` says a bypass gets rejected on sight is fully
+  mutation-covered: every mutant in both files is caught. `freeze.rs`
+  has one, and it is the whole-function seam. Worth recording, because
+  the headline 53.1% says nothing about *where* the coverage is.
+
+- [x] **`src/cli/action.rs` — the rollout decision logic** —
+  2026-08-26. Most of the file's 37 reachable survivors sat in
+  `run_rollout`, each check written inline against `eprintln!` +
+  `std::process::exit(2)`, so none was reachable from a test. Extracted
+  `validate_rollout_flags` (which combinations are refused, and the
+  `--parallel implies --continue-on-fail` resolution) and
+  `unattempted_regions` (the "skipped (rollout halted)" list, which was
+  written out twice — once per output format — and both copies carried
+  the same survivor; losing those lines is what 0.14.1 shipped a fix
+  for). Mutation-verified three ways: CAUGHT.
+
+- [ ] **`run_rollout`'s `if !yes` confirmation gate is untestable** —
+  found 2026-08-26 and NOT fixed. Deleting the `!` inverts it: `--yes`
+  would print "re-run with --yes" and exit 2, and *omitting* `--yes`
+  would dispatch the rollout. That is a safety inversion with nothing
+  behind it.
+
+  It cannot be reached from a test as things stand. The gate sits after
+  the per-region preflight, so an integration test without credentials
+  exits at `list_environments` long before it. Moving the gate ahead of
+  the preflight would make it testable but changes behaviour — today the
+  operator learns the env is missing from a region *before* being asked
+  to confirm, which is the better order. The real fix is the same one
+  the SDK seam needs: a fake client layer. Flagging rather than
+  guessing.
+
 - [ ] **`src/cli/lint.rs::run` is a god-function — 57 survivors in one
   body**, out of 87 for the file. 31 of them are `delete !` and 15 are
   `&&` → `||`: condition checks threaded through a single large async
