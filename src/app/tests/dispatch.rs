@@ -21,6 +21,54 @@ fn edit_distance_basic_cases() {
     assert_eq!(crate::app::edit_distance("restrt", "restart"), 1);
     assert_eq!(crate::app::edit_distance("rebild", "rebuild"), 1);
     assert_eq!(crate::app::edit_distance("scal", "scale"), 1);
+
+    // Deletions must cost. The recurrence is
+    // `(prev[j+1] + 1).min(curr[j] + 1).min(prev[j] + cost)`, and
+    // turning that first `+ 1` into `* 1` makes dropping a character
+    // from the longer string free. None of the cases above notice —
+    // their minimum comes from another term. A pure-suffix difference
+    // does: every edit here is a deletion.
+    assert_eq!(crate::app::edit_distance("abc", "abcdef"), 3);
+    assert_eq!(crate::app::edit_distance("abcdef", "abc"), 3);
+    assert_eq!(crate::app::edit_distance("a", "aaaa"), 3);
+
+    // Symmetric, in both argument orders. The implementation picks a
+    // `short`/`long` pair purely to bound the DP row's memory, so which
+    // one it picks must not change the answer.
+    for (a, b) in [("kitten", "sitting"), ("abc", "abcdef"), ("", "xyz")] {
+        assert_eq!(
+            crate::app::edit_distance(a, b),
+            crate::app::edit_distance(b, a),
+            "edit_distance({a:?}, {b:?}) is not symmetric"
+        );
+    }
+}
+
+/// The tie-break, against a fixed candidate list.
+///
+/// `suggest_command` walks the live command registry, so testing this
+/// through it would pin the registry's contents and ordering rather than
+/// the selection rule, and break the next time a command is added.
+/// `suggest_from` takes the names, so the two cases below are exact.
+#[test]
+fn suggest_from_keeps_the_first_of_equally_close_names() {
+    // Both one edit from "ab", so the FIRST wins: the comparison is a
+    // strict `d < best`. With `<=` the last equally-close name would
+    // win instead, which makes the suggestion depend on registry order.
+    assert_eq!(
+        crate::app::suggest_from("ab", ["ac", "ad"]).as_deref(),
+        Some("ac")
+    );
+    // A strictly better later candidate does replace the earlier one.
+    // With `==` the comparison never improves on the first match found.
+    assert_eq!(
+        crate::app::suggest_from("ab", ["ac", "ab"]).as_deref(),
+        Some("ab")
+    );
+    // Nothing within the threshold → no suggestion. Short inputs get a
+    // threshold of 1, so a 2-edit name must not match.
+    assert_eq!(crate::app::suggest_from("ab", ["xy"]), None);
+    assert_eq!(crate::app::suggest_from("ab", []), None);
 }
 
 #[test]

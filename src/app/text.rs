@@ -419,9 +419,28 @@ pub(crate) fn edit_distance(a: &str, b: &str) -> usize {
 /// length-aware threshold prevents a 2-char miss like `:xy`
 /// from "matching" every 3-char name in the registry.
 pub(crate) fn suggest_command(input: &str) -> Option<String> {
+    suggest_from(input, crate::commands::all_names())
+}
+
+/// The candidate-selection half of [`suggest_command`], with the name
+/// list passed in.
+///
+/// Split out so the tie-break can be tested. Against the live registry a
+/// test has to find two real commands equidistant from a made-up input
+/// and rely on their relative order in the table — which pins the
+/// registry's contents, not this function, and breaks the next time a
+/// command is added.
+///
+/// The rule: strictly-better wins, so the FIRST of several equally-close
+/// names is kept. `<=` here would hand the suggestion to whichever
+/// happened to be last in the registry.
+pub(crate) fn suggest_from<'a, I>(input: &str, names: I) -> Option<String>
+where
+    I: IntoIterator<Item = &'a str>,
+{
     let threshold = if input.len() <= 3 { 1 } else { 2 };
     let mut best: Option<(usize, String)> = None;
-    for name in crate::commands::all_names() {
+    for name in names {
         let d = edit_distance(input, name);
         if d <= threshold && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
             best = Some((d, name.to_string()));

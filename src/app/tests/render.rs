@@ -749,3 +749,47 @@ mod mode_state_invariant {
         let _ = render(&mut app, 120, 40);
     }
 }
+
+// ── mutation-sweep triage, 2026-08-26 ────────────────────────────────
+//
+// `render_env_resources_tree` carried 18 survivors and
+// `format_deploy_preview` 13, and in both cases most of them sat on the
+// same expression written out several times. The duplication was the
+// finding; these cover what it collapsed to.
+
+/// `└─` closes a section, `├─` continues it.
+#[test]
+fn tree_glyph_closes_only_the_last_item() {
+    use crate::app::render::{is_last, tree_glyph};
+    assert_eq!(tree_glyph(0, 3), "├─");
+    assert_eq!(tree_glyph(1, 3), "├─");
+    assert_eq!(tree_glyph(2, 3), "└─", "the last item closes the branch");
+    // A single item is the last one.
+    assert_eq!(tree_glyph(0, 1), "└─");
+
+    assert!(!is_last(0, 3));
+    assert!(is_last(2, 3));
+    assert!(is_last(0, 1));
+    // Degenerate: an empty section has no last item, and `i + 1 == n`
+    // must not be satisfiable. `i * 1 == n` would be, at i = n = 0.
+    assert!(!is_last(0, 0), "an empty section has no last item");
+}
+
+/// The deploy preview's coarse age ladder.
+#[test]
+fn coarse_age_buckets() {
+    use crate::app::render::coarse_age;
+    for (secs, want) in [
+        (0, "0m"),
+        (59, "0m"), // no seconds bucket, by design
+        (60, "1m"),
+        (3599, "59m"),
+        (3600, "1h"), // `secs < 3600`
+        (43_200, "12h"),
+        (86_399, "23h"),
+        (86_400, "1d"), // `secs < 86_400`
+        (259_200, "3d"),
+    ] {
+        assert_eq!(coarse_age(secs), want, "{secs}s");
+    }
+}

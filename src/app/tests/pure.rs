@@ -14,10 +14,30 @@ use super::support::*;
 
 #[test]
 fn health_rank_orders_severities() {
-    assert!(health_rank("green") < health_rank("grey"));
-    assert!(health_rank("grey") < health_rank("yellow"));
-    assert!(health_rank("yellow") < health_rank("red"));
-    assert_eq!(health_rank("ok"), health_rank("Green"));
+    // Absolute ranks, not just ordering. Relative assertions survive a
+    // bucket falling through to the `_ => 4` default — deleting the
+    // red arm leaves `yellow(2) < red(4)` true, which is how that arm
+    // came to be deletable.
+    for (h, want) in [
+        ("green", 0),
+        ("ok", 0),
+        ("grey", 1),
+        ("gray", 1),
+        ("info", 1),
+        ("no data", 1),
+        ("pending", 1),
+        ("yellow", 2),
+        ("warning", 2),
+        ("red", 3),
+        ("severe", 3),
+        ("degraded", 3),
+    ] {
+        assert_eq!(health_rank(h), want, "health_rank({h:?})");
+    }
+    // And the default is distinct from every named bucket, so a bucket
+    // silently falling through is visible.
+    assert_eq!(health_rank("something-new"), 4);
+    assert_eq!(health_rank("ok"), health_rank("Green"), "case-insensitive");
 }
 
 #[test]
