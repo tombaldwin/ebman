@@ -482,6 +482,13 @@ fn every_listed_instance_type_has_a_price() {
 /// The list above has to stay in step with the table, in the other
 /// direction too: an arm added to production without a line here would
 /// leave the new type unchecked.
+///
+/// Catches the one-sided cases only. Deleting a type from both the
+/// table and `PRICED` keeps the counts equal, and no test comparing the
+/// code against a list derived from the code can tell a deliberate
+/// removal from an accidental one. `shell.rs`'s FORWARDED has the same
+/// shape and the same limit; `control.rs`'s key vocabulary escapes it
+/// by pinning to `docs/headless.md`, which is a spec outside the code.
 #[test]
 fn the_priced_list_covers_the_whole_table() {
     let src = std::fs::read_to_string("src/app/cost.rs").expect("read cost.rs");

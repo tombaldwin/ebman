@@ -409,6 +409,47 @@ mod key_bytes_tests {
             .unwrap_or_else(|| panic!("{code:?} produced nothing — the shell would swallow it"))
     }
 
+    /// FORWARDED must cover every key the function actually handles.
+    ///
+    /// It catches the one-sided cases: an arm added to production
+    /// without a list entry, and a list entry whose arm has gone.
+    ///
+    /// It does NOT catch a coordinated removal — deleting a key from
+    /// both sides keeps the counts equal. That is inherent, not an
+    /// oversight: no test comparing the code against a list derived
+    /// from the code can tell "we dropped support for Insert
+    /// deliberately" from "we dropped it by accident". Only a spec
+    /// outside the code can, which is why the `ctl key` vocabulary in
+    /// `control.rs` is pinned to `docs/headless.md` instead. These
+    /// escape sequences have no such doc, so this is the available
+    /// half. The price table in `app/tests/cost.rs` has the same shape
+    /// and the same limit.
+    #[test]
+    fn forwarded_covers_every_arm_that_emits_bytes() {
+        let src = std::fs::read_to_string("src/shell.rs").expect("read shell.rs");
+        let body = src
+            .split_once("\npub(crate) fn key_event_to_bytes")
+            .expect("key_event_to_bytes moved or was renamed")
+            .1;
+        let body = body.split("\n#[cfg(test)]").next().unwrap_or(body);
+        assert!(
+            !body.contains("mod key_bytes_tests"),
+            "the slice ran past the function into this test module"
+        );
+        // Every arm that emits bytes directly, at either level of the
+        // match. The `Char(c)` arm is a block rather than an expression
+        // and is covered by its own tests below.
+        let arms = body.matches("=> out.").count();
+        assert_eq!(
+            arms,
+            FORWARDED.len(),
+            "key_event_to_bytes has {arms} byte-emitting arms and \
+             FORWARDED lists {}. Add the new key to FORWARDED (or drop \
+             the stale one) so it is actually checked.",
+            FORWARDED.len()
+        );
+    }
+
     /// No forwarded key may be swallowed. This is what catches all 26
     /// deletable arms: a deleted arm falls to `_ => return None`.
     #[test]
