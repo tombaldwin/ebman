@@ -602,3 +602,175 @@ async fn a_replay_with_failures_reports_as_an_error() {
         partial.error_message
     );
 }
+
+/// The type-the-env-name gate on a queue purge.
+///
+/// `KeyCode::Enter if dlq.purge_typed.text() == dlq.env_name` had all
+/// three of its mutants survive the sweep, and one of them is the worst
+/// single finding in it: `==` flipped to `!=` purges when the typed name
+/// is WRONG and refuses when it is right. The other two bypass the gate
+/// entirely (guard → true) or wedge it shut (guard → false).
+///
+/// `p` on a DLQ is not recoverable. Nothing was checking this.
+#[tokio::test]
+async fn a_purge_fires_only_when_the_typed_name_matches() {
+    let armed = |typed: &str| {
+        let mut app = test_app();
+        let mut dlq = open_dlq_state("api-prod");
+        dlq.confirm_purge = true;
+        for c in typed.chars() {
+            dlq.purge_typed.handle_key(crossterm::event::KeyEvent {
+                code: KeyCode::Char(c),
+                modifiers: KeyModifiers::NONE,
+                kind: crossterm::event::KeyEventKind::Press,
+                state: crossterm::event::KeyEventState::NONE,
+            });
+        }
+        app.dlq = Some(dlq);
+        app.mode = crate::app::Mode::Dlq;
+        app
+    };
+    let still_confirming = |app: &App| app.dlq.as_ref().unwrap().confirm_purge;
+
+    // The exact name dispatches: the confirm closes and the buffer clears.
+    let mut app = armed("api-prod");
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(
+        !still_confirming(&app),
+        "typing the env name exactly must confirm the purge"
+    );
+    assert!(app.dlq.as_ref().unwrap().purge_typed.text().is_empty());
+
+    // Anything else is a no-op that leaves the prompt up. A near-miss
+    // is the realistic case — the operator meant to type it and didn't.
+    for wrong in ["api-prod ", "api-pro", "API-PROD", "", "worker-prod"] {
+        let mut app = armed(wrong);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(
+            still_confirming(&app),
+            "{wrong:?} is not the env name and must NOT purge"
+        );
+    }
+
+    // Esc abandons the confirm and clears what was typed.
+    let mut app = armed("api-pro");
+    press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(!still_confirming(&app), "Esc leaves the confirm");
+    assert!(app.dlq.as_ref().unwrap().purge_typed.text().is_empty());
+}
+
+/// And the matching arm must actually reach the dispatch, not merely
+/// clear the flag. A read-only env refuses at `deny_write`, which is
+/// only reachable if `spawn_dlq_purge` was called at all — the same
+/// wiring-vs-predicate distinction the rollout freeze needed.
+#[tokio::test]
+async fn a_confirmed_purge_reaches_the_write_gate() {
+    let mut app = read_only_app_with_env();
+    let mut dlq = open_dlq_state("api-prod");
+    dlq.confirm_purge = true;
+    for c in "api-prod".chars() {
+        dlq.purge_typed.handle_key(crossterm::event::KeyEvent {
+            code: KeyCode::Char(c),
+            modifiers: KeyModifiers::NONE,
+            kind: crossterm::event::KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+    }
+    app.dlq = Some(dlq);
+    app.mode = crate::app::Mode::Dlq;
+
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    let msg = app.error_message.clone().unwrap_or_default();
+    assert!(
+        msg.contains("read-only") || msg.contains("refus"),
+        "a confirmed purge must reach the write gate — a read-only env \
+         should have refused it: {msg:?}"
+    );
+}
+
+/// The single-message delete confirm: `y` / `Y` / `Enter` go ahead,
+/// **anything else cancels**. The confirming arm was deletable, and the
+/// cancel-on-anything-else behaviour is what makes a stray keypress safe.
+#[tokio::test]
+async fn a_delete_confirm_takes_yes_and_cancels_on_anything_else() {
+    let armed = || {
+        let mut app = read_only_app_with_env();
+        let mut dlq = open_dlq_state("api-prod");
+        dlq.confirm_delete_id = Some("m-1".into());
+        app.dlq = Some(dlq);
+        app.mode = crate::app::Mode::Dlq;
+        app
+    };
+
+    for confirm in [KeyCode::Char('y'), KeyCode::Char('Y'), KeyCode::Enter] {
+        let mut app = armed();
+        press(&mut app, confirm, KeyModifiers::NONE);
+        assert!(
+            app.dlq.as_ref().unwrap().confirm_delete_id.is_none(),
+            "{confirm:?} answers the confirm"
+        );
+        let msg = app.error_message.clone().unwrap_or_default();
+        assert!(
+            msg.contains("read-only") || msg.contains("refus"),
+            "{confirm:?} must reach the write gate: {msg:?}"
+        );
+    }
+
+    // Anything else cancels WITHOUT dispatching.
+    for other in [KeyCode::Char('n'), KeyCode::Esc, KeyCode::Char('z')] {
+        let mut app = armed();
+        press(&mut app, other, KeyModifiers::NONE);
+        assert!(
+            app.dlq.as_ref().unwrap().confirm_delete_id.is_none(),
+            "{other:?} clears the confirm"
+        );
+        assert!(
+            app.error_message.is_none(),
+            "{other:?} must not dispatch anything: {:?}",
+            app.error_message
+        );
+    }
+}
+
+/// The DLQ cursor wraps both ways. Ten survivors sat on these two
+/// expressions, and this cursor is what `x` deletes and what `r`
+/// resends — the same reason the refetch clamp mattered.
+#[tokio::test]
+async fn the_dlq_cursor_wraps_at_both_ends() {
+    let mut app = test_app();
+    let mut dlq = open_dlq_state("api-prod");
+    dlq.messages = vec![msg("m-1"), msg("m-2"), msg("m-3")];
+    dlq.list_state.select(Some(0));
+    app.dlq = Some(dlq);
+    app.mode = crate::app::Mode::Dlq;
+    let sel = |app: &App| app.dlq.as_ref().unwrap().list_state.selected();
+
+    press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+    assert_eq!(sel(&app), Some(1));
+    press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+    assert_eq!(sel(&app), Some(2));
+    press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+    assert_eq!(sel(&app), Some(0), "j wraps past the last message");
+
+    press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+    assert_eq!(sel(&app), Some(2), "k wraps past the first");
+    press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+    assert_eq!(sel(&app), Some(1));
+
+    // The arrow keys are the same arms.
+    press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    assert_eq!(sel(&app), Some(2));
+    press(&mut app, KeyCode::Up, KeyModifiers::NONE);
+    assert_eq!(sel(&app), Some(1));
+
+    // An empty queue must not panic on either key — `if n == 0`.
+    let mut app = test_app();
+    let mut dlq = open_dlq_state("api-prod");
+    dlq.messages.clear();
+    dlq.list_state.select(None);
+    app.dlq = Some(dlq);
+    app.mode = crate::app::Mode::Dlq;
+    press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+    press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+    assert_eq!(sel(&app), None, "an empty queue has nothing to select");
+}

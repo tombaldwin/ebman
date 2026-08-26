@@ -747,6 +747,36 @@ than a wrong action. Working top-down by count is the wrong order.
   body from the `--watch` loop; still wants scoping deliberately rather
   than starting mid-run.
 
+- [x] **`app/mode_dlq_handlers.rs` — the purge type-to-confirm gate had
+  nothing behind it** — 2026-08-26. The worst single finding of the
+  sweep.
+
+  `KeyCode::Enter if dlq.purge_typed.text() == dlq.env_name` is the
+  type-the-env-name confirmation on a **queue purge**, and all three of
+  its mutants survived. `==` → `!=` purges when the typed name is
+  *wrong* and refuses when it is right; guard → `true` bypasses the gate
+  entirely; guard → `false` wedges it shut. `p` on a DLQ is not
+  recoverable, and the gate exists because of that.
+
+  Covered from both sides — the exact name confirms, and four
+  near-misses (trailing space, truncation, wrong case, empty) do not,
+  because a near-miss is the realistic failure. Plus a second test that
+  a confirmed purge actually **reaches `deny_write`**, since clearing
+  the flag and dispatching are different things; that is the same
+  wiring-vs-predicate distinction the rollout freeze needed an hour
+  earlier.
+
+  Also: the `y`/`Y`/`Enter` single-message delete arm (deletable, and
+  the cancel-on-anything-else behaviour is what makes a stray keypress
+  safe), and the DLQ cursor's wrap in both directions — ten survivors on
+  two expressions, and this cursor is what `x` deletes and `r` resends.
+
+  Mutation-verified four ways: CAUGHT.
+
+- [ ] **`app/mode_dlq_handlers.rs` — what's left**: the replay-spec
+  prompt arms, the `Ctrl-R` vs `r` modifier guard, and the `m`
+  main/DLQ toggle.
+
 - [ ] **The SDK seam — 75 survivors in `aws/eb.rs` alone** — every one
   of the form `replace AwsClient::fetch_x with Ok(vec![])`. No test can
   kill these: the function *is* the AWS call, and `AwsClient::stub()`
