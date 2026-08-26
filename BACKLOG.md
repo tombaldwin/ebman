@@ -801,10 +801,30 @@ than a wrong action. Working top-down by count is the wrong order.
   `ui/header.rs`; the grep had been truncated by a `head -6`. Checked
   before reporting, which is the only reason it wasn't reported.
 
+- [x] **`app/spawn_refresh.rs` — the bell, the status line and the
+  history cap** — 2026-08-26.
+
+  - **The bell rings on an INCREASE in alerts, not on their presence.**
+    All four mutants of `notify_bell && new_alerts > prev_alerts`
+    survived. `>=` rings on every refresh of a fleet that is merely
+    still unhealthy, which trains the operator to ignore it — and an
+    ignored bell is worse than none. `||` rings for anyone who switched
+    it off. Extracted as `should_ring` because the write itself is the
+    BEL to stderr that the rule-5 allowlist already justifies, so the
+    decision is the only part a test can reach.
+  - **A refresh clears the status line it set, and nothing else.**
+    `!pinned && status_message == prev_status`: `!=` clobbers exactly
+    the message the operator just caused, and dropping the `!` throws
+    away pinned results every 15s.
+  - **The health sparkline buffer** is capped and trimmed from the
+    front, so `>=` leaves it one short and trimming the other end would
+    freeze every sparkline at startup.
+
+  Mutation-verified five ways: CAUGHT.
+
 - [ ] **`app/spawn_refresh.rs` — what's left**: `apply_rebuild`'s
   overlay-mode chain (11 survivors on one condition — the modes a
-  context switch tears down), the notify-bell threshold, the
-  `HISTORY_CAP` trim and the throttle backoff arithmetic.
+  context switch tears down) and the throttle backoff arithmetic.
 
 - [ ] **The SDK seam — 75 survivors in `aws/eb.rs` alone** — every one
   of the form `replace AwsClient::fetch_x with Ok(vec![])`. No test can

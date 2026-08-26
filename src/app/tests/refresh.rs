@@ -2163,3 +2163,115 @@ async fn severe_counts_as_red_and_so_does_any_casing() {
         );
     }
 }
+
+/// The bell rings on an INCREASE in alerts, not on their presence.
+///
+/// All four of this condition's mutants survived. `>` flipped to `>=`
+/// rings on every refresh of a fleet that is merely still unhealthy —
+/// which trains the operator to ignore the bell, and a bell that is
+/// ignored is worse than none. `&&` flipped to `||` rings even with
+/// notifications switched off.
+#[test]
+fn the_bell_rings_only_when_alerts_increase() {
+    use crate::app::spawn_refresh::should_ring;
+
+    assert!(should_ring(true, 2, 1), "one more alert than last time");
+    assert!(should_ring(true, 1, 0), "the first alert");
+
+    assert!(
+        !should_ring(true, 2, 2),
+        "still unhealthy is not newly unhealthy — `>=` would ring every \
+         refresh until the operator silences it"
+    );
+    assert!(!should_ring(true, 1, 2), "recovering does not ring");
+    assert!(!should_ring(true, 0, 0), "a healthy fleet is silent");
+
+    // The opt-out is absolute.
+    assert!(
+        !should_ring(false, 9, 0),
+        "notify_bell = false must silence it regardless — `||` here \
+         would ring for anyone who turned it off"
+    );
+}
+
+/// A refresh clears the status line it set, and nothing else.
+#[tokio::test]
+async fn a_refresh_clears_only_its_own_status_message() {
+    let refreshed = |pinned: bool, current: &str, snapshot: &str| {
+        let mut app = test_app();
+        app.status_message = Some(current.to_string());
+        app.status_message_pinned = pinned;
+        app.status_snapshot_at_refresh = Some((Some(snapshot.to_string()), None));
+        app.apply_refresh(
+            app.fanout_epoch,
+            Ok(vec![mk_env("api-prod", "shop", "Web", "Green")]),
+            Vec::new(),
+        );
+        app.status_message
+    };
+
+    // Unchanged since the refresh began → the refresh's own message, so
+    // it goes.
+    assert_eq!(refreshed(false, "refreshing…", "refreshing…"), None);
+
+    // The operator did something during the round-trip. Their message
+    // must survive — `==` flipped to `!=` clobbers exactly this.
+    assert_eq!(
+        refreshed(false, "sorted by health", "refreshing…"),
+        Some("sorted by health".to_string()),
+        "a message the operator caused must not be cleared by a refresh"
+    );
+
+    // Pinned results survive even when they look like the refresh's own.
+    assert_eq!(
+        refreshed(true, "refreshing…", "refreshing…"),
+        Some("refreshing…".to_string()),
+        "a pinned message is a result the operator asked for and would \
+         otherwise vanish every 15s"
+    );
+}
+
+/// The per-env health sparkline buffer is capped, and trimmed from the
+/// front so the newest samples survive.
+#[tokio::test]
+async fn the_health_history_is_capped_and_keeps_the_newest() {
+    let mut app = test_app();
+    let cap = crate::app::HISTORY_CAP;
+
+    // Alternate health so the retained window is identifiable.
+    for i in 0..(cap + 5) {
+        let health = if i.is_multiple_of(2) {
+            "Green"
+        } else {
+            "Yellow"
+        };
+        app.apply_refresh(
+            app.fanout_epoch,
+            Ok(vec![mk_env("api-prod", "shop", "Web", health)]),
+            Vec::new(),
+        );
+    }
+    let buf = app.history.get("api-prod").expect("history for the env");
+    assert_eq!(buf.len(), cap, "the buffer is capped at HISTORY_CAP");
+    assert_eq!(
+        buf.back().map(String::as_str),
+        Some(if (cap + 4).is_multiple_of(2) {
+            "Green"
+        } else {
+            "Yellow"
+        }),
+        "the newest sample is kept — trimming from the back would leave \
+         a sparkline frozen at startup"
+    );
+
+    // An env that disappears loses its history rather than leaking.
+    app.apply_refresh(
+        app.fanout_epoch,
+        Ok(vec![mk_env("worker-prod", "shop", "Worker", "Green")]),
+        Vec::new(),
+    );
+    assert!(
+        !app.history.contains_key("api-prod"),
+        "history is dropped for an env no longer in the fleet"
+    );
+}
