@@ -115,16 +115,58 @@ pub(crate) fn refusal_message(marker: &FreezeMarker) -> String {
 /// alive. A dead-pid marker is stale (crashed TUI) — ignored and
 /// removed so it can't confuse later readers.
 pub(crate) fn read_active() -> Option<FreezeMarker> {
-    read_active_with(&marker_path(), pid_alive)
+    read_active_with(&marker_path(), pid_alive, process_start_epoch)
 }
 
-/// Testable core: liveness probe injected.
-fn read_active_with(path: &Path, alive: impl Fn(u32) -> bool) -> Option<FreezeMarker> {
+/// How far after the marker a process must have started before we call
+/// the pid reused.
+///
+/// The true owner always starts BEFORE it writes its own marker, so any
+/// positive difference is suspicious in principle. The slack is for
+/// clock movement, not for reuse: an NTP step backwards would otherwise
+/// make a live session's marker look like a reused pid and **lift the
+/// freeze**, which is the one direction this must never fail in. Reuse
+/// in practice happens hours or days later, so five minutes costs
+/// nothing and buys immunity to ordinary clock wobble.
+const START_SLACK_SECS: i64 = 300;
+
+/// Does the process now holding `pid` look like the one that wrote the
+/// marker?
+///
+/// Pure, so the interesting case — a reused pid — is testable without
+/// waiting for the kernel to wrap its pid counter.
+///
+/// Unknown start time means "assume it is the owner": failing closed
+/// keeps a phantom freeze refusing writes, which is recoverable by
+/// deleting the file. Failing open would let writes through during a
+/// declared incident.
+fn marker_owner_is_live(alive: bool, start_epoch: Option<i64>, marker_at_epoch: i64) -> bool {
+    if !alive {
+        return false;
+    }
+    // Reads as "not reused". Written this way round because the
+    // interesting case is the exclusion: `None` and an early start both
+    // mean "assume owner", which is the closed direction.
+    !matches!(start_epoch, Some(start) if start > marker_at_epoch + START_SLACK_SECS)
+}
+
+/// Testable core: liveness and start-time probes injected.
+fn read_active_with(
+    path: &Path,
+    alive: impl Fn(u32) -> bool,
+    start_epoch: impl Fn(u32) -> Option<i64>,
+) -> Option<FreezeMarker> {
     let m = parse_file(path)?;
-    if alive(m.pid) {
+    // `at` is RFC3339 text on disk. An unparseable timestamp means we
+    // cannot judge reuse, so fall back to "assume owner" — closed.
+    let at_epoch = chrono::DateTime::parse_from_rfc3339(&m.at)
+        .map(|t| t.timestamp())
+        .unwrap_or(i64::MAX);
+    if marker_owner_is_live(alive(m.pid), start_epoch(m.pid), at_epoch) {
         return Some(m);
     }
-    // Dead pid → stale. Re-read immediately before removing and only
+    // Dead pid, or the pid was reused → stale. Re-read immediately
+    // before removing and only
     // delete if the on-disk pid is STILL the dead one (I1): between
     // our read and here, another session could have overwritten the
     // file with a live-pid freeze, and a blind remove would silently
@@ -188,6 +230,66 @@ fn pid_alive(_pid: u32) -> bool {
     true
 }
 
+/// Wall-clock epoch second at which the process holding `pid` started.
+///
+/// `kill(pid, 0)` proves a pid is *in use*; it says nothing about which
+/// process is using it. Pids are allocated sequentially and wrap at
+/// ~99999, so a marker left by a crashed session is reused within days
+/// on a busy machine — and without this it reads as a live fleet freeze
+/// refusing every write until someone deletes the file by hand. One was
+/// found five days stale during a 2026-08-26 review.
+///
+/// `None` when the start time cannot be read, which the caller treats as
+/// "assume owner" — see `marker_owner_is_live`.
+#[cfg(target_os = "macos")]
+fn process_start_epoch(pid: u32) -> Option<i64> {
+    // SAFETY: `proc_pidinfo` fills a `proc_bsdinfo` we own and sized;
+    // it reports how many bytes it wrote, which we check.
+    unsafe {
+        let mut info: libc::proc_bsdinfo = std::mem::zeroed();
+        let want = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        let got = libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            &mut info as *mut _ as *mut libc::c_void,
+            want,
+        );
+        (got == want).then_some(info.pbi_start_tvsec as i64)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn process_start_epoch(pid: u32) -> Option<i64> {
+    // `/proc/<pid>/stat` field 22 is the start time in clock ticks since
+    // boot. The comm field can contain spaces and parentheses, so the
+    // fields are counted from after the LAST `)`, which is the standard
+    // way to parse this and the reason a naive split is wrong.
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let after = &stat[stat.rfind(')')? + 1..];
+    let ticks: u64 = after.split_whitespace().nth(19)?.parse().ok()?;
+    // SAFETY: `sysconf` takes a constant and returns a long.
+    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    if hz <= 0 {
+        return None;
+    }
+    // Boot time, so the tick count can be turned into wall clock.
+    let btime: i64 = std::fs::read_to_string("/proc/stat")
+        .ok()?
+        .lines()
+        .find_map(|l| l.strip_prefix("btime "))?
+        .trim()
+        .parse()
+        .ok()?;
+    Some(btime + (ticks / hz as u64) as i64)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn process_start_epoch(_pid: u32) -> Option<i64> {
+    // No cheap probe: assume owner, which fails closed.
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,7 +314,7 @@ mod tests {
     fn dead_pid_marker_is_ignored_and_cleaned() {
         let p = tmp("dead");
         write_marker_at(&p, 4242, "stale", false).unwrap();
-        assert!(read_active_with(&p, |_| false).is_none());
+        assert!(read_active_with(&p, |_| false, |_| None).is_none());
         assert!(!p.exists(), "stale marker must be removed by the reader");
     }
 
@@ -220,7 +322,7 @@ mod tests {
     fn live_pid_marker_is_active() {
         let p = tmp("live");
         write_marker_at(&p, 4242, "deploy freeze", false).unwrap();
-        let m = read_active_with(&p, |_| true).expect("active");
+        let m = read_active_with(&p, |_| true, |_| None).expect("active");
         assert_eq!(m.remedy(), ":thaw-deploys");
         assert!(p.exists());
         let _ = std::fs::remove_file(&p);
@@ -247,14 +349,18 @@ mod tests {
         // delete the file now holds a live-pid marker. Model that by
         // overwriting inside the liveness closure.
         let overwritten = std::cell::Cell::new(false);
-        let result = read_active_with(&p, |_pid| {
-            if !overwritten.get() {
-                // First call: rewrite the file with a "live" pid.
-                write_marker_at(&p, 111, "new live freeze", true).unwrap();
-                overwritten.set(true);
-            }
-            false // report the ORIGINAL pid as dead
-        });
+        let result = read_active_with(
+            &p,
+            |_pid| {
+                if !overwritten.get() {
+                    // First call: rewrite the file with a "live" pid.
+                    write_marker_at(&p, 111, "new live freeze", true).unwrap();
+                    overwritten.set(true);
+                }
+                false // report the ORIGINAL pid as dead
+            },
+            |_| None,
+        );
         assert!(
             result.is_none(),
             "original dead marker not returned as active"
@@ -265,11 +371,81 @@ mod tests {
         let _ = std::fs::remove_file(&p);
     }
 
+    /// A reused pid must not read as a live freeze.
+    ///
+    /// `kill(pid, 0)` proves a pid is in use, not *who* is using it.
+    /// Pids wrap at ~99999 and are handed out sequentially, so a marker
+    /// from a crashed session gets adopted by an unrelated process
+    /// within days — and before this, that read as a fleet freeze
+    /// refusing every write across TUI, CLI and MCP until the file was
+    /// deleted by hand. One was found five days stale on a real machine.
+    #[test]
+    fn a_reused_pid_does_not_hold_the_freeze() {
+        // Marker written at T. The process now holding the pid started
+        // well after T, so it cannot be the one that wrote it.
+        let at = 1_700_000_000;
+        assert!(
+            !marker_owner_is_live(true, Some(at + 86_400), at),
+            "a process that started a day after the marker cannot have \
+             written it"
+        );
+
+        // The real owner always starts BEFORE it writes its own marker.
+        assert!(marker_owner_is_live(true, Some(at - 60), at));
+        assert!(marker_owner_is_live(true, Some(at), at), "same second");
+
+        // Dead pid is stale regardless of start time.
+        assert!(!marker_owner_is_live(false, Some(at - 60), at));
+        assert!(!marker_owner_is_live(false, None, at));
+    }
+
+    /// Every uncertain case assumes the marker is still owned, because
+    /// the failure directions are not symmetric: a phantom freeze
+    /// refuses writes and is fixed by deleting a file, while a lifted
+    /// freeze lets writes through during a declared incident.
+    #[test]
+    fn an_unreadable_start_time_fails_closed() {
+        let at = 1_700_000_000;
+        assert!(
+            marker_owner_is_live(true, None, at),
+            "unknown start time must not lift the freeze"
+        );
+
+        // Clock wobble must not lift it either. An NTP step backwards
+        // makes a live session look like it started after its own
+        // marker; the slack absorbs that.
+        assert!(
+            marker_owner_is_live(true, Some(at + START_SLACK_SECS - 1), at),
+            "a start time inside the slack window is still the owner"
+        );
+        assert!(
+            !marker_owner_is_live(true, Some(at + START_SLACK_SECS + 1), at),
+            "past the slack it is reuse"
+        );
+    }
+
+    /// The probe reports something sane for this very process — without
+    /// which every case above is reasoning about a function that always
+    /// returns None.
+    #[test]
+    fn the_start_time_probe_works_on_this_process() {
+        let start = super::process_start_epoch(std::process::id());
+        let start = start.expect(
+            "this platform must report a process start time, or the \
+             reuse check silently degrades to the old behaviour",
+        );
+        let now = chrono::Utc::now().timestamp();
+        assert!(
+            start <= now && start > now - 86_400 * 365,
+            "start {start} is not a plausible epoch second near {now}"
+        );
+    }
+
     #[test]
     fn corrupt_marker_never_blocks() {
         let p = tmp("corrupt");
         let _ = crate::util::write_secure(&p, b"not json at all");
-        assert!(read_active_with(&p, |_| true).is_none());
+        assert!(read_active_with(&p, |_| true, |_| None).is_none());
         let _ = std::fs::remove_file(&p);
     }
 

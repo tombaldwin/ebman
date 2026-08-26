@@ -111,10 +111,10 @@ holds:
    atomic, so it needs the `MARKER_LOCK` treatment before
    `tokio::time::start_paused` makes it deterministic.
 
-3. **Two decisions** *(blocked on the maintainer)* — the freeze marker's
-   PID-reuse hole (flock / pid+start-time / age bound), and
-   `run_rollout`'s `!yes` gate (move it before pre-flight, or accept
-   it). Both are in `BACKLOG.md` with the options.
+3. ~~Two decisions~~ — **done 2026-08-27.** The freeze marker now
+   checks process start time as well as pid existence, and the `!yes`
+   gate has a positional guard. Both recorded in `BACKLOG.md` with what
+   was rejected and why.
 
 ### Next
 
