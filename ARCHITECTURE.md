@@ -228,6 +228,16 @@ exit 3. Both resolve the same layers.
 and the freeze window are all resolved there, so there is exactly one place to
 audit. Writes are journalled by [`src/audit.rs`](src/audit.rs).
 
+Two of those confirms make the operator type the environment's name:
+`Terminate` and the DLQ purge. Both are irreversible, and both are
+checked by a test that refuses a near-miss rather than only accepting an
+exact match — the 2026-08-26 mutation sweep found the purge's gate
+completely untested, including the inversion that purges when the typed
+name is *wrong*. `every_typed_confirmation_gate_names_its_test` in
+`app/tests/safety.rs` keeps that from recurring: every typed-input
+comparison in production is classified, a gate has to name the test that
+covers it, and "not a gate" has to say why.
+
 Destructive actions go through a confirm modal and then sit in an undo window
 (`app/action_flow.rs`) before they're dispatched — `tick_pending_dispatch` is
 what finally fires them.
