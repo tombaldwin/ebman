@@ -2015,3 +2015,151 @@ fn apply_client_refresh_dispatches_an_identity_refetch() {
          to, for the rest of the session — the bug this exists to fix."
     );
 }
+
+// ── mutation-sweep triage, 2026-08-26 ────────────────────────────────
+//
+// `apply_refresh`'s newly-Red / newly-added detection had five
+// survivors and no test at all. It drives two operator-facing markers:
+// the red alert on a row and the `+` on a name that just appeared, both
+// rendered by `ui/table.rs`. A wrong condition here is either a missed
+// alert or a screen full of spurious ones.
+
+/// Startup must not flag every environment as new.
+///
+/// `if !self.prev_health.is_empty()` is what skips the first refresh —
+/// deleting the `!` inverts it, so the very first listing marks the
+/// whole fleet `+` and nothing after that ever does.
+#[tokio::test]
+async fn the_first_refresh_flags_nothing_as_newly_added() {
+    let mut app = test_app();
+    app.prev_health.clear();
+    app.apply_refresh(
+        app.fanout_epoch,
+        Ok(vec![
+            mk_env("api-prod", "shop", "Web", "Green"),
+            mk_env("worker-prod", "shop", "Worker", "Green"),
+        ]),
+        Vec::new(),
+    );
+    assert!(
+        app.newly_added.is_empty(),
+        "the first listing is not two new environments: {:?}",
+        app.newly_added
+    );
+
+    // The SECOND refresh does flag a genuinely new one — without this
+    // half, "never flag anything" passes the assertion above.
+    app.apply_refresh(
+        app.fanout_epoch,
+        Ok(vec![
+            mk_env("api-prod", "shop", "Web", "Green"),
+            mk_env("worker-prod", "shop", "Worker", "Green"),
+            mk_env("batch-prod", "shop", "Worker", "Green"),
+        ]),
+        Vec::new(),
+    );
+    assert_eq!(
+        app.newly_added.iter().collect::<Vec<_>>(),
+        vec!["batch-prod"],
+        "only the env that just appeared is new"
+    );
+}
+
+/// A red alert fires on the TRANSITION into red, not on being red.
+#[tokio::test]
+async fn newly_red_marks_the_transition_not_the_state() {
+    let mut app = test_app();
+
+    // Seed a fleet that is already unhealthy.
+    app.apply_refresh(
+        app.fanout_epoch,
+        Ok(vec![
+            mk_env("api-prod", "shop", "Web", "Red"),
+            mk_env("worker-prod", "shop", "Worker", "Green"),
+        ]),
+        Vec::new(),
+    );
+    assert!(
+        app.newly_red.contains("api-prod"),
+        "a red env on the first listing is news to the operator"
+    );
+
+    // Still red next cycle → NOT news any more. This is the `!prev_red`
+    // half; without it the alert re-fires every refresh forever.
+    app.apply_refresh(
+        app.fanout_epoch,
+        Ok(vec![
+            mk_env("api-prod", "shop", "Web", "Red"),
+            mk_env("worker-prod", "shop", "Worker", "Green"),
+        ]),
+        Vec::new(),
+    );
+    assert!(
+        !app.newly_red.contains("api-prod"),
+        "an env that was already red has not just gone red"
+    );
+
+    // A fresh transition IS news.
+    app.apply_refresh(
+        app.fanout_epoch,
+        Ok(vec![
+            mk_env("api-prod", "shop", "Web", "Red"),
+            mk_env("worker-prod", "shop", "Worker", "Red"),
+        ]),
+        Vec::new(),
+    );
+    assert!(
+        app.newly_red.contains("worker-prod"),
+        "green → red is exactly what the alert is for"
+    );
+    assert!(
+        !app.newly_red.contains("api-prod"),
+        "and the one that was already red stays quiet"
+    );
+
+    // Recovering clears it.
+    app.apply_refresh(
+        app.fanout_epoch,
+        Ok(vec![
+            mk_env("api-prod", "shop", "Web", "Green"),
+            mk_env("worker-prod", "shop", "Worker", "Green"),
+        ]),
+        Vec::new(),
+    );
+    assert!(app.newly_red.is_empty(), "a recovered fleet raises nothing");
+}
+
+/// `Severe` counts as red. The predicate is
+/// `eq_ignore_ascii_case("Red") || eq_ignore_ascii_case("Severe")`, and
+/// `&&` there is unsatisfiable — no string is both, so every red alert
+/// in the tool would stop firing.
+#[tokio::test]
+async fn severe_counts_as_red_and_so_does_any_casing() {
+    for health in ["Red", "red", "RED", "Severe", "severe"] {
+        let mut app = test_app();
+        app.apply_refresh(
+            app.fanout_epoch,
+            Ok(vec![mk_env("api-prod", "shop", "Web", health)]),
+            Vec::new(),
+        );
+        assert!(
+            app.newly_red.contains("api-prod"),
+            "{health:?} must raise a red alert"
+        );
+    }
+
+    // And a healthy env does not — otherwise "always alert" passes.
+    for health in ["Green", "Yellow", "Grey", "Info"] {
+        let mut app = test_app();
+        app.apply_refresh(
+            app.fanout_epoch,
+            Ok(vec![mk_env("api-prod", "shop", "Web", health)]),
+            Vec::new(),
+        );
+        assert!(
+            app.newly_red.is_empty(),
+            "{health:?} is not a red alert: {:?}",
+            app.newly_red
+        );
+    }
+}
