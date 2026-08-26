@@ -575,6 +575,40 @@ than a wrong action. Working top-down by count is the wrong order.
   (`env_found == Some(true)` filters, the `!CONTROL` guards on picker
   j/k), plus `open_parameterised_action_on` (8) and `spawn_action` (7).
 
+- [x] **`app/msg.rs` — the DLQ handlers** — 2026-08-26, eleven
+  survivors. Worth the attention because the DLQ view is the one place a
+  keystroke destroys a message: `x` deletes the *selected* row, `p`
+  purges the queue. Three shapes were unguarded by any test:
+
+  - **The wrong-env guards.** `dlq.env_name != env_name` in both
+    `handle_dlq_messages` and `handle_dlq_action_result` was flippable,
+    so another env's peek could land in this view — the same class as
+    the wrong-env spacious click and the `:rollback` wrong-env bug.
+  - **The refetch cursor clamp.** `Some(cur) if cur < messages.len()`
+    was interchangeable with `<=`, and index `len` is out of bounds. A
+    cursor left past the end of a shorter page is exactly the shape that
+    destroys the wrong message, since `x` acts on the selection. Both
+    directions covered now — a cursor at `len` resets, a valid one is
+    kept, because a clamp that always resets passes the first case
+    alone.
+  - **`retain(|m| m.id != message_id)`.** Inverted, the list keeps
+    *only* the deleted message. And `failures == 0` flipped reports
+    every clean replay as a failure and every partial one as clean.
+
+  Driven through `handle_msg` rather than the private handlers, so the
+  generation check and the routing are pinned too. Mutation-verified
+  four ways: CAUGHT.
+
+- [ ] **`src/cli/lint.rs::run` is a god-function — 57 survivors in one
+  body**, out of 87 for the file. 31 of them are `delete !` and 15 are
+  `&&` → `||`: condition checks threaded through a single large async
+  CLI function that also does the AWS calls and the printing, so none of
+  them is reachable from a test. This is an architecture item, not a
+  test-writing one — the decision logic (which probes to run, which
+  issues to suppress, what exit code to return) needs to come out as
+  pure functions first, the way `aws/eb.rs`'s did. Sizeable; worth
+  scoping deliberately rather than starting mid-run.
+
 - [ ] **The SDK seam — 75 survivors in `aws/eb.rs` alone** — every one
   of the form `replace AwsClient::fetch_x with Ok(vec![])`. No test can
   kill these: the function *is* the AWS call, and `AwsClient::stub()`
