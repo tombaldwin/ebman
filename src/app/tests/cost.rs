@@ -414,3 +414,246 @@ async fn cost_status_does_not_call_a_partial_result_cached() {
         "a partial result was never cached: {msg:?}"
     );
 }
+
+// ── mutation-sweep triage, 2026-08-26 ────────────────────────────────
+//
+// `instance_hourly_usd` held 37 of `app/cost.rs`'s 45 survivors, all of
+// them "delete match arm" — nothing checked the price table at all.
+//
+// Asserting 39 constants would just be a copy of the table, which
+// CLAUDE.md rules out and which pins nothing: the test and the code
+// would drift together the moment someone edits both. Two properties do
+// the job instead. The *values* are pinned by the doubling relationship
+// AWS actually prices on, so a typo'd figure fails without the expected
+// figure ever being written down twice. The *key set* is listed, on
+// purpose — that it must not silently shrink is the whole invariant, and
+// a family with a size missing is a cost estimate that quietly reads as
+// "unknown".
+
+/// Which sizes are priced, per family. Deliberately the keys and not the
+/// values; see the note above.
+const PRICED: &[(&str, &[&str])] = &[
+    ("c5", &["large", "xlarge", "2xlarge"]),
+    ("c6i", &["large", "xlarge"]),
+    ("m5", &["large", "xlarge", "2xlarge", "4xlarge"]),
+    ("m6g", &["large", "xlarge"]),
+    ("m6i", &["large", "xlarge", "2xlarge"]),
+    ("r5", &["large", "xlarge"]),
+    ("r6i", &["large"]),
+    ("t2", &["nano", "micro", "small", "medium", "large"]),
+    (
+        "t3",
+        &[
+            "nano", "micro", "small", "medium", "large", "xlarge", "2xlarge",
+        ],
+    ),
+    ("t3a", &["nano", "micro", "small", "medium", "large"]),
+    ("t4g", &["nano", "micro", "small", "medium", "large"]),
+];
+
+/// Canonical size ladder. Each step up doubles the machine, and AWS
+/// prices it accordingly.
+const SIZE_ORDER: &[&str] = &[
+    "nano", "micro", "small", "medium", "large", "xlarge", "2xlarge", "4xlarge", "8xlarge",
+    "12xlarge", "16xlarge", "24xlarge",
+];
+
+#[test]
+fn every_listed_instance_type_has_a_price() {
+    use crate::app::instance_hourly_usd;
+    let mut missing = Vec::new();
+    for (family, sizes) in PRICED {
+        for size in *sizes {
+            let t = format!("{family}.{size}");
+            match instance_hourly_usd(&t) {
+                Some(p) if p > 0.0 && p.is_finite() => {}
+                other => missing.push(format!("{t} → {other:?}")),
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "instance types with no usable price — the fleet-cost column \
+         reads these as unknown:\n{}",
+        missing.join("\n")
+    );
+}
+
+/// The list above has to stay in step with the table, in the other
+/// direction too: an arm added to production without a line here would
+/// leave the new type unchecked.
+#[test]
+fn the_priced_list_covers_the_whole_table() {
+    let src = std::fs::read_to_string("src/app/cost.rs").expect("read cost.rs");
+    let body = src
+        .split_once("fn instance_hourly_usd")
+        .expect("instance_hourly_usd moved")
+        .1;
+    let body = body.split_once("\n}").expect("unterminated fn").0;
+    let arms = body.matches("=> Some(").count();
+    let listed: usize = PRICED.iter().map(|(_, s)| s.len()).sum();
+    assert_eq!(
+        arms, listed,
+        "the price table has {arms} entries but PRICED lists {listed}. \
+         Add the new instance type to PRICED (or drop the stale one) so \
+         it is actually checked."
+    );
+}
+
+/// One size step doubles the price. Pins every figure in the table
+/// against its neighbour without restating any of them.
+#[test]
+fn prices_double_with_each_size_step() {
+    use crate::app::instance_hourly_usd;
+    let rank = |s: &str| SIZE_ORDER.iter().position(|x| *x == s).expect("known size");
+
+    let mut wrong = Vec::new();
+    for (family, sizes) in PRICED {
+        for pair in sizes.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let (pa, pb) = (
+                instance_hourly_usd(&format!("{family}.{a}")).expect("priced"),
+                instance_hourly_usd(&format!("{family}.{b}")).expect("priced"),
+            );
+            let steps = rank(b) - rank(a);
+            let want = pa * 2f64.powi(steps as i32);
+            // Worst real deviation in the table today is 0.87%, so 2%
+            // is tight enough to catch a mistyped figure and loose
+            // enough to survive AWS's actual rounding.
+            let off = (pb - want).abs() / want;
+            if off > 0.02 {
+                wrong.push(format!(
+                    "{family}: {a}={pa} → {b}={pb}, expected ~{want:.4} ({:+.1}%)",
+                    (pb / want - 1.0) * 100.0
+                ));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "prices that don't scale with the size ladder:\n{}",
+        wrong.join("\n")
+    );
+}
+
+#[test]
+fn an_unknown_instance_type_has_no_price() {
+    use crate::app::instance_hourly_usd;
+    assert_eq!(instance_hourly_usd("x9.enormous"), None);
+    assert_eq!(instance_hourly_usd(""), None);
+    assert_eq!(instance_hourly_usd("t3"), None, "a family is not a type");
+    assert_eq!(
+        instance_hourly_usd("T3.MICRO"),
+        None,
+        "EB reports lowercase; a case-insensitive match would be a \
+         silent behaviour change rather than a fix"
+    );
+}
+
+/// The "without cost data" note appears only when something is missing,
+/// and the 24-hour staleness marker only past 24 hours.
+#[test]
+fn fleet_cost_header_reports_gaps_and_staleness_only_when_real() {
+    use crate::app::render_fleet_cost;
+    use std::collections::HashMap;
+
+    let now = chrono::Utc::now();
+    let envs = vec![
+        mk_env("api-prod", "shop", "WebServer", "Green"),
+        mk_env("worker-prod", "shop", "Worker", "Green"),
+    ];
+    let priced: HashMap<String, f64> = envs.iter().map(|e| (e.name.clone(), 10.0)).collect();
+
+    // Nothing missing → no note. `> 0` flipped to `>=` reports a gap
+    // that isn't there on every single fleet-cost view.
+    let out = render_fleet_cost(&envs, &priced, None, now);
+    assert!(
+        !out.contains("without cost data"),
+        "reported missing cost data when every env is priced:\n{out}"
+    );
+
+    // One missing → the note, naming how many.
+    let mut partial = priced.clone();
+    partial.remove("worker-prod");
+    let out = render_fleet_cost(&envs, &partial, None, now);
+    assert!(
+        out.contains("1 without cost data"),
+        "a genuine gap must be reported:\n{out}"
+    );
+
+    // Staleness is a 24-hour threshold: `24 * 60 * 60` seconds. The
+    // sweep found both `*` operators survivable, and `24 + 60 + 60`
+    // (144s) or `24 / 60 / 60` (0s) would mark every cache stale.
+    let day = chrono::Duration::hours(24);
+    let fresh = render_fleet_cost(
+        &envs,
+        &priced,
+        Some(now - day + chrono::Duration::minutes(1)),
+        now,
+    );
+    assert!(
+        !fresh.contains("stale"),
+        "a cache under 24h old is not stale:\n{fresh}"
+    );
+    let stale = render_fleet_cost(
+        &envs,
+        &priced,
+        Some(now - day - chrono::Duration::minutes(1)),
+        now,
+    );
+    assert!(
+        stale.contains("stale"),
+        "a cache over 24h old must say so:\n{stale}"
+    );
+}
+
+/// `app_rollup` counts the three signals the Apps table shows.
+#[test]
+fn app_rollup_counts_each_signal_independently() {
+    use crate::app::app_rollup;
+    use std::collections::HashMap;
+
+    let mut envs = vec![
+        mk_env("a-updating", "shop", "WebServer", "Green"),
+        mk_env("a-launching", "shop", "WebServer", "Green"),
+        mk_env("a-terminating", "shop", "WebServer", "Green"),
+        mk_env("a-steady", "shop", "WebServer", "Green"),
+        mk_env("a-worker", "shop", "Worker", "Green"),
+        mk_env("other-app", "billing", "WebServer", "Green"),
+    ];
+    envs[0].status = "Updating".into();
+    envs[1].status = "Launching".into();
+    envs[2].status = "Terminating".into();
+    envs[3].status = "Ready".into();
+    envs[4].status = "Ready".into();
+    envs[5].status = "Updating".into();
+
+    let mut depths = HashMap::new();
+    depths.insert("a-worker".to_string(), 3i64);
+
+    let r = app_rollup(&envs, "shop", &depths);
+    assert_eq!(r.env_count, 5, "only this application's envs");
+    // Each in-flight status counts, `Terminating` included — its arm was
+    // separately deletable.
+    assert_eq!(r.updating_count, 3, "Updating + Launching + Terminating");
+    assert_eq!(r.worker_dlq_alerts, 1);
+
+    // A Worker with an EMPTY dlq is not an alert: `> 0`, not `>= 0`.
+    let mut empty = HashMap::new();
+    empty.insert("a-worker".to_string(), 0i64);
+    assert_eq!(
+        app_rollup(&envs, "shop", &empty).worker_dlq_alerts,
+        0,
+        "a worker with an empty DLQ is not an alert"
+    );
+
+    // A non-Worker tier with a depth is not an alert either — the `&&`
+    // needs both halves, and each needs its own case.
+    let mut web_depth = HashMap::new();
+    web_depth.insert("a-steady".to_string(), 9i64);
+    assert_eq!(
+        app_rollup(&envs, "shop", &web_depth).worker_dlq_alerts,
+        0,
+        "only Worker-tier envs raise a DLQ alert"
+    );
+}

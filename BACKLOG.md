@@ -599,6 +599,32 @@ than a wrong action. Working top-down by count is the wrong order.
   generation check and the routing are pinned too. Mutation-verified
   four ways: CAUGHT.
 
+- [x] **`app/cost.rs` — 45 survivors, none of them whole-function** —
+  2026-08-26. 37 sat in `instance_hourly_usd`, all "delete match arm":
+  nothing checked the price table at all.
+
+  Asserting 39 constants would have been a copy of the table, which pins
+  nothing — test and code drift together the moment someone edits both.
+  Two properties do it instead. The **values** are pinned by the
+  doubling relationship AWS actually prices on (each size step doubles;
+  worst real deviation in the table is 0.87%, so the tolerance is 2%),
+  so a mistyped figure fails without any figure being written down
+  twice. The **key set** is listed on purpose — that it must not
+  silently shrink is the whole invariant — and a third test reads the
+  arm count out of the source so the list can't fall behind the table in
+  the other direction either.
+
+  Also: the "N without cost data" note fired on every view with `>=`;
+  the 24-hour staleness threshold (`24 * 60 * 60`) had both `*`
+  survivable, and `24 + 60 * 60` marks a 1-hour-old cache stale; and in
+  `app_rollup` the `Terminating` status arm and the Worker-tier/DLQ-depth
+  conjunction were each independently deletable. The existing
+  `app_rollup_counts_envs_red_and_updating` passes against both of those
+  mutations — checked.
+
+  Mutation-verified six ways: CAUGHT, with a deleted price arm caught by
+  three tests independently.
+
 - [ ] **`src/cli/lint.rs::run` is a god-function — 57 survivors in one
   body**, out of 87 for the file. 31 of them are `delete !` and 15 are
   `&&` → `||`: condition checks threaded through a single large async
