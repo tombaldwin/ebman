@@ -625,6 +625,23 @@ than a wrong action. Working top-down by count is the wrong order.
   Mutation-verified six ways: CAUGHT, with a deleted price arm caught by
   three tests independently.
 
+- [x] **`app/forms.rs` — 52 of 56 survivors in `handle_form_key`** —
+  2026-08-26. The same shape as the action menu: field navigation with
+  wrap-around arithmetic, plus per-field-kind input rules nothing
+  exercised. `Tab` and `BackTab` were separately deletable; the
+  `((cur + delta) % n + n) % n` option-cursor expression carried ten
+  survivors on its own; the `!is_multi` guard — which is what keeps
+  Up/Down moving *within* a MultiSelect rather than between fields —
+  was flippable in both directions; and the Integer field's
+  `is_ascii_digit() || (c == '-' && value.is_empty())` accepted nothing
+  at all as `&&`, so an operator typing a capacity would have watched
+  the field stay empty.
+
+  Mutation-verified four ways: CAUGHT.
+
+- [ ] **`app/forms.rs` — the rest of `handle_form_key`**, chiefly
+  Select/Boolean arms and the submit path.
+
 - [ ] **`src/cli/lint.rs::run` is a god-function — 57 survivors in one
   body**, out of 87 for the file. 31 of them are `delete !` and 15 are
   `&&` → `||`: condition checks threaded through a single large async

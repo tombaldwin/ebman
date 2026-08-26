@@ -2055,3 +2055,148 @@ async fn the_action_menu_cursor_wraps_at_both_ends() {
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
     assert!(app.action_flow.is_none(), "Esc closes the action menu");
 }
+
+// ── mutation-sweep triage, 2026-08-26 ────────────────────────────────
+//
+// `app/forms.rs` had 56 reachable survivors, 52 of them in
+// `handle_form_key` — the same shape as the action menu: field
+// navigation with wrap-around arithmetic, plus per-field-kind input
+// rules that nothing exercised.
+
+fn a_form(fields: Vec<crate::form::FormField>) -> crate::form::Form {
+    crate::form::Form {
+        title: "Test".into(),
+        fields,
+        cursor: 0,
+        state: crate::form::FormState::Ready,
+        submit: crate::form::FormSubmit::OptionSettings { mappings: vec![] },
+        summary: "test".into(),
+        env_name: "api-prod".into(),
+        banner: String::new(),
+        scroll: 0,
+    }
+}
+
+fn form_with_three_text_fields() -> crate::form::Form {
+    a_form(vec![
+        crate::form::FormField::text("a", "A", None::<String>),
+        crate::form::FormField::text("b", "B", None::<String>),
+        crate::form::FormField::text("c", "C", None::<String>),
+    ])
+}
+
+/// Tab and Shift-Tab walk the fields, and wrap at both ends.
+#[tokio::test]
+async fn form_field_navigation_wraps_both_ways() {
+    let mut app = test_app();
+    app.form = Some(form_with_three_text_fields());
+    app.mode = crate::app::Mode::Form;
+    let cur = |app: &App| app.form.as_ref().unwrap().cursor;
+
+    assert_eq!(cur(&app), 0);
+    press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(cur(&app), 1, "Tab moves forward");
+    press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(cur(&app), 2);
+    press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(cur(&app), 0, "Tab wraps past the last field");
+
+    press(&mut app, KeyCode::BackTab, KeyModifiers::NONE);
+    assert_eq!(cur(&app), 2, "Shift-Tab wraps past the first field");
+    press(&mut app, KeyCode::BackTab, KeyModifiers::NONE);
+    assert_eq!(cur(&app), 1, "Shift-Tab moves backward");
+
+    // Up/Down are the same movement on a non-MultiSelect field, and the
+    // directions must not be swapped.
+    press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    assert_eq!(cur(&app), 2, "Down is forward");
+    press(&mut app, KeyCode::Up, KeyModifiers::NONE);
+    assert_eq!(cur(&app), 1, "Up is backward");
+}
+
+/// An Integer field takes digits, and a minus only where a minus can
+/// legally go. `is_ascii_digit() || (c == '-' && value.is_empty())`
+/// flipped to `&&` accepts nothing at all.
+#[tokio::test]
+async fn an_integer_field_accepts_digits_and_a_leading_minus_only() {
+    let typed = |keys: &str| {
+        let mut app = test_app();
+        app.form = Some(a_form(vec![crate::form::FormField::integer(
+            "n",
+            "N",
+            None::<String>,
+            None,
+            None,
+            true,
+        )]));
+        app.mode = crate::app::Mode::Form;
+        for c in keys.chars() {
+            press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.form.unwrap().fields[0].value.clone()
+    };
+
+    assert_eq!(typed("42"), "42", "digits go in");
+    assert_eq!(typed("-5"), "-5", "a leading minus is allowed");
+    assert_eq!(typed("4-2"), "42", "a minus mid-number is not");
+    assert_eq!(typed("abc"), "", "letters are rejected outright");
+    assert_eq!(typed("1a2"), "12", "and rejected in the middle too");
+
+    // Backspace pops, and its arm was separately deletable.
+    let mut app = test_app();
+    app.form = Some(a_form(vec![crate::form::FormField::integer(
+        "n",
+        "N",
+        None::<String>,
+        None,
+        None,
+        true,
+    )]));
+    app.mode = crate::app::Mode::Form;
+    for c in "123".chars() {
+        press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    press(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
+    assert_eq!(app.form.unwrap().fields[0].value, "12", "Backspace pops");
+}
+
+/// A MultiSelect field takes Up/Down for its own option cursor rather
+/// than moving between fields, and wraps. Ten survivors sat on the
+/// `((cur + delta) % n + n) % n` expression.
+#[tokio::test]
+async fn multi_select_up_down_moves_the_option_cursor_and_wraps() {
+    let mut app = test_app();
+    app.form = Some(a_form(vec![
+        crate::form::FormField::multi_select(
+            "subnets",
+            "Subnets",
+            vec!["a".into(), "b".into(), "c".into()],
+            vec![],
+            None::<String>,
+        ),
+        crate::form::FormField::text("other", "Other", None::<String>),
+    ]));
+    app.mode = crate::app::Mode::Form;
+
+    let opt = |app: &App| app.form.as_ref().unwrap().fields[0].option_cursor;
+    let field = |app: &App| app.form.as_ref().unwrap().cursor;
+
+    assert_eq!((field(&app), opt(&app)), (0, 0));
+    press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    assert_eq!(
+        (field(&app), opt(&app)),
+        (0, 1),
+        "Down moves the option cursor, NOT between fields"
+    );
+    press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+    assert_eq!(opt(&app), 2);
+    press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+    assert_eq!(opt(&app), 0, "the option cursor wraps forward");
+    press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+    assert_eq!(opt(&app), 2, "and backward");
+
+    // Tab still leaves the field, which is the distinction the `is_multi`
+    // guard exists to preserve.
+    press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(field(&app), 1, "Tab still moves between fields");
+}
