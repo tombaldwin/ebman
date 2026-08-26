@@ -263,6 +263,134 @@ pub(crate) fn platform_branch_from(stack_or_arn: &str) -> String {
     String::new()
 }
 
+/// Fold `(namespace, option_name, value)` option settings into the VPC
+/// context. An empty value is not a setting — EB returns every settable
+/// key whether or not it is set, so without the emptiness guards an
+/// unset `Subnets` would overwrite the list with an empty vec.
+///
+/// Extracted from `fetch_env_vpc_context`: all four guards survived the
+/// sweep, because reaching them meant calling
+/// `DescribeConfigurationSettings`.
+pub(crate) fn vpc_context_from_settings<I>(settings: I) -> EnvVpcContext
+where
+    I: IntoIterator<Item = (String, String, String)>,
+{
+    let mut ctx = EnvVpcContext::default();
+    for (ns, name, value) in settings {
+        match (ns.as_str(), name.as_str()) {
+            ("aws:ec2:vpc", "VPCId") if !value.is_empty() => {
+                ctx.vpc_id = Some(value);
+            }
+            ("aws:ec2:vpc", "Subnets") if !value.is_empty() => {
+                ctx.subnets = crate::util::split_csv(&value);
+            }
+            ("aws:ec2:vpc", "ELBSubnets") if !value.is_empty() => {
+                ctx.elb_subnets = crate::util::split_csv(&value);
+            }
+            ("aws:autoscaling:launchconfiguration", "SecurityGroups") if !value.is_empty() => {
+                ctx.security_groups = crate::util::split_csv(&value);
+            }
+            _ => {}
+        }
+    }
+    ctx
+}
+
+/// Order listener rows: `default` (port 80) first, then numeric ports
+/// ascending, then alphabetically by option name within each listener.
+///
+/// Extracted from `fetch_env_listeners`. Both `!= "default"` rank
+/// comparisons survived the sweep — flipping them puts the default
+/// listener last, which nothing could see from outside an AWS call.
+pub(crate) fn sort_listener_rows(rows: &mut [(String, String, String)]) {
+    rows.sort_by(|a, b| {
+        let rank_a = u8::from(a.0 != "default");
+        let rank_b = u8::from(b.0 != "default");
+        let port_a = a.0.parse::<u32>().unwrap_or(0);
+        let port_b = b.0.parse::<u32>().unwrap_or(0);
+        (rank_a, port_a, &a.1).cmp(&(rank_b, port_b, &b.1))
+    });
+}
+
+/// Worker-queue discovery, as pure state.
+///
+/// EB reports the queues it created under named entries; a user who
+/// manages their own queue points at it through `aws:elasticbeanstalk:sqsd`
+/// option settings instead. The rules between the two are what this holds:
+/// EB's answer wins, an empty URL is not an answer, and only a URL we
+/// actually resolved sets `DlqOrigin::Reported` — the distinction that
+/// field exists to keep is "no DLQ configured" versus "we guessed a name".
+///
+/// Extracted from `describe_worker_queues`, where it sat between two
+/// `.send().await` calls and so could only be reached by talking to AWS.
+/// The first complete mutation sweep left ten survivors in it, including
+/// deletable `WorkerQueue` / `WorkerDeadLetterQueue` match arms — which is
+/// to say nothing checked that EB-reported queues are recognised at all.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct QueueDiscovery {
+    pub main_url: Option<String>,
+    pub dlq_url: Option<String>,
+    pub dlq_origin: Option<DlqOrigin>,
+}
+
+impl QueueDiscovery {
+    /// From `DescribeEnvironmentResources`' named queue entries.
+    pub(crate) fn from_reported<I>(queues: I) -> Self
+    where
+        I: IntoIterator<Item = (String, String)>,
+    {
+        let mut out = Self::default();
+        for (name, url) in queues {
+            if url.is_empty() {
+                continue;
+            }
+            match name.as_str() {
+                "WorkerQueue" => out.main_url = Some(url),
+                "WorkerDeadLetterQueue" => {
+                    out.dlq_url = Some(url);
+                    out.dlq_origin = Some(DlqOrigin::Reported);
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// Whether the option-settings fallback is worth a second API call.
+    /// Either gap is enough — an env can report a main queue and leave the
+    /// DLQ to an override, or the reverse.
+    pub(crate) fn needs_option_fallback(&self) -> bool {
+        self.main_url.is_none() || self.dlq_url.is_none()
+    }
+
+    /// Apply `aws:elasticbeanstalk:sqsd` option settings as `(namespace,
+    /// option_name, value)`. Fills gaps only: anything EB already reported
+    /// stays, and an empty override is ignored rather than blanking it.
+    pub(crate) fn apply_sqsd_settings<I>(&mut self, settings: I)
+    where
+        I: IntoIterator<Item = (String, String, String)>,
+    {
+        for (ns, name, value) in settings {
+            if ns != "aws:elasticbeanstalk:sqsd" {
+                continue;
+            }
+            // Guards rather than an inner `if`: an empty value or an
+            // already-resolved field falls through to `_` and is a no-op
+            // either way, and clippy asks for the collapsed form.
+            match name.as_str() {
+                "WorkerQueueURL" if !value.is_empty() && self.main_url.is_none() => {
+                    self.main_url = Some(value);
+                }
+                "DeadLetterQueueURL" if !value.is_empty() && self.dlq_url.is_none() => {
+                    self.dlq_url = Some(value);
+                    self.dlq_origin = Some(DlqOrigin::Reported);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 /// Pure: roll up EB's per-bucket `InstanceHealthSummary` into the
 /// `(healthy, total)` shape the INST column wants. `healthy` is `ok +
 /// info` (both Green per EB's docs — Info just means an operation is in
@@ -705,9 +833,7 @@ impl AwsClient {
         application_name: &str,
         env_name: &str,
     ) -> Result<WorkerQueues> {
-        let mut main_url: Option<String> = None;
-        let mut dlq_url: Option<String> = None;
-        let mut dlq_origin: Option<DlqOrigin> = None;
+        let mut found = QueueDiscovery::default();
         // Errors must stay distinguishable from "this env has no
         // queues": the pre-0.27 shape swallowed every failure into
         // an empty result, so an AccessDenied rendered as "no worker
@@ -725,21 +851,12 @@ impl AwsClient {
         {
             Ok(resp) => {
                 if let Some(res) = resp.environment_resources {
-                    for q in res.queues.unwrap_or_default() {
-                        let name = q.name.unwrap_or_default();
-                        let url = q.url.unwrap_or_default();
-                        if url.is_empty() {
-                            continue;
-                        }
-                        match name.as_str() {
-                            "WorkerQueue" => main_url = Some(url),
-                            "WorkerDeadLetterQueue" => {
-                                dlq_url = Some(url);
-                                dlq_origin = Some(DlqOrigin::Reported);
-                            }
-                            _ => {}
-                        }
-                    }
+                    found = QueueDiscovery::from_reported(
+                        res.queues
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|q| (q.name.unwrap_or_default(), q.url.unwrap_or_default())),
+                    );
                 }
             }
             Err(e) => discovery_err = Some(format!("DescribeEnvironmentResources: {e}")),
@@ -747,7 +864,7 @@ impl AwsClient {
 
         // Fallback / override: look at user-supplied option settings in case
         // the env explicitly points at a queue the user manages outside EB.
-        if main_url.is_none() || dlq_url.is_none() {
+        if found.needs_option_fallback() {
             match self
                 .client
                 .describe_configuration_settings()
@@ -766,31 +883,19 @@ impl AwsClient {
                     });
                 }
                 Ok(resp) => {
-                    for setting in resp.configuration_settings.unwrap_or_default() {
-                        for opt in setting.option_settings.unwrap_or_default() {
-                            let ns = opt.namespace.unwrap_or_default();
-                            let name = opt.option_name.unwrap_or_default();
-                            if ns != "aws:elasticbeanstalk:sqsd" {
-                                continue;
-                            }
-                            match name.as_str() {
-                                "WorkerQueueURL" => {
-                                    let v = opt.value.unwrap_or_default();
-                                    if !v.is_empty() && main_url.is_none() {
-                                        main_url = Some(v);
-                                    }
-                                }
-                                "DeadLetterQueueURL" => {
-                                    let v = opt.value.unwrap_or_default();
-                                    if !v.is_empty() && dlq_url.is_none() {
-                                        dlq_url = Some(v);
-                                        dlq_origin = Some(DlqOrigin::Reported);
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
+                    found.apply_sqsd_settings(
+                        resp.configuration_settings
+                            .unwrap_or_default()
+                            .into_iter()
+                            .flat_map(|s| s.option_settings.unwrap_or_default())
+                            .map(|opt| {
+                                (
+                                    opt.namespace.unwrap_or_default(),
+                                    opt.option_name.unwrap_or_default(),
+                                    opt.value.unwrap_or_default(),
+                                )
+                            }),
+                    );
                 }
             }
         }
@@ -803,21 +908,21 @@ impl AwsClient {
         // failed, so AccessDenied-on-primary + empty-fallback — the
         // common autocreated-queue case — still read as "no queues"
         // and silently cleared DLQ alerting).
-        if main_url.is_none() {
+        if found.main_url.is_none() {
             if let Some(err) = discovery_err {
                 return Err(eyre!(err));
             }
         }
 
         // If we still have a main queue but no DLQ URL, derive one by SQS naming convention.
-        if let (Some(main), None) = (&main_url, &dlq_url) {
-            dlq_url = derive_dlq_url(main);
+        if let (Some(main), None) = (&found.main_url, &found.dlq_url) {
+            found.dlq_url = derive_dlq_url(main);
             // Only a *successful* derivation is an origin. `derive_dlq_url`
             // returns None when the main queue already ends in `-dlq`, and
             // claiming a Derived origin for a url we never produced would
             // be the same conflation this field exists to remove.
-            if dlq_url.is_some() {
-                dlq_origin = Some(DlqOrigin::Derived);
+            if found.dlq_url.is_some() {
+                found.dlq_origin = Some(DlqOrigin::Derived);
             }
         }
 
@@ -827,7 +932,7 @@ impl AwsClient {
         // depth cache treated it as "no DLQ" and cleared the alert.
         // NonExistentQueue on the DERIVED DLQ url is the one genuine
         // "no DLQ" error (the naming-convention guess missed).
-        let main_stats = match &main_url {
+        let main_stats = match &found.main_url {
             Some(u) => match self.queue_stats(u).await {
                 Ok(st) => Some(st),
                 Err(e) => {
@@ -841,7 +946,7 @@ impl AwsClient {
             },
             None => None,
         };
-        let dlq_stats = match &dlq_url {
+        let dlq_stats = match &found.dlq_url {
             Some(u) => match self.queue_stats(u).await {
                 Ok(st) => Some(st),
                 Err(e) => {
@@ -857,11 +962,11 @@ impl AwsClient {
         };
 
         Ok(WorkerQueues {
-            main_url,
-            dlq_url,
+            main_url: found.main_url,
+            dlq_url: found.dlq_url,
             main_stats,
             dlq_stats,
-            dlq_origin,
+            dlq_origin: found.dlq_origin,
         })
     }
 
@@ -920,32 +1025,19 @@ impl AwsClient {
             .send()
             .await
             .wrap_err("DescribeConfigurationSettings(env) failed")?;
-        let mut ctx = EnvVpcContext::default();
-        for setting in resp.configuration_settings.unwrap_or_default() {
-            for opt in setting.option_settings.unwrap_or_default() {
-                let ns = opt.namespace.unwrap_or_default();
-                let name = opt.option_name.unwrap_or_default();
-                let value = opt.value.unwrap_or_default();
-                match (ns.as_str(), name.as_str()) {
-                    ("aws:ec2:vpc", "VPCId") if !value.is_empty() => {
-                        ctx.vpc_id = Some(value);
-                    }
-                    ("aws:ec2:vpc", "Subnets") if !value.is_empty() => {
-                        ctx.subnets = crate::util::split_csv(&value);
-                    }
-                    ("aws:ec2:vpc", "ELBSubnets") if !value.is_empty() => {
-                        ctx.elb_subnets = crate::util::split_csv(&value);
-                    }
-                    ("aws:autoscaling:launchconfiguration", "SecurityGroups")
-                        if !value.is_empty() =>
-                    {
-                        ctx.security_groups = crate::util::split_csv(&value);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        Ok(ctx)
+        Ok(vpc_context_from_settings(
+            resp.configuration_settings
+                .unwrap_or_default()
+                .into_iter()
+                .flat_map(|s| s.option_settings.unwrap_or_default())
+                .map(|opt| {
+                    (
+                        opt.namespace.unwrap_or_default(),
+                        opt.option_name.unwrap_or_default(),
+                        opt.value.unwrap_or_default(),
+                    )
+                }),
+        ))
     }
 
     /// Fetch RDS dbinstance option settings for an env. EB envs
@@ -1143,15 +1235,7 @@ impl AwsClient {
                 Some((port, opt, value))
             })
             .collect();
-        // Sort: 'default' (port 80) first, then numeric ports asc,
-        // then alpha by option name within each listener.
-        out.sort_by(|a, b| {
-            let rank_a = u8::from(a.0 != "default");
-            let rank_b = u8::from(b.0 != "default");
-            let port_a = a.0.parse::<u32>().unwrap_or(0);
-            let port_b = b.0.parse::<u32>().unwrap_or(0);
-            (rank_a, port_a, &a.1).cmp(&(rank_b, port_b, &b.1))
-        });
+        sort_listener_rows(&mut out);
         Ok(out)
     }
 

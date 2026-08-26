@@ -388,6 +388,79 @@ both guards were mutation-verified before being believed.
   failing the job, and `publish to MCP Registry` ran for the first time
   on a re-run.
 
+#### Mutation sweep — first complete run, 2026-08-26
+
+Run 32928330276, 03:56–11:04 UTC, against `0adc76a`. **6053 mutants:
+2989 caught, 2637 missed, 28 timeout, 399 unviable — score 53.1%.**
+Every shard finished under the 350-minute cap (slowest 3h47m), so the
+24-way split is right and does not need revisiting.
+
+Aggregated survivor list: `scratchpad/sweep/all-missed.txt` (session
+scratch — regenerate from the run's artifacts if it has been cleaned).
+
+Read the raw counts carefully. Roughly 1000 survivors are arithmetic and
+comparison flips, and the four biggest `ui/*` files contribute 505
+between them — render code, where a survivor means a wrong pixel rather
+than a wrong action. Working top-down by count is the wrong order.
+
+- [x] **`src/audit.rs` — 42 survivors triaged** — DONE 2026-08-26.
+  Twelve were real and are now covered; six are genuinely equivalent and
+  are reasoned about at the code they mutate rather than listed, so the
+  next triage doesn't redo the analysis. Highlights:
+  - **A quoted value butted against the next key** lost the rest of the
+    line. Four survivors sat in "consume the closing quote"; every
+    existing test put a space after the quote, and with a space the
+    parser recovers. `audit replay` reconstructs an AWS action from this.
+  - **`field_token` was untested on `=`** — the half that matters, since
+    an unquoted `=` parses back as two fields. Field forgery in a log
+    that `replay` acts on.
+  - **The JSON renderer's comma placement** had four survivors: nothing
+    parsed the output, the tests asserted on substrings. It is parsed
+    now, per line — it is JSON Lines, not an array.
+  - **`(Some(s), _)` in the text renderer was deletable**, so any outcome
+    other than `ok` fell through to `-` untested. Its neighbour
+    `(Some("ok"), _)` was pure duplication — deleted rather than covered.
+  - **`detail_field` was a closure inside `write_audit_line_raw`**, so
+    the only way to reach it was to fire a webhook. It decides what the
+    webhook reports and had already been wrong once.
+  - Stale rationale corrected: the JSON renderer's "so we don't pull in
+    `serde_json`" stopped being true when five surfaces moved onto it.
+
+- [ ] **`src/audit.rs` — the writer seam** — ~12 survivors of the form
+  `replace append_action_dispatched with ()`, plus `drain_webhooks` (5)
+  and `fire_webhook` (2). Same shape as the `aws/eb.rs` item below: the
+  function is I/O and nothing drives it. `drain_webhooks` is the
+  tractable one — `tokio::time` with `start_paused` makes its deadline
+  arithmetic deterministic — but it reads a process-global atomic, so it
+  needs the `MARKER_LOCK` treatment from `freeze.rs` first.
+
+- [x] **`src/aws/eb.rs` — the reachable logic** — 19 of 30 done
+  2026-08-26 by extracting pure helpers, which is the only way to reach
+  any of it: the logic sits between two `.send().await` calls.
+  `QueueDiscovery` (10) is the notable one — worker-queue discovery with
+  a real precedence rule, and *deletable `WorkerQueue` /
+  `WorkerDeadLetterQueue` match arms*, meaning nothing checked that
+  EB-reported queues were recognised at all. Also
+  `vpc_context_from_settings` (4, empty-value guards),
+  `sort_listener_rows` (2, default-listener-first),
+  `summarise_instance_health` (2 — the existing test set exactly the two
+  buckets that survived to zero) and `platform_branch_from` (1).
+
+- [ ] **`src/aws/eb.rs` — 11 reachable survivors left**, each needing its
+  own extraction: `list_events_inner` (3),
+  `latest_platform_version_date` (3), and singles in `fetch_env_vars`,
+  `list_tags`, `fetch_env_configuration_options`,
+  `list_compatible_platforms`, `fetch_env_rds_config`.
+
+- [ ] **The SDK seam — 75 survivors in `aws/eb.rs` alone** — every one
+  of the form `replace AwsClient::fetch_x with Ok(vec![])`. No test can
+  kill these: the function *is* the AWS call, and `AwsClient::stub()`
+  doesn't intercept at that level. This is an architecture question, not
+  a test-writing one — a fake client layer, or a decision to accept the
+  seam and stop counting it. Worth deciding, because it is ~3% of the
+  whole tree's mutants and it silently drags the headline score down;
+  quoting 53.1% without this footnote overstates the gap.
+
 #### Console parity — BONUS
 
 ### Feature candidates — competitive scan (2026-05-24)

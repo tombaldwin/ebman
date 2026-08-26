@@ -3806,3 +3806,259 @@ async fn ssm_run_chunks_past_the_fifty_instance_cap() {
     );
     assert_eq!(out.len(), 120, "every instance is accounted for");
 }
+
+// ── mutation-sweep triage, 2026-08-26 ────────────────────────────────
+//
+// The first complete whole-tree sweep left 105 survivors in `aws/eb.rs`.
+// 75 are whole-function replacements — the SDK seam, unreachable without
+// a fake client — and are tracked as their own backlog item. These cover
+// the reachable logic.
+
+/// EB reports its auto-created queues under named entries. Deleting
+/// either arm survived, which means nothing checked that they are
+/// recognised at all.
+#[test]
+fn eb_reported_queues_are_recognised_by_name() {
+    let q = super::eb::QueueDiscovery::from_reported([
+        ("WorkerQueue".to_string(), "https://sqs/main".to_string()),
+        (
+            "WorkerDeadLetterQueue".to_string(),
+            "https://sqs/dlq".to_string(),
+        ),
+        ("SomethingElse".to_string(), "https://sqs/other".to_string()),
+    ]);
+    assert_eq!(q.main_url.as_deref(), Some("https://sqs/main"));
+    assert_eq!(q.dlq_url.as_deref(), Some("https://sqs/dlq"));
+    assert_eq!(
+        q.dlq_origin,
+        Some(super::eb::DlqOrigin::Reported),
+        "a URL EB actually reported is Reported, not Derived"
+    );
+}
+
+/// An empty URL is not an answer. EB returns entries with blank URLs,
+/// and treating one as found would suppress the derivation fallback and
+/// report a queue that doesn't exist.
+#[test]
+fn an_empty_reported_url_is_not_a_queue() {
+    let q = super::eb::QueueDiscovery::from_reported([
+        ("WorkerQueue".to_string(), String::new()),
+        ("WorkerDeadLetterQueue".to_string(), String::new()),
+    ]);
+    assert_eq!(q, super::eb::QueueDiscovery::default());
+    assert_eq!(q.dlq_origin, None, "no URL means no origin to claim");
+}
+
+/// The fallback fires when *either* is missing — an env can report a
+/// main queue and leave the DLQ to an override, or the reverse. `&&`
+/// here would skip the second API call whenever one was found.
+#[test]
+fn the_option_fallback_fires_on_either_gap() {
+    let both = super::eb::QueueDiscovery::from_reported([
+        ("WorkerQueue".to_string(), "m".to_string()),
+        ("WorkerDeadLetterQueue".to_string(), "d".to_string()),
+    ]);
+    assert!(!both.needs_option_fallback(), "nothing missing");
+
+    let main_only =
+        super::eb::QueueDiscovery::from_reported([("WorkerQueue".to_string(), "m".to_string())]);
+    assert!(main_only.needs_option_fallback(), "DLQ still missing");
+
+    let dlq_only = super::eb::QueueDiscovery::from_reported([(
+        "WorkerDeadLetterQueue".to_string(),
+        "d".to_string(),
+    )]);
+    assert!(dlq_only.needs_option_fallback(), "main still missing");
+
+    assert!(super::eb::QueueDiscovery::default().needs_option_fallback());
+}
+
+/// sqsd option settings fill gaps and never displace what EB reported.
+#[test]
+fn sqsd_settings_fill_gaps_without_overriding() {
+    let setting = |name: &str, value: &str| {
+        (
+            "aws:elasticbeanstalk:sqsd".to_string(),
+            name.to_string(),
+            value.to_string(),
+        )
+    };
+
+    // Gap-filling on an empty discovery.
+    let mut q = super::eb::QueueDiscovery::default();
+    q.apply_sqsd_settings([
+        setting("WorkerQueueURL", "https://sqs/override-main"),
+        setting("DeadLetterQueueURL", "https://sqs/override-dlq"),
+    ]);
+    assert_eq!(q.main_url.as_deref(), Some("https://sqs/override-main"));
+    assert_eq!(q.dlq_url.as_deref(), Some("https://sqs/override-dlq"));
+    assert_eq!(q.dlq_origin, Some(super::eb::DlqOrigin::Reported));
+
+    // What EB reported wins.
+    let mut q = super::eb::QueueDiscovery::from_reported([
+        ("WorkerQueue".to_string(), "https://sqs/eb-main".to_string()),
+        (
+            "WorkerDeadLetterQueue".to_string(),
+            "https://sqs/eb-dlq".to_string(),
+        ),
+    ]);
+    q.apply_sqsd_settings([
+        setting("WorkerQueueURL", "https://sqs/override-main"),
+        setting("DeadLetterQueueURL", "https://sqs/override-dlq"),
+    ]);
+    assert_eq!(q.main_url.as_deref(), Some("https://sqs/eb-main"));
+    assert_eq!(q.dlq_url.as_deref(), Some("https://sqs/eb-dlq"));
+
+    // An empty override is ignored rather than blanking the field.
+    let mut q = super::eb::QueueDiscovery::default();
+    q.apply_sqsd_settings([
+        setting("WorkerQueueURL", ""),
+        setting("DeadLetterQueueURL", ""),
+    ]);
+    assert_eq!(q, super::eb::QueueDiscovery::default());
+
+    // Another namespace with the same option names must not apply.
+    let mut q = super::eb::QueueDiscovery::default();
+    q.apply_sqsd_settings([(
+        "aws:elasticbeanstalk:application:environment".to_string(),
+        "WorkerQueueURL".to_string(),
+        "https://sqs/wrong-namespace".to_string(),
+    )]);
+    assert_eq!(
+        q,
+        super::eb::QueueDiscovery::default(),
+        "only the sqsd namespace configures the worker queue"
+    );
+
+    // An unrecognised option name in the right namespace is ignored.
+    let mut q = super::eb::QueueDiscovery::default();
+    q.apply_sqsd_settings([setting("HttpPath", "/work")]);
+    assert_eq!(q, super::eb::QueueDiscovery::default());
+}
+
+/// Every bucket distinct and non-zero.
+///
+/// The existing roll-up test sets `unknown` and `degraded` to 0, so
+/// flipping either `+` to `-` changed nothing — both survived. Zero is
+/// the one value that hides an arithmetic mutation, and half the buckets
+/// were zero.
+#[test]
+fn summarise_instance_health_counts_every_bucket() {
+    use aws_sdk_elasticbeanstalk::types::InstanceHealthSummary;
+    let s = InstanceHealthSummary::builder()
+        .ok(1)
+        .info(2)
+        .warning(4)
+        .degraded(8)
+        .severe(16)
+        .pending(32)
+        .no_data(64)
+        .unknown(128)
+        .build();
+    let counts = super::summarise_instance_health(Some(&s));
+    // Powers of two: any dropped or negated bucket changes the sum, and
+    // the amount it changes by says which one.
+    assert_eq!(counts.healthy, 3, "ok(1) + info(2)");
+    assert_eq!(counts.total, 255, "every bucket, 1+2+4+8+16+32+64+128");
+}
+
+/// `parts[parts.len() - 2]` is "second to last", and the sweep found it
+/// interchangeable with `parts.len() / 2` — true for every three-segment
+/// ARN, which is every ARN the function meets in practice. The `>= 2`
+/// guard admits the two-segment case though, and there the two disagree.
+#[test]
+fn platform_branch_from_takes_the_second_to_last_segment() {
+    assert_eq!(
+        platform_branch_from("arn:aws:eb::platform/my-branch"),
+        "arn:aws:eb::platform"
+    );
+    assert_eq!(
+        platform_branch_from("arn:a/b/c/d/branch-name/1.0.0"),
+        "branch-name"
+    );
+    // Degenerate: no `/` at all fails the `>= 2` guard.
+    assert_eq!(platform_branch_from("arn:nothing"), "");
+}
+
+/// EB returns every settable key whether or not it is set, so an empty
+/// value must not overwrite what a previous setting established. All
+/// four guards survived the sweep.
+#[test]
+fn an_empty_option_value_does_not_clear_the_vpc_context() {
+    let setting =
+        |ns: &str, name: &str, value: &str| (ns.to_string(), name.to_string(), value.to_string());
+
+    let ctx = super::eb::vpc_context_from_settings([
+        setting("aws:ec2:vpc", "VPCId", "vpc-123"),
+        setting("aws:ec2:vpc", "Subnets", "subnet-a,subnet-b"),
+        setting("aws:ec2:vpc", "ELBSubnets", "subnet-c"),
+        setting(
+            "aws:autoscaling:launchconfiguration",
+            "SecurityGroups",
+            "sg-1,sg-2",
+        ),
+    ]);
+    assert_eq!(ctx.vpc_id.as_deref(), Some("vpc-123"));
+    assert_eq!(ctx.subnets, vec!["subnet-a", "subnet-b"]);
+    assert_eq!(ctx.elb_subnets, vec!["subnet-c"]);
+    assert_eq!(ctx.security_groups, vec!["sg-1", "sg-2"]);
+
+    // Empty values for every key: nothing is set, and nothing panics.
+    let ctx = super::eb::vpc_context_from_settings([
+        setting("aws:ec2:vpc", "VPCId", ""),
+        setting("aws:ec2:vpc", "Subnets", ""),
+        setting("aws:ec2:vpc", "ELBSubnets", ""),
+        setting("aws:autoscaling:launchconfiguration", "SecurityGroups", ""),
+    ]);
+    assert_eq!(ctx.vpc_id, None);
+    assert!(ctx.subnets.is_empty());
+    assert!(ctx.elb_subnets.is_empty());
+    assert!(ctx.security_groups.is_empty());
+
+    // And the ordering case that matters: a real value followed by the
+    // same key empty. EB lists keys once, but the guard is what makes
+    // that assumption safe to stop relying on.
+    let ctx = super::eb::vpc_context_from_settings([
+        setting("aws:ec2:vpc", "Subnets", "subnet-a"),
+        setting("aws:ec2:vpc", "Subnets", ""),
+    ]);
+    assert_eq!(
+        ctx.subnets,
+        vec!["subnet-a"],
+        "an empty value must not blank a list already resolved"
+    );
+}
+
+/// `default` is the port-80 listener and sorts first; the rest go by
+/// numeric port, then by option name. Both rank comparisons survived —
+/// flipping either puts the default listener last.
+#[test]
+fn listener_rows_sort_default_first_then_by_port() {
+    let row = |port: &str, opt: &str| (port.to_string(), opt.to_string(), "v".to_string());
+    let mut rows = vec![
+        row("8443", "SSLCertificateArns"),
+        row("443", "Protocol"),
+        row("default", "Protocol"),
+        row("443", "DefaultProcess"),
+    ];
+    super::eb::sort_listener_rows(&mut rows);
+    let order: Vec<(&str, &str)> = rows
+        .iter()
+        .map(|(p, o, _)| (p.as_str(), o.as_str()))
+        .collect();
+    assert_eq!(
+        order,
+        vec![
+            ("default", "Protocol"),
+            ("443", "DefaultProcess"),
+            ("443", "Protocol"),
+            ("8443", "SSLCertificateArns"),
+        ],
+        "default first, then ports ascending, then option name"
+    );
+
+    // Numeric, not lexicographic: "8443" < "9" as strings.
+    let mut rows = vec![row("9", "a"), row("8443", "a")];
+    super::eb::sort_listener_rows(&mut rows);
+    assert_eq!(rows[0].0, "9", "ports compare as numbers");
+}
