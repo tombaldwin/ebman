@@ -822,9 +822,22 @@ than a wrong action. Working top-down by count is the wrong order.
 
   Mutation-verified five ways: CAUGHT.
 
-- [ ] **`app/spawn_refresh.rs` — what's left**: `apply_rebuild`'s
-  overlay-mode chain (11 survivors on one condition — the modes a
-  context switch tears down) and the throttle backoff arithmetic.
+- [x] **`apply_rebuild`'s overlay-mode chain** — 2026-08-26. Eleven
+  survivors on one condition. Every mode it lists holds data the context
+  switch has just dropped: `Mode::Detail` with `detail == None` is the
+  ghost state the comment beside it names, and `Dlq` / `Action` /
+  `Form` / `Picker` are the same shape. As `&&` the chain is
+  unsatisfiable and nothing ever closes; with any `==` flipped, modes
+  that should survive get reset instead — including `Shell`, where that
+  would strand a live PTY subprocess with no way back to it. Both halves
+  covered: six modes close, six survive. Help's `pre_mode` /
+  `pre_overlay` stash is separately pinned, since restoring it after a
+  switch is how the ghost gets rendered anyway.
+  Mutation-verified three ways: CAUGHT.
+
+- [ ] **`app/spawn_refresh.rs` — what's left**: the throttle backoff
+  arithmetic (`Instant::now() + backoff`, two survivors) and the
+  whole-function seam.
 
 - [ ] **The SDK seam — 75 survivors in `aws/eb.rs` alone** — every one
   of the form `replace AwsClient::fetch_x with Ok(vec![])`. No test can
