@@ -1007,3 +1007,125 @@ async fn detail_tab_cycling_wraps_both_ways() {
     app.detail_cycle_tab(1);
     assert_eq!(app.detail.as_ref().unwrap().tab_idx, 1, "plain forward");
 }
+
+/// `n` / `N` in the detail event search step to the NEXT match, wrapping.
+///
+/// The order starts at `cur + 1`, not `cur` — which is exactly what
+/// makes repeated `n` advance instead of sticking on the match already
+/// under the cursor. Twelve survivors sat on that arithmetic and the
+/// direction test beside it.
+#[tokio::test]
+async fn detail_search_steps_to_the_next_match_and_wraps() {
+    let armed = |cursor: u16| {
+        let mut app = detail_on("api-prod");
+        {
+            let d = app.detail.as_mut().expect("detail open");
+            // Three matches, at rows 0, 2 and 4. Two is not enough:
+            // from a match in the middle, forward-wrapping and
+            // backward both land on the same row, so the direction
+            // assertion below cannot distinguish them. (My first
+            // version had two and failed on exactly that.)
+            d.events = vec![
+                make_event("alpha match"),
+                make_event("beta"),
+                make_event("gamma match"),
+                make_event("delta"),
+                make_event("epsilon match"),
+            ];
+            d.search_pattern = Some(regex::Regex::new("match").expect("valid regex"));
+            d.events_scroll = cursor;
+        }
+        app
+    };
+    let scroll = |app: &App| app.detail.as_ref().unwrap().events_scroll;
+
+    // From row 0 (itself a match) forward → the NEXT one, not itself.
+    let mut app = armed(0);
+    app.detail_search_jump(1);
+    assert_eq!(
+        scroll(&app),
+        2,
+        "forward search must step past the match under the cursor, or `n` \
+         would never advance"
+    );
+
+    // Again → the third match.
+    app.detail_search_jump(1);
+    assert_eq!(scroll(&app), 4);
+    // Again → wraps back round to row 0.
+    app.detail_search_jump(1);
+    assert_eq!(scroll(&app), 0, "forward search wraps past the end");
+
+    // Backward from row 0 → the LAST match, wrapping the other way.
+    let mut app = armed(0);
+    app.detail_search_jump(-1);
+    assert_eq!(
+        scroll(&app),
+        4,
+        "backward search wraps past the start to the last match"
+    );
+
+    // Backward from row 3 → the match before it.
+    let mut app = armed(3);
+    app.detail_search_jump(-1);
+    assert_eq!(scroll(&app), 2, "backward finds the preceding match");
+
+    // Forward and backward from the same place must differ when there
+    // is more than one match — otherwise `N` is just `n`.
+    let mut fwd = armed(2);
+    fwd.detail_search_jump(1);
+    let mut back = armed(2);
+    back.detail_search_jump(-1);
+    assert_ne!(
+        scroll(&fwd),
+        scroll(&back),
+        "`n` and `N` must move in opposite directions"
+    );
+}
+
+/// No match, and no events, both leave the cursor alone rather than
+/// moving it or panicking. `n - 1` underflows on an empty list, which
+/// is what the `n == 0` guard is for.
+#[tokio::test]
+async fn detail_search_with_nothing_to_find_is_inert() {
+    // Pattern that matches nothing.
+    let mut app = detail_on("api-prod");
+    {
+        let d = app.detail.as_mut().expect("detail open");
+        d.events = vec![make_event("alpha"), make_event("beta")];
+        d.search_pattern = Some(regex::Regex::new("nothing-here").expect("valid regex"));
+        d.events_scroll = 1;
+    }
+    app.detail_search_jump(1);
+    assert_eq!(
+        app.detail.as_ref().unwrap().events_scroll,
+        1,
+        "a search with no match leaves the cursor where it was"
+    );
+
+    // No events at all: the `n == 0` guard, without which `n - 1`
+    // underflows before the search even starts.
+    let any = regex::Regex::new(".").expect("valid regex");
+    for delta in [1, -1] {
+        let mut app = detail_on("api-prod");
+        {
+            let d = app.detail.as_mut().expect("detail open");
+            d.events = Vec::new();
+            d.search_pattern = Some(any.clone());
+            d.events_scroll = 0;
+        }
+        app.detail_search_jump(delta);
+        assert_eq!(app.detail.as_ref().unwrap().events_scroll, 0);
+    }
+
+    // No pattern set at all is a no-op too.
+    let mut app = detail_on("api-prod");
+    {
+        let d = app.detail.as_mut().expect("detail open");
+        d.events = vec![make_event("alpha")];
+        d.search_pattern = None;
+        d.events_scroll = 0;
+    }
+    app.detail_search_jump(1);
+    assert_eq!(app.detail.as_ref().unwrap().events_scroll, 0);
+}
