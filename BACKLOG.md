@@ -964,6 +964,30 @@ than a wrong action. Working top-down by count is the wrong order.
   Not done here: four modules is past the ~3-module bar CLAUDE.md sets
   for a refactor that isn't required by the task at hand.
 
+- [x] **`config_edit.rs` — Enter could apply a config instead of
+  deleting one** — 2026-08-26. 18 survivors around the saved-configs
+  delete confirm.
+
+  Enter means *apply* when nothing is armed and *confirm delete* when
+  the prompt is up; the two arms are told apart by `!confirm_delete`
+  versus `confirm_delete`. Every mutant of the first guard survived, and
+  deleting that `!` makes both identical — so the apply arm, being
+  earlier, wins on Enter **while the delete prompt is showing**. The
+  operator presses Enter to delete a saved configuration and instead
+  applies it to the environment, rewriting its option settings.
+
+  Also: the `n`/`N`/`Esc` decline arm was deletable, and `x` arms the
+  confirm rather than deleting outright.
+
+  Note for the standing guard: this is a **y/n** confirm, so
+  `every_typed_confirmation_gate_names_its_test` does not reach it. That
+  guard's scope is typed confirmations, which is narrower than
+  "confirmation gates on irreversible operations". Widening it would
+  need a way to enumerate y/n gates, which is not obviously mechanical.
+
+  Mutation-verified four ways: CAUGHT — after widening the test, which
+  initially missed one. See the commit message.
+
 - [ ] **The SDK seam — 75 survivors in `aws/eb.rs` alone** — every one
   of the form `replace AwsClient::fetch_x with Ok(vec![])`. No test can
   kill these: the function *is* the AWS call, and `AwsClient::stub()`
