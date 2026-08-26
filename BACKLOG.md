@@ -426,9 +426,14 @@ than a wrong action. Working top-down by count is the wrong order.
   - Stale rationale corrected: the JSON renderer's "so we don't pull in
     `serde_json`" stopped being true when five surfaces moved onto it.
 
-- [ ] **`src/audit.rs` — the writer seam** — ~12 survivors of the form
+  **Verified**: 188 mutants re-run, 139 caught, 27 missed, 19 timeouts —
+  down from 42. Every remaining `parse_kv_pairs` survivor is one
+  predicted equivalent *before* the run, and each now says why in place.
+  One claimed fix had not worked: see the note on test shape below.
+
+- [ ] **`src/audit.rs` — the writer seam, 20 survivors** — of the form
   `replace append_action_dispatched with ()`, plus `drain_webhooks` (5)
-  and `fire_webhook` (2). Same shape as the `aws/eb.rs` item below: the
+  and `fire_webhook` (3). Same shape as the `aws/eb.rs` item below: the
   function is I/O and nothing drives it. `drain_webhooks` is the
   tractable one — `tokio::time` with `start_paused` makes its deadline
   arithmetic deterministic — but it reads a process-global atomic, so it
@@ -446,11 +451,38 @@ than a wrong action. Working top-down by count is the wrong order.
   `summarise_instance_health` (2 — the existing test set exactly the two
   buckets that survived to zero) and `platform_branch_from` (1).
 
+  **Verified**: 213 mutants re-run, 98 caught, 88 missed — 17 of the 30
+  reachable killed by the run, plus 2 more below, so 19 of 30.
+
 - [ ] **`src/aws/eb.rs` — 11 reachable survivors left**, each needing its
   own extraction: `list_events_inner` (3),
   `latest_platform_version_date` (3), and singles in `fetch_env_vars`,
   `list_tags`, `fetch_env_configuration_options`,
   `list_compatible_platforms`, `fetch_env_rds_config`.
+
+- [x] **Test shape: one case per guard, and it has to discriminate** —
+  2026-08-26. The verification runs caught the same mistake twice, in
+  tests written the same day to close these very survivors, which is why
+  it is worth writing down rather than just fixing.
+
+  `field_token` quotes on whitespace, `"` **or** `=`. The test used
+  `"a=b"` — one value tripping one trigger — and the surviving mutant
+  flipped a *different* `||`, collapsing the predicate to "contains
+  `=`". `a=b` is quoted under both. A value must trip exactly the
+  trigger under test and no other, and there must be a converse case
+  (a value tripping none stays bare), or "always quote" passes the lot.
+
+  `vpc_context_from_settings` has four `!value.is_empty()` guards. The
+  test proved the *representative* one and assumed its three siblings
+  followed; `ELBSubnets` and `SecurityGroups` survived. Worse, the
+  all-empty case it did apply to all four proves nothing for a list:
+  `split_csv("")` yields an empty vec, which is what the default already
+  is. Only overwriting a resolved value discriminates. Both fixed, both
+  re-verified by re-applying the exact surviving mutant: CAUGHT.
+
+  The general form: N sibling guards need N cases, each with a value
+  that distinguishes *that* guard from its default. Sharing one case
+  across siblings is how a test reads as coverage while checking one.
 
 - [ ] **The SDK seam — 75 survivors in `aws/eb.rs` alone** — every one
   of the form `replace AwsClient::fetch_x with Ok(vec![])`. No test can
