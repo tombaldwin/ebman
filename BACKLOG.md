@@ -689,15 +689,38 @@ than a wrong action. Working top-down by count is the wrong order.
   the SDK seam needs: a fake client layer. Flagging rather than
   guessing.
 
-- [ ] **`src/cli/lint.rs::run` is a god-function — 57 survivors in one
-  body**, out of 87 for the file. 31 of them are `delete !` and 15 are
-  `&&` → `||`: condition checks threaded through a single large async
-  CLI function that also does the AWS calls and the printing, so none of
-  them is reachable from a test. This is an architecture item, not a
-  test-writing one — the decision logic (which probes to run, which
-  issues to suppress, what exit code to return) needs to come out as
-  pure functions first, the way `aws/eb.rs`'s did. Sizeable; worth
-  scoping deliberately rather than starting mid-run.
+- [~] **`src/cli/lint.rs::run` is a god-function — 57 survivors in one
+  622-line body**, out of 87 for the file. 31 of them are `delete !` and
+  15 are `&&` → `||`: condition checks threaded through a single large
+  async CLI function that also does the AWS calls and the printing, so
+  none was reachable from a test.
+
+  **Partially addressed 2026-08-26: 6 of the 57 — the six that decide
+  anything, as opposed to the ~50 that decide whether a line prints.**
+
+  - **`filter_issues`** — `--min-severity` and `--rule`. Written out
+    twice (main path and `--watch` cycle path), both copies carrying the
+    same survivors. Which issues reach the operator is the entire output
+    of this subcommand. `>= min` includes the named level, and `>` would
+    silently drop exactly the severity that was asked for; the
+    `!rule_filter.is_empty()` guard is what stops an empty `--rule`
+    matching nothing and reporting a clean fleet.
+  - **`lint_exit_code`** — the matrix that gates CI. Every branch called
+    `std::process::exit` inline. The ordering is load-bearing:
+    issues-found (3) beats degraded (1) because 3 is actionable, and a
+    *clean but degraded* run must not pass green — a region skipped on
+    expired credentials otherwise looks identical to a passing check.
+    All eight cells named in one table.
+
+  Mutation-verified four ways: CAUGHT.
+
+  **What remains is ~50 survivors, nearly all `!quiet` / `!json` /
+  `!quiet && !json` output suppression** — a mutation changes whether a
+  line prints. Low consequence individually, and reaching them means
+  capturing stdout from a 622-line async function that also makes the
+  AWS calls. The remaining structural work is splitting the one-shot
+  body from the `--watch` loop; still wants scoping deliberately rather
+  than starting mid-run.
 
 - [ ] **The SDK seam — 75 survivors in `aws/eb.rs` alone** — every one
   of the form `replace AwsClient::fetch_x with Ok(vec![])`. No test can
