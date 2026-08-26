@@ -1038,6 +1038,39 @@ enum TypedUse {
     NotAGate(&'static str),
 }
 
+/// Confirmation state: every `confirm_*` field DECLARED on a type.
+///
+/// Added after the guard below let a real one through. Its first version
+/// covered only typed confirmations (`X.text() == Y`), which is narrower
+/// than its name suggested — the saved-configs delete confirm is a y/n
+/// gate, so it sat outside the guard entirely and had every arm
+/// survivable, including one where Enter applied a config instead of
+/// deleting it. Confirmation state turns out to be consistently named,
+/// so it is enumerable after all.
+///
+/// Keyed `file::field`, because one file can hold several.
+const CONFIRM_STATE: &[(&str, TypedUse)] = &[
+    (
+        "src/mode_dlq.rs::confirm_purge",
+        TypedUse::Gate("a_purge_fires_only_when_the_typed_name_matches"),
+    ),
+    (
+        "src/mode_dlq.rs::confirm_delete_id",
+        TypedUse::Gate("a_delete_confirm_takes_yes_and_cancels_on_anything_else"),
+    ),
+    (
+        "src/app/types.rs::confirm_delete",
+        TypedUse::Gate("a_delete_confirm_can_be_declined_and_ignores_navigation"),
+    ),
+    (
+        "src/ui/overlays.rs::confirm_delete",
+        TypedUse::NotAGate(
+            "a render function's parameter, not state — it draws the \
+             prompt the gate in app/types.rs owns.",
+        ),
+    ),
+];
+
 /// Every `X.text() == Y` in production. See the note above.
 const TYPED_COMPARISONS: &[(&str, TypedUse)] = &[
     (
@@ -1069,7 +1102,7 @@ const TYPED_COMPARISONS: &[(&str, TypedUse)] = &[
 ];
 
 #[test]
-fn every_typed_confirmation_gate_names_its_test() {
+fn every_confirmation_gate_names_its_test() {
     // 1. The list must cover every comparison in production, so a new
     //    gate cannot be added without being classified.
     let mut found: Vec<String> = Vec::new();
@@ -1136,7 +1169,76 @@ fn every_typed_confirmation_gate_names_its_test() {
         }
     }
 
-    // 4. Non-vacuity: at least the two known gates.
+    // 4. The same three checks for confirmation STATE, which is the
+    //    half this guard originally missed.
+    let mut found_state: Vec<String> = Vec::new();
+    for (path, text) in super::scan::source_files() {
+        if super::scan::is_test_path(&path) {
+            continue;
+        }
+        for line in text.lines() {
+            let t = super::scan::strip_line_comment(line).trim();
+            let Some(rest) = t.strip_prefix("pub ").or(Some(t)) else {
+                continue;
+            };
+            let rest = rest.strip_prefix("pub(crate) ").unwrap_or(rest);
+            if !rest.starts_with("confirm_") {
+                continue;
+            }
+            let Some((field, ty)) = rest.split_once(':') else {
+                continue;
+            };
+            // A DECLARATION has a type on the right (`bool`,
+            // `Option<String>`); an initialiser has a value (`false`,
+            // `None`). Only declarations are the surface.
+            let ty = ty.trim().trim_end_matches(',').trim();
+            if !(ty == "bool" || ty.starts_with("Option<") || ty.starts_with("String")) {
+                continue;
+            }
+            found_state.push(format!("{path}::{}", field.trim()));
+        }
+    }
+    found_state.sort();
+    found_state.dedup();
+    assert!(
+        found_state.len() >= 3,
+        "expected at least three confirm_* declarations; found \
+         {found_state:?} — the scan is broken"
+    );
+
+    let listed_state: Vec<&str> = CONFIRM_STATE.iter().map(|(p, _)| *p).collect();
+    for f in &found_state {
+        assert!(
+            listed_state.contains(&f.as_str()),
+            "{f} is confirmation state and is not classified in \
+             CONFIRM_STATE. If it gates an irreversible operation it \
+             needs a test that the DECLINE path works; if it doesn't, \
+             say so there."
+        );
+    }
+    for l in &listed_state {
+        assert!(
+            found_state.contains(&l.to_string()),
+            "CONFIRM_STATE names {l}, which no longer exists — drop it \
+             rather than leave it asserting nothing."
+        );
+    }
+    for (path, use_) in CONFIRM_STATE {
+        match use_ {
+            TypedUse::Gate(test_name) => assert!(
+                all_tests.contains(&format!("fn {test_name}(")),
+                "{path} is a confirmation gate and the test it names — \
+                 {test_name} — does not exist."
+            ),
+            TypedUse::NotAGate(why) => assert!(
+                why.len() > 20,
+                "{path} is exempted from needing a test; say why in more \
+                 than a few words: {why:?}"
+            ),
+        }
+    }
+
+    // 5. Non-vacuity: at least the two known gates.
     let gates = TYPED_COMPARISONS
         .iter()
         .filter(|(_, u)| matches!(u, TypedUse::Gate(_)))

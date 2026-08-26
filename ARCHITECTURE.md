@@ -233,10 +233,16 @@ Two of those confirms make the operator type the environment's name:
 checked by a test that refuses a near-miss rather than only accepting an
 exact match — the 2026-08-26 mutation sweep found the purge's gate
 completely untested, including the inversion that purges when the typed
-name is *wrong*. `every_typed_confirmation_gate_names_its_test` in
+name is *wrong*. `every_confirmation_gate_names_its_test` in
 `app/tests/safety.rs` keeps that from recurring: every typed-input
-comparison in production is classified, a gate has to name the test that
-covers it, and "not a gate" has to say why.
+comparison **and every `confirm_*` state field** in production is
+classified, a gate has to name the test that covers it, and "not a gate"
+has to say why.
+
+It grew that second half the hard way. It originally covered only typed
+comparisons, and the saved-configs delete confirm — a y/n gate — sat
+outside it with every arm survivable, including one where `Enter`
+applied a configuration instead of deleting it.
 
 Destructive actions go through a confirm modal and then sit in an undo window
 (`app/action_flow.rs`) before they're dispatched — `tick_pending_dispatch` is
