@@ -361,3 +361,244 @@ async fn the_embedded_shell_pane_renders_its_transcript() {
         "vt100 screen contents reach the ratatui buffer:\n{out}"
     );
 }
+
+// ── mutation-sweep triage, 2026-08-26 ────────────────────────────────
+//
+// `app/msg.rs`'s DLQ handlers carried eleven survivors between them.
+// They are worth the attention because the DLQ view is the one place
+// where a keystroke destroys a message: `x` deletes the *selected* row
+// and `p` purges the queue. A cursor pointing at the wrong row, or a
+// result from the wrong env landing in the view, is a real hazard
+// rather than a cosmetic one.
+
+fn msg(id: &str) -> crate::aws::QueueMessage {
+    crate::aws::QueueMessage {
+        id: id.into(),
+        receipt_handle: format!("rh-{id}"),
+        body: "{}".into(),
+        receive_count: 1,
+        sent_at: None,
+    }
+}
+
+/// A peek result belongs to the env and the queue it was launched for.
+#[tokio::test]
+async fn dlq_messages_from_another_env_or_queue_are_dropped() {
+    use crate::app::AppMsg;
+
+    let armed = || {
+        let mut app = test_app();
+        app.dlq = Some(open_dlq_state("api-prod"));
+        app
+    };
+    let ids = |app: &App| -> Vec<String> {
+        app.dlq
+            .as_ref()
+            .unwrap()
+            .messages
+            .iter()
+            .map(|m| m.id.clone())
+            .collect()
+    };
+
+    // Baseline: the right env and the currently-viewed queue apply.
+    let mut app = armed();
+    app.handle_msg(AppMsg::DlqMessages {
+        gen: app.generation,
+        env_name: "api-prod".into(),
+        queue_url: "https://sqs/q-dlq".into(),
+        result: Ok(vec![msg("new-1"), msg("new-2")]),
+    });
+    assert_eq!(
+        ids(&app),
+        vec!["new-1", "new-2"],
+        "the matching peek applies"
+    );
+
+    // Another env's peek must not land in this view.
+    let mut app = armed();
+    app.handle_msg(AppMsg::DlqMessages {
+        gen: app.generation,
+        env_name: "worker-prod".into(),
+        queue_url: "https://sqs/q-dlq".into(),
+        result: Ok(vec![msg("wrong-env")]),
+    });
+    assert_eq!(ids(&app), vec!["m-1"], "another env's messages were shown");
+
+    // A peek that raced an `m`-toggle: right env, but the main queue
+    // while the DLQ is being viewed.
+    let mut app = armed();
+    app.handle_msg(AppMsg::DlqMessages {
+        gen: app.generation,
+        env_name: "api-prod".into(),
+        queue_url: "https://sqs/q".into(),
+        result: Ok(vec![msg("main-queue")]),
+    });
+    assert_eq!(
+        ids(&app),
+        vec!["m-1"],
+        "the main queue's messages were shown in the DLQ view"
+    );
+}
+
+/// The cursor after a refetch. `x` deletes whatever the cursor points
+/// at, so a cursor left past the end of a shorter page is the shape that
+/// destroys the wrong message.
+#[tokio::test]
+async fn a_dlq_refetch_clamps_the_cursor_into_the_new_page() {
+    use crate::app::AppMsg;
+
+    let with_cursor = |at: Option<usize>| {
+        let mut app = test_app();
+        let mut dlq = open_dlq_state("api-prod");
+        dlq.list_state.select(at);
+        app.dlq = Some(dlq);
+        app
+    };
+    let sel = |app: &App| app.dlq.as_ref().unwrap().list_state.selected();
+    let fetch = |app: &mut App, n: usize| {
+        let gen = app.generation;
+        app.handle_msg(AppMsg::DlqMessages {
+            gen,
+            env_name: "api-prod".into(),
+            queue_url: "https://sqs/q-dlq".into(),
+            result: Ok((0..n).map(|i| msg(&format!("m{i}"))).collect()),
+        });
+    };
+
+    // Cursor exactly at the new length is OUT of bounds — indices stop
+    // at len - 1. This is the case `<=` would wave through.
+    let mut app = with_cursor(Some(2));
+    fetch(&mut app, 2);
+    assert_eq!(sel(&app), Some(0), "a cursor at index == len must reset");
+
+    // Well past the end.
+    let mut app = with_cursor(Some(9));
+    fetch(&mut app, 2);
+    assert_eq!(sel(&app), Some(0));
+
+    // A cursor validly inside the new page is KEPT — without this the
+    // clamp could reset every time and still pass the cases above.
+    let mut app = with_cursor(Some(1));
+    fetch(&mut app, 3);
+    assert_eq!(sel(&app), Some(1), "a valid cursor survives the refetch");
+
+    // Nothing selected yet → row 0, so Enter/x/r are live immediately.
+    let mut app = with_cursor(None);
+    fetch(&mut app, 3);
+    assert_eq!(sel(&app), Some(0));
+
+    // An empty page has nothing to point at.
+    let mut app = with_cursor(Some(1));
+    fetch(&mut app, 0);
+    assert_eq!(sel(&app), None, "an empty queue selects nothing");
+}
+
+/// A completed DLQ operation removes exactly the message it names.
+#[tokio::test]
+async fn a_dlq_op_removes_only_the_message_it_names() {
+    use crate::app::{AppMsg, DlqOp};
+
+    let armed = || {
+        let mut app = test_app();
+        let mut dlq = open_dlq_state("api-prod");
+        dlq.messages = vec![msg("m-1"), msg("m-2"), msg("m-3")];
+        app.dlq = Some(dlq);
+        app
+    };
+    let ids = |app: &App| -> Vec<String> {
+        app.dlq
+            .as_ref()
+            .unwrap()
+            .messages
+            .iter()
+            .map(|m| m.id.clone())
+            .collect()
+    };
+
+    for op in [
+        DlqOp::Deleted {
+            message_id: "m-2".into(),
+        },
+        DlqOp::Resent {
+            message_id: "m-2".into(),
+        },
+    ] {
+        let mut app = armed();
+        app.handle_msg(AppMsg::DlqActionResult {
+            gen: app.generation,
+            env_name: "api-prod".into(),
+            result: Ok(op.clone()),
+        });
+        assert_eq!(
+            ids(&app),
+            vec!["m-1", "m-3"],
+            "{op:?} must drop only its own message — inverting the retain \
+             predicate would leave only that one"
+        );
+    }
+
+    // Another env's result must not touch this view.
+    let mut app = armed();
+    app.handle_msg(AppMsg::DlqActionResult {
+        gen: app.generation,
+        env_name: "worker-prod".into(),
+        result: Ok(DlqOp::Purged),
+    });
+    assert_eq!(
+        ids(&app),
+        vec!["m-1", "m-2", "m-3"],
+        "wrong env purged the view"
+    );
+
+    // Purge clears everything.
+    let mut app = armed();
+    app.handle_msg(AppMsg::DlqActionResult {
+        gen: app.generation,
+        env_name: "api-prod".into(),
+        result: Ok(DlqOp::Purged),
+    });
+    assert!(ids(&app).is_empty());
+}
+
+/// A partial replay is an error, not a success toast. `failures == 0`
+/// flipped to `!=` reports every clean replay as a failure and every
+/// failed one as clean.
+#[tokio::test]
+async fn a_replay_with_failures_reports_as_an_error() {
+    use crate::app::{AppMsg, DlqOp};
+
+    let replay = |count: usize, failures: usize| {
+        let mut app = test_app();
+        app.dlq = Some(open_dlq_state("api-prod"));
+        app.handle_msg(AppMsg::DlqActionResult {
+            gen: app.generation,
+            env_name: "api-prod".into(),
+            result: Ok(DlqOp::Replayed { count, failures }),
+        });
+        app
+    };
+
+    let clean = replay(5, 0);
+    assert!(
+        clean
+            .status_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("replayed 5"),
+        "a clean replay is a status message: {:?}",
+        clean.status_message
+    );
+    assert!(clean.error_message.is_none(), "and not an error");
+
+    let partial = replay(5, 2);
+    assert!(
+        partial
+            .error_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("2 failed"),
+        "a partial replay is an error: {:?}",
+        partial.error_message
+    );
+}
