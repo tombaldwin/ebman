@@ -701,6 +701,25 @@ fn degrade(reasons: &mut Vec<String>, degraded: &mut bool, reason: String) {
     *degraded = true;
 }
 
+/// Should this `lint --watch` cycle post to the webhook?
+///
+/// Only a CHANGE from a known previous state, or first findings. A first
+/// cycle that is already clean posts nothing: the all-clear body claims
+/// issues cleared, and none did.
+///
+/// Extracted from `run`'s watch loop, where both halves of the condition
+/// were survivable. Getting either wrong is a pager consequence — the
+/// `!=` re-posts an unchanged set every interval, and dropping the
+/// first-cycle-clean test pages "all clear" at someone who never had an
+/// alert.
+pub(crate) fn should_post_webhook(
+    previous: Option<&std::collections::BTreeSet<String>>,
+    current: &std::collections::BTreeSet<String>,
+) -> bool {
+    let first_cycle_clean = previous.is_none() && current.is_empty();
+    !first_cycle_clean && previous != Some(current)
+}
+
 /// Apply the operator's `--min-severity` and `--rule` filters.
 ///
 /// Written out twice inside `run` — once on the main path and once on
@@ -1161,8 +1180,7 @@ pub async fn run(args: &[String]) -> Result<()> {
                 // the all-clear body claims issues cleared, and none
                 // did. Only a change from a KNOWN previous state (or
                 // first findings) is worth a page.
-                let first_cycle_clean = last_webhook_identities.is_none() && identities.is_empty();
-                if !first_cycle_clean && last_webhook_identities.as_ref() != Some(&identities) {
+                if should_post_webhook(last_webhook_identities.as_ref(), &identities) {
                     let detail = webhook_summary(&all_issues);
                     audit::fire_webhook(
                         url,
@@ -2010,5 +2028,60 @@ mod run_decision_tests {
                 "fix={fix} failed={failed} degraded={degraded} clean={clean}: {why}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod webhook_gate_tests {
+    use super::should_post_webhook;
+    use std::collections::BTreeSet;
+
+    fn set(items: &[&str]) -> BTreeSet<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// `lint --watch --webhook` posts on a CHANGE, and only on a change.
+    ///
+    /// Both halves of this condition survived the sweep, and each has a
+    /// pager consequence: re-posting an unchanged set fires every
+    /// interval until someone mutes it, and dropping the
+    /// first-cycle-clean test pages "all clear" at an operator who never
+    /// had an alert.
+    #[test]
+    fn the_watch_webhook_posts_only_on_a_change() {
+        // First cycle with findings → post. This is the "first findings"
+        // case the guard deliberately allows.
+        assert!(should_post_webhook(None, &set(&["EBL001:api-prod"])));
+
+        // First cycle already clean → nothing. An all-clear body claims
+        // issues cleared, and none did.
+        assert!(
+            !should_post_webhook(None, &set(&[])),
+            "a first cycle that is already clean has nothing to report"
+        );
+
+        // Unchanged between cycles → nothing, however many cycles pass.
+        let seen = set(&["EBL001:api-prod"]);
+        assert!(
+            !should_post_webhook(Some(&seen), &seen),
+            "an unchanged finding set must not re-post every interval"
+        );
+
+        // Changed → post, in both directions.
+        assert!(
+            should_post_webhook(Some(&seen), &set(&["EBL001:api-prod", "EBL002:worker"])),
+            "a new finding is a change"
+        );
+        assert!(
+            should_post_webhook(Some(&seen), &set(&[])),
+            "going clean after findings IS worth an all-clear"
+        );
+        assert!(
+            should_post_webhook(Some(&set(&[])), &seen),
+            "and findings after a known-clean cycle"
+        );
+
+        // A different set of the same size still counts as a change.
+        assert!(should_post_webhook(Some(&seen), &set(&["EBL009:other"])));
     }
 }

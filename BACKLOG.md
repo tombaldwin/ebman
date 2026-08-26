@@ -739,13 +739,25 @@ than a wrong action. Working top-down by count is the wrong order.
 
   Mutation-verified four ways: CAUGHT.
 
-  **What remains is ~50 survivors, nearly all `!quiet` / `!json` /
-  `!quiet && !json` output suppression** — a mutation changes whether a
-  line prints. Low consequence individually, and reaching them means
-  capturing stdout from a 622-line async function that also makes the
-  AWS calls. The remaining structural work is splitting the one-shot
-  body from the `--watch` loop; still wants scoping deliberately rather
-  than starting mid-run.
+  A third came out later: **`should_post_webhook`**, the
+  `lint --watch --webhook` change gate. Both halves survived, and each
+  has a pager consequence — `!=` flipped re-posts an unchanged finding
+  set every interval until someone mutes it, and dropping the
+  first-cycle-clean test pages "all clear" at an operator who never had
+  an alert. Mutation-verified both ways: CAUGHT.
+
+  **Measured what remains: 57 survivors in `run`, of which 28 are
+  `!quiet` / `!json` output suppression** — a mutation changes whether
+  a line prints. Of the other 29, the filters and exit code are now
+  covered. What is genuinely left is a handful of flag combinations
+  (`fix && yes`, `!to_set.is_empty() && yes`, the EBL015 skip) that sit
+  inline against `eprintln!` + `exit`, and the `--watch` loop's own
+  bookkeeping.
+
+  The remaining structural work is splitting the one-shot body from the
+  `--watch` loop, which would make both reachable. Still wants scoping
+  deliberately: it is a real refactor of the largest function in the
+  crate, not a mid-run move.
 
 - [x] **`app/mode_dlq_handlers.rs` — the purge type-to-confirm gate had
   nothing behind it** — 2026-08-26. The worst single finding of the
