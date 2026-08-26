@@ -1058,6 +1058,25 @@ than a wrong action. Working top-down by count is the wrong order.
   mod 2. Documented at the code, including the note that it stops being
   equivalent if a third queue row is ever added.
 
+- [x] **`detail_search_jump` — `n` / `N` in the event search** —
+  2026-08-26, twelve survivors on the order arithmetic and the direction
+  test. The order starts at `cur + 1`, not `cur`, which is exactly what
+  makes repeated `n` advance instead of sticking on the match already
+  under the cursor. Also a fourth `n == 0` guard in this file, without
+  which `n - 1` underflows before the search starts.
+
+  Worth recording how the test was wrong first: with matches at only two
+  rows, forward-wrapping and backward from a middle match land on the
+  *same* row, so the "n and N move in opposite directions" assertion
+  couldn't distinguish them and failed on correct code. Three matches
+  are the minimum that makes direction observable — the fixture says so
+  now.
+
+  Mutation-verified four ways: CAUGHT — swapping the direction test,
+  breaking each order expression, and inverting the zero guard.
+
+  That finishes `detail_nav.rs`'s reachable survivors.
+
 - [ ] **The SDK seam — 75 survivors in `aws/eb.rs` alone** — every one
   of the form `replace AwsClient::fetch_x with Ok(vec![])`. No test can
   kill these: the function *is* the AWS call, and `AwsClient::stub()`
