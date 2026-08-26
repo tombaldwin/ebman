@@ -331,7 +331,10 @@ pub(crate) fn render_audit_entries_text(entries: &[AuditEntry]) -> String {
     for e in entries {
         let outcome = match (e.outcome.as_deref(), e.err.as_deref()) {
             (_, Some(err)) => format!("err=\"{err}\""),
-            (Some("ok"), _) => "ok".into(),
+            // No special case for "ok": `(Some(s), _)` renders it
+            // identically. One was there, and the sweep reported deleting
+            // it as survivable — correctly, since it was pure
+            // duplication rather than an untested branch.
             (Some(s), _) => s.into(),
             _ => "-".into(),
         };
@@ -347,9 +350,15 @@ pub(crate) fn render_audit_entries_text(entries: &[AuditEntry]) -> String {
     out
 }
 
-/// Render audit entries as JSON Lines (one JSON object per line). Hand-
-/// rolled so we don't pull in `serde_json` for this one path; values
-/// are escaped per the JSON string-escape spec.
+/// Render audit entries as JSON Lines (one JSON object per line).
+///
+/// Hand-rolled. The original reason — "so we don't pull in `serde_json`
+/// for this one path" — stopped being true when five JSON surfaces moved
+/// off the YAML parser onto `serde_json`, which is a direct dependency
+/// now. It stays hand-rolled for a different reason: the key order here
+/// is the declaration order below and consumers grep it, whereas a
+/// derived serialisation would tie that order to the struct. Values are
+/// escaped by [`crate::util::json_string`], the canonical escaper.
 pub(crate) fn render_audit_entries_json(entries: &[AuditEntry]) -> String {
     let mut out = String::new();
     for e in entries {
@@ -794,16 +803,25 @@ fn write_audit_line_raw(tail: &str) {
         // it read `profile=prod`. The `region` line above is the
         // precedent — a field added to the line shape has to be chased
         // here too, or the webhook and the log disagree.
-        let field = |k: &str| {
-            detail
-                .split(' ')
-                .find_map(|tok| tok.strip_prefix(k))
-                .filter(|v| !v.is_empty() && *v != "-")
-        };
-        let region = field("region=").unwrap_or("-");
-        let profile = field("profile=");
+        let region = detail_field(&detail, "region=").unwrap_or("-");
+        let profile = detail_field(&detail, "profile=");
         fire_webhook(url, None, profile, region, &detail, &when);
     }
+}
+
+/// Pull `key=value` out of an already-rendered audit `detail` string,
+/// treating an empty value and the placeholder `-` as absent.
+///
+/// Was a closure inside `write_audit_line_raw`, which meant the only way
+/// to reach it was to fire a webhook. It is the piece that decides what
+/// the webhook reports, and it has already been wrong once: the
+/// structured `profile` went out empty while `detail` right beside it
+/// read `profile=prod`. Worth being able to test on its own.
+fn detail_field<'a>(detail: &'a str, key: &str) -> Option<&'a str> {
+    detail
+        .split(' ')
+        .find_map(|tok| tok.strip_prefix(key))
+        .filter(|v| !v.is_empty() && *v != "-")
 }
 
 /// Fire-and-forget webhook POST via `reqwest` (the same HTTP client
@@ -1339,6 +1357,201 @@ mod tests {
             }
         }
         assert!(ours >= 3, "the three writers' lines are in there");
+    }
+
+    // ── sweep triage, 2026-08-26 ──────────────────────────────────────
+    //
+    // The first complete whole-tree mutation sweep left 42 survivors in
+    // this file. These cover the ones that turned out to be real; the
+    // equivalents are reasoned about at the code they mutate rather than
+    // listed here, so the next triage doesn't redo the analysis.
+
+    /// A quoted value butted straight against the next key.
+    ///
+    /// Four survivors lived here, all in "consume the closing quote":
+    /// `if i < n` flipped to `==` or `>` (never consume), and the `i += 1`
+    /// flipped to `-=` or `*=`. Every existing test put a space after the
+    /// closing quote, and with a space the parser recovers either way —
+    /// the stray `"` is skipped as a non-key token. Without one, the rest
+    /// of the line is swallowed and `ebman audit replay` silently
+    /// reconstructs a different action.
+    #[test]
+    fn a_quoted_value_can_butt_against_the_next_key() {
+        assert_eq!(
+            parse_kv_pairs(r#"a="1"b=2"#),
+            vec![("a".into(), "1".into()), ("b".into(), "2".into())]
+        );
+        // The empty-value form has the same shape and is what
+        // `field_token` emits for an empty field.
+        assert_eq!(
+            parse_kv_pairs(r#"a=""b=2"#),
+            vec![("a".into(), String::new()), ("b".into(), "2".into())]
+        );
+    }
+
+    /// An unterminated quote must still yield what it has, rather than
+    /// dropping the field or running off the end.
+    #[test]
+    fn an_unterminated_quote_keeps_the_value() {
+        assert_eq!(
+            parse_kv_pairs(r#"a="unterminated"#),
+            vec![("a".into(), "unterminated".into())]
+        );
+    }
+
+    /// The timestamp sanity check is a length *floor*, and both of its
+    /// boundaries survived: `< 10` flipped to `<= 10` (rejects a bare
+    /// date, which is a legal RFC3339 prefix) and to `== 10` (accepts
+    /// `2026-8`, which is not a timestamp at all but has a `-` in the
+    /// right place).
+    #[test]
+    fn the_timestamp_floor_is_exactly_ten_characters() {
+        let ten = parse_audit_line("2026-08-26\tstage=x");
+        assert_eq!(
+            ten.map(|e| e.when),
+            Some("2026-08-26".to_string()),
+            "a bare date is exactly 10 chars and must be accepted"
+        );
+        assert!(
+            parse_audit_line("2026-8\tstage=x").is_none(),
+            "6 chars with a dash at index 4 is not a timestamp"
+        );
+    }
+
+    /// `field_token` quotes on whitespace, `"` **or `=`**, and the `=`
+    /// half was untested. It is the half that matters: an unquoted value
+    /// containing `=` parses back as two fields, which is field forgery
+    /// in a log `audit replay` acts on.
+    #[test]
+    fn a_value_containing_an_equals_sign_is_quoted() {
+        let token = field_token("target", "a=b");
+        assert_eq!(token, r#"target="a=b""#);
+
+        // The property that matters, stated against the parser rather
+        // than the spelling: one field in, one field out.
+        assert_eq!(
+            parse_kv_pairs(&token),
+            vec![("target".into(), "a=b".into())],
+            "an unquoted `=` would forge a second field"
+        );
+    }
+
+    /// `detail_field` decides what the webhook reports. Empty and `-`
+    /// both mean absent — three survivors sat on that filter (`delete !`,
+    /// `&&` to `||`, `!=` to `==`), and it has been wrong before: the
+    /// structured `profile` went out empty while `detail` beside it read
+    /// `profile=prod`.
+    #[test]
+    fn detail_field_treats_empty_and_dash_as_absent() {
+        let d = "region=us-east-1 profile=prod action=Deploy";
+        assert_eq!(detail_field(d, "region="), Some("us-east-1"));
+        assert_eq!(detail_field(d, "profile="), Some("prod"));
+        assert_eq!(detail_field(d, "nothing="), None);
+
+        assert_eq!(
+            detail_field("profile=- region=eu-west-1", "profile="),
+            None,
+            "`-` is the placeholder for absent, not a profile named `-`"
+        );
+        assert_eq!(
+            detail_field("profile= region=eu-west-1", "profile="),
+            None,
+            "an empty value is absent"
+        );
+    }
+
+    fn an_entry(outcome: Option<&str>, err: Option<&str>) -> AuditEntry {
+        AuditEntry {
+            when: "2026-08-26T10:00:00Z".into(),
+            account: Some("123456789012".into()),
+            profile: None,
+            region: Some("us-east-1".into()),
+            rollout_id: None,
+            stage: Some("completed".into()),
+            action: Some("Deploy".into()),
+            target: Some("api-prod".into()),
+            version: None,
+            rule_id: None,
+            outcome: outcome.map(Into::into),
+            err: err.map(Into::into),
+            extras: Default::default(),
+            raw: String::new(),
+        }
+    }
+
+    /// The text renderer's `(Some(s), _)` arm was deletable: every test
+    /// used `ok` or an error, and `ok` is also what the deleted arm
+    /// produced, so nothing noticed that any other outcome fell through
+    /// to `-`.
+    #[test]
+    fn a_non_ok_outcome_renders_as_itself() {
+        let out = render_audit_entries_text(&[an_entry(Some("skipped"), None)]);
+        assert!(
+            out.contains("skipped"),
+            "a `skipped` outcome must not render as `-`:\n{out}"
+        );
+        // The two neighbouring arms still work.
+        assert!(render_audit_entries_text(&[an_entry(Some("ok"), None)]).contains("ok"));
+        assert!(
+            render_audit_entries_text(&[an_entry(None, Some("AccessDenied"))])
+                .contains("AccessDenied")
+        );
+        assert!(
+            render_audit_entries_text(&[an_entry(None, None)]).contains('-'),
+            "no outcome and no error renders as the placeholder"
+        );
+    }
+
+    /// Four `delete !` survivors in the JSON renderer, all comma
+    /// placement. Nothing was parsing the output — the tests asserted on
+    /// substrings, which survive a stray or missing comma. Parse it.
+    #[test]
+    fn the_json_render_is_valid_json() {
+        let mut with_extras = an_entry(Some("ok"), None);
+        with_extras.extras.insert("bundle".into(), "app.zip".into());
+        with_extras.extras.insert("size".into(), "12".into());
+
+        // JSON *Lines*: one object per line, not an array.
+        let parse_all = |out: &str| -> Vec<serde_json::Value> {
+            out.lines()
+                .map(|l| {
+                    serde_json::from_str(l)
+                        .unwrap_or_else(|e| panic!("not valid JSON ({e}): {l:?}"))
+                })
+                .collect()
+        };
+
+        for (label, entries) in [
+            ("empty", vec![]),
+            ("one", vec![an_entry(Some("ok"), None)]),
+            (
+                "several",
+                vec![an_entry(Some("ok"), None), an_entry(None, Some("boom"))],
+            ),
+            ("with extras", vec![with_extras.clone()]),
+        ] {
+            let out = render_audit_entries_json(&entries);
+            let objs = parse_all(&out);
+            assert_eq!(objs.len(), entries.len(), "{label}: wrong line count");
+            for o in &objs {
+                assert!(o.is_object(), "{label}: each line is one object");
+            }
+        }
+
+        // Values, not just well-formedness: comma placement can be wrong
+        // in ways that still parse.
+        let v = parse_all(&render_audit_entries_json(&[with_extras]));
+        assert_eq!(v[0]["action"], "Deploy");
+        assert_eq!(v[0]["when"], "2026-08-26T10:00:00Z");
+        assert_eq!(v[0]["extras"]["bundle"], "app.zip");
+        assert_eq!(v[0]["extras"]["size"], "12");
+
+        // An entry with no extras must not carry an `extras` key at all.
+        let bare = parse_all(&render_audit_entries_json(&[an_entry(Some("ok"), None)]));
+        assert!(
+            bare[0].get("extras").is_none(),
+            "an empty extras map should be omitted, not emitted"
+        );
     }
 
     #[test]
