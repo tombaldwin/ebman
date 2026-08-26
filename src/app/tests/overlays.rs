@@ -849,3 +849,160 @@ async fn the_apps_action_menu_renders_its_actions() {
         "and names the application:\n{out}"
     );
 }
+
+// ── mutation-sweep triage, 2026-08-26 ────────────────────────────────
+//
+// `handle_saved_configs_interactive_key` had 18 survivors around a
+// delete confirm. It is a y/n gate rather than a typed one, so the
+// standing `every_typed_confirmation_gate_names_its_test` guard doesn't
+// reach it — worth noting, because that guard's scope is narrower than
+// "confirmation gates" generally.
+
+fn saved_configs_overlay(confirm_delete: bool) -> App {
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "shop", "WebServer", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.current_overlay = Some(crate::app::Overlay::SavedConfigsInteractive {
+        items: vec![
+            ("shop".into(), "prod-baseline".into()),
+            ("shop".into(), "canary".into()),
+        ],
+        cursor: 0,
+        confirm_delete,
+    });
+    app.mode = crate::app::Mode::Normal;
+    app
+}
+
+fn overlay_state(app: &App) -> Option<(usize, bool)> {
+    match app.current_overlay.as_ref()? {
+        crate::app::Overlay::SavedConfigsInteractive {
+            cursor,
+            confirm_delete,
+            ..
+        } => Some((*cursor, *confirm_delete)),
+        _ => None,
+    }
+}
+
+/// Enter means APPLY when nothing is armed, and CONFIRM DELETE when the
+/// delete prompt is up. Those two arms are told apart by `!confirm_delete`
+/// versus `confirm_delete`, and the sweep left every mutant of the first
+/// guard alive.
+///
+/// Deleting that `!` makes both guards identical, so the apply arm — the
+/// earlier one — wins on Enter *while the delete confirm is showing*.
+/// The operator presses Enter to delete a saved configuration and
+/// instead applies it to the environment, rewriting its option settings.
+#[tokio::test]
+async fn enter_applies_only_when_no_delete_is_armed() {
+    // Nothing armed: Enter applies. `spawn_config_apply_template` closes
+    // the overlay, so that is the observable.
+    let mut app = saved_configs_overlay(false);
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(
+        app.current_overlay.is_none(),
+        "Enter with nothing armed applies the selected template"
+    );
+
+    // Armed: Enter confirms the DELETE, and must not take the apply arm.
+    // Both close the overlay, so the discriminator is which spawn ran —
+    // a read-only env refuses the write and names the operation.
+    let mut app = saved_configs_overlay(true);
+    app.read_only = true;
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    let msg = app.error_message.clone().unwrap_or_default();
+    assert!(
+        msg.contains("delete") || msg.contains("read-only") || msg.contains("refus"),
+        "Enter while the delete confirm is armed must dispatch the DELETE, \
+         not apply the config to the environment: {msg:?}"
+    );
+}
+
+/// `n` / `N` / `Esc` back out of the delete confirm, and navigation is
+/// inert while it is armed so a stray `j` can't silently discard it.
+#[tokio::test]
+async fn a_delete_confirm_can_be_declined_and_ignores_navigation() {
+    for decline in [KeyCode::Char('n'), KeyCode::Char('N'), KeyCode::Esc] {
+        let mut app = saved_configs_overlay(true);
+        press(&mut app, decline, KeyModifiers::NONE);
+        assert_eq!(
+            overlay_state(&app),
+            Some((0, false)),
+            "{decline:?} disarms the confirm and leaves the overlay open"
+        );
+    }
+
+    // Everything except y/Y/Enter and n/N/Esc is inert while armed.
+    //
+    // The navigation keys are the obvious case — a stray `j` must not
+    // discard the confirm and reset the cursor. But the ones that
+    // matter are `q`, `a`, `c`, `x` and `i`, which all have arms in the
+    // dispatch block below: the armed branch returns rather than
+    // falling through, and without that `q` would CLOSE the overlay and
+    // `a` would APPLY the config, both while the operator is looking at
+    // a delete prompt. Testing only j/k/G misses every one of those —
+    // they match nothing below, so falling through looks inert.
+    for inert in [
+        KeyCode::Char('j'),
+        KeyCode::Char('k'),
+        KeyCode::Char('G'),
+        KeyCode::Char('g'),
+        KeyCode::Char('q'),
+        KeyCode::Char('a'),
+        KeyCode::Char('c'),
+        KeyCode::Char('x'),
+        KeyCode::Char('i'),
+    ] {
+        let mut app = saved_configs_overlay(true);
+        press(&mut app, inert, KeyModifiers::NONE);
+        assert_eq!(
+            overlay_state(&app),
+            Some((0, true)),
+            "{inert:?} must do nothing while a delete confirm is armed — \
+             the overlay stays open, the cursor stays put, and the \
+             confirm stays armed"
+        );
+        assert!(
+            app.error_message.is_none(),
+            "{inert:?} must not dispatch anything: {:?}",
+            app.error_message
+        );
+    }
+}
+
+/// And navigation works when nothing is armed, so "inert" above isn't
+/// just "these keys never do anything".
+#[tokio::test]
+async fn saved_configs_navigation_moves_the_cursor_when_unarmed() {
+    let mut app = saved_configs_overlay(false);
+    press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+    assert_eq!(overlay_state(&app), Some((1, false)), "j moves down");
+    press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+    assert_eq!(overlay_state(&app), Some((0, false)), "k moves up");
+    // Clamped at both ends rather than wrapping.
+    press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+    assert_eq!(overlay_state(&app), Some((0, false)), "k clamps at the top");
+    press(&mut app, KeyCode::Char('G'), KeyModifiers::NONE);
+    assert_eq!(overlay_state(&app), Some((1, false)), "G jumps to the end");
+    press(&mut app, KeyCode::Char('g'), KeyModifiers::NONE);
+    assert_eq!(overlay_state(&app), Some((0, false)), "g jumps to the top");
+}
+
+/// `x` arms the confirm rather than deleting outright.
+#[tokio::test]
+async fn x_arms_the_delete_confirm_rather_than_deleting() {
+    let mut app = saved_configs_overlay(false);
+    press(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
+    assert_eq!(
+        overlay_state(&app),
+        Some((0, true)),
+        "`x` must arm the confirm and keep the overlay open, not delete"
+    );
+    assert!(
+        app.error_message.is_none(),
+        "and must not have dispatched anything: {:?}",
+        app.error_message
+    );
+}
