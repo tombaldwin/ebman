@@ -16,6 +16,26 @@ ebman ctl cmd ':region eu-west-2' # run a : command (leading : optional)
 
 Useful for integration tests, screenshot capture, scripted workflows.
 
+### `ctl key` spec vocabulary
+
+Pieces are joined with `+` and are case-insensitive. Modifiers may appear
+in any order and combine; the last key name in the spec wins.
+
+| kind | accepted |
+|---|---|
+| modifiers | `ctrl` / `control` / `^`, `shift`, `alt` / `meta` / `option` |
+| arrows | `up`, `down`, `left`, `right` |
+| editing | `enter` / `return`, `esc` / `escape`, `tab`, `backtab`, `backspace`, `delete` / `del`, `space` |
+| navigation | `home`, `end`, `pageup`, `pagedown` |
+| function | `f1` … `f12` |
+| character | any single character (case-sensitive: `J` ≠ `j`), or `Char(x)` to be explicit |
+
+`shift+tab` is `backtab` — the two are the same key, and the TUI binds
+BackTab to *reverse* field/tab/scope cycling, so they have to agree.
+
+A spec naming no key (`ctrl` alone), an unknown name, or an out-of-range
+function key (`f13`) is rejected rather than guessed at.
+
 ## Non-interactive subcommands
 
 These don't need a running TUI — they connect to AWS, do their thing, and exit. CI-friendly.

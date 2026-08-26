@@ -867,6 +867,41 @@ than a wrong action. Working top-down by count is the wrong order.
   It now anchors at column zero and asserts the slice didn't run into
   the test module.
 
+- [x] **`ctl key shift+tab` walked the wrong way** — FIXED 2026-08-26.
+  A real bug, found by asking why 14 of `parse_key_spec`'s match arms
+  were deletable.
+
+  The arm read `"backtab" | "shift+tab"`, but the loop splits the spec
+  on `+` before matching, so the `"shift+tab"` alternative was
+  **unreachable**: the pieces are `shift` and `tab`, and the spec came
+  out as Tab+SHIFT. That is not cosmetic — the TUI binds `KeyCode::Tab`
+  forward and `KeyCode::BackTab` backward in three places (form fields,
+  detail tabs, scope cycling), so a script sending `shift+tab` over the
+  control socket moved **forwards**. The dead literal is the author's
+  intent, sitting where it could never fire.
+
+  Normalised after the loop instead of special-casing the string, so
+  `shift+tab`, `Shift+Tab`, `tab+shift` and `SHIFT+TAB` all agree.
+
+- [x] **`parse_key_spec` — 16 survivors, 14 of them deletable name
+  arms** — 2026-08-26. Asserting twenty name→code pairs would be a copy
+  of the table. Instead the vocabulary is now **documented** in
+  `docs/headless.md` — it was ~20 names with two examples, so a script
+  author had to read the source — and the parser is pinned to that
+  documentation in both directions: every documented name parses, and
+  every name the parser accepts is documented. Deleting an arm makes a
+  multi-character name fall through to the single-char fallback and be
+  rejected, so the first direction catches all fourteen.
+
+  The scrape distinguishes the modifiers row, because `ctrl` alone names
+  no key and is correctly rejected — and separately asserts that
+  modifiers *stay* rejected alone, so testing them as `<mod>+x` can't
+  hide a parser that accepts anything.
+
+  Mutation-verified four ways: CAUGHT — a deleted arm, `|=` → `&=` on a
+  modifier, undoing the shift+tab fix, and a name vanishing from the
+  docs.
+
 - [ ] **The SDK seam — 75 survivors in `aws/eb.rs` alone** — every one
   of the form `replace AwsClient::fetch_x with Ok(vec![])`. No test can
   kill these: the function *is* the AWS call, and `AwsClient::stub()`
