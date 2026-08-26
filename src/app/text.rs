@@ -20,6 +20,10 @@ pub(crate) fn expand_command_alias(
     aliases: &std::collections::HashMap<String, String>,
 ) -> String {
     let line = line.trim();
+    // A fast path, not a correctness guard — `||` vs `&&` here is
+    // equivalent. With no aliases the lookup below misses and returns
+    // `line` anyway; with an empty line the lookup is for `""`, which no
+    // sane alias table holds, and that returns `line` too.
     if aliases.is_empty() || line.is_empty() {
         return line.to_string();
     }
@@ -305,6 +309,12 @@ pub(crate) fn wrap_with_hanging_indent(text: &str, width: usize, lead: &str, con
     let prefix = |first: bool| if first { lead } else { cont };
     for word in text.split_whitespace() {
         // If a single word is longer than the body width, hard-break it.
+        //
+        // `>` vs `>=` is equivalent. A word of exactly `body_width` goes
+        // down the hard-break path as a single chunk and down the normal
+        // path as a full line, and both emit it alone with the same
+        // prefix — the trailing newline the two disagree about is popped
+        // at the end.
         if word.chars().count() > body_width {
             if !current.is_empty() {
                 out.push_str(prefix(first));
@@ -392,6 +402,11 @@ pub(crate) fn edit_distance(a: &str, b: &str) -> usize {
     // Two-row rolling DP: only the previous row's distances are
     // needed to compute the current row. Saves O(m·n) memory →
     // O(min(m,n)) without changing the answer.
+    // Which side is `short` is a memory optimisation, not a decision:
+    // the row DP is correct for either ordering and Levenshtein is
+    // symmetric, so `<`, `<=`, `==` and `>` all yield the same distance.
+    // All three mutations of this comparison are equivalent; the
+    // symmetry is pinned by a test rather than assumed.
     let (short, long) = if a_bytes.len() < b_bytes.len() {
         (a_bytes, b_bytes)
     } else {
