@@ -1468,6 +1468,51 @@ mod rollout_flag_tests {
 mod rollout_freeze_tests {
     use super::rollout_freeze_halt;
 
+    /// The `--yes` gate must exist, be negated, and sit BEFORE the
+    /// dispatch.
+    ///
+    /// A structural pin, and honest about being one: it cannot prove the
+    /// gate does the right thing, only that it is there, the right way
+    /// round, and in the right place. `delete !` on it inverts the
+    /// meaning — `--yes` would refuse and *omitting* it would dispatch a
+    /// multi-region rollout — and that mutation is unreachable from a
+    /// behavioural test, because the gate sits after the per-region
+    /// pre-flight and an integration test without credentials exits at
+    /// `list_environments` long before it.
+    ///
+    /// Moving the gate earlier would make it testable and was considered
+    /// and rejected: today the operator learns an env is missing from a
+    /// region BEFORE being asked to confirm, and reversing that on the
+    /// widest-blast-radius command the CLI has is the wrong trade. The
+    /// behavioural version needs a fake client layer, which BACKLOG.md
+    /// records as not worth building for its own sake.
+    #[test]
+    fn the_yes_gate_guards_the_dispatch() {
+        let src = std::fs::read_to_string("src/cli/action.rs").expect("read action.rs");
+        let body = src
+            .split_once("\nasync fn run_rollout")
+            .expect("run_rollout moved or was renamed")
+            .1;
+        let body = body.split("\n#[cfg(test)]").next().unwrap_or(body);
+        assert!(
+            !body.contains("mod rollout_freeze_tests"),
+            "the slice ran past the function into this test module"
+        );
+
+        let gate = body.find("if !yes {").expect(
+            "run_rollout must refuse to dispatch without --yes. Dropping \
+             the `!` inverts it: --yes would refuse and omitting it would \
+             dispatch to every region.",
+        );
+        let dispatch = body
+            .find("let rollout_id = format!")
+            .expect("the dispatch preamble moved");
+        assert!(
+            gate < dispatch,
+            "the --yes gate must come BEFORE the dispatch, not after it"
+        );
+    }
+
     /// A freeze halt must not exit 0.
     ///
     /// `any_failure` is computed from the outcomes, and a freeze halt

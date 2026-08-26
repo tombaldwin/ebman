@@ -1106,16 +1106,38 @@ than a wrong action. Working top-down by count is the wrong order.
   Reopen this if a fake client is wanted for its own sake; it is not
   worth building only to move a number.
 
-- [ ] **The freeze marker's PID-reuse hole** — the doc claim is narrowed
-  (2026-08-26) to what `kill(pid, 0)` actually checks; the underlying
-  hole stands. `pid_alive` is a bare existence probe and does not check
-  the process is ebman, so a stale marker whose pid is reused reads as a
-  live fleet freeze across TUI, CLI and MCP until the file is removed by
-  hand. Evidence: this machine held `~/.cache/ebman/freeze.json` from
-  22 Aug, pid 3683, five days stale. Options unchanged: advisory `flock` held for the
-  session's lifetime (the OS releases it on death — robust, but changes
-  a safety mechanism), pid + process start time, or an age bound. Fails
-  closed, so confusing rather than dangerous.
+- [x] **The freeze marker's PID-reuse hole** — FIXED 2026-08-27.
+  `read_active` now checks the pid's **start time** as well as its
+  existence: a pid in use whose holder started after the marker was
+  written cannot be the session that wrote it. `proc_pidinfo` on macOS,
+  `/proc/<pid>/stat` + `/proc/stat` btime on Linux, `None` elsewhere.
+
+  Rejected on the way: `flock` does not compose with `write_atomic`
+  (the rename replaces the inode and orphans the lock) and its failure
+  mode is *open* — a lost lock lets a reader delete a live marker.
+  Heartbeat-plus-age-bound fails open too: a wedged or paused session
+  silently lifts the freeze.
+
+  Every uncertain case assumes still-owned, because the directions are
+  not symmetric — a phantom freeze refuses writes and is fixed by
+  deleting a file, a lifted freeze lets writes through during an
+  incident. A five-minute slack absorbs clock steps for the same reason.
+
+  Mutation-verified three ways: CAUGHT — disabling the reuse check,
+  making an unknown start time lift the freeze, and the probe silently
+  returning `None` on every platform.
+
+- [x] **`run_rollout`'s `!yes` gate** — pinned 2026-08-27 by a
+  positional source guard: the gate must exist, be negated, and sit
+  before the dispatch. Honest about being structural — it cannot prove
+  the gate behaves, only that it is there, the right way round and in
+  the right place.
+
+  Moving it before the pre-flight was considered and rejected: today the
+  operator learns an env is missing from a region *before* being asked
+  to confirm, and reversing that on the widest-blast-radius command is
+  the wrong trade. Verified both ways: deleting the `!`, and relocating
+  the gate after the dispatch.
 
 - [x] **`app/msg.rs` — nine wrong-env guards, every one flippable** —
   2026-08-26. `if <open thing>.env_name != env_name { return }` appears
