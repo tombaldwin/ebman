@@ -1077,7 +1077,35 @@ than a wrong action. Working top-down by count is the wrong order.
 
   That finishes `detail_nav.rs`'s reachable survivors.
 
-- [ ] **The SDK seam — 75 survivors in `aws/eb.rs` alone** — every one
+- [x] **The SDK seam — decided 2026-08-26: account for it, don't hide
+  it.** 75 survivors in `aws/eb.rs`, ~20 more in `audit.rs`'s writers,
+  all of the form `replace <fn> with Ok(..)`. The two options were a
+  fake client layer or excluding those paths from the sweep.
+
+  Excluding them was rejected: it would make the headline score prettier
+  while removing the sweep's ability to notice when a *new* AWS function
+  grows extractable logic inside it — which is exactly how
+  `QueueDiscovery`, `vpc_context_from_settings` and the rollout
+  validators were found. A fake client layer is a large piece of test
+  infrastructure that this codebase has so far managed without.
+
+  So: neither. The seam is accounted for instead. Every triage entry
+  above quotes **reachable** survivors separately from whole-function
+  ones, and the rule for reading any future sweep is the same — split
+  the count before drawing a conclusion from it. `aws/eb.rs` at 86
+  survivors is 11 reachable and 75 seam, and those are different facts.
+
+  Reopen this if a fake client is wanted for its own sake; it is not
+  worth building only to move a number.
+
+- [ ] **The freeze marker's PID-reuse hole** — the doc claim is narrowed
+  (2026-08-26) to what `kill(pid, 0)` actually checks; the underlying
+  hole stands. Options unchanged: advisory `flock` held for the
+  session's lifetime (the OS releases it on death — robust, but changes
+  a safety mechanism), pid + process start time, or an age bound. Fails
+  closed, so confusing rather than dangerous.
+
+- [ ] **(superseded) The SDK seam — 75 survivors in `aws/eb.rs` alone** — every one
   of the form `replace AwsClient::fetch_x with Ok(vec![])`. No test can
   kill these: the function *is* the AWS call, and `AwsClient::stub()`
   doesn't intercept at that level. This is an architecture question, not
