@@ -777,6 +777,35 @@ than a wrong action. Working top-down by count is the wrong order.
   prompt arms, the `Ctrl-R` vs `r` modifier guard, and the `m`
   main/DLQ toggle.
 
+- [x] **`app/spawn_refresh.rs` — the red-alert detection** —
+  2026-08-26. Five survivors and no test at all, on the logic behind two
+  operator-facing markers `ui/table.rs` renders: the red alert on a row
+  and the `+` on a name that just appeared. A wrong condition here is
+  either a missed alert or a screen full of spurious ones.
+
+  - `is_red` is `eq_ignore_ascii_case("Red") || …("Severe")`, and `&&`
+    there is **unsatisfiable** — no string is both, so every red alert
+    in the tool would stop firing.
+  - `if !self.prev_health.is_empty()` is what stops the first listing
+    marking the whole fleet as new. Inverted, startup flags everything
+    and nothing after that ever does.
+  - `is_red(&e.health) && !prev_red` is a *transition*, not a state.
+    Without the `!`, an env that has been red for a week never alerts
+    and only a flapping one does; as `||`, every healthy env alerts.
+
+  All four covered from both sides. Mutation-verified: CAUGHT.
+
+  Worth recording a near-miss in the method: a first grep suggested
+  `newly_red` / `newly_added` were written and never read — dead state,
+  like `DeploySnapshot::env_name`. They are read, by `ui/table.rs` and
+  `ui/header.rs`; the grep had been truncated by a `head -6`. Checked
+  before reporting, which is the only reason it wasn't reported.
+
+- [ ] **`app/spawn_refresh.rs` — what's left**: `apply_rebuild`'s
+  overlay-mode chain (11 survivors on one condition — the modes a
+  context switch tears down), the notify-bell threshold, the
+  `HISTORY_CAP` trim and the throttle backoff arithmetic.
+
 - [ ] **The SDK seam — 75 survivors in `aws/eb.rs` alone** — every one
   of the form `replace AwsClient::fetch_x with Ok(vec![])`. No test can
   kill these: the function *is* the AWS call, and `AwsClient::stub()`
