@@ -520,6 +520,34 @@ than a wrong action. Working top-down by count is the wrong order.
   same three-branch duration ladder was written out twice in
   `format_deploy_preview`.
 
+- [x] **`src/app/action_flow.rs` — the pending/undo machinery** —
+  2026-08-26. 69 reachable survivors; this pass covers the
+  destructive-action ones, which are the highest-consequence logic the
+  sweep touched.
+
+  The finding worth naming: **the undo window had no test holding it
+  shut.** `tick_pending_dispatch_fires_after_deadline` covered only the
+  elapsed direction, so `if now < pd.deadline` was interchangeable with
+  `now == pd.deadline` — under which a queued destructive action fires
+  on the very next tick and the operator's cancel window does not exist
+  at all. That existing test still passes against the mutation; only the
+  new converse catches it.
+
+  Also covered: `push_pending`'s `PENDING_CAP` (flipped to `<` the panel
+  never holds more than one row), `complete_pending`'s three-way match
+  (one case per conjunct — wrong label, wrong target, already-finished —
+  since the realistic collision is the same action against a different
+  env), `expire_pending`'s TTL in both directions, and the **six
+  individually deletable `advance_action_flow` arms** (Rebuild, Deploy,
+  UpgradePlatform, Clone, Scale, Capacity), where a deleted arm drops
+  the menu entry into the catch-all and it silently does nothing while
+  every other action still works.
+
+  Mutation-verified, five re-applied by hand: CAUGHT on each.
+
+- [ ] **`src/app/action_flow.rs` — 35 survivors in `handle_action_key`**
+  left, plus `open_parameterised_action_on` (8) and `spawn_action` (7).
+
 - [ ] **The SDK seam — 75 survivors in `aws/eb.rs` alone** — every one
   of the form `replace AwsClient::fetch_x with Ok(vec![])`. No test can
   kill these: the function *is* the AWS call, and `AwsClient::stub()`
