@@ -1105,6 +1105,32 @@ than a wrong action. Working top-down by count is the wrong order.
   a safety mechanism), pid + process start time, or an age bound. Fails
   closed, so confusing rather than dangerous.
 
+- [x] **`app/msg.rs` — nine wrong-env guards, every one flippable** —
+  2026-08-26. `if <open thing>.env_name != env_name { return }` appears
+  in five detail handlers, two form handlers, and two more on the
+  option-settings and tag paths. All flippable, and this is the class
+  that has already shipped twice here: the wrong-env spacious click and
+  the `:rollback` wrong-env.
+
+  The form one is the worst of them. A prefill for another environment
+  populating the open form means **the next submit writes those values
+  back to the wrong environment** — the fetch is read-only, the
+  consequence is not.
+
+  Covered by table rather than nine scattered assertions, driven through
+  `handle_msg` so the generation check and routing come along. Both
+  directions, because a handler that dropped everything would pass the
+  drop half on its own.
+
+  Mutation-verified: inverting all five detail guards, and both form
+  guards, CAUGHT.
+
+  Two fixture mistakes worth recording: `Fetch<T>` has no public
+  constructor so the assertions had to go through `ready()`, and the
+  form's prefill lands via `FormSubmit::OptionSettings { mappings }` —
+  with the empty `mappings` I first wrote, the "matching env applies"
+  half passed vacuously and the test told me so.
+
 - [ ] **(superseded) The SDK seam — 75 survivors in `aws/eb.rs` alone** — every one
   of the form `replace AwsClient::fetch_x with Ok(vec![])`. No test can
   kill these: the function *is* the AWS call, and `AwsClient::stub()`

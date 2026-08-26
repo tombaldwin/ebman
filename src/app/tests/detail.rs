@@ -1129,3 +1129,165 @@ async fn detail_search_with_nothing_to_find_is_inert() {
     app.detail_search_jump(1);
     assert_eq!(app.detail.as_ref().unwrap().events_scroll, 0);
 }
+
+// ── mutation-sweep triage, 2026-08-26 ────────────────────────────────
+//
+// Nine `handle_*` methods in `app/msg.rs` guard with
+// `if <open thing>.env_name != env_name { return }`, and the sweep left
+// every one of those comparisons flippable. This is the class that has
+// already shipped twice here — the wrong-env spacious click and the
+// `:rollback` wrong-env — so it gets one table rather than nine
+// scattered assertions.
+//
+// Driven through `handle_msg`, which also exercises the generation
+// check and the routing.
+
+/// A result for a different environment must never land in the open
+/// Detail view.
+#[tokio::test]
+async fn detail_results_for_another_env_are_dropped() {
+    use crate::app::AppMsg;
+
+    // Each case: a message naming `worker-prod` arriving while Detail is
+    // open on `api-prod`, and what it would have overwritten.
+    let armed = || {
+        let mut app = detail_on("api-prod");
+        {
+            let d = app.detail.as_mut().expect("detail open");
+            d.cw_log_groups = Some(vec!["existing-group".into()]);
+        }
+        app
+    };
+
+    // Log groups.
+    let mut app = armed();
+    app.handle_msg(AppMsg::DetailLogGroups {
+        gen: app.generation,
+        env_name: "worker-prod".into(),
+        groups: vec!["wrong-env-group".into()],
+    });
+    assert_eq!(
+        app.detail.as_ref().unwrap().cw_log_groups,
+        Some(vec!["existing-group".to_string()]),
+        "another env's log groups were shown against this one"
+    );
+
+    // Alarms.
+    let mut app = armed();
+    app.handle_msg(AppMsg::DetailAlarms {
+        gen: app.generation,
+        env_name: "worker-prod".into(),
+        result: Ok(Vec::new()),
+    });
+    assert!(
+        app.detail.as_ref().unwrap().cw_alarms.ready().is_none(),
+        "another env's alarm result settled this env's alarm panel"
+    );
+
+    // Recent versions.
+    let mut app = armed();
+    app.handle_msg(AppMsg::DetailRecentVersions {
+        gen: app.generation,
+        env_name: "worker-prod".into(),
+        result: Ok(vec![]),
+    });
+    assert!(
+        app.detail
+            .as_ref()
+            .unwrap()
+            .recent_versions
+            .ready()
+            .is_none(),
+        "another env's version list settled this env's panel"
+    );
+
+    // And the matching env DOES apply — without this half, a handler
+    // that dropped everything would pass all of the above.
+    let mut app = armed();
+    app.handle_msg(AppMsg::DetailLogGroups {
+        gen: app.generation,
+        env_name: "api-prod".into(),
+        groups: vec!["right-env-group".into()],
+    });
+    assert_eq!(
+        app.detail.as_ref().unwrap().cw_log_groups,
+        Some(vec!["right-env-group".to_string()]),
+        "the matching env's result must be applied, or the drop tests \
+         above prove nothing"
+    );
+}
+
+/// The same guard on the form-prefill path: a prefill for another env
+/// must not populate the open form.
+#[tokio::test]
+async fn a_form_prefill_for_another_env_is_dropped() {
+    use crate::app::AppMsg;
+
+    let armed = || {
+        let mut app = test_app();
+        app.environments = vec![mk_env("api-prod", "shop", "WebServer", "Green")];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        let mut form = crate::form::Form {
+            title: "Capacity".into(),
+            fields: vec![crate::form::FormField::text(
+                "MinSize",
+                "Min",
+                None::<String>,
+            )],
+            cursor: 0,
+            state: crate::form::FormState::Loading,
+            // The prefill populates fields via these mappings — an
+            // empty list means nothing lands, which would make the
+            // "matching env applies" half pass vacuously.
+            submit: crate::form::FormSubmit::OptionSettings {
+                mappings: vec![(
+                    "MinSize".to_string(),
+                    "aws:autoscaling:asg".to_string(),
+                    "MinSize".to_string(),
+                )],
+            },
+            summary: "capacity".into(),
+            env_name: "api-prod".into(),
+            banner: String::new(),
+            scroll: 0,
+        };
+        form.fields[0].value = "untouched".into();
+        app.form = Some(form);
+        app
+    };
+
+    let mut app = armed();
+    app.handle_msg(AppMsg::FormPrefilled {
+        gen: app.generation,
+        env_name: "worker-prod".into(),
+        settings: Ok(vec![(
+            "aws:autoscaling:asg".into(),
+            "MinSize".into(),
+            "99".into(),
+        )]),
+    });
+    assert_eq!(
+        app.form.as_ref().unwrap().fields[0].value,
+        "untouched",
+        "another env's settings were prefilled into this env's form — the \
+         next submit would write them back to the wrong environment"
+    );
+
+    // The matching env applies.
+    let mut app = armed();
+    app.handle_msg(AppMsg::FormPrefilled {
+        gen: app.generation,
+        env_name: "api-prod".into(),
+        settings: Ok(vec![(
+            "aws:autoscaling:asg".into(),
+            "MinSize".into(),
+            "4".into(),
+        )]),
+    });
+    assert_ne!(
+        app.form.as_ref().unwrap().fields[0].value,
+        "untouched",
+        "the matching env's prefill must be applied"
+    );
+}
