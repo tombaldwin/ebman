@@ -701,6 +701,60 @@ fn degrade(reasons: &mut Vec<String>, degraded: &mut bool, reason: String) {
     *degraded = true;
 }
 
+/// Apply the operator's `--min-severity` and `--rule` filters.
+///
+/// Written out twice inside `run` — once on the main path and once on
+/// the `--watch` cycle path — and both copies carried the same
+/// survivors. Which issues reach the operator is the whole output of
+/// this subcommand, so it is worth being able to assert.
+pub(crate) fn filter_issues(
+    issues: &mut Vec<lint::Issue>,
+    severity_filter: Option<lint::Severity>,
+    rule_filter: &[String],
+) {
+    if let Some(min) = severity_filter {
+        issues.retain(|i| i.severity >= min);
+    }
+    if !rule_filter.is_empty() {
+        issues.retain(|i| rule_filter.contains(&i.rule_id));
+    }
+}
+
+/// The process exit code for a completed lint run.
+///
+/// This is what gates CI, and the matrix in `docs/headless.md` is the
+/// contract: 0 clean, 3 issues found, 1 an AWS/degraded run. The
+/// ordering matters — "issues found" beats "degraded" because exit 3 is
+/// actionable, while a *clean but incomplete* run must NOT pass green,
+/// since a region skipped on expired credentials would otherwise look
+/// identical to a passing check.
+///
+/// `--fix` reports on the dispatch rather than on cleanliness: fixing
+/// issues is the point, so finding them is not a failure.
+///
+/// Extracted from the tail of `run`, where each branch called
+/// `std::process::exit` inline and none was reachable from a test.
+pub(crate) fn lint_exit_code(
+    fix: bool,
+    fix_dispatch_failed: bool,
+    degraded: bool,
+    clean: bool,
+) -> i32 {
+    if fix {
+        if fix_dispatch_failed || degraded {
+            1
+        } else {
+            0
+        }
+    } else if !clean {
+        3
+    } else if degraded {
+        1
+    } else {
+        0
+    }
+}
+
 pub async fn run(args: &[String]) -> Result<()> {
     let LintArgs {
         env_name,
@@ -892,12 +946,7 @@ pub async fn run(args: &[String]) -> Result<()> {
                     degrade(&mut degrade_reasons, &mut cycle_degraded, w.clone());
                 }
                 let mut issues = run_rules_for_env(&rules, env, &inputs, &safety_cfg.required_tags);
-                if let Some(min) = severity_filter {
-                    issues.retain(|i| i.severity >= min);
-                }
-                if !rule_filter.is_empty() {
-                    issues.retain(|i| rule_filter.contains(&i.rule_id));
-                }
+                filter_issues(&mut issues, severity_filter, &rule_filter);
                 if let Some(region) = region_opt {
                     for issue in &mut issues {
                         issue.fields.insert("region".into(), region.clone());
@@ -1074,12 +1123,7 @@ pub async fn run(args: &[String]) -> Result<()> {
                                 eprintln!("warning: {w}");
                             }
                         }
-                        if let Some(min) = severity_filter {
-                            issues.retain(|i| i.severity >= min);
-                        }
-                        if !rule_filter.is_empty() {
-                            issues.retain(|i| rule_filter.contains(&i.rule_id));
-                        }
+                        filter_issues(&mut issues, severity_filter, &rule_filter);
                         if let Some(region) = region_opt {
                             for issue in &mut issues {
                                 issue.fields.insert("region".into(), region.clone());
@@ -1306,23 +1350,16 @@ pub async fn run(args: &[String]) -> Result<()> {
     // --watch --webhook cycle posts) before the process ends —
     // fire-and-forget tasks are cancelled at runtime drop.
     audit::drain_webhooks(std::time::Duration::from_secs(12)).await;
-    if fix {
-        if FIX_DISPATCH_FAILED.load(std::sync::atomic::Ordering::Relaxed) || last_cycle_degraded {
-            std::process::exit(1);
-        }
-        Ok(())
-    } else if !last_cycle_clean {
-        // Issues found wins over degraded — exit 3 is actionable.
-        std::process::exit(3);
-    } else if last_cycle_degraded {
-        // "Clean" but incomplete: some region/env was skipped on a
-        // fetch failure, so clean is unproven. The documented
-        // AWS-error exit code — a CI gate must not pass green on
-        // expired credentials.
-        std::process::exit(1);
-    } else {
-        Ok(())
+    let code = lint_exit_code(
+        fix,
+        FIX_DISPATCH_FAILED.load(std::sync::atomic::Ordering::Relaxed),
+        last_cycle_degraded,
+        last_cycle_clean,
+    );
+    if code != 0 {
+        std::process::exit(code);
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1802,5 +1839,176 @@ mod degrade_guard {
             "degrade must keep the reason for --json"
         );
         assert!(body.contains("*degraded"), "degrade must set the flag");
+    }
+}
+
+#[cfg(test)]
+mod run_decision_tests {
+    use super::{filter_issues, lint_exit_code};
+    use crate::lint;
+
+    // ── mutation-sweep triage, 2026-08-26 ────────────────────────────
+    //
+    // `run` held 57 of this file's 87 survivors in a single 622-line
+    // body, every check written inline against a `println!` or a
+    // `std::process::exit`. These cover the two decisions worth pulling
+    // out of it first: which issues reach the operator, and what the
+    // process exits with.
+
+    fn issue(rule: &str, sev: lint::Severity) -> lint::Issue {
+        lint::Issue {
+            rule_id: rule.into(),
+            severity: sev,
+            env_name: Some("api-prod".into()),
+            title: format!("{rule} fired"),
+            detail: String::new(),
+            suggestion: None,
+            fields: Default::default(),
+        }
+    }
+
+    fn ids(issues: &[lint::Issue]) -> Vec<&str> {
+        issues.iter().map(|i| i.rule_id.as_str()).collect()
+    }
+
+    #[test]
+    fn min_severity_keeps_that_level_and_above() {
+        let all = || {
+            vec![
+                issue("EBL001", lint::Severity::Info),
+                issue("EBL002", lint::Severity::Warn),
+                issue("EBL003", lint::Severity::Error),
+            ]
+        };
+
+        // No filter → everything. Without this, "drop everything"
+        // passes every case below.
+        let mut v = all();
+        filter_issues(&mut v, None, &[]);
+        assert_eq!(ids(&v), ["EBL001", "EBL002", "EBL003"]);
+
+        // `>= min`, so the named level is INCLUDED — the boundary is the
+        // whole point of the flag, and `>` would silently drop exactly
+        // the severity the operator asked for.
+        let mut v = all();
+        filter_issues(&mut v, Some(lint::Severity::Warn), &[]);
+        assert_eq!(ids(&v), ["EBL002", "EBL003"], "warn keeps warn and error");
+
+        let mut v = all();
+        filter_issues(&mut v, Some(lint::Severity::Error), &[]);
+        assert_eq!(ids(&v), ["EBL003"]);
+
+        let mut v = all();
+        filter_issues(&mut v, Some(lint::Severity::Info), &[]);
+        assert_eq!(ids(&v), ["EBL001", "EBL002", "EBL003"], "info keeps all");
+    }
+
+    #[test]
+    fn an_empty_rule_filter_is_no_filter_at_all() {
+        let all = || {
+            vec![
+                issue("EBL001", lint::Severity::Warn),
+                issue("EBL002", lint::Severity::Warn),
+            ]
+        };
+
+        // The `!rule_filter.is_empty()` guard: without it, an empty
+        // `--rule` would match nothing and report a clean fleet.
+        let mut v = all();
+        filter_issues(&mut v, None, &[]);
+        assert_eq!(ids(&v), ["EBL001", "EBL002"], "no --rule means no filter");
+
+        let mut v = all();
+        filter_issues(&mut v, None, &["EBL002".to_string()]);
+        assert_eq!(ids(&v), ["EBL002"]);
+
+        let mut v = all();
+        filter_issues(&mut v, None, &["EBL999".to_string()]);
+        assert!(v.is_empty(), "an unmatched rule filter reports nothing");
+    }
+
+    #[test]
+    fn the_two_filters_compose() {
+        let mut v = vec![
+            issue("EBL001", lint::Severity::Info),
+            issue("EBL002", lint::Severity::Error),
+            issue("EBL003", lint::Severity::Error),
+        ];
+        filter_issues(
+            &mut v,
+            Some(lint::Severity::Warn),
+            &["EBL001".to_string(), "EBL002".to_string()],
+        );
+        assert_eq!(
+            ids(&v),
+            ["EBL002"],
+            "an issue has to survive BOTH filters, not either"
+        );
+    }
+
+    /// The exit-code matrix from `docs/headless.md`. This is what gates
+    /// CI, so every cell is named.
+    #[test]
+    fn the_exit_code_matrix_holds() {
+        // fix, fix_failed, degraded, clean → code
+        for (fix, failed, degraded, clean, want, why) in [
+            (false, false, false, true, 0, "clean run passes"),
+            (false, false, false, false, 3, "issues found is exit 3"),
+            (
+                false,
+                false,
+                true,
+                true,
+                1,
+                "clean but degraded must NOT pass green — a region skipped on \
+                 expired credentials looks identical to a passing check",
+            ),
+            (
+                false,
+                false,
+                true,
+                false,
+                3,
+                "issues found beats degraded: exit 3 is the actionable one",
+            ),
+            (
+                true,
+                false,
+                false,
+                false,
+                0,
+                "--fix that dispatched cleanly passes",
+            ),
+            (
+                true,
+                true,
+                false,
+                false,
+                1,
+                "--fix with a failed dispatch is exit 1",
+            ),
+            (
+                true,
+                false,
+                true,
+                false,
+                1,
+                "--fix on a degraded run is exit 1",
+            ),
+            (
+                true,
+                false,
+                false,
+                true,
+                0,
+                "--fix reports on the dispatch, not on cleanliness",
+            ),
+        ] {
+            assert_eq!(
+                lint_exit_code(fix, failed, degraded, clean),
+                want,
+                "fix={fix} failed={failed} degraded={degraded} clean={clean}: {why}"
+            );
+        }
     }
 }
