@@ -1014,3 +1014,135 @@ async fn terminate_requires_the_env_name_typed_exactly() {
         "and the modal closes into the cancel window"
     );
 }
+
+// ── type-to-confirm gates ─────────────────────────────────────────────
+//
+// The 2026-08-26 mutation sweep found the DLQ purge's type-the-env-name
+// gate completely untested — all three of its mutants survived,
+// including `==` flipped to `!=`, which purges when the typed name is
+// WRONG. `p` on a DLQ is not recoverable.
+//
+// The audit that followed found only one other such gate (Terminate),
+// and that one was properly covered. But the audit was a one-off, and a
+// third gate added tomorrow would ship the same way. This turns it into
+// a standing check: every place production compares typed input against
+// an expected value is classified here, and a gate has to name the test
+// that proves it.
+
+/// What a typed-input comparison is for.
+enum TypedUse {
+    /// A confirmation gate on an irreversible operation. Names the test
+    /// that proves it refuses a near-miss and accepts an exact match.
+    Gate(&'static str),
+    /// Not a gate — rendering, or a change check. Says why.
+    NotAGate(&'static str),
+}
+
+/// Every `X.text() == Y` in production. See the note above.
+const TYPED_COMPARISONS: &[(&str, TypedUse)] = &[
+    (
+        "src/app/mode_dlq_handlers.rs",
+        TypedUse::Gate("a_purge_fires_only_when_the_typed_name_matches"),
+    ),
+    (
+        "src/app/action_flow.rs",
+        TypedUse::Gate("terminate_requires_the_env_name_typed_exactly"),
+    ),
+    (
+        "src/ui/action.rs",
+        TypedUse::NotAGate(
+            "render only — colours the typed text by whether it matches. \
+             The gate it mirrors is action_flow.rs's.",
+        ),
+    ),
+    (
+        "src/ui/dlq.rs",
+        TypedUse::NotAGate("render only — same mirror for the purge prompt."),
+    ),
+    (
+        "src/app/config_edit.rs",
+        TypedUse::NotAGate(
+            "change detection, not confirmation: an unedited value is \
+             submitted as a no-op rather than refused.",
+        ),
+    ),
+];
+
+#[test]
+fn every_typed_confirmation_gate_names_its_test() {
+    // 1. The list must cover every comparison in production, so a new
+    //    gate cannot be added without being classified.
+    let mut found: Vec<String> = Vec::new();
+    for (path, text) in super::scan::source_files() {
+        if super::scan::is_test_path(&path) {
+            continue;
+        }
+        for line in text.lines() {
+            if super::scan::strip_line_comment(line).contains(".text() == ") {
+                found.push(path.clone());
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
+
+    let listed: Vec<&str> = TYPED_COMPARISONS.iter().map(|(p, _)| *p).collect();
+    for f in &found {
+        assert!(
+            listed.contains(&f.as_str()),
+            "{f} compares typed input against an expected value and is not \
+             classified in TYPED_COMPARISONS. If it gates an irreversible \
+             operation it needs a test that refuses a near-miss; if it \
+             doesn't, say so there."
+        );
+    }
+    for l in &listed {
+        assert!(
+            found.contains(&l.to_string()),
+            "TYPED_COMPARISONS names {l}, which no longer compares typed \
+             input — drop the entry rather than leave it asserting nothing."
+        );
+    }
+
+    // 2. Every gate's named test must actually exist. A renamed test
+    //    would otherwise leave a gate claiming cover it doesn't have.
+    let all_tests: String = super::scan::source_files()
+        .into_iter()
+        .filter(|(p, _)| super::scan::is_test_path(p))
+        .map(|(_, t)| t)
+        .collect();
+    for (path, use_) in TYPED_COMPARISONS {
+        if let TypedUse::Gate(test_name) = use_ {
+            assert!(
+                all_tests.contains(&format!("fn {test_name}(")),
+                "{path} is a confirmation gate on an irreversible \
+                 operation, and the test it names — {test_name} — does not \
+                 exist. Either it was renamed, or the gate is uncovered."
+            );
+        }
+    }
+
+    // 3. A "not a gate" claim has to carry a reason. Without this the
+    //    payload is decoration — clippy says so, and the cheapest way
+    //    to silence this guard would be `NotAGate("")`.
+    for (path, use_) in TYPED_COMPARISONS {
+        if let TypedUse::NotAGate(why) = use_ {
+            assert!(
+                why.len() > 20,
+                "{path} is classified as not a confirmation gate, which is \
+                 the classification that exempts it from needing a test. \
+                 Say why in more than a few words: {why:?}"
+            );
+        }
+    }
+
+    // 4. Non-vacuity: at least the two known gates.
+    let gates = TYPED_COMPARISONS
+        .iter()
+        .filter(|(_, u)| matches!(u, TypedUse::Gate(_)))
+        .count();
+    assert!(
+        gates >= 2,
+        "expected at least the Terminate and DLQ-purge gates; found {gates}"
+    );
+}
