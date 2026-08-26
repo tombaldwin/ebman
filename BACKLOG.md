@@ -931,6 +931,39 @@ than a wrong action. Working top-down by count is the wrong order.
   by age; or just narrow the documented claim. Wants a deliberate
   decision.
 
+- [x] **A flaky test that could assert against another test's data** —
+  found + fixed 2026-08-26 by max code review.
+  `a_dispatch_and_its_completion_agree_on_the_region` failed once in
+  ~16 full-suite runs. `cache_dir()` is **one temp directory per test
+  process**, so every test writing an audit line appends to the same
+  file concurrently — and this test used the env name `api-prod`, which
+  a dozen other tests also use. It searched the delta for the first line
+  mentioning that name, and fell back to searching the *whole file* when
+  `strip_prefix` failed, so a concurrent append could make it assert
+  against a neighbour's region.
+
+  Fixed by giving it a name nothing else uses, requiring `strip_prefix`
+  to succeed rather than silently widening to the whole log, and
+  asserting exactly one matching line. Verified it still catches the bug
+  it exists for (completion naming the home region instead of the row's)
+  and 10 clean full-suite runs after.
+
+- [ ] **Five implementations of "wrap a cursor by ±1", across four
+  modules** — `action_flow.rs` (action menu), `mode_dlq_handlers.rs`
+  (DLQ list), `forms.rs` (field options ×2, and `form.rs::move_cursor`).
+  Seven sites in total; `detail_nav.rs`'s two are a rotated *search
+  order* rather than a cursor move and are correctly separate.
+
+  Every one of them showed the same survivor pattern in the sweep, and
+  this session tested four of them **separately** instead of collapsing
+  them — the opposite of the `render.rs` call, where extracting
+  `tree_glyph` took that file 18 → 2. One `wrap_index(cur, delta, len)`
+  would do it, and the per-site tests written this session make the
+  refactor safe to do.
+
+  Not done here: four modules is past the ~3-module bar CLAUDE.md sets
+  for a refactor that isn't required by the task at hand.
+
 - [ ] **The SDK seam — 75 survivors in `aws/eb.rs` alone** — every one
   of the form `replace AwsClient::fetch_x with Ok(vec![])`. No test can
   kill these: the function *is* the AWS call, and `AwsClient::stub()`

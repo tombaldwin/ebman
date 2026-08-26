@@ -366,8 +366,17 @@ async fn a_dispatch_and_its_completion_agree_on_the_region() {
     // action + target. If the dispatch names the row's region and the
     // completion names the home one, a grep across the pair reports an
     // action that started in eu-west-2 and finished in us-east-1.
+    // A name no other test uses. `cache_dir()` is ONE temp directory per
+    // test process, so every test that writes an audit line appends to
+    // this same file concurrently — and this test used `api-prod`, which
+    // a dozen others use too. It searched the delta for the first line
+    // mentioning that name and could pick up a neighbour's, asserting
+    // against another test's region. Observed failing once in ~16 full
+    // -suite runs while reviewing this session's work.
+    let env_name = "region-pair-probe-env";
+
     let mut app = test_app();
-    let mut env = mk_env("api-prod", "uflexi", "Web", "Green");
+    let mut env = mk_env(env_name, "uflexi", "Web", "Green");
     env.region = Some("eu-west-2".into());
     app.environments = vec![env];
     app.rebuild_view();
@@ -379,18 +388,25 @@ async fn a_dispatch_and_its_completion_agree_on_the_region() {
     app.handle_msg(AppMsg::ActionResult {
         gen: app.generation,
         action: crate::app::Action::RestartAppServer,
-        env_name: "api-prod".into(),
+        env_name: env_name.into(),
         result: Ok(()),
     });
 
     let after = std::fs::read_to_string(&path).unwrap_or_default();
-    let line = after
+    // Strict: the log is append-only, so `before` must still be a prefix.
+    // Falling back to the whole file on failure is how a concurrent write
+    // turned into a search over unrelated history.
+    let delta = after
         .strip_prefix(&before)
-        .unwrap_or(&after)
-        .lines()
-        .find(|l| l.contains("api-prod"))
-        .expect("a completion line was written")
-        .to_string();
+        .expect("the audit log is append-only; a non-prefix means it was rotated mid-test");
+    let matching: Vec<&str> = delta.lines().filter(|l| l.contains(env_name)).collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "exactly one completion line for {env_name} should have been \
+         written by this test: {matching:?}"
+    );
+    let line = matching[0].to_string();
     assert!(
         line.contains("region=eu-west-2"),
         "the completion must name where the work went: {line}"

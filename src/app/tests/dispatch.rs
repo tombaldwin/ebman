@@ -2200,3 +2200,54 @@ async fn multi_select_up_down_moves_the_option_cursor_and_wraps() {
     press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
     assert_eq!(field(&app), 1, "Tab still moves between fields");
 }
+
+/// A Select field with no options must not panic on a keypress.
+///
+/// `% options.len()` is a divide-by-zero on an empty list, and the
+/// backward form underflows `i + len - 1` before even reaching it.
+/// Unreachable today — every Select in the tree is built from a
+/// hardcoded `vec![]` — but `FormField::select` accepts any
+/// `Vec<String>`, so the first Select fed a fetched list (subnets,
+/// platform ARNs, log groups) would panic the TUI on `h` or `l`. Found
+/// reviewing this session's own work: I had tested four cursor-wrap
+/// implementations separately without noticing one of them had no
+/// zero-guard.
+#[tokio::test]
+async fn an_empty_select_field_is_inert_rather_than_fatal() {
+    for key in [
+        KeyCode::Char('h'),
+        KeyCode::Char('l'),
+        KeyCode::Left,
+        KeyCode::Right,
+    ] {
+        let mut app = test_app();
+        app.form = Some(a_form(vec![crate::form::FormField::select(
+            "empty",
+            "Empty",
+            Vec::new(),
+            None::<String>,
+        )]));
+        app.mode = crate::app::Mode::Form;
+        press(&mut app, key, KeyModifiers::NONE);
+        assert_eq!(
+            app.form.as_ref().unwrap().fields[0].value,
+            "",
+            "{key:?} on an empty Select leaves it empty"
+        );
+    }
+
+    // A populated Select still cycles, so the guard didn't disable the
+    // field outright.
+    let mut app = test_app();
+    app.form = Some(a_form(vec![crate::form::FormField::select(
+        "theme",
+        "Theme",
+        vec!["dark".into(), "light".into()],
+        None::<String>,
+    )]));
+    app.mode = crate::app::Mode::Form;
+    press(&mut app, KeyCode::Char('l'), KeyModifiers::NONE);
+    assert_eq!(app.form.as_ref().unwrap().fields[0].value, "light");
+    press(&mut app, KeyCode::Char('h'), KeyModifiers::NONE);
+    assert_eq!(app.form.as_ref().unwrap().fields[0].value, "dark");
+}
