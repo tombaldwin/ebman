@@ -7,6 +7,20 @@
 
 use super::*;
 
+/// Whether a refresh should ring the terminal bell.
+///
+/// The bell fires on an INCREASE in red alerts, not on their presence —
+/// otherwise a fleet that stays unhealthy rings every refresh interval
+/// until the operator turns it off, which trains them to ignore it. All
+/// four of this condition's mutants survived the 2026-08-26 sweep.
+///
+/// Split out because the write itself goes to stderr (see the BEL below,
+/// and the rule-5 allowlist entry that justifies it), so the decision is
+/// the only part a test can reach.
+pub(crate) fn should_ring(notify_bell: bool, new_alerts: usize, prev_alerts: usize) -> bool {
+    notify_bell && new_alerts > prev_alerts
+}
+
 impl App {
     pub(crate) fn manual_refresh(&mut self) {
         self.spawn_refresh();
@@ -932,7 +946,7 @@ impl App {
                     .collect();
 
                 let new_alerts = compute_red_alerts(&envs, &self.worker_dlq_depths);
-                if self.notify_bell && new_alerts > self.prev_alerts {
+                if should_ring(self.notify_bell, new_alerts, self.prev_alerts) {
                     // BEL — write to stderr and flush so the terminal rings
                     // immediately even though we're in the alt screen.
                     use std::io::Write;
