@@ -793,3 +793,134 @@ fn coarse_age_buckets() {
         assert_eq!(coarse_age(secs), want, "{secs}s");
     }
 }
+
+// ── header/footer chrome that reports operator state ──────────────────
+//
+// Everything below renders through `crate::ui::draw` and was already
+// being *executed* by the 56 render call sites in this suite — but
+// nothing asserted on it, so the mutation sweep reported the whole
+// `ui/draw_*` area as survivors and the backlog read that as
+// "unreachable". It is not unreachable; it was unasserted. Three probes
+// on 2026-08-27 (footer first-run row, header alert plural, table pin
+// star) were each NOT CAUGHT before these tests existed.
+
+#[tokio::test]
+async fn read_only_mode_shows_the_badge_in_the_header() {
+    // The operator's one visual confirmation that writes are blocked.
+    // `deny_write` is separately tested to *refuse*; this pins that the
+    // refusal is advertised before they try, which is the difference
+    // between a safe session and a confusing one.
+    let mut app = test_app();
+    app.read_only = true;
+    app.rebuild_view();
+    let frame = render(&mut app, 160, 24);
+    assert!(
+        frame.contains("READ-ONLY"),
+        "read-only session must advertise itself; got:\n{frame}"
+    );
+}
+
+#[tokio::test]
+async fn a_writable_session_does_not_claim_to_be_read_only() {
+    // The other direction matters just as much: a stuck badge would
+    // tell an operator they were protected while every write went
+    // through.
+    let mut app = test_app();
+    app.read_only = false;
+    app.rebuild_view();
+    let frame = render(&mut app, 160, 24);
+    assert!(
+        !frame.contains("READ-ONLY"),
+        "writable session must not show the badge; got:\n{frame}"
+    );
+}
+
+#[tokio::test]
+async fn the_alert_pill_counts_and_pluralises() {
+    let mut app = test_app();
+    app.alerts = 1;
+    app.rebuild_view();
+    let one = render(&mut app, 160, 24);
+    assert!(
+        one.contains("1 alert") && !one.contains("1 alerts"),
+        "a single alert reads '1 alert'; got:\n{one}"
+    );
+
+    app.alerts = 3;
+    app.rebuild_view();
+    let many = render(&mut app, 160, 24);
+    assert!(
+        many.contains("3 alerts"),
+        "multiple alerts pluralise; got:\n{many}"
+    );
+}
+
+#[tokio::test]
+async fn no_alert_pill_when_there_are_no_alerts() {
+    let mut app = test_app();
+    app.alerts = 0;
+    app.rebuild_view();
+    let frame = render(&mut app, 160, 24);
+    assert!(
+        !frame.contains("alert"),
+        "a quiet fleet shows no alert pill; got:\n{frame}"
+    );
+}
+
+#[tokio::test]
+async fn the_first_run_hint_row_appears_only_on_a_first_launch() {
+    // The hint costs a footer row, so it has to disappear once the flag
+    // clears — a permanently-present hint is a permanently-lost row.
+    let mut app = test_app();
+    app.first_run_hint = true;
+    app.rebuild_view();
+    let shown = render(&mut app, 160, 24);
+    assert!(
+        shown.contains("First launch"),
+        "first launch shows the discovery hint; got:\n{shown}"
+    );
+
+    app.first_run_hint = false;
+    app.rebuild_view();
+    let hidden = render(&mut app, 160, 24);
+    assert!(
+        !hidden.contains("First launch"),
+        "the hint clears on subsequent launches; got:\n{hidden}"
+    );
+}
+
+#[tokio::test]
+async fn a_pinned_env_is_marked_in_the_table() {
+    let mut app = test_app();
+    app.environments = vec![
+        mk_env("api-prod", "uflexi", "Web", "Green"),
+        mk_env("api-staging", "uflexi", "Web", "Green"),
+    ];
+    app.pinned.insert("api-prod".to_string());
+    app.rebuild_view();
+    let buf = render_buf(&mut app, 160, 24);
+
+    // `find_row` alone is not enough here: the header breadcrumb also
+    // contains the selected env's name, so a name search matches chrome
+    // as well as the table row. Assert on the star instead — exactly
+    // one row in the frame carries it, and it is the pinned env's.
+    let row_text = |y: u16| {
+        (0..buf.area.width)
+            .map(|x| buf[(x, y)].symbol())
+            .collect::<String>()
+    };
+    let starred: Vec<String> = (0..buf.area.height)
+        .map(row_text)
+        .filter(|r| r.contains('\u{2605}'))
+        .collect();
+    assert_eq!(
+        starred.len(),
+        1,
+        "exactly one row should carry the pin star; got {starred:#?}"
+    );
+    assert!(
+        starred[0].contains("api-prod") && !starred[0].contains("api-staging"),
+        "the starred row is the pinned env's; got: {}",
+        starred[0]
+    );
+}
