@@ -456,13 +456,27 @@ than a wrong action. Working top-down by count is the wrong order.
   predicted equivalent *before* the run, and each now says why in place.
   One claimed fix had not worked: see the note on test shape below.
 
-- [ ] **`src/audit.rs` — the writer seam, 20 survivors** — of the form
-  `replace append_action_dispatched with ()`, plus `drain_webhooks` (5)
-  and `fire_webhook` (3). Same shape as the `aws/eb.rs` item below: the
-  function is I/O and nothing drives it. `drain_webhooks` is the
-  tractable one — `tokio::time` with `start_paused` makes its deadline
-  arithmetic deterministic — but it reads a process-global atomic, so it
-  needs the `MARKER_LOCK` treatment from `freeze.rs` first.
+- [x] **`drain_webhooks`** — 2026-08-27, five survivors across three
+  expressions. Time paused with `tokio::test(start_paused = true)`, so
+  the elapsed measurements are exact rather than wall-clock flaky.
+
+  Both directions, because either alone admits a broken drain: nothing
+  in flight must return immediately (`>= 0` there stalls every one-shot
+  CLI command for the full timeout), something in flight must be waited
+  for (`== 0` never waits at all), and a POST finishing mid-wait must
+  release it early rather than holding to the deadline — without that
+  third case, a drain that ignores the counter and just sleeps would
+  pass. Mutation-verified four ways: CAUGHT.
+
+  The counter is process-global, so the tests take a lock. It is a
+  `tokio::sync::Mutex`, not `std` — they await inside the guard, and
+  clippy refuses a `std::sync::MutexGuard` held across an await.
+  `aws::CACHE_TEST_LOCK` is the same shape for the same reason.
+
+- [ ] **`src/audit.rs` — the writer seam, ~15 survivors left** — of the
+  form `replace append_action_dispatched with ()`, plus `fire_webhook`
+  (3). The function *is* the I/O; same shape as the SDK seam, and
+  accounted for the same way rather than hidden.
 
 - [x] **`src/aws/eb.rs` — the reachable logic** — 19 of 30 done
   2026-08-26 by extracting pure helpers, which is the only way to reach

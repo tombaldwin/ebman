@@ -950,6 +950,21 @@ pub(crate) fn webhook_errors_to_stderr() {
 /// the machine. CLI exits call [`drain_webhooks`] first.
 static WEBHOOKS_IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// Serialises the tests that drive `WEBHOOKS_IN_FLIGHT`.
+///
+/// The counter is process-global, so two tests setting it at once would
+/// see each other's value — the same shape as the audit-log race a
+/// 2026-08-26 review found, where a test asserted against a neighbour's
+/// data. Only `fire_webhook` touches it in production, and no test
+/// reaches that (it makes a real request), so this exists purely to keep
+/// the tests below from racing each other as more are added.
+/// A tokio mutex, not a `std` one: these tests await inside the guard,
+/// and clippy rightly refuses a `std::sync::MutexGuard` held across an
+/// await point. `aws::CACHE_TEST_LOCK` is the same shape for the same
+/// reason.
+#[cfg(test)]
+pub(crate) static WEBHOOK_COUNTER_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Wait (bounded) for in-flight webhook POSTs to finish. Call before
 /// a one-shot CLI command returns/exits; a no-op when no webhook is
 /// configured or nothing is in flight. Polling is fine here: the
@@ -2017,6 +2032,83 @@ mod parser_properties {
             profile,
             Some(hostile),
             "the whole profile name must survive as ONE value"
+        );
+    }
+}
+
+#[cfg(test)]
+mod drain_tests {
+    use super::{drain_webhooks, WEBHOOKS_IN_FLIGHT, WEBHOOK_COUNTER_LOCK};
+    use std::sync::atomic::Ordering::SeqCst;
+    use std::time::Duration;
+
+    /// `drain_webhooks` waits for in-flight POSTs, and gives up at the
+    /// deadline rather than hanging a one-shot CLI command forever.
+    ///
+    /// Five survivors sat on three expressions: the deadline
+    /// arithmetic, the `> 0` in-flight test, and the `>= deadline`
+    /// timeout. Time is paused, so `sleep` auto-advances and the
+    /// elapsed measurements below are exact rather than wall-clock
+    /// flaky.
+    #[tokio::test(start_paused = true)]
+    async fn nothing_in_flight_returns_immediately() {
+        let _guard = WEBHOOK_COUNTER_LOCK.lock().await;
+        WEBHOOKS_IN_FLIGHT.store(0, SeqCst);
+
+        let start = tokio::time::Instant::now();
+        drain_webhooks(Duration::from_secs(10)).await;
+        assert_eq!(
+            start.elapsed(),
+            Duration::ZERO,
+            "with nothing in flight the drain must not wait — `>= 0` here \
+             would stall every one-shot command for the full timeout"
+        );
+    }
+
+    /// And with something in flight it waits, then gives up at the
+    /// deadline. Without this half, "return immediately" passes the
+    /// case above and the drain never waits for anything.
+    #[tokio::test(start_paused = true)]
+    async fn an_in_flight_post_is_waited_for_up_to_the_deadline() {
+        let _guard = WEBHOOK_COUNTER_LOCK.lock().await;
+        WEBHOOKS_IN_FLIGHT.store(1, SeqCst);
+
+        let start = tokio::time::Instant::now();
+        drain_webhooks(Duration::from_millis(500)).await;
+        let waited = start.elapsed();
+        WEBHOOKS_IN_FLIGHT.store(0, SeqCst);
+
+        assert!(
+            waited >= Duration::from_millis(500),
+            "the drain must wait for the POST — it returned after {waited:?}"
+        );
+        assert!(
+            waited < Duration::from_secs(5),
+            "and must give up at the deadline rather than hanging: {waited:?}"
+        );
+    }
+
+    /// A POST that finishes mid-wait releases the drain early rather
+    /// than holding it to the deadline.
+    #[tokio::test(start_paused = true)]
+    async fn a_finished_post_releases_the_drain_early() {
+        let _guard = WEBHOOK_COUNTER_LOCK.lock().await;
+        WEBHOOKS_IN_FLIGHT.store(1, SeqCst);
+
+        tokio::spawn(async {
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            WEBHOOKS_IN_FLIGHT.store(0, SeqCst);
+        });
+
+        let start = tokio::time::Instant::now();
+        drain_webhooks(Duration::from_secs(30)).await;
+        let waited = start.elapsed();
+        WEBHOOKS_IN_FLIGHT.store(0, SeqCst);
+
+        assert!(
+            waited < Duration::from_secs(30),
+            "the drain returned only at its deadline, so it is not \
+             actually watching the counter: {waited:?}"
         );
     }
 }
