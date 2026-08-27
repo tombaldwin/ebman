@@ -9,7 +9,7 @@ use super::*;
 
 pub(super) fn draw_help(f: &mut Frame, area: Rect, app: &mut App) {
     let theme = &app.theme;
-    let popup = centered_overlay(OverlaySize::Text, area);
+    let popup = overlay_rect(OverlaySize::Text, area);
     f.render_widget(Clear, popup);
     // Per-context help: when the user pressed `?` inside Detail / DLQ /
     // Action / Shell, show only the keys relevant to that screen. The

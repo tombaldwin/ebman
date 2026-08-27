@@ -23,6 +23,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   computed rather than left to constraint tie-breaking, which also fixes
   `VERSION` rendering `bui` for `build-1`.
 
+- **`:update` truncated the command it exists to give you.** It pinned
+  a one-line status message ending in the upgrade command — and on a
+  standalone install that command is a 52-character URL, so the line ran
+  to ~150 characters and the URL was the part that fell off: cut
+  mid-host at 120 columns, gone entirely at 80, leaving "download the
+  latest binary" and no hint of where from. It now opens an overlay
+  showing the install channel, the running and latest versions, and the
+  command on its own line.
+
+- **Overlays wasted a narrow terminal and then wrapped badly.** They are
+  sized as a percentage of the screen, so at 80 columns the help overlay
+  took 56 cells, left 24 unused, and wrapped the keymap mid-description
+  with the continuation losing its indent — no line said which key it
+  belonged to. Overlays now have a minimum readable width, and fall back
+  to the percentage as soon as the terminal is big enough for it to be
+  the larger.
+
 - **The header showed `Profile:` with no value on a narrow terminal**,
   which reads as an empty profile rather than a clipped one. Whole
   fields are now dropped instead.

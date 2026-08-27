@@ -350,6 +350,55 @@ pub(crate) fn kv<'a>(key: &'a str, value: &'a str, theme: &Theme) -> Vec<Span<'a
     ]
 }
 
+/// The narrowest an overlay should be before it starts wrapping prose
+/// into nonsense — unless the terminal itself is narrower.
+///
+/// 72 is the conventional comfortable reading measure, and it is what
+/// the help keymap needs to keep a key and its description on one line.
+pub(crate) const COMFORTABLE_OVERLAY_WIDTH: u16 = 72;
+
+/// A centred overlay rect that does not waste a narrow terminal.
+///
+/// The shared `tui_common::centered_overlay` sizes by PERCENTAGE, which
+/// is right on a wide screen and wrong on a small one: `OverlaySize::Text`
+/// is 70%, so an 80-column terminal got a 56-cell overlay, left 24 cells
+/// unused, and then wrapped the help keymap mid-description — the
+/// continuation losing its indent, so no line said which key it belonged
+/// to. The percentage exists to stop an overlay dominating a big screen;
+/// that reasoning simply does not apply when the screen is small.
+///
+/// So: never narrower than [`COMFORTABLE_OVERLAY_WIDTH`], never wider
+/// than the terminal less a small margin, and otherwise exactly what the
+/// shared size table says. On a wide terminal this is a no-op, which is
+/// why it wraps the shared helper rather than replacing it — pgman uses
+/// the same table and this is an ebman-side judgement about narrow
+/// terminals, not a change to the shared visual language.
+pub(crate) fn overlay_rect(size: OverlaySize, area: Rect) -> Rect {
+    let base = centered_overlay(size, area);
+    let margin = 4;
+    let floor = COMFORTABLE_OVERLAY_WIDTH.min(area.width.saturating_sub(margin));
+    let want_w = base.width.max(floor);
+    // Same argument vertically: a short overlay on a short terminal is
+    // all scrollback and no content.
+    let h_floor = 20u16.min(area.height.saturating_sub(margin));
+    let want_h = base.height.max(h_floor);
+    // Defence in depth, and currently unreachable: `floor` is capped at
+    // `area.width - 4` and `base` at 100% of the area, so `want_w` is
+    // always already inside. Kept because the base dimensions come from
+    // another crate — if `overlay_dims` ever returned more than 100 the
+    // alternative is a Rect that overflows ratatui's buffer. A mutation
+    // removing these clamps is NOT caught by any test, and that is a
+    // statement about their redundancy today, not about coverage.
+    let w = want_w.min(area.width);
+    let h = want_h.min(area.height);
+    Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    }
+}
+
 /// How many `key: value` fields fit in `available` columns.
 ///
 /// Fields are laid out in order with a separator between each, and the

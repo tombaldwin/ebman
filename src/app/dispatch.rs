@@ -209,15 +209,23 @@ impl App {
                 let channel = crate::update_check::detect_install_channel();
                 let cmd = channel.upgrade_command();
                 let current = env!("CARGO_PKG_VERSION");
-                let msg = match self.update_available.as_ref() {
-                    Some(release) => format!(
-                        "update available: {current} → {}.  run: {cmd}",
-                        release.version
-                    ),
-                    None => {
-                        format!("already on the latest ({current}).  to force-reinstall: {cmd}")
-                    }
-                };
+                let latest = self.update_available.as_ref().map(|r| r.version.as_str());
+                // An OVERLAY, not a pinned status line. The status bar is
+                // one line, and this message ends with the thing the
+                // operator actually needs — the command. On a standalone
+                // install that is a 52-character URL, so the line ran to
+                // ~150 characters and the URL was the part that fell off:
+                // at 120 columns it truncated mid-host, at 80 it vanished
+                // entirely, leaving "download the latest binary" and no
+                // hint of where from. A command you cannot read is the
+                // whole feature gone.
+                self.current_overlay = Some(Overlay::TextDump {
+                    title: match latest {
+                        Some(v) => format!("update available \u{2014} {current} \u{2192} {v}"),
+                        None => format!("ebman {current} \u{2014} up to date"),
+                    },
+                    body: channel.upgrade_body(current, latest),
+                });
                 // Best-effort yank to the clipboard so the operator can
                 // paste the upgrade command directly. Silent if the
                 // clipboard isn't reachable. Goes through `yank` like
@@ -225,7 +233,6 @@ impl App {
                 // how a test ends up writing to the real clipboard,
                 // since only `yank` is stubbed under `cfg(test)`.
                 let _ = crate::app::yank(cmd);
-                self.pin_status(msg);
             }
             "history" => {
                 self.current_overlay = Some(Overlay::History(self.format_message_log()));
