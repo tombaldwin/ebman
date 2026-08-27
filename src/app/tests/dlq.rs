@@ -774,3 +774,148 @@ async fn the_dlq_cursor_wraps_at_both_ends() {
     press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
     assert_eq!(sel(&app), None, "an empty queue has nothing to select");
 }
+
+/// `r` resends, `Ctrl-R` refetches, and the main-queue view refuses the
+/// destructive half.
+///
+/// The two share a character and are told apart by a modifier guard —
+/// ARCHITECTURE rule 4, whose *ordering* is enforced by
+/// `key_arm_order.rs` but whose *behaviour* had nothing on it. And the
+/// main/DLQ distinction is a safety rule: resend and purge are disabled
+/// on a live main queue, which is exactly the kind of restriction that
+/// stops mattering the moment nothing checks it.
+#[tokio::test]
+async fn resend_is_refused_on_the_main_queue_and_refetch_is_not() {
+    let viewing = |view: crate::app::QueueView| {
+        let mut app = read_only_app_with_env();
+        let mut dlq = open_dlq_state("api-prod");
+        dlq.viewing = view;
+        app.dlq = Some(dlq);
+        app.mode = crate::app::Mode::Dlq;
+        app
+    };
+
+    // `r` on the main queue refuses before reaching any write gate.
+    let mut app = viewing(crate::app::QueueView::Main);
+    press(&mut app, KeyCode::Char('r'), KeyModifiers::NONE);
+    assert!(
+        app.error_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("only available in DLQ view"),
+        "resend must be refused on a live main queue: {:?}",
+        app.error_message
+    );
+
+    // `r` in DLQ view goes through to the write gate instead.
+    let mut app = viewing(crate::app::QueueView::Dlq);
+    press(&mut app, KeyCode::Char('r'), KeyModifiers::NONE);
+    let msg = app.error_message.clone().unwrap_or_default();
+    assert!(
+        !msg.contains("only available in DLQ view"),
+        "resend is allowed in DLQ view: {msg:?}"
+    );
+
+    // Ctrl-R is a refetch, not a resend — it must NOT be refused on the
+    // main queue. If the guarded arm were shadowed, this would take the
+    // resend path and report the refusal above.
+    let mut app = viewing(crate::app::QueueView::Main);
+    press(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+    assert!(
+        !app.error_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("only available in DLQ view"),
+        "Ctrl-R refetches and is safe on either queue: {:?}",
+        app.error_message
+    );
+}
+
+/// `R` opens the replay prompt, and refuses when there is nothing to
+/// replay or the wrong queue is in view.
+#[tokio::test]
+async fn replay_opens_only_when_there_is_something_to_replay() {
+    let armed = |view: crate::app::QueueView, empty: bool| {
+        let mut app = test_app();
+        let mut dlq = open_dlq_state("api-prod");
+        dlq.viewing = view;
+        if empty {
+            dlq.messages.clear();
+        }
+        app.dlq = Some(dlq);
+        app.mode = crate::app::Mode::Dlq;
+        app
+    };
+    let prompt_open = |app: &App| app.dlq.as_ref().unwrap().replay_input.is_some();
+
+    let mut app = armed(crate::app::QueueView::Dlq, false);
+    press(&mut app, KeyCode::Char('R'), KeyModifiers::NONE);
+    assert!(prompt_open(&app), "R opens the replay prompt");
+
+    // Esc closes it without replaying.
+    press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(!prompt_open(&app), "Esc abandons the replay prompt");
+
+    // Wrong queue, and nothing to replay, both refuse.
+    let mut app = armed(crate::app::QueueView::Main, false);
+    press(&mut app, KeyCode::Char('R'), KeyModifiers::NONE);
+    assert!(!prompt_open(&app));
+    assert!(app
+        .error_message
+        .as_deref()
+        .unwrap_or("")
+        .contains("only available in DLQ view"));
+
+    let mut app = armed(crate::app::QueueView::Dlq, true);
+    press(&mut app, KeyCode::Char('R'), KeyModifiers::NONE);
+    assert!(!prompt_open(&app), "an empty DLQ has nothing to replay");
+    assert!(app.error_message.as_deref().unwrap_or("").contains("empty"));
+}
+
+/// `m` toggles which queue is loaded, and clears what was on screen so
+/// the old queue's messages can't be acted on against the new one.
+#[tokio::test]
+async fn m_toggles_the_queue_and_clears_the_stale_page() {
+    let mut app = test_app();
+    let mut dlq = open_dlq_state("api-prod");
+    dlq.viewing = crate::app::QueueView::Dlq;
+    app.dlq = Some(dlq);
+    app.mode = crate::app::Mode::Dlq;
+
+    press(&mut app, KeyCode::Char('m'), KeyModifiers::NONE);
+    {
+        let d = app.dlq.as_ref().unwrap();
+        assert!(matches!(d.viewing, crate::app::QueueView::Main), "toggled");
+        assert!(
+            d.messages.is_empty(),
+            "the previous queue's messages must not survive the switch — \
+             `x` acts on the selection, and it would be the wrong queue's"
+        );
+        assert_eq!(d.list_state.selected(), None);
+    }
+
+    // And back again, so "always switches to Main" fails.
+    press(&mut app, KeyCode::Char('m'), KeyModifiers::NONE);
+    assert!(matches!(
+        app.dlq.as_ref().unwrap().viewing,
+        crate::app::QueueView::Dlq
+    ));
+
+    // With no main queue known it refuses rather than switching to one
+    // that does not exist.
+    let mut app = test_app();
+    let mut dlq = open_dlq_state("api-prod");
+    dlq.main_queue_url = String::new();
+    app.dlq = Some(dlq);
+    app.mode = crate::app::Mode::Dlq;
+    press(&mut app, KeyCode::Char('m'), KeyModifiers::NONE);
+    assert!(matches!(
+        app.dlq.as_ref().unwrap().viewing,
+        crate::app::QueueView::Dlq
+    ));
+    assert!(app
+        .error_message
+        .as_deref()
+        .unwrap_or("")
+        .contains("no main queue"));
+}
