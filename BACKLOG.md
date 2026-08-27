@@ -144,8 +144,20 @@ The write/freeze pre-tag review (2 lenses) fixed 2 Critical + 2 Important + 1 Mi
 - [ ] **Whole-tree mutation sweep: triage the remaining survivors.**
   The first complete-ish sweep (2026-08-25, 16 shards, ~95% of the tree)
   produced 2832 caught / 2599 missed — a 52% kill rate on viable
-  mutants. Artifacts and the triage list are reproducible by re-running
-  the `mutants` workflow.
+  mutants.
+
+  **The v0.34.2..HEAD slice is DONE (2026-08-27)** — 478 mutants run
+  locally via `scripts/sweep.sh`, 352 caught / 105 missed, and all 105
+  triaged: the real gaps closed, the SDK and whole-function seam left
+  alone, and three genuine equivalents recorded in place (`AGE`'s match
+  arm, `hints_to_fit`'s final `>`, `newest_date`'s comparison) so they
+  are never re-investigated.
+
+  What remains is the other ~5800 mutants. That is 5+ days on one
+  machine — GitHub only manages ~4.4h by sharding across twenty-four —
+  so it needs either the runners back or a deliberate multi-day run.
+  Artifacts reproducible by re-running the `mutants` workflow, or
+  `scripts/sweep.sh` with no argument.
 
   Worked so far, all in the write/safety cluster: the `:rollback`
   wrong-env guard, the Terminate type-the-name guard, `AuditFilter`,
@@ -296,7 +308,7 @@ Three gates added to CI. Two of them found something on the first run, which is 
 - [x] report_bug scrubber mojibake — ALREADY FIXED; verified 2026-08-22. `scrub_12_digit_numbers` walks chars. The one remaining `byte as char` is inside `url_encode`, where the byte has just been matched against the ASCII unreserved set — correct there.
 - [x] ascii icon-mode stragglers — FIXED 2026-08-22, and **FOUR MORE FOUND 2026-08-27** because the guard that fix left behind checked a list (`▲`, `▼`) instead of a range. The new ones: the armed-rollback pill's `⏱`, the watching-deploy pill's `👁`, the header sort-direction `↑`/`↓` at both its sites (one of them `estimated_info_row_width`, the width estimator — consistent with the renderer and both wrong, so nothing looked odd), and the HEALTH column label `●`. The guard now fails on any character in the arrow / misc-technical / geometric / misc-symbol / dingbat / emoji blocks, excluding box drawing and block elements which ratatui draws regardless of icon style. It also renders a frame with every optional pill enabled — the two watcher pills were invisible to the old test partly because nothing in its `App` had a watchdog armed. A guard that renders half the surface protects half the surface. Original note follows. FIXED 2026-08-22. Five sites, not six: `ui.rs:3458` turned out to be `separator_glyph`, which already had an `IconStyle::Ascii` arm — my scan flagged its `_ =>` line for having no ascii context within three lines. The real five were the header delta arrows, the sort marker, and the Metrics anomaly badge, which had `▲` baked into its *message string* where a grep for glyph helpers would never find it. `series_anomaly_label` takes an `IconStyle` now. Guarded at both levels: the helpers in `ui.rs`, and a rendered frame in ascii mode carrying no `▲`/`▼` at all — because the pure helpers can be right while a call site still hardcodes.
 - [x] drift redaction — ALREADY FIXED in 0.27 (`redact_drift_fields` reaches `ebman drift` text and `--json`, the MCP tool, and the TUI overlay); entry was stale. A guard test now names the three call sites so a fourth consumer can't skip it. 2026-08-22.
-- [ ] **Minor bugs — verified 2026-08-22.** The old one-line batch of ~19 was checked item by item against current code; **eleven were already fixed** by the 0.29/0.30 work and are struck below. What survives:
+- [x] **Minor bugs — CLOSED 2026-08-27**, all seven children resolved. The last open one (Unicode display-width column math) was closed as WONTFIX today. Verified 2026-08-22. The old one-line batch of ~19 was checked item by item against current code; **eleven were already fixed** by the 0.29/0.30 work and are struck below. What survives:
   - [x] **Detail Logs tab scroll is unclamped upward** — NOT A BUG; my own verification was wrong. `scroll_apply` clamps only at 0, but the Logs call site in `detail_nav.rs` already clamps at the total line count. Checking the helper in isolation instead of its call site is the same mistake the `WRITE_COMMANDS` walk made.
   - [x] **`run_shell_command` doesn't chunk >50 instances** — FIXED 2026-08-22. Sends in chunks of 50 and keys the poll loop on a per-instance command id, since there is now more than one. A failed chunk no longer discards the successful ones: those instances come back as `SendFailed` rows by name, which is strictly more than the operator got before.
   - [x] **`derive_dlq_url` guesses** — FIXED 2026-08-23 via `DlqOrigin` + `dlq_absence_note`; see the 0.31.1 changelog. Original note follows.  — `format!("{trimmed}-dlq")`, right for the EB convention. Downgraded on inspection: a wrong guess IS detected (`NonExistentQueue` on the derived URL resolves to "no DLQ" rather than an error), so the gap is only that the operator isn't told the difference between "no DLQ configured" and "we guessed a name and it wasn't there". Observability, not correctness.
