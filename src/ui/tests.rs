@@ -2033,3 +2033,167 @@ fn column_widths_at_the_exact_budget_boundary() {
     let w2 = column_widths(&cols, exact + 1);
     assert_eq!(w2, w, "fixed-width columns do not absorb slack");
 }
+
+#[test]
+fn the_title_boundary_is_exact() {
+    // `version_title`'s overhead is `decoration + 2 borders + 4 margin`.
+    // The sweep mutated each of those `+`s and nothing failed, because
+    // the existing test used widths far from the boundary. Only a width
+    // either side of the exact threshold can tell the arithmetic apart.
+    let theme = Theme::dark(); // Unicode: decoration 8, so overhead 14.
+    let version = env!("CARGO_PKG_VERSION");
+    let full_len = format!("ebman {version} \u{b7} 2026-08-27").chars().count();
+    let overhead = 8 + 2 + 4;
+    let threshold = (full_len + overhead) as u16;
+
+    // Only meaningful when this build actually has a date to drop.
+    if release_date().is_some() {
+        assert!(
+            version_title(&theme, threshold).contains('\u{b7}'),
+            "the date should survive at exactly the threshold"
+        );
+        assert!(
+            !version_title(&theme, threshold - 1).contains('\u{b7}'),
+            "and be dropped one cell below it"
+        );
+    }
+}
+
+#[test]
+fn the_unicode_watcher_glyphs_are_actually_glyphs() {
+    // Replacing either with the ascii string "xyzzy" survived: it is
+    // non-empty, distinct, and ascii, which is everything the previous
+    // test asked for. The property that distinguishes a glyph from
+    // arbitrary text is that the UNICODE form is not ascii.
+    let mut uni = Theme::dark();
+    uni.icons = IconStyle::Unicode;
+    assert!(
+        !rollback_timer_glyph(&uni).is_ascii(),
+        "the unicode rollback glyph is ascii text: {:?}",
+        rollback_timer_glyph(&uni)
+    );
+    assert!(
+        !watching_glyph(&uni).is_ascii(),
+        "the unicode watching glyph is ascii text: {:?}",
+        watching_glyph(&uni)
+    );
+}
+
+#[test]
+fn an_overlay_is_actually_centred() {
+    use ratatui::layout::Rect;
+    // `area.x + offset` and `(area.width - w) / 2` were both mutable
+    // with nothing failing, because every test asserted only the SIZE.
+    // Position is half of what `centered_overlay` promises.
+    for (aw, ah) in [(200u16, 60u16), (120, 40), (100, 30)] {
+        let area = Rect {
+            x: 7,
+            y: 3,
+            width: aw,
+            height: ah,
+        };
+        let r = overlay_rect(OverlaySize::Text, area);
+        let left = r.x - area.x;
+        let right = (area.x + area.width) - (r.x + r.width);
+        assert!(
+            left.abs_diff(right) <= 1,
+            "not horizontally centred in {aw}x{ah}: {left} left, {right} right"
+        );
+        let top = r.y - area.y;
+        let bottom = (area.y + area.height) - (r.y + r.height);
+        assert!(
+            top.abs_diff(bottom) <= 1,
+            "not vertically centred in {aw}x{ah}: {top} top, {bottom} bottom"
+        );
+        assert!(r.x >= area.x && r.y >= area.y, "overlay escaped the area");
+    }
+}
+
+#[test]
+fn only_the_first_field_is_free_of_a_separator() {
+    // `if i == 0` decides which field skips the separator. With two
+    // fields the totals are identical either way — w0+sep+w1 versus
+    // (sep+w0)+w1 — so only THREE fields can tell them apart: the
+    // correct form costs two separators, the mutated one costs a single
+    // separator no matter how many fields there are.
+    let w = [10usize, 10, 10];
+    assert_eq!(fields_that_fit(&w, 5, 40), 3, "10+5+10+5+10 = 40 exactly");
+    assert_eq!(
+        fields_that_fit(&w, 35, 35),
+        1,
+        "sanity: a huge separator leaves room for one"
+    );
+    assert_eq!(
+        fields_that_fit(&w, 5, 39),
+        2,
+        "one cell short of three — the mutated form would fit all three"
+    );
+}
+
+#[test]
+fn hints_to_fit_is_exact_at_the_second_hint() {
+    // The early `line fits` return meant the loop was never entered at
+    // its own boundary, so `>` vs `>=` there survived. A line LONGER
+    // than the budget forces the loop, and then the second hint lands
+    // exactly on the limit.
+    //
+    // " ab  cd  ef" is 11 cells; " ab  cd" is 7.
+    assert_eq!(
+        hints_to_fit(" ab  cd  ef", 7),
+        " ab  cd",
+        "exact fit keeps it"
+    );
+    assert_eq!(
+        hints_to_fit(" ab  cd  ef", 6),
+        " ab",
+        "one cell short drops it"
+    );
+}
+
+#[test]
+fn the_help_wrap_floor_is_exact() {
+    // `avail < 8` — below that there is no useful wrapping to do. The
+    // boundary is the only place `<` and `<=` differ.
+    let t = Theme::dark();
+    let key_col = super::help::help_line("x", "y", &t).spans[0]
+        .content
+        .chars()
+        .count();
+    let long = "aaaa bbbb cccc dddd";
+    // avail == 8: wrapping is allowed.
+    let at = super::help::wrap_help_lines(vec![super::help::help_line("x", long, &t)], key_col + 8);
+    assert!(at.len() > 1, "avail == 8 should wrap, got {at:?}");
+    // avail == 7: left alone.
+    let below =
+        super::help::wrap_help_lines(vec![super::help::help_line("x", long, &t)], key_col + 7);
+    assert_eq!(
+        below.len(),
+        1,
+        "avail < 8 should pass through, got {below:?}"
+    );
+}
+
+#[test]
+fn column_widths_give_the_rounding_remainder_to_a_growing_column() {
+    // The remainder from integer division goes to the greediest column.
+    // `filter(|w| **w > 0)` is what stops it landing on a fixed-width
+    // one, where it renders as padding beside content that never gets
+    // longer. Needs a slack that does NOT divide evenly by the total
+    // weight, or there is no remainder to misplace.
+    let cols = vec![
+        ("NAME", SortKey::Name),     // weight 3
+        ("STATUS", SortKey::Status), // weight 0
+        ("AGE", SortKey::Age),       // weight 0
+    ];
+    let mins: u16 = cols.iter().map(|(l, _)| column_min_width(l)).sum();
+    let spacing = cols.len() as u16 - 1;
+    // +5 slack against a total weight of 3: 5/3 = 1 with 2 left over.
+    let w = column_widths(&cols, mins + spacing + 5);
+    assert_eq!(w[1], column_min_width("STATUS"), "STATUS took slack");
+    assert_eq!(w[2], column_min_width("AGE"), "AGE took slack");
+    assert_eq!(
+        w[0],
+        column_min_width("NAME") + 5,
+        "NAME should get all of it"
+    );
+}

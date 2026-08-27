@@ -491,12 +491,13 @@ pub(crate) fn hints_to_fit(line: &str, available: u16) -> String {
         .collect();
     let mut out = String::new();
     for hint in &hints {
-        let candidate_len = if out.is_empty() {
-            hint.chars().count() + 1
-        } else {
-            out.chars().count() + 2 + hint.chars().count()
-        };
-        if candidate_len > available && !out.is_empty() {
+        // Only the non-first case can break — the first hint is always
+        // kept — so there is no candidate length to compute for it. It
+        // used to be computed anyway and thrown away, which meant the
+        // arithmetic could be mutated freely with nothing to notice:
+        // two permanently-surviving mutants standing for dead code
+        // rather than a missing test.
+        if !out.is_empty() && out.chars().count() + 2 + hint.chars().count() > available {
             break;
         }
         if out.is_empty() {
@@ -511,6 +512,10 @@ pub(crate) fn hints_to_fit(line: &str, available: u16) -> String {
     // back to. Do it here rather than leaving ratatui to, so the return
     // value always honours the width it was given and a caller can rely
     // on that.
+    // `>` and `>=` are indistinguishable here — at exactly `available`,
+    // `take(available)` is a no-op — so that mutant is equivalent and
+    // will survive every sweep. Noted so the next triage does not spend
+    // time on it.
     if out.chars().count() > available {
         out = out.chars().take(available).collect();
     }
