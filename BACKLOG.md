@@ -1310,6 +1310,33 @@ than a wrong action. Working top-down by count is the wrong order.
   golden-frame snapshots at fixed terminal sizes, not per-survivor
   tests. `pgman` already uses `insta` for exactly that.
 
+  **Refined 2026-08-27 — "~440 survivors" is two populations, not
+  one, and the reasoning above only applies to the first.**
+
+  *Layout arithmetic* (column widths, truncation points, elision
+  thresholds) — the argument above stands unchanged. Low value per
+  survivor, brittle under legitimate layout change, defer.
+
+  *State-reporting branches* — `if app.read_only`, `if app.alerts > 0`,
+  `if app.pinned.contains(..)`, `if app.first_run_hint`. These are not
+  layout; they are the mapping from App state to what the operator is
+  told, and a wrong answer misinforms rather than misaligns. They are
+  worth pinning, they are cheap to pin, and a test for one does not
+  break when a column moves.
+
+  They were also never unreachable. `crate::ui::draw` is called by 56
+  render sites in the suite already. Three mutations — footer's
+  first-run row, header's alert plural, table's pin star — were each
+  NOT CAUGHT, then CAUGHT once six tests were written against the
+  existing `support::render` harness. No new infrastructure, no PTY.
+
+  So the survivor count was read as a statement about reachability when
+  it is only a statement about assertions. Four state-reporting
+  branches are now covered (read-only badge pinned in *both*
+  directions — a badge stuck on is the dangerous failure). The rest of
+  that population has not been enumerated; the number to trust is
+  "unknown subset of 440", not 440.
+
 #### Console parity — BONUS
 
 ### Feature candidates — competitive scan (2026-05-24)
