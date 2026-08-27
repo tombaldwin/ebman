@@ -153,11 +153,33 @@ holds:
    shared helper now fails 12 of them — which is the evidence the
    migration is wired rather than merely compiling.
 
-6. **QA lane** *(architecture)* — `ebman --demo` plus `ctl key` /
-   `ctl screen` / `ctl state` can drive the real binary headlessly. It
-   is the only route to the ~440 `ui/draw_*` survivors, and nothing
-   currently exercises `ctl` that way. Shape: a handful of scripted key
-   sequences against the synthetic fleet, asserting on rendered frames.
+6. ~~QA lane~~ — **premise disproved 2026-08-27.** The item called a
+   PTY-driven `--demo` + `ctl` harness "the only route to the ~440
+   `ui/draw_*` survivors". It is not a route at all in the sense meant:
+   those survivors were already reachable. `crate::ui::draw` is called
+   by 56 render sites in the suite via `support::render`, and the
+   survivors persisted because nothing asserted on the output.
+
+   Shown rather than argued: three mutations in three different `ui/`
+   files (footer's first-run row, header's alert plural, table's pin
+   star) were each NOT CAUGHT, then CAUGHT after six tests using the
+   harness that already existed. Cost: no new dependency, no PTY, no
+   subprocess.
+
+   The ~440 also turned out to be two populations. Layout arithmetic
+   stays deferred for the reason the backlog already gave — pinning a
+   pixel breaks on every legitimate layout change. State-reporting
+   branches (`read_only`, `alerts`, `pinned`, `first_run_hint`) are
+   worth pinning and four now are, the read-only badge in both
+   directions. The remaining state-reporting branches are not
+   enumerated; `BACKLOG.md` records the honest number as "unknown
+   subset of 440".
+
+   A `ctl`-driven lane may still be worth building, but for what it
+   uniquely tests — the socket transport, key-spec parsing end to end,
+   and `main.rs`'s TUI setup, none of which `cargo test --lib`
+   compiles. That is a different and much smaller item, and it is the
+   net `lint::run` (item 4) wants. Re-file it that way.
 
 ### Then
 
