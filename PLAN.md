@@ -125,9 +125,27 @@ holds:
 
 ### Next
 
-4. **`lint::run` split** *(architecture)* — separate the one-shot body
-   from the `--watch` loop. This is what makes its remaining ~29
-   survivors reachable at all.
+4. ~~`lint::run` split~~ — **re-scoped 2026-08-27, and the original
+   justification was wrong.** The item claimed the split "makes its
+   remaining ~29 survivors reachable at all". Reading them: they are
+   `!quiet` / `!json` output-suppression, the lowest-value survivor
+   class there is, and reaching them means asserting on captured
+   stdout. Meanwhile the safety net for a 604-line refactor of the
+   subcommand that gates users' CI is four `tests/cli.rs` invocations,
+   none of which test behaviour — two arg-validation rejections and a
+   help-text check.
+
+   So the split was not done. What was done instead is the part that
+   carried the risk: `--baseline` drift and the `--watch` interval were
+   *decisions* with no cover, sitting inline between two pages of
+   printing. Both are now pure, tested functions (9 tests, 6 mutations,
+   all CAUGHT). All 26 pre-existing tests in `cli/lint.rs` were
+   argument parsing.
+
+   The 604-line body remains, and still trips the ~300-line trigger at
+   `PLAN.md:91`. It is now a *readability* item rather than a coverage
+   one, and it wants the integration-test net built first — which is
+   what item 6 is for. Re-file it after the QA lane, not before.
 
 5. ~~Cursor wrap unification~~ — **done 2026-08-27.** 22 sites across
    11 modules, not the 12 across 5 the backlog recorded. The per-site

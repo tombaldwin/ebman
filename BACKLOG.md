@@ -791,8 +791,35 @@ than a wrong action. Working top-down by count is the wrong order.
   a line prints. Of the other 29, the filters and exit code are now
   covered. What is genuinely left is a handful of flag combinations
   (`fix && yes`, `!to_set.is_empty() && yes`, the EBL015 skip) that sit
-  inline against `eprintln!` + `exit`, and the `--watch` loop's own
-  bookkeeping.
+  inline against `eprintln!` + `exit`.
+
+  **The `--watch` loop's own bookkeeping came out 2026-08-27** —
+  `baseline_drift` and `watch_sleep`, the last two decisions in this
+  body that weren't about whether a line prints:
+
+  - **`baseline_drift`** — `ebman lint --baseline` is a CI gate, so
+    `new_issues` is what fails someone's build. Comparison is by
+    `lint::issue_identity`, which hashes the env in: EBL001 on staging
+    must not be excused by EBL001 on prod sitting in the baseline, or a
+    fleet-wide regression walks straight through. `baseline_count` is
+    deduplicated because "N issues stable" means distinct issues.
+  - **`watch_sleep`** — start-to-start interval. Takes a
+    `chrono::Duration` so the backwards-clock case (NTP step,
+    suspend/resume) is a tested branch rather than an
+    `unwrap_or_default()` inside a `tokio::select!` arm, where the
+    wrong answer is a hot loop against the AWS API.
+
+  Six mutations, all CAUGHT. All 26 pre-existing tests in this file
+  were argument parsing.
+
+  **The remaining split is now a readability item, not a coverage one,
+  and the original framing was wrong.** `PLAN.md` recorded it as "what
+  makes its remaining ~29 survivors reachable at all" — but those are
+  the output-suppression ones, reachable only by asserting on captured
+  stdout, which is the lowest-value class here. Meanwhile the net for
+  refactoring 604 lines of the subcommand that gates users' CI is four
+  `tests/cli.rs` invocations, none behavioural. Build the integration
+  net first (the QA lane), then split.
 
   The remaining structural work is splitting the one-shot body from the
   `--watch` loop, which would make both reachable. Still wants scoping
