@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.35.0] — 2026-08-27
+
+**If you rely on `:freeze-deploys` or `:incident` as a safety net, this
+release matters.** A freeze marker whose timestamp could not be parsed
+was treated as stale, deleted, and enforcement stopped — silently, and
+by definition during the incident the freeze was declared for. Details
+below.
+
 ### Added
 
 - `:help <topic>` opens one help topic by name — `global`, `detail`,
@@ -2582,7 +2590,8 @@ Initial public release. Headline surface:
 - Published to crates.io as `ebman`.
 - Homebrew tap at `tombaldwin/homebrew-tap`.
 
-[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.34.2...HEAD
+[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.35.0...HEAD
+[0.35.0]: https://github.com/tombaldwin/ebman/compare/v0.34.2...v0.35.0
 [0.34.2]: https://github.com/tombaldwin/ebman/compare/v0.34.1...v0.34.2
 [0.34.1]: https://github.com/tombaldwin/ebman/compare/v0.34.0...v0.34.1
 [0.34.0]: https://github.com/tombaldwin/ebman/compare/v0.33.0...v0.34.0
