@@ -65,6 +65,30 @@ ebman completions <bash|zsh|fish>                                           # pr
 
 Exit-code convention (CI scripts can branch on these): `0` clean, `1` AWS-layer error, `2` usage error, `3` issues / drift found.
 
+`3` also covers **refused and halted writes**, which is worth spelling
+out because a script branching on "issues found" will otherwise
+misread them:
+
+- A write refused before it started — a `safety.envs.*` / `safety.accounts.*`
+  pin, read-only mode, or an active `:freeze-deploys` / `:incident`
+  marker from a live TUI session. Nothing was dispatched; the reason
+  goes to stderr.
+- A `rollout` **halted part-way** by a freeze declared while it was
+  running. Regions already dispatched stay dispatched; the rest are not
+  attempted. This exits `3` even though no region *failed*, because the
+  rollout did not complete and reporting success would be a lie.
+
+  The unattempted regions are listed on **stdout** alongside the ones
+  that ran — `REGION\tskipped (rollout halted)` in text mode, or a row
+  with `"ok":false,"err":"skipped (rollout halted)"` in `--json`. Only
+  the halt *reason* goes to stderr. So a script can recover exactly
+  which regions still need deploying from the normal output, without
+  parsing stderr.
+
+For a refused write, stderr names the cause, so a script that needs to
+tell a pin from a freeze should read it rather than infer from the
+code.
+
 `ebman lint` exits `1` when a check could not run — for example an
 `AccessDenied` on `iam:SimulatePrincipalPolicy`, which EBL020 needs.
 The rule skips rather than firing a false positive, but the run is not
