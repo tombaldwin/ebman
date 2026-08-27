@@ -2409,3 +2409,49 @@ async fn a_throttled_refresh_backs_off_into_the_future() {
     );
     assert_eq!(app.consecutive_throttles, 0, "and resets the streak");
 }
+
+/// The periodic update re-check must run while the TUI is idle, and
+/// must not duplicate the startup check.
+///
+/// A structural pin, and honest about being one: `App::run`'s select
+/// loop is not reachable from a unit test, so this asserts the shape of
+/// the wiring rather than its behaviour. It cannot prove a re-check
+/// ever fires — only that the three things that would silently stop it
+/// firing correctly are still as written.
+#[test]
+fn the_update_recheck_ticker_is_idle_safe_and_does_not_double_fire() {
+    let src = std::fs::read_to_string("src/app.rs").expect("read app.rs");
+    let body = src
+        .split_once("\n    pub async fn run(")
+        .expect("App::run moved or was renamed")
+        .1;
+    let body = body.split("\n#[cfg(test)]").next().unwrap_or(body);
+
+    // `interval` fires immediately on its first tick, which would
+    // re-check crates.io milliseconds after the startup check already
+    // did. `interval_at` with a delayed start is what avoids that.
+    assert!(
+        body.contains("let mut update_tick = tokio::time::interval_at("),
+        "the update ticker must use `interval_at` — plain `interval` \
+         fires immediately and duplicates the startup check"
+    );
+
+    // The arm must be unconditional. `anim` is gated on
+    // `loading_since.is_some()` and so does not run while idle, which
+    // is exactly when a long-lived session needs this.
+    assert!(
+        body.contains("_ = update_tick.tick() => {"),
+        "the update ticker needs an unconditional select arm; a `, if ..` \
+         guard would stop it firing while the TUI sits idle"
+    );
+
+    let arm = body
+        .split_once("_ = update_tick.tick() => {")
+        .expect("arm present, just asserted")
+        .1;
+    let arm = arm.split_once('}').map(|(a, _)| a).unwrap_or(arm);
+    assert!(
+        arm.contains("self.spawn_update_check()"),
+        "the ticker arm must actually dispatch a check; got: {arm:?}"
+    );
+}

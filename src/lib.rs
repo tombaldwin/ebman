@@ -73,6 +73,17 @@ pub(crate) mod eb_cli;
 pub(crate) mod form;
 pub(crate) mod lint;
 pub(crate) mod llm;
+/// Release metadata derived from `CHANGELOG.md` at build time.
+///
+/// `build.rs` is the real consumer and reaches this file through
+/// `include!`, independently of the module system — so the library
+/// itself compiles it only under `cfg(test)`, where the drift guard in
+/// `app::tests::dispatch::docs_drift` exercises the same parser the
+/// build script ran. Compiling it into the release binary would be
+/// dead code, and silencing that with `#[allow]` would hide the fact
+/// that nothing at runtime needs it.
+#[cfg(test)]
+pub(crate) mod release_meta;
 pub(crate) mod terraform;
 
 // `font_probe` and `overlay` live in the shared `tui-common` crate so

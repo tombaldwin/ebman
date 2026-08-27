@@ -1240,3 +1240,113 @@ fn micro_bar_is_proportional_and_guards_its_edges() {
         "an eighth of the range is one partial glyph: {quarter:?}"
     );
 }
+
+#[test]
+fn build_age_counts_whole_days_since_the_release() {
+    let now = chrono::DateTime::parse_from_rfc3339("2026-08-27T12:00:00Z")
+        .expect("fixed instant")
+        .with_timezone(&chrono::Utc);
+    assert_eq!(build_age_days("2026-08-27", now), Some(0), "released today");
+    assert_eq!(build_age_days("2026-08-20", now), Some(7));
+    assert_eq!(build_age_days("2025-08-27", now), Some(365));
+}
+
+#[test]
+fn a_release_date_in_the_future_yields_no_age() {
+    // Not hypothetical: anyone building from a checkout on release day
+    // in a timezone ahead of UTC sees a date one day in the future.
+    // Returning a negative age would render "build is -1d old", and
+    // clamping it to 0 would be a quiet lie about a state that should
+    // simply not produce a nudge.
+    let now = chrono::DateTime::parse_from_rfc3339("2026-08-27T12:00:00Z")
+        .expect("fixed instant")
+        .with_timezone(&chrono::Utc);
+    assert_eq!(build_age_days("2026-08-28", now), None);
+    assert_eq!(build_age_days("2030-01-01", now), None);
+}
+
+#[test]
+fn an_unparseable_release_date_yields_no_age() {
+    let now = chrono::Utc::now();
+    for bad in ["", "soon", "2026-8-27", "27-08-2026"] {
+        assert_eq!(build_age_days(bad, now), None, "accepted {bad:?}");
+    }
+}
+
+#[test]
+fn the_version_title_names_the_running_version() {
+    let title = version_title(&crate::theme::Theme::dark(), 200);
+    assert!(
+        title.starts_with(&format!("ebman {}", env!("CARGO_PKG_VERSION"))),
+        "got {title:?}"
+    );
+    // Whether a date follows depends on the build, so assert the shape
+    // rather than the value: either bare, or version + separator + an
+    // ISO date.
+    match release_date() {
+        Some(d) => assert!(title.ends_with(d), "got {title:?}"),
+        None => assert_eq!(title, format!("ebman {}", env!("CARGO_PKG_VERSION"))),
+    }
+}
+
+#[test]
+fn the_title_drops_the_date_before_it_would_truncate() {
+    let theme = crate::theme::Theme::dark();
+    let version = env!("CARGO_PKG_VERSION");
+    // Widths are the BLOCK's, not the terminal's — `draw_header` gives
+    // this block 60% of the row, so a 50-column terminal lands here as
+    // 30. That is the width at which the date used to truncate to
+    // `2026-08-2`.
+    let full = version_title(&theme, 200);
+    let narrow = version_title(&theme, 30);
+    let tiny = version_title(&theme, 12);
+
+    assert_eq!(narrow, format!("ebman {version}"), "date dropped, not cut");
+    assert_eq!(
+        tiny, "ebman",
+        "version dropped too when even that won't fit"
+    );
+    // Whatever the width, the title is never a prefix-truncated version
+    // of a longer one — that was the regression this guards.
+    for t in [&full, &narrow, &tiny] {
+        assert!(
+            !t.ends_with('-') && !t.ends_with(' '),
+            "looks truncated: {t:?}"
+        );
+    }
+    assert!(full.len() >= narrow.len() && narrow.len() >= tiny.len());
+}
+
+#[test]
+fn the_title_accounts_for_the_icon_styles_decoration() {
+    // Unicode wraps the title in `[ ◆ … ◆ ]`, powerline in a bare pair
+    // of spaces. The same block width therefore fits a different title,
+    // and a single hardcoded overhead would clip one style or under-use
+    // the other.
+    //
+    // Asserting a `<=` ordering is not enough — it still holds when
+    // every overhead is made equal, so it cannot fail for the thing it
+    // names. This looks for a width that actually DISCRIMINATES: one
+    // where the roomier decoration keeps the date and the tighter one
+    // has already dropped it. Scanned rather than hardcoded so the test
+    // survives the version string changing length at a release.
+    let uni = crate::theme::Theme::dark();
+    let mut power = crate::theme::Theme::dark();
+    power.icons = IconStyle::Powerline;
+
+    let discriminating = (8..120u16).find(|&w| {
+        version_title(&power, w).contains('\u{b7}') && !version_title(&uni, w).contains('\u{b7}')
+    });
+    assert!(
+        discriminating.is_some(),
+        "no width distinguishes powerline from unicode decoration — \
+         the per-style overhead is not being applied"
+    );
+
+    // And at that width the ordering is the expected way round.
+    let w = discriminating.unwrap_or(0);
+    assert!(
+        version_title(&power, w).chars().count() > version_title(&uni, w).chars().count(),
+        "tighter decoration should leave room for MORE title, not less"
+    );
+}

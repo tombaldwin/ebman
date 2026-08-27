@@ -486,6 +486,14 @@ pub struct App {
     /// Newer ebman release advertised by crates.io, if any. Populated by the
     /// fire-and-forget update-check task that runs once at startup.
     pub(crate) update_available: Option<crate::update_check::LatestRelease>,
+    /// This build's release date, from `CHANGELOG.md` via `build.rs`.
+    ///
+    /// Held on `App` rather than read from the compiled-in constant at
+    /// the render site so tests can age a build without recompiling —
+    /// the same reason `paginate_until` takes its deadline as an
+    /// argument. The staleness pill is otherwise only reachable by
+    /// waiting ninety days.
+    pub(crate) release_date: Option<&'static str>,
     /// When `true`, `run()` exits and `main()` re-execs the binary so the
     /// user keeps their terminal session across a code change. Driven by
     /// `ControlOp::Reload` over the control socket.
@@ -1343,6 +1351,7 @@ impl App {
             why_red_session: 0,
             why_items: Vec::new(),
             update_available: None,
+            release_date: crate::ui::release_date(),
             reload_requested: false,
             pending_shell_target: None,
             pending_env_edit: None,
@@ -1634,6 +1643,7 @@ impl App {
             why_red_session: 0,
             why_items: Vec::new(),
             update_available: None,
+            release_date: crate::ui::release_date(),
             reload_requested: false,
             pending_shell_target: None,
             pending_env_edit: None,
@@ -1675,6 +1685,12 @@ impl App {
         app
     }
 
+    /// How often a running session re-checks crates.io. Six hours:
+    /// frequent enough that a day-long session notices a release,
+    /// infrequent enough to be invisible to crates.io and to anyone
+    /// watching their own network.
+    const UPDATE_RECHECK_INTERVAL_SECS: u64 = 6 * 60 * 60;
+
     pub async fn run(
         &mut self,
         terminal: &mut Tui,
@@ -1689,6 +1705,23 @@ impl App {
         // PTY output renders promptly. Idle-gated below.
         let mut shell_tick = tokio::time::interval(Duration::from_millis(30));
         shell_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Re-check crates.io periodically. ebman is a TUI people leave
+        // open for days, and the startup check would otherwise be the
+        // only one a long-lived session ever ran — a release published
+        // an hour after launch stayed invisible until the next restart.
+        //
+        // A separate ticker, not the animation one: `anim` is gated on
+        // `loading_since.is_some()` and so does not run while idle,
+        // which is precisely when this needs to fire.
+        //
+        // `interval_at` rather than `interval` because `interval` fires
+        // immediately on its first tick, which would duplicate the
+        // startup check a few milliseconds after it was dispatched.
+        let mut update_tick = tokio::time::interval_at(
+            tokio::time::Instant::now() + Duration::from_secs(Self::UPDATE_RECHECK_INTERVAL_SECS),
+            Duration::from_secs(Self::UPDATE_RECHECK_INTERVAL_SECS),
+        );
+        update_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         // Listen for OS termination signals (SIGINT from terminal Ctrl-C,
         // SIGTERM from cargo-watch / process supervisors). Default handlers
         // would kill us abruptly without running `leave_tui` — leaving the
@@ -1810,6 +1843,9 @@ impl App {
                         // tick proceeds normally even if no refresh fired here.
                         self.throttle_until = None;
                     }
+                }
+                _ = update_tick.tick() => {
+                    self.spawn_update_check();
                 }
                 _ = shell_tick.tick(), if self.current_shell.is_some() => {
                     // ~30 fps redraw while a shell pane is live so typed

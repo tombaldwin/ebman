@@ -89,6 +89,80 @@ pub(crate) fn multi_select_glyph(theme: &Theme) -> &'static str {
 /// one that only reports, and the two must stay distinguishable in
 /// ascii for the same reason they use different glyphs and colours in
 /// unicode.
+/// How old a build has to be before the header suggests checking for
+/// an update. Three months: long enough not to nag someone who
+/// installed last week, short enough that a year-old build never sits
+/// there unremarked.
+pub(crate) const STALE_BUILD_DAYS: i64 = 90;
+
+/// The build's identity for the header title — `ebman 0.35.0 · 2026-08-27`.
+///
+/// The date comes from `CHANGELOG.md` via `build.rs`. When it could not
+/// be determined (a working tree whose `Cargo.toml` was bumped before
+/// the changelog section was cut) the version is shown alone rather
+/// than with a placeholder, because a title reading `ebman 0.35.0 ·
+/// unknown` invites a bug report about the word "unknown".
+pub(crate) fn version_title(theme: &Theme, available: u16) -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    let short = format!("ebman {version}");
+    let full = match release_date() {
+        Some(date) => format!("{short} \u{b7} {date}"),
+        None => short.clone(),
+    };
+    // `titled_block` wraps the title, and the block draws two borders.
+    // The extra four keeps a few cells of border visible so the title
+    // does not butt against the corner and read as clipped.
+    let overhead = match theme.icons {
+        IconStyle::Ascii => 4,     // `[ x ]`
+        IconStyle::Powerline => 2, // ` x `
+        IconStyle::Unicode => 8,   // `[ * x * ]`
+    } + 2
+        + 4;
+    let fits = |s: &str| s.chars().count() + overhead <= available as usize;
+    // Drop the date before letting it truncate: `ebman 0.35.0 \u{b7} 2026-08-2`
+    // is worse than no date at all, and the title never truncated
+    // before this carried anything but the word "ebman".
+    if fits(&full) {
+        full
+    } else if fits(&short) {
+        short
+    } else {
+        "ebman".to_string()
+    }
+}
+
+/// The compiled-in release date, or `None` if `build.rs` could not find
+/// one. Empty rather than absent because `cargo:rustc-env` always sets
+/// the variable; it is the value that carries "unknown".
+pub(crate) fn release_date() -> Option<&'static str> {
+    let d = env!("EBMAN_RELEASE_DATE");
+    (!d.is_empty()).then_some(d)
+}
+
+/// Whole days between this build's release date and `now`.
+///
+/// `None` when there is no date, or when the date is in the future —
+/// which happens to anyone building from a checkout on the day of a
+/// release in a timezone ahead of UTC, and is not a thing to warn
+/// about.
+pub(crate) fn build_age_days(
+    release_date: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<i64> {
+    let d = chrono::NaiveDate::parse_from_str(release_date, "%Y-%m-%d").ok()?;
+    // chrono accepts `2026-8-27` for `%Y-%m-%d`; the build-time
+    // validator in `release_meta` does not. Two validators that
+    // disagree about what a date is, is the drift this codebase keeps
+    // paying for, so require the canonical form by round-tripping
+    // rather than by restating the shape rules here and letting the
+    // copies diverge.
+    if d.format("%Y-%m-%d").to_string() != release_date {
+        return None;
+    }
+    let days = now.date_naive().signed_duration_since(d).num_days();
+    (days >= 0).then_some(days)
+}
+
 pub(crate) fn rollback_timer_glyph(theme: &Theme) -> &'static str {
     match theme.icons {
         IconStyle::Ascii => "! ",

@@ -224,6 +224,25 @@ pub(crate) fn build_chain_pills(app: &App) -> Vec<(String, Color, Color)> {
             fg(theme.title_alt),
             theme.title_alt,
         ));
+    } else if let Some(days) = app
+        .release_date
+        .and_then(|d| build_age_days(d, chrono::Utc::now()))
+        .filter(|d| *d >= STALE_BUILD_DAYS)
+    {
+        // Only when `update_available` is None. If crates.io answered
+        // and named a newer version, that is strictly better
+        // information than "your build is old" and this would just be
+        // a second pill saying the same thing worse.
+        //
+        // The value here is the case the crates.io check cannot cover:
+        // offline, or behind a proxy that eats the request. There a
+        // failed check is indistinguishable from "you are up to date",
+        // and this is the only thing that will ever say otherwise.
+        chain.push((
+            format!("build is {days}d old (:update)"),
+            fg(theme.health_grey),
+            theme.health_grey,
+        ));
     }
     if let Some(exp) = app.sso_expiry {
         let remaining = exp.signed_duration_since(chrono::Utc::now());
@@ -617,8 +636,12 @@ pub(crate) fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: boo
         }
         paragraph_lines.push(Line::from(chips));
     }
-    let info =
-        Paragraph::new(paragraph_lines).block(titled_block(theme, "ebman", false, theme.title));
+    let info = Paragraph::new(paragraph_lines).block(titled_block(
+        theme,
+        &version_title(theme, cols[0].width),
+        false,
+        theme.title,
+    ));
     f.render_widget(info, cols[0]);
 
     let scope_label = match app.scope {

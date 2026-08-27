@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **The header title now shows the running version and its release
+  date** — `ebman 0.35.0 · 2026-08-27`. The date is parsed out of
+  `CHANGELOG.md` at build time, so there is no second place to bump and
+  it is right for `cargo install` and Homebrew alike. On a narrow
+  terminal the title drops the date, then the version, rather than
+  truncating either mid-value.
+- **A stale-build nudge.** If the running build is more than 90 days
+  old, the header suggests `:update`. This is derived from the
+  compiled-in release date rather than the network, so it still appears
+  when crates.io is unreachable — previously a failed version check
+  was indistinguishable from "you are up to date". It stands down
+  whenever the crates.io check has named an actual newer version, since
+  the UPDATE pill is better information.
+- **The version check now repeats every six hours** while a session is
+  open, instead of only at startup. ebman is left running for days, and
+  a release published an hour after launch used to stay invisible until
+  the next restart. See `docs/safety-and-privacy.md` for what the ping
+  does and does not send.
+
 ## [0.35.0] — 2026-08-27
 
 **If you rely on `:freeze-deploys` or `:incident` as a safety net, this
