@@ -818,9 +818,23 @@ than a wrong action. Working top-down by count is the wrong order.
 
   Mutation-verified four ways: CAUGHT.
 
-- [ ] **`app/mode_dlq_handlers.rs` — what's left**: the replay-spec
-  prompt arms, the `Ctrl-R` vs `r` modifier guard, and the `m`
-  main/DLQ toggle.
+- [x] **`app/mode_dlq_handlers.rs` — the rest** — 2026-08-27.
+
+  `r` resends and `Ctrl-R` refetches: an ARCHITECTURE rule-4 pair whose
+  *ordering* `key_arm_order.rs` enforces but whose *behaviour* nothing
+  checked. Deleting the guarded arm makes `Ctrl-R` take the resend path
+  — and the test catches it precisely because resend is refused on the
+  main queue while a refetch is not. That main/DLQ restriction is a
+  safety rule (resend and purge are disabled on a live queue), and it is
+  exactly the kind that stops meaning anything the moment nothing checks
+  it.
+
+  `R` opens the replay prompt only in DLQ view and only with something
+  to replay; `m` toggles which queue is loaded and **clears the page**,
+  which matters because `x` acts on the selection and a stale page would
+  put it on the wrong queue's message.
+
+  Mutation-verified four ways: CAUGHT.
 
 - [x] **`app/spawn_refresh.rs` — the red-alert detection** —
   2026-08-26. Five survivors and no test at all, on the logic behind two
