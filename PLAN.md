@@ -99,17 +99,24 @@ holds:
 
 ### Now
 
+0. **Blocked on the clock:** the 03:00 UTC sweep. Everything else in
+   "Now" is done.
+
 1. **Triage tonight's sweep** *(mechanical)* — first full-tree run since
    133 tests landed. Re-baselines every per-file figure below. Split
    reachable from seam before drawing any conclusion.
 
-2. **Sweep tail** *(mechanical)* — `audit.rs` writer seam (20),
-   `aws/eb.rs` reachable remainder (11), `action_flow.rs` swap-target
-   picker, `forms.rs` Select/Boolean arms, `mode_dlq_handlers.rs` replay
-   prompt, `spawn_refresh.rs` throttle backoff.
-   `drain_webhooks` has a prerequisite: it reads a process-global
-   atomic, so it needs the `MARKER_LOCK` treatment before
-   `tokio::time::start_paused` makes it deterministic.
+2. ~~Sweep tail~~ — **done 2026-08-27.** `aws/eb.rs`'s reachable
+   remainder, `drain_webhooks`, `mode_dlq_handlers.rs`, `forms.rs`'s
+   Boolean/MultiSelect arms and `spawn_refresh.rs`'s throttle back-off.
+   Nineteen mutations, all CAUGHT.
+
+   Left behind on purpose, and both accounted for rather than hidden:
+   `audit.rs`'s writer seam (~15) and `action_flow.rs`'s `spawn_action`
+   are the same `replace <fn> with ()` shape as the SDK seam. What is
+   still *reachable* is four survivors in `aws/eb.rs::list_events_inner`
+   — paging logic that needs the loop split from the SDK call, which is
+   an architecture item rather than tail work.
 
 3. ~~Two decisions~~ — **done 2026-08-27.** The freeze marker now
    checks process start time as well as pid existence, and the `!yes`
