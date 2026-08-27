@@ -1625,3 +1625,137 @@ fn hints_to_fit_shows_something_even_when_one_hint_is_too_long() {
     assert!(!out.trim().is_empty(), "got {out:?}");
     assert!(out.chars().count() <= 10, "got {out:?}");
 }
+
+#[test]
+fn help_rows_wrap_under_the_description_column() {
+    let t = crate::theme::Theme::dark();
+    let line = super::help::help_line(
+        "!",
+        "diagnose selected env (events + alarms + instances + recent deploys)",
+        &t,
+    );
+    let indent = line.spans[0].content.chars().count();
+    let out = super::help::wrap_help_lines(vec![line], 60);
+    assert!(out.len() > 1, "this description should have wrapped");
+
+    // Every continuation begins with exactly the key column's width in
+    // spaces. Without that the reader cannot tell which key a line
+    // belongs to, which is the entire failure being fixed.
+    for cont in &out[1..] {
+        let text: String = cont.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.starts_with(&" ".repeat(indent)),
+            "continuation is not aligned: {text:?}"
+        );
+        assert!(
+            text.chars().nth(indent).is_none_or(|c| c != ' '),
+            "over-indented: {text:?}"
+        );
+    }
+}
+
+#[test]
+fn wrapped_help_rows_never_exceed_the_width_they_were_given() {
+    // A line one column too long gets re-wrapped by the Paragraph's own
+    // `Wrap`, which strands the overflow at the left margin — a lone
+    // `+` on its own line, mid-row. The two wrappers must not disagree.
+    let t = crate::theme::Theme::dark();
+    let lines = vec![
+        super::help::help_line(
+            "a",
+            "open actions menu (rebuild / restart / swap / terminate)",
+            &t,
+        ),
+        super::help::help_line(
+            "!",
+            "diagnose selected env (events + alarms + instances + recent deploys)",
+            &t,
+        ),
+        super::help::help_line(
+            "U",
+            "undo a pending action dispatch during its 5s cancel window",
+            &t,
+        ),
+    ];
+    for width in [40usize, 52, 60, 68, 80] {
+        for line in super::help::wrap_help_lines(lines.clone(), width) {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(
+                text.chars().count() <= width,
+                "{:?} is {} wide, over {width}",
+                text,
+                text.chars().count()
+            );
+        }
+    }
+}
+
+#[test]
+fn help_text_width_accounts_for_the_padding_not_just_the_border() {
+    use ratatui::layout::Rect;
+    // Every help paragraph sets `Padding::uniform(1)` as well as a
+    // border. Guessing `width - 2` is how the pre-wrapped line came out
+    // one column too long.
+    let popup = Rect {
+        x: 0,
+        y: 0,
+        width: 72,
+        height: 20,
+    };
+    assert_eq!(super::help::help_text_width(popup), 68);
+}
+
+#[test]
+fn non_help_rows_pass_through_the_wrapper_untouched() {
+    let t = crate::theme::Theme::dark();
+    let heading = ratatui::text::Line::from(Span::styled(
+        "ebman — keybindings",
+        Style::default().fg(t.title),
+    ));
+    let blank = ratatui::text::Line::from("");
+    let out = super::help::wrap_help_lines(vec![heading.clone(), blank.clone()], 20);
+    assert_eq!(out.len(), 2, "headings and blanks are not help rows");
+}
+
+#[test]
+fn a_word_longer_than_the_line_is_not_split_mid_word() {
+    let t = crate::theme::Theme::dark();
+    // A URL or command name broken across lines is harder to read than
+    // a ragged edge.
+    // The long word goes FIRST on purpose. The `!cur.is_empty()` guard
+    // only differs when a word longer than the line arrives with nothing
+    // buffered — with anything already in `cur` both forms flush it and
+    // behave identically, so a description that leads with short words
+    // cannot distinguish them.
+    let line = super::help::help_line(
+        "x",
+        "https://example.com/a/very/long/path/indeed see it",
+        &t,
+    );
+    let out = super::help::wrap_help_lines(vec![line], 40);
+    let joined: String = out
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+        .collect();
+    assert!(
+        joined.contains("https://example.com/a/very/long/path/indeed"),
+        "the URL was split: {joined:?}"
+    );
+    // No row may carry an empty DESCRIPTION. Dropping the
+    // `!cur.is_empty()` guard does not split the word — it flushes an
+    // empty chunk first, which renders as the key with no text beside
+    // it and the description pushed to the next line. Asserting the
+    // whole line is non-blank misses that, because the key span keeps
+    // it non-blank.
+    for line in &out {
+        let desc = line
+            .spans
+            .last()
+            .map(|s| s.content.to_string())
+            .unwrap_or_default();
+        assert!(
+            !desc.trim().is_empty(),
+            "a row was emitted with no description: {out:?}"
+        );
+    }
+}
