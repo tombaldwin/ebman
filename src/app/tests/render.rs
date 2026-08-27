@@ -1549,3 +1549,23 @@ async fn the_help_overlay_uses_a_narrow_terminal_instead_of_wasting_it() {
         "the footer line should fit; got:\n{frame}"
     );
 }
+
+#[tokio::test]
+async fn the_hint_panel_cuts_between_hints_not_inside_a_chord() {
+    // Clipped, this read `<:> com` — a chord with its action cut in
+    // half, which is a worse outcome than one hint fewer.
+    let mut app = test_app();
+    app.rebuild_view();
+
+    let narrow = render(&mut app, 80, 20);
+    let fragments = narrow
+        .lines()
+        .any(|l| l.contains("<:> com") && !l.contains("<:> command"));
+    assert!(!fragments, "a chord was cut mid-action; got:\n{narrow}");
+
+    // Wide enough: every hint present.
+    let wide = render(&mut app, 200, 20);
+    for hint in ["<tab> scope", "<?> help", "<:> command", "<q> quit"] {
+        assert!(wide.contains(hint), "missing {hint}; got:\n{wide}");
+    }
+}

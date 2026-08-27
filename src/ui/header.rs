@@ -670,7 +670,13 @@ pub(crate) fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: boo
             pill(scope_label, theme.contrast_text(theme.title), theme.title),
         ]),
         Line::from(Span::styled(
-            "<tab> scope  <?> help  <:> command  </> filter  <q> quit",
+            // Whole hints only. Clipped, this read `<:> com` — a chord
+            // with its action cut in half, which is worse than one
+            // hint fewer. Same treatment as the footer key strip.
+            hints_to_fit(
+                "<tab> scope  <?> help  <:> command  </> filter  <q> quit",
+                cols[1].width.saturating_sub(2),
+            ),
             Style::default().fg(theme.muted),
         )),
     ])

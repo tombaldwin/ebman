@@ -49,6 +49,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   this" and drop "is it healthy", which is backwards for a screen you
   open to answer the second question.
 
+- **The help screen's descriptions wrapped back to the left margin**, so
+  on a narrow terminal nothing said which key a continuation line
+  belonged to — on the screen someone reads when they do not yet know
+  the tool. Continuations now align under the description column.
+
+- **The header's hint panel cut chords in half** (`<:> com`). It cuts
+  between hints now, like the footer.
+
 - **The footer key strip clipped mid-hint**, leaving `r region  p` — a
   bare key with its action gone, which reads as a hint for a key that
   does nothing and costs a keystroke to disprove. It now cuts between

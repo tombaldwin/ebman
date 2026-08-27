@@ -276,6 +276,7 @@ pub(super) fn draw_help(f: &mut Frame, area: Rect, app: &mut App) {
         width: popup.width.saturating_sub(4),
         height: 1,
     };
+    let lines = wrap_help_lines(lines, help_text_width(popup));
     let help = Paragraph::new(lines)
         .wrap(Wrap { trim: false })
         .scroll((effective_scroll, 0))
@@ -451,6 +452,7 @@ pub(super) fn draw_help_detail(f: &mut Frame, popup: Rect, app: &App) {
             Style::default().fg(theme.muted),
         )),
     ];
+    let lines = wrap_help_lines(lines, help_text_width(popup));
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
         titled_block(&app.theme, "help — Detail", true, app.theme.title_alt)
             .padding(Padding::uniform(1)),
@@ -495,6 +497,7 @@ pub(super) fn draw_help_dlq(f: &mut Frame, popup: Rect, app: &App) {
             Style::default().fg(theme.muted),
         )),
     ];
+    let lines = wrap_help_lines(lines, help_text_width(popup));
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
         titled_block(&app.theme, "help — Queue", true, app.theme.title_alt)
             .padding(Padding::uniform(1)),
@@ -541,6 +544,7 @@ pub(super) fn draw_help_action(f: &mut Frame, popup: Rect, app: &App) {
             Style::default().fg(theme.muted),
         )),
     ];
+    let lines = wrap_help_lines(lines, help_text_width(popup));
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
         titled_block(&app.theme, "help — Action", true, app.theme.title_alt)
             .padding(Padding::uniform(1)),
@@ -588,6 +592,7 @@ pub(super) fn draw_help_saved_configs(f: &mut Frame, popup: Rect, app: &App) {
             Style::default().fg(theme.muted),
         )),
     ];
+    let lines = wrap_help_lines(lines, help_text_width(popup));
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
         titled_block(
             &app.theme,
@@ -627,11 +632,124 @@ pub(super) fn draw_help_shell(f: &mut Frame, popup: Rect, app: &App) {
             Style::default().fg(theme.muted),
         )),
     ];
+    let lines = wrap_help_lines(lines, help_text_width(popup));
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
         titled_block(&app.theme, "help — Shell", true, app.theme.title_alt)
             .padding(Padding::uniform(1)),
     );
     f.render_widget(p, popup);
+}
+
+/// Re-wrap help rows so an over-long description continues UNDER the
+/// description column instead of returning to the left margin.
+///
+/// ratatui's `Wrap` has no notion of a hanging indent, so a description
+/// that did not fit produced:
+///
+/// ```text
+///   a               open actions menu (rebuild / restart / swap /
+///  terminate)
+/// ```
+///
+/// — and on a narrow terminal that happened to most rows at once, so
+/// nothing on screen said which key any given line belonged to. This is
+/// the help screen; it is what someone reads when they do not yet know
+/// the tool.
+///
+/// Applied as a pass over the finished lines rather than by changing
+/// `help_line`, which has 102 call sites. A row is recognised by its
+/// shape — the padded key span followed by the description — and the
+/// indent is taken from the key span's actual width, so it stays
+/// correct for keys wider than the column.
+///
+/// Lines that are not help rows (headings, blanks, the footer credit)
+/// pass through untouched.
+///
+/// Callers pass [`help_text_width`], which is the width the text
+/// actually gets. The `Paragraph` still
+/// has `Wrap` enabled for the lines this pass leaves alone, and a chunk
+/// sized to EXACTLY the inner width gets re-wrapped by it — which put a
+/// lone `+` on its own line, at the left margin, in the middle of a row
+/// this function had just laid out correctly. Getting that width right
+/// is what stops the two wrappers fighting — and "right" is not
+/// `width - 2`: every one of these paragraphs also sets
+/// `Padding::uniform(1)`, which takes two more columns that the border
+/// arithmetic alone does not account for.
+/// The columns a help paragraph's TEXT actually gets.
+///
+/// Two for the rounded border and two more for `Padding::uniform(1)`,
+/// which every help paragraph sets. Guessing `width - 2` here is how a
+/// pre-wrapped line came out one column too long and ratatui re-wrapped
+/// it, stranding a lone `+` at the left margin.
+pub(super) fn help_text_width(popup: Rect) -> usize {
+    popup.width.saturating_sub(4) as usize
+}
+
+pub(super) fn wrap_help_lines(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
+    let mut out = Vec::with_capacity(lines.len());
+    for line in lines {
+        let is_row = line.spans.len() == 2 && line.spans[0].content.starts_with(' ');
+        if !is_row {
+            out.push(line);
+            continue;
+        }
+        let indent = line.spans[0].content.chars().count();
+        let desc = line.spans[1].content.to_string();
+        let avail = width.saturating_sub(indent);
+        // No room to wrap into, or it already fits: leave it alone and
+        // let the Paragraph do whatever it did before.
+        if avail < 8 || desc.chars().count() <= avail {
+            out.push(line);
+            continue;
+        }
+        let key_span = line.spans[0].clone();
+        let desc_style = line.spans[1].style;
+        let mut first = true;
+        for chunk in wrap_words(&desc, avail) {
+            if first {
+                out.push(Line::from(vec![
+                    key_span.clone(),
+                    Span::styled(chunk, desc_style),
+                ]));
+                first = false;
+            } else {
+                out.push(Line::from(vec![
+                    Span::raw(" ".repeat(indent)),
+                    Span::styled(chunk, desc_style),
+                ]));
+            }
+        }
+    }
+    out
+}
+
+/// Greedy word wrap. A word longer than the line is left whole on its
+/// own line rather than split mid-word — a broken command name or URL
+/// is harder to read than a ragged edge.
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut cur = String::new();
+    for word in text.split_whitespace() {
+        let extra = if cur.is_empty() {
+            word.chars().count()
+        } else {
+            1 + word.chars().count()
+        };
+        if !cur.is_empty() && cur.chars().count() + extra > width {
+            lines.push(std::mem::take(&mut cur));
+        }
+        if !cur.is_empty() {
+            cur.push(' ');
+        }
+        cur.push_str(word);
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
 }
 
 pub(super) fn help_line(key: &str, desc: &str, theme: &Theme) -> Line<'static> {
