@@ -1369,11 +1369,19 @@ than a wrong action. Working top-down by count is the wrong order.
   branches), `update_available`, `sso_expiry` (counts down, and shows
   nothing once expired), `multi_selected`.
 
-  **13 remain**, and they are the tail rather than the core:
-  `armed_watchdogs`, `cfg`, `costs`, `event_panel`, `loading_since`,
-  `loading_visible_until`, `newly_added`, `newly_red`,
-  `pending_dispatch`, `plugins`, `tf_managed_envs`, `watching_deploys`,
-  `worker_dlq_stale`.
+Since extended to nineteen — `tf_managed_envs` (the IaC drift
+  warning inside the confirm modal, pinned in both directions),
+  `pending_dispatch` (the undo window: what, which key, how long),
+  `armed_watchdogs` and `watching_deploys` (across the singular/plural
+  boundary, since two armed watchdogs rendered as one hides the second),
+  `newly_red` and `newly_added` (marker on the right row and no other).
+
+  **7 remain**, all genuinely UX rather than operator-state: `cfg`,
+  `costs`, `event_panel`, `loading_since`, `loading_visible_until`,
+  `plugins`, `worker_dlq_stale`. `worker_dlq_stale` is the only one of
+  the seven with operational weight — it marks a DLQ depth as stale in
+  the Detail pane — and it is left because reaching it needs Detail-mode
+  fixture setup rather than because it does not matter.
 
   Reproduce the count with the grep in the 2026-08-27 session — it
   matches `if app.X`, `if let Some(_) = app.X` and `while app.X` in
