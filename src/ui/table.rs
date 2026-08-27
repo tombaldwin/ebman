@@ -234,6 +234,149 @@ pub(crate) fn visible_columns(
     columns
 }
 
+/// The narrowest a column can be and still say anything useful.
+///
+/// Used to decide which columns survive on a narrow terminal — see
+/// [`drop_columns_to_fit`]. These are *floors*, not the widths actually
+/// rendered: the `Constraint`s below still let the flexible columns
+/// grow on a wide terminal.
+pub(crate) fn column_min_width(label: &str) -> u16 {
+    match label {
+        // The row identifier. Long enough for a realistic EB env name
+        // (`myapp-production`) rather than a stub.
+        "NAME" => 18,
+        "REGION" => 12,
+        // 11, not 10: the header is the word "APPLICATION" itself, and
+        // a floor that truncates its own column heading reads as a
+        // rendering bug rather than a deliberate narrowing.
+        "APPLICATION" => 11,
+        "TIER" => 11,
+        "STATUS" => 10,
+        "HEALTH" => 3,
+        "INST" => 7,
+        "TREND" => 12,
+        "PLATFORM" => 11,
+        "VERSION" => 9,
+        "CNAME" => 12,
+        "AGE" => 6,
+        "COST" => 8,
+        _ => 6,
+    }
+}
+
+/// Columns to shed when the terminal cannot fit them all, least
+/// operationally useful first.
+///
+/// The order is a judgement about what an operator needs at a glance
+/// when they have only 80 columns: which env (NAME), is it healthy
+/// (HEALTH/STATUS), what is deployed (VERSION), and how stale (AGE).
+/// TREND is a sparkline, CNAME is rarely read off the fleet view, and
+/// PLATFORM changes about once a year.
+///
+/// NAME, HEALTH, STATUS, VERSION and AGE are deliberately absent: they
+/// are never dropped.
+const DROP_ORDER: &[&str] = &["TREND", "CNAME", "PLATFORM", "INST", "TIER", "APPLICATION"];
+
+/// Drop optional columns until the remaining minimums fit `available`.
+///
+/// Without this the layout silently defeats an invariant the column
+/// list states outright — "NAME can never be hidden, it's the row
+/// identifier". At 80 columns the fixed-width columns alone claimed ~49
+/// cells and ratatui satisfies `Length` before `Percentage`, so NAME and
+/// APPLICATION were squeezed to nothing while `TREND (5m)` kept its
+/// full twelve. Every row rendered without saying which env it was.
+///
+/// Returns the labels dropped, newest first, so a caller can tell the
+/// operator what is missing rather than leaving them to notice.
+pub(crate) fn drop_columns_to_fit(
+    columns: &mut Vec<(&'static str, SortKey)>,
+    available: u16,
+) -> Vec<&'static str> {
+    let needed = |cols: &[(&'static str, SortKey)]| -> u16 {
+        cols.iter()
+            .map(|(l, _)| column_min_width(l))
+            .fold(0u16, |a, b| a.saturating_add(b))
+    };
+    let mut dropped = Vec::new();
+    for candidate in DROP_ORDER {
+        if needed(columns) <= available {
+            break;
+        }
+        if let Some(i) = columns.iter().position(|(l, _)| l == candidate) {
+            columns.remove(i);
+            dropped.push(*candidate);
+        }
+    }
+    dropped
+}
+
+/// How eagerly a column takes leftover space. `0` means fixed.
+///
+/// NAME and CNAME grow most because their content is genuinely
+/// variable-length and gets truncated first; TIER, STATUS, HEALTH,
+/// INST, TREND and AGE render fixed-width content and gain nothing
+/// from extra cells.
+fn column_grow_weight(label: &str) -> u16 {
+    match label {
+        "NAME" => 3,
+        "CNAME" => 3,
+        "APPLICATION" => 2,
+        "PLATFORM" => 2,
+        "VERSION" => 2,
+        "REGION" => 1,
+        _ => 0,
+    }
+}
+
+/// Exact width for every column, given the space they have to share.
+///
+/// Computed rather than delegated to `Constraint` tie-breaking. The
+/// previous mix of `Length` and `Percentage` meant the choice of which
+/// columns to show (made from [`column_min_width`]) and the widths
+/// actually rendered disagreed: at 80 columns VERSION was picked on a
+/// floor of 9 and then laid out at 3, so it read `bui` for `build-1`.
+/// One source of truth for both decisions is the point.
+///
+/// Every column gets its minimum; whatever is left over is shared by
+/// weight, with the remainder going to the widest-growing column so no
+/// cells are lost to rounding.
+pub(crate) fn column_widths(columns: &[(&'static str, SortKey)], available: u16) -> Vec<u16> {
+    let mins: Vec<u16> = columns.iter().map(|(l, _)| column_min_width(l)).collect();
+    let total_min: u16 = mins.iter().fold(0u16, |a, b| a.saturating_add(*b));
+    // Already at or over budget — `drop_columns_to_fit` has shed what it
+    // can and the rest is genuinely too narrow. Hand back the minimums
+    // and let the renderer truncate rather than inventing space.
+    if total_min >= available {
+        return mins;
+    }
+    let weights: Vec<u16> = columns.iter().map(|(l, _)| column_grow_weight(l)).collect();
+    let total_weight: u16 = weights.iter().fold(0u16, |a, b| a.saturating_add(*b));
+    if total_weight == 0 {
+        return mins;
+    }
+    let slack = available - total_min;
+    let mut out = mins.clone();
+    let mut handed_out = 0u16;
+    for (i, w) in weights.iter().enumerate() {
+        let share = (u32::from(slack) * u32::from(*w) / u32::from(total_weight)) as u16;
+        out[i] = out[i].saturating_add(share);
+        handed_out = handed_out.saturating_add(share);
+    }
+    // Integer division loses up to `total_weight - 1` cells. Give them
+    // to the greediest column rather than leaving a ragged gap at the
+    // right edge.
+    if let Some(best) = weights
+        .iter()
+        .enumerate()
+        .filter(|(_, w)| **w > 0)
+        .max_by_key(|(_, w)| **w)
+        .map(|(i, _)| i)
+    {
+        out[best] = out[best].saturating_add(slack - handed_out);
+    }
+    out
+}
+
 /// Everything a cell renderer reads for one row.
 ///
 /// A struct rather than eight parameters: the match below was 160
@@ -447,12 +590,17 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
     let block_padding: u16 = if spacious { 2 } else { 1 };
     let indexes = app.filtered_indexes();
 
-    let columns = visible_columns(
+    let mut columns = visible_columns(
         &app.multi_regions,
         app.costs.enabled(),
         &app.view.hidden_cols,
         compact,
     );
+    // Shed optional columns the terminal cannot fit. Two borders and the
+    // selection gutter come off the top; what is left is what the
+    // columns actually get to share.
+    let usable = area.width.saturating_sub(2 + 2);
+    let dropped = drop_columns_to_fit(&mut columns, usable);
     let sort_marker = if app.view.sort_desc() {
         glyph(app.theme.icons, " ▼", " v")
     } else {
@@ -692,31 +840,22 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
         })
         .collect();
 
-    let title = format!("Environments  {}/{}", indexes.len(), app.environments.len());
-    let widths: Vec<Constraint> = columns
-        .iter()
-        .map(|(label, _)| match *label {
-            "NAME" => Constraint::Percentage(14),
-            "APPLICATION" => Constraint::Percentage(12),
-            // 11 fits `" {icon} Worker " + trailing breathing space`
-            // exactly (1 pill-pad + 1 icon + 1 sep + 6 label + 1 pill-
-            // pad + 1 breathing = 11). Web fills the same width with
-            // trailing pad inside the pill so the bg stops at the same
-            // column boundary either way.
-            "TIER" => Constraint::Length(11),
-            "STATUS" => Constraint::Length(10),
-            "HEALTH" => Constraint::Length(3),
-            // " 99/99 " worst case = 7 cells incl. trailing pad. Most envs
-            // are single-digit on each side so we sit at 4-5 typical width.
-            "INST" => Constraint::Length(7),
-            "TREND" => Constraint::Length(12),
-            "PLATFORM" => Constraint::Percentage(15),
-            "VERSION" => Constraint::Percentage(10),
-            "CNAME" => Constraint::Percentage(14),
-            "AGE" => Constraint::Length(6),
-            "COST" => Constraint::Length(8),
-            _ => Constraint::Length(6),
-        })
+    // Say when columns were dropped for width. Silently hiding them
+    // leaves the operator wondering where VERSION went, or worse, not
+    // noticing it is missing and reading the fleet as fully described.
+    let title = if dropped.is_empty() {
+        format!("Environments  {}/{}", indexes.len(), app.environments.len())
+    } else {
+        format!(
+            "Environments  {}/{}  \u{b7} {} cols hidden (widen)",
+            indexes.len(),
+            app.environments.len(),
+            dropped.len()
+        )
+    };
+    let widths: Vec<Constraint> = column_widths(&columns, usable)
+        .into_iter()
+        .map(Constraint::Length)
         .collect();
     let popup_open = matches!(
         app.mode,

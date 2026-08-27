@@ -350,6 +350,35 @@ pub(crate) fn kv<'a>(key: &'a str, value: &'a str, theme: &Theme) -> Vec<Span<'a
     ]
 }
 
+/// How many `key: value` fields fit in `available` columns.
+///
+/// Fields are laid out in order with a separator between each, and the
+/// answer is a count so the caller can render exactly the prefix that
+/// fits. Always at least one — a header row showing nothing is worse
+/// than one showing a clipped first field.
+///
+/// The point is to drop WHOLE fields. ratatui clips the right edge, so
+/// an over-long row rendered `Account: 1234  \u{b7}  Region: eu-west-1
+/// \u{b7}  Profile: ` — a label with its value cut off entirely, which
+/// reads as "the profile is empty" rather than "this did not fit". Same
+/// defect as a truncated release date in the title, and the same fix.
+pub(crate) fn fields_that_fit(field_widths: &[usize], sep_width: usize, available: usize) -> usize {
+    if field_widths.is_empty() {
+        return 0;
+    }
+    let mut used = 0usize;
+    let mut fitted = 0usize;
+    for (i, w) in field_widths.iter().enumerate() {
+        let extra = if i == 0 { *w } else { sep_width + *w };
+        if used + extra > available {
+            break;
+        }
+        used += extra;
+        fitted += 1;
+    }
+    fitted.max(1)
+}
+
 pub(crate) fn sep(theme: &Theme) -> Span<'static> {
     // U+E0B1 — thin powerline separator — reads as a real divider in
     // Powerline-patched fonts and falls back to a tofu box otherwise.

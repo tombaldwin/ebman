@@ -1371,3 +1371,108 @@ async fn a_build_with_no_known_release_date_never_nags() {
     let frame = render(&mut app, 300, 24);
     assert!(!frame.contains("build is"), "got:\n{frame}");
 }
+
+// ── narrow terminals (80 columns) ─────────────────────────────────────
+
+#[tokio::test]
+async fn at_eighty_columns_every_row_still_says_which_env_it_is() {
+    // The regression this guards: NAME was `Percentage(14)` while TIER,
+    // STATUS, HEALTH, INST, TREND and AGE were fixed `Length`s. ratatui
+    // satisfies `Length` before `Percentage`, so at 80 columns the
+    // fixed columns took ~49 cells and NAME — the row identifier — got
+    // nothing. Every row rendered without saying which env it was,
+    // while `TREND (5m)` kept its full twelve.
+    let mut app = test_app();
+    app.environments = vec![
+        mk_env("api-prod", "uflexi", "Web", "Green"),
+        mk_env("worker-prod", "uflexi", "Worker", "Red"),
+    ];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+
+    let frame = render(&mut app, 80, 20);
+    for env in ["api-prod", "worker-prod"] {
+        assert!(
+            frame.contains(env),
+            "env {env} is unidentifiable at 80 columns; got:\n{frame}"
+        );
+    }
+    assert!(
+        frame.contains("NAME"),
+        "the NAME column header survives; got:\n{frame}"
+    );
+}
+
+#[tokio::test]
+async fn a_narrow_terminal_sheds_optional_columns_and_says_so() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
+    app.rebuild_view();
+
+    let narrow = render(&mut app, 80, 20);
+    // TREND is the first thing shed: it is a sparkline, and at 80
+    // columns the operator needs identity and health instead.
+    assert!(
+        !narrow.contains("TREND"),
+        "TREND should be shed at 80 columns; got:\n{narrow}"
+    );
+    assert!(
+        narrow.contains("cols hidden"),
+        "and the operator must be told, or they read a partial fleet as \
+         a complete one; got:\n{narrow}"
+    );
+
+    // Wide enough for everything: nothing shed, no notice.
+    let wide = render(&mut app, 200, 20);
+    assert!(wide.contains("TREND"), "got:\n{wide}");
+    assert!(
+        !wide.contains("cols hidden"),
+        "no notice when nothing was hidden; got:\n{wide}"
+    );
+}
+
+#[tokio::test]
+async fn the_columns_that_survive_are_wide_enough_to_read() {
+    // Choosing columns by one width and laying them out by another is
+    // how VERSION came to be picked on a floor of 9 and rendered at 3,
+    // showing `bui` for `build-1`. The value has to survive, not just
+    // the column.
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
+    app.rebuild_view();
+    let frame = render(&mut app, 80, 20);
+    assert!(
+        frame.contains("build-1"),
+        "the version must be readable, not truncated to noise; got:\n{frame}"
+    );
+    assert!(
+        frame.contains("APPLICATION"),
+        "a column heading that truncates itself reads as a bug; got:\n{frame}"
+    );
+}
+
+#[tokio::test]
+async fn a_narrow_header_drops_whole_fields_rather_than_dangling_a_label() {
+    // ratatui clips the right edge, which rendered `Profile: ` with the
+    // value gone — read as "the profile is empty", not "this did not
+    // fit". Same defect as a release date truncated to `2026-08-2`.
+    let mut app = test_app();
+    app.context.profile = Some("production-admin".into());
+    app.rebuild_view();
+
+    let narrow = render(&mut app, 80, 20);
+    let dangling = narrow
+        .lines()
+        .any(|l| l.contains("Profile:") && !l.contains("production-admin"));
+    assert!(
+        !dangling,
+        "a Profile label with no value is worse than no label; got:\n{narrow}"
+    );
+
+    // Given the room, it is shown in full.
+    let wide = render(&mut app, 200, 20);
+    assert!(
+        wide.contains("production-admin"),
+        "the profile appears when there is room; got:\n{wide}"
+    );
+}

@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **At 80 columns the fleet table did not say which environment each row
+  was.** `NAME` was a percentage-width column while `TIER`, `STATUS`,
+  `HEALTH`, `INST`, `TREND` and `AGE` were fixed; ratatui satisfies
+  fixed widths first, so on a narrow terminal those took ~49 cells and
+  `NAME` was squeezed to nothing — while `TREND (5m)` kept its full
+  twelve. The column list already said "NAME can never be hidden — it's
+  the row identifier"; the layout quietly defeated it.
+
+  The table now sheds genuinely optional columns instead (TREND, then
+  CNAME, PLATFORM, INST, TIER, APPLICATION) and says how many it hid, so
+  a partial fleet is not read as a complete one. `NAME`, `HEALTH`,
+  `STATUS`, `VERSION` and `AGE` are never dropped. Column widths are
+  computed rather than left to constraint tie-breaking, which also fixes
+  `VERSION` rendering `bui` for `build-1`.
+
+- **The header showed `Profile:` with no value on a narrow terminal**,
+  which reads as an empty profile rather than a clipped one. Whole
+  fields are now dropped instead.
+
 ### Added
 
 - **The header title now shows the running version and its release
