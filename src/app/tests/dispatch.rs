@@ -2360,3 +2360,84 @@ async fn the_apps_selection_is_clamped_when_the_list_shrinks() {
     });
     assert_eq!(app.app_table_state.selected(), None);
 }
+
+/// Boolean fields: space toggles, `t` and `f` set directly.
+///
+/// Three separate arms, each deletable. `t`/`f` exist so an operator can
+/// set a value without knowing which way it currently points — deleting
+/// one turns it into a no-op key rather than an error, which reads as
+/// the form ignoring you.
+#[tokio::test]
+async fn a_boolean_field_toggles_and_sets_directly() {
+    let with_value = |v: &str| {
+        let mut app = test_app();
+        let mut f = crate::form::FormField::boolean("flag", "Flag", None::<String>);
+        f.value = v.into();
+        app.form = Some(a_form(vec![f]));
+        app.mode = crate::app::Mode::Form;
+        app
+    };
+    let value = |app: &App| app.form.as_ref().unwrap().fields[0].value.clone();
+
+    // Space toggles, both ways — a one-directional toggle is not one.
+    let mut app = with_value("false");
+    press(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    assert_eq!(value(&app), "true", "space turns it on");
+    press(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    assert_eq!(value(&app), "false", "and off again");
+
+    // `t` and `f` set, regardless of where the value started. Each is
+    // checked from the state it does NOT change, which is the only way
+    // a deleted arm is distinguishable from a working one.
+    for (key, want, from) in [
+        (KeyCode::Char('t'), "true", "false"),
+        (KeyCode::Char('t'), "true", "true"),
+        (KeyCode::Char('f'), "false", "true"),
+        (KeyCode::Char('f'), "false", "false"),
+    ] {
+        let mut app = with_value(from);
+        press(&mut app, key, KeyModifiers::NONE);
+        assert_eq!(value(&app), want, "{key:?} from {from:?}");
+    }
+}
+
+/// Space toggles a MultiSelect option in and out of the value, which is
+/// a comma-separated list EB reads directly.
+#[tokio::test]
+async fn multi_select_space_toggles_the_option_under_the_cursor() {
+    let mut app = test_app();
+    app.form = Some(a_form(vec![crate::form::FormField::multi_select(
+        "subnets",
+        "Subnets",
+        vec!["subnet-a".into(), "subnet-b".into()],
+        vec![],
+        None::<String>,
+    )]));
+    app.mode = crate::app::Mode::Form;
+    let value = |app: &App| app.form.as_ref().unwrap().fields[0].value.clone();
+
+    assert_eq!(value(&app), "", "nothing selected initially");
+    press(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    assert_eq!(
+        value(&app),
+        "subnet-a",
+        "space selects the option at the cursor"
+    );
+
+    // Move and select the second.
+    press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    press(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    assert!(
+        value(&app).contains("subnet-a") && value(&app).contains("subnet-b"),
+        "both selected: {}",
+        value(&app)
+    );
+
+    // Space again removes it — a toggle that only adds is not a toggle.
+    press(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    assert_eq!(
+        value(&app),
+        "subnet-a",
+        "space deselects the option under the cursor"
+    );
+}

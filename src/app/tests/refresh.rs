@@ -2360,3 +2360,52 @@ async fn a_context_switch_drops_helps_restore_stash() {
     );
     assert!(app.help.pre_overlay.is_none());
 }
+
+/// A throttled refresh pushes the next attempt into the FUTURE.
+///
+/// `Instant::now() + backoff` written as `-` puts `throttle_until` in
+/// the past, so the backoff never holds and the fleet keeps hammering
+/// an API that is already rate-limiting it — the exact failure the
+/// backoff exists to prevent, and invisible except as more throttling.
+/// Two sites, one per error path.
+#[tokio::test]
+async fn a_throttled_refresh_backs_off_into_the_future() {
+    let mut app = test_app();
+    app.consecutive_throttles = 0;
+    let before = std::time::Instant::now();
+
+    app.apply_refresh(
+        app.fanout_epoch,
+        Ok(vec![mk_env("api-prod", "shop", "Web", "Green")]),
+        // `is_throttling_error` reads the classification `flatten_err`
+        // already made — the `ThrottlingException:` prefix — rather than
+        // sniffing the text for the word. An env merely NAMED
+        // "throttling-test" must not arm the fleet back-off.
+        vec!["region eu-west-2: ThrottlingException: Rate exceeded".to_string()],
+    );
+
+    let until = app
+        .throttle_until
+        .expect("a throttling error must arm the backoff");
+    assert!(
+        until > before,
+        "the next attempt must be pushed into the future; `-` here puts \
+         it in the past and the backoff never holds"
+    );
+    assert!(
+        app.consecutive_throttles > 0,
+        "and the streak must advance so the backoff grows"
+    );
+
+    // A clean refresh clears it, so "always throttled" fails.
+    app.apply_refresh(
+        app.fanout_epoch,
+        Ok(vec![mk_env("api-prod", "shop", "Web", "Green")]),
+        Vec::new(),
+    );
+    assert!(
+        app.throttle_until.is_none(),
+        "a clean refresh clears the backoff"
+    );
+    assert_eq!(app.consecutive_throttles, 0, "and resets the streak");
+}
