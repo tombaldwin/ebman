@@ -99,12 +99,18 @@ holds:
 
 ### Now
 
-0. **Blocked on the clock:** the 03:00 UTC sweep. Everything else in
-   "Now" is done.
+0. **Blocked, and no longer on the clock:** the nightly sweep **did not
+   fire on 2026-08-27**. The workflow is `active` and the cron is
+   unchanged at `0 3 * * *`; GitHub simply dropped the run. Recent runs
+   started at 03:51 and 03:56 rather than 03:00, so the schedule was
+   already being queued heavily — a dropped run is the same behaviour
+   further along. Needs a manual `workflow_dispatch` (~7h20m) rather
+   than another night's wait.
 
-1. **Triage tonight's sweep** *(mechanical)* — first full-tree run since
-   133 tests landed. Re-baselines every per-file figure below. Split
-   reachable from seam before drawing any conclusion.
+1. **Triage the sweep** *(mechanical)* — first full-tree run since ~180
+   tests landed. Re-baselines every per-file figure below. Split
+   reachable from seam before drawing any conclusion. **Waiting on a
+   run to triage** — see item 0.
 
 2. ~~Sweep tail~~ — **done 2026-08-27.** `aws/eb.rs`'s reachable
    remainder, `drain_webhooks`, `mode_dlq_handlers.rs`, `forms.rs`'s
@@ -207,9 +213,14 @@ holds:
      `deny.toml` of which that is true. The waiver says "not waived
      indefinitely" and then names no trigger and no date. **Needs a
      maintainer ruling.**
-8. **Release** — **prepared 2026-08-27, not tagged.** Everything
-   reversible is done; the irreversible step is left for an explicit
-   go, and item 1 (sweep triage) is ordered ahead of it anyway.
+8. ~~Release~~ — **0.35.0 SHIPPED 2026-08-27.** crates.io, GitHub
+   release, MCP Registry and both Homebrew formulae. Record of what the
+   preparation found follows.
+
+   One process note worth keeping: the first tag push failed the
+   `ci-green` gate, because `main` and the tag were pushed seconds
+   apart and CI had not finished on the release commit. The gate was
+   right. **Tag and branch pushes need a CI cycle between them.**
 
    Done:
    - **Docs audit.** All 131 registry commands appear in
@@ -233,14 +244,33 @@ holds:
      across the changed files found no other instance.
    - **`CHANGELOG.md` `[Unreleased]`** filled in.
 
-   Left to do at tag time: version bump across `Cargo.toml`,
-   `server.json` (both fields) and `Formula/ebman.rb`, then the
-   publish + Homebrew push.
+   Also fixed during the audit, in its own commit: `CHANGELOG.md`'s
+   link references had stopped being maintained after 0.17.0, so 25
+   version headings rendered as plain text and `[Unreleased]` still
+   compared against v0.17.0. 35 refs backfilled from the git tags.
+9. **Features.** `:queue` inspector, mouse column resize, pill caps and
+   `:custom-platform-create` are all **stop conditions** as filed — each
+   needs a design ruling, and `:custom-platform-create` is additionally
+   unverifiable without live EB. They are not autonomous work.
 
-   Version should be **0.35.0** — one feature (`:help <topic>`), so
-   minor, and semver-checks confirms nothing forces more.
-9. **Features** — `:queue` inspector, mouse column resize, pill caps,
-   `:custom-platform-create`, then the speculative tail.
+   Landed instead, on request 2026-08-27: **version + release date in
+   the header title**, a **stale-build nudge** derived from the
+   compiled-in date (so it survives an unreachable crates.io, which the
+   existing check does not), and a **six-hourly re-check** for
+   long-lived sessions. Sitting in `[Unreleased]`.
+
+### Next
+
+10. **Cut 0.36.0** when the header work has had some use. `[Unreleased]`
+    currently holds the three items above.
+
+11. **Remaining `src/ui` state-reporting fields** — 6 of 26 uncovered
+    (`cfg`, `costs`, `event_panel`, the two loading flags, `plugins`).
+    All UX rather than fleet or safety state, so low priority.
+
+12. **`serde_yml`** — still needs the maintainer ruling from item 7.
+    RUSTSEC-2025-0068, unsound and unmaintained, own direct dependency,
+    waiver with no trigger and no date.
 
 ### Not scheduled
 
