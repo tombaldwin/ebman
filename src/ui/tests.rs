@@ -1801,3 +1801,235 @@ fn the_name_floor_survives_the_spacing_at_eighty_columns() {
         "the row overflows its area, which is what makes ratatui squeeze"
     );
 }
+
+#[test]
+fn every_column_has_its_own_documented_minimum_width() {
+    // Table-driven because these are SIBLING match arms: deleting any
+    // one falls through to the `_ => 6` default, and a test that checks
+    // only a couple of columns passes while the rest silently collapse
+    // to six cells. The 2026-08-27 sweep missed thirteen mutants here,
+    // one per arm.
+    //
+    // The values are the contract, not a restatement of the code: NAME
+    // holds a realistic env name, APPLICATION must not truncate its own
+    // heading, HEALTH is a single dot.
+    let expected: &[(&str, u16)] = &[
+        ("NAME", 18),
+        ("REGION", 12),
+        ("APPLICATION", 11),
+        ("TIER", 11),
+        ("STATUS", 10),
+        ("HEALTH", 3),
+        ("INST", 7),
+        ("TREND", 12),
+        ("PLATFORM", 11),
+        ("VERSION", 9),
+        ("CNAME", 12),
+        ("AGE", 6),
+        ("COST", 8),
+    ];
+    for (label, want) in expected {
+        assert_eq!(
+            column_min_width(label),
+            *want,
+            "{label} floor changed; if that is deliberate, change it here too"
+        );
+    }
+    // A named column whose floor equals the fallback cannot be
+    // distinguished from a deleted arm by any test — that mutant is
+    // equivalent, and will show as MISSED in every sweep forever.
+    //
+    // AGE is the one such column, deliberately: six cells is right for
+    // "12d" and it happens to be the fallback too. Its arm is kept for
+    // documentation rather than behaviour. Listing it here means the
+    // next person triaging a sweep can tell "known equivalent" from
+    // "untested", which is the distinction that makes a survivor list
+    // worth reading.
+    const EQUIVALENT_BY_DESIGN: &[&str] = &["AGE"];
+    let fallback = column_min_width("NOT-A-REAL-COLUMN");
+    for (label, want) in expected {
+        if EQUIVALENT_BY_DESIGN.contains(label) {
+            continue;
+        }
+        assert_ne!(
+            *want, fallback,
+            "{label}'s floor equals the fallback, so deleting its arm is \
+             undetectable — either give it a distinct value or add it to \
+             EQUIVALENT_BY_DESIGN with a reason"
+        );
+    }
+}
+
+#[test]
+fn only_the_variable_width_columns_grow() {
+    // Same sibling-arm problem in `column_grow_weight`: the sweep missed
+    // PLATFORM, VERSION and REGION. Slack handed to a fixed-width column
+    // is slack wasted — it renders as padding beside content that never
+    // gets longer.
+    let expected: &[(&str, u16)] = &[
+        ("NAME", 3),
+        ("CNAME", 3),
+        ("APPLICATION", 2),
+        ("PLATFORM", 2),
+        ("VERSION", 2),
+        ("REGION", 1),
+    ];
+    for (label, want) in expected {
+        assert_eq!(column_grow_weight(label), *want, "{label} weight changed");
+    }
+    // The fixed ones must stay at zero.
+    for label in ["TIER", "STATUS", "HEALTH", "INST", "TREND", "AGE", "COST"] {
+        assert_eq!(
+            column_grow_weight(label),
+            0,
+            "{label} renders fixed-width content and should not take slack"
+        );
+    }
+}
+
+#[test]
+fn the_watcher_glyphs_are_non_empty_and_distinguishable() {
+    // The ascii guard asserts no DECORATIVE UNICODE reaches the frame,
+    // which an empty string satisfies perfectly — the sweep replaced
+    // both glyphs with "" and nothing failed. A missing glyph is not the
+    // same as an ascii one.
+    let mut uni = Theme::dark();
+    uni.icons = IconStyle::Unicode;
+    let mut ascii = Theme::dark();
+    ascii.icons = IconStyle::Ascii;
+
+    for t in [&uni, &ascii] {
+        let r = rollback_timer_glyph(t);
+        let w = watching_glyph(t);
+        assert!(
+            !r.trim().is_empty(),
+            "rollback glyph empty for {:?}",
+            t.icons
+        );
+        assert!(
+            !w.trim().is_empty(),
+            "watching glyph empty for {:?}",
+            t.icons
+        );
+        // One acts on timeout, the other only reports; the header
+        // comment promises they stay tellable apart.
+        assert_ne!(r, w, "the two watcher glyphs collided for {:?}", t.icons);
+    }
+    // And the ascii forms are actually ascii.
+    assert!(rollback_timer_glyph(&ascii).is_ascii());
+    assert!(watching_glyph(&ascii).is_ascii());
+}
+
+#[test]
+fn fit_helpers_are_exact_at_their_boundaries() {
+    // The sweep missed a cluster of `>` -> `>=`, `+` -> `*` and
+    // `<` -> `<=` mutants across the width helpers. Off-by-one in a fit
+    // calculation is not cosmetic here: one cell too many and ratatui
+    // re-wraps the line, which is what stranded a lone `+` at the left
+    // margin in the help screen.
+    let t = Theme::dark();
+
+    // `fields_that_fit`: the first field costs its own width, each
+    // later one costs a separator too.
+    assert_eq!(
+        fields_that_fit(&[10, 10], 5, 25),
+        2,
+        "10 + 5 + 10 = 25 exactly"
+    );
+    assert_eq!(fields_that_fit(&[10, 10], 5, 24), 1, "one cell short");
+    assert_eq!(
+        fields_that_fit(&[10], 5, 10),
+        1,
+        "first field costs no separator"
+    );
+    assert_eq!(
+        fields_that_fit(&[10], 5, 9),
+        1,
+        "and is kept even when it does not fit"
+    );
+
+    // `join_fields_to_fit` measures the spans, so the same boundary
+    // must hold through it.
+    let g = |n: usize| vec![Span::raw("x".repeat(n))];
+    // Count CHARS, not bytes: the separator contains `\u{2022}`, which is
+    // three bytes, so a byte count reads 25 cells as 27.
+    let text = |v: Vec<Span>| -> String { v.iter().map(|s| s.content.to_string()).collect() };
+    assert_eq!(
+        text(join_fields_to_fit(vec![g(10), g(10)], &t, 25))
+            .chars()
+            .count(),
+        25
+    );
+    assert_eq!(
+        text(join_fields_to_fit(vec![g(10), g(10)], &t, 24))
+            .chars()
+            .count(),
+        10
+    );
+
+    // `hints_to_fit`: exact fit keeps both, one cell less drops one.
+    // " ab  cd" is 7 cells.
+    assert_eq!(hints_to_fit(" ab  cd", 7), " ab  cd");
+    assert_eq!(hints_to_fit(" ab  cd", 6), " ab");
+}
+
+#[test]
+fn wrap_words_fills_a_line_exactly_before_breaking() {
+    // `+` -> `*` and `>` -> `>=` in the width arithmetic both survived
+    // the sweep. A wrapper that breaks one word early wastes a column on
+    // every line; one that breaks late overflows and gets re-wrapped.
+    let t = Theme::dark();
+    // Key column is 17 wide, so at 27 the description gets 10.
+    let line = super::help::help_line("x", "abcd efgh ij", &t);
+    let out = super::help::wrap_help_lines(vec![line], 27);
+    let descs: Vec<String> = out
+        .iter()
+        .map(|l| {
+            l.spans
+                .last()
+                .map(|s| s.content.to_string())
+                .unwrap_or_default()
+        })
+        .collect();
+    // "abcd efgh" is exactly 9, +1 for " ij" would be 12 > 10.
+    assert_eq!(
+        descs,
+        vec!["abcd efgh".to_string(), "ij".to_string()],
+        "got {descs:?}"
+    );
+}
+
+#[test]
+fn a_row_too_narrow_to_wrap_into_is_left_alone() {
+    // `avail < 8 || desc <= avail` — the sweep flipped both the
+    // comparison and the `||`. Below the floor there is no useful
+    // wrapping to do, and forcing it produces one word per line.
+    let t = Theme::dark();
+    let line = super::help::help_line("x", "some fairly long description here", &t);
+    // Key column alone is 17, so at 20 there are 3 cells for text.
+    let out = super::help::wrap_help_lines(vec![line.clone()], 20);
+    assert_eq!(out.len(), 1, "should pass through untouched, got {out:?}");
+    // And with room, it does wrap.
+    let wrapped = super::help::wrap_help_lines(vec![line], 40);
+    assert!(wrapped.len() > 1, "should wrap at 40");
+}
+
+#[test]
+fn column_widths_at_the_exact_budget_boundary() {
+    // `total_min > available` vs `>=` decides whether a set that fits
+    // EXACTLY gets its slack distributed or is handed back untouched.
+    let cols = vec![("HEALTH", SortKey::Health), ("AGE", SortKey::Age)];
+    let spacing = 1u16;
+    let exact = column_min_width("HEALTH") + column_min_width("AGE") + spacing;
+    let w = column_widths(&cols, exact);
+    assert_eq!(
+        w,
+        vec![column_min_width("HEALTH"), column_min_width("AGE")],
+        "an exact fit gets the minimums and no more"
+    );
+    // One more cell is slack, and neither of these columns grows, so it
+    // stays with the minimums rather than being invented into a fixed
+    // column.
+    let w2 = column_widths(&cols, exact + 1);
+    assert_eq!(w2, w, "fixed-width columns do not absorb slack");
+}
