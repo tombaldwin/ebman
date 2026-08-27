@@ -276,29 +276,58 @@ fn process_start_epoch(pid: u32) -> Option<i64> {
     }
 }
 
-#[cfg(target_os = "linux")]
-fn process_start_epoch(pid: u32) -> Option<i64> {
-    // `/proc/<pid>/stat` field 22 is the start time in clock ticks since
-    // boot. The comm field can contain spaces and parentheses, so the
-    // fields are counted from after the LAST `)`, which is the standard
-    // way to parse this and the reason a naive split is wrong.
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+/// Start time in clock ticks since boot, from a `/proc/<pid>/stat` body.
+///
+/// Field 22, counted from after the LAST `)`. The comm field is the
+/// process name in parentheses and can itself contain spaces and
+/// parentheses — `((sd-pam))` is a real one on any systemd box — so a
+/// naive `split_whitespace().nth(21)` reads the wrong field for exactly
+/// the processes whose names are unusual.
+///
+/// Gated on `linux` OR `test`, deliberately. Only Linux calls it, so on
+/// a Mac it would be dead code in a release build — but a parser that
+/// compiles only on the platform it parses for is a parser nobody can
+/// test from a Mac, and this decides whether a fleet freeze is honoured.
+/// The `test` arm buys the coverage without shipping unused code.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn start_ticks_from_stat(stat: &str) -> Option<u64> {
     let after = &stat[stat.rfind(')')? + 1..];
-    let ticks: u64 = after.split_whitespace().nth(19)?.parse().ok()?;
-    // SAFETY: `sysconf` takes a constant and returns a long.
-    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
-    if hz <= 0 {
-        return None;
-    }
-    // Boot time, so the tick count can be turned into wall clock.
-    let btime: i64 = std::fs::read_to_string("/proc/stat")
-        .ok()?
-        .lines()
+    after.split_whitespace().nth(19)?.parse().ok()
+}
+
+/// Boot time in seconds since the epoch, from a `/proc/stat` body.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn btime_from_proc_stat(body: &str) -> Option<i64> {
+    body.lines()
         .find_map(|l| l.strip_prefix("btime "))?
         .trim()
         .parse()
-        .ok()?;
+        .ok()
+}
+
+/// Turn a boot time and a tick count into a wall-clock start time.
+///
+/// `hz` comes from `sysconf(_SC_CLK_TCK)`, which returns a `long` and is
+/// documented to return -1 on error. Dividing by that would panic in
+/// debug and produce nonsense in release, and the nonsense is the
+/// dangerous half: a wrong start time makes `marker_owner_is_live`
+/// misjudge a freeze.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn start_epoch_from(btime: i64, ticks: u64, hz: i64) -> Option<i64> {
+    if hz <= 0 {
+        return None;
+    }
     Some(btime + (ticks / hz as u64) as i64)
+}
+
+#[cfg(target_os = "linux")]
+fn process_start_epoch(pid: u32) -> Option<i64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let ticks = start_ticks_from_stat(&stat)?;
+    // SAFETY: `sysconf` takes a constant and returns a long.
+    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    let btime = btime_from_proc_stat(&std::fs::read_to_string("/proc/stat").ok()?)?;
+    start_epoch_from(btime, ticks, hz)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -310,6 +339,87 @@ fn process_start_epoch(_pid: u32) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── /proc parsing (Linux start-time probe) ────────────────────────
+    //
+    // The whole of `process_start_epoch` showed as MISSED in the
+    // 2026-08-27 sweep — fourteen mutants, including every arithmetic
+    // operator. It ran only on Linux and only against the real `/proc`,
+    // so nothing could reach it. These cover the parts that are pure.
+
+    #[test]
+    fn start_ticks_reads_field_22_after_the_last_paren() {
+        // A normal line: `pid (comm) state ppid ...`, start time is the
+        // 22nd field overall, i.e. the 20th after the comm.
+        let f: Vec<String> = (1..=30).map(|i| i.to_string()).collect();
+        let stat = format!("42 (bash) S {}", f.join(" "));
+        // After `)` the fields are: S, then 1..30. nth(19) counts from
+        // the field after `)`, so index 19 is "19".
+        assert_eq!(start_ticks_from_stat(&stat), Some(19));
+    }
+
+    #[test]
+    fn a_comm_containing_spaces_and_parens_does_not_shift_the_fields() {
+        // `((sd-pam))` is a real process name on any systemd box, and
+        // `Web Content` on a desktop. Counting from the LAST `)` is the
+        // whole reason this is not a plain `split_whitespace`.
+        let f: Vec<String> = (1..=30).map(|i| i.to_string()).collect();
+        let plain = format!("42 (bash) S {}", f.join(" "));
+        for comm in ["((sd-pam))", "(Web Content)", "(a b) c)", "(x (y) z)"] {
+            let odd = format!("42 {comm} S {}", f.join(" "));
+            assert_eq!(
+                start_ticks_from_stat(&odd),
+                start_ticks_from_stat(&plain),
+                "comm {comm:?} shifted the field count"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_stat_lines_yield_no_start_time() {
+        // No paren, too few fields, a non-numeric tick count. Each must
+        // be `None` — "assume owner" — rather than a wrong number, which
+        // would make `marker_owner_is_live` misjudge the freeze.
+        for bad in [
+            "",
+            "42 bash S 1 2 3",
+            "42 (bash) S 1 2 3",
+            "42 (bash) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 x",
+        ] {
+            assert_eq!(start_ticks_from_stat(bad), None, "accepted {bad:?}");
+        }
+    }
+
+    #[test]
+    fn btime_is_read_from_its_own_line() {
+        let body = "cpu  1 2 3\nintr 99\nbtime 1756000000\nprocesses 5\n";
+        assert_eq!(btime_from_proc_stat(body), Some(1_756_000_000));
+        // A line that merely CONTAINS btime is not the btime line.
+        assert_eq!(btime_from_proc_stat("cpu 1\nnot_btime 5\n"), None);
+        assert_eq!(btime_from_proc_stat(""), None);
+        assert_eq!(btime_from_proc_stat("btime notanumber\n"), None);
+    }
+
+    #[test]
+    fn start_epoch_converts_ticks_to_seconds_and_adds_boot_time() {
+        // 100 Hz is the usual _SC_CLK_TCK.
+        assert_eq!(start_epoch_from(1_000_000, 0, 100), Some(1_000_000));
+        assert_eq!(start_epoch_from(1_000_000, 100, 100), Some(1_000_001));
+        assert_eq!(
+            start_epoch_from(1_000_000, 250, 100),
+            Some(1_000_002),
+            "truncates"
+        );
+    }
+
+    #[test]
+    fn a_bad_clock_tick_yields_no_start_time_rather_than_dividing_by_it() {
+        // `sysconf` is documented to return -1 on error. Dividing by
+        // that panics in debug and produces nonsense in release, and the
+        // nonsense is the dangerous half.
+        assert_eq!(start_epoch_from(1_000_000, 100, 0), None);
+        assert_eq!(start_epoch_from(1_000_000, 100, -1), None);
+    }
 
     fn tmp(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("ebman-freeze-{}-{name}.json", std::process::id()))
