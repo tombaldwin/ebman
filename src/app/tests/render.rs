@@ -1118,3 +1118,112 @@ async fn the_multi_select_pill_counts_the_selection() {
         "a batch operation must show how many rows it will hit; got:\n{frame}"
     );
 }
+
+#[tokio::test]
+async fn a_terraform_managed_env_is_flagged_in_the_confirm_modal() {
+    // The warning fires at the point of an irreversible write, and it
+    // is the only thing telling the operator that this change drifts
+    // from IaC and will be reverted on the next plan/apply. A heads-up
+    // rather than a block — but a silent one is worse than none.
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
+    app.tf_managed_envs.insert("api-prod".to_string());
+    app.rebuild_view();
+    app.mode = Mode::Action;
+    app.action_flow = Some(crate::app::ActionFlow::Confirm(mk_modal(
+        Action::Rebuild,
+        "api-prod",
+    )));
+    let frame = render(&mut app, 160, 40);
+    assert!(
+        frame.contains("terraform-managed"),
+        "a tf-managed env must be flagged before the write; got:\n{frame}"
+    );
+    assert!(
+        frame.contains(":drift"),
+        "and point at the command that shows what diverges; got:\n{frame}"
+    );
+}
+
+#[tokio::test]
+async fn an_env_not_managed_by_terraform_gets_no_drift_warning() {
+    // The false-positive direction: warning on every env trains the
+    // operator to ignore it.
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
+    app.rebuild_view();
+    app.mode = Mode::Action;
+    app.action_flow = Some(crate::app::ActionFlow::Confirm(mk_modal(
+        Action::Rebuild,
+        "api-prod",
+    )));
+    let frame = render(&mut app, 160, 40);
+    assert!(
+        !frame.contains("terraform-managed"),
+        "an unmanaged env must not carry the warning; got:\n{frame}"
+    );
+}
+
+#[tokio::test]
+async fn the_undo_window_counts_down_and_names_the_key() {
+    // The 5-second cancel window after a dispatch. If the pill renders
+    // without the key, the window may as well not exist — the operator
+    // has no way to learn what to press in the time available.
+    let mut app = test_app();
+    app.pending_dispatch = Some(crate::app::PendingDispatch {
+        deadline: std::time::Instant::now() + std::time::Duration::from_secs(4),
+        label: "Rebuild env".into(),
+        target: "api-prod".into(),
+        kind: crate::app::PendingDispatchKind::Single {
+            modal: mk_modal(Action::Rebuild, "api-prod"),
+        },
+    });
+    app.rebuild_view();
+    let frame = render(&mut app, 200, 24);
+    assert!(
+        frame.contains("Rebuild env"),
+        "the pill names what is about to happen; got:\n{frame}"
+    );
+    assert!(
+        frame.contains("U undo"),
+        "and which key cancels it; got:\n{frame}"
+    );
+    assert!(
+        frame.contains("5s") || frame.contains("4s"),
+        "and how long is left; got:\n{frame}"
+    );
+}
+
+#[tokio::test]
+async fn the_watcher_pills_switch_between_singular_and_plural() {
+    // Two armed watchdogs must not read "rollback api-prod in 5m" —
+    // that hides the second one entirely, and these pills are the only
+    // standing signal that something will act on the fleet unattended.
+    let mut app = test_app();
+    // The pill reads `env_name` off the watchdog, not the map key, so
+    // the fixture has to set both consistently — a mismatch here would
+    // make the test pass against a rendering that names the wrong env.
+    let arm = |env: &str, mins: i64| crate::app::ArmedWatchdog {
+        env_name: env.into(),
+        target_label: "v1".into(),
+        armed_at: chrono::Utc::now(),
+        deadline_at: chrono::Utc::now() + chrono::Duration::minutes(mins),
+    };
+    app.armed_watchdogs
+        .insert("api-prod".into(), arm("api-prod", 5));
+    app.rebuild_view();
+    let one = render(&mut app, 300, 24);
+    assert!(
+        one.contains("rollback api-prod in"),
+        "a single armed watchdog names its env; got:\n{one}"
+    );
+
+    app.armed_watchdogs
+        .insert("api-staging".into(), arm("api-staging", 9));
+    app.rebuild_view();
+    let two = render(&mut app, 300, 24);
+    assert!(
+        two.contains("2 rollbacks armed") && two.contains("next: api-prod"),
+        "two armed watchdogs report the count and the soonest; got:\n{two}"
+    );
+}
