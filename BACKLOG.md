@@ -721,7 +721,20 @@ than a wrong action. Working top-down by count is the wrong order.
   keypress leaves a multi-region dispatch armed on screen.
   Mutation-verified three ways: CAUGHT.
 
-- [ ] **`src/app/action_flow.rs` — what's left**: the swap-target picker
+- [x] **`src/app/action_flow.rs` — CLOSED 2026-08-28.** The `!CONTROL`
+  guards on the swap picker's j/k are covered: `^K` is the
+  command-palette chord advertised in every footer, and without the
+  guards it also moved this picker — so reaching for the palette
+  silently re-aimed which environment production DNS was about to be
+  swapped onto, and the next `Enter` acted on it. Both guards
+  mutation-verified: CAUGHT. Driven through the real flow rather than
+  poking `Picker`, so it pins the KEY HANDLER honouring the guard.
+
+  The `env_found` filters named below were already closed by earlier
+  work — the 2026-08-27 sweep leaves only `spawn_action` in this file,
+  which is whole-function seam. Original entry follows.
+
+  ~~what's left~~: the swap-target picker
   branches (the `!CONTROL` guards on picker j/k, the `env_found` filters
   in `open_parameterised_action_on`, 8) and `spawn_action` (7, mostly
   the whole-function seam).

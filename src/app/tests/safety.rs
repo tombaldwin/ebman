@@ -1248,3 +1248,59 @@ fn every_confirmation_gate_names_its_test() {
         "expected at least the Terminate and DLQ-purge gates; found {gates}"
     );
 }
+
+/// `Ctrl-J` / `Ctrl-K` must not move the swap-target picker.
+///
+/// `^K` is the command-palette chord, advertised in the footer on every
+/// screen. Without the `!CONTROL` guards on these arms it also moves the
+/// selection in this picker — so an operator reaching for the palette
+/// silently changes which environment they are about to swap production
+/// DNS onto, and the next `Enter` acts on it. Both guards were free in
+/// the 2026-08-27 sweep.
+///
+/// Drives the real flow rather than poking `Picker` directly: the point
+/// is that the KEY HANDLER honours the guard, not that a picker can move.
+#[tokio::test]
+async fn ctrl_chords_do_not_move_the_swap_target_picker() {
+    let selected = |app: &App| -> Option<String> {
+        match app.action_flow.as_ref() {
+            Some(crate::app::ActionFlow::SwapTarget { picker, .. }) => picker.selected_value(),
+            _ => panic!("not in the swap picker"),
+        }
+    };
+    let open = || {
+        let mut app = test_app();
+        app.environments = vec![
+            mk_env("blue", "shop", "WebServer", "Green"),
+            mk_env("green", "shop", "WebServer", "Green"),
+            mk_env("amber", "shop", "WebServer", "Green"),
+        ];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        assert!(app.open_action_menu());
+        app.advance_action_flow(crate::app::Action::SwapCnames);
+        app
+    };
+
+    // Plain j / k / Down / Up move it — the guard must not block the
+    // ordinary case, which is how "always refuse" would pass.
+    for key in [KeyCode::Char('j'), KeyCode::Down] {
+        let mut app = open();
+        let before = selected(&app);
+        press(&mut app, key, KeyModifiers::NONE);
+        assert_ne!(selected(&app), before, "{key:?} should move the picker");
+    }
+
+    // The same keys with Ctrl held must not.
+    for key in [KeyCode::Char('j'), KeyCode::Char('k')] {
+        let mut app = open();
+        let before = selected(&app);
+        press(&mut app, key, KeyModifiers::CONTROL);
+        assert_eq!(
+            selected(&app),
+            before,
+            "Ctrl-{key:?} moved the swap target — reaching for the palette \
+             must not re-aim a production DNS swap"
+        );
+    }
+}
