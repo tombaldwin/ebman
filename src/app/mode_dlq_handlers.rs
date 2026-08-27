@@ -194,7 +194,8 @@ impl App {
                     return;
                 }
                 let cur = dlq.list_state.selected().unwrap_or(0);
-                dlq.list_state.select(Some((cur + 1) % n));
+                dlq.list_state
+                    .select(Some(crate::util::wrap_index(cur, 1, n)));
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 let n = dlq.messages.len();
@@ -202,7 +203,8 @@ impl App {
                     return;
                 }
                 let cur = dlq.list_state.selected().unwrap_or(0);
-                dlq.list_state.select(Some((cur + n - 1) % n));
+                dlq.list_state
+                    .select(Some(crate::util::wrap_index(cur, -1, n)));
             }
             KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.spawn_dlq_fetch();

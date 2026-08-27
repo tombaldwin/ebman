@@ -129,10 +129,11 @@ holds:
    from the `--watch` loop. This is what makes its remaining ~29
    survivors reachable at all.
 
-5. **Cursor wrap unification** *(architecture)* — six implementations,
-   twelve sites, five modules. Needs both wrap and clamp modes, and
-   should standardise on `rem_euclid`. The per-site tests written on
-   2026-08-26 are what make it safe to do.
+5. ~~Cursor wrap unification~~ — **done 2026-08-27.** 22 sites across
+   11 modules, not the 12 across 5 the backlog recorded. The per-site
+   tests written on 2026-08-26 are what made it safe, and breaking the
+   shared helper now fails 12 of them — which is the evidence the
+   migration is wired rather than merely compiling.
 
 6. **QA lane** *(architecture)* — `ebman --demo` plus `ctl key` /
    `ctl screen` / `ctl state` can drive the real binary headlessly. It

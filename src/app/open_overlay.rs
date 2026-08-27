@@ -215,7 +215,7 @@ impl App {
             .iter()
             .position(|r| *r == d.metrics_range_secs)
             .unwrap_or(1) as i32;
-        let next = (cur + delta).rem_euclid(RANGES.len() as i32) as usize;
+        let next = crate::util::wrap_index(cur as usize, delta as isize, RANGES.len());
         d.metrics_range_secs = RANGES[next];
         let env_name = d.env_name.clone();
         self.spawn_detail_metrics(env_name);

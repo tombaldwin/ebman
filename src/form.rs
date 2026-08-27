@@ -182,9 +182,7 @@ impl Form {
         if len <= 0 {
             return;
         }
-        let mut next = self.cursor as isize + delta;
-        next = ((next % len) + len) % len;
-        self.cursor = next as usize;
+        self.cursor = crate::util::wrap_index(self.cursor, delta, self.fields.len());
     }
 
     /// Run per-field validators. Stores errors on each `FormField.error` and

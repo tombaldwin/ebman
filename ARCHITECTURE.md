@@ -190,6 +190,21 @@ and so can't corrupt the screen. The count is part of the pin — file-level
 granularity would let a second, unjustified write shelter behind the first
 one's reason.
 
+A third piece of shared logic sits in `util.rs` rather than being a
+type: `wrap_index` / `clamp_index`. Cursor movement had **six**
+implementations across eleven modules — `rem_euclid`, a hand-rolled
+`((x % n) + n) % n`, and direction-specific `(cur + 1) % n` pairs, in
+`usize`, `i32` and `isize`. Each was tested separately, which is
+coverage of six copies rather than of one rule, and each carried the
+same survivor pattern. `clamp_index` is a deliberate second mode, not an
+inconsistency: Detail's Config tab stops at the ends because wrapping
+past the bottom of a long editable list is disorienting, while short
+fixed lists wrap.
+
+`detail_search_jump`'s two rotated *search orders* look similar and are
+not the same operation — they build a sequence to scan, not a cursor
+move — so they stay separate.
+
 ### Clusters that own their invariant
 
 Two of `App`'s field groups are types rather than loose fields, and both
