@@ -461,6 +461,58 @@ pub(crate) fn join_fields_to_fit<'a>(
     out
 }
 
+/// Trim a footer key-strip to whole hints.
+///
+/// Hints are separated by two spaces, and ratatui clips the right edge —
+/// which left a bare key with its action gone, `r region  p`, reading as
+/// a hint for a key called "p" that does nothing. A hint you cannot act
+/// on is worse than one you cannot see, because it costs a keystroke to
+/// find out.
+///
+/// Always keeps at least the first hint: a key strip is the only
+/// discoverability surface in the TUI, and an empty one on a very narrow
+/// terminal helps nobody.
+pub(crate) fn hints_to_fit(line: &str, available: u16) -> String {
+    let available = available as usize;
+    if line.chars().count() <= available {
+        return line.to_string();
+    }
+    // Split the TRIMMED line: the first hint carries the strip's own
+    // leading space, and re-adding one below doubled the indent on
+    // exactly the narrow terminals this exists to help.
+    let hints: Vec<&str> = line
+        .trim_start()
+        .split("  ")
+        .filter(|h| !h.is_empty())
+        .collect();
+    let mut out = String::new();
+    for hint in &hints {
+        let candidate_len = if out.is_empty() {
+            hint.chars().count() + 1
+        } else {
+            out.chars().count() + 2 + hint.chars().count()
+        };
+        if candidate_len > available && !out.is_empty() {
+            break;
+        }
+        if out.is_empty() {
+            out.push(' ');
+        } else {
+            out.push_str("  ");
+        }
+        out.push_str(hint);
+    }
+    // A single hint longer than the whole terminal is the one case where
+    // clipping is unavoidable — there is no smaller whole unit to fall
+    // back to. Do it here rather than leaving ratatui to, so the return
+    // value always honours the width it was given and a caller can rely
+    // on that.
+    if out.chars().count() > available {
+        out = out.chars().take(available).collect();
+    }
+    out
+}
+
 /// `sep` renders as five cells in every icon style.
 pub(crate) const SEP_WIDTH: usize = 5;
 
