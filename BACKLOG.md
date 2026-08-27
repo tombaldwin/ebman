@@ -1023,21 +1023,34 @@ than a wrong action. Working top-down by count is the wrong order.
   it exists for (completion naming the home region instead of the row's)
   and 10 clean full-suite runs after.
 
-- [ ] **Five implementations of "wrap a cursor by ±1", across four
-  modules** — `action_flow.rs` (action menu), `mode_dlq_handlers.rs`
-  (DLQ list), `forms.rs` (field options ×2, and `form.rs::move_cursor`).
-  Seven sites in total; `detail_nav.rs`'s two are a rotated *search
-  order* rather than a cursor move and are correctly separate.
+- [x] **Cursor wrap-around unified** — DONE 2026-08-27.
+  `util::wrap_index` and `util::clamp_index`, replacing **22 sites
+  across 11 modules** — half again as many as this entry recorded,
+  because it was written from the mutation-sweep survivor list rather
+  than from the code, and the sweep only names lines it could mutate.
 
-  Every one of them showed the same survivor pattern in the sweep, and
-  this session tested four of them **separately** instead of collapsing
-  them — the opposite of the `render.rs` call, where extracting
-  `tree_glyph` took that file 18 → 2. One `wrap_index(cur, delta, len)`
-  would do it, and the per-site tests written this session make the
-  refactor safe to do.
+  Six implementations became two: `rem_euclid`, hand-rolled
+  `((x % n) + n) % n`, and direction-specific `(cur + 1) % n` /
+  `(cur + n - 1) % n` pairs, across `usize`, `i32` and `isize`.
+  `rem_euclid` is why this was a rewrite rather than a dedupe — it is
+  the correct idiom and what most sites already used, while the
+  hand-rolled forms are the ones easy to get subtly wrong.
 
-  Not done here: four modules is past the ~3-module bar CLAUDE.md sets
-  for a refactor that isn't required by the task at hand.
+  `clamp_index` is a deliberate second mode: Detail's Config tab stops
+  at the ends because wrapping past the bottom of a long editable list
+  is disorienting. A test asserts the two **disagree** at the ends, so
+  neither is quietly redundant. The empty-list guard now lives in the
+  helper, which turns the three `if n == 0` checks in `detail_scroll`
+  from load-bearing into belt-and-braces.
+
+  Verified wired, not merely compiling: breaking `wrap_index` fails
+  **12 per-site tests** across detail tabs, the queue cursor, form
+  fields, MultiSelect options, the action menu, the DLQ list and
+  saved-view cycling. Breaking `clamp_index` fails the Config tab
+  alone. Three mutations: CAUGHT.
+
+  `detail_search_jump`'s two rotated search orders were left alone —
+  they build a sequence to scan, not a cursor move.
 
 - [x] **`config_edit.rs` — Enter could apply a config instead of
   deleting one** — 2026-08-26. 18 survivors around the saved-configs
