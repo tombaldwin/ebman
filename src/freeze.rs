@@ -140,14 +140,31 @@ const START_SLACK_SECS: i64 = 300;
 /// keeps a phantom freeze refusing writes, which is recoverable by
 /// deleting the file. Failing open would let writes through during a
 /// declared incident.
-fn marker_owner_is_live(alive: bool, start_epoch: Option<i64>, marker_at_epoch: i64) -> bool {
+///
+/// `marker_at_epoch` is an `Option` rather than a sentinel. It was
+/// `i64::MAX` for "unparseable timestamp", which read as the closed
+/// direction and was the open one: `i64::MAX + START_SLACK_SECS`
+/// overflows, wrapping to a large negative, so every real start time
+/// compared greater and the marker was judged reused — deleted, freeze
+/// silently lifted. Debug builds panicked instead. Encoding "unknown"
+/// as an extreme value puts it in the arithmetic's range; `None` keeps
+/// it out.
+fn marker_owner_is_live(
+    alive: bool,
+    start_epoch: Option<i64>,
+    marker_at_epoch: Option<i64>,
+) -> bool {
     if !alive {
         return false;
     }
+    let Some(marker_at) = marker_at_epoch else {
+        // Cannot judge reuse without a marker timestamp — assume owner.
+        return true;
+    };
     // Reads as "not reused". Written this way round because the
     // interesting case is the exclusion: `None` and an early start both
     // mean "assume owner", which is the closed direction.
-    !matches!(start_epoch, Some(start) if start > marker_at_epoch + START_SLACK_SECS)
+    !matches!(start_epoch, Some(start) if start > marker_at.saturating_add(START_SLACK_SECS))
 }
 
 /// Testable core: liveness and start-time probes injected.
@@ -161,7 +178,7 @@ fn read_active_with(
     // cannot judge reuse, so fall back to "assume owner" — closed.
     let at_epoch = chrono::DateTime::parse_from_rfc3339(&m.at)
         .map(|t| t.timestamp())
-        .unwrap_or(i64::MAX);
+        .ok();
     if marker_owner_is_live(alive(m.pid), start_epoch(m.pid), at_epoch) {
         return Some(m);
     }
@@ -385,18 +402,21 @@ mod tests {
         // well after T, so it cannot be the one that wrote it.
         let at = 1_700_000_000;
         assert!(
-            !marker_owner_is_live(true, Some(at + 86_400), at),
+            !marker_owner_is_live(true, Some(at + 86_400), Some(at)),
             "a process that started a day after the marker cannot have \
              written it"
         );
 
         // The real owner always starts BEFORE it writes its own marker.
-        assert!(marker_owner_is_live(true, Some(at - 60), at));
-        assert!(marker_owner_is_live(true, Some(at), at), "same second");
+        assert!(marker_owner_is_live(true, Some(at - 60), Some(at)));
+        assert!(
+            marker_owner_is_live(true, Some(at), Some(at)),
+            "same second"
+        );
 
         // Dead pid is stale regardless of start time.
-        assert!(!marker_owner_is_live(false, Some(at - 60), at));
-        assert!(!marker_owner_is_live(false, None, at));
+        assert!(!marker_owner_is_live(false, Some(at - 60), Some(at)));
+        assert!(!marker_owner_is_live(false, None, Some(at)));
     }
 
     /// Every uncertain case assumes the marker is still owned, because
@@ -407,7 +427,7 @@ mod tests {
     fn an_unreadable_start_time_fails_closed() {
         let at = 1_700_000_000;
         assert!(
-            marker_owner_is_live(true, None, at),
+            marker_owner_is_live(true, None, Some(at)),
             "unknown start time must not lift the freeze"
         );
 
@@ -415,13 +435,35 @@ mod tests {
         // makes a live session look like it started after its own
         // marker; the slack absorbs that.
         assert!(
-            marker_owner_is_live(true, Some(at + START_SLACK_SECS - 1), at),
+            marker_owner_is_live(true, Some(at + START_SLACK_SECS - 1), Some(at)),
             "a start time inside the slack window is still the owner"
         );
         assert!(
-            !marker_owner_is_live(true, Some(at + START_SLACK_SECS + 1), at),
+            !marker_owner_is_live(true, Some(at + START_SLACK_SECS + 1), Some(at)),
             "past the slack it is reuse"
         );
+    }
+
+    #[test]
+    fn an_unreadable_marker_timestamp_keeps_the_freeze_rather_than_lifting_it() {
+        // A truncated or corrupt `at` field means reuse cannot be
+        // judged. The safe answer is "assume owner": a phantom freeze
+        // refuses writes and the operator deletes the file, whereas
+        // lifting it lets deploys through during a declared incident.
+        //
+        // This was inverted. `at` fell back to the sentinel `i64::MAX`,
+        // and `i64::MAX + START_SLACK_SECS` overflows — wrapping to a
+        // large negative that every real start time compares greater
+        // than, so the marker was judged reused and DELETED. Release
+        // builds lifted the freeze silently; debug builds panicked.
+        let live_process_start = 1_756_000_000_i64;
+        assert!(
+            marker_owner_is_live(true, Some(live_process_start), None),
+            "an unjudgeable marker must keep the freeze, not lift it"
+        );
+        // A dead pid still lifts it — "cannot judge the timestamp" must
+        // not resurrect a freeze whose owner is gone.
+        assert!(!marker_owner_is_live(false, Some(live_process_start), None));
     }
 
     /// The probe reports something sane for this very process — without
