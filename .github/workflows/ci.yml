@@ -223,7 +223,24 @@ jobs:
           echo "$out"
           # And prove it actually analysed this crate, for the same
           # reason: a lint that silently no-ops emits no findings.
-          if ! echo "$out" | grep -qE 'Checking.*ebman'; then
+          #
+          # BOTH verbs. `cargo check` says "Checking ebman" for a crate
+          # it only checks, but "Compiling ebman" when it has to build
+          # something real for the package first — which, since 0.35.0
+          # added `build.rs`, it does on every CI run: the build-script
+          # artefact is not cached for the dylint nightly toolchain, so
+          # it is compiled fresh each time. Matching only "Checking"
+          # made this gate fail on every push regardless of findings.
+          #
+          # That is the SECOND time this detector has broken on a
+          # cosmetic change to cargo's output — see the CARGO_TERM_COLOR
+          # note above, which is the same shape. It greps a human-facing
+          # progress line for a machine decision, and there is no stabler
+          # signal on offer, so it stays fragile. Widen it deliberately
+          # when cargo changes how it announces work; do not delete it,
+          # because a lint that silently no-ops emits no findings and
+          # would otherwise read as a clean pass.
+          if ! echo "$out" | grep -qE '(Checking|Compiling).*ebman'; then
             echo "::error::candor lint produced no analysis of ebman — gate did not run"
             exit 1
           fi
