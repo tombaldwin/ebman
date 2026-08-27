@@ -207,9 +207,38 @@ holds:
      `deny.toml` of which that is true. The waiver says "not waived
      indefinitely" and then names no trigger and no date. **Needs a
      maintainer ruling.**
-8. **Release** — full procedure per `CLAUDE.md`, including
-   `cargo semver-checks` against the last published version *as a
-   patch*.
+8. **Release** — **prepared 2026-08-27, not tagged.** Everything
+   reversible is done; the irreversible step is left for an explicit
+   go, and item 1 (sweep triage) is ordered ahead of it anyway.
+
+   Done:
+   - **Docs audit.** All 131 registry commands appear in
+     `docs/commands.md`; `:help <topic>` documented; baseline flag
+     names match the parser; no keybindings changed; the three
+     `docs_drift` guards pass. One real gap found and fixed — exit `3`
+     also means *refused or halted*, which was documented only in the
+     MCP section, so a CI script branching on the stated convention
+     read a safety refusal as a lint finding.
+   - **Breaking-change enumeration, both halves.** `cargo semver-checks
+     --baseline-version 0.34.2 --release-type patch` → `223 checks: 223
+     pass, 31 skip`. And the half it provably misses (the 0.33.0
+     lesson): no dependency changed *at all* since v0.34.2 — verified
+     by diffing the lockfile, not assumed — so there is no inherited
+     break to miss. No **Breaking** section needed.
+   - **Lineup code review.** Found one Critical in my own freeze fix
+     from earlier in this run: a corrupt marker timestamp lifted the
+     freeze instead of holding it, via an overflowing sentinel. Fixed
+     as a class (`Option` instead of `i64::MAX`), mutation-verified by
+     reinstating the original bug. A targeted scan for the same class
+     across the changed files found no other instance.
+   - **`CHANGELOG.md` `[Unreleased]`** filled in.
+
+   Left to do at tag time: version bump across `Cargo.toml`,
+   `server.json` (both fields) and `Formula/ebman.rb`, then the
+   publish + Homebrew push.
+
+   Version should be **0.35.0** — one feature (`:help <topic>`), so
+   minor, and semver-checks confirms nothing forces more.
 9. **Features** — `:queue` inspector, mouse column resize, pill caps,
    `:custom-platform-create`, then the speculative tail.
 

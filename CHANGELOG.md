@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `:help <topic>` opens one help topic by name — `global`, `detail`,
+  `dlq`, `shell` and the rest — rather than scrolling the full keymap.
+  `:help shell` is the only way to read the embedded-shell keys.
+
+### Fixed
+
+- **A fleet freeze could be lifted by a corrupt marker file.** An
+  unparseable timestamp in `freeze.marker` fell back to a sentinel that
+  overflowed when the reuse window was added to it, so the marker was
+  judged pid-reused, deleted, and enforcement stopped — silently, during
+  the incident it was declared for. Release builds lifted the freeze;
+  debug builds panicked. Found reviewing this release's own lineup.
+- **A reused pid could hold a fleet freeze indefinitely.** The marker
+  recorded only a pid, so once the OS wrapped its pid counter an
+  unrelated process kept a phantom freeze alive. The marker now checks
+  process start time as well, and still fails closed when the start time
+  cannot be read.
+- **A rollout halted by a freeze exited 0**, reporting success for a
+  deploy that stopped part-way. It exits 3, and the unattempted regions
+  are listed as `skipped (rollout halted)`.
+- **A freeze declared mid-rollout did not stop the remaining regions.**
+  Both the sequential and parallel dispatch loops now re-check before
+  each region.
+- **An empty `Select` field panicked the TUI** on a keypress — a
+  divide-by-zero in the option cursor when a form offered a choice list
+  with nothing in it.
+- **`ebman ctl key shift+tab` moved the cursor forwards**, not
+  backwards.
+
+### Documentation
+
+- `docs/headless.md` now spells out that exit `3` covers refused and
+  halted writes — a safety pin, read-only mode, an active freeze, or a
+  rollout halted mid-run — not only "issues / drift found". CI scripts
+  branching on the documented convention were reading a refusal as a
+  lint finding.
+
 ## [0.34.2] — 2026-08-25
 
 **If you installed 0.34.1 from crates.io, this replaces it.** That
