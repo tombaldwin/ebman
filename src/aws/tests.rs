@@ -4086,3 +4086,111 @@ fn listener_rows_sort_default_first_then_by_port() {
     super::eb::sort_listener_rows(&mut rows);
     assert_eq!(rows[0].0, "9", "ports compare as numbers");
 }
+
+/// The namespace filter is the whole filter.
+///
+/// Flipped to `!=`, every setting EXCEPT the ones asked for comes back
+/// — `:env` would list the entire configuration vocabulary as
+/// environment variables, and the RDS panel would show everything but
+/// the database.
+#[test]
+fn settings_in_namespace_selects_only_that_namespace() {
+    use super::eb::settings_in_namespace;
+    let s = |ns: &str, name: &str, val: &str| {
+        (
+            Some(ns.to_string()),
+            Some(name.to_string()),
+            Some(val.to_string()),
+        )
+    };
+    let rows = || {
+        vec![
+            s(
+                "aws:elasticbeanstalk:application:environment",
+                "LOG_LEVEL",
+                "debug",
+            ),
+            s("aws:elasticbeanstalk:application:environment", "EMPTY", ""),
+            s("aws:rds:dbinstance", "DBEngine", "postgres"),
+            s("aws:rds:dbinstance", "DBUnset", ""),
+            s("aws:autoscaling:asg", "MinSize", "2"),
+        ]
+    };
+
+    // Env vars keep an empty value: a var set to "" IS set.
+    let env = settings_in_namespace(rows(), "aws:elasticbeanstalk:application:environment", true);
+    assert_eq!(
+        env,
+        vec![
+            ("LOG_LEVEL".to_string(), "debug".to_string()),
+            ("EMPTY".to_string(), String::new()),
+        ],
+        "only the env namespace, and an empty value is still a value"
+    );
+
+    // RDS drops them: EB returns every settable key whether or not it is
+    // configured, and an unset one is not part of the database's config.
+    let rds = settings_in_namespace(rows(), "aws:rds:dbinstance", false);
+    assert_eq!(
+        rds,
+        vec![("DBEngine".to_string(), "postgres".to_string())],
+        "the RDS panel drops unset keys"
+    );
+
+    // A namespace nothing is in yields nothing, rather than everything.
+    assert!(settings_in_namespace(rows(), "aws:nowhere", true).is_empty());
+    // A setting with no namespace is not in any namespace.
+    assert!(settings_in_namespace(
+        vec![(None, Some("X".into()), Some("1".into()))],
+        "aws:x",
+        true
+    )
+    .is_empty());
+}
+
+/// A tag needs both halves. Deleting the arm that requires them drops
+/// every tag, and the panel renders as an env with no tags rather than
+/// a fetch that lost them.
+#[test]
+fn tag_pairs_requires_both_halves() {
+    use super::eb::tag_pairs;
+    let got = tag_pairs(vec![
+        (Some("Owner".into()), Some("platform".into())),
+        (Some("KeyOnly".into()), None),
+        (None, Some("ValueOnly".into())),
+        (None, None),
+        (Some("Team".into()), Some(String::new())),
+    ]);
+    assert_eq!(
+        got,
+        vec![
+            ("Owner".to_string(), "platform".to_string()),
+            ("Team".to_string(), String::new()),
+        ],
+        "both halves required; an empty value is still a value"
+    );
+    assert!(tag_pairs(Vec::new()).is_empty());
+}
+
+/// `newest_date` picks the newest. With `<` it picks the oldest, and
+/// `:upgrade` offers a downgrade as the latest available platform.
+#[test]
+fn newest_date_picks_the_latest_not_the_earliest() {
+    use super::eb::newest_date;
+    let at = |s: &str| {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .expect("valid")
+            .with_timezone(&chrono::Utc)
+    };
+    let old = at("2026-01-01T00:00:00Z");
+    let mid = at("2026-06-01T00:00:00Z");
+    let new = at("2026-08-01T00:00:00Z");
+
+    // Order must not matter.
+    assert_eq!(newest_date(vec![old, new, mid]), Some(new));
+    assert_eq!(newest_date(vec![new, mid, old]), Some(new));
+    assert_eq!(newest_date(vec![mid]), Some(mid));
+    assert_eq!(newest_date(Vec::new()), None, "no dates, no answer");
+    // Equal dates settle on that date rather than looping or panicking.
+    assert_eq!(newest_date(vec![mid, mid]), Some(mid));
+}

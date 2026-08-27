@@ -263,6 +263,71 @@ pub(crate) fn platform_branch_from(stack_or_arn: &str) -> String {
     String::new()
 }
 
+/// Option settings in one namespace, as `(name, value)`.
+///
+/// The namespace test is the whole filter: flipped to `!=`, every
+/// setting EXCEPT the ones asked for comes back — so `:env` would list
+/// the entire configuration vocabulary as environment variables.
+///
+/// `keep_empty` splits the two callers. Environment variables keep an
+/// empty value (an env var set to "" is set), while the RDS panel drops
+/// them, because EB returns every settable key whether or not it is
+/// configured and an unset one is not part of the database's config.
+pub(crate) fn settings_in_namespace<I>(
+    settings: I,
+    namespace: &str,
+    keep_empty: bool,
+) -> Vec<(String, String)>
+where
+    I: IntoIterator<Item = (Option<String>, Option<String>, Option<String>)>,
+{
+    settings
+        .into_iter()
+        .filter_map(|(ns, name, value)| {
+            if ns.as_deref() != Some(namespace) {
+                return None;
+            }
+            let value = value.unwrap_or_default();
+            if !keep_empty && value.is_empty() {
+                return None;
+            }
+            Some((name.unwrap_or_default(), value))
+        })
+        .collect()
+}
+
+/// Tags that have both halves.
+///
+/// EB's `resource_tags` are `Option` on each side. A tag with a key and
+/// no value is not a tag, and deleting the arm that requires both drops
+/// every tag silently — the panel renders empty and looks like an env
+/// with no tags rather than a fetch that lost them.
+pub(crate) fn tag_pairs<I>(tags: I) -> Vec<(String, String)>
+where
+    I: IntoIterator<Item = (Option<String>, Option<String>)>,
+{
+    tags.into_iter()
+        .filter_map(|(k, v)| match (k, v) {
+            (Some(k), Some(v)) => Some((k, v)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The newest of a set of platform-version dates.
+///
+/// `>` is load-bearing: with `<` this returns the OLDEST, and
+/// `:upgrade` offers a downgrade as the newest available platform.
+pub(crate) fn newest_date(dates: impl IntoIterator<Item = DateTime<Utc>>) -> Option<DateTime<Utc>> {
+    let mut latest: Option<DateTime<Utc>> = None;
+    for d in dates {
+        if latest.is_none_or(|l| d > l) {
+            latest = Some(d);
+        }
+    }
+    latest
+}
+
 /// Fold `(namespace, option_name, value)` option settings into the VPC
 /// context. An empty value is not a setting — EB returns every settable
 /// key whether or not it is set, so without the emptiness guards an
@@ -1061,24 +1126,15 @@ impl AwsClient {
             .send()
             .await
             .wrap_err("DescribeConfigurationSettings(rds) failed")?;
-        let mut out: Vec<(String, String)> = resp
-            .configuration_settings
-            .unwrap_or_default()
-            .into_iter()
-            .flat_map(|c| c.option_settings.unwrap_or_default())
-            .filter_map(|o| {
-                let ns = o.namespace?;
-                if ns != "aws:rds:dbinstance" {
-                    return None;
-                }
-                let opt = o.option_name?;
-                let value = o.value.unwrap_or_default();
-                if value.is_empty() {
-                    return None;
-                }
-                Some((opt, value))
-            })
-            .collect();
+        let mut out = settings_in_namespace(
+            resp.configuration_settings
+                .unwrap_or_default()
+                .into_iter()
+                .flat_map(|c| c.option_settings.unwrap_or_default())
+                .map(|o| (o.namespace, o.option_name, o.value)),
+            "aws:rds:dbinstance",
+            false,
+        );
         out.sort();
         Ok(out)
     }
@@ -1252,21 +1308,15 @@ impl AwsClient {
             .send()
             .await
             .wrap_err("DescribeConfigurationSettings(env) failed")?;
-        let mut out: Vec<(String, String)> = resp
-            .configuration_settings
-            .unwrap_or_default()
-            .into_iter()
-            .flat_map(|c| c.option_settings.unwrap_or_default())
-            .filter(|o| {
-                o.namespace.as_deref() == Some("aws:elasticbeanstalk:application:environment")
-            })
-            .map(|o| {
-                (
-                    o.option_name.unwrap_or_default(),
-                    o.value.unwrap_or_default(),
-                )
-            })
-            .collect();
+        let mut out = settings_in_namespace(
+            resp.configuration_settings
+                .unwrap_or_default()
+                .into_iter()
+                .flat_map(|c| c.option_settings.unwrap_or_default())
+                .map(|o| (o.namespace, o.option_name, o.value)),
+            "aws:elasticbeanstalk:application:environment",
+            true,
+        );
         out.sort();
         Ok(out)
     }
@@ -1316,15 +1366,12 @@ impl AwsClient {
             .resource_arn(resource_arn)
             .send()
             .await?;
-        let tags = resp
-            .resource_tags
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|t| match (t.key, t.value) {
-                (Some(k), Some(v)) => Some((k, v)),
-                _ => None,
-            })
-            .collect();
+        let tags = tag_pairs(
+            resp.resource_tags
+                .unwrap_or_default()
+                .into_iter()
+                .map(|t| (t.key, t.value)),
+        );
         Ok(tags)
     }
 
@@ -1648,7 +1695,7 @@ impl AwsClient {
         &self,
         version_arns: &[String],
     ) -> Result<Option<DateTime<Utc>>> {
-        let mut latest: Option<DateTime<Utc>> = None;
+        let mut dates: Vec<DateTime<Utc>> = Vec::with_capacity(version_arns.len());
         for arn in version_arns {
             let resp = self
                 .client
@@ -1657,17 +1704,15 @@ impl AwsClient {
                 .send()
                 .await
                 .wrap_err("DescribePlatformVersion failed")?;
-            let date = resp
+            if let Some(d) = resp
                 .platform_description
                 .and_then(|d| d.date_created)
-                .and_then(|t| DateTime::<Utc>::from_timestamp(t.secs(), t.subsec_nanos()));
-            if let Some(d) = date {
-                if latest.is_none_or(|l| d > l) {
-                    latest = Some(d);
-                }
+                .and_then(|t| DateTime::<Utc>::from_timestamp(t.secs(), t.subsec_nanos()))
+            {
+                dates.push(d);
             }
         }
-        Ok(latest)
+        Ok(newest_date(dates))
     }
 
     /// Delete a custom platform by ARN. EB returns success immediately even

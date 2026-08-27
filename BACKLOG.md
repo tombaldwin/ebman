@@ -479,11 +479,30 @@ than a wrong action. Working top-down by count is the wrong order.
   **Verified**: 213 mutants re-run, 98 caught, 88 missed — 17 of the 30
   reachable killed by the run, plus 2 more below, so 19 of 30.
 
-- [ ] **`src/aws/eb.rs` — 11 reachable survivors left**, each needing its
-  own extraction: `list_events_inner` (3),
-  `latest_platform_version_date` (3), and singles in `fetch_env_vars`,
-  `list_tags`, `fetch_env_configuration_options`,
-  `list_compatible_platforms`, `fetch_env_rds_config`.
+- [x] **`src/aws/eb.rs` — the reachable remainder** — 2026-08-27.
+  Three more pure helpers, and the extraction collapsed two call sites
+  into one as a side effect:
+
+  - **`settings_in_namespace`** replaces the option-setting filter in
+    BOTH `fetch_env_vars` and `fetch_env_rds_config` — the same shape
+    written twice. The namespace test is the whole filter: flipped to
+    `!=`, `:env` lists the entire configuration vocabulary as
+    environment variables. The `keep_empty` flag is what separated the
+    two copies: an env var set to `""` is set, while an unset RDS key is
+    not part of the database's config.
+  - **`tag_pairs`** — a tag needs both halves; deleting the arm drops
+    every tag and the panel renders as an env with no tags rather than a
+    fetch that lost them.
+  - **`newest_date`** — `>` is load-bearing. With `<` it returns the
+    OLDEST, and `:upgrade` offers a downgrade as the newest available
+    platform.
+
+  Mutation-verified four ways: CAUGHT.
+
+- [ ] **`src/aws/eb.rs` — the last four**, all inside `list_events_inner`
+  (the `!t.is_empty()` next-token guard, `max_pages > 1`, the empty
+  version-label filter) and `list_compatible_platforms`'s branch filter.
+  Paging logic: needs the loop split from the SDK call to be reachable.
 
 - [x] **Test shape: one case per guard, and it has to discriminate** —
   2026-08-26. The verification runs caught the same mistake twice, in
