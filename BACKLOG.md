@@ -168,9 +168,16 @@ The write/freeze pre-tag review (2 lenses) fixed 2 Critical + 2 Important + 1 Mi
   arm, `hints_to_fit`'s final `>`, `newest_date`'s comparison) so they
   are never re-investigated.
 
-  What remains is the other ~5800 mutants. That is 5+ days on one
-  machine — GitHub only manages ~4.4h by sharding across twenty-four —
-  so it needs either the runners back or a deliberate multi-day run.
+  What remains is the other ~5700 mutants. **Corrected 2026-08-28: that
+  is about 17 hours on this machine, not the 5+ days recorded earlier.**
+  The 5-day figure came from timing the FIRST EIGHT mutants of a run,
+  which are dominated by build warm-up — 0.8/min against the 6.14/min
+  the completed 478-mutant run actually sustained. An estimate taken
+  before a cache is warm is not an estimate of the steady state, and
+  this one was wrong by 7.7x in the direction that says "don't bother".
+
+  17 hours is an overnight job. Started 2026-08-28 23:37 UTC via
+  `scripts/sweep.sh` with no argument.
   Artifacts reproducible by re-running the `mutants` workflow, or
   `scripts/sweep.sh` with no argument.
 

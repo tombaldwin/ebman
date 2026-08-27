@@ -17,16 +17,15 @@
 # Hence: fewer jobs than cores, a `cargo clean` first, and a watchdog
 # that aborts rather than letting the machine run out.
 #
-# IT IS ALSO SLOW, and the whole tree is NOT an overnight job here.
-# Measured 2026-08-27: 0.8 mutants/min at -j 8 (eight in ten minutes of
-# real work), against ~6250 mutants in the tree. That is 5.4 days at
-# -j 8 and 9 days at -j 4. GitHub gets it down to ~4.4h only by sharding
-# across twenty-four machines; one machine cannot.
+# IT IS SLOW, BUT MEASURE IT PROPERLY. A completed run of 478 mutants
+# took 78 minutes at -j 6: 6.14 mutants/min, so the ~6200-mutant tree is
+# about 17 hours. That is an overnight job.
 #
-# So: scope with a diff for anything you want back tomorrow. This week's
-# diff is 478 mutants ~ 10-13h, which is a real overnight run. Reserve
-# the whole-tree sweep for when a multi-day run is acceptable, or for
-# whenever GitHub's runners come back.
+# Do NOT estimate from the first few mutants. Timing the opening eight
+# of a run gave 0.8/min — they are dominated by build warm-up — and that
+# figure said "5 days, don't bother", which was wrong by 7.7x and got
+# written into the backlog before anyone checked it against a run that
+# actually finished.
 set -uo pipefail
 
 JOBS=${SWEEP_JOBS:-4}
