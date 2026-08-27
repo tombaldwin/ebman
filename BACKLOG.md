@@ -1358,11 +1358,30 @@ than a wrong action. Working top-down by count is the wrong order.
   existing `support::render` harness. No new infrastructure, no PTY.
 
   So the survivor count was read as a statement about reachability when
-  it is only a statement about assertions. Four state-reporting
-  branches are now covered (read-only badge pinned in *both*
-  directions — a badge stuck on is the dangerous failure). The rest of
-  that population has not been enumerated; the number to trust is
-  "unknown subset of 440", not 440.
+  it is only a statement about assertions.
+
+  **Population enumerated 2026-08-27, so "unknown subset of 440" now
+  has a real number.** 26 distinct `App` fields gate a conditional in
+  `src/ui/`. Ten are now asserted in a render test — `read_only` (both
+  directions, since a badge stuck *on* is the dangerous failure),
+  `alerts`, `pinned`, `first_run_hint`, `frozen` (including the
+  past-5-minutes staleness), `incident` (headline and empty-headline
+  branches), `update_available`, `sso_expiry` (counts down, and shows
+  nothing once expired), `multi_selected`.
+
+  **13 remain**, and they are the tail rather than the core:
+  `armed_watchdogs`, `cfg`, `costs`, `event_panel`, `loading_since`,
+  `loading_visible_until`, `newly_added`, `newly_red`,
+  `pending_dispatch`, `plugins`, `tf_managed_envs`, `watching_deploys`,
+  `worker_dlq_stale`.
+
+  Reproduce the count with the grep in the 2026-08-27 session — it
+  matches `if app.X`, `if let Some(_) = app.X` and `while app.X` in
+  `src/ui/*.rs`, and counts a field as covered when it appears in
+  `render.rs` / `overlays.rs` / `detail.rs`. That second half is
+  *directional, not exact*: it proves the field is set in some test,
+  not that the rendered output was asserted. Treat 13 as an upper bound
+  on what is genuinely pinned and a lower bound on what is left.
 
 #### Console parity — BONUS
 
