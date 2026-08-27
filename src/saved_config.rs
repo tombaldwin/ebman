@@ -43,16 +43,66 @@ struct SavedConfigFile {
 /// form so the diff still shows *something* rather than silently
 /// dropping the row.
 fn coerce_value(v: &serde_yml::Value) -> String {
+    coerce_value_at(v, 0)
+}
+
+/// How deep a nested value is rendered before it is abbreviated.
+///
+/// `OptionSettings` values are scalars in every saved config EB writes,
+/// so anything nested is already off the expected shape. Four levels is
+/// far past anything meaningful and keeps a hand-edited or truncated
+/// file from recursing until the stack runs out.
+const MAX_VALUE_DEPTH: usize = 4;
+
+/// Render a saved-config value as the single line a diff row shows.
+///
+/// The non-scalar arms used to go through `serde_yml::to_string`, which
+/// is the emitter named by RUSTSEC-2025-0068: `serde_yml`'s serializer
+/// can segfault, the crate is archived, and `patched = []` means no
+/// version fixes it. That was the codebase's only serializer use — the
+/// other five call sites only parse, which the advisory does not
+/// implicate — so writing these two arms by hand removes the unsound
+/// path entirely rather than waiting on a replacement crate.
+///
+/// It also renders better. `to_string` emitted real YAML, so a sequence
+/// became `- a\n- b` and got `trim`med into a row that still contained a
+/// newline; a compact `[a, b]` is what a single-line diff cell wants.
+fn coerce_value_at(v: &serde_yml::Value, depth: usize) -> String {
     use serde_yml::Value;
     match v {
         Value::Null => String::new(),
         Value::Bool(b) => b.to_string(),
         Value::Number(n) => n.to_string(),
         Value::String(s) => s.clone(),
-        other => serde_yml::to_string(other)
-            .unwrap_or_default()
-            .trim()
-            .to_string(),
+        Value::Sequence(_) | Value::Mapping(_) | Value::Tagged(_) if depth >= MAX_VALUE_DEPTH => {
+            "…".to_string()
+        }
+        Value::Sequence(items) => {
+            let inner: Vec<String> = items
+                .iter()
+                .map(|i| coerce_value_at(i, depth + 1))
+                .collect();
+            format!("[{}]", inner.join(", "))
+        }
+        Value::Mapping(map) => {
+            let inner: Vec<String> = map
+                .iter()
+                // 0.0.13 hands out the key as a string rather than a
+                // `Value` — one of the two breaking changes it shipped
+                // inside a patch release.
+                .map(|(k, val)| format!("{k}: {}", coerce_value_at(val, depth + 1)))
+                .collect();
+            format!("{{{}}}", inner.join(", "))
+        }
+        // `!Tag value` — YAML's enum syntax. The tag itself is not
+        // reachable: `TaggedValue`'s field is private in 0.0.13 and it
+        // exposes no accessor, so this renders the value alone. That is
+        // a real (if small) loss of fidelity — two differently-tagged
+        // values would diff as identical — and it is accepted because
+        // EB writes plain scalars into `OptionSettings`, so a tagged
+        // value cannot occur in a file we actually read. Revisit if the
+        // YAML crate is ever replaced.
+        Value::Tagged(_) => format!("{v:?}"),
     }
 }
 
@@ -339,5 +389,90 @@ mod parser_properties {
             let _ = super::parse_saved_config(&format!("OptionSettings:\n  {ns}: {val}\n"));
             let _ = super::parse_saved_config(&format!("OptionSettings: {val}\n"));
         }
+    }
+}
+
+#[cfg(test)]
+mod coerce_tests {
+    use super::parse_saved_config;
+
+    fn value_for(yaml: &str) -> String {
+        let opts = parse_saved_config(yaml).expect("parses");
+        // `ConfigOption.value` is itself an `Option`; the parser always
+        // sets `Some`, so a `None` here means the option was missing.
+        opts.iter()
+            .find(|o| o.name == "K")
+            .and_then(|o| o.value.clone())
+            .unwrap_or_else(|| panic!("no option K in {opts:?}"))
+    }
+
+    #[test]
+    fn scalars_render_as_the_string_eb_would_return() {
+        // DescribeConfigurationSettings gives every value back as a
+        // string regardless of its underlying type, so the local file
+        // has to be coerced the same way or every row diffs.
+        assert_eq!(value_for("OptionSettings:\n  NS:\n    K: true\n"), "true");
+        assert_eq!(value_for("OptionSettings:\n  NS:\n    K: 4\n"), "4");
+        assert_eq!(value_for("OptionSettings:\n  NS:\n    K: '4'\n"), "4");
+        assert_eq!(value_for("OptionSettings:\n  NS:\n    K: hello\n"), "hello");
+        assert_eq!(value_for("OptionSettings:\n  NS:\n    K: null\n"), "");
+    }
+
+    #[test]
+    fn a_sequence_renders_on_one_line() {
+        // This arm used to go through `serde_yml::to_string`, the
+        // emitter named by RUSTSEC-2025-0068. It also emitted real
+        // YAML — `- a\n- b` — so a `trim` left a newline sitting inside
+        // what is rendered as a single diff cell.
+        let v = value_for("OptionSettings:\n  NS:\n    K:\n      - a\n      - b\n");
+        assert_eq!(v, "[a, b]");
+        assert!(!v.contains('\n'), "a diff cell is one line");
+    }
+
+    #[test]
+    fn a_mapping_renders_on_one_line() {
+        let v = value_for("OptionSettings:\n  NS:\n    K:\n      a: 1\n      b: 2\n");
+        assert_eq!(v, "{a: 1, b: 2}");
+        assert!(!v.contains('\n'));
+    }
+
+    #[test]
+    fn nesting_is_bounded_rather_than_recursing_until_the_stack_ends() {
+        // EB writes scalars, so anything this deep is a hand-edited or
+        // truncated file. It must abbreviate, not recurse.
+        let deep = "OptionSettings:\n  NS:\n    K:\n\
+                    \x20     - - - - - - - - - - a\n";
+        let v = value_for(deep);
+        assert!(v.contains('…'), "deep nesting should abbreviate, got {v:?}");
+        assert!(!v.contains('\n'));
+    }
+
+    #[test]
+    fn an_empty_sequence_is_distinguishable_from_null() {
+        // `[]` is not the same as "unset": rendering both as "" would
+        // diff an emptied list as unchanged.
+        assert_eq!(value_for("OptionSettings:\n  NS:\n    K: []\n"), "[]");
+        assert_eq!(value_for("OptionSettings:\n  NS:\n    K: null\n"), "");
+    }
+
+    #[test]
+    fn an_inline_empty_mapping_fails_to_parse_at_all() {
+        // Not our behaviour — `serde_yml` 0.0.13 rejects `K: {}` in this
+        // position with "expected identifier, found non-scalar", and the
+        // whole file fails rather than that one value. `K: []` in the
+        // same position is fine.
+        //
+        // Pinned because it is a real limitation of `:config-diff-local`
+        // (a saved config containing an inline empty mapping cannot be
+        // diffed at all), and because it is one more data point on the
+        // crate that RUSTSEC-2025-0068 covers: this is the version that
+        // shipped two breaking changes in a patch release. If the YAML
+        // dependency is ever replaced, this test should start failing —
+        // and that would be an improvement, not a regression.
+        assert!(
+            parse_saved_config("OptionSettings:\n  NS:\n    K: {}\n").is_err(),
+            "serde_yml learned to parse an inline empty mapping — good; \
+             update this test and the note in deny.toml"
+        );
     }
 }

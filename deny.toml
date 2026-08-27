@@ -23,10 +23,28 @@ ignore = [
     # only to AWS endpoints. Reviewed 2026-08-22.
     "RUSTSEC-2026-0258",
     # `serde_yml` — unsound AND unmaintained, and the ONLY one of
-    # these that is ebman's own direct dependency. Not waived
-    # indefinitely: tracked in BACKLOG for migration off it. Two
-    # breaking changes inside a patch release (0.0.12 -> 0.0.13)
-    # on 2026-08-22 alone. Reviewed 2026-08-22.
+    # these that is ebman's own direct dependency. Two breaking changes
+    # inside a patch release (0.0.12 -> 0.0.13) on 2026-08-22 alone.
+    #
+    # THE UNSOUND PATH IS NO LONGER REACHED (2026-08-27). RUSTSEC-2025-0068
+    # is specifically about the SERIALIZER: `serde_yml::ser::Serializer`'s
+    # emitter can segfault. `saved_config.rs` had the codebase's only
+    # serializer call, `serde_yml::to_string`, in the fallback arm that
+    # rendered a non-scalar option value. That is hand-written now, so
+    # every remaining use is parsing — which the advisory does not
+    # implicate.
+    #
+    # The waiver stays because the crate is still unmaintained and still
+    # a dependency; `patched = []`, so no version fixes it and there is
+    # nothing to upgrade to. What has changed is that this is now a
+    # maintenance risk rather than a soundness one.
+    #
+    # Migration is still open in BACKLOG, and still blocked on there
+    # being somewhere to go: the advisory recommends `serde_norway`
+    # (last released Dec 2024) and `serde_yaml_ng` (May 2024), both
+    # staler than the crate they replace. `saphyr` is actively developed
+    # but 0.0.x and a parser rather than a serde integration.
+    # Reviewed 2026-08-27.
     "RUSTSEC-2025-0068",
 ]
 
