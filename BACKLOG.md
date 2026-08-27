@@ -711,8 +711,15 @@ than a wrong action. Working top-down by count is the wrong order.
 
   Mutation-verified four ways: CAUGHT.
 
-- [ ] **`app/forms.rs` — the rest of `handle_form_key`**, chiefly
-  Select/Boolean arms and the submit path.
+- [x] **`app/forms.rs` — the Boolean and MultiSelect arms** —
+  2026-08-27. Three separate Boolean arms, each deletable: space
+  toggles, `t` and `f` set directly. `t`/`f` exist so an operator can
+  set a value without knowing which way it points, and a deleted arm
+  turns one into a no-op key — the form appears to ignore you rather
+  than erroring. Each is checked from the state it does NOT change,
+  which is the only way a deleted arm differs from a working one.
+  MultiSelect's space toggle likewise, in both directions: a toggle
+  that only adds is not a toggle. Mutation-verified three ways: CAUGHT.
 
 - [x] **`src/app/safety.rs` and `src/cli/writes.rs` have ZERO
   survivors** — noted 2026-08-26, no work needed. The write gate that
@@ -894,9 +901,22 @@ than a wrong action. Working top-down by count is the wrong order.
   switch is how the ghost gets rendered anyway.
   Mutation-verified three ways: CAUGHT.
 
-- [ ] **`app/spawn_refresh.rs` — what's left**: the throttle backoff
-  arithmetic (`Instant::now() + backoff`, two survivors) and the
-  whole-function seam.
+- [x] **`app/spawn_refresh.rs` — the throttle backoff** — 2026-08-27.
+  `Instant::now() + backoff` written as `-` puts `throttle_until` in the
+  PAST, so the backoff never holds and the fleet keeps hammering an API
+  that is already rate-limiting it — the exact failure the backoff
+  exists to prevent, and invisible except as more throttling. Both
+  sites, plus the converse that a clean refresh clears it. Verified:
+  CAUGHT.
+
+  Worth recording: the first fixture used a plausible-looking
+  `"Rate exceeded (Throttling)"` and the test failed, because
+  `is_throttling_error` reads the `ThrottlingException:` prefix that
+  `flatten_err` already stamped rather than sniffing the text — a
+  narrowing made after an env merely *named* `throttling-test` armed the
+  fleet back-off over a permissions error. The test caught my fixture.
+
+  What remains here is the whole-function seam only.
 
 - [x] **`src/control.rs` — the control socket's peer authorisation** —
   2026-08-26. The most security-relevant survivors in the sweep. The
