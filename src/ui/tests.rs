@@ -1350,3 +1350,114 @@ fn the_title_accounts_for_the_icon_styles_decoration() {
         "tighter decoration should leave room for MORE title, not less"
     );
 }
+
+#[test]
+fn column_widths_give_every_column_at_least_its_minimum() {
+    let cols = vec![
+        ("NAME", SortKey::Name),
+        ("STATUS", SortKey::Status),
+        ("VERSION", SortKey::Version),
+    ];
+    for available in [30u16, 40, 60, 80, 200] {
+        let w = column_widths(&cols, available);
+        for ((label, _), got) in cols.iter().zip(&w) {
+            assert!(
+                *got >= column_min_width(label),
+                "{label} got {got} at available={available}, below its \
+                 minimum {}",
+                column_min_width(label)
+            );
+        }
+    }
+}
+
+#[test]
+fn column_widths_spend_all_the_available_space() {
+    // Integer division loses cells; the remainder has to go somewhere or
+    // the table ends in a ragged gap.
+    let cols = vec![
+        ("NAME", SortKey::Name),
+        ("APPLICATION", SortKey::App),
+        ("STATUS", SortKey::Status),
+        ("AGE", SortKey::Age),
+    ];
+    for available in [60u16, 79, 80, 81, 120, 201] {
+        let total: u16 = column_widths(&cols, available).iter().sum();
+        assert_eq!(
+            total, available,
+            "widths summed to {total}, not {available}"
+        );
+    }
+}
+
+#[test]
+fn column_widths_hand_slack_to_the_growing_columns_not_the_fixed_ones() {
+    let cols = vec![
+        ("NAME", SortKey::Name),
+        ("STATUS", SortKey::Status),
+        ("AGE", SortKey::Age),
+    ];
+    let tight = column_widths(&cols, 34);
+    let roomy = column_widths(&cols, 120);
+    // STATUS and AGE render fixed-width content and gain nothing.
+    assert_eq!(tight[1], roomy[1], "STATUS should not grow");
+    assert_eq!(tight[2], roomy[2], "AGE should not grow");
+    assert!(roomy[0] > tight[0], "NAME should absorb the slack");
+}
+
+#[test]
+fn dropping_sheds_the_least_useful_column_first_and_never_the_identifier() {
+    let full = || {
+        vec![
+            ("NAME", SortKey::Name),
+            ("APPLICATION", SortKey::App),
+            ("TIER", SortKey::App),
+            ("STATUS", SortKey::Status),
+            ("HEALTH", SortKey::Health),
+            ("INST", SortKey::Health),
+            ("TREND", SortKey::Health),
+            ("PLATFORM", SortKey::Version),
+            ("VERSION", SortKey::Version),
+            ("CNAME", SortKey::Name),
+            ("AGE", SortKey::Age),
+        ]
+    };
+    // Roomy: nothing shed.
+    let mut cols = full();
+    assert!(drop_columns_to_fit(&mut cols, 300).is_empty());
+    assert_eq!(cols.len(), full().len());
+
+    // 80 columns: TREND goes first.
+    let mut cols = full();
+    let dropped = drop_columns_to_fit(&mut cols, 76);
+    assert_eq!(dropped.first(), Some(&"TREND"), "got {dropped:?}");
+
+    // Absurdly narrow: it sheds everything it is allowed to, and the
+    // columns that identify a row and its health are still there.
+    let mut cols = full();
+    drop_columns_to_fit(&mut cols, 10);
+    for keep in ["NAME", "HEALTH", "STATUS", "VERSION", "AGE"] {
+        assert!(
+            cols.iter().any(|(l, _)| *l == keep),
+            "{keep} must never be dropped; left with {cols:?}"
+        );
+    }
+}
+
+#[test]
+fn fields_that_fit_drops_whole_fields_and_never_returns_nothing() {
+    // "Account: 1234" = 13, "Region: eu-west-1" = 17, sep = 5.
+    let widths = [13usize, 17, 16];
+    assert_eq!(fields_that_fit(&widths, 5, 200), 3, "all three fit");
+    assert_eq!(fields_that_fit(&widths, 5, 35), 2, "13 + 5 + 17 = 35");
+    assert_eq!(fields_that_fit(&widths, 5, 34), 1, "one cell short of two");
+    assert_eq!(fields_that_fit(&widths, 5, 13), 1, "exactly the first");
+    // Never zero: a header row showing nothing is worse than one
+    // showing a clipped first field.
+    assert_eq!(fields_that_fit(&widths, 5, 1), 1);
+    assert_eq!(
+        fields_that_fit(&[], 5, 100),
+        0,
+        "but no fields is no fields"
+    );
+}

@@ -494,11 +494,31 @@ pub(crate) fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: boo
         app.view.redact,
     );
 
-    let mut line1 = kv("Account", &account, theme);
-    line1.push(sep(theme));
-    line1.extend(kv("Region", &app.context.region, theme));
-    line1.push(sep(theme));
-    line1.extend(kv("Profile", &profile, theme));
+    // The info block's inner width: its own two borders come off the
+    // column it was given.
+    let usable_width = cols[0].width.saturating_sub(2);
+    // Drop whole fields rather than let ratatui clip the right edge.
+    // Clipping leaves `Profile: ` with the value gone, which an
+    // operator reads as an empty profile rather than as a narrow
+    // terminal.
+    let line1_fields: Vec<(&str, &str)> = vec![
+        ("Account", account.as_str()),
+        ("Region", app.context.region.as_str()),
+        ("Profile", profile.as_str()),
+    ];
+    let line1_widths: Vec<usize> = line1_fields
+        .iter()
+        .map(|(k, v)| k.chars().count() + 2 + v.chars().count())
+        .collect();
+    // `sep` renders as five cells in every icon style.
+    let line1_n = fields_that_fit(&line1_widths, 5, usable_width as usize);
+    let mut line1: Vec<Span> = Vec::new();
+    for (i, (k, v)) in line1_fields.iter().take(line1_n).enumerate() {
+        if i > 0 {
+            line1.push(sep(theme));
+        }
+        line1.extend(kv(k, v, theme));
+    }
     // Ordering on this row matters under width pressure: ratatui clips
     // the right edge when content exceeds the column, so anything the
     // operator needs ALWAYS visible (Sort, Status) goes first. Caller +
