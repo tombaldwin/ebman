@@ -1381,11 +1381,15 @@ fn column_widths_spend_all_the_available_space() {
         ("STATUS", SortKey::Status),
         ("AGE", SortKey::Age),
     ];
+    // The contract is widths + ratatui's inter-column spacing == budget.
+    // It was `widths == budget` until the spacing was accounted for, and
+    // that difference is exactly what let the NAME floor be squeezed.
+    let spacing = cols.len() as u16 - 1;
     for available in [60u16, 79, 80, 81, 120, 201] {
-        let total: u16 = column_widths(&cols, available).iter().sum();
+        let total: u16 = column_widths(&cols, available).iter().sum::<u16>() + spacing;
         assert_eq!(
             total, available,
-            "widths summed to {total}, not {available}"
+            "widths + spacing summed to {total}, not {available}"
         );
     }
 }
@@ -1758,4 +1762,42 @@ fn a_word_longer_than_the_line_is_not_split_mid_word() {
             "a row was emitted with no description: {out:?}"
         );
     }
+}
+
+#[test]
+fn the_name_floor_survives_the_spacing_at_eighty_columns() {
+    // The end-to-end version of the above: with a realistic column set
+    // and an 80-column terminal, NAME still gets its floor.
+    let mut cols = vec![
+        ("NAME", SortKey::Name),
+        ("APPLICATION", SortKey::App),
+        ("TIER", SortKey::App),
+        ("STATUS", SortKey::Status),
+        ("HEALTH", SortKey::Health),
+        ("INST", SortKey::Health),
+        ("TREND", SortKey::Health),
+        ("PLATFORM", SortKey::Version),
+        ("VERSION", SortKey::Version),
+        ("CNAME", SortKey::Name),
+        ("AGE", SortKey::Age),
+    ];
+    // 80 wide, less two borders and the two-cell highlight gutter.
+    let usable = 80u16 - 2 - 2;
+    drop_columns_to_fit(&mut cols, usable);
+    let widths = column_widths(&cols, usable);
+    let name_idx = cols
+        .iter()
+        .position(|(l, _)| *l == "NAME")
+        .expect("NAME kept");
+    assert!(
+        widths[name_idx] >= column_min_width("NAME"),
+        "NAME got {} at 80 columns, below its {} floor",
+        widths[name_idx],
+        column_min_width("NAME")
+    );
+    let spacing = cols.len() as u16 - 1;
+    assert!(
+        widths.iter().sum::<u16>() + spacing <= usable,
+        "the row overflows its area, which is what makes ratatui squeeze"
+    );
 }

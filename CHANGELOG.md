@@ -49,6 +49,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   this" and drop "is it healthy", which is backwards for a screen you
   open to answer the second question.
 
+- **The fleet table's NAME column was still being squeezed**, even after
+  the width work above: ratatui puts a cell of spacing *between* columns
+  and prepends a highlight-symbol gutter, and neither was in the budget.
+  The widths summed exactly to the space available, ratatui added seven
+  more cells, and squeezed everything back down — so a NAME floor of 18
+  rendered at 13. Found by rendering a 40-character environment name
+  rather than a short one.
+
 - **The help screen's descriptions wrapped back to the left margin**, so
   on a narrow terminal nothing said which key a continuation line
   belonged to — on the screen someone reads when they do not yet know
