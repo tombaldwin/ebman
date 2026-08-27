@@ -183,9 +183,30 @@ holds:
 
 ### Then
 
-7. **Parked calls** *(behaviour)* — `WRITE_COMMANDS`, `serde_yml`,
-   Unicode column math. Decide or delete; none should stay open a third
-   time.
+7. ~~Parked calls~~ — **two closed, one escalated, 2026-08-27.**
+
+   - `WRITE_COMMANDS` — closed, stays hand-written. The open question
+     was a guard for a *missing* entry, and one already exists:
+     `every_registry_command_is_covered_by_some_test` partitions the
+     whole registry, mutation-verified CAUGHT. Filing a command in the
+     *wrong* list is a review judgement no guard can make, and the
+     earlier derivation attempt is the evidence.
+   - Unicode column math — closed WONTFIX. The reasoning was already
+     sound; re-deriving it a third time is the cost the entry exists to
+     prevent.
+   - `serde_yml` — **skipped, and it is the one that should not have
+     been on a list called "parked".** Three reasonable shapes
+     (hand-roll two shallow parsers, take `saphyr`, hold the waiver), so
+     it is a stop condition. What changed is that the cost is now
+     measured rather than assumed: neither caller needs general YAML,
+     and the surface is 6 call sites in 2 files.
+
+     It also deserves a blunter framing than "migrate off a crate".
+     RUSTSEC-2025-0068 is unsound *and* unmaintained, it is ebman's own
+     direct dependency, and it is the only waived advisory in
+     `deny.toml` of which that is true. The waiver says "not waived
+     indefinitely" and then names no trigger and no date. **Needs a
+     maintainer ruling.**
 8. **Release** — full procedure per `CLAUDE.md`, including
    `cargo semver-checks` against the last published version *as a
    patch*.
@@ -194,6 +215,13 @@ holds:
 
 ### Not scheduled
 
-The ~440 `ui/draw_*` survivors, on purpose. If they are ever wanted the
-shape is golden-frame snapshots at fixed sizes (`insta`, as `pgman`
-uses), not per-survivor tests — and item 6 is the prerequisite.
+The *layout-arithmetic* half of the `ui/draw_*` survivors, on purpose —
+column widths, truncation points, elision thresholds. If they are ever
+wanted the shape is golden-frame snapshots at fixed sizes (`insta`, as
+`pgman` uses), not per-survivor tests.
+
+No prerequisite: item 6 claimed one and was wrong. `support::render`
+already reaches this code. The reason to leave layout alone is that a
+test pinning a pixel breaks on every legitimate layout change — not
+that it cannot be written. The *state-reporting* half is a different
+population and is being covered as it comes up.
