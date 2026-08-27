@@ -1569,3 +1569,75 @@ async fn the_hint_panel_cuts_between_hints_not_inside_a_chord() {
         assert!(wide.contains(hint), "missing {hint}; got:\n{wide}");
     }
 }
+
+#[tokio::test]
+async fn no_terminal_size_makes_any_screen_panic() {
+    // A panic in a TUI leaves the terminal in raw mode and the alternate
+    // screen — the user's shell is broken until they blind-type `reset`.
+    // Width arithmetic that shows up under narrow terminals is exactly
+    // where a subtract-with-overflow or a zero-width Layout comes from,
+    // so every screen gets rendered at every extreme.
+    let sizes: [(u16, u16); 9] = [
+        (200, 60),
+        (80, 24),
+        (60, 18),
+        (40, 12),
+        (20, 8),
+        (10, 5),
+        (4, 4),
+        (2, 2),
+        (1, 1),
+    ];
+    let modes = [
+        Mode::Normal,
+        Mode::Filter,
+        Mode::Help,
+        Mode::Command,
+        Mode::Detail,
+        Mode::Dlq,
+        Mode::QuickJump,
+        Mode::Palette,
+    ];
+    let long = "a ".repeat(300);
+    for (w, h) in sizes {
+        for mode in modes {
+            let mut app = test_app();
+            app.environments = vec![
+                mk_env(
+                    "a-really-long-environment-name-40chars-x",
+                    "uflexi",
+                    "Web",
+                    "Green",
+                ),
+                mk_env("worker-prod", "uflexi", "Worker", "Red"),
+            ];
+            app.rebuild_view();
+            app.table_state.select(Some(0));
+            if mode == Mode::Detail {
+                app.open_detail();
+            }
+            if mode == Mode::Dlq {
+                app.dlq = Some(open_dlq_state("api-prod"));
+            }
+            app.mode = mode;
+            let _ = render(&mut app, w, h);
+        }
+        // Overlays draw over Normal and do their own centring, which is
+        // where the size arithmetic lives.
+        for overlay in [
+            crate::app::Overlay::TextDump {
+                title: "t".into(),
+                body: long.clone(),
+            },
+            crate::app::Overlay::Describe(long.clone()),
+            crate::app::Overlay::Diff(long.clone()),
+            crate::app::Overlay::History(long.clone()),
+        ] {
+            let mut app = test_app();
+            app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
+            app.rebuild_view();
+            app.current_overlay = Some(overlay);
+            let _ = render(&mut app, w, h);
+        }
+    }
+}

@@ -382,13 +382,17 @@ pub(crate) fn overlay_rect(size: OverlaySize, area: Rect) -> Rect {
     // all scrollback and no content.
     let h_floor = 20u16.min(area.height.saturating_sub(margin));
     let want_h = base.height.max(h_floor);
-    // Defence in depth, and currently unreachable: `floor` is capped at
-    // `area.width - 4` and `base` at 100% of the area, so `want_w` is
-    // always already inside. Kept because the base dimensions come from
-    // another crate — if `overlay_dims` ever returned more than 100 the
-    // alternative is a Rect that overflows ratatui's buffer. A mutation
-    // removing these clamps is NOT caught by any test, and that is a
-    // statement about their redundancy today, not about coverage.
+    // Unreachable given the line above: `floor` is capped at
+    // `area.width - margin` and `base` at 100% of the area, so `want_w`
+    // is always already inside. Kept so the returned `Rect` is truthful
+    // about where it will draw — a caller doing its own arithmetic from
+    // it (as the help wrapping does) would otherwise be handed a width
+    // that does not exist.
+    //
+    // NOT panic protection, which was the assumption worth checking:
+    // removing BOTH this and the floor's own `.min()` renders fine at
+    // 2x2, because ratatui clips an out-of-area Rect itself. Verified
+    // rather than assumed.
     let w = want_w.min(area.width);
     let h = want_h.min(area.height);
     Rect {

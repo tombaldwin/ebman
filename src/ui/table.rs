@@ -292,10 +292,17 @@ pub(crate) fn drop_columns_to_fit(
     columns: &mut Vec<(&'static str, SortKey)>,
     available: u16,
 ) -> Vec<&'static str> {
+    // ratatui puts `column_spacing` (default 1) BETWEEN columns, so N
+    // columns cost N-1 cells beyond their own widths. Leaving that out
+    // is how a NAME floor of 18 rendered at 13: the widths summed to
+    // the budget, ratatui added seven more cells of spacing, overflowed,
+    // and squeezed everything back down — silently undoing the floor
+    // this function exists to protect.
     let needed = |cols: &[(&'static str, SortKey)]| -> u16 {
         cols.iter()
             .map(|(l, _)| column_min_width(l))
             .fold(0u16, |a, b| a.saturating_add(b))
+            .saturating_add(cols.len().saturating_sub(1) as u16)
     };
     let mut dropped = Vec::new();
     for candidate in DROP_ORDER {
@@ -341,6 +348,9 @@ fn column_grow_weight(label: &str) -> u16 {
 /// weight, with the remainder going to the widest-growing column so no
 /// cells are lost to rounding.
 pub(crate) fn column_widths(columns: &[(&'static str, SortKey)], available: u16) -> Vec<u16> {
+    // The inter-column spacing is not ours to hand out — see
+    // `drop_columns_to_fit`.
+    let available = available.saturating_sub(columns.len().saturating_sub(1) as u16);
     let mins: Vec<u16> = columns.iter().map(|(l, _)| column_min_width(l)).collect();
     let total_min: u16 = mins.iter().fold(0u16, |a, b| a.saturating_add(*b));
     // Already at or over budget — `drop_columns_to_fit` has shed what it
@@ -596,10 +606,15 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
         &app.view.hidden_cols,
         compact,
     );
-    // Shed optional columns the terminal cannot fit. Two borders and the
-    // selection gutter come off the top; what is left is what the
-    // columns actually get to share.
-    let usable = area.width.saturating_sub(2 + 2);
+    // Shed optional columns the terminal cannot fit. Off the top come the
+    // block's two borders and the highlight symbol ratatui prepends to
+    // every row — measured, not guessed, because it is two cells in
+    // unicode/ascii and two in powerline but that is a coincidence
+    // rather than a guarantee. The inter-column spacing is handled
+    // inside `drop_columns_to_fit` / `column_widths`, since it depends
+    // on how many columns survive.
+    let gutter = cursor_marker(&theme).chars().count() as u16;
+    let usable = area.width.saturating_sub(2).saturating_sub(gutter);
     let dropped = drop_columns_to_fit(&mut columns, usable);
     let sort_marker = if app.view.sort_desc() {
         glyph(app.theme.icons, " ▼", " v")
