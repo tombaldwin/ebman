@@ -67,8 +67,23 @@ The write/freeze pre-tag review (2 lenses) fixed 2 Critical + 2 Important + 1 Mi
   `[x]` item is invisible to anyone scanning for open work. See the
   `Collapse the Option<T> + loading_* pairs` entry for the full analysis.
 
-- [ ] **`draw_table`'s `DisplayRow::Env` arm is still inline** (~200
-  lines of a 389-line function). The `Separator` arm was extracted in
+- [ ] **`draw_table`'s `DisplayRow::Env` arm is still inline** (165
+  lines of a 389-line function — re-measured 2026-08-28, it was recorded
+  as ~200).
+
+  **Re-assessed 2026-08-28 and still not worth it.** The arm reads 12
+  `App` fields and 6 outer locals, and ~116 of its 165 lines are per-row
+  resolution that happens BEFORE it builds `CellCtx` — so an extraction
+  needs a second context struct of roughly eighteen fields to move one
+  function's body. Passing `&App` instead provably does not work, for
+  the reason recorded below: the rows borrow `app.environments`, and a
+  whole-struct borrow defeats the field-level split that lets
+  `render_stateful_widget` take `&mut app.table_state` afterwards.
+
+  Left open because the ~300-line trigger is real, but it is a
+  readability item with a known wall and no behavioural payoff. Do it
+  when something else forces the file open, not on its own. Original
+  note follows. The `Separator` arm was extracted in
   0.30; this one captures ~30 `App` fields and would need a context
   struct, which is where the value per edit drops off sharply. Same
   reason as above for surfacing it: the note lived inside a completed
