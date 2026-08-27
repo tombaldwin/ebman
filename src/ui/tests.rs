@@ -1997,6 +1997,29 @@ fn wrap_words_fills_a_line_exactly_before_breaking() {
         vec!["abcd efgh".to_string(), "ij".to_string()],
         "got {descs:?}"
     );
+    // An EXACT fill, which is the only place `>` and `>=` differ. It has
+    // to clear two hurdles the previous case did not: `avail` must be at
+    // least 8 (below that the row passes through unwrapped) and the
+    // description must be longer than `avail` (or it is left alone).
+    //
+    // "abc defg" is exactly 8: 3 + 1 + 4.
+    let key_col = super::help::help_line("x", "y", &t).spans[0]
+        .content
+        .chars()
+        .count();
+    let exact = super::help::wrap_help_lines(
+        vec![super::help::help_line("x", "abc defg hi", &t)],
+        key_col + 8,
+    );
+    let first = exact[0]
+        .spans
+        .last()
+        .map(|s| s.content.to_string())
+        .unwrap_or_default();
+    assert_eq!(
+        first, "abc defg",
+        "an exact fill must not break early and waste the last cell"
+    );
 }
 
 #[test]
@@ -2148,6 +2171,16 @@ fn hints_to_fit_is_exact_at_the_second_hint() {
         " ab",
         "one cell short drops it"
     );
+    // Hints of DIFFERENT lengths. With every hint two cells wide,
+    // `out + 2 + hint` and `out + 2 * hint` give the same answer, so a
+    // uniform fixture cannot tell the separator's `+` from a `*`.
+    // " a  bbbb  c": " a" is 2, " a  bbbb" is 8.
+    assert_eq!(hints_to_fit(" a  bbbb  c", 8), " a  bbbb", "2 + 2 + 4 = 8");
+    assert_eq!(
+        hints_to_fit(" a  bbbb  c", 7),
+        " a",
+        "one short of the second"
+    );
 }
 
 #[test]
@@ -2195,5 +2228,30 @@ fn column_widths_give_the_rounding_remainder_to_a_growing_column() {
         w[0],
         column_min_width("NAME") + 5,
         "NAME should get all of it"
+    );
+    // TWO growing columns, and a slack that does not divide by their
+    // combined weight: 7 over weights 3 and 2 gives 4 and 2, leaving one
+    // cell over. A single growing column absorbs everything and leaves
+    // NO remainder, so it cannot show where a remainder would land —
+    // which is what `filter(|w| **w > 0)` protects.
+    let cols2 = vec![
+        ("NAME", SortKey::Name),
+        ("APPLICATION", SortKey::App),
+        ("STATUS", SortKey::Status),
+        ("AGE", SortKey::Age),
+    ];
+    let mins2: u16 = cols2.iter().map(|(l, _)| column_min_width(l)).sum();
+    let spacing2 = cols2.len() as u16 - 1;
+    let w2 = column_widths(&cols2, mins2 + spacing2 + 7);
+    assert_eq!(
+        w2[2],
+        column_min_width("STATUS"),
+        "STATUS took the remainder"
+    );
+    assert_eq!(w2[3], column_min_width("AGE"), "AGE took the remainder");
+    assert_eq!(
+        w2[0] + w2[1],
+        column_min_width("NAME") + column_min_width("APPLICATION") + 7,
+        "all seven cells should land on the growing columns"
     );
 }
