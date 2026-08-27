@@ -367,6 +367,59 @@ where
 /// Extracted from `fetch_env_listeners`. Both `!= "default"` rank
 /// comparisons survived the sweep — flipping them puts the default
 /// listener last, which nothing could see from outside an AWS call.
+/// What a paginated `DescribeEvents` loop should do after a page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PageStep {
+    /// Fetch another page using this token.
+    Continue(String),
+    /// Stop, but more events exist behind the token being discarded.
+    StopTruncated,
+    /// Stop; the source had nothing more to give.
+    StopComplete,
+}
+
+/// Decide whether to fetch another page of events.
+///
+/// Extracted from `list_events_inner`, where it sat between two
+/// `.send().await` calls and so could not be reached from a test at
+/// all. Three survivors lived here.
+///
+/// The distinction between `StopTruncated` and `StopComplete` is not
+/// cosmetic. `list_events_since` returns it and `:event-tail` renders a
+/// gap marker from it — and the tail advances its watermark past the
+/// newest event received while DescribeEvents returns newest-first, so
+/// the events behind a discarded token are OLDER and no later poll's
+/// `start_time` can ever reach them. Get this wrong and the tail shows
+/// unbroken chronology with a hole in it.
+///
+/// An empty-string token counts as no token. AWS has returned one, and
+/// paging on it either loops on the same page or errors.
+pub(crate) fn next_page_step(
+    next_token: Option<String>,
+    pages: usize,
+    max_pages: usize,
+) -> PageStep {
+    match next_token {
+        Some(t) if !t.is_empty() => {
+            if pages < max_pages {
+                PageStep::Continue(t)
+            } else {
+                PageStep::StopTruncated
+            }
+        }
+        _ => PageStep::StopComplete,
+    }
+}
+
+/// An empty version label means "no version", not a version named "".
+///
+/// EB returns `Some("")` for events not tied to an application version.
+/// Left as-is it renders as a blank column the operator reads as a
+/// value, and compares unequal to `None` in every filter downstream.
+pub(crate) fn non_empty_label(label: Option<String>) -> Option<String> {
+    label.filter(|v| !v.is_empty())
+}
+
 pub(crate) fn sort_listener_rows(rows: &mut [(String, String, String)]) {
     rows.sort_by(|a, b| {
         let rank_a = u8::from(a.0 != "default");
@@ -758,12 +811,12 @@ impl AwsClient {
             let resp = req.send().await?;
             raw.extend(resp.events.unwrap_or_default());
             pages += 1;
-            match resp.next_token {
-                Some(t) if !t.is_empty() => {
-                    if pages < max_pages {
-                        next_token = Some(t);
-                        continue;
-                    }
+            match next_page_step(resp.next_token, pages, max_pages) {
+                PageStep::Continue(t) => {
+                    next_token = Some(t);
+                    continue;
+                }
+                PageStep::StopTruncated => {
                     // Stopped with more behind the token. For the
                     // display callers (`max_pages == 1`) that is the
                     // whole point — they asked for the newest N and a
@@ -792,7 +845,7 @@ impl AwsClient {
                     }
                     break;
                 }
-                _ => break,
+                PageStep::StopComplete => break,
             }
         }
         let events = raw
@@ -808,7 +861,7 @@ impl AwsClient {
                     .severity
                     .map(|s| s.as_str().to_string())
                     .unwrap_or_else(|| "INFO".to_string()),
-                version_label: e.version_label.filter(|v| !v.is_empty()),
+                version_label: non_empty_label(e.version_label),
             })
             .collect();
         Ok((events, truncated))
@@ -2090,5 +2143,85 @@ impl AwsClient {
             .await
             .wrap_err("ListAvailableSolutionStacks failed")?;
         Ok(resp.solution_stacks.unwrap_or_default())
+    }
+}
+
+#[cfg(test)]
+mod paging_tests {
+    use super::{next_page_step, non_empty_label, PageStep};
+
+    #[test]
+    fn a_token_within_the_page_budget_fetches_another_page() {
+        assert_eq!(
+            next_page_step(Some("tok".into()), 1, 5),
+            PageStep::Continue("tok".into())
+        );
+    }
+
+    #[test]
+    fn no_token_means_the_source_is_exhausted_not_truncated() {
+        // StopComplete, not StopTruncated. `:event-tail` renders a gap
+        // marker from this, and a marker on a complete fetch tells the
+        // operator events are missing when none are.
+        assert_eq!(next_page_step(None, 1, 5), PageStep::StopComplete);
+    }
+
+    #[test]
+    fn an_empty_token_counts_as_no_token() {
+        // AWS has returned `Some("")`. Paging on it either re-fetches
+        // the same page forever or errors — and treating it as a real
+        // token would also report truncation that did not happen.
+        assert_eq!(
+            next_page_step(Some(String::new()), 1, 5),
+            PageStep::StopComplete
+        );
+    }
+
+    #[test]
+    fn hitting_the_page_cap_with_a_token_left_reports_truncation() {
+        // The case the flag exists for: events remain behind a token we
+        // are about to discard, and because DescribeEvents returns
+        // newest-first they are OLDER than anything fetched — so no
+        // later poll's `start_time` can reach them.
+        assert_eq!(
+            next_page_step(Some("tok".into()), 5, 5),
+            PageStep::StopTruncated
+        );
+        assert_eq!(
+            next_page_step(Some("tok".into()), 9, 5),
+            PageStep::StopTruncated
+        );
+    }
+
+    #[test]
+    fn the_single_page_display_callers_stop_after_one_page() {
+        // `max_pages == 1` is the fleet/detail display path: newest N,
+        // and a token is present on essentially every real account.
+        assert_eq!(
+            next_page_step(Some("tok".into()), 1, 1),
+            PageStep::StopTruncated
+        );
+    }
+
+    #[test]
+    fn the_boundary_is_pages_less_than_max_not_less_than_or_equal() {
+        // Off by one here either fetches one page too many or reports
+        // truncation a page early. After page 1 of a 2-page budget
+        // there is still a page to fetch; after page 2 there is not.
+        assert_eq!(
+            next_page_step(Some("tok".into()), 1, 2),
+            PageStep::Continue("tok".into())
+        );
+        assert_eq!(
+            next_page_step(Some("tok".into()), 2, 2),
+            PageStep::StopTruncated
+        );
+    }
+
+    #[test]
+    fn an_empty_version_label_reads_as_no_version() {
+        assert_eq!(non_empty_label(Some(String::new())), None);
+        assert_eq!(non_empty_label(None), None);
+        assert_eq!(non_empty_label(Some("v1.2".into())), Some("v1.2".into()));
     }
 }
