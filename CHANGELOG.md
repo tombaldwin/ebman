@@ -36,6 +36,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   with nothing in it.
 - **`ebman ctl key shift+tab` moved the cursor forwards**, not
   backwards.
+- **Four glyphs ignored `icons = "ascii"`** and rendered as unicode: the
+  armed-rollback and watching-deploy pills, the header's sort-direction
+  arrow, and the HEALTH column label. On a terminal or font without
+  those characters they showed as tofu. The guard that was supposed to
+  catch this checked a fixed list of two characters; it now checks the
+  whole decorative range against a frame with every optional pill turned
+  on.
 
 ### Documentation
 
