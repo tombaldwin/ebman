@@ -4193,4 +4193,9 @@ fn newest_date_picks_the_latest_not_the_earliest() {
     assert_eq!(newest_date(Vec::new()), None, "no dates, no answer");
     // Equal dates settle on that date rather than looping or panicking.
     assert_eq!(newest_date(vec![mid, mid]), Some(mid));
+    // `>` vs `>=` is EQUIVALENT here and always will be: with equal
+    // values the comparison only decides which of two identical dates
+    // is stored, and the result is the same either way. It shows as a
+    // survivor in every sweep. Noted so the next triage skips it rather
+    // than trying to write a test that cannot exist.
 }
