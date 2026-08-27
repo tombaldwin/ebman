@@ -14,7 +14,7 @@ pub(super) fn draw_form(f: &mut Frame, area: Rect, app: &mut App) {
         crate::ui::missing_mode_state("Form");
         return;
     };
-    let popup = centered_overlay(OverlaySize::Text, area);
+    let popup = overlay_rect(OverlaySize::Text, area);
     f.render_widget(Clear, popup);
     let theme = &app.theme;
     let outer = titled_block(theme, &form.title, true, theme.title_alt);
@@ -230,7 +230,7 @@ pub(super) fn draw_form(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 pub(super) fn draw_palette(f: &mut Frame, area: Rect, app: &App) {
-    let popup = centered_overlay(OverlaySize::Picker, area);
+    let popup = overlay_rect(OverlaySize::Picker, area);
     f.render_widget(Clear, popup);
     let theme = &app.theme;
     // Single frame around the whole palette (input + list + footer). The
@@ -409,7 +409,7 @@ pub(super) fn draw_saved_configs_interactive(
     cursor: usize,
     confirm_delete: bool,
 ) {
-    let popup = centered_overlay(OverlaySize::Picker, area);
+    let popup = overlay_rect(OverlaySize::Picker, area);
     f.render_widget(Clear, popup);
     let theme = &app.theme;
     let target = app
@@ -588,7 +588,7 @@ pub(super) fn draw_tail_overlay_chrome(
     lines: Vec<Line>,
     chrome: TailChrome<'_>,
 ) {
-    let popup = centered_overlay(OverlaySize::Wide, area);
+    let popup = overlay_rect(OverlaySize::Wide, area);
     f.render_widget(Clear, popup);
     let theme = &app.theme;
     // popup.height minus borders/padding/title/footer (≈6). Slice the tail
@@ -768,7 +768,7 @@ pub(super) fn draw_text_dump_overlay(
     title: &str,
     text: &str,
 ) {
-    let popup = centered_overlay(OverlaySize::Text, area);
+    let popup = overlay_rect(OverlaySize::Text, area);
     f.render_widget(Clear, popup);
     let theme = &app.theme;
     let lines: Vec<Line> = text
@@ -958,7 +958,7 @@ pub(super) fn draw_about(f: &mut Frame, area: Rect, app: &App, opened: std::time
 }
 
 pub(super) fn draw_saved_configs_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
-    let popup = centered_overlay(OverlaySize::Picker, area);
+    let popup = overlay_rect(OverlaySize::Picker, area);
     f.render_widget(Clear, popup);
     let theme = &app.theme;
     let mut lines: Vec<Line> = text
@@ -997,7 +997,7 @@ pub(super) fn push_close_hint(lines: &mut Vec<Line<'static>>, theme: &Theme) {
 }
 
 pub(super) fn draw_diff_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
-    let popup = centered_overlay(OverlaySize::Wide, area);
+    let popup = overlay_rect(OverlaySize::Wide, area);
     f.render_widget(Clear, popup);
     let theme = &app.theme;
     let mut lines: Vec<Line> = text
@@ -1023,7 +1023,7 @@ pub(super) fn draw_diff_overlay(f: &mut Frame, area: Rect, app: &App, text: &str
 }
 
 pub(super) fn draw_alarms_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
-    let popup = centered_overlay(OverlaySize::Text, area);
+    let popup = overlay_rect(OverlaySize::Text, area);
     f.render_widget(Clear, popup);
     let theme = &app.theme;
     let mut lines: Vec<Line> = text
@@ -1146,7 +1146,7 @@ pub(super) fn draw_why_red_overlay(f: &mut Frame, area: Rect, app: &mut App) {
     // pass can mark items[cursor]'s line, and the key handler reading
     // App.why_items knows what to drill into on Enter.
     let mut items: Vec<(crate::app::WhyItem, usize)> = Vec::new();
-    let popup = centered_overlay(OverlaySize::Wide, area);
+    let popup = overlay_rect(OverlaySize::Wide, area);
     f.render_widget(Clear, popup);
     let theme = &app.theme;
     let now = chrono::Utc::now();
@@ -1573,7 +1573,7 @@ pub(super) fn draw_apps_action_menu(
     cursor: usize,
 ) {
     let theme = &app.theme;
-    let popup = centered_overlay(OverlaySize::Small, area);
+    let popup = overlay_rect(OverlaySize::Small, area);
     f.render_widget(Clear, popup);
     let n_envs = env_names.len();
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -1629,7 +1629,7 @@ pub(super) fn draw_apps_action_menu(
 /// don't reflow into unreadable wrap.
 pub(super) fn draw_report_bug_overlay(f: &mut Frame, area: Rect, app: &App, body: &str) {
     let theme = &app.theme;
-    let popup = centered_overlay(OverlaySize::Wide, area);
+    let popup = overlay_rect(OverlaySize::Wide, area);
     f.render_widget(Clear, popup);
     let mut lines: Vec<Line<'static>> = body
         .lines()
@@ -1695,7 +1695,7 @@ pub(super) fn draw_report_bug_overlay(f: &mut Frame, area: Rect, app: &App, body
 }
 
 pub(super) fn draw_history_overlay(f: &mut Frame, area: Rect, app: &App, text: &str) {
-    let popup = centered_overlay(OverlaySize::Text, area);
+    let popup = overlay_rect(OverlaySize::Text, area);
     f.render_widget(Clear, popup);
     let mut lines: Vec<Line> = text
         .lines()
@@ -1714,7 +1714,7 @@ pub(super) fn draw_history_overlay(f: &mut Frame, area: Rect, app: &App, text: &
 }
 
 pub(super) fn draw_whatsnew(f: &mut Frame, area: Rect, app: &App, text: &str) {
-    let popup = centered_overlay(OverlaySize::Text, area);
+    let popup = overlay_rect(OverlaySize::Text, area);
     f.render_widget(Clear, popup);
     let lines: Vec<Line> = text
         .lines()
@@ -1738,7 +1738,7 @@ pub(super) fn draw_whatsnew(f: &mut Frame, area: Rect, app: &App, text: &str) {
 }
 
 pub(super) fn draw_describe(f: &mut Frame, area: Rect, app: &App, text: &str) {
-    let popup = centered_overlay(OverlaySize::Text, area);
+    let popup = overlay_rect(OverlaySize::Text, area);
     f.render_widget(Clear, popup);
     let lines: Vec<Line> = text
         .lines()
@@ -1767,7 +1767,7 @@ pub(super) fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         crate::ui::missing_mode_state("Picker");
         return;
     };
-    let popup = centered_overlay(OverlaySize::Picker, area);
+    let popup = overlay_rect(OverlaySize::Picker, area);
     f.render_widget(Clear, popup);
 
     let layout = Layout::default()

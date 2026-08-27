@@ -82,7 +82,9 @@ pub(crate) fn is_newer(candidate: &str, current: &str) -> bool {
 /// is how we tell the operator *what to run* to apply it. None of the
 /// patterns are bulletproof — we lean on the most-common defaults and fall
 /// back to a "download from releases page" hint.
-#[derive(Debug, Clone, PartialEq, Eq)]
+// `Copy`: a fieldless enum, and every method here already takes `self`
+// by value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InstallChannel {
     /// `/<prefix>/Cellar/ebman/<ver>/bin/ebman` — Homebrew. `brew upgrade ebman`.
     Homebrew,
@@ -111,6 +113,52 @@ impl InstallChannel {
 
     /// Shell command that upgrades the binary in-place for this channel.
     /// Returned as a single-line string suitable for the operator to copy.
+    /// How to name this channel to an operator.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            InstallChannel::Homebrew => "Homebrew",
+            InstallChannel::Cargo => "cargo install",
+            InstallChannel::Standalone => "standalone binary",
+        }
+    }
+
+    /// The upgrade instruction, laid out for an overlay rather than a
+    /// status line.
+    ///
+    /// `upgrade_command` returns something runnable for Homebrew and
+    /// cargo, but for a standalone install there is no command — only a
+    /// URL to fetch. Both are given their own line so neither is
+    /// squeezed by a label sharing the row.
+    pub(crate) fn upgrade_body(self, current: &str, latest: Option<&str>) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("  installed via   {}\n", self.label()));
+        out.push_str(&format!("  running         {current}\n"));
+        match latest {
+            Some(v) => out.push_str(&format!("  latest          {v}\n")),
+            None => out.push_str("  latest          this is the latest\n"),
+        }
+        out.push('\n');
+        match self {
+            InstallChannel::Homebrew | InstallChannel::Cargo => {
+                out.push_str("  to upgrade, run:\n\n");
+                out.push_str(&format!("    {}\n", self.upgrade_command()));
+                out.push_str("\n  (copied to the clipboard)\n");
+            }
+            InstallChannel::Standalone => {
+                // No in-place upgrade: the operator downloads, verifies
+                // and replaces the binary themselves. The URL goes on
+                // its own line because it is 52 characters and sharing a
+                // row with a label is what truncated it in the status
+                // bar.
+                out.push_str("  no in-place upgrade for a standalone install.\n");
+                out.push_str("  download, verify and replace the binary from:\n\n");
+                out.push_str("    https://github.com/tombaldwin/ebman/releases/latest\n");
+                out.push_str("\n  (URL copied to the clipboard)\n");
+            }
+        }
+        out
+    }
+
     pub(crate) fn upgrade_command(self) -> &'static str {
         match self {
             InstallChannel::Homebrew => "brew upgrade ebman",

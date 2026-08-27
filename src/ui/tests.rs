@@ -1461,3 +1461,63 @@ fn fields_that_fit_drops_whole_fields_and_never_returns_nothing() {
         "but no fields is no fields"
     );
 }
+
+#[test]
+fn overlay_rect_never_goes_narrower_than_readable_unless_the_terminal_is() {
+    use ratatui::layout::Rect;
+    for w in [60u16, 80, 100, 120, 200] {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: 40,
+        };
+        let r = overlay_rect(OverlaySize::Text, area);
+        let floor = COMFORTABLE_OVERLAY_WIDTH.min(w.saturating_sub(4));
+        assert!(
+            r.width >= floor,
+            "at terminal width {w} the overlay was {} wide, below the {floor} floor",
+            r.width
+        );
+        assert!(r.width <= w, "overlay wider than the terminal at {w}");
+    }
+}
+
+#[test]
+fn overlay_rect_leaves_a_wide_terminal_alone() {
+    use ratatui::layout::Rect;
+    // The percentage table is right when there is room; this only
+    // exists to stop a NARROW terminal being wasted.
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 200,
+        height: 60,
+    };
+    assert_eq!(
+        overlay_rect(OverlaySize::Text, area).width,
+        crate::overlay::centered_overlay(OverlaySize::Text, area).width,
+        "a wide terminal should get exactly the shared size table"
+    );
+}
+
+#[test]
+fn overlay_rect_stays_inside_a_tiny_terminal() {
+    use ratatui::layout::Rect;
+    // Smaller than the floor in both axes: the overlay must still fit,
+    // not overflow and panic ratatui's buffer.
+    for (w, h) in [(20u16, 8u16), (10, 5), (4, 3)] {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+        };
+        let r = overlay_rect(OverlaySize::Text, area);
+        assert!(r.width <= w && r.height <= h, "{r:?} escapes {w}x{h}");
+        assert!(
+            r.x + r.width <= w && r.y + r.height <= h,
+            "{r:?} overflows {w}x{h}"
+        );
+    }
+}

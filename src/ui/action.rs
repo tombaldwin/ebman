@@ -16,7 +16,7 @@ pub(crate) fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
     };
     match flow {
         ActionFlow::Menu { list_state } => {
-            let popup = centered_overlay(OverlaySize::Small, area);
+            let popup = overlay_rect(OverlaySize::Small, area);
             f.render_widget(Clear, popup);
             let layout = Layout::default()
                 .direction(Direction::Vertical)
@@ -63,7 +63,7 @@ pub(crate) fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
             );
         }
         ActionFlow::SwapTarget { source, picker } => {
-            let popup = centered_overlay(OverlaySize::Picker, area);
+            let popup = overlay_rect(OverlaySize::Picker, area);
             f.render_widget(Clear, popup);
             let layout = Layout::default()
                 .direction(Direction::Vertical)
@@ -127,7 +127,7 @@ pub(crate) fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
             );
         }
         ActionFlow::Confirm(modal) => {
-            let popup = centered_overlay(OverlaySize::Small, area);
+            let popup = overlay_rect(OverlaySize::Small, area);
             f.render_widget(Clear, popup);
             // Treat scale-to-zero as destructive at the modal level even
             // though `Action::Scale.destructive() == false` — dropping
@@ -533,7 +533,7 @@ pub(crate) fn draw_action(f: &mut Frame, area: Rect, app: &mut App) {
             );
         }
         ActionFlow::Rollout(flow) => {
-            let popup = centered_overlay(OverlaySize::Wide, area);
+            let popup = overlay_rect(OverlaySize::Wide, area);
             f.render_widget(Clear, popup);
             let title = format!(
                 " rollout {} — {} → {} ",
