@@ -1563,3 +1563,65 @@ fn join_fields_never_emits_half_a_group() {
         "CNAME's label appeared without room for its value: {text:?}"
     );
 }
+
+#[test]
+fn hints_to_fit_cuts_between_hints_never_inside_one() {
+    let line = " j/k move  enter drill  a actions  r region  p profile  q quit";
+    for w in [20u16, 30, 45, 61, 200] {
+        let out = hints_to_fit(line, w);
+        assert!(
+            out.chars().count() <= w.max(1) as usize,
+            "{out:?} exceeds {w}"
+        );
+        // Every hint present must be present in full. A bare key with
+        // its action clipped away — `r region  p` — reads as a hint for
+        // a key that does nothing.
+        // EXACT membership, not `line.contains(hint)`. A clipped hint
+        // is still a substring of the whole one — `p prof` is contained
+        // in `p profile` — so a containment check passes on precisely
+        // the defect it is meant to catch. Verified by mutation: with
+        // the break disabled, containment stayed green.
+        let whole: Vec<&str> = line
+            .trim_start()
+            .split("  ")
+            .filter(|h| !h.is_empty())
+            .collect();
+        for hint in out.trim_start().split("  ").filter(|h| !h.is_empty()) {
+            assert!(
+                whole.contains(&hint),
+                "{hint:?} is a fragment, not a whole hint, at width {w}"
+            );
+        }
+    }
+}
+
+#[test]
+fn hints_to_fit_leaves_a_wide_strip_untouched() {
+    let line = " j/k move  q quit";
+    assert_eq!(hints_to_fit(line, 200), line, "no change when it fits");
+}
+
+#[test]
+fn hints_to_fit_indents_by_one_space_at_every_width() {
+    // The first hint carries the strip's own leading space; re-adding
+    // one doubled the indent on exactly the narrow terminals this
+    // helper exists to serve.
+    let line = " j/k move  enter drill  q quit";
+    for w in [12u16, 25, 40, 200] {
+        let out = hints_to_fit(line, w);
+        assert!(
+            out.starts_with(" ") && !out.starts_with("  "),
+            "indent is {:?} at width {w}",
+            &out[..out.len().min(4)]
+        );
+    }
+}
+
+#[test]
+fn hints_to_fit_shows_something_even_when_one_hint_is_too_long() {
+    // A key strip is the only discoverability surface in the TUI; an
+    // empty one helps nobody.
+    let out = hints_to_fit(" an-extremely-long-single-hint-with-no-breaks", 10);
+    assert!(!out.trim().is_empty(), "got {out:?}");
+    assert!(out.chars().count() <= 10, "got {out:?}");
+}

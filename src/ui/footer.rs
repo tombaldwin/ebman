@@ -219,6 +219,8 @@ pub(crate) fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
     // strips that exceed one row get a horizontal scroll bar visually
     // (truncation) rather than wrapping into the body region. Mode key
     // strips are kept ≤ ~150 chars to fit standard terminals.
+    // Whole hints only — see `hints_to_fit`.
+    let keys = hints_to_fit(&keys, rows[1].width);
     f.render_widget(
         Paragraph::new(Span::styled(keys, Style::default().fg(theme.muted))),
         rows[1],

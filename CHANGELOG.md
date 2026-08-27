@@ -49,6 +49,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   this" and drop "is it healthy", which is backwards for a screen you
   open to answer the second question.
 
+- **The footer key strip clipped mid-hint**, leaving `r region  p` — a
+  bare key with its action gone, which reads as a hint for a key that
+  does nothing and costs a keystroke to disprove. It now cuts between
+  hints.
+
 - **The header showed `Profile:` with no value on a narrow terminal**,
   which reads as an empty profile rather than a clipped one. Whole
   fields are now dropped instead.
