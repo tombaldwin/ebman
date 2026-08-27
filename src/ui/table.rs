@@ -470,7 +470,7 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
             // in the header for the canonical column; sort marker only on it
             // (and the canonical NAME/APPLICATION/STATUS/VERSION/AGE columns).
             let display: std::borrow::Cow<'_, str> = if *label == "HEALTH" {
-                "●".into()
+                glyph(app.theme.icons, "●", "*").into()
             } else if *label == "TREND" {
                 format!("TREND ({trend_window})").into()
             } else {

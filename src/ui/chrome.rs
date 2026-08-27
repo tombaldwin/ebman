@@ -82,6 +82,29 @@ pub(crate) fn multi_select_glyph(theme: &Theme) -> &'static str {
 
 /// Glyph for the incident banner pill. `🚨` is unicode-only; ascii
 /// terminals get a loud `!!` tag instead of tofu.
+/// The armed-auto-rollback countdown pill.
+///
+/// Ascii form is `!` because this watcher *acts* — it redeploys the
+/// previous version when the deadline passes. `watching_glyph` is the
+/// one that only reports, and the two must stay distinguishable in
+/// ascii for the same reason they use different glyphs and colours in
+/// unicode.
+pub(crate) fn rollback_timer_glyph(theme: &Theme) -> &'static str {
+    match theme.icons {
+        IconStyle::Ascii => "! ",
+        _ => "⏱ ",
+    }
+}
+
+/// The watching-deploy countdown pill — reports the outcome, never
+/// changes the env. See `rollback_timer_glyph` for why they differ.
+pub(crate) fn watching_glyph(theme: &Theme) -> &'static str {
+    match theme.icons {
+        IconStyle::Ascii => "o ",
+        _ => "👁 ",
+    }
+}
+
 pub(crate) fn incident_glyph(theme: &Theme) -> &'static str {
     match theme.icons {
         IconStyle::Ascii => "!! ",

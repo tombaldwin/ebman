@@ -420,12 +420,34 @@ async fn render_redact_masks_the_cname() {
 }
 
 #[tokio::test]
-async fn ascii_icon_mode_renders_no_unicode_arrows() {
+async fn ascii_icon_mode_renders_no_decorative_unicode() {
     // The end-to-end half of `every_status_glyph_has_an_ascii_form`:
     // the pure helpers can be right while a call site still hardcodes
-    // the glyph. Five did — the header delta arrows, the sort marker,
-    // and the Metrics anomaly badge, which baked `▲` into its message
-    // string where a glyph-helper grep wouldn't find it.
+    // the glyph. Five did in 0.27 — the header delta arrows, the sort
+    // marker, and the Metrics anomaly badge, which baked `▲` into its
+    // message string where a glyph-helper grep wouldn't find it.
+    //
+    // That fix left this test checking exactly `▲` and `▼`, which is
+    // how two more got in: the armed-rollback pill hardcoded `⏱` and
+    // the watching-deploy pill `👁`, and neither was rendered by the
+    // frame this test built. So the check is now a RANGE rather than a
+    // list, and the frame turns on the header state that makes the
+    // optional pills appear.
+    //
+    // Box drawing (U+2500-U+257F) and block elements (U+2580-U+259F)
+    // are deliberately excluded: ratatui draws borders and bar charts
+    // with them regardless of our icon style, so they are not ours to
+    // fall back.
+    fn decorative(c: char) -> bool {
+        let n = c as u32;
+        (0x2190..=0x21FF).contains(&n)      // arrows
+            || (0x2300..=0x23FF).contains(&n) // misc technical (⏱)
+            || (0x25A0..=0x25FF).contains(&n) // geometric (▲ ▼ ●)
+            || (0x2600..=0x26FF).contains(&n) // misc symbols (★ ⚠)
+            || (0x2700..=0x27BF).contains(&n) // dingbats (✓ ✗)
+            || (0x1F000..=0x1FAFF).contains(&n) // emoji (👁 💡 🚨)
+    }
+
     let cfg = crate::config::Config {
         icons: "ascii".into(),
         ..crate::config::Config::default()
@@ -440,11 +462,51 @@ async fn ascii_icon_mode_renders_no_unicode_arrows() {
     // Header deltas render only when a bucket moved.
     app.health_delta = vec![("Red".to_string(), 1)];
     app.status_delta = vec![("Ready".to_string(), -1)];
+    // Every optional pill, so none of them is invisible to this check
+    // the way the two watcher pills were.
+    app.alerts = 2;
+    app.read_only = true;
+    app.frozen = true;
+    app.first_run_hint = true;
+    app.pinned.insert("api-prod".to_string());
+    app.multi_selected.insert("api-prod".to_string());
+    app.incident = Some(crate::app::Incident {
+        headline: "checkout 5xx".into(),
+        started_at: chrono::Utc::now(),
+    });
+    app.update_available = Some(crate::update_check::LatestRelease {
+        version: "9.9.9".into(),
+    });
+    app.sso_expiry = Some(chrono::Utc::now() + chrono::Duration::minutes(30));
+    app.armed_watchdogs.insert(
+        "api-prod".into(),
+        crate::app::ArmedWatchdog {
+            env_name: "api-prod".into(),
+            target_label: "v1".into(),
+            armed_at: chrono::Utc::now(),
+            deadline_at: chrono::Utc::now() + chrono::Duration::minutes(5),
+        },
+    );
+    app.watching_deploys.insert(
+        "api-staging".into(),
+        crate::app::WatchingDeploy {
+            env_name: "api-staging".into(),
+            target_label: "v1".into(),
+            armed_at: chrono::Utc::now(),
+            deadline_at: chrono::Utc::now() + chrono::Duration::minutes(9),
+        },
+    );
+    app.rebuild_view();
 
-    let out = render(&mut app, 160, 44);
-    for g in ['▲', '▼'] {
-        assert!(!out.contains(g), "ascii mode rendered {g}:\n{out}");
-    }
+    // Wide enough that `prune_pills_to_width` doesn't drop the pills
+    // before this test can look at them.
+    let out = render(&mut app, 400, 44);
+    let found: Vec<char> = out.chars().filter(|c| decorative(*c)).collect();
+    assert!(
+        found.is_empty(),
+        "ascii mode rendered decorative unicode {found:?} — a call site \
+         hardcoded a glyph instead of going through `glyph(theme.icons, ..)`:\n{out}"
+    );
     // The information the glyphs carry is still there.
     assert!(
         out.contains('^') || out.contains('v'),

@@ -150,10 +150,14 @@ pub(crate) fn build_chain_pills(app: &App) -> Vec<(String, Color, Color)> {
         crate::app::soonest_armed_rollback(&app.armed_watchdogs, chrono::Utc::now())
     {
         let label = if app.armed_watchdogs.len() == 1 {
-            format!("⏱ rollback {env} in {remaining}")
+            format!(
+                "{}rollback {env} in {remaining}",
+                rollback_timer_glyph(theme)
+            )
         } else {
             format!(
-                "⏱ {} rollbacks armed (next: {env} in {remaining})",
+                "{}{} rollbacks armed (next: {env} in {remaining})",
+                rollback_timer_glyph(theme),
                 app.armed_watchdogs.len()
             )
         };
@@ -169,10 +173,11 @@ pub(crate) fn build_chain_pills(app: &App) -> Vec<(String, Color, Color)> {
         crate::app::soonest_watching_deploy(&app.watching_deploys, chrono::Utc::now())
     {
         let label = if app.watching_deploys.len() == 1 {
-            format!("👁 watching {env} {remaining}")
+            format!("{}watching {env} {remaining}", watching_glyph(theme))
         } else {
             format!(
-                "👁 {} watching (next: {env} {remaining})",
+                "{}{} watching (next: {env} {remaining})",
+                watching_glyph(theme),
                 app.watching_deploys.len()
             )
         };
@@ -364,7 +369,11 @@ pub(crate) fn header_dimensions(
 pub(crate) fn estimated_info_row_width(app: &App) -> usize {
     const STATUS_SLOT: usize = 10;
     let sep_w = 5; // both "  •  " and "  ❘  " render at 5 cols
-    let sort_dir = if app.view.sort_desc() { "↓" } else { "↑" };
+    let sort_dir = if app.view.sort_desc() {
+        glyph(app.theme.icons, "↓", "v")
+    } else {
+        glyph(app.theme.icons, "↑", "^")
+    };
     let sort_label = format!("{}{}", app.view.sort_key().label(), sort_dir);
     let env_count = app.environments.len().to_string();
     let caller = redact(
@@ -476,7 +485,11 @@ pub(crate) fn draw_header(f: &mut Frame, area: Rect, app: &App, merge_pills: boo
     // operator needs ALWAYS visible (Sort, Status) goes first. Caller +
     // Last get pushed right so they're the first to clip on narrow
     // terminals — we'd rather lose "20s ago" than lose "↑app".
-    let sort_dir = if app.view.sort_desc() { "↓" } else { "↑" };
+    let sort_dir = if app.view.sort_desc() {
+        glyph(app.theme.icons, "↓", "v")
+    } else {
+        glyph(app.theme.icons, "↑", "^")
+    };
     let sort_label = format!("{}{}", app.view.sort_key().label(), sort_dir);
     let mut line2 = kv("Sort", &sort_label, theme);
     line2.push(sep(theme));
