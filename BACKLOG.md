@@ -540,10 +540,24 @@ than a wrong action. Working top-down by count is the wrong order.
 
   Mutation-verified four ways: CAUGHT.
 
-- [ ] **`src/aws/eb.rs` — the last four**, all inside `list_events_inner`
-  (the `!t.is_empty()` next-token guard, `max_pages > 1`, the empty
-  version-label filter) and `list_compatible_platforms`'s branch filter.
-  Paging logic: needs the loop split from the SDK call to be reachable.
+- [ ] **`src/aws/eb.rs` — `list_compatible_platforms`'s branch filter**,
+  the last one. `list_events_inner`'s three came out 2026-08-27 by
+  extracting `next_page_step` (the whole paging decision, as a
+  three-way `PageStep` rather than a bool) and `non_empty_label`.
+
+  The three-way return is the point. `StopTruncated` and `StopComplete`
+  were previously both "break", distinguished only by a `truncated`
+  flag set on one path — and that flag is what `:event-tail` renders
+  its gap marker from. Since DescribeEvents returns newest-first and
+  the tail advances its watermark past the newest event received, the
+  events behind a discarded token are OLDER and unreachable by any
+  later poll: confusing the two shows unbroken chronology with a hole
+  in it. Naming the outcomes makes that a type-level distinction
+  instead of a flag someone can forget to set.
+
+  Seven tests, four mutations, all CAUGHT — including the `pages <
+  max_pages` boundary and an empty-string token, which AWS does return
+  and which paging on either loops forever or errors.
 
 - [x] **Test shape: one case per guard, and it has to discriminate** —
   2026-08-26. The verification runs caught the same mistake twice, in
