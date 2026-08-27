@@ -924,3 +924,135 @@ async fn a_pinned_env_is_marked_in_the_table() {
         starred[0]
     );
 }
+
+#[tokio::test]
+async fn an_active_freeze_is_advertised_and_says_when_the_data_went_stale() {
+    // Auto-refresh is off while frozen, so the operator is looking at a
+    // snapshot. After 5 minutes the pill says so — the failure mode is
+    // someone heads-down on an incident reading minutes-old health as
+    // current.
+    let mut app = test_app();
+    app.frozen = true;
+    app.last_refresh = Some(chrono::Utc::now());
+    app.rebuild_view();
+    let fresh = render(&mut app, 160, 24);
+    assert!(
+        fresh.contains("FROZEN") && !fresh.contains("FROZEN (stale)"),
+        "a fresh freeze reads FROZEN; got:\n{fresh}"
+    );
+
+    app.last_refresh = Some(chrono::Utc::now() - chrono::Duration::minutes(10));
+    app.rebuild_view();
+    let stale = render(&mut app, 160, 24);
+    assert!(
+        stale.contains("FROZEN (stale)"),
+        "a freeze older than 5 minutes must say the data is stale; got:\n{stale}"
+    );
+}
+
+#[tokio::test]
+async fn a_declared_incident_shows_its_headline_in_the_header() {
+    // `:incident START` is the one signal everyone sharing the terminal
+    // must see, and it outranks the UX pills in the width-pruning pass.
+    let mut app = test_app();
+    app.incident = Some(crate::app::Incident {
+        headline: "checkout 5xx spike".into(),
+        started_at: chrono::Utc::now(),
+    });
+    app.rebuild_view();
+    let frame = render(&mut app, 160, 24);
+    assert!(
+        frame.contains("INCIDENT"),
+        "a declared incident must be visible; got:\n{frame}"
+    );
+    assert!(
+        frame.contains("checkout 5xx spike"),
+        "and it carries the operator's headline; got:\n{frame}"
+    );
+}
+
+#[tokio::test]
+async fn an_incident_without_a_headline_still_announces_itself() {
+    // `:incident START` with no text — the empty-headline branch must
+    // not render a dangling "INCIDENT ():".
+    let mut app = test_app();
+    app.incident = Some(crate::app::Incident {
+        headline: String::new(),
+        started_at: chrono::Utc::now(),
+    });
+    app.rebuild_view();
+    let frame = render(&mut app, 160, 24);
+    assert!(frame.contains("INCIDENT"), "got:\n{frame}");
+    assert!(
+        !frame.contains("):"),
+        "no dangling separator when there is no headline; got:\n{frame}"
+    );
+}
+
+#[tokio::test]
+async fn an_available_update_names_the_version_and_the_command() {
+    let mut app = test_app();
+    app.update_available = Some(crate::update_check::LatestRelease {
+        version: "9.9.9".into(),
+    });
+    app.rebuild_view();
+    let frame = render(&mut app, 160, 24);
+    assert!(
+        frame.contains("UPDATE 9.9.9") && frame.contains(":update"),
+        "the pill names the version and how to take it; got:\n{frame}"
+    );
+}
+
+#[tokio::test]
+async fn the_sso_pill_counts_down_and_disappears_once_expired() {
+    // An expired session is not a "0m" warning — the credentials are
+    // already gone, and every call is about to fail with a message that
+    // names SSO anyway. Showing a stale countdown would be worse than
+    // showing nothing.
+    let mut app = test_app();
+    app.sso_expiry = Some(chrono::Utc::now() + chrono::Duration::minutes(30));
+    app.rebuild_view();
+    let soon = render(&mut app, 160, 24);
+    assert!(
+        soon.contains("SSO 29m") || soon.contains("SSO 30m"),
+        "a session expiring in 30 minutes counts down in minutes; got:\n{soon}"
+    );
+
+    // Over an hour switches to hours, and the hour count TRUNCATES:
+    // 3h29m reads "SSO 3h", not "SSO 4h" (an exactly-3h expiry would
+    // read 2h, since a few microseconds have already elapsed). Rounding
+    // down is the right direction for a credential warning — it never
+    // tells the operator they have more time than they do.
+    app.sso_expiry = Some(chrono::Utc::now() + chrono::Duration::minutes(209));
+    app.rebuild_view();
+    let hours = render(&mut app, 160, 24);
+    assert!(
+        hours.contains("SSO 3h"),
+        "3h29m remaining reads as 3h, rounded down; got:\n{hours}"
+    );
+
+    app.sso_expiry = Some(chrono::Utc::now() - chrono::Duration::minutes(1));
+    app.rebuild_view();
+    let gone = render(&mut app, 160, 24);
+    assert!(
+        !gone.contains("SSO "),
+        "an already-expired session shows no countdown; got:\n{gone}"
+    );
+}
+
+#[tokio::test]
+async fn the_multi_select_pill_counts_the_selection() {
+    let mut app = test_app();
+    app.environments = vec![
+        mk_env("api-prod", "uflexi", "Web", "Green"),
+        mk_env("api-staging", "uflexi", "Web", "Green"),
+    ];
+    app.multi_selected.insert("api-prod".to_string());
+    app.multi_selected.insert("api-staging".to_string());
+    app.rebuild_view();
+    let frame = render(&mut app, 160, 24);
+    assert!(
+        frame.contains("2 selected"),
+        "a batch operation must show how many rows it will hit; got:\n{frame}"
+    );
+}
