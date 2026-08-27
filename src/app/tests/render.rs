@@ -1295,3 +1295,79 @@ async fn a_newly_discovered_env_is_marked_in_the_table() {
         "and the pre-existing env is not; got {others:#?}"
     );
 }
+
+// ── version and release date ──────────────────────────────────────────
+
+#[tokio::test]
+async fn the_header_title_carries_the_version_and_release_date() {
+    let mut app = test_app();
+    app.rebuild_view();
+    let frame = render(&mut app, 160, 24);
+    assert!(
+        frame.contains(&format!("ebman {}", env!("CARGO_PKG_VERSION"))),
+        "the title names the running version; got:\n{frame}"
+    );
+    if let Some(date) = crate::ui::release_date() {
+        assert!(
+            frame.contains(date),
+            "and the date it shipped; got:\n{frame}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_stale_build_is_flagged_and_a_fresh_one_is_not() {
+    let mut app = test_app();
+
+    // Fresh: no nudge. Guarding the false-positive direction matters
+    // more than usual here — a permanent "your build is old" pill on a
+    // build installed yesterday is the fastest way to teach someone to
+    // ignore the header.
+    app.release_date = Some("2026-08-20");
+    app.rebuild_view();
+    let fresh = render(&mut app, 300, 24);
+    assert!(
+        !fresh.contains("build is"),
+        "a week-old build is not stale; got:\n{fresh}"
+    );
+
+    // Old enough to nudge.
+    app.release_date = Some("2020-01-01");
+    app.rebuild_view();
+    let old = render(&mut app, 300, 24);
+    assert!(
+        old.contains("build is") && old.contains("(:update)"),
+        "an old build says so and names the command; got:\n{old}"
+    );
+}
+
+#[tokio::test]
+async fn a_known_newer_version_beats_the_staleness_nudge() {
+    // Both conditions true at once. The UPDATE pill names an actual
+    // version, which is strictly better information than "your build is
+    // old", so the nudge must stand down rather than sit beside it
+    // saying the same thing worse.
+    let mut app = test_app();
+    app.release_date = Some("2020-01-01");
+    app.update_available = Some(crate::update_check::LatestRelease {
+        version: "9.9.9".into(),
+    });
+    app.rebuild_view();
+    let frame = render(&mut app, 300, 24);
+    assert!(frame.contains("UPDATE 9.9.9"), "got:\n{frame}");
+    assert!(
+        !frame.contains("build is"),
+        "the staleness nudge stands down when a version is known; got:\n{frame}"
+    );
+}
+
+#[tokio::test]
+async fn a_build_with_no_known_release_date_never_nags() {
+    // `Cargo.toml` bumped before the changelog section was cut. Showing
+    // the version alone is right; inventing an age is not.
+    let mut app = test_app();
+    app.release_date = None;
+    app.rebuild_view();
+    let frame = render(&mut app, 300, 24);
+    assert!(!frame.contains("build is"), "got:\n{frame}");
+}

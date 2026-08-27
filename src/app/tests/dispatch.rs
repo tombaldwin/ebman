@@ -1532,6 +1532,41 @@ mod docs_drift {
         }
     }
 
+    /// The crate version must have a dated `CHANGELOG.md` entry, and
+    /// the date compiled into the binary must be that date.
+    ///
+    /// `build.rs` bakes the release date in for the header title. If
+    /// `Cargo.toml` is bumped without cutting the changelog section,
+    /// the parser finds nothing, the variable is empty, and the header
+    /// silently drops the date — a degradation nobody would notice
+    /// until a user asked why their build has no date on it.
+    ///
+    /// The comparison is not circular. `build.rs` parses the changelog
+    /// at compile time and this reads the file now, so it also catches
+    /// a stale build artefact whose `cargo:rerun-if-changed` did not
+    /// fire.
+    #[test]
+    fn the_compiled_in_release_date_matches_the_changelog() {
+        let crate_version = env!("CARGO_PKG_VERSION");
+        let changelog = std::fs::read_to_string("CHANGELOG.md").expect("read CHANGELOG.md");
+        let from_file = crate::release_meta::release_date_for(&changelog, crate_version);
+
+        assert!(
+            from_file.is_some(),
+            "CHANGELOG.md has no dated `## [{crate_version}]` heading. \
+             The release procedure cuts the changelog section in the same \
+             commit as the version bump — without it the header loses its \
+             release date."
+        );
+        assert_eq!(
+            crate::ui::release_date(),
+            from_file,
+            "the date compiled into this binary disagrees with \
+             CHANGELOG.md — a stale build artefact, or build.rs did not \
+             re-run"
+        );
+    }
+
     /// Every key `config::parse` accepts must appear in
     /// `docs/configuration.md`. An operator cannot use a key they cannot
     /// find, and a key that silently exists is indistinguishable from a
