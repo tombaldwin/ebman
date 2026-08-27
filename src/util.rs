@@ -897,3 +897,114 @@ mod partition_guard {
         );
     }
 }
+
+/// Move a cursor by `delta` within a list of `len`, wrapping at both
+/// ends.
+///
+/// One helper because the tree had **six** implementations of this
+/// across eleven modules — `(cur + delta).rem_euclid(n)`,
+/// `((x % n) + n) % n`, `(cur + 1) % n` paired with
+/// `(cur + n - 1) % n`, and variants in `usize`, `i32` and `isize`.
+/// Every one of them showed the same survivor pattern in the 2026-08-26
+/// mutation sweep, and each was tested separately, which is coverage of
+/// six copies rather than of one rule.
+///
+/// `rem_euclid` is the reason this is a rewrite and not just a dedupe:
+/// it is the correct idiom and it is what most sites already used, while
+/// the hand-rolled double-modulo forms are the ones that are easy to get
+/// subtly wrong.
+///
+/// An empty list has no index to move to, so `len == 0` yields 0 rather
+/// than panicking — `rem_euclid(0)` and `% 0` both divide by zero, which
+/// is how three `if n == 0` guards in `detail_scroll` came to be
+/// load-bearing.
+pub(crate) fn wrap_index(cur: usize, delta: isize, len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let len_i = len as isize;
+    ((cur as isize).saturating_add(delta)).rem_euclid(len_i) as usize
+}
+
+/// Move a cursor by `delta` within `len`, stopping at the ends.
+///
+/// The counterpart to [`wrap_index`], and a deliberate difference rather
+/// than an inconsistency: Detail's Config tab clamps because the list of
+/// editable rows can be long, and wrapping past the bottom of a long
+/// list is disorienting. Short, fixed lists — the action menu, the
+/// queue's two rows, form fields — wrap.
+pub(crate) fn clamp_index(cur: usize, delta: isize, len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    (cur as isize)
+        .saturating_add(delta)
+        .clamp(0, len as isize - 1) as usize
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::{clamp_index, wrap_index};
+
+    #[test]
+    fn wrap_index_moves_and_wraps_both_ways() {
+        // Ordinary movement.
+        assert_eq!(wrap_index(0, 1, 3), 1);
+        assert_eq!(wrap_index(1, 1, 3), 2);
+        assert_eq!(wrap_index(2, -1, 3), 1);
+
+        // Both ends wrap — the whole point, and the half that the
+        // direction-specific `(cur + 1) % n` copies each only did once.
+        assert_eq!(wrap_index(2, 1, 3), 0, "off the end wraps to the start");
+        assert_eq!(wrap_index(0, -1, 3), 2, "off the start wraps to the end");
+
+        // Deltas larger than the list, in both directions.
+        assert_eq!(wrap_index(0, 7, 3), 1);
+        assert_eq!(wrap_index(0, -7, 3), 2);
+
+        // A single-item list is its own neighbour.
+        assert_eq!(wrap_index(0, 1, 1), 0);
+        assert_eq!(wrap_index(0, -1, 1), 0);
+
+        // An empty list has no index. `rem_euclid(0)` panics, so this
+        // guard is what keeps the callers' own `if n == 0` checks from
+        // being the only thing between a keypress and a crash.
+        assert_eq!(wrap_index(0, 1, 0), 0);
+        assert_eq!(wrap_index(5, -3, 0), 0);
+
+        // A cursor already past the end still lands in range rather
+        // than panicking or staying out of bounds.
+        assert!(wrap_index(99, 1, 3) < 3);
+
+        // No overflow at the extremes.
+        assert!(wrap_index(0, isize::MIN, 4) < 4);
+        assert!(wrap_index(usize::MAX, isize::MAX, 4) < 4);
+    }
+
+    #[test]
+    fn clamp_index_stops_at_the_ends() {
+        assert_eq!(clamp_index(0, 1, 3), 1);
+        assert_eq!(clamp_index(2, -1, 3), 1);
+
+        // Stops rather than wrapping — the difference from wrap_index,
+        // and the reason both exist.
+        assert_eq!(clamp_index(2, 1, 3), 2, "clamps at the bottom");
+        assert_eq!(clamp_index(0, -1, 3), 0, "clamps at the top");
+        assert_eq!(clamp_index(0, 99, 3), 2);
+        assert_eq!(clamp_index(2, -99, 3), 0);
+
+        assert_eq!(clamp_index(0, 1, 0), 0, "an empty list has no index");
+        assert!(clamp_index(0, isize::MIN, 4) < 4);
+        assert!(clamp_index(usize::MAX, isize::MAX, 4) < 4);
+    }
+
+    /// The two must actually differ, or one of them is redundant.
+    #[test]
+    fn wrap_and_clamp_disagree_at_the_ends() {
+        assert_ne!(wrap_index(2, 1, 3), clamp_index(2, 1, 3));
+        assert_ne!(wrap_index(0, -1, 3), clamp_index(0, -1, 3));
+        // And agree in the middle, so they are the same operation
+        // elsewhere.
+        assert_eq!(wrap_index(1, 1, 3), clamp_index(1, 1, 3));
+    }
+}

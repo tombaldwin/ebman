@@ -139,12 +139,12 @@ impl App {
                 KeyCode::Esc | KeyCode::Char('q') => self.close_action_flow(),
                 KeyCode::Char('j') | KeyCode::Down => {
                     let cur = list_state.selected().unwrap_or(0);
-                    let next = (cur + 1) % ACTIONS.len();
+                    let next = crate::util::wrap_index(cur, 1, ACTIONS.len());
                     list_state.select(Some(next));
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
                     let cur = list_state.selected().unwrap_or(0);
-                    let next = (cur + ACTIONS.len() - 1) % ACTIONS.len();
+                    let next = crate::util::wrap_index(cur, -1, ACTIONS.len());
                     list_state.select(Some(next));
                 }
                 KeyCode::Enter => {

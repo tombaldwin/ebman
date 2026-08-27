@@ -133,7 +133,7 @@ impl App {
                                 matches!(key.code, KeyCode::Down | KeyCode::Char('j')) as isize * 2
                                     - 1;
                             let cur = field.option_cursor as isize;
-                            let next = ((cur + delta) % n as isize + n as isize) % n as isize;
+                            let next = crate::util::wrap_index(cur as usize, delta, n) as isize;
                             field.option_cursor = next as usize;
                         }
                     }
@@ -192,7 +192,7 @@ impl App {
                 if !options.is_empty() =>
             {
                 let i = options.iter().position(|o| o == &field.value).unwrap_or(0);
-                let next = (i + options.len() - 1) % options.len();
+                let next = crate::util::wrap_index(i, -1, options.len());
                 field.value = options[next].clone();
             }
             (FieldKind::Select { options }, KeyCode::Right)
@@ -200,7 +200,7 @@ impl App {
                 if !options.is_empty() =>
             {
                 let i = options.iter().position(|o| o == &field.value).unwrap_or(0);
-                let next = (i + 1) % options.len();
+                let next = crate::util::wrap_index(i, 1, options.len());
                 field.value = options[next].clone();
             }
             (FieldKind::MultiSelect { options }, KeyCode::Char(' ')) => {

@@ -141,14 +141,14 @@ impl App {
                 if let Some(Overlay::AppsActionMenu { cursor, .. }) = self.current_overlay.as_mut()
                 {
                     let cur = *cursor as i32;
-                    *cursor = (cur + 1).rem_euclid(n_items) as usize;
+                    *cursor = crate::util::wrap_index(cur as usize, 1, n_items as usize);
                 }
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 if let Some(Overlay::AppsActionMenu { cursor, .. }) = self.current_overlay.as_mut()
                 {
                     let cur = *cursor as i32;
-                    *cursor = (cur - 1).rem_euclid(n_items) as usize;
+                    *cursor = crate::util::wrap_index(cur as usize, -1, n_items as usize);
                 }
             }
             KeyCode::Enter => self.dispatch_apps_action_menu(),

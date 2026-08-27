@@ -108,7 +108,7 @@ impl App {
             })
         };
         let next = match cur_idx {
-            Some(i) => (i as i32 + delta).rem_euclid(names.len() as i32) as usize,
+            Some(i) => crate::util::wrap_index(i, delta as isize, names.len()),
             None if delta >= 0 => 0,
             None => names.len() - 1,
         };
@@ -273,7 +273,7 @@ impl App {
                     return;
                 }
                 let cur = self.app_table_state.selected().unwrap_or(0) as i32;
-                let next = (cur + delta).rem_euclid(n as i32) as usize;
+                let next = crate::util::wrap_index(cur as usize, delta as isize, n);
                 self.app_table_state.select(Some(next));
             }
         }
@@ -347,7 +347,8 @@ impl App {
         }
         let current = self.table_state.selected().unwrap_or(selectable[0]);
         let pos_in_selectable = selectable.iter().position(|i| *i == current).unwrap_or(0) as i32;
-        let next = (pos_in_selectable + delta).rem_euclid(selectable.len() as i32) as usize;
+        let next =
+            crate::util::wrap_index(pos_in_selectable as usize, delta as isize, selectable.len());
         self.table_state.select(Some(selectable[next]));
     }
 

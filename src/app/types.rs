@@ -888,7 +888,7 @@ impl Picker {
             .selected()
             .and_then(|s| filt.iter().position(|i| *i == s))
             .unwrap_or(0) as i32;
-        let next = (cur_visible + delta).rem_euclid(filt.len() as i32) as usize;
+        let next = crate::util::wrap_index(cur_visible as usize, delta as isize, filt.len());
         self.list_state.select(Some(filt[next]));
     }
 

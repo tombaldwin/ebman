@@ -153,7 +153,7 @@ impl App {
             return;
         };
         let n = detail.tabs.len() as i32;
-        let next = (detail.tab_idx as i32 + delta).rem_euclid(n) as usize;
+        let next = crate::util::wrap_index(detail.tab_idx, delta as isize, n as usize);
         detail.tab_idx = next;
         self.detail_refresh_active_tab();
         // NB: an earlier iteration auto-spawned the CW Logs streaming
@@ -181,7 +181,7 @@ impl App {
                     return;
                 }
                 let cur = detail.instances_cursor as i32;
-                let next = (cur + delta).rem_euclid(n as i32) as usize;
+                let next = crate::util::wrap_index(cur as usize, delta as isize, n);
                 detail.instances_cursor = next;
                 // Keep the scroll offset roughly aligned with the cursor so
                 // the active row stays visible when navigating with j/k.
@@ -212,7 +212,8 @@ impl App {
                 // need a direction assertion.
                 let n: i32 = 2;
                 let cur = detail.queue_cursor as i32;
-                detail.queue_cursor = (cur + delta).rem_euclid(n) as usize;
+                detail.queue_cursor =
+                    crate::util::wrap_index(cur as usize, delta as isize, n as usize);
             }
             DetailTab::Health => {
                 // Cursor wraps over the interactive items list; see
@@ -223,7 +224,8 @@ impl App {
                     return;
                 }
                 let cur = detail.health_cursor as i32;
-                detail.health_cursor = (cur + delta).rem_euclid(n) as usize;
+                detail.health_cursor =
+                    crate::util::wrap_index(cur as usize, delta as isize, n as usize);
             }
             DetailTab::Config => {
                 // Cursor moves over the editable rows (tags + env vars).
@@ -234,7 +236,7 @@ impl App {
                     return;
                 }
                 let cur = detail.config_cursor as i32;
-                detail.config_cursor = (cur + delta).clamp(0, n as i32 - 1) as usize;
+                detail.config_cursor = crate::util::clamp_index(cur as usize, delta as isize, n);
             }
             // Metrics tab has no scrollable cursor — the chart body
             // handles its own keyboard interactions.

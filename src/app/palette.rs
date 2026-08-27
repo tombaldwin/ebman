@@ -93,7 +93,7 @@ impl App {
             }
         } else {
             let cur = self.completion.index as i32;
-            (cur + delta).rem_euclid(n) as usize
+            crate::util::wrap_index(cur as usize, delta as isize, n as usize)
         };
         self.completion.index = next;
         self.command_input = format!("{head}{}{tail}", candidates[next]).into();
@@ -155,7 +155,7 @@ impl App {
             return;
         }
         let cur = self.palette_state.selected().unwrap_or(0) as i32;
-        let next = (cur + delta).rem_euclid(n as i32) as usize;
+        let next = crate::util::wrap_index(cur as usize, delta as isize, n);
         self.palette_state.select(Some(next));
     }
 
