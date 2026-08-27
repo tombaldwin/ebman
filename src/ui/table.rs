@@ -323,7 +323,7 @@ pub(crate) fn drop_columns_to_fit(
 /// variable-length and gets truncated first; TIER, STATUS, HEALTH,
 /// INST, TREND and AGE render fixed-width content and gain nothing
 /// from extra cells.
-fn column_grow_weight(label: &str) -> u16 {
+pub(crate) fn column_grow_weight(label: &str) -> u16 {
     match label {
         "NAME" => 3,
         "CNAME" => 3,
