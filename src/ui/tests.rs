@@ -1521,3 +1521,45 @@ fn overlay_rect_stays_inside_a_tiny_terminal() {
         );
     }
 }
+
+#[test]
+fn join_fields_measures_the_spans_rather_than_trusting_a_width_table() {
+    let t = crate::theme::Theme::dark();
+    let groups = vec![
+        vec![Span::raw("aaaa")],                // 4
+        vec![Span::raw("bb"), Span::raw("bb")], // 4, split across spans
+        vec![Span::raw("cccc")],                // 4
+    ];
+    // 4 + 5 + 4 = 13 fits two; a third needs 5 + 4 more.
+    let two = join_fields_to_fit(groups.clone(), &t, 13);
+    let text: String = two.iter().map(|s| s.content.as_ref()).collect();
+    assert!(
+        text.contains("aaaa") && text.contains("bbbb"),
+        "got {text:?}"
+    );
+    assert!(
+        !text.contains("cccc"),
+        "third group should not fit: {text:?}"
+    );
+
+    let all = join_fields_to_fit(groups.clone(), &t, 100);
+    let text: String = all.iter().map(|s| s.content.as_ref()).collect();
+    assert!(text.contains("cccc"), "all three fit at 100: {text:?}");
+}
+
+#[test]
+fn join_fields_never_emits_half_a_group() {
+    // The whole point: a label and its value travel together, so a
+    // narrow row shows fewer fields rather than a truncated one.
+    let t = crate::theme::Theme::dark();
+    let groups = vec![
+        kv("Region", "us-east-1", &t),
+        kv("CNAME", "api-prod.example.com", &t),
+    ];
+    let out = join_fields_to_fit(groups, &t, 20);
+    let text: String = out.iter().map(|s| s.content.as_ref()).collect();
+    assert!(
+        !text.contains("CNAME"),
+        "CNAME's label appeared without room for its value: {text:?}"
+    );
+}

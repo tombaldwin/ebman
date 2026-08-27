@@ -31,23 +31,18 @@ pub(super) fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
     // the env table's STATUS column. Health gets its dot glyph too so the
     // colour blind don't have to lean on hue alone.
     let theme = &app.theme;
-    let mut h1 = kv("Name", &env.name, theme);
-    h1.push(sep(theme));
-    h1.extend(kv("Application", &env.application, theme));
-    h1.push(sep(theme));
-    h1.push(Span::styled("Status: ", Style::default().fg(theme.muted)));
-    h1.push(status_pill(&env.status, theme));
-    h1.push(sep(theme));
-    h1.push(Span::styled("Health: ", Style::default().fg(theme.muted)));
-    h1.push(health_dot(&env.health, theme));
-    h1.push(Span::raw(" "));
-    h1.push(Span::styled(
-        env.health.clone(),
-        health_style(&env.health, &app.theme),
-    ));
+    // Built as GROUPS so a narrow terminal drops whole fields instead of
+    // clipping one in half — Detail replaces the whole screen, so a
+    // half-rendered value here is the only thing on it saying what.
+    let mut health_group = vec![
+        Span::styled("Health: ", Style::default().fg(theme.muted)),
+        health_dot(&env.health, theme),
+        Span::raw(" "),
+        Span::styled(env.health.clone(), health_style(&env.health, &app.theme)),
+    ];
     if let Some(reco) = health_recommendation(env, app) {
-        h1.push(Span::raw("  "));
-        h1.push(Span::styled(
+        health_group.push(Span::raw("  "));
+        health_group.push(Span::styled(
             reco,
             Style::default()
                 .fg(app.theme.health_yellow)
@@ -68,21 +63,54 @@ pub(super) fn draw_detail(f: &mut Frame, area: Rect, app: &mut App) {
     // actually came from. First field in the row, so it survives
     // truncation on a narrow terminal.
     let env_region = app.region_for(env);
-    let mut h2 = kv("Region", &env_region, theme);
-    h2.push(sep(theme));
-    h2.extend(kv("Platform", &env.platform, theme));
+    // The stale-platform badge belongs to the Platform field, so it is
+    // part of that group: if Platform is dropped for width the badge
+    // goes with it rather than floating loose after Region.
+    let mut platform_group = kv("Platform", &env.platform, theme);
     if let Some(newer) = app.view.stale_platforms().get(&env.name) {
-        h2.push(Span::styled(
+        platform_group.push(Span::styled(
             format!("  {}v{newer} available", stale_glyph(theme.icons)),
             Style::default()
                 .fg(theme.health_yellow)
                 .add_modifier(Modifier::BOLD),
         ));
     }
-    h2.push(sep(theme));
-    h2.extend(kv("Version", &env.version_label, theme));
-    h2.push(sep(theme));
-    h2.extend(kv("CNAME", &cname_text, theme));
+
+    // The header block's inner width: its own two borders come off the
+    // chunk it was given.
+    let header_usable = chunks[0].width.saturating_sub(2);
+    // Order IS priority: `join_fields_to_fit` drops from the end, so the
+    // row reads identity, then state, then context. Application used to
+    // sit second and Health last, which meant a 70-column terminal kept
+    // "which app is this" and dropped "is it healthy" — backwards for a
+    // screen an operator opens to answer the second question.
+    let h1 = join_fields_to_fit(
+        vec![
+            kv("Name", &env.name, theme),
+            vec![
+                Span::styled("Status: ", Style::default().fg(theme.muted)),
+                status_pill(&env.status, theme),
+            ],
+            health_group,
+            kv("Application", &env.application, theme),
+        ],
+        theme,
+        header_usable,
+    );
+    // Same rule. Region stays first (it is the one thing Detail has no
+    // other way of telling you under a `:region all` fan-out), then what
+    // is deployed, then what it runs on, then the address — which is the
+    // field an operator is least likely to be reading off this screen.
+    let h2 = join_fields_to_fit(
+        vec![
+            kv("Region", &env_region, theme),
+            kv("Version", &env.version_label, theme),
+            platform_group,
+            kv("CNAME", &cname_text, theme),
+        ],
+        theme,
+        header_usable,
+    );
     let header_title = format!("env: {}", env.name);
     let header = Paragraph::new(vec![Line::from(h1), Line::from(h2), Line::raw("")]).block(
         titled_block(&app.theme, &header_title, true, app.theme.title),

@@ -1324,3 +1324,43 @@ async fn a_stale_dlq_depth_says_so_rather_than_reading_as_current() {
         "a failed check marks the depth stale; got:\n{stale}"
     );
 }
+
+#[tokio::test]
+async fn the_detail_header_drops_whole_fields_on_a_narrow_terminal() {
+    // Detail replaces the whole screen and draws no breadcrumb, so this
+    // header is the only thing on it saying what you are looking at.
+    // ratatui clips the right edge, which rendered `CNAME: api-pr` — a
+    // label promising a value and then cutting it in half.
+    let mut app = detail_on("api-prod");
+
+    let narrow = render(&mut app, 80, 26);
+    let dangling = narrow
+        .lines()
+        .any(|l| l.contains("CNAME:") && !l.contains("example.com"));
+    assert!(
+        !dangling,
+        "a CNAME label with a half-rendered value; got:\n{narrow}"
+    );
+    // The fields that identify the env survive — they are first for
+    // exactly that reason.
+    assert!(narrow.contains("Region:"), "got:\n{narrow}");
+    assert!(narrow.contains("Platform:"), "got:\n{narrow}");
+
+    // Given room, everything is shown in full.
+    let wide = render(&mut app, 200, 26);
+    assert!(
+        wide.contains("CNAME:") && wide.contains("example.com"),
+        "CNAME returns when there is room; got:\n{wide}"
+    );
+}
+
+#[tokio::test]
+async fn the_detail_header_keeps_the_env_identity_at_any_width() {
+    // Whatever else goes, the row has to say which env and how it is.
+    let mut app = detail_on("api-prod");
+    for w in [70u16, 80, 100, 160] {
+        let f = render(&mut app, w, 26);
+        assert!(f.contains("api-prod"), "no env name at {w}; got:\n{f}");
+        assert!(f.contains("Health:"), "no health at {w}; got:\n{f}");
+    }
+}

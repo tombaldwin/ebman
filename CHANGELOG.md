@@ -40,6 +40,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   to the percentage as soon as the terminal is big enough for it to be
   the larger.
 
+- **The Detail header cut values in half on a narrow terminal** —
+  `CNAME: api-pr`, a label promising a value and then clipping it.
+  Detail replaces the whole screen and draws no breadcrumb, so that
+  header is the only thing on it saying what you are looking at. Whole
+  fields are dropped now, and the rows are ordered by priority rather
+  than habit: a 70-column terminal used to keep "which application is
+  this" and drop "is it healthy", which is backwards for a screen you
+  open to answer the second question.
+
 - **The header showed `Profile:` with no value on a narrow terminal**,
   which reads as an empty profile rather than a clipped one. Whole
   fields are now dropped instead.

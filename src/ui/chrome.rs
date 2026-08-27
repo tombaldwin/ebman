@@ -428,6 +428,42 @@ pub(crate) fn fields_that_fit(field_widths: &[usize], sep_width: usize, availabl
     fitted.max(1)
 }
 
+/// Join field groups with separators, dropping whole groups that do not
+/// fit `available` columns.
+///
+/// A group is one logical field — `kv("Region", …)`, or a label plus a
+/// coloured pill, or anything else — and its width is measured from the
+/// spans themselves, so a caller does not have to keep a parallel list
+/// of widths in step with the spans. That matters here: the Detail
+/// header rows mix `kv` pairs with status pills and health dots, and a
+/// hand-maintained width table would be one more thing to get wrong.
+///
+/// Whole groups, never part of one. ratatui clips the right edge, which
+/// is how the Detail header came to render `CNAME: api-pr` — a label
+/// promising a value it then cut in half.
+pub(crate) fn join_fields_to_fit<'a>(
+    groups: Vec<Vec<Span<'a>>>,
+    theme: &Theme,
+    available: u16,
+) -> Vec<Span<'a>> {
+    let widths: Vec<usize> = groups
+        .iter()
+        .map(|g| g.iter().map(|s| s.content.chars().count()).sum())
+        .collect();
+    let keep = fields_that_fit(&widths, SEP_WIDTH, available as usize);
+    let mut out: Vec<Span<'a>> = Vec::new();
+    for (i, g) in groups.into_iter().take(keep).enumerate() {
+        if i > 0 {
+            out.push(sep(theme));
+        }
+        out.extend(g);
+    }
+    out
+}
+
+/// `sep` renders as five cells in every icon style.
+pub(crate) const SEP_WIDTH: usize = 5;
+
 pub(crate) fn sep(theme: &Theme) -> Span<'static> {
     // U+E0B1 — thin powerline separator — reads as a real divider in
     // Powerline-patched fonts and falls back to a tofu box otherwise.
