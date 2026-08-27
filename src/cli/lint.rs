@@ -774,6 +774,77 @@ pub(crate) fn lint_exit_code(
     }
 }
 
+/// The two sides of a `--baseline` comparison: issues present now that
+/// the baseline did not record, and baseline issues that no longer
+/// reproduce.
+pub(crate) struct BaselineDrift<'a> {
+    pub new_issues: Vec<&'a lint::Issue>,
+    pub cleared: Vec<&'a lint::BaselineIssue>,
+    /// Distinct baseline identities. Deduplicated, so a baseline file
+    /// listing the same issue twice counts once — which is what the
+    /// "N issues stable" line means.
+    pub baseline_count: usize,
+}
+
+/// Compare the current findings against a recorded baseline.
+///
+/// `ebman lint --baseline` is a CI gate: `new_issues` is what fails the
+/// build, so a bug here either lets a regression through or breaks a
+/// build over an issue the operator already accepted. Both directions
+/// are computed by identity (`lint::issue_identity`), not by rule id —
+/// the same rule firing on a different env is a *different* issue.
+///
+/// Extracted from `run`'s watch loop, where it sat inline between two
+/// pages of printing and no test could reach it.
+pub(crate) fn baseline_drift<'a>(
+    all_issues: &'a [lint::Issue],
+    baseline_issues: &'a [lint::BaselineIssue],
+) -> BaselineDrift<'a> {
+    let baseline_set: std::collections::HashSet<&str> = baseline_issues
+        .iter()
+        .map(|b| b.identity.as_str())
+        .collect();
+    let current_identities: Vec<String> = all_issues.iter().map(lint::issue_identity).collect();
+    let current_set: std::collections::HashSet<&str> =
+        current_identities.iter().map(String::as_str).collect();
+
+    let new_issues: Vec<&lint::Issue> = all_issues
+        .iter()
+        .zip(current_identities.iter())
+        .filter(|(_, id)| !baseline_set.contains(id.as_str()))
+        .map(|(i, _)| i)
+        .collect();
+    let cleared: Vec<&lint::BaselineIssue> = baseline_issues
+        .iter()
+        .filter(|b| !current_set.contains(b.identity.as_str()))
+        .collect();
+    BaselineDrift {
+        new_issues,
+        cleared,
+        baseline_count: baseline_set.len(),
+    }
+}
+
+/// How long `--watch` sleeps before the next cycle.
+///
+/// The interval is start-to-start: a cycle that took 20s of a 60s
+/// interval sleeps 40s, so `--interval 60s` fires every ~60s rather
+/// than every 60s-plus-however-long-the-fleet-scan-took. A cycle that
+/// overran its interval sleeps zero and starts again immediately.
+///
+/// Takes the elapsed time as a `chrono::Duration` so that the
+/// clock-going-backwards case is decided here rather than by an
+/// `unwrap_or_default()` at the call site: a negative elapsed means the
+/// wall clock moved under us (NTP step, suspend/resume), and the safe
+/// reading is "no time passed", i.e. sleep the whole interval.
+pub(crate) fn watch_sleep(
+    interval_secs: u64,
+    cycle_elapsed: chrono::Duration,
+) -> std::time::Duration {
+    std::time::Duration::from_secs(interval_secs)
+        .saturating_sub(cycle_elapsed.to_std().unwrap_or_default())
+}
+
 pub async fn run(args: &[String]) -> Result<()> {
     let LintArgs {
         env_name,
@@ -1284,35 +1355,18 @@ pub async fn run(args: &[String]) -> Result<()> {
                     std::process::exit(1);
                 }
             };
-            let baseline_set: std::collections::HashSet<&str> = baseline_issues
-                .iter()
-                .map(|b| b.identity.as_str())
-                .collect();
-            let current_identities: Vec<String> =
-                all_issues.iter().map(lint::issue_identity).collect();
-            let current_set: std::collections::HashSet<&str> =
-                current_identities.iter().map(String::as_str).collect();
-
-            let new_issues: Vec<&lint::Issue> = all_issues
-                .iter()
-                .zip(current_identities.iter())
-                .filter(|(_, id)| !baseline_set.contains(id.as_str()))
-                .map(|(i, _)| i)
-                .collect();
-            let cleared: Vec<&lint::BaselineIssue> = baseline_issues
-                .iter()
-                .filter(|b| !current_set.contains(b.identity.as_str()))
-                .collect();
+            let BaselineDrift {
+                new_issues,
+                cleared,
+                baseline_count,
+            } = baseline_drift(&all_issues, &baseline_issues);
 
             if !quiet {
                 if json {
                     print_baseline_diff_json(&new_issues, &cleared);
                 } else {
                     if new_issues.is_empty() && cleared.is_empty() {
-                        println!(
-                            "✓ No drift vs baseline ({} issues stable)",
-                            baseline_set.len()
-                        );
+                        println!("✓ No drift vs baseline ({} issues stable)", baseline_count);
                     }
                     for issue in &new_issues {
                         let sev = issue.severity.as_str();
@@ -1355,11 +1409,7 @@ pub async fn run(args: &[String]) -> Result<()> {
                 // Interval is start-to-start: subtract the cycle's own
                 // duration so `--interval 60s` fires every ~60s, not
                 // 60s + however long the fleet scan took.
-                std::time::Duration::from_secs(interval_secs).saturating_sub(
-                    (chrono::Utc::now() - cycle_started)
-                        .to_std()
-                        .unwrap_or_default(),
-                ),
+                watch_sleep(interval_secs, chrono::Utc::now() - cycle_started),
             ) => {}
         }
     }
@@ -1862,7 +1912,7 @@ mod degrade_guard {
 
 #[cfg(test)]
 mod run_decision_tests {
-    use super::{filter_issues, lint_exit_code};
+    use super::{baseline_drift, filter_issues, lint_exit_code, watch_sleep};
     use crate::lint;
 
     // ── mutation-sweep triage, 2026-08-26 ────────────────────────────
@@ -1872,6 +1922,148 @@ mod run_decision_tests {
     // `std::process::exit`. These cover the two decisions worth pulling
     // out of it first: which issues reach the operator, and what the
     // process exits with.
+
+    // ── baseline drift ────────────────────────────────────────────────
+
+    fn drift_issue(rule: &str, env: Option<&str>) -> lint::Issue {
+        lint::Issue {
+            rule_id: rule.into(),
+            severity: lint::Severity::Warn,
+            env_name: env.map(str::to_string),
+            title: format!("{rule} fired"),
+            detail: String::new(),
+            suggestion: None,
+            fields: Default::default(),
+        }
+    }
+
+    /// Build the baseline entry that `issue` would have produced, so the
+    /// test compares production identities rather than a string the test
+    /// made up.
+    fn as_baseline(issue: &lint::Issue) -> lint::BaselineIssue {
+        lint::BaselineIssue {
+            identity: lint::issue_identity(issue),
+            rule_id: issue.rule_id.clone(),
+            env_name: issue.env_name.clone(),
+            title: issue.title.clone(),
+        }
+    }
+
+    #[test]
+    fn drift_splits_issues_into_new_and_cleared_and_ignores_the_stable_ones() {
+        let stable = drift_issue("EBL001", Some("api-prod"));
+        let appeared = drift_issue("EBL002", Some("api-prod"));
+        let gone = drift_issue("EBL003", Some("api-prod"));
+
+        let current = vec![stable.clone(), appeared.clone()];
+        let baseline = vec![as_baseline(&stable), as_baseline(&gone)];
+
+        let d = baseline_drift(&current, &baseline);
+
+        assert_eq!(
+            d.new_issues.iter().map(|i| &i.rule_id).collect::<Vec<_>>(),
+            vec!["EBL002"],
+            "only the issue absent from the baseline is new"
+        );
+        assert_eq!(
+            d.cleared.iter().map(|b| &b.rule_id).collect::<Vec<_>>(),
+            vec!["EBL003"],
+            "only the baseline issue that stopped reproducing is cleared"
+        );
+    }
+
+    #[test]
+    fn drift_is_by_identity_so_the_same_rule_on_another_env_is_a_new_issue() {
+        // The whole reason the comparison hashes env into the identity:
+        // EBL001 on staging must not be excused by EBL001 on prod
+        // sitting in the baseline. Comparing rule ids alone would let a
+        // fleet-wide regression through a CI gate.
+        let prod = drift_issue("EBL001", Some("api-prod"));
+        let staging = drift_issue("EBL001", Some("api-staging"));
+
+        let baseline = [as_baseline(&prod)];
+        let d = baseline_drift(std::slice::from_ref(&staging), &baseline);
+
+        assert_eq!(d.new_issues.len(), 1, "same rule, different env, is new");
+        assert_eq!(d.new_issues[0].env_name.as_deref(), Some("api-staging"));
+        assert_eq!(d.cleared.len(), 1, "and prod's issue reads as cleared");
+    }
+
+    #[test]
+    fn drift_on_an_unchanged_fleet_is_empty_both_ways() {
+        let a = drift_issue("EBL001", Some("api-prod"));
+        let b = drift_issue("EBL002", None);
+        let baseline = vec![as_baseline(&a), as_baseline(&b)];
+
+        let current = [a.clone(), b.clone()];
+        let d = baseline_drift(&current, &baseline);
+
+        assert!(d.new_issues.is_empty() && d.cleared.is_empty());
+        assert_eq!(d.baseline_count, 2, "both baseline issues counted stable");
+    }
+
+    #[test]
+    fn drift_against_an_empty_baseline_makes_every_issue_new() {
+        // The first `--baseline` run against a fresh file: everything is
+        // new, nothing is cleared, and the stable count is zero.
+        let issues = vec![
+            drift_issue("EBL001", Some("a")),
+            drift_issue("EBL002", Some("b")),
+        ];
+        let d = baseline_drift(&issues, &[]);
+        assert_eq!(d.new_issues.len(), 2);
+        assert!(d.cleared.is_empty());
+        assert_eq!(d.baseline_count, 0);
+    }
+
+    #[test]
+    fn drift_on_a_now_clean_fleet_clears_the_whole_baseline() {
+        let was = drift_issue("EBL001", Some("api-prod"));
+        let baseline = [as_baseline(&was)];
+        let d = baseline_drift(&[], &baseline);
+        assert!(d.new_issues.is_empty(), "nothing fires, so nothing is new");
+        assert_eq!(d.cleared.len(), 1);
+    }
+
+    #[test]
+    fn baseline_count_deduplicates_repeated_identities() {
+        // A baseline file that lists the same issue twice describes one
+        // issue; "2 issues stable" would be a lie to the operator.
+        let a = drift_issue("EBL001", Some("api-prod"));
+        let baseline = vec![as_baseline(&a), as_baseline(&a)];
+        let d = baseline_drift(std::slice::from_ref(&a), &baseline);
+        assert_eq!(d.baseline_count, 1);
+    }
+
+    // ── watch interval ────────────────────────────────────────────────
+
+    #[test]
+    fn watch_sleep_subtracts_the_cycle_so_the_interval_is_start_to_start() {
+        let s = watch_sleep(60, chrono::Duration::seconds(20));
+        assert_eq!(
+            s,
+            std::time::Duration::from_secs(40),
+            "a 20s cycle in a 60s interval sleeps 40s, not 60s"
+        );
+    }
+
+    #[test]
+    fn watch_sleep_floors_at_zero_when_a_cycle_overruns_its_interval() {
+        // A fleet scan slower than the interval must start the next
+        // cycle immediately, not underflow.
+        let s = watch_sleep(30, chrono::Duration::seconds(45));
+        assert_eq!(s, std::time::Duration::ZERO);
+    }
+
+    #[test]
+    fn watch_sleep_treats_a_backwards_clock_as_no_time_passed() {
+        // NTP step or suspend/resume can make `now - started` negative.
+        // `to_std()` fails on a negative duration and the fallback is a
+        // full interval — the safe direction, since the alternative is a
+        // hot loop hammering the AWS API.
+        let s = watch_sleep(60, chrono::Duration::seconds(-5));
+        assert_eq!(s, std::time::Duration::from_secs(60));
+    }
 
     fn issue(rule: &str, sev: lint::Severity) -> lint::Issue {
         lint::Issue {
