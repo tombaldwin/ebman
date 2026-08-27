@@ -2255,3 +2255,32 @@ fn column_widths_give_the_rounding_remainder_to_a_growing_column() {
         "all seven cells should land on the growing columns"
     );
 }
+
+#[test]
+fn the_install_channel_labels_are_distinct_and_meaningful() {
+    // `label` feeds the `:update` overlay's "installed via" line. The
+    // sweep replaced the whole function with "" and with "xyzzy" and
+    // nothing failed — it was added today for that overlay and never
+    // pinned. A wrong or blank channel tells an operator to run the
+    // wrong upgrade command.
+    use crate::update_check::InstallChannel::*;
+    let labels = [Homebrew.label(), Cargo.label(), Standalone.label()];
+    for l in labels {
+        assert!(!l.trim().is_empty(), "a blank channel label");
+    }
+    assert_eq!(
+        labels
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        3,
+        "two channels share a label: {labels:?}"
+    );
+    // Each names its own channel, so the line cannot say Homebrew for a
+    // cargo install.
+    assert!(Homebrew.label().to_lowercase().contains("brew"));
+    assert!(Cargo.label().to_lowercase().contains("cargo"));
+    // And the label agrees with the command it will be shown beside.
+    assert!(Homebrew.upgrade_command().contains("brew"));
+    assert!(Cargo.upgrade_command().contains("cargo"));
+}

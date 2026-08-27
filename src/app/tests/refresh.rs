@@ -2436,6 +2436,25 @@ fn the_update_recheck_ticker_is_idle_safe_and_does_not_double_fire() {
          fires immediately and duplicates the startup check"
     );
 
+    // ...and its start instant must be in the FUTURE. Checking that
+    // `interval_at` is called says nothing about what it is called
+    // WITH: negating the offset puts the first tick in the past, which
+    // fires immediately and is exactly the double-fire `interval_at` was
+    // chosen to avoid. The 2026-08-27 sweep found that mutant alive.
+    //
+    // A guard that checks the CALL but not its ARGUMENT — the same
+    // shape as the candor detector matching one cargo verb, and as a
+    // clipped hint passing a `contains` check.
+    let start = body
+        .split_once("tokio::time::interval_at(")
+        .expect("interval_at present, just asserted")
+        .1;
+    let start = start.split_once(',').map(|(a, _)| a).unwrap_or(start);
+    assert!(
+        start.contains("Instant::now() +"),
+        "the first tick must be scheduled AHEAD of now; got: {start:?}"
+    );
+
     // The arm must be unconditional. `anim` is gated on
     // `loading_since.is_some()` and so does not run while idle, which
     // is exactly when a long-lived session needs this.
@@ -2453,5 +2472,26 @@ fn the_update_recheck_ticker_is_idle_safe_and_does_not_double_fire() {
     assert!(
         arm.contains("self.spawn_update_check()"),
         "the ticker arm must actually dispatch a check; got: {arm:?}"
+    );
+}
+
+#[test]
+fn the_update_recheck_interval_is_six_hours() {
+    // Pinning a constant looks tautological until you see what the
+    // sweep did to it: `6 * 60 * 60` mutated to `6 / 60 / 60` is ZERO,
+    // and a zero-second `interval_at` re-checks crates.io as fast as the
+    // loop will turn. The comment promises "six hours"; this is what
+    // holds it to that.
+    assert_eq!(
+        crate::app::App::UPDATE_RECHECK_INTERVAL_SECS,
+        21_600,
+        "the update re-check interval is documented as six hours"
+    );
+    // And it is a sane order of magnitude regardless of the arithmetic:
+    // frequent enough to matter in a long session, rare enough to be
+    // invisible to crates.io.
+    assert!(
+        (3_600..=86_400).contains(&crate::app::App::UPDATE_RECHECK_INTERVAL_SECS),
+        "an interval outside an hour-to-a-day is a bug whichever way it went"
     );
 }

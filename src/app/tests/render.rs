@@ -1641,3 +1641,35 @@ async fn no_terminal_size_makes_any_screen_panic() {
         }
     }
 }
+
+#[tokio::test]
+async fn the_watching_pill_pluralises_too() {
+    // The armed-rollback pill was pinned across the singular/plural
+    // boundary; its sibling was not, and the sweep found the `== 1`
+    // free. Two sibling branches, one covered — the same shape as the
+    // thirteen unpinned column widths.
+    let mut app = test_app();
+    let watch = |env: &str, mins: i64| crate::app::WatchingDeploy {
+        env_name: env.into(),
+        target_label: "v1".into(),
+        armed_at: chrono::Utc::now(),
+        deadline_at: chrono::Utc::now() + chrono::Duration::minutes(mins),
+    };
+    app.watching_deploys
+        .insert("api-prod".into(), watch("api-prod", 5));
+    app.rebuild_view();
+    let one = render(&mut app, 300, 24);
+    assert!(
+        one.contains("watching api-prod"),
+        "a single watcher names its env; got:\n{one}"
+    );
+
+    app.watching_deploys
+        .insert("api-staging".into(), watch("api-staging", 9));
+    app.rebuild_view();
+    let two = render(&mut app, 300, 24);
+    assert!(
+        two.contains("2 watching") && two.contains("next: api-prod"),
+        "two watchers report the count and the soonest; got:\n{two}"
+    );
+}
