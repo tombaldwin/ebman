@@ -184,97 +184,112 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install dylint
         run: cargo install cargo-dylint dylint-link --locked
-      - name: Build the candor lint
+      - name: Install candor (pinned)
         run: |
           # Pinned, not HEAD. This gate can fail the release, so it must
           # not change underfoot: an unrelated push to candor-rust would
           # otherwise land in the next ebman CI run with no review here.
           # Bump deliberately.
           git clone --filter=blob:none https://github.com/tombaldwin/candor-rust ~/candor
-          (cd ~/candor && git checkout --quiet a7f01138a1ceea6b2e05dc92995ee47ee9219201 && cargo build)
-      # The DYLINT backend, not `candor-scan`. The syntactic scanner
-      # reports `ui::draw` with no Exec/Ipc at all, while the
-      # type-resolved lint finds both through the embedded shell pane —
-      # so gating on a scan report would miss exactly the class this
-      # policy exists to catch.
+          (cd ~/candor && git checkout --quiet a7f01138a1ceea6b2e05dc92995ee47ee9219201 && ./install.sh)
+          # `install.sh` DEGRADES rather than fails when the nightly
+          # build doesn't work: it builds only the stable crates, and
+          # `cargo candor` keeps working via the syntactic scanner. That
+          # scanner reports `ui::draw` with no Exec/Ipc at all, while the
+          # type-resolved lint finds both through the embedded shell pane
+          # — i.e. it misses exactly the class this policy exists to
+          # catch.
+          #
+          # `cargo candor policy` is dylint-only and would fail closed
+          # (exit 2) rather than quietly scan, so this is belt-and-braces
+          # — but it names the actual cause instead of leaving a bare
+          # "policy NOT evaluated" to be diagnosed from scratch.
+          ls ~/.candor/lib/libcandor@*.so >/dev/null 2>&1 || {
+            echo "::error::candor installed without the nightly lint dylib — the deep engine is unavailable, and the stable scanner cannot see the embedded shell pane's Exec/Ipc"
+            exit 1
+          }
       - name: Enforce .candor/policy
-        # Plain text, overriding the workflow-level `always`. The three
-        # greps below parse this output; with colour on, cargo writes
-        # "Checking\e[0m ebman" and the "did it actually run" guard
-        # fails a clean tree. It did exactly that once.
+        # Plain text. Nothing below parses cargo's output any more (see
+        # the note in the run block), but the human-readable failure
+        # output is easier to read in a log without escape codes.
         env:
           CARGO_TERM_COLOR: never
         run: |
-          LIB=$(ls ~/candor/target/debug/libcandor@*.so)
-          # Force a re-analysis. `rust-cache` restores the check
-          # artefacts, and a cached `cargo dylint` prints "Finished"
-          # without re-running the lint — so the gate would pass on
-          # stale results from before the change under review.
-          touch src/lib.rs src/main.rs
-          # No `|| true` on the lint. Swallowing its exit code means a
-          # crash, a missing lib or a compile error produces no AS-EFF
-          # lines, the grep below finds nothing, and the gate passes —
-          # a gate that reports success when it did not run.
-          if ! out=$(CANDOR_POLICY=.candor/policy cargo dylint --lib-path "$LIB" 2>&1); then
-            echo "$out"
-            echo "::error::candor lint failed to RUN (not a policy violation)"
+          # `cargo candor policy`, not a raw `cargo dylint`.
+          #
+          # This job used to invoke the dylint backend directly and then
+          # reconstruct, in bash, three things candor already guarantees:
+          # whether the lint actually ran, whether the run was cached,
+          # and which findings it produced. Each was inferred by grepping
+          # cargo's human-facing progress output, and it broke twice on
+          # cosmetic changes to that output — first when colour codes
+          # split "Checking ebman", then when adding a build.rs in 0.35.0
+          # made cargo say "Compiling ebman" instead. Neither was a
+          # policy violation; both were red builds.
+          #
+          # The wrapper answers all three from machine signals:
+          #   * exit codes are pinned (candor-spec §3.3) — 0 evaluated
+          #     clean, 1 evaluated with violations, 2 NOT evaluated, and
+          #     a 2 is fail-closed by design;
+          #   * the verdict rides on CANDOR_VIOLATIONS, a sentinel file
+          #     the engine appends to, so a message reword or a dylint
+          #     output-stream change cannot turn the gate green;
+          #   * a cache hit that emits no diagnostics is detected and
+          #     re-run by the wrapper rather than mistaken for a pass.
+          #
+          # It is also a STRONGER gate than what it replaces: `policy`
+          # snapshots every workspace crate first and enforces with the
+          # siblings loaded, so an effect or host that physically lives
+          # in another crate is caught at the boundary that forbids it.
+          # The raw invocation saw one crate at a time.
+          rc=0
+          cargo candor policy .candor/policy --gate-json verdict.json || rc=$?
+          case "$rc" in
+            0) ;;
+            1)
+              echo "::error::effect/layer policy violation — see .candor/policy"
+              [ -f verdict.json ] && cat verdict.json
+              exit 1 ;;
+            2)
+              # NOT a pass. Unreadable policy, a build failure, a missing
+              # engine — anything that means the gate could not actually
+              # check. Fail-closed is the whole point.
+              echo "::error::candor policy NOT evaluated (exit 2) — failing closed, this is not a clean run"
+              exit 1 ;;
+            *)
+              echo "::error::candor exited $rc, which is outside the documented 0/1/2 contract"
+              exit 1 ;;
+          esac
+          # A clean exit has to be corroborated by the document, not
+          # taken on trust. Exit 0 with no verdict would mean the two
+          # signals disagree, and the safe reading of that is failure.
+          [ -f verdict.json ] || {
+            echo "::error::candor exited 0 but wrote no verdict document"
+            exit 1
+          }
+          cat verdict.json
+          # `jq '.ok // "missing"'` would be wrong here: `//` treats
+          # `false` as empty, so a document honestly saying `"ok": false`
+          # would be reported as `ok=missing`. The failure is the same
+          # either way, but the message would send the next reader
+          # looking for a malformed document instead of a real refusal.
+          ok=$(jq -r 'if has("ok") then (.ok|tostring) else "missing" end' verdict.json)
+          # `refused: true` carries no `violations` key by design, so a
+          # naive read of a refusal document is already the fail-closed
+          # one. Check it explicitly anyway.
+          refused=$(jq -r 'if has("refused") then (.refused|tostring) else "false" end' verdict.json)
+          if [ "$ok" != "true" ] || [ "$refused" = "true" ]; then
+            echo "::error::candor exited 0 but its verdict says ok=$ok refused=$refused"
             exit 1
           fi
-          echo "$out"
-          # And prove it actually analysed this crate, for the same
-          # reason: a lint that silently no-ops emits no findings.
-          #
-          # BOTH verbs. `cargo check` says "Checking ebman" for a crate
-          # it only checks, but "Compiling ebman" when it has to build
-          # something real for the package first — which, since 0.35.0
-          # added `build.rs`, it does on every CI run: the build-script
-          # artefact is not cached for the dylint nightly toolchain, so
-          # it is compiled fresh each time. Matching only "Checking"
-          # made this gate fail on every push regardless of findings.
-          #
-          # That is the SECOND time this detector has broken on a
-          # cosmetic change to cargo's output — see the CARGO_TERM_COLOR
-          # note above, which is the same shape. It greps a human-facing
-          # progress line for a machine decision, and there is no stabler
-          # signal on offer, so it stays fragile. Widen it deliberately
-          # when cargo changes how it announces work; do not delete it,
-          # because a lint that silently no-ops emits no findings and
-          # would otherwise read as a clean pass.
-          if ! echo "$out" | grep -qE '(Checking|Compiling).*ebman'; then
-            echo "::error::candor lint produced no analysis of ebman — gate did not run"
+          # Prove the reader can fail, on every run, before trusting it
+          # to pass. A gate with no demonstration that it rejects
+          # anything is one you are trusting on assertion — this repo has
+          # found three guards that were silently passing. Same
+          # discipline as `scripts/mutate.sh`.
+          canary='{"ok":false,"refused":true,"reason":"canary"}'
+          if [ "$(echo "$canary" | jq -r '.ok')" = "true" ]; then
+            echo "::error::the verdict reader reports a refusal document as clean"
             exit 1
           fi
-          # Fail on ANY effect/layer finding, then allowlist by exact id.
-          #
-          # This used to grep for `AS-EFF-00[689]` — three hardcoded ids
-          # out of a numbering scheme we do not control. A fourth
-          # violation class, an upstream renumber at the next candor
-          # bump, or a policy rule emitting a different id, and the gate
-          # goes green on a real violation. That is the same shape as the
-          # `starts_with("pub ")` guard that would have gone blind on a
-          # visibility edit, and the `split("//")` stripper that let a
-          # clipboard call hide behind a URL literal. Both were live.
-          #
-          # Inverted: anything matching AS-EFF fails unless its id is in
-          # ACCEPTED. Empty today — the policy is fully enforced — so a
-          # new id fails loudly instead of passing silently.
-          ACCEPTED=""
-          # Prove the check can fail, on every run, before trusting it to
-          # pass. A gate with no demonstration that it rejects anything is
-          # a gate you are trusting on assertion — and this repo has found
-          # three guards that were silently passing. Same discipline as
-          # `scripts/mutate.sh`: a test that cannot fail is not evidence.
-          canary=$(echo "warning: AS-EFF-999 canary" | grep -oE "AS-EFF-[0-9]+" | sort -u)
-          if [ "$canary" != "AS-EFF-999" ]; then
-            echo "::error::the candor finding-extractor does not extract findings"
-            exit 1
-          fi
-          findings=$(echo "$out" | grep -oE "AS-EFF-[0-9]+" | sort -u || true)
-          for id in $findings; do
-            case " $ACCEPTED " in
-              *" $id "*) echo "note: $id is an accepted exception" ;;
-              *)
-                echo "::error::effect/layer policy violation $id — see .candor/policy"
-                exit 1 ;;
-            esac
-          done
+          echo "candor: evaluated, clean."
