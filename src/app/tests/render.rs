@@ -1673,3 +1673,95 @@ async fn the_watching_pill_pluralises_too() {
         "two watchers report the count and the soonest; got:\n{two}"
     );
 }
+
+#[test]
+fn the_deploy_preview_warns_only_when_the_candidate_is_genuinely_older() {
+    // The warning exists to catch an accidental rollback: deploying a
+    // version built BEFORE the one currently running. `<` vs `<=` is
+    // the difference between that and warning whenever the two share a
+    // timestamp — which is common, since versions built by the same CI
+    // run carry the same `created`. A warning that fires on the normal
+    // case is one operators learn to click through.
+    use crate::aws::AppVersion;
+    let at = |s: &str| {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .expect("valid")
+            .with_timezone(&chrono::Utc)
+    };
+    let v = |label: &str, created: &str| AppVersion {
+        label: label.into(),
+        description: String::new(),
+        created: Some(at(created)),
+    };
+
+    // Candidate older than deployed: warn.
+    let older = vec![
+        v("deployed", "2026-06-01T00:00:00Z"),
+        v("candidate", "2026-01-01T00:00:00Z"),
+    ];
+    let out = format_deploy_preview("api-prod", "deployed", "candidate", &older);
+    assert!(out.contains("older than"), "should warn; got:\n{out}");
+
+    // Same timestamp: not a rollback, no warning.
+    let same = vec![
+        v("deployed", "2026-06-01T00:00:00Z"),
+        v("candidate", "2026-06-01T00:00:00Z"),
+    ];
+    let out = format_deploy_preview("api-prod", "deployed", "candidate", &same);
+    assert!(
+        !out.contains("older than"),
+        "an equal timestamp is not a rollback; got:\n{out}"
+    );
+
+    // Candidate newer: the ordinary case, no warning.
+    let newer = vec![
+        v("deployed", "2026-01-01T00:00:00Z"),
+        v("candidate", "2026-06-01T00:00:00Z"),
+    ];
+    let out = format_deploy_preview("api-prod", "deployed", "candidate", &newer);
+    assert!(!out.contains("older than"), "got:\n{out}");
+}
+
+#[tokio::test]
+async fn the_apps_action_menu_moves_and_wraps_on_j_and_k() {
+    // Both navigation arms were free in the sweep — the whole
+    // `KeyCode::Down | Char('j')` arm could be deleted and nothing
+    // failed. This is a menu that dispatches per-application actions, so
+    // a cursor that does not move means the operator selects whatever
+    // happened to be first.
+    let n = crate::app::APPS_ACTION_ITEMS.len();
+    assert!(n >= 2, "the wrap cases need at least two items");
+
+    let cursor_of = |app: &App| match app.current_overlay.as_ref() {
+        Some(crate::app::Overlay::AppsActionMenu { cursor, .. }) => *cursor,
+        other => panic!("apps menu closed unexpectedly: {other:?}"),
+    };
+    let open = || {
+        let mut app = test_app();
+        app.current_overlay = Some(crate::app::Overlay::AppsActionMenu {
+            app_name: "uflexi".into(),
+            env_names: vec!["api-prod".into()],
+            cursor: 0,
+        });
+        app
+    };
+
+    // Down / j advance.
+    for key in [KeyCode::Down, KeyCode::Char('j')] {
+        let mut app = open();
+        app.handle_apps_action_menu_key(KeyEvent::new(key, KeyModifiers::NONE));
+        assert_eq!(cursor_of(&app), 1, "{key:?} should move down");
+    }
+    // Up / k retreat, wrapping from the top to the bottom.
+    for key in [KeyCode::Up, KeyCode::Char('k')] {
+        let mut app = open();
+        app.handle_apps_action_menu_key(KeyEvent::new(key, KeyModifiers::NONE));
+        assert_eq!(cursor_of(&app), n - 1, "{key:?} should wrap to the end");
+    }
+    // And down from the last item wraps back to the first.
+    let mut app = open();
+    for _ in 0..n {
+        app.handle_apps_action_menu_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    }
+    assert_eq!(cursor_of(&app), 0, "a full cycle returns to the start");
+}
