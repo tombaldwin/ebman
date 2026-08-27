@@ -1291,3 +1291,36 @@ async fn a_form_prefill_for_another_env_is_dropped() {
         "the matching env's prefill must be applied"
     );
 }
+
+#[tokio::test]
+async fn a_stale_dlq_depth_says_so_rather_than_reading_as_current() {
+    // The depth shown is the last-known value when the most recent
+    // check failed. Presenting it as live would have an operator
+    // conclude a queue had drained when nothing had been read at all —
+    // the number is identical either way, so the suffix is the only
+    // thing carrying the difference.
+    let mut app = test_app();
+    app.environments = vec![mk_env("worker-prod", "uflexi", "Worker", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+    app.mode = crate::app::Mode::Detail;
+    app.worker_dlq_depths.insert("worker-prod".to_string(), 42);
+
+    let live = render(&mut app, 200, 40);
+    assert!(
+        live.contains("DLQ:42"),
+        "a worker env shows its DLQ depth; got:\n{live}"
+    );
+    assert!(
+        !live.contains("DLQ:42 (stale)"),
+        "a fresh reading is not marked stale; got:\n{live}"
+    );
+
+    app.worker_dlq_stale.insert("worker-prod".to_string());
+    let stale = render(&mut app, 200, 40);
+    assert!(
+        stale.contains("DLQ:42 (stale)"),
+        "a failed check marks the depth stale; got:\n{stale}"
+    );
+}
