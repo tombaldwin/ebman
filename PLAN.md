@@ -99,15 +99,37 @@ holds:
 
 ### Now
 
-0. **Blocked, and no longer on the clock:** the nightly sweep **did not
-   fire on 2026-08-27**. The workflow is `active` and the cron is
+0. **GitHub Actions is treated as unavailable (2026-08-27).** Runs sit
+   queued for hours without a runner — three CI runs and the sweep were
+   all queued simultaneously, none started. Nothing that depends on it
+   can be a gate right now.
+
+   **Verify locally instead.** The candor gate migration was checked end
+   to end on this machine — `cargo candor policy .candor/policy
+   --gate-json verdict.json` exits 0 and writes
+   `{"spec":"0.27","ok":true,"violations":[]}`, and the workflow's own
+   assertions pass against it. The mutation sweep runs here too; see
+   item 1.
+
+   Earlier note, still true: the nightly sweep **did not fire on
+   2026-08-27**. The workflow is `active` and the cron is
    unchanged at `0 3 * * *`; GitHub simply dropped the run. Recent runs
    started at 03:51 and 03:56 rather than 03:00, so the schedule was
    already being queued heavily — a dropped run is the same behaviour
    further along. Needs a manual `workflow_dispatch` (~7h20m) rather
    than another night's wait.
 
-1. **Triage the sweep** *(mechanical)* — first full-tree run since ~180
+1. **Triage the sweep** *(mechanical)* — **running locally 2026-08-27**,
+   since GitHub cannot be relied on. Scoped to this week's diff first:
+   478 mutants against v0.34.2..HEAD, versus 6253 for the whole tree.
+   That is the slice no sweep has ever seen, and it fits in under an
+   hour on ten cores rather than the ~10 hours a full local run needs.
+
+   The full tree is worth doing afterwards, overnight. Note `target/`
+   is already 59G and `CLAUDE.md` records a session that reached 427
+   GiB and filled the disk — `cargo clean` before the long run.
+
+   Original framing: first full-tree run since ~180
    tests landed. Re-baselines every per-file figure below. Split
    reachable from seam before drawing any conclusion. **Waiting on a
    run to triage** — see item 0.
