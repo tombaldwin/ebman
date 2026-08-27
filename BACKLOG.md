@@ -249,11 +249,37 @@ Three gates added to CI. Two of them found something on the first run, which is 
     plus scalar coercion to string. The `other =>` arm re-serialises
     sequences/mappings so a malformed row still shows something.
 
-  **Still a maintainer decision, not a drive-by** — hand-roll two
+  **The UNSOUND path is gone as of 2026-08-27, without migrating.**
+  RUSTSEC-2025-0068 is specifically about the SERIALIZER —
+  `serde_yml::ser::Serializer`'s emitter can segfault. `saved_config.rs`
+  held the codebase's only serializer call, `serde_yml::to_string`, in
+  the fallback arm rendering a non-scalar option value. It is
+  hand-written now (`coerce_value_at`), so every remaining use is
+  parsing, which the advisory does not implicate.
+
+  That was worth finding: the earlier assessment on this entry reasoned
+  about the blast radius of PARSING ("neither parses anything an
+  attacker supplies") while the advisory was about writing. Right
+  conclusion, wrong half of the crate.
+
+  The hand-written version also renders better — `to_string` emitted
+  real YAML, so a sequence became `- a\n- b` and a `trim` left a newline
+  inside what is displayed as a single diff cell. It is `[a, b]` now,
+  with a depth cap so a hand-edited file cannot recurse until the stack
+  ends.
+
+  **Still a maintainer decision, but a smaller one** — hand-roll two
   shallow parsers, take `saphyr` (active but 0.0.x and not
   serde-integrated), or hold the waiver. Three reasonable shapes, so it
-  is a stop condition under `CLAUDE.md` and was skipped rather than
-  picked on 2026-08-27.
+  stays a stop condition under `CLAUDE.md`. What changed is the
+  urgency: this is now a maintenance risk rather than a soundness one,
+  and `deny.toml`'s waiver says so.
+
+  Re-checked the alternatives 2026-08-27: `serde_norway` last released
+  **Dec 2024**, `serde_yaml_ng` **May 2024** — both staler than the
+  crate they would replace, despite being what the advisory recommends.
+  `saphyr` 0.0.12 shipped 2026-08-18 and is the only one actively
+  developed.
 
   Worth stating plainly, because the entry above buries it: this is
   RUSTSEC-2025-0068, **unsound and unmaintained**, ebman's own direct
