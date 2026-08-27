@@ -1227,3 +1227,71 @@ async fn the_watcher_pills_switch_between_singular_and_plural() {
         "two armed watchdogs report the count and the soonest; got:\n{two}"
     );
 }
+
+#[tokio::test]
+async fn an_env_that_just_went_red_is_marked_and_its_neighbours_are_not() {
+    // The transient "this changed on the refresh you just watched"
+    // marker. Its whole value is being scoped to the one env — a marker
+    // on every row is a marker on none.
+    let mut app = test_app();
+    app.environments = vec![
+        mk_env("api-prod", "uflexi", "Web", "Red"),
+        mk_env("api-staging", "uflexi", "Web", "Red"),
+    ];
+    app.newly_red.insert("api-prod".to_string());
+    app.rebuild_view();
+    let buf = render_buf(&mut app, 200, 24);
+    let row_text = |y: u16| {
+        (0..buf.area.width)
+            .map(|x| buf[(x, y)].symbol())
+            .collect::<String>()
+    };
+    // Match the marker IMMEDIATELY BEFORE an env name. Neither half
+    // alone works: the header breadcrumb repeats the selected env's
+    // name, and the column-sort indicator is also a `\u{25B2}` (that
+    // one cost a first draft of this test, which counted two rows).
+    let marked: Vec<String> = (0..buf.area.height)
+        .map(row_text)
+        .filter(|r| r.contains("\u{25B2} api-"))
+        .collect();
+    assert_eq!(
+        marked.len(),
+        1,
+        "exactly one row carries the newly-red marker; got {marked:#?}"
+    );
+    assert!(
+        marked[0].contains("api-prod") && !marked[0].contains("api-staging"),
+        "and it is the env that just turned; got: {}",
+        marked[0]
+    );
+}
+
+#[tokio::test]
+async fn a_newly_discovered_env_is_marked_in_the_table() {
+    let mut app = test_app();
+    app.environments = vec![
+        mk_env("api-prod", "uflexi", "Web", "Green"),
+        mk_env("api-new", "uflexi", "Web", "Green"),
+    ];
+    app.newly_added.insert("api-new".to_string());
+    app.rebuild_view();
+    let buf = render_buf(&mut app, 200, 24);
+    let row_text = |y: u16| {
+        (0..buf.area.width)
+            .map(|x| buf[(x, y)].symbol())
+            .collect::<String>()
+    };
+    let marked: Vec<String> = (0..buf.area.height)
+        .map(row_text)
+        .filter(|r| r.contains("+ api-new"))
+        .collect();
+    assert_eq!(marked.len(), 1, "the new env is flagged; got {marked:#?}");
+    let others: Vec<String> = (0..buf.area.height)
+        .map(row_text)
+        .filter(|r| r.contains("+ api-prod"))
+        .collect();
+    assert!(
+        others.is_empty(),
+        "and the pre-existing env is not; got {others:#?}"
+    );
+}
