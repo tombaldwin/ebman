@@ -18,7 +18,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
   The table now sheds genuinely optional columns instead (TREND, then
   CNAME, PLATFORM, INST, TIER, APPLICATION) and says how many it hid, so
-  a partial fleet is not read as a complete one. `NAME`, `HEALTH`,
+  a partial fleet is not read as a complete one.
+
+  **Shedding starts before you would call a terminal narrow.** TREND
+  goes at roughly 127 columns, so a 120-column terminal that showed the
+  sparkline in 0.35.0 will not in 0.36.0. That is deliberate — the
+  alternative is squeezing the columns that identify a row — but it is a
+  visible change at a width most operators would not describe as narrow.
+  Below about 60 columns the never-dropped set no longer fits either,
+  and the table degrades rather than staying legible. `NAME`, `HEALTH`,
   `STATUS`, `VERSION` and `AGE` are never dropped. Column widths are
   computed rather than left to constraint tie-breaking, which also fixes
   `VERSION` rendering `bui` for `build-1`.
