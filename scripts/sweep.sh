@@ -74,13 +74,17 @@ fi
 # Total time is unchanged: the shards run one after another.
 SHARDS=${SWEEP_SHARDS:-30}
 
+# Captured into an ARRAY, not left in `$@`. `run_shard` takes the shard
+# number as its own argument, so `"$@"` inside it is that number and not
+# the scope flags — which produced a bare `cargo mutants 0` and a usage
+# error on the first attempt.
 if [ -n "$DIFF" ]; then
   say "scope: diff $DIFF"
-  set -- --in-diff "$DIFF"
+  SCOPE=(--in-diff "$DIFF")
   SHARDS=1
 else
   say "scope: whole tree, $SHARDS shards run sequentially"
-  set --
+  SCOPE=()
 fi
 
 # `--exclude src/main.rs`: `cargo mutants -- --lib` does not compile the
@@ -90,7 +94,13 @@ run_shard() {
   local n=$1
   local shard_args=()
   [ "$SHARDS" -gt 1 ] && shard_args=(--shard "$n/$SHARDS")
-  cargo mutants "$@" "${shard_args[@]}" \
+  # `${A[@]+"${A[@]}"}`, not `"${A[@]}"`. macOS ships bash 3.2, where
+  # expanding an EMPTY array under `set -u` is an unbound-variable error
+  # — which is what a whole-tree run has for SCOPE, so every shard died
+  # instantly with rc=1 and the sweep "finished" in under a second with
+  # zero results. The command was fine when pasted into a shell by hand;
+  # only the script's `set -u` made it fail.
+  cargo mutants ${SCOPE[@]+"${SCOPE[@]}"} ${shard_args[@]+"${shard_args[@]}"} \
     --no-shuffle --timeout 120 -j "$JOBS" \
     --exclude src/main.rs \
     -o "$OUT/shard-$n" -- --lib >> "$LOG" 2>&1 &

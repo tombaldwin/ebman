@@ -1364,3 +1364,87 @@ async fn the_detail_header_keeps_the_env_identity_at_any_width() {
         assert!(f.contains("Health:"), "no health at {w}; got:\n{f}");
     }
 }
+
+/// `x` arms a destructive action, and WHICH one depends entirely on the
+/// tab guard.
+///
+/// On Config it arms deletion of a configuration row; on Instances it
+/// arms termination of an EC2 instance. Both guards were free in the
+/// 2026-08-28 whole-tree sweep — six mutants each, replacing the
+/// `matches!(… DetailTab::Instances)` guard with `true` and with
+/// `false`. A guard stuck `true` arms an instance termination from the
+/// Config tab; stuck `false`, `x` falls through to whatever arm catches
+/// it next. Either way the operator arms something they were not
+/// looking at, and the confirm prompt is the only thing standing
+/// between that and a dispatch.
+///
+/// Table-driven over the tabs so a new tab cannot be added without a
+/// row here — the guard is per-tab and a test naming two of them proves
+/// nothing about the third.
+#[tokio::test]
+async fn x_arms_the_delete_belonging_to_the_focused_tab_and_no_other() {
+    let armed = |app: &App| -> (Option<usize>, Option<usize>) {
+        let d = app.detail.as_ref().expect("detail open");
+        (d.config_delete_confirm, d.instance_terminate_confirm)
+    };
+    let open_on = |tab: DetailTab| {
+        let mut app = detail_on("api-prod");
+        {
+            let d = app.detail.as_mut().expect("detail open");
+            // Both tabs populated every time: an empty tab arms nothing
+            // regardless of the guard, which would let a broken guard
+            // pass for the wrong reason.
+            d.tags = vec![
+                ("Owner".into(), "platform".into()),
+                ("Team".into(), "infra".into()),
+            ];
+            d.config_cursor = 0;
+            d.instances = vec![crate::aws::Instance {
+                id: "i-0123456789abcdef0".into(),
+                health: "Ok".into(),
+                color: "Green".into(),
+                causes: vec![],
+                instance_type: "t3.small".into(),
+                availability_zone: "us-east-1a".into(),
+                launched_at: None,
+            }];
+            d.instances_cursor = 0;
+        }
+        focus_tab(&mut app, tab);
+        app
+    };
+
+    // Config tab: arms the config-row delete and nothing else.
+    let mut app = open_on(DetailTab::Config);
+    press(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
+    assert_eq!(
+        armed(&app),
+        (Some(0), None),
+        "`x` on Config must arm the CONFIG delete only"
+    );
+
+    // Instances tab: arms the instance termination and nothing else.
+    let mut app = open_on(DetailTab::Instances);
+    press(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
+    assert_eq!(
+        armed(&app),
+        (None, Some(0)),
+        "`x` on Instances must arm the INSTANCE termination only"
+    );
+
+    // Every other tab: `x` arms nothing destructive at all.
+    for tab in [
+        DetailTab::Health,
+        DetailTab::Events,
+        DetailTab::Metrics,
+        DetailTab::Logs,
+    ] {
+        let mut app = open_on(tab);
+        press(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
+        assert_eq!(
+            armed(&app),
+            (None, None),
+            "`x` on {tab:?} armed a delete that belongs to another tab"
+        );
+    }
+}
