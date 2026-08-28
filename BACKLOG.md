@@ -323,6 +323,23 @@ Three gates added to CI. Two of them found something on the first run, which is 
 - [x] **`cargo-semver-checks`** on pull requests. ebman is lib + bin on crates.io, so a signature change in the lib decides whether the next tag is a patch or a minor — 0.30.2 shipped one (`ui::series_anomaly_label` gained a parameter) that a human review caught, which is not a thing to notice by reading.
 - [x] **Least-privilege workflow permissions.** Four open CodeQL alerts, one per CI job (`actions/missing-workflow-permissions`) — jobs inheriting the repository default rather than declaring what they need. `ci.yml` is `contents: read` throughout; `release.yml` drops from a blanket `contents: write` to read, with only the `publish` job opting up, since `build` uploads via `actions/upload-artifact` and `crates_io` authenticates with its own token.
 
+- [ ] **The fleet table degrades below ~60 columns.** Once `DROP_ORDER`
+  is exhausted the never-dropped set (NAME 18 + STATUS 10 + HEALTH 3 +
+  VERSION 9 + AGE 6, plus COST 8 and REGION 12 when enabled — neither is
+  in `DROP_ORDER`) exceeds the budget, `column_widths` returns minimums
+  that do not fit, and ratatui squeezes NAME again: 13 cells at 60
+  columns, 4 at 40. That is the same "rows do not say which env they
+  are" defect 0.36.0 fixed at 80, returning at a narrower width, and the
+  title still says only "N cols hidden".
+
+  Found 2026-08-28 by a release-panel reviewer who ran the binary in a
+  real PTY at several widths — not by any test, all of which use widths
+  at or above 80.
+
+  Options if picked up: add COST and REGION to `DROP_ORDER`; or below a
+  floor width, stop pretending it is a table and render one env per line.
+  Sub-60 terminals are rare but reachable in a tmux split.
+
 #### Minor (batchable)
 - [x] control.sock chmod-after-bind race — CLOSED by the SO_PEERCRED check on every connection (`control.rs`), which is stronger than file perms and needs no process-global umask change. Confirmed 2026-08-22; entry was stale.
 - [x] 0600 perms on audit.log / ebman.log / crash logs / explain cache — done in 0.27 via `open_append_secure` / `write_secure`. The gap that remained: `write_atomic` (shared crate) used `std::fs::write`, so `config.toml` — which carries `notify_webhook` and `accounts.*.external_id` — was umask-default. Shadowed locally 2026-08-22 with the mode set on the temp file, not chmod'd after the rename.

@@ -1429,6 +1429,23 @@ async fn a_narrow_terminal_sheds_optional_columns_and_says_so() {
         !wide.contains("cols hidden"),
         "no notice when nothing was hidden; got:\n{wide}"
     );
+    // The notice pluralises. It read "1 cols hidden" at 120 columns —
+    // cosmetic, but in the feature this release is named for, and the
+    // existing assertion only looked for the substring "cols hidden",
+    // which "1 cols hidden" satisfies.
+    let mut one = test_app();
+    one.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
+    one.rebuild_view();
+    for w in 60..=200u16 {
+        let f = render(&mut one, w, 20);
+        assert!(
+            !f.contains("1 cols hidden"),
+            "plural used for a single column at width {w}"
+        );
+        if f.contains("· 1 col hidden") {
+            return; // found the width that sheds exactly one; shape is right
+        }
+    }
 }
 
 #[tokio::test]
@@ -1438,11 +1455,25 @@ async fn the_columns_that_survive_are_wide_enough_to_read() {
     // showing `bui` for `build-1`. The value has to survive, not just
     // the column.
     let mut app = test_app();
-    app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
+    let mut env = mk_env("api-prod", "uflexi", "Web", "Green");
+    // A version string as long as the column's declared floor. The
+    // fixture used `build-1` — SEVEN characters, which survives an
+    // eight-cell column, so the test passed while VERSION was rendering
+    // one cell under its floor of nine and truncating real version
+    // labels. The value has to be long enough to feel the boundary or
+    // the assertion is decoration.
+    env.version_label = "build-823".into();
+    assert_eq!(
+        env.version_label.chars().count() as u16,
+        crate::ui::column_min_width("VERSION"),
+        "this fixture must be exactly the column's floor to be able to \
+         detect it rendering under it"
+    );
+    app.environments = vec![env];
     app.rebuild_view();
     let frame = render(&mut app, 80, 20);
     assert!(
-        frame.contains("build-1"),
+        frame.contains("build-823"),
         "the version must be readable, not truncated to noise; got:\n{frame}"
     );
     assert!(
@@ -1475,22 +1506,6 @@ async fn a_narrow_header_drops_whole_fields_rather_than_dangling_a_label() {
         wide.contains("production-admin"),
         "the profile appears when there is room; got:\n{wide}"
     );
-}
-
-#[tokio::test]
-async fn probe80_more() {
-    let mut app = test_app();
-    app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
-    app.rebuild_view();
-    app.table_state.select(Some(0));
-    app.open_detail();
-    app.mode = Mode::Detail;
-    println!("=== DETAIL 80 ===\n{}", render(&mut app, 80, 26));
-
-    let mut h = test_app();
-    h.rebuild_view();
-    h.mode = Mode::Help;
-    println!("=== HELP 80 ===\n{}", render(&mut h, 80, 26));
 }
 
 #[tokio::test]

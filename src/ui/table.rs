@@ -614,7 +614,24 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
     // inside `drop_columns_to_fit` / `column_widths`, since it depends
     // on how many columns survive.
     let gutter = cursor_marker(&theme).chars().count() as u16;
-    let usable = area.width.saturating_sub(2).saturating_sub(gutter);
+    // ...AND the block's horizontal padding, which is applied where the
+    // `Block` is built below and is 2 cells normally, 4 in Spacious.
+    // Leaving it out made the budget larger than the area, so
+    // `column_widths` handed out cells that did not exist and ratatui
+    // squeezed the overflow out of a flexing column: VERSION rendered at
+    // 8 against its floor of 9, showing `build-82` for `build-823` — at
+    // 80 columns, the exact width this work was for.
+    //
+    // Third time this release: the help wrapper missed the same
+    // `Padding::uniform(1)`, and this budget already missed the
+    // inter-column spacing and the highlight gutter. Every width here is
+    // now derived from what is actually applied rather than counted by
+    // hand.
+    let usable = area
+        .width
+        .saturating_sub(2)
+        .saturating_sub(gutter)
+        .saturating_sub(block_padding.saturating_mul(2));
     let dropped = drop_columns_to_fit(&mut columns, usable);
     let sort_marker = if app.view.sort_desc() {
         glyph(app.theme.icons, " ▼", " v")
@@ -862,10 +879,11 @@ pub(crate) fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
         format!("Environments  {}/{}", indexes.len(), app.environments.len())
     } else {
         format!(
-            "Environments  {}/{}  \u{b7} {} cols hidden (widen)",
+            "Environments  {}/{}  \u{b7} {} col{} hidden (widen)",
             indexes.len(),
             app.environments.len(),
-            dropped.len()
+            dropped.len(),
+            if dropped.len() == 1 { "" } else { "s" }
         )
     };
     let widths: Vec<Constraint> = column_widths(&columns, usable)
