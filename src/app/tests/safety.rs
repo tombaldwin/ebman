@@ -1063,6 +1063,14 @@ const CONFIRM_STATE: &[(&str, TypedUse)] = &[
         TypedUse::Gate("a_delete_confirm_can_be_declined_and_ignores_navigation"),
     ),
     (
+        "src/mode_detail.rs::config_delete_confirm",
+        TypedUse::Gate("x_arms_the_delete_belonging_to_the_focused_tab_and_no_other"),
+    ),
+    (
+        "src/mode_detail.rs::instance_terminate_confirm",
+        TypedUse::Gate("x_arms_the_delete_belonging_to_the_focused_tab_and_no_other"),
+    ),
+    (
         "src/ui/overlays.rs::confirm_delete",
         TypedUse::NotAGate(
             "a render function's parameter, not state — it draws the \
@@ -1182,7 +1190,19 @@ fn every_confirmation_gate_names_its_test() {
                 continue;
             };
             let rest = rest.strip_prefix("pub(crate) ").unwrap_or(rest);
-            if !rest.starts_with("confirm_") {
+            // BOTH orders. The first version of this scan matched only
+            // `confirm_*`, which is how `config_delete_confirm` and
+            // `instance_terminate_confirm` — two real gates on
+            // irreversible operations — stayed outside a guard whose
+            // stated job is "every confirmation field". That is the same
+            // mistake this guard's docstring already records making
+            // once: a check narrower than its own name.
+            //
+            // Matched on the field NAME rather than a prefix, so a third
+            // convention (`pending_delete_confirmed`, say) would also be
+            // caught.
+            let name_part = rest.split(':').next().unwrap_or("").trim();
+            if !(name_part.starts_with("confirm_") || name_part.ends_with("_confirm")) {
                 continue;
             }
             let Some((field, ty)) = rest.split_once(':') else {
@@ -1201,8 +1221,8 @@ fn every_confirmation_gate_names_its_test() {
     found_state.sort();
     found_state.dedup();
     assert!(
-        found_state.len() >= 3,
-        "expected at least three confirm_* declarations; found \
+        found_state.len() >= 5,
+        "expected at least five confirmation declarations; found \
          {found_state:?} — the scan is broken"
     );
 
