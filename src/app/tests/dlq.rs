@@ -919,3 +919,68 @@ async fn m_toggles_the_queue_and_clears_the_stale_page() {
         .unwrap_or("")
         .contains("no main queue"));
 }
+
+/// `x` and `p` are the two destructive keys in the DLQ view, and both
+/// arms were deletable in the 2026-08-28 sweep.
+///
+/// Neither dispatches on its own — `x` arms a per-message confirm and
+/// `p` arms a type-to-confirm purge — but an arm that stops working is
+/// not the failure to worry about here. `p` is gated on actually being
+/// in DLQ view, and the comment on that gate records why: it once armed
+/// a purge OF THE DLQ URL while the operator was looking at the MAIN
+/// queue. Both directions of that gate are covered below.
+#[tokio::test]
+async fn the_dlq_destructive_keys_arm_only_what_they_should() {
+    let open = |viewing: crate::app::QueueView| {
+        let mut app = test_app();
+        app.environments = vec![mk_env("api-prod", "uflexi", "Worker", "Green")];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        let mut dlq = open_dlq_state("api-prod");
+        dlq.viewing = viewing;
+        app.dlq = Some(dlq);
+        app.mode = crate::app::Mode::Dlq;
+        app
+    };
+    let state = |app: &App| {
+        let d = app.dlq.as_ref().expect("dlq open");
+        (d.confirm_delete_id.clone(), d.confirm_purge)
+    };
+
+    // `x` arms the delete for the SELECTED message, by id.
+    let mut app = open(crate::app::QueueView::Dlq);
+    press(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
+    assert_eq!(
+        state(&app),
+        (Some("m-1".to_string()), false),
+        "`x` should arm the delete for the selected message and nothing else"
+    );
+
+    // `p` in DLQ view arms the purge.
+    let mut app = open(crate::app::QueueView::Dlq);
+    press(&mut app, KeyCode::Char('p'), KeyModifiers::NONE);
+    assert_eq!(
+        state(&app),
+        (None, true),
+        "`p` in DLQ view should arm the purge"
+    );
+
+    // `p` in MAIN view must NOT arm it, and must say why. This is the
+    // direction with the history: the purge targets the DLQ url, so
+    // arming it from the main-queue view destroys a queue the operator
+    // is not looking at.
+    let mut app = open(crate::app::QueueView::Main);
+    press(&mut app, KeyCode::Char('p'), KeyModifiers::NONE);
+    assert_eq!(
+        state(&app),
+        (None, false),
+        "`p` armed a purge from the MAIN queue view"
+    );
+    assert!(
+        app.error_message
+            .as_deref()
+            .is_some_and(|m| m.contains("only available in DLQ view")),
+        "refusing silently is worse than refusing loudly; got {:?}",
+        app.error_message
+    );
+}

@@ -571,3 +571,77 @@ async fn the_control_socket_screen_op_reports_the_last_frame() {
         "the screenshot carries the rendered fleet:\n{text}"
     );
 }
+
+/// Every Ctrl chord in Normal mode must need its Ctrl.
+///
+/// These arms carry `if key.modifiers.contains(KeyModifiers::CONTROL)`,
+/// and the 2026-08-28 sweep replaced those guards with `true` and with
+/// `false` — nineteen mutants across the file, none caught. Most of
+/// these characters have NO unguarded arm in this block, so the guard is
+/// the only thing making the chord mean anything: stuck `true`, plain
+/// `x` starts toggling redaction and plain `r` starts refreshing; stuck
+/// `false`, the chord does nothing at all.
+///
+/// Table-driven, and both directions for each: the chord DOES the thing,
+/// and the bare key does NOT. Asserting only the first passes a guard
+/// stuck `true`; only the second passes one stuck `false`.
+#[tokio::test]
+async fn ctrl_chords_in_normal_mode_require_their_ctrl() {
+    // (key, what it changes, read it back)
+    #[allow(clippy::type_complexity)]
+    let cases: Vec<(char, &str, Box<dyn Fn(&App) -> String>)> = vec![
+        (
+            'x',
+            "redaction",
+            Box::new(|a: &App| a.view.redact.to_string()),
+        ),
+        (
+            'g',
+            "grouping",
+            Box::new(|a: &App| a.view.grouped().to_string()),
+        ),
+        (
+            'e',
+            "the events panel",
+            Box::new(|a: &App| a.event_panel.visible.to_string()),
+        ),
+        (
+            'd',
+            "the view mode",
+            Box::new(|a: &App| format!("{:?}", a.view.mode)),
+        ),
+        (
+            'k',
+            "the palette",
+            Box::new(|a: &App| format!("{:?}", a.mode)),
+        ),
+    ];
+
+    for (ch, what, read) in cases {
+        let fresh = || {
+            let mut app = test_app();
+            app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
+            app.rebuild_view();
+            app.table_state.select(Some(0));
+            app
+        };
+
+        let mut with_ctrl = fresh();
+        let before = read(&with_ctrl);
+        press(&mut with_ctrl, KeyCode::Char(ch), KeyModifiers::CONTROL);
+        assert_ne!(
+            read(&with_ctrl),
+            before,
+            "Ctrl-{ch} should change {what}; the guard may be stuck false"
+        );
+
+        let mut without = fresh();
+        press(&mut without, KeyCode::Char(ch), KeyModifiers::NONE);
+        assert_eq!(
+            read(&without),
+            before,
+            "a bare `{ch}` changed {what} — the Ctrl guard is not holding, \
+             so an ordinary keystroke performs a chord's action"
+        );
+    }
+}
