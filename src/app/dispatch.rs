@@ -207,7 +207,7 @@ impl App {
                 // self-replacing the binary across Cellar / cargo-bin /
                 // tarball layouts has too many platform footguns.
                 let channel = crate::update_check::detect_install_channel();
-                let cmd = channel.upgrade_command();
+                let cmd = channel.clipboard_payload();
                 let current = env!("CARGO_PKG_VERSION");
                 let latest = self.update_available.as_ref().map(|r| r.version.as_str());
                 // An OVERLAY, not a pinned status line. The status bar is

@@ -34,3 +34,10 @@ crash-*.log
 # these files, lock.json included.
 mutants.out/
 mutants.out.old/
+
+# Editor / tooling backups. `sed -i.bak` writes these IN PLACE, and a
+# `git add -A` then sweeps them in — which is how a 55KB copy of a test
+# file was committed and would have shipped inside the 0.36.0 crate.
+*.bak
+*.orig
+*.rej

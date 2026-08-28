@@ -2284,3 +2284,30 @@ fn the_install_channel_labels_are_distinct_and_meaningful() {
     assert!(Homebrew.upgrade_command().contains("brew"));
     assert!(Cargo.upgrade_command().contains("cargo"));
 }
+
+#[test]
+fn sep_width_matches_what_sep_actually_renders() {
+    // `SEP_WIDTH` is the cell cost `fields_that_fit` charges between
+    // fields, and it was a hand-maintained `5` with nothing tying it to
+    // `sep()`. Both current glyph branches happen to be five cells, so
+    // it is right today — but if `sep()` ever changes, every field-fit
+    // calculation miscounts silently and the header and Detail rows
+    // start clipping again, which is the whole class this was written
+    // to end.
+    let mut uni = Theme::dark();
+    uni.icons = IconStyle::Unicode;
+    let mut ascii = Theme::dark();
+    ascii.icons = IconStyle::Ascii;
+    let mut power = Theme::dark();
+    power.icons = IconStyle::Powerline;
+
+    for t in [&uni, &ascii, &power] {
+        assert_eq!(
+            sep(t).content.chars().count(),
+            SEP_WIDTH,
+            "sep() renders {} cells in {:?} but SEP_WIDTH says {SEP_WIDTH}",
+            sep(t).content.chars().count(),
+            t.icons
+        );
+    }
+}
