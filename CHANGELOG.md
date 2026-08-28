@@ -74,6 +74,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   which reads as an empty profile rather than a clipped one. Whole
   fields are now dropped instead.
 
+### Security
+
+- **Stopped calling `serde_yml`'s serializer**, the half of the crate
+  named by RUSTSEC-2025-0068 — its emitter can segfault, the project is
+  archived, and no released version fixes it. The one call was in the
+  saved-config reader's fallback for a non-scalar option value; it is
+  hand-written now, so every remaining use of the crate is parsing,
+  which the advisory does not implicate.
+
+  Side effect worth knowing if you use `:config-diff-local`: a
+  non-scalar value now renders as `[a, b]` or `{k: v}` on one line,
+  where before it was YAML emitted across several lines and then
+  trimmed — which left a newline inside a single diff cell. Deeply
+  nested values abbreviate with `…` rather than recursing.
+
 ### Added
 
 - **The header title now shows the running version and its release

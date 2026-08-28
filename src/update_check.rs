@@ -1,5 +1,6 @@
-//! Check crates.io for a newer release of `ebman`. The check fires once at
-//! startup and writes its result to the App via an `AppMsg::UpdateCheck`. We
+//! Check crates.io for a newer release of `ebman`. The check fires at
+//! startup and every six hours a session stays open, writing its result to
+//! the App via an `AppMsg::UpdateCheck`. We
 //! don't pull in `reqwest` for this — `curl` is already a dependency of the
 //! log-tail feature, so a one-shot subprocess fits in the same budget.
 
@@ -122,6 +123,26 @@ impl InstallChannel {
         }
     }
 
+    /// What `:update` puts on the clipboard.
+    ///
+    /// Not always `upgrade_command()`. For Homebrew and cargo that
+    /// string IS a runnable command, but for a standalone install it is
+    /// the sentence "download the latest binary from <url>" — and the
+    /// overlay tells the operator a URL was copied. Pasting a sentence
+    /// into an address bar gets them nothing, so the standalone arm
+    /// hands over the bare URL the message promises.
+    pub(crate) fn clipboard_payload(self) -> &'static str {
+        match self {
+            InstallChannel::Homebrew | InstallChannel::Cargo => self.upgrade_command(),
+            InstallChannel::Standalone => Self::RELEASES_URL,
+        }
+    }
+
+    /// The releases page, named once so the overlay body and the
+    /// clipboard cannot drift apart.
+    pub(crate) const RELEASES_URL: &'static str =
+        "https://github.com/tombaldwin/ebman/releases/latest";
+
     /// The upgrade instruction, laid out for an overlay rather than a
     /// status line.
     ///
@@ -152,7 +173,7 @@ impl InstallChannel {
                 // bar.
                 out.push_str("  no in-place upgrade for a standalone install.\n");
                 out.push_str("  download, verify and replace the binary from:\n\n");
-                out.push_str("    https://github.com/tombaldwin/ebman/releases/latest\n");
+                out.push_str(&format!("    {}\n", Self::RELEASES_URL));
                 out.push_str("\n  (URL copied to the clipboard)\n");
             }
         }

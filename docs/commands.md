@@ -170,7 +170,7 @@ goes to *that environment's* region, and the audit line says so.
 ## Setup / discovery
 
 - `:settings` — interactive form to edit `~/.config/ebman/config.toml`. Writes back on submit and live-applies theme / icons / refresh interval.
-- `:update` — show (and yank to clipboard) the upgrade command for the detected install channel (Homebrew / cargo-bin / tarball).
+- `:update` — open an overlay showing the detected install channel, the running and latest versions, and the upgrade command (also copied to the clipboard). Does not upgrade in place.
 - `:whatsnew` — embedded changelog.
 - `:about` / `:credits` — version, license, attributions.
 - `:report-bug` — scrubbed bug-report overlay. `y` copies the payload, `b` opens a GitHub issue with the body pre-filled. No outbound HTTP from ebman. See [safety-and-privacy](safety-and-privacy.md) for the redactor scope.

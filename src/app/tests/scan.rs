@@ -212,3 +212,55 @@ mod tests {
         assert!(!is_test_path("src/util.rs"));
     }
 }
+
+#[cfg(test)]
+mod packaging {
+    /// Nothing that is not source, docs or config may reach the crate.
+    ///
+    /// 0.34.1 was YANKED because its published tarball carried 22
+    /// `mutants.out/` files, one of which held the build machine's
+    /// hostname and username. `Cargo.toml`'s `exclude` was tightened
+    /// then — and it excludes by NAME, so it stops the thing that
+    /// happened and not the class.
+    ///
+    /// It happened again: `sed -i.bak` writes its backup IN PLACE, a
+    /// `git add -A` swept it up, and a 55KB copy of a test file was
+    /// committed and would have shipped in 0.36.0. Caught by review,
+    /// not by any check.
+    ///
+    /// So this asserts on the tracked file list by EXTENSION rather
+    /// than by name. `.gitignore` stops the accident; this stops it
+    /// being committed deliberately or by a tool that ignores
+    /// `.gitignore`.
+    #[test]
+    fn no_backup_or_scratch_files_are_tracked() {
+        let out = std::process::Command::new("git")
+            .args(["ls-files"])
+            .output()
+            .expect("git ls-files");
+        assert!(out.status.success(), "git ls-files failed");
+        let files = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            files.lines().count() > 50,
+            "only {} tracked files — the listing failed and this guard \
+             would pass on an empty result",
+            files.lines().count()
+        );
+
+        let bad: Vec<&str> = files
+            .lines()
+            .filter(|f| {
+                f.ends_with(".bak")
+                    || f.ends_with(".orig")
+                    || f.ends_with(".rej")
+                    || f.ends_with('~')
+                    || f.contains("mutants.out/")
+            })
+            .collect();
+        assert!(
+            bad.is_empty(),
+            "these are tracked and would be published in the crate \
+             tarball: {bad:?}"
+        );
+    }
+}
