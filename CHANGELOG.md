@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.36.0] — 2026-08-28
+
+**A narrow-terminal release.** At 80 columns the fleet table did not say
+which environment any row was — NAME had been squeezed to nothing while
+a sparkline kept its full width. That and six other layout defects are
+fixed, and `:update` no longer truncates away the command it exists to
+give you.
+
 ### Fixed
 
 - **At 80 columns the fleet table did not say which environment each row
@@ -2702,7 +2710,8 @@ Initial public release. Headline surface:
 - Published to crates.io as `ebman`.
 - Homebrew tap at `tombaldwin/homebrew-tap`.
 
-[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.35.0...HEAD
+[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.36.0...HEAD
+[0.36.0]: https://github.com/tombaldwin/ebman/compare/v0.35.0...v0.36.0
 [0.35.0]: https://github.com/tombaldwin/ebman/compare/v0.34.2...v0.35.0
 [0.34.2]: https://github.com/tombaldwin/ebman/compare/v0.34.1...v0.34.2
 [0.34.1]: https://github.com/tombaldwin/ebman/compare/v0.34.0...v0.34.1
