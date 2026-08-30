@@ -1695,7 +1695,7 @@ dependencies = [
  "serde_json",
  "serde_yml",
  "sha2 0.11.0",
- "syn 2.0.119",
+ "syn 3.0.3",
  "tb-tui-common",
  "tokio",
  "tokio-util",
