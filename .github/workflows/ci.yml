@@ -52,7 +52,7 @@ jobs:
       # (cargo-machete to a commit, candor-scan to a version,
       # mcp-publisher to a sha256) for exactly this reason; these two
       # were the exception. Bump deliberately.
-      - uses: dtolnay/rust-toolchain@1.96.0
+      - uses: dtolnay/rust-toolchain@1.100.0
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
@@ -71,7 +71,7 @@ jobs:
       # (cargo-machete to a commit, candor-scan to a version,
       # mcp-publisher to a sha256) for exactly this reason; these two
       # were the exception. Bump deliberately.
-      - uses: dtolnay/rust-toolchain@1.96.0
+      - uses: dtolnay/rust-toolchain@1.100.0
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -82,7 +82,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: dtolnay/rust-toolchain@1.100.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked
       # Build alone let a test-only API that doesn't exist on the MSRV
