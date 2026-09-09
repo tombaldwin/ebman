@@ -340,6 +340,18 @@ Three gates added to CI. Two of them found something on the first run, which is 
   floor width, stop pretending it is a table and render one env per line.
   Sub-60 terminals are rare but reachable in a tmux split.
 
+- [ ] **Emit MCP tool annotations** (`readOnlyHint`, `destructiveHint`,
+  `idempotentHint`, `openWorldHint`). Verified 2026-09-09 that ebman
+  emits none, so an MCP client cannot tell `list_environments` from a
+  write tool except by reading the prose description — it has to ask the
+  human about everything or nothing.
+
+  Contained, standards-compliant, and the first step in
+  `docs/design/protection-levels.md`. Worth doing on its own before any
+  of the larger model, because it tells us how clients actually behave
+  with the hints. Confirm the field names against the current MCP spec
+  revision first.
+
 #### Minor (batchable)
 - [x] control.sock chmod-after-bind race — CLOSED by the SO_PEERCRED check on every connection (`control.rs`), which is stronger than file perms and needs no process-global umask change. Confirmed 2026-08-22; entry was stale.
 - [x] 0600 perms on audit.log / ebman.log / crash logs / explain cache — done in 0.27 via `open_append_secure` / `write_secure`. The gap that remained: `write_atomic` (shared crate) used `std::fs::write`, so `config.toml` — which carries `notify_webhook` and `accounts.*.external_id` — was umask-default. Shadowed locally 2026-08-22 with the mode set on the temp file, not chmod'd after the rename.
