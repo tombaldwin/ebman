@@ -270,7 +270,8 @@ pub(crate) async fn run_replay(args: &[String]) -> Result<()> {
         pin_profile.as_deref(),
         plan.region.as_deref(),
         plan.verb.label(),
-    );
+    )
+    .await;
     if plan.verb.destructive() && !yes {
         eprintln!(
             "ebman audit replay: '{}' is destructive; re-run with --yes to confirm",

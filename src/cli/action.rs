@@ -239,12 +239,12 @@ fn parse_action_args(args: &[String]) -> Result<ActionArgs, ActionArgError> {
 /// given, so feeding it the ambient `AWS_PROFILE` while dispatching
 /// under `--profile X` checks the pin on the wrong account entirely.
 /// `rollout` did exactly that, and it is the biggest write the CLI has.
-fn refuse_write(prog: &'static str, env: &str, explicit: Option<&str>, action_label: &str) {
+async fn refuse_write(prog: &'static str, env: &str, explicit: Option<&str>, action_label: &str) {
     let ambient = std::env::var("AWS_PROFILE").ok();
     let profile = explicit.or(ambient.as_deref());
     // No region: the gate runs before any AWS client is built, and the
     // rules it applies are region-independent.
-    crate::cli::refuse_write(prog, env, env, profile, None, action_label);
+    crate::cli::refuse_write(prog, env, env, profile, None, action_label).await;
 }
 
 pub async fn run(args: &[String]) -> Result<()> {
@@ -282,7 +282,7 @@ pub async fn run(args: &[String]) -> Result<()> {
     // means `ebman audit --action RestartAppServer` shows the writes
     // that happened and hides the ones that were stopped — which is the
     // correlation this feature exists for.
-    refuse_write("ebman action", &env, None, action.audit_label());
+    refuse_write("ebman action", &env, None, action.audit_label()).await;
     let aws = aws::AwsClient::with(None, None).await?;
 
     let verb = match action {
@@ -832,7 +832,7 @@ async fn run_rollout(args: &[String]) -> Result<()> {
     // `--profile` if given, else ambient. Gating on the ambient
     // one while dispatching under another checks the pin on the
     // wrong account.
-    refuse_write("ebman action rollout", &env, profile.as_deref(), "Rollout");
+    refuse_write("ebman action rollout", &env, profile.as_deref(), "Rollout").await;
     let wait_for_green_secs = match wait_for_green.as_deref() {
         Some(s) => match aws::parse_window_ms(s) {
             Some(ms) => Some((ms / 1000) as u64),

@@ -887,7 +887,7 @@ pub async fn run(args: &[String]) -> Result<()> {
     // :incident (a --dry-run plans nothing, so it stays allowed).
     // This path had the same blind spot action/replay had.
     if fix && yes {
-        crate::cli::refuse_if_frozen("ebman lint --fix", "SetOption");
+        crate::cli::refuse_if_frozen("ebman lint --fix", "SetOption").await;
     }
     if webhook.is_some() {
         // CLI mode installs no tracing subscriber — route webhook
