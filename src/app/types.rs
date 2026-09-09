@@ -1008,6 +1008,11 @@ pub(crate) struct ResolvedConfig {
     pub safety_envs: std::collections::HashMap<String, bool>,
     /// Per-account read-only locks (`safety.accounts.NAME.read_only`).
     pub safety_accounts: std::collections::HashMap<String, bool>,
+    /// Lines under `safety.` the parser could not act on. Non-empty
+    /// means every write is refused until config.toml is fixed — the
+    /// policy is only partially known, and a safety control that cannot
+    /// be enforced must not read as absent.
+    pub safety_parse_errors: Vec<String>,
     /// Named AssumeRole accounts (`accounts.NAME.*`).
     pub accounts: std::collections::HashMap<String, crate::config::AccountSpec>,
     /// Base theme name (`theme = …`), kept separate from the running

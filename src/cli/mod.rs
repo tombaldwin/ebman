@@ -120,6 +120,7 @@ pub(crate) fn write_refusal(
         // The CLI has no session-wide toggle; that rung exists for the
         // TUI. Passing `false` leaves this path's precedence exactly as
         // it was: freeze, then env pin, then account pin.
+        safety_parse_errors: &safety_cfg.safety_parse_errors,
         global_read_only: false,
         frozen: active_freeze.is_some(),
         safety_envs: &safety_cfg.safety_envs,
@@ -149,6 +150,9 @@ pub(crate) fn write_refusal(
 
     // Wording stays the CLI's own — see `write_gate`'s module docs.
     Some(match refusal {
+        crate::write_gate::Refusal::SafetyConfigUnreadable { problem } => {
+            format!("refusing {env} — safety config unreadable: {problem}")
+        }
         crate::write_gate::Refusal::Frozen => match active_freeze.as_ref() {
             Some(m) => crate::freeze::refusal_message(m),
             // Unreachable — `frozen` was set from this very `Option` —

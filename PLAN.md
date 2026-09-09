@@ -257,9 +257,16 @@ one never happens. If that stops being true, the stage is wrong.
    `Decision` (`wrap_in_tx`, `read_only_escape`) stays the evidence for
    the shape.
 
-   Requires the config parser to **fail closed**, which is its own
-   change: today a malformed line is silently skipped, so a typo'd level
-   would grant the default.
+   ~~Requires the config parser to **fail closed**~~ — **done
+   2026-09-09**, ahead of the levels themselves, because the fail-open
+   was live: `safety.envs.prod = true`, `.readonly`, and a non-boolean
+   value were each skipped in silence, leaving the env writeable while
+   the operator believed it pinned. Now a line under `safety.` that
+   cannot be acted on refuses every write, with the offending line named
+   at startup and in the refusal. Five mutations CAUGHT.
+
+   The levels inherit this: a typo'd level name refuses rather than
+   granting the default.
 
    Ship with `ebman safety explain`, or the preset is unauditable and
    Principle 6 is violated by its own implementation.
