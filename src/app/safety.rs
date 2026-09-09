@@ -147,7 +147,18 @@ impl App {
                 // `decide` only reports THAT a freeze applies; the
                 // detail lives here because only this surface has room
                 // for it.
-                let freeze = self.deploy_freeze.as_ref()?;
+                //
+                // NOT `as_ref()?`. That was the first version, and `?`
+                // in a function returning `Option<String>` propagates
+                // `None` — which here means "not read-only", i.e. the
+                // write proceeds. Unreachable today (both values come
+                // from the same `Option` in the same function), but a
+                // fail-OPEN shape inside a write gate is the one thing
+                // this module exists to avoid. Refuse with less detail
+                // instead.
+                let Some(freeze) = self.deploy_freeze.as_ref() else {
+                    return Some("deploys frozen".into());
+                };
                 let age = (chrono::Utc::now() - freeze.frozen_at).num_seconds().max(0);
                 let age =
                     crate::app::humanize_short_age(std::time::Duration::from_secs(age as u64));

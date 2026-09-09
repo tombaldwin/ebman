@@ -264,3 +264,88 @@ mod packaging {
         );
     }
 }
+
+#[cfg(test)]
+mod write_gate_convergence {
+    /// Only the two gates may consult the shared write decision.
+    ///
+    /// The point of stage 1 was collapsing two gates into one decision.
+    /// Nothing stops a future path calling `write_gate::decide` itself
+    /// and rendering its own wording — precisely how the divergence
+    /// arose the first time, and it would pass every other test.
+    ///
+    /// The CLI side already had a guard of this shape; this is its
+    /// missing twin, found reviewing stage 1 rather than by anything
+    /// failing. Goes through `scan::find_in_production` rather than a
+    /// hand-rolled walk, per CLAUDE.md — eight guards once each carried
+    /// their own comment stripper and all eight shared a blind spot.
+    /// The two gates, plus the module itself. Anything else touching
+    /// the shared decision is re-diverging.
+    const ALLOWED: &[&str] = &["src/write_gate.rs", "src/app/safety.rs", "src/cli/mod.rs"];
+
+    /// Extracted so the FILTER can be exercised directly. Inlined, the
+    /// guard passed with the filter neutered — because a clean tree
+    /// yields no hits and an always-empty result is indistinguishable
+    /// from a correct one. Caught by mutation, not by reading.
+    fn offenders_among(hits: &[String]) -> Vec<String> {
+        hits.iter()
+            .filter(|hit| !ALLOWED.iter().any(|a| hit.starts_with(a)))
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn only_the_gates_consult_the_shared_decision() {
+        let offenders = offenders_among(&super::find_in_production("write_gate::"));
+        assert!(
+            offenders.is_empty(),
+            "these reach the shared write decision directly instead of \
+             going through `deny_write` / `write_refusal`, which is how \
+             the two gates diverged in the first place: {offenders:?}"
+        );
+    }
+
+    /// The canary — proves the scan detects, on every run, rather than
+    /// passing because the tree happens to be clean.
+    #[test]
+    fn the_convergence_guard_detects_what_it_looks_for() {
+        // The detector is `find_in_production`, whose own accuracy
+        // tests live beside it; what this pins is that the needle
+        // matches a real call and not a mention in prose.
+        assert!(
+            super::strip_line_comment("let d = crate::write_gate::decide(&ctx);")
+                .contains("write_gate::")
+        );
+        assert!(
+            !super::strip_line_comment("// write_gate::decide is fine in a comment")
+                .contains("write_gate::")
+        );
+        assert!(
+            !super::strip_line_comment("if self.deny_write(&env, \"rollback\") {")
+                .contains("write_gate::")
+        );
+        // The needle still matches something real. If it stopped, the
+        // guard would pass vacuously.
+        assert!(
+            !super::find_in_production("write_gate::").is_empty(),
+            "no production code references write_gate at all — the scan \
+             has gone blind"
+        );
+        // And the FILTER does its job on synthetic input: a path
+        // outside the allowlist is an offender, one inside it is not.
+        // Without this the allowlist can be widened to everything and
+        // the guard still passes, because a clean tree has no hits to
+        // filter.
+        assert_eq!(
+            offenders_among(&["src/app/cmd_ops.rs:12".to_string()]).len(),
+            1,
+            "a path outside the allowlist must be flagged"
+        );
+        for ok in ALLOWED {
+            assert!(
+                offenders_among(&[format!("{ok}:1")]).is_empty(),
+                "{ok} is a gate and must not be flagged"
+            );
+        }
+    }
+}
