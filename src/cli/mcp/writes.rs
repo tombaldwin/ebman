@@ -160,7 +160,7 @@ impl Server {
     ) -> Option<String> {
         let freeze = crate::freeze::read_active();
         if matches!(self.backend, Backend::Demo) {
-            return crate::cli::write_refusal_parts(&self.safety_cfg, env, profile, freeze)
+            return crate::cli::write_refusal_unaudited(&self.safety_cfg, env, profile, freeze)
                 .map(|(_, message, _)| message);
         }
         crate::cli::write_refusal(&self.safety_cfg, env, profile, freeze, region, action_label)

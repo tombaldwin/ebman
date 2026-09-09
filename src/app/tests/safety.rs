@@ -1586,3 +1586,41 @@ async fn a_fleet_wide_refusal_is_not_reported_as_per_env_pins() {
         "a real per-env pin must still name what to deselect: {msg}"
     );
 }
+
+/// The safety banner must not starve the partial-failure notice.
+///
+/// "Some regions failed and their environments are NOT shown" is the
+/// only channel telling an operator that data is missing. The banner
+/// has a second channel — the refusal itself, in full, the moment a
+/// write is attempted. Filling the slot first meant a broken safety
+/// line plus one throttled region hid the missing-envs warning for the
+/// whole session.
+#[tokio::test]
+async fn the_safety_banner_yields_to_the_partial_failure_notice() {
+    let cfg = crate::config::parse("safety.envs.uflexi-prod = true\n");
+    let mut app = App::for_tests(crate::aws::AwsClient::stub(), cfg);
+
+    app.status_snapshot_at_refresh = Some((app.status_message.clone(), app.error_message.clone()));
+    app.apply_refresh(
+        app.fanout_epoch,
+        Ok(vec![]),
+        vec!["eu-west-2: throttled".to_string()],
+    );
+
+    let msg = app.error_message.as_deref().expect("a notice");
+    assert!(
+        msg.contains("NOT shown"),
+        "missing data is the notice with no second channel: {msg}"
+    );
+
+    // With no partial failure, the banner takes the slot as before.
+    app.status_snapshot_at_refresh = Some((app.status_message.clone(), app.error_message.clone()));
+    app.apply_refresh(app.fanout_epoch, Ok(vec![]), vec![]);
+    assert!(
+        app.error_message
+            .as_deref()
+            .is_some_and(|m| m.contains("writes refused")),
+        "the banner returns once the slot is free: {:?}",
+        app.error_message
+    );
+}

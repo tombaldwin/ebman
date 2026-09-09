@@ -1071,7 +1071,7 @@ pub async fn run(args: &[String]) -> Result<()> {
                             "SetOption",
                         )
                     } else {
-                        crate::cli::write_refusal_parts(
+                        crate::cli::write_refusal_unaudited(
                             &safety_cfg,
                             &env.name,
                             &active_profile_for_safety,

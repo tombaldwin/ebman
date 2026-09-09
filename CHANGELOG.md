@@ -68,9 +68,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   pin would be promoted into a durable one — turning a typo'd `read_only
   = false` into a real `true`.
 
-  A field this version does not recognise is treated the same way, which
-  also covers reading a config written by a *newer* ebman: a safety
+  A field this version does not recognise is treated the same way, and
+  so is a whole family it does not recognise (`safety.env.` for
+  `safety.envs.`, or a family only a newer ebman writes): a safety
   control this binary cannot enforce must not read as absent.
+
+  **A `config.toml` that exists but cannot be read at all** — a
+  permission change, one non-UTF-8 byte, a failing disk — is treated the
+  same way, where it previously loaded silent defaults. Pins may be
+  defined in a file we cannot see, and `Config::default()` has none, so
+  returning it turned "cannot read the policy" into "there is no
+  policy". A *missing* config file remains the ordinary case: no file,
+  no pins, nothing to enforce.
 
   **If ebman starts refusing writes after this upgrade, the banner names
   the line to fix.**

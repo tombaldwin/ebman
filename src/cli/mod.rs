@@ -122,7 +122,7 @@ pub(crate) fn write_refusal(
     action_label: &str,
 ) -> Option<String> {
     let (refusal, message, pin_profile) =
-        write_refusal_parts(safety_cfg, env, profile, active_freeze)?;
+        write_refusal_unaudited(safety_cfg, env, profile, active_freeze)?;
     // Record the attempt. Every CLI and MCP write path funnels through
     // here, so this is the one place that sees a refusal on this side.
     //
@@ -144,7 +144,13 @@ pub(crate) fn write_refusal(
     Some(message)
 }
 
-/// Decide and render, with NO side effect.
+/// Decide and render, with NO side effect — **no audit line**.
+///
+/// Named for what it omits. This is the half a new enforcement path
+/// must NOT reach for: a refusal that leaves no `stage=refused` line is
+/// a silent regression to the pre-0.37 blind spot, where a blocked
+/// write and no attempt at all looked identical. `write_refusal_paths_are_audited`
+/// pins the two callers that are legitimately audit-free.
 ///
 /// Split out because `--demo` must reach the same verdict while writing
 /// nothing: a demo MCP server still reads the real cross-process freeze
@@ -154,7 +160,7 @@ pub(crate) fn write_refusal(
 ///
 /// Returns the refusal, its rendered message, and the profile the pin
 /// was resolved against.
-pub(crate) fn write_refusal_parts(
+pub(crate) fn write_refusal_unaudited(
     safety_cfg: &crate::config::Config,
     env: &str,
     profile: &Option<String>,
@@ -353,6 +359,96 @@ mod write_gate_guard {
         assert!(!reaches_past_the_gate(
             "refuse_write(prog, subject, env, profile)"
         ));
+    }
+
+    /// The non-auditing half of the gate has exactly two callers.
+    ///
+    /// Splitting `write_refusal` into a pure half and an auditing funnel
+    /// solved a real problem (demo mode was writing real audit lines),
+    /// and opened a new one: `cli_write_paths_do_not_reach_past_the_shared_gate`
+    /// scans for the pin maps and `decide`, none of which the pure half
+    /// mentions — so a future enforcement path could call it, refuse
+    /// correctly, and leave no trace, passing every guard. That is the
+    /// "nothing made the fifth path do it" shape the sibling guard
+    /// exists for, one level down.
+    ///
+    /// Pinned by COUNT, not just by file, so a second call appearing in
+    /// an allowed file still fails. Both legitimate callers are
+    /// non-dispatching by construction: a `--fix` preview and a demo
+    /// server. If a third appears, the question to answer is why it
+    /// refuses without recording, not how to make this list longer.
+    #[test]
+    fn write_refusal_paths_are_audited() {
+        const ALLOWED: &[(&str, usize, &str)] = &[
+            (
+                "src/cli/lint.rs",
+                1,
+                "a --fix dry run dispatched nothing; recording refusals \
+                 of writes that were never going to happen is noise",
+            ),
+            (
+                "src/cli/mcp/writes.rs",
+                1,
+                "demo mode reaches the same verdict and writes nothing \
+                 real — the refusal is genuine, the fleet is not",
+            ),
+        ];
+
+        let mut found: Vec<(String, usize)> = Vec::new();
+        let mut stack = vec![std::path::PathBuf::from("src/cli")];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("src/cli") {
+                let path = entry.expect("entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                // `mod.rs` declares it.
+                if path.file_name().and_then(|f| f.to_str()) == Some("mod.rs") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).expect("read");
+                let prod = text.split("#[cfg(test)]").next().unwrap_or("");
+                let n = prod.matches("write_refusal_unaudited(").count();
+                if n > 0 {
+                    found.push((path.display().to_string(), n));
+                }
+            }
+        }
+        found.sort();
+
+        let mut expected: Vec<(String, usize)> = ALLOWED
+            .iter()
+            .map(|(p, n, _)| ((*p).to_string(), *n))
+            .collect();
+        expected.sort();
+
+        assert_eq!(
+            found, expected,
+            "the non-auditing gate gained or lost a caller. A refusal that \
+             writes no `stage=refused` line is invisible — the exact blind \
+             spot 0.37 closed. Justify the new site before listing it."
+        );
+    }
+
+    /// The canary: this guard must be able to fail.
+    ///
+    /// It counts occurrences in a clean tree, so without this it would
+    /// pass identically if the needle stopped matching anything.
+    #[test]
+    fn the_unaudited_gate_guard_can_see_its_needle() {
+        let sample = "let r = crate::cli::write_refusal_unaudited(&cfg, env, &p, None);";
+        assert_eq!(sample.matches("write_refusal_unaudited(").count(), 1);
+        assert_eq!(
+            "crate::cli::write_refusal(&cfg, env, &p, None, None, \"X\")"
+                .matches("write_refusal_unaudited(")
+                .count(),
+            0,
+            "the auditing funnel must not be counted as the unaudited one"
+        );
     }
 
     #[test]
