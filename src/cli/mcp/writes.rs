@@ -15,7 +15,10 @@
 //! - Dispatch-only semantics: no wait-for-green; the agent polls the
 //!   read tools. Keeps every call inside the 30s tool bound.
 //! - Audit parity with the CLI: dispatched/completed pairs tagged
-//!   `via=mcp client=<clientInfo.name>`. Demo mode writes NO audit
+//!   `via=mcp client=<clientInfo.name> can_ask=<bool>`, the last
+//!   recording whether the client declared elicitation support — a
+//!   per-connection fact that cannot be recovered after the fact.
+//!   Demo mode writes NO audit
 //!   lines and fires NO webhooks — synthetic success only.
 //!
 //! Tokens are single-use and short-lived; they force the round-trip,
@@ -88,6 +91,57 @@ fn mismatched_token_message(retired: &std::collections::VecDeque<String>, token:
 /// How many retired tokens to remember. An agent re-planning more than
 /// a handful of times inside one 60-second TTL is not a case worth
 /// spending memory on.
+/// Assemble the audit `extras` for an MCP-dispatched write.
+///
+/// Pure half of `Server::write_extras`, split out so the shape is
+/// testable on its own. Callers go through the method — reading the
+/// capability there rather than passing it in means there is no bool
+/// at the call site to wire up wrongly.
+fn write_extras_parts(
+    client_name: &str,
+    can_ask: bool,
+    version: Option<&str>,
+    settings_len: usize,
+) -> Vec<(&'static str, String)> {
+    let mut extras = vec![
+        ("via", "mcp".to_string()),
+        ("client", client_name.to_string()),
+        ("can_ask", can_ask.to_string()),
+    ];
+    if let Some(v) = version {
+        extras.push(("version", v.to_string()));
+    }
+    if settings_len > 0 {
+        extras.push(("settings", settings_len.to_string()));
+    }
+    extras
+}
+
+impl Server {
+    /// Audit extras for an MCP-dispatched write.
+    ///
+    /// `can_ask` — whether the client declared elicitation support — is
+    /// read here rather than passed in, so the whole chain (initialize →
+    /// capability → audit line) is reachable from a test without a live
+    /// AWS dispatch. It belongs on the dispatch line rather than being
+    /// inferred later: the capability is per-connection, and the
+    /// connection is long gone by the time anyone reads the log.
+    fn write_extras(
+        &self,
+        client_name: &str,
+        version: Option<&str>,
+        settings_len: usize,
+    ) -> Vec<(&'static str, String)> {
+        write_extras_parts(
+            client_name,
+            self.client_supports_elicitation
+                .load(std::sync::atomic::Ordering::Relaxed),
+            version,
+            settings_len,
+        )
+    }
+}
+
 const RETIRED_TOKEN_MEMORY: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -584,14 +638,7 @@ impl Server {
             .profile
             .clone()
             .or_else(|| std::env::var("AWS_PROFILE").ok());
-        let mut extras: Vec<(&str, String)> =
-            vec![("via", "mcp".to_string()), ("client", client_name.clone())];
-        if let Some(v) = &p.version {
-            extras.push(("version", v.clone()));
-        }
-        if !p.settings.is_empty() {
-            extras.push(("settings", p.settings.len().to_string()));
-        }
+        let extras = self.write_extras(&client_name, p.version.as_deref(), p.settings.len());
         let extras_ref: Vec<(&str, &str)> = extras.iter().map(|(k, v)| (*k, v.as_str())).collect();
         crate::audit::append_action_dispatched(
             None,
@@ -719,5 +766,84 @@ mod tests {
         }
         assert_eq!(st.retired.len(), RETIRED_TOKEN_MEMORY, "memory is bounded");
         assert!(mismatched_token_message(&st.retired, "tok-a").contains("unknown"));
+    }
+
+    /// `can_ask` must track the argument in BOTH directions. A test
+    /// that only pinned the `false` case would pass against a hardcoded
+    /// `false` — which is precisely the shape the elicitation flag
+    /// would degrade into if the plumbing came loose.
+    #[test]
+    fn audit_extras_record_whether_the_client_could_be_asked() {
+        let find = |extras: &[(&'static str, String)], key: &str| -> Option<String> {
+            extras
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.clone())
+        };
+
+        let cannot = write_extras_parts("some-agent", false, None, 0);
+        assert_eq!(find(&cannot, "can_ask").as_deref(), Some("false"));
+        assert_eq!(find(&cannot, "client").as_deref(), Some("some-agent"));
+        assert_eq!(find(&cannot, "via").as_deref(), Some("mcp"));
+
+        let can = write_extras_parts("some-agent", true, None, 0);
+        assert_eq!(
+            find(&can, "can_ask").as_deref(),
+            Some("true"),
+            "a client that declared elicitation must be recorded as such"
+        );
+    }
+
+    #[test]
+    fn audit_extras_omit_optional_context_when_absent() {
+        let bare = write_extras_parts("agent", false, None, 0);
+        assert!(
+            !bare
+                .iter()
+                .any(|(k, _)| *k == "version" || *k == "settings"),
+            "absent context must not appear as an empty value: {bare:?}"
+        );
+
+        let full = write_extras_parts("agent", false, Some("app-v3"), 2);
+        assert!(full.contains(&("version", "app-v3".to_string())));
+        assert!(full.contains(&("settings", "2".to_string())));
+    }
+
+    /// Pins the WIRING, not just the helper: a test that handed the flag
+    /// to the pure function only ever proved the value it supplied
+    /// itself came back. The suite stayed green with the audit line
+    /// hardcoded to `can_ask=false` — so this drives a real
+    /// `initialize` and reads the extras the dispatch path would build.
+    #[tokio::test]
+    async fn the_audit_line_reflects_the_capability_the_client_declared() {
+        async fn can_ask_in_audit(caps: serde_json::Value) -> String {
+            let s = Server::new(true, false, false);
+            let _ = s
+                .handle_request(&json!({
+                    "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                    "params": {
+                        "protocolVersion": PROTOCOL_VERSION,
+                        "capabilities": caps,
+                        "clientInfo": {"name": "probe", "version": "1"}
+                    }
+                }))
+                .await;
+            s.write_extras("probe", None, 0)
+                .iter()
+                .find(|(k, _)| *k == "can_ask")
+                .map(|(_, v)| v.clone())
+                .expect("dispatch audit line must record can_ask")
+        }
+
+        assert_eq!(
+            can_ask_in_audit(json!({"elicitation": {}})).await,
+            "true",
+            "a client that CAN be asked must be auditable as such"
+        );
+        assert_eq!(
+            can_ask_in_audit(json!({})).await,
+            "false",
+            "a client that cannot be asked must not be logged as if it could"
+        );
     }
 }
