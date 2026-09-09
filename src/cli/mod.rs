@@ -103,6 +103,8 @@ pub(crate) fn write_refusal(
     env: &str,
     profile: &Option<String>,
     active_freeze: Option<crate::freeze::FreezeMarker>,
+    region: Option<&str>,
+    action_label: &str,
 ) -> Option<String> {
     // The profile fallback is resolved HERE rather than inside the
     // decision, which used to read `AWS_PROFILE` itself — an ambient
@@ -123,6 +125,27 @@ pub(crate) fn write_refusal(
         safety_envs: &safety_cfg.safety_envs,
         safety_accounts: &safety_cfg.safety_accounts,
     })?;
+
+    // Record the attempt before rendering it. Every CLI and MCP write
+    // path funnels through here, so this is the one place that sees a
+    // refusal on this side — and until it did, a blocked write left no
+    // trace at all.
+    //
+    // The region is whatever the caller could honestly resolve. These
+    // refusals happen BEFORE any AWS client is built, and the rules
+    // (freeze, env pin, account pin) are region-independent anyway, so
+    // an unknown region is recorded as unknown rather than guessed at
+    // as home — a line filed against the wrong region is worse than one
+    // that admits it does not know.
+    crate::audit::append_action_refused(
+        None,
+        pin_profile.as_deref(),
+        region.unwrap_or("-"),
+        action_label,
+        env,
+        refusal.rule(),
+        &refusal.remedy(),
+    );
 
     // Wording stays the CLI's own — see `write_gate`'s module docs.
     Some(match refusal {
@@ -154,13 +177,22 @@ pub(crate) fn write_refusal(
 /// `subject` is what the message names — usually the env, but
 /// `audit replay` says "restart on api-prod", which is more useful and
 /// worth keeping.
-pub(crate) fn refuse_write(prog: &str, subject: &str, env: &str, profile: Option<&str>) {
+pub(crate) fn refuse_write(
+    prog: &str,
+    subject: &str,
+    env: &str,
+    profile: Option<&str>,
+    region: Option<&str>,
+    action_label: &str,
+) {
     let profile = profile.map(str::to_string);
     if let Some(reason) = write_refusal(
         &crate::config::load(),
         env,
         &profile,
         crate::freeze::read_active(),
+        region,
+        action_label,
     ) {
         // `write_refusal` phrases the pin case as "refusing ENV — …";
         // for a caller naming something richer, say that instead.
@@ -355,7 +387,14 @@ mod write_refusal_tests {
         let mut cfg = Config::default();
         cfg.safety_accounts.insert("prod-admin".into(), true);
 
-        let refused = write_refusal(&cfg, "api-prod", &Some("prod-admin".into()), None);
+        let refused = write_refusal(
+            &cfg,
+            "api-prod",
+            &Some("prod-admin".into()),
+            None,
+            None,
+            "Test",
+        );
         assert!(
             refused.is_some_and(|r| r.contains("prod-admin")),
             "a pinned account must refuse when it is the profile the write runs under"
@@ -364,7 +403,7 @@ mod write_refusal_tests {
         // A different profile is not pinned, and must not be refused —
         // over-refusing would be its own bug.
         assert_eq!(
-            write_refusal(&cfg, "api-prod", &Some("dev".into()), None),
+            write_refusal(&cfg, "api-prod", &Some("dev".into()), None, None, "Test"),
             None
         );
     }

@@ -268,6 +268,8 @@ pub(crate) async fn run_replay(args: &[String]) -> Result<()> {
         &format!("{} on {}", plan.verb.label(), plan.env),
         &plan.env,
         pin_profile.as_deref(),
+        plan.region.as_deref(),
+        plan.verb.label(),
     );
     if plan.verb.destructive() && !yes {
         eprintln!(
@@ -489,15 +491,23 @@ mod tests {
         cfg.safety_accounts.insert("prod-admin".into(), true);
 
         assert_eq!(
-            write_refusal(&cfg, "api-prod", &None, None).as_deref(),
+            write_refusal(&cfg, "api-prod", &None, None, None, "Test").as_deref(),
             Some("refusing api-prod — pinned by safety.envs.api-prod.read_only")
         );
         assert_eq!(
-            write_refusal(&cfg, "other-env", &Some("prod-admin".into()), None).as_deref(),
+            write_refusal(
+                &cfg,
+                "other-env",
+                &Some("prod-admin".into()),
+                None,
+                None,
+                "Test"
+            )
+            .as_deref(),
             Some("refusing other-env — pinned by safety.accounts.prod-admin.read_only")
         );
         assert_eq!(
-            write_refusal(&cfg, "other-env", &Some("dev".into()), None),
+            write_refusal(&cfg, "other-env", &Some("dev".into()), None, None, "Test"),
             None
         );
     }
