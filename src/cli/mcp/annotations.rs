@@ -32,16 +32,26 @@ pub(super) struct ToolAttrs {
 }
 
 impl ToolAttrs {
+    /// A read against AWS: open world, because the account's contents
+    /// change without ebman's involvement.
     const fn read() -> Self {
         Self {
             read_only: true,
             destructive: false,
             idempotent: true,
-            // True for every tool here: they observe an AWS account
-            // whose contents change without ebman's involvement. A
-            // closed domain would be something like a scratchpad the
-            // server owns outright.
             open_world: true,
+        }
+    }
+
+    /// A read against something the server owns — the local audit log.
+    /// Closed domain, which is the distinction `openWorldHint` exists
+    /// to draw. Marking it open would be a small lie in the direction
+    /// of "this might reach anywhere", and the hint is worth less every
+    /// time it is wrong.
+    const fn local_read() -> Self {
+        Self {
+            open_world: false,
+            ..Self::read()
         }
     }
     const fn write(destructive: bool, idempotent: bool) -> Self {
@@ -66,7 +76,9 @@ pub(super) const TOOL_ATTRS: &[(&str, ToolAttrs)] = &[
     ("lint", ToolAttrs::read()),
     ("drift", ToolAttrs::read()),
     ("fleet_cost", ToolAttrs::read()),
-    ("audit_log", ToolAttrs::read()),
+    // Local file, no AWS call — verified by reading `tool_audit_log`,
+    // which is `std::fs::read_to_string` and nothing else.
+    ("audit_log", ToolAttrs::local_read()),
     // ── writes ──
     //
     // `restart` bounces the app servers: downtime, but nothing is
@@ -179,6 +191,54 @@ mod tests {
                     assert!(ann.get(key).is_some(), "`{name}` is missing {key}");
                 }
             }
+        }
+    }
+
+    /// The reverse direction: nothing in the table is stale.
+    ///
+    /// `every_advertised_tool_is_classified` checks advertised →
+    /// classified. A tool DELETED from the server leaves its entry
+    /// behind, and nothing noticed. Low harm on its own — but the next
+    /// reader treats the table as the tool list, and a stale row makes
+    /// it a worse answer than no table. `CONFIRM_STATE` in the safety
+    /// tests already checks both directions; this is the same rule.
+    #[test]
+    fn no_table_entry_names_a_tool_that_is_gone() {
+        let advertised: Vec<String> = super::super::tools::tool_table(true)
+            .as_array()
+            .expect("array")
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_string))
+            .collect();
+        assert!(
+            advertised.len() >= 8,
+            "the tool table failed to build; this guard would pass vacuously"
+        );
+        let stale: Vec<&str> = TOOL_ATTRS
+            .iter()
+            .map(|(n, _)| *n)
+            .filter(|n| !advertised.iter().any(|a| a == n))
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "TOOL_ATTRS classifies tools that are no longer advertised — \
+             drop them: {stale:?}"
+        );
+    }
+
+    #[test]
+    fn the_local_read_is_not_marked_open_world() {
+        // `audit_log` reads ebman's own log file and makes no AWS call.
+        // Everything else here observes an account whose contents move
+        // without us. Getting this wrong is a small lie in the
+        // direction of "might reach anywhere", and a hint is worth less
+        // every time it is wrong.
+        assert!(!attrs_for("audit_log").expect("classified").open_world);
+        for aws_backed in ["list_environments", "drift", "fleet_cost", "lint"] {
+            assert!(
+                attrs_for(aws_backed).expect(aws_backed).open_world,
+                "`{aws_backed}` reaches AWS and should say so"
+            );
         }
     }
 
