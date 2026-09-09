@@ -212,27 +212,54 @@ one never happens. If that stops being true, the stage is wrong.
    CAUGHT on the detector, including one that would have made every
    client look incapable.
 
-4. **The decision type, with obligations** *(architecture)*
+4. ~~Audit every refusal, with its rule and its remedy~~ — **done
+   2026-09-09.** Re-scoped; see below.
 
-   `Decision { outcome, obligations, refusal }` where obligations is the
-   channel for "allow, but with the undo window" / "allow, but
-   type-to-confirm". pgman's shipped `Decision` already carries exactly
-   this shape (`wrap_in_tx`, `read_only_escape`), which is the evidence
-   it is needed rather than speculative.
+   `stage=refused` lines across all four enforcement funnels: the TUI's
+   `deny_write` / `deny_write_batch`, and `cli::write_refusal` behind
+   `ebman action`, `action rollout`, `audit replay`, `lint --fix` and
+   both MCP write phases. Each names the rule (`env_pinned`,
+   `account_pinned`, `frozen`, `global_read_only`) and a remedy naming
+   the exact config key.
 
-   Includes the refusal document, the `remedy` values, the correlation
-   id, and — separately — **auditing every decision including denials**,
-   which nothing does today.
+   The near-miss is now visible: an agent attempting `terminate` on a
+   pinned prod leaves a line per attempt instead of nothing.
 
-   **Useful alone:** near-misses become visible. The agent that tried
-   `terminate` on prod six times currently leaves no trace at all.
+   Wired at four funnels rather than ~25 dispatch sites, which the
+   existing `cli_write_paths_do_not_reach_past_the_shared_gate` guard is
+   what makes safe. `read_only_reason` split into `refusal_for` (typed)
+   and `render_refusal` (wording) — the audit needs the rule name, and
+   rendering is exactly what discards it.
 
-5. **Levels** *(behaviour)*
+   Eight mutations CAUGHT across the two halves.
+
+   **Re-scoped: the obligations channel moves into stage 5.** Stage 4 as
+   written also carried `Decision { outcome, obligations }` and a
+   correlation id. Both were deferred *because nothing produces or reads
+   them yet* — the first obligation ("allow, but type-to-confirm")
+   arrives with the levels, and a channel with no producer is the
+   dead-field defect this repo has now hit three times in one day
+   (`client_supports_elicitation` written and never read; a client cache
+   added that nothing read; `pin_reason` as a third gate). Adding it
+   early would not have made stage 5 cheaper; it would have shipped a
+   plausible-looking struct field that no test could fail on.
+
+5. **Levels, and the decision type they need** *(behaviour)*
 
    Named rungs over the decision function, per principal, effective
-   level = minimum of matching entries. Requires the config parser to
-   **fail closed**, which is its own change: today a malformed line is
-   silently skipped, so a typo'd level would grant the default.
+   level = minimum of matching entries.
+
+   This now also carries what stage 4 deferred: `Decision { outcome,
+   obligations, refusal }`, and the correlation id that ties a refusal
+   to the retry that followed it. Both get real producers here —
+   `guarded` is precisely "allow with an obligation" — so they can be
+   built against a consumer rather than guessed at. pgman's shipped
+   `Decision` (`wrap_in_tx`, `read_only_escape`) stays the evidence for
+   the shape.
+
+   Requires the config parser to **fail closed**, which is its own
+   change: today a malformed line is silently skipped, so a typo'd level
+   would grant the default.
 
    Ship with `ebman safety explain`, or the preset is unauditable and
    Principle 6 is violated by its own implementation.
