@@ -230,23 +230,28 @@ impl App {
         }
     }
 
-    /// Put the safety-config banner back into an empty error slot.
+    /// What the footer's error slot should show.
     ///
-    /// One function rather than the expression repeated at each site
-    /// that clears `error_message`: the first version was inline at the
-    /// refresh handler and immediately missed the context-switch path,
-    /// so the banner blinked out on `:context` until the next refresh
-    /// completed. A convention every handler has to remember is the
-    /// shape that already failed once here.
+    /// An explicit `error_message` wins; the safety-config banner fills
+    /// the slot when nothing else claims it.
     ///
-    /// Only fills an EMPTY slot — a refresh error or a partial-failure
-    /// notice outranks it, and both are less replaceable: a write
-    /// refusal re-announces itself in full the moment anything is
-    /// attempted.
-    pub(crate) fn reassert_safety_banner(&mut self) {
-        if self.error_message.is_none() {
-            self.error_message = crate::app::safety_config_warning(&self.cfg.safety_parse_errors);
-        }
+    /// DERIVED, not stored. Two earlier versions pushed the banner INTO
+    /// `error_message` at each site that clears it — first inline at the
+    /// refresh handler (which immediately missed the context-switch
+    /// path, so the banner blinked out on `:context`), then via a shared
+    /// method called from both. Both were a convention every future
+    /// handler has to remember, and the first forgot one of two sites on
+    /// the day it was written. Computing it at render makes forgetting
+    /// impossible.
+    ///
+    /// The ordering is deliberate and not merely "explicit wins": a
+    /// refresh error or the "environments are NOT shown" partial-failure
+    /// notice has no second channel, while a write refusal re-announces
+    /// itself in full the moment anything is attempted.
+    pub(crate) fn effective_error_message(&self) -> Option<String> {
+        self.error_message
+            .clone()
+            .or_else(|| crate::app::safety_config_warning(&self.cfg.safety_parse_errors))
     }
 
     /// Record a refusal in the audit log.

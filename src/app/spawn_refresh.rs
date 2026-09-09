@@ -837,7 +837,6 @@ impl App {
                     self.context.region
                 ));
                 self.error_message = None;
-                self.reassert_safety_banner();
                 self.arm_loading_linger();
                 self.load_state = LoadState::Idle;
                 self.persist_state();
@@ -1150,21 +1149,7 @@ impl App {
                         partial_errors.join("; ")
                     ));
                 }
-                // The safety banner fills whatever slot is left — AFTER
-                // the partial-failure notice, not before it.
-                //
-                // Re-asserted at all because it is not transient: while
-                // the policy is only partially readable EVERY write is
-                // refused, and a banner cleared by the first refresh
-                // sent the operator to find out at a confirm modal.
-                //
-                // But it yields, because the two notices are not
-                // equally replaceable. "Envs are NOT shown" is the only
-                // channel saying data is missing; a write refusal
-                // announces itself again, in full, the moment anything
-                // is attempted. Taking the slot first starved the
-                // partial-failure notice for the whole session.
-                self.reassert_safety_banner();
+
                 // Pin lasts one refresh cycle. After that the message
                 // survives in the slot but the next ephemeral write (e.g.
                 // a spawn helper's "fetching…") gets normal auto-clear

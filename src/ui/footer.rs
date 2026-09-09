@@ -151,7 +151,11 @@ pub(crate) fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
             ));
         }
         _ => {
-            if let Some(msg) = &app.error_message {
+            // Derived, so a partially-readable safety policy shows in
+            // the slot whenever nothing more urgent claims it — without
+            // every handler that clears `error_message` remembering to
+            // put it back.
+            if let Some(msg) = &app.effective_error_message() {
                 top.push(Span::styled(
                     format!(" {msg}"),
                     Style::default().fg(theme.health_red),

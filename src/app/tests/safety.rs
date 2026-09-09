@@ -1435,8 +1435,8 @@ async fn an_unreadable_safety_config_announces_itself_at_startup() {
     );
 
     let app = App::for_tests(crate::aws::AwsClient::stub(), cfg);
-    let msg = app
-        .error_message
+    let derived = app.effective_error_message();
+    let msg = derived
         .as_deref()
         .expect("a policy that refuses every write must say so up front");
     assert!(msg.contains("writes refused"), "{msg}");
@@ -1449,9 +1449,9 @@ async fn an_unreadable_safety_config_announces_itself_at_startup() {
     let clean = crate::config::parse("safety.envs.uflexi-prod.read_only = true\n");
     let app = App::for_tests(crate::aws::AwsClient::stub(), clean);
     assert!(
-        app.error_message.is_none(),
+        app.effective_error_message().is_none(),
         "a healthy session must not open with a warning: {:?}",
-        app.error_message
+        app.effective_error_message()
     );
 }
 
@@ -1525,14 +1525,17 @@ async fn the_safety_banner_survives_a_refresh() {
     );
 
     let mut app = App::for_tests(crate::aws::AwsClient::stub(), cfg);
-    assert!(app.error_message.is_some(), "banner shows at startup");
+    assert!(
+        app.effective_error_message().is_some(),
+        "banner shows at startup"
+    );
 
     // Drive a refresh the way a live session does: snapshot, then apply.
     app.status_snapshot_at_refresh = Some((app.status_message.clone(), app.error_message.clone()));
     app.apply_refresh(app.fanout_epoch, Ok(vec![]), vec![]);
 
-    let msg = app
-        .error_message
+    let derived = app.effective_error_message();
+    let msg = derived
         .as_deref()
         .expect("the banner must survive — the writes are still refused");
     assert!(msg.contains("writes refused"), "{msg}");
@@ -1543,9 +1546,9 @@ async fn the_safety_banner_survives_a_refresh() {
     app.status_snapshot_at_refresh = Some((app.status_message.clone(), app.error_message.clone()));
     app.apply_refresh(app.fanout_epoch, Ok(vec![]), vec![]);
     assert!(
-        app.error_message.is_none(),
+        app.effective_error_message().is_none(),
         "a healthy session must not gain a banner: {:?}",
-        app.error_message
+        app.effective_error_message()
     );
 }
 
@@ -1607,7 +1610,8 @@ async fn the_safety_banner_yields_to_the_partial_failure_notice() {
         vec!["eu-west-2: throttled".to_string()],
     );
 
-    let msg = app.error_message.as_deref().expect("a notice");
+    let derived = app.effective_error_message();
+    let msg = derived.as_deref().expect("a notice");
     assert!(
         msg.contains("NOT shown"),
         "missing data is the notice with no second channel: {msg}"
@@ -1617,10 +1621,36 @@ async fn the_safety_banner_yields_to_the_partial_failure_notice() {
     app.status_snapshot_at_refresh = Some((app.status_message.clone(), app.error_message.clone()));
     app.apply_refresh(app.fanout_epoch, Ok(vec![]), vec![]);
     assert!(
-        app.error_message
+        app.effective_error_message()
             .as_deref()
             .is_some_and(|m| m.contains("writes refused")),
         "the banner returns once the slot is free: {:?}",
-        app.error_message
+        app.effective_error_message()
+    );
+}
+
+/// The banner must actually reach the screen.
+///
+/// Deriving it in `effective_error_message` only helps if the footer
+/// calls that rather than reading `error_message` directly — the class
+/// of gap where a helper is tested and the wiring is not. Renders a real
+/// frame and greps it.
+#[tokio::test]
+async fn the_safety_banner_is_rendered_in_the_footer() {
+    let cfg = crate::config::parse("safety.envs.uflexi-prod = true\n");
+    let mut app = App::for_tests(crate::aws::AwsClient::stub(), cfg);
+    let screen = render(&mut app, 200, 30);
+    assert!(
+        screen.contains("writes refused"),
+        "a policy that refuses every write must be visible on screen:\n{screen}"
+    );
+
+    // And a healthy config renders no such warning.
+    let clean = crate::config::parse("safety.envs.uflexi-prod.read_only = true\n");
+    let mut app = App::for_tests(crate::aws::AwsClient::stub(), clean);
+    let screen = render(&mut app, 200, 30);
+    assert!(
+        !screen.contains("writes refused"),
+        "a healthy session must not show the banner:\n{screen}"
     );
 }
