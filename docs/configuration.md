@@ -98,6 +98,11 @@ safety.accounts.prod.read_only = true
 # `read_only = false` into a durable `true`. Earlier versions skipped
 # these lines silently, which left the env writeable while you believed
 # it pinned.
+#
+# The line itself is preserved on save, so opening `:settings` while a
+# pin is broken will not delete it. Names may contain dots — the field
+# is the last segment, so `safety.accounts.company.prod.read_only` pins
+# the profile `company.prod`.
 
 # Custom command aliases. `alias.NAME = "expansion"` lines map a
 # typed `:NAME` to a full command line. Args typed after the alias

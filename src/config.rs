@@ -256,7 +256,13 @@ pub(crate) enum SafetyPin {
 pub(crate) fn parse_safety_pin(scope: &str, rest: &str, value: &str) -> SafetyPin {
     let unreadable = |problem: String| SafetyPin::Unreadable { problem };
 
-    let Some((name, field)) = rest.split_once('.') else {
+    // `rsplit_once`, so the FIELD is the last segment and everything
+    // before it is the name. An AWS profile name may contain dots
+    // (`company.prod` is ordinary) and `safety.accounts.NAME` matches
+    // the profile name — splitting from the left made every dotted
+    // account unreadable, which under fail-closed means refusing every
+    // write for a config that is perfectly reasonable.
+    let Some((name, field)) = rest.rsplit_once('.') else {
         // `safety.envs.prod = true` — the field was omitted entirely.
         return unreadable(format!(
             "{scope}.{rest} is missing a field — did you mean {scope}.{rest}.read_only?"
@@ -459,7 +465,18 @@ pub(crate) fn parse(text: &str) -> Config {
                     SafetyPin::Valid { name, read_only } => {
                         cfg.safety_envs.insert(name, read_only);
                     }
-                    SafetyPin::Unreadable { problem } => cfg.safety_parse_errors.push(problem),
+                    SafetyPin::Unreadable { problem } => {
+                        cfg.safety_parse_errors.push(problem);
+                        // Keep the line. `:settings` rewrites the whole
+                        // file from the parsed config, so dropping it
+                        // would DELETE the operator's pin on the next
+                        // save — and the refusal is exactly what sends
+                        // them to `:settings` to look. That path ends
+                        // with the refusal lifted, the pin gone and the
+                        // env writeable: the original fail-open,
+                        // reached by a new route.
+                        cfg.passthrough.push(line.to_string());
+                    }
                 }
             }
             other if other.starts_with("alias.") => {
@@ -481,7 +498,12 @@ pub(crate) fn parse(text: &str) -> Config {
                     SafetyPin::Valid { name, read_only } => {
                         cfg.safety_accounts.insert(name, read_only);
                     }
-                    SafetyPin::Unreadable { problem } => cfg.safety_parse_errors.push(problem),
+                    SafetyPin::Unreadable { problem } => {
+                        cfg.safety_parse_errors.push(problem);
+                        // Preserved for the same reason as `safety.envs`
+                        // above: a save must not delete the line.
+                        cfg.passthrough.push(line.to_string());
+                    }
                 }
             }
             // Unrecognised at the top level too — preserved rather
@@ -1370,5 +1392,59 @@ explain.max_tokens = 512
             !rendered.contains("safety_parse_errors") && !rendered.contains("is missing a field"),
             "diagnostics leaked into the saved config: {rendered}"
         );
+    }
+
+    /// A malformed safety line must survive a save.
+    ///
+    /// The sequence this prevents: a broken pin refuses every write →
+    /// the operator opens `:settings` to find out why → saving rewrites
+    /// config.toml from the parsed config → the malformed line is gone
+    /// → the refusal lifts and the pin they meant to set has vanished.
+    /// They would reasonably conclude it was fixed. It was deleted, and
+    /// the environment is writeable again — the original fail-open,
+    /// reached by a new route.
+    #[test]
+    fn a_malformed_safety_line_survives_a_save() {
+        for raw in [
+            "safety.envs.prod = true",
+            "safety.envs.prod.readonly = true",
+            "safety.accounts.prod.read_only = ture",
+        ] {
+            let cfg = parse(&format!("{raw}\n"));
+            assert_eq!(cfg.safety_parse_errors.len(), 1, "{raw} should not parse");
+            let out = serialize(&cfg);
+            assert!(
+                out.contains(raw),
+                "saving deleted the operator's line {raw:?}: {out}"
+            );
+            // And it is still refused after the round-trip, rather than
+            // quietly becoming valid.
+            assert_eq!(
+                parse(&out).safety_parse_errors.len(),
+                1,
+                "the round-tripped config must still refuse: {out}"
+            );
+        }
+    }
+
+    /// A dotted account name is ordinary — AWS profile names allow them,
+    /// and `safety.accounts.NAME` matches the profile name. Splitting
+    /// the key from the left made every one of them unreadable, which
+    /// under fail-closed means refusing every write for a config that is
+    /// perfectly reasonable.
+    #[test]
+    fn a_dotted_account_name_is_a_valid_pin() {
+        let cfg = parse("safety.accounts.company.prod.read_only = true\n");
+        assert!(
+            cfg.safety_parse_errors.is_empty(),
+            "a dotted profile name must not refuse the fleet: {:?}",
+            cfg.safety_parse_errors
+        );
+        assert_eq!(cfg.safety_accounts.get("company.prod"), Some(&true));
+
+        // The field is still the LAST segment, so a typo after a dotted
+        // name is still caught rather than swallowed into the name.
+        let bad = parse("safety.accounts.company.prod.readonly = true\n");
+        assert_eq!(bad.safety_parse_errors.len(), 1, "typo must still refuse");
     }
 }

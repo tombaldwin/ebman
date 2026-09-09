@@ -1635,3 +1635,13 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
 - **[bottom](https://github.com/ClementTsang/bottom)** — ratatui dashboard widget patterns; Metrics tab follows this.
 - **[harlequin](https://github.com/tconbeer/harlequin)** / **[atuin](https://github.com/atuinsh/atuin)** — fuzzy-find UI patterns for filtering long streams.
 - **[tig](https://github.com/jonas/tig)** — paged event-log + ref panel for timeline views.
+
+- [ ] **`accounts.NAME.field` misparses a dotted account name.** The
+  `accounts.` arm splits its key from the left, so
+  `accounts.company.prod.role_arn = "..."` is read as name `company`,
+  field `prod.role_arn` — an unrecognised field, which that arm ignores
+  by design. The AssumeRole spec is silently never created. Found while
+  fixing the same bug in `safety.accounts.*` (which now uses
+  `rsplit_once`); left alone because it is a different subsystem with no
+  safety implication and its own "unknown fields degrade gracefully"
+  contract to think about. `src/config.rs:418`.
