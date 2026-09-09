@@ -340,30 +340,6 @@ Three gates added to CI. Two of them found something on the first run, which is 
   floor width, stop pretending it is a table and render one env per line.
   Sub-60 terminals are rare but reachable in a tmux split.
 
-- [ ] **Converge ebman's two write gates.** `cli::write_refusal` (CLI,
-  MCP, `lint --fix`) and `App::read_only_reason` (the ~25 TUI sites) are
-  separate implementations with different inputs, and `src/config.rs`
-  documents the divergence as deliberate. A design note assumed one gate
-  and got its cost estimate wrong as a result
-  (`docs/design/protection-levels.md`).
-
-  Converging them onto one decision function over a fully-materialised
-  context — no ambient `AWS_PROFILE` read, no clock — is the prerequisite
-  for anything shared with pgman, and is worth doing on its own merits:
-  two gates means two places to keep honest, and the existing guard
-  catches half-composition rather than bypass.
-
-- [ ] **Emit MCP tool annotations** (`readOnlyHint`, `destructiveHint`,
-  `idempotentHint`, `openWorldHint`). Verified 2026-09-09 that ebman
-  emits none, so an MCP client cannot tell `list_environments` from a
-  write tool except by reading the prose description — it has to ask the
-  human about everything or nothing.
-
-  Contained, standards-compliant, and the first step in
-  `docs/design/protection-levels.md`. Worth doing on its own before any
-  of the larger model, because it tells us how clients actually behave
-  with the hints. Confirm the field names against the current MCP spec
-  revision first.
 
 #### Minor (batchable)
 - [x] control.sock chmod-after-bind race — CLOSED by the SO_PEERCRED check on every connection (`control.rs`), which is stronger than file perms and needs no process-global umask change. Confirmed 2026-08-22; entry was stale.
@@ -1635,13 +1611,3 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
 - **[bottom](https://github.com/ClementTsang/bottom)** — ratatui dashboard widget patterns; Metrics tab follows this.
 - **[harlequin](https://github.com/tconbeer/harlequin)** / **[atuin](https://github.com/atuinsh/atuin)** — fuzzy-find UI patterns for filtering long streams.
 - **[tig](https://github.com/jonas/tig)** — paged event-log + ref panel for timeline views.
-
-- [ ] **`accounts.NAME.field` misparses a dotted account name.** The
-  `accounts.` arm splits its key from the left, so
-  `accounts.company.prod.role_arn = "..."` is read as name `company`,
-  field `prod.role_arn` — an unrecognised field, which that arm ignores
-  by design. The AssumeRole spec is silently never created. Found while
-  fixing the same bug in `safety.accounts.*` (which now uses
-  `rsplit_once`); left alone because it is a different subsystem with no
-  safety implication and its own "unknown fields degrade gracefully"
-  contract to think about. `src/config.rs:418`.

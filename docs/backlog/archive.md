@@ -2361,3 +2361,39 @@ Honest list of features that landed during expansion sprints but aren't earning 
 
 ---
 
+- [x] **Converge ebman's two write gates** — done 2026-09-09. One
+  decision function in `src/write_gate.rs` (`decide(&WriteContext) ->
+  Option<Refusal>`), values only: no `App`, no `Config` methods, no
+  `std::env`, no clock. Both `cli::write_refusal` and
+  `App::read_only_reason` consult it and render in their own voice — the
+  TUI keeps the freeze age and `:incident END` hint, the CLI keeps
+  `refusing ENV — pinned by …`. Converging the wording too would have
+  been a visible regression for no benefit. `Config::pin_reason` (the
+  third implementation) deleted. The CLI guard was widened from a single
+  method name to the pin maps + the decision function, and given a
+  canary — it could previously be blinded entirely with the suite
+  staying green. Five mutations CAUGHT.
+
+- [x] **Emit MCP tool annotations** — done 2026-09-09. One table in
+  `src/cli/mcp/annotations.rs` classifying all 14 tools, applied in
+  `tool_table` rather than per descriptor so a guard can check the table
+  against what is actually advertised, in both directions. Verified on
+  the wire over stdio in both modes: 14 tools, 0 unannotated.
+  `confirm_action` is annotated at its worst case — it dispatches
+  whatever is pending, which may be a terminate. `restart` / `deploy` /
+  `set_option` are deliberately NOT destructive; flagging everything
+  teaches clients to ignore the flag. Five mutations CAUGHT.
+
+- [x] **`accounts.NAME.field` misparsed a dotted account name** — filed
+  and fixed 2026-09-09, same session. The arm split its key from the
+  left, so `accounts.company.prod.role_arn` read as name `company`,
+  field `prod.role_arn` — unrecognised, and this arm ignores
+  unrecognised fields by design, so the AssumeRole spec was silently
+  never created and `:account company.prod` reported no such account.
+  Profile names routinely contain dots. Now `rsplit_once` (field is the
+  last segment), with the empty-name case rejected rather than creating
+  a phantom account under `""`. Also fixed the data loss beside it: an
+  unusable `accounts.` line was `continue`d rather than preserved, so
+  `:settings` deleted the operator's line on the next save. Two
+  mutations CAUGHT.
+

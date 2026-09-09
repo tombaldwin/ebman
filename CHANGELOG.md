@@ -34,6 +34,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   **If ebman starts refusing writes after this upgrade, the banner names
   the line to fix.**
 
+- **A dotted account name now works in `accounts.*` and
+  `safety.accounts.*`.** Both split their config key from the left, so
+  `accounts.company.prod.role_arn` was read as name `company`, field
+  `prod.role_arn`. In `accounts.*` that is an unrecognised field, which
+  the parser ignores by design — the AssumeRole spec was silently never
+  created and `:account company.prod` reported no such account. AWS
+  profile names routinely contain dots. The field is now taken as the
+  last segment.
+
+- **A config line the parser cannot use is preserved on save.**
+  `:settings` rewrites `config.toml` from the parsed config, and
+  unusable `safety.*` / `accounts.*` lines were dropped rather than kept
+  — so opening `:settings` deleted them. For a broken safety pin that
+  was the whole failure mode returning by another route: the refusal
+  sends the operator to `:settings`, the save removes the line, the
+  refusal lifts, and the pin is gone.
+
 ### Added
 
 - **Refused writes are now audited** (`stage=refused`). A write stopped
