@@ -673,6 +673,38 @@ pub(crate) fn append_action_skipped(
     write_audit_line(account, profile, region, &detail);
 }
 
+/// Append a `stage=refused` line — a write that policy stopped before
+/// it reached AWS.
+///
+/// Deliberately NOT `stage=skipped`. Skipped means "deliberately not
+/// dispatched" for benign operational reasons (a batch member whose env
+/// vanished mid-run); refused means a safety control fired. Folding
+/// them together would make the log unable to answer the one question
+/// it is being extended to answer: did anything try this, and what
+/// stopped it. Until now a blocked write left no trace at all — the
+/// dispatch never happened, so no dispatched/completed pair was ever
+/// written, and six attempts to terminate prod looked exactly like
+/// none.
+///
+/// `rule` is the machine token from `write_gate::Refusal::rule`;
+/// `remedy` says which control would have to change.
+pub(crate) fn append_action_refused(
+    account: Option<&str>,
+    profile: Option<&str>,
+    region: &str,
+    action_label: &str,
+    target: &str,
+    rule: &str,
+    remedy: &str,
+) {
+    let detail = format!(
+        "stage=refused action={action_label} {} rule={rule} remedy=\"{}\"",
+        field_token("target", target),
+        escape_value(remedy)
+    );
+    write_audit_line(account, profile, region, &detail);
+}
+
 /// Append a `stage=undone` line — an operator-driven undo of a prior
 /// action. No outcome (the undo dispatch logs its own completion via the
 /// normal action path); this records that the undo was initiated.

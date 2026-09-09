@@ -50,6 +50,46 @@ pub(crate) enum Refusal {
     AccountPinned { profile: String },
 }
 
+impl Refusal {
+    /// Stable machine token naming the rule that refused.
+    ///
+    /// Deliberately not the prose. The rendered messages differ per
+    /// surface by design (see the module docs), so anything that has to
+    /// *aggregate* refusals — the audit log, and whatever reads it —
+    /// needs a name that does not move when a toast is reworded.
+    pub(crate) fn rule(&self) -> &'static str {
+        match self {
+            Refusal::GlobalReadOnly => "global_read_only",
+            Refusal::Frozen => "frozen",
+            Refusal::EnvPinned { .. } => "env_pinned",
+            Refusal::AccountPinned { .. } => "account_pinned",
+        }
+    }
+
+    /// What the operator would have to change to make this write legal.
+    ///
+    /// Names the control, and only the control. A refusal that says
+    /// nothing leaves an agent to guess, and the guesses are worse than
+    /// the truth: retry the same call, try a neighbouring env, or
+    /// attempt to edit the config itself. Telling it which lever is
+    /// down turns a dead end into something it can hand back to a
+    /// human.
+    pub(crate) fn remedy(&self) -> String {
+        match self {
+            Refusal::GlobalReadOnly => {
+                "clear read-only mode (:readonly off, or restart without --read-only)".into()
+            }
+            Refusal::Frozen => "end the deploy freeze (:thaw-deploys, or :incident END)".into(),
+            Refusal::EnvPinned { env } => {
+                format!("clear safety.envs.{env}.read_only in config.toml")
+            }
+            Refusal::AccountPinned { profile } => {
+                format!("clear safety.accounts.{profile}.read_only in config.toml")
+            }
+        }
+    }
+}
+
 /// Decide. `None` means the write may proceed.
 ///
 /// Precedence is session-wide first, then the freeze, then the most
@@ -220,5 +260,57 @@ mod tests {
                 env: "pinned-env".into()
             })
         );
+    }
+
+    /// Every rule token must be distinct, and every remedy must name a
+    /// control the operator can actually find.
+    ///
+    /// Distinctness is the load-bearing half: two variants sharing a
+    /// token makes the audit log unable to tell a fleet-wide freeze from
+    /// a single pinned env, which is the difference between an incident
+    /// and a misconfiguration.
+    #[test]
+    fn every_refusal_names_a_distinct_rule_and_a_findable_remedy() {
+        let all = [
+            Refusal::GlobalReadOnly,
+            Refusal::Frozen,
+            Refusal::EnvPinned {
+                env: "api-prod".into(),
+            },
+            Refusal::AccountPinned {
+                profile: "prod-admin".into(),
+            },
+        ];
+
+        let rules: std::collections::HashSet<&str> = all.iter().map(|r| r.rule()).collect();
+        assert_eq!(
+            rules.len(),
+            all.len(),
+            "rule tokens collide: {:?}",
+            all.iter().map(|r| r.rule()).collect::<Vec<_>>()
+        );
+
+        for r in &all {
+            let remedy = r.remedy();
+            assert!(
+                !remedy.is_empty(),
+                "{:?} refuses without saying what would change it",
+                r
+            );
+            // The pinned variants must name the SPECIFIC key, not the
+            // family: "clear a safety pin" sends an operator hunting
+            // through a config file for which one.
+            match r {
+                Refusal::EnvPinned { env } => assert!(
+                    remedy.contains(&format!("safety.envs.{env}.read_only")),
+                    "remedy must name the exact key: {remedy}"
+                ),
+                Refusal::AccountPinned { profile } => assert!(
+                    remedy.contains(&format!("safety.accounts.{profile}.read_only")),
+                    "remedy must name the exact key: {remedy}"
+                ),
+                _ => {}
+            }
+        }
     }
 }
