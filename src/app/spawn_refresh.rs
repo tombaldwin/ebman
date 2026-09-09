@@ -837,6 +837,7 @@ impl App {
                     self.context.region
                 ));
                 self.error_message = None;
+                self.reassert_safety_banner();
                 self.arm_loading_linger();
                 self.load_state = LoadState::Idle;
                 self.persist_state();
@@ -1132,18 +1133,6 @@ impl App {
                     self.status_message = None;
                     self.error_message = None;
                 }
-                // Re-assert the safety-config banner. It is not a
-                // transient notice: while the policy is only partially
-                // readable EVERY write is refused, for the whole
-                // session. Clearing it on the first refresh meant the
-                // operator learned about it at a confirm modal instead
-                // — which is exactly what `safety_config_warning`'s own
-                // doc comment calls a poor way to find out. It survived
-                // only under `--demo`, which never refreshes.
-                if self.error_message.is_none() {
-                    self.error_message =
-                        crate::app::safety_config_warning(&self.cfg.safety_parse_errors);
-                }
                 // AFTER the auto-clear above, not before it: a
                 // successful refresh wipes `error_message`, so a
                 // partial-failure notice set at the top of this
@@ -1161,6 +1150,21 @@ impl App {
                         partial_errors.join("; ")
                     ));
                 }
+                // The safety banner fills whatever slot is left — AFTER
+                // the partial-failure notice, not before it.
+                //
+                // Re-asserted at all because it is not transient: while
+                // the policy is only partially readable EVERY write is
+                // refused, and a banner cleared by the first refresh
+                // sent the operator to find out at a confirm modal.
+                //
+                // But it yields, because the two notices are not
+                // equally replaceable. "Envs are NOT shown" is the only
+                // channel saying data is missing; a write refusal
+                // announces itself again, in full, the moment anything
+                // is attempted. Taking the slot first starved the
+                // partial-failure notice for the whole session.
+                self.reassert_safety_banner();
                 // Pin lasts one refresh cycle. After that the message
                 // survives in the slot but the next ephemeral write (e.g.
                 // a spawn helper's "fetching…") gets normal auto-clear

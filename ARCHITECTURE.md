@@ -256,7 +256,10 @@ rather than a path calling neither. `cli_write_paths_do_not_reach_past_the_share
 now stops any CLI path reaching around the shared decision.
 
 Every refusal is audited (`stage=refused`, with the rule and a remedy
-naming the exact config key), as is every dispatch. Writes are
+naming the exact config key), as is every dispatch — excepting the two
+paths that deliberately record nothing: `--demo`, whose whole contract
+is that it touches nothing real, and a `lint --fix` dry run, which
+dispatched nothing to refuse. Writes are
 journalled by [`src/audit.rs`](src/audit.rs).
 
 Two of those confirms make the operator type the environment's name:

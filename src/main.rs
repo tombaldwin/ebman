@@ -266,7 +266,7 @@ FLAGS:
     -V, --version           Print version and exit.
     -h, --help              Print this help and exit.
         --read-only         Start with destructive actions disabled (also toggleable with :readonly).
-        --demo              Run with a hand-crafted synthetic fleet (no AWS calls, no disk reads).
+        --demo              Run with a hand-crafted synthetic fleet (no AWS calls; reads config.toml).
                             Use for screenshots / VHS recordings / talk demos that shouldn't show
                             real account data. Drill-into-other-tabs may show stub errors — main
                             table + Detail/Health is the supported surface.

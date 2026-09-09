@@ -230,6 +230,25 @@ impl App {
         }
     }
 
+    /// Put the safety-config banner back into an empty error slot.
+    ///
+    /// One function rather than the expression repeated at each site
+    /// that clears `error_message`: the first version was inline at the
+    /// refresh handler and immediately missed the context-switch path,
+    /// so the banner blinked out on `:context` until the next refresh
+    /// completed. A convention every handler has to remember is the
+    /// shape that already failed once here.
+    ///
+    /// Only fills an EMPTY slot — a refresh error or a partial-failure
+    /// notice outranks it, and both are less replaceable: a write
+    /// refusal re-announces itself in full the moment anything is
+    /// attempted.
+    pub(crate) fn reassert_safety_banner(&mut self) {
+        if self.error_message.is_none() {
+            self.error_message = crate::app::safety_config_warning(&self.cfg.safety_parse_errors);
+        }
+    }
+
     /// Record a refusal in the audit log.
     ///
     /// The region is the ROW's, not home: under a multi-region fan-out
