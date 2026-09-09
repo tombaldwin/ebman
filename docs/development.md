@@ -1,5 +1,11 @@
 # Development
 
+> **Design notes** live in `docs/design/`. They are proposals and
+> reasoning, not descriptions of shipped behaviour — check the code
+> before treating one as current. Start with
+> [protection-levels.md](design/protection-levels.md), which covers how
+> agents are meant to interact with write paths.
+
 ```bash
 cargo build
 cargo test
