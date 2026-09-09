@@ -127,48 +127,54 @@ impl App {
     /// called this; defensive return). The three reasons are ordered
     /// to match `is_read_only_for`'s precedence.
     pub(crate) fn read_only_reason(&self, env_name: &str) -> Option<String> {
-        if self.read_only {
-            return Some("read-only mode (global toggle)".into());
-        }
-        if let Some(freeze) = self.deploy_freeze.as_ref() {
-            let age = (chrono::Utc::now() - freeze.frozen_at).num_seconds().max(0);
-            let age = crate::app::humanize_short_age(std::time::Duration::from_secs(age as u64));
-            // When the freeze came from `:incident START`, point the
-            // operator at the gesture that actually closes it — a bare
-            // :thaw-deploys would lift the lock but leave the incident
-            // banner up, which is rarely what they meant.
-            let unlock_hint = if self.incident.is_some() {
-                ":incident END to close"
-            } else {
-                ":thaw-deploys to unfreeze"
-            };
-            return Some(if freeze.reason.is_empty() {
-                format!("deploys frozen ({age} ago) — {unlock_hint}")
-            } else {
-                format!(
-                    "deploys frozen ({age} ago): {} — {unlock_hint}",
-                    freeze.reason
-                )
-            });
-        }
-        if self.cfg.safety_envs.get(env_name).copied().unwrap_or(false) {
-            return Some(format!(
-                "read-only mode (env pinned via safety.envs.{env_name})"
-            ));
-        }
-        if let Some(profile) = self.context.profile.as_deref() {
-            if self
-                .cfg
-                .safety_accounts
-                .get(profile)
-                .copied()
-                .unwrap_or(false)
-            {
-                return Some(format!(
-                    "read-only mode (account pinned via safety.accounts.{profile})"
-                ));
+        // The DECISION is `write_gate::decide`, shared with the CLI and
+        // MCP paths. The WORDING below is not shared and should not be:
+        // a toast can afford the freeze age and the `:incident END`
+        // hint, and a CLI line cannot. Converging the messages too
+        // would have been a visible regression for no benefit.
+        let refusal = crate::write_gate::decide(&crate::write_gate::WriteContext {
+            env: env_name,
+            profile: self.context.profile.as_deref(),
+            global_read_only: self.read_only,
+            frozen: self.deploy_freeze.is_some(),
+            safety_envs: &self.cfg.safety_envs,
+            safety_accounts: &self.cfg.safety_accounts,
+        })?;
+
+        Some(match refusal {
+            crate::write_gate::Refusal::GlobalReadOnly => "read-only mode (global toggle)".into(),
+            crate::write_gate::Refusal::Frozen => {
+                // `decide` only reports THAT a freeze applies; the
+                // detail lives here because only this surface has room
+                // for it.
+                let freeze = self.deploy_freeze.as_ref()?;
+                let age = (chrono::Utc::now() - freeze.frozen_at).num_seconds().max(0);
+                let age =
+                    crate::app::humanize_short_age(std::time::Duration::from_secs(age as u64));
+                // When the freeze came from `:incident START`, point the
+                // operator at the gesture that actually closes it — a
+                // bare :thaw-deploys would lift the lock but leave the
+                // incident banner up, which is rarely what they meant.
+                let unlock_hint = if self.incident.is_some() {
+                    ":incident END to close"
+                } else {
+                    ":thaw-deploys to unfreeze"
+                };
+                if freeze.reason.is_empty() {
+                    format!("deploys frozen ({age} ago) — {unlock_hint}")
+                } else {
+                    format!(
+                        "deploys frozen ({age} ago): {} — {unlock_hint}",
+                        freeze.reason
+                    )
+                }
             }
-        }
-        None
+            crate::write_gate::Refusal::EnvPinned { env } => {
+                format!("read-only mode (env pinned via safety.envs.{env})")
+            }
+            crate::write_gate::Refusal::AccountPinned { profile } => {
+                format!("read-only mode (account pinned via safety.accounts.{profile})")
+            }
+        })
     }
 }

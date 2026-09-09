@@ -123,7 +123,7 @@ that has to be thrown away.
 Each stage must be independently shippable and useful even if the next
 one never happens. If that stops being true, the stage is wrong.
 
-1. **Converge the two write gates** *(architecture — prerequisite)*
+1. ~~Converge the two write gates~~ — **done 2026-09-09.**
 
    `cli::write_refusal` and `App::read_only_reason` are separate
    implementations over different inputs, and `src/config.rs` documents
@@ -140,8 +140,30 @@ one never happens. If that stops being true, the stage is wrong.
    not a path that calls neither gate. A dispatch site that reaches
    neither should fail a test.
 
-   **Useful alone:** two gates means two places to keep honest, and this
-   halves that regardless of what follows.
+   `src/write_gate.rs` holds `decide(&WriteContext) -> Option<Refusal>`:
+   values only, no `App`, no `Config` methods, no `std::env`, no clock.
+   Both `cli::write_refusal` and `App::read_only_reason` now consult it
+   and render the result in their own voice — the TUI keeps the freeze
+   age and the `:incident END` hint, the CLI keeps `refusing ENV —
+   pinned by …`. Converging the messages too would have been a visible
+   regression for no benefit.
+
+   The converged precedence (global → freeze → env pin → account pin) is
+   the union of both, and preserves each: the CLI never sets the global
+   rung, so its old order is untouched.
+
+   `Config::pin_reason` is gone — it was the third implementation. Its
+   tests moved: the precedence cases to `write_gate`, and the replay one
+   ported to go through `write_refusal`, which pins the path it claims
+   to rather than a helper.
+
+   Five mutations CAUGHT, and two of them were the interesting ones. An
+   account pin applying with no profile resolved was NOT caught until
+   the fixture gained an empty-string account key — a malformed config
+   line produces one, and without it the bug's lookup simply misses. And
+   the CLI guard could be blinded entirely with the suite staying green,
+   because it only ever fired if someone introduced a violation; it now
+   carries a canary that proves it detects on every run.
 
 2. **Emit MCP tool annotations** *(mechanical)*
 

@@ -104,18 +104,46 @@ pub(crate) fn write_refusal(
     profile: &Option<String>,
     active_freeze: Option<crate::freeze::FreezeMarker>,
 ) -> Option<String> {
-    // Cross-process freeze (the pid-scoped marker a live TUI session
-    // persists for :freeze-deploys / :incident).
-    if let Some(m) = active_freeze {
-        return Some(crate::freeze::refusal_message(&m));
-    }
+    // The profile fallback is resolved HERE rather than inside the
+    // decision, which used to read `AWS_PROFILE` itself — an ambient
+    // read that made it impossible to test without touching the process
+    // environment. `write_gate::decide` now takes values only.
     let pin_profile = profile
         .clone()
         .or_else(|| std::env::var("AWS_PROFILE").ok());
-    if let Some(pin) = safety_cfg.pin_reason(env, pin_profile.as_deref()) {
-        return Some(format!("refusing {env} — pinned by {pin}"));
-    }
-    None
+
+    let refusal = crate::write_gate::decide(&crate::write_gate::WriteContext {
+        env,
+        profile: pin_profile.as_deref(),
+        // The CLI has no session-wide toggle; that rung exists for the
+        // TUI. Passing `false` leaves this path's precedence exactly as
+        // it was: freeze, then env pin, then account pin.
+        global_read_only: false,
+        frozen: active_freeze.is_some(),
+        safety_envs: &safety_cfg.safety_envs,
+        safety_accounts: &safety_cfg.safety_accounts,
+    })?;
+
+    // Wording stays the CLI's own — see `write_gate`'s module docs.
+    Some(match refusal {
+        crate::write_gate::Refusal::Frozen => {
+            // Infallible: `frozen` was set from this very `Option`.
+            let m = active_freeze.as_ref()?;
+            crate::freeze::refusal_message(m)
+        }
+        crate::write_gate::Refusal::EnvPinned { env: e } => {
+            format!("refusing {env} — pinned by safety.envs.{e}.read_only")
+        }
+        crate::write_gate::Refusal::AccountPinned { profile: p } => {
+            format!("refusing {env} — pinned by safety.accounts.{p}.read_only")
+        }
+        // Unreachable: the CLI never sets `global_read_only`. Rendered
+        // rather than `unreachable!()` because a panic in a write gate
+        // is a worse failure than a slightly odd message.
+        crate::write_gate::Refusal::GlobalReadOnly => {
+            format!("refusing {env} — read-only mode")
+        }
+    })
 }
 
 /// CLI wrapper over [`write_refusal`]: read the world, print, exit 3.
@@ -222,6 +250,38 @@ mod write_gate_guard {
     /// Converging them on `write_refusal` only helps while they stay
     /// converged, and "everyone remembered" is what failed last time.
     /// This is the part that can't be forgotten.
+    /// What counts as reaching past the gate: the raw pin maps, or the
+    /// decision function directly (which would skip this module's
+    /// wording and its freeze composition).
+    ///
+    /// Extracted so the guard can DEMONSTRATE that it detects, rather
+    /// than passing because the tree happens to be clean. Disabling the
+    /// scan used to leave the suite green — the guard only ever fired
+    /// if someone introduced a violation, which is a guard you are
+    /// trusting on assertion.
+    fn reaches_past_the_gate(code: &str) -> bool {
+        code.contains("safety_envs")
+            || code.contains("safety_accounts")
+            || code.contains("write_gate::decide")
+    }
+
+    #[test]
+    fn the_gate_guard_detects_what_it_is_looking_for() {
+        // The canary. Runs on every invocation, so a scan that has gone
+        // blind fails here rather than passing quietly over a clean
+        // tree.
+        assert!(reaches_past_the_gate("if cfg.safety_envs.get(env) {"));
+        assert!(reaches_past_the_gate("cfg.safety_accounts.contains_key(p)"));
+        assert!(reaches_past_the_gate("crate::write_gate::decide(&ctx)"));
+        // And does not flag the legitimate route.
+        assert!(!reaches_past_the_gate(
+            "if let Some(r) = write_refusal(&cfg, env, &p, f) {"
+        ));
+        assert!(!reaches_past_the_gate(
+            "refuse_write(prog, subject, env, profile)"
+        ));
+    }
+
     #[test]
     fn cli_write_paths_do_not_reach_past_the_shared_gate() {
         let mut offenders: Vec<String> = Vec::new();
@@ -237,7 +297,7 @@ mod write_gate_guard {
                     continue;
                 }
                 // `mod.rs` defines the shared gate; it is allowed to
-                // call `pin_reason` because it IS the composition.
+                // reach the safety config because it IS the composition.
                 if path.file_name().and_then(|f| f.to_str()) == Some("mod.rs") {
                     continue;
                 }
@@ -247,7 +307,17 @@ mod write_gate_guard {
                 let prod = text.split("#[cfg(test)]").next().unwrap_or("");
                 for (n, line) in prod.lines().enumerate() {
                     let code = crate::app::tests::scan::strip_line_comment(line);
-                    if code.contains(".pin_reason(") {
+                    // Widened when `pin_reason` was folded into
+                    // `write_gate::decide`. The old form scanned for a
+                    // single method name, which would have become
+                    // decorative the moment that method was deleted —
+                    // a guard that cannot fire reads as coverage.
+                    //
+                    // These are what a CLI write path must not touch:
+                    // the raw pin maps, or the decision function
+                    // directly (which would skip this module's wording
+                    // and its freeze composition).
+                    if reaches_past_the_gate(code) {
                         offenders.push(format!("{}:{}", path.display(), n + 1));
                     }
                 }
@@ -255,7 +325,7 @@ mod write_gate_guard {
         }
         assert!(
             offenders.is_empty(),
-            "these CLI paths call `pin_reason` directly instead of going \
+            "these CLI paths reach the safety config directly instead of going \
              through `cli::write_refusal`, which also checks the freeze — \
              the exact half-composition 0.14.1 shipped: {offenders:?}"
         );
