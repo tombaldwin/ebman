@@ -473,22 +473,33 @@ mod tests {
 
     #[test]
     fn safety_pins_gate_replay_by_env_then_account() {
-        // The shared `Config::pin_reason` (0.26 extraction) is what
-        // replay consults; keep the replay-shaped assertions here so
-        // this file still pins its own gate behaviour.
+        // Goes through `write_refusal` — the gate replay actually
+        // consults — rather than a config helper. The previous version
+        // called `Config::pin_reason` directly, which pinned the
+        // helper's behaviour and not this path's; when the decision
+        // moved into `write_gate` the helper was deleted and the test
+        // was the only thing still holding it up.
+        //
+        // Asserting on the rendered message keeps the CLI's wording
+        // pinned here too, which is the half `write_gate`'s own tests
+        // deliberately do not cover.
+        use crate::cli::write_refusal;
         let mut cfg = crate::config::Config::default();
         cfg.safety_envs.insert("api-prod".into(), true);
         cfg.safety_accounts.insert("prod-admin".into(), true);
+
         assert_eq!(
-            cfg.pin_reason("api-prod", None).as_deref(),
-            Some("safety.envs.api-prod.read_only")
+            write_refusal(&cfg, "api-prod", &None, None).as_deref(),
+            Some("refusing api-prod — pinned by safety.envs.api-prod.read_only")
         );
         assert_eq!(
-            cfg.pin_reason("other-env", Some("prod-admin")).as_deref(),
-            Some("safety.accounts.prod-admin.read_only")
+            write_refusal(&cfg, "other-env", &Some("prod-admin".into()), None).as_deref(),
+            Some("refusing other-env — pinned by safety.accounts.prod-admin.read_only")
         );
-        assert_eq!(cfg.pin_reason("other-env", Some("dev")), None);
-        assert_eq!(cfg.pin_reason("other-env", None), None);
+        assert_eq!(
+            write_refusal(&cfg, "other-env", &Some("dev".into()), None),
+            None
+        );
     }
 
     #[test]

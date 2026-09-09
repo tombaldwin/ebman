@@ -84,7 +84,11 @@ pub(crate) mod llm;
 /// that nothing at runtime needs it.
 #[cfg(test)]
 pub(crate) mod release_meta;
+
 pub(crate) mod terraform;
+/// The single write-authorisation decision, shared by the TUI and CLI
+/// gates. See the module docs for why the wording is NOT shared.
+pub(crate) mod write_gate;
 
 // `font_probe` and `overlay` live in the shared `tui-common` crate so
 // the sibling pgman repo can depend on the same code. Re-exported here
