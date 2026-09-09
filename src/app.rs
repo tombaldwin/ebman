@@ -1466,9 +1466,6 @@ impl App {
         // Derive the tf-managed name set from the loaded tfstate
         // so the env-table badge can do O(1) lookups per row.
         app.refresh_tf_managed_envs();
-        if let Some(w) = safety_config_warning(&app.cfg.safety_parse_errors) {
-            app.error_message = Some(w);
-        }
         Ok(app)
     }
 
@@ -1707,14 +1704,6 @@ impl App {
             quit: false,
         };
         app.rebuild_view();
-        // Same banner as the live constructor. `--demo` is documented as
-        // the way to validate `safety.envs.*` / `safety.accounts.*`
-        // before going live (see `deny_write`), so a demo session that
-        // stayed silent about an unparseable pin would be validating
-        // the operator's config by hiding the one thing wrong with it.
-        if let Some(w) = safety_config_warning(&app.cfg.safety_parse_errors) {
-            app.error_message = Some(w);
-        }
         app
     }
 
