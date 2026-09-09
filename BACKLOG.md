@@ -340,6 +340,19 @@ Three gates added to CI. Two of them found something on the first run, which is 
   floor width, stop pretending it is a table and render one env per line.
   Sub-60 terminals are rare but reachable in a tmux split.
 
+- [ ] **Converge ebman's two write gates.** `cli::write_refusal` (CLI,
+  MCP, `lint --fix`) and `App::read_only_reason` (the ~25 TUI sites) are
+  separate implementations with different inputs, and `src/config.rs`
+  documents the divergence as deliberate. A design note assumed one gate
+  and got its cost estimate wrong as a result
+  (`docs/design/protection-levels.md`).
+
+  Converging them onto one decision function over a fully-materialised
+  context — no ambient `AWS_PROFILE` read, no clock — is the prerequisite
+  for anything shared with pgman, and is worth doing on its own merits:
+  two gates means two places to keep honest, and the existing guard
+  catches half-composition rather than bypass.
+
 - [ ] **Emit MCP tool annotations** (`readOnlyHint`, `destructiveHint`,
   `idempotentHint`, `openWorldHint`). Verified 2026-09-09 that ebman
   emits none, so an MCP client cannot tell `list_environments` from a
