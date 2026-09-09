@@ -189,7 +189,7 @@ one never happens. If that stops being true, the stage is wrong.
    Five mutations CAUGHT. As intended, the table doubles as stage 4's
    action vocabulary.
 
-3. **Specify `ask` per surface** *(design — gate on stages 4–5)*
+3. ~~Specify `ask` per surface~~ — **decided 2026-09-09, and instrumented.**
 
    Not code: a decision, written down, about what `ask` means on TUI,
    CLI and MCP, and what it degrades to when the transport cannot carry
@@ -199,9 +199,18 @@ one never happens. If that stops being true, the stage is wrong.
    defined in terms of asking; a ladder whose middle rungs cannot be
    expressed over the primary agent transport is sugar over nothing.
 
-   **Stop condition:** if MCP elicitation turns out to be unusable in
-   the clients that matter, the levels design changes shape and stages
-   4–5 should be re-planned rather than pushed through.
+   The decision is in the design note. The part worth repeating here:
+   elicitation is a CLIENT capability declared at `initialize`, so
+   whether `ask` is expressible is knowable per connection rather than
+   assumed. ebman was throwing that field away; it now captures and logs
+   it, and nothing branches on it yet.
+
+   **The stop condition is now instrumented rather than hypothetical.**
+   If the logs show almost no client declaring elicitation, the ladder's
+   middle rungs collapse to deny and stages 4–5 need re-planning — but
+   that will be a conclusion from data, not a guess. Three mutations
+   CAUGHT on the detector, including one that would have made every
+   client look incapable.
 
 4. **The decision type, with obligations** *(architecture)*
 

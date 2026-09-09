@@ -121,6 +121,19 @@ pub(crate) struct Server {
     /// the confirm path's RAII guard can reset it on an unwind
     /// (pre-tag review I2).
     dispatching: std::sync::atomic::AtomicBool,
+    /// Whether the client declared the `elicitation` capability at
+    /// initialize.
+    ///
+    /// Captured because `ask` — the middle rung of the protection
+    /// levels in `docs/design/protection-levels.md` — needs a way to
+    /// put a question to a human, and over MCP that is elicitation. The
+    /// design note could not say whether that is usable in practice,
+    /// and the honest way to settle it is to record what real clients
+    /// declare rather than to guess.
+    ///
+    /// Nothing branches on this yet. It is logged at initialize so the
+    /// question has an answer before the levels work depends on it.
+    client_supports_elicitation: std::sync::atomic::AtomicBool,
     /// `clientInfo.name` from initialize — lands in audit extras so
     /// agent-dispatched writes are attributable.
     client_name: std::sync::Mutex<String>,
@@ -152,6 +165,7 @@ impl Server {
             writes: tokio::sync::Mutex::new(writes::WriteState::default()),
             dispatching: std::sync::atomic::AtomicBool::new(false),
             client_name: std::sync::Mutex::new("unknown".to_string()),
+            client_supports_elicitation: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -183,6 +197,27 @@ impl Server {
                         *cn = name.to_string();
                     }
                 }
+                // Does the client support elicitation? That is the only
+                // way an MCP server can ask a human a question
+                // mid-request, so it decides whether `ask` is
+                // expressible on this transport at all — see
+                // `docs/design/protection-levels.md`. Recorded rather
+                // than acted on: the point is to learn what clients
+                // actually declare before the levels design commits to
+                // it.
+                let elicits = req
+                    .get("params")
+                    .and_then(|p| p.get("capabilities"))
+                    .and_then(|c| c.get("elicitation"))
+                    .is_some();
+                self.client_supports_elicitation
+                    .store(elicits, std::sync::atomic::Ordering::Relaxed);
+                tracing::info!(
+                    target: "ebman::mcp",
+                    client = %self.client_name.lock().map(|c| c.clone()).unwrap_or_default(),
+                    elicitation = elicits,
+                    "MCP client connected"
+                );
                 // Echo-negotiate: accept the client's revision when it
                 // matches ours, otherwise offer ours.
                 let client_version = req
@@ -431,6 +466,51 @@ pub async fn run(args: &[String]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The `ask` question, answered with data rather than a guess.
+    ///
+    /// `docs/design/protection-levels.md` stage 3 turns on whether an
+    /// MCP client can be asked something mid-request. Elicitation is
+    /// the only mechanism, and it is a CLIENT capability — so the
+    /// server can know, per connection, whether `ask` is expressible or
+    /// must degrade to a refusal.
+    ///
+    /// Pinned in both directions because a detector that always says
+    /// "no" would quietly make every client look unable, and the levels
+    /// design would then be built around a limitation that is not real.
+    #[tokio::test]
+    async fn the_elicitation_capability_is_detected_per_client() {
+        use std::sync::atomic::Ordering;
+
+        async fn declares(caps: serde_json::Value) -> bool {
+            let s = Server::new(true, false, false);
+            let _ = s
+                .handle_request(&json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {
+                    "protocolVersion": PROTOCOL_VERSION,
+                    "capabilities": caps,
+                    "clientInfo": {"name": "probe", "version": "1"}
+                    }
+                }))
+                .await;
+            s.client_supports_elicitation.load(Ordering::Relaxed)
+        }
+
+        assert!(
+            declares(json!({"elicitation": {}})).await,
+            "a client declaring elicitation must be detected, or `ask` \
+             degrades to a refusal for everyone"
+        );
+        assert!(
+            !declares(json!({})).await,
+            "a client declaring nothing must NOT be treated as able to ask"
+        );
+        assert!(
+            !declares(json!({"sampling": {}, "roots": {}})).await,
+            "other capabilities are not elicitation"
+        );
+    }
     use super::*;
 
     fn argv(parts: &[&str]) -> Vec<String> {
