@@ -205,11 +205,17 @@ impl Server {
                 // than acted on: the point is to learn what clients
                 // actually declare before the levels design commits to
                 // it.
+                // `is_object`, not `is_some`: the capability is typed as
+                // an object, and a client that says `"elicitation":
+                // false` or `null` means it CANNOT be asked. Presence
+                // alone would read that as consent — fail-open in the
+                // one direction that matters, since the whole point of
+                // `ask` is that a human sees the question.
                 let elicits = req
                     .get("params")
                     .and_then(|p| p.get("capabilities"))
                     .and_then(|c| c.get("elicitation"))
-                    .is_some();
+                    .is_some_and(Value::is_object);
                 self.client_supports_elicitation
                     .store(elicits, std::sync::atomic::Ordering::Relaxed);
                 tracing::info!(
@@ -502,6 +508,14 @@ mod tests {
             "a client declaring elicitation must be detected, or `ask` \
              degrades to a refusal for everyone"
         );
+        for explicit_no in [json!({"elicitation": false}), json!({"elicitation": null})] {
+            assert!(
+                !declares(explicit_no.clone()).await,
+                "{explicit_no} explicitly declines elicitation; treating \
+                 mere presence as support would let `ask` believe a human \
+                 is watching when none is"
+            );
+        }
         assert!(
             !declares(json!({})).await,
             "a client declaring nothing must NOT be treated as able to ask"
