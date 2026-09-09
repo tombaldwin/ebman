@@ -207,10 +207,35 @@ impl Config {
 
 pub fn load() -> Config {
     let path = config_path();
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return Config::default();
-    };
-    parse(&text)
+    config_from_read(std::fs::read_to_string(&path), &path)
+}
+
+/// Turn the result of reading `config.toml` into a `Config`.
+///
+/// Split from `load` so the failure arms are testable without writing
+/// to the shared test config path — the house rule keeps the I/O
+/// wrapper thin and the decision pure.
+fn config_from_read(read: std::io::Result<String>, path: &std::path::Path) -> Config {
+    match read {
+        Ok(text) => parse(&text),
+        // No config file at all is the ordinary case — no pins exist,
+        // so there is nothing to fail closed about.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
+        // Anything else — a permission change, one non-UTF-8 byte from
+        // an editor saving latin-1, a failing disk — means pins MAY be
+        // defined and we cannot see them. Returning a default here was
+        // the file-level version of the hole the line-level parser
+        // closes: `safety.envs.prod.read_only = true` sitting in a file
+        // we failed to read left prod writeable, silently.
+        Err(e) => Config {
+            safety_parse_errors: vec![format!(
+                "{} could not be read ({e}) — any safety pins in it \
+                 cannot be applied",
+                path.display()
+            )],
+            ..Config::default()
+        },
+    }
 }
 
 /// Sugar for the `ebman lint` CLI: just the global
@@ -527,6 +552,28 @@ pub(crate) fn parse(text: &str) -> Config {
                         cfg.passthrough.push(line.to_string());
                     }
                 }
+            }
+            // Any OTHER key under `safety.` — refused, not ignored.
+            //
+            // The two arms above police typos INSIDE a known family
+            // (`safety.envs.prod.readonly`). This one catches a typo OF
+            // the family (`safety.env.prod.read_only`, missing the `s`)
+            // — which is the same operator mistake and was previously
+            // the one shape that still vanished silently, leaving the
+            // env writeable while the fleet-wide refusal fired for the
+            // lesser typo one character away.
+            //
+            // It also covers a family a NEWER ebman writes
+            // (`safety.regions.*`). Same reasoning the field check
+            // already applies: a safety control this binary cannot
+            // enforce must not read as absent.
+            other if other.starts_with("safety.") => {
+                cfg.safety_parse_errors.push(format!(
+                    "{other} is not a safety setting this version understands \
+                     (expected safety.envs.NAME.read_only or \
+                     safety.accounts.NAME.read_only)"
+                ));
+                cfg.passthrough.push(line.to_string());
             }
             // Unrecognised at the top level too — preserved rather
             // than dropped, for the same reason as the account fields
@@ -1516,5 +1563,90 @@ explain.max_tokens = 512
             let out = serialize(&cfg);
             assert!(out.contains(raw), "saving deleted {raw:?}: {out}");
         }
+    }
+
+    /// A typo OF the family, not just IN it.
+    ///
+    /// `safety.envs.prod.readonly` refused the whole fleet while
+    /// `safety.env.prod.read_only` — the same operator mistake, one
+    /// character away — vanished silently and left prod writeable. Two
+    /// independent reviewers found this in the release that introduced
+    /// the fail-closed rule, because the net was written around the
+    /// families it already recognised.
+    #[test]
+    fn an_unknown_safety_family_is_refused_not_ignored() {
+        for raw in [
+            "safety.env.prod.read_only = true",          // missing the `s`
+            "safety.account.prod.read_only = true",      // ditto
+            "safety.envs = true",                        // no name at all
+            "safety.regions.eu-west-2.read_only = true", // a newer ebman's family
+        ] {
+            let cfg = parse(&format!("{raw}\n"));
+            assert_eq!(
+                cfg.safety_parse_errors.len(),
+                1,
+                "{raw} must refuse rather than vanish"
+            );
+            assert!(
+                serialize(&cfg).contains(raw),
+                "and must survive a save: {raw}"
+            );
+        }
+
+        // The known families still parse — this must not become "refuse
+        // everything under safety.".
+        let good =
+            parse("safety.envs.prod.read_only = true\nsafety.accounts.acme.read_only = false\n");
+        assert!(
+            good.safety_parse_errors.is_empty(),
+            "well-formed pins must still work: {:?}",
+            good.safety_parse_errors
+        );
+        assert_eq!(good.safety_envs.get("prod"), Some(&true));
+        assert_eq!(good.safety_accounts.get("acme"), Some(&false));
+    }
+
+    /// An unreadable config file must refuse, not default.
+    ///
+    /// The file-level twin of the line-level rule: pins may be defined
+    /// in a file we cannot read, and `Config::default()` has none — so
+    /// returning it turns "cannot read the policy" into "there is no
+    /// policy". A permission change or a single non-UTF-8 byte was
+    /// enough to leave a pinned prod writeable, silently.
+    #[test]
+    fn an_unreadable_config_file_refuses_rather_than_defaulting() {
+        use std::io::{Error, ErrorKind};
+        let path = std::path::Path::new("/tmp/does-not-matter/config.toml");
+
+        // Missing is fine — no file, no pins, nothing to enforce.
+        let missing = config_from_read(Err(Error::from(ErrorKind::NotFound)), path);
+        assert!(
+            missing.safety_parse_errors.is_empty(),
+            "a missing config is the ordinary case, not a refusal"
+        );
+
+        // Anything else must fail closed.
+        for kind in [
+            ErrorKind::PermissionDenied,
+            ErrorKind::InvalidData, // non-UTF-8 bytes
+            ErrorKind::Other,
+        ] {
+            let cfg = config_from_read(Err(Error::from(kind)), path);
+            assert_eq!(
+                cfg.safety_parse_errors.len(),
+                1,
+                "{kind:?} must refuse — pins may exist in a file we cannot read"
+            );
+            assert!(
+                cfg.safety_parse_errors[0].contains("config.toml"),
+                "the message must name the file: {:?}",
+                cfg.safety_parse_errors
+            );
+        }
+
+        // And a readable file still parses normally.
+        let ok = config_from_read(Ok("safety.envs.prod.read_only = true\n".into()), path);
+        assert!(ok.safety_parse_errors.is_empty());
+        assert_eq!(ok.safety_envs.get("prod"), Some(&true));
     }
 }

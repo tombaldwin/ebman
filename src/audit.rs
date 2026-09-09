@@ -697,8 +697,16 @@ pub(crate) fn append_action_refused(
     rule: &str,
     remedy: &str,
 ) {
+    // `action` goes through `field_token` like `target`, not raw. It
+    // carries operator-chosen text on some paths (a rename summary, a
+    // batch verb), and `escape_value` does not quote spaces — so a bare
+    // interpolation lets a crafted value forge a `stage=` token that
+    // every consumer reads instead of the real one. Same forge path
+    // `field_token`'s own comment exists to close for the header
+    // fields.
     let detail = format!(
-        "stage=refused action={action_label} {} rule={rule} remedy=\"{}\"",
+        "stage=refused {} {} rule={rule} remedy=\"{}\"",
+        field_token("action", action_label),
         field_token("target", target),
         escape_value(remedy)
     );
@@ -1142,7 +1150,7 @@ mod tests {
     #[test]
     fn parse_audit_line_normal_dispatched() {
         let line = "2026-05-27T10:15:30Z\taccount=123\tprofile=prod\tregion=us-east-1\tstage=dispatched action=Restart target=my-env";
-        let entry = parse_audit_line(line).expect("parses");
+        let entry = crate::audit::parse_audit_line(line).expect("parses");
         assert_eq!(entry.when, "2026-05-27T10:15:30Z");
         assert_eq!(entry.account.as_deref(), Some("123"));
         assert_eq!(entry.profile.as_deref(), Some("prod"));
@@ -1160,7 +1168,7 @@ mod tests {
         // 0.14+ writers emit this so the parser doesn't have to
         // special-case bare trailing "ok".
         let line = "2026-05-27T10:15:31Z\taccount=123\tprofile=prod\tregion=us-east-1\tstage=completed action=Restart target=my-env outcome=ok";
-        let entry = parse_audit_line(line).expect("parses");
+        let entry = crate::audit::parse_audit_line(line).expect("parses");
         assert_eq!(entry.stage.as_deref(), Some("completed"));
         assert_eq!(entry.action.as_deref(), Some("Restart"));
         assert_eq!(entry.target.as_deref(), Some("my-env"));
@@ -1175,7 +1183,7 @@ mod tests {
         // operators who care about historical analysis read the
         // `raw` field.
         let line = "2026-05-26T08:00:00Z\taccount=123\tprofile=prod\tregion=us-east-1\tstage=completed action=Restart target=my-env ok";
-        let entry = parse_audit_line(line).expect("parses");
+        let entry = crate::audit::parse_audit_line(line).expect("parses");
         assert_eq!(entry.outcome, None);
         assert_eq!(entry.target.as_deref(), Some("my-env ok"));
     }
@@ -1183,7 +1191,7 @@ mod tests {
     #[test]
     fn parse_audit_line_completed_with_outcome_err() {
         let line = "2026-05-27T10:16:00Z\taccount=123\tprofile=-\tregion=us-east-1\tstage=completed action=Deploy target=my-env err=\"UpdateEnvironment: throttled\"";
-        let entry = parse_audit_line(line).expect("parses");
+        let entry = crate::audit::parse_audit_line(line).expect("parses");
         assert_eq!(entry.profile, None); // "-" promoted to None
         assert_eq!(entry.err.as_deref(), Some("UpdateEnvironment: throttled"));
     }
@@ -1191,7 +1199,7 @@ mod tests {
     #[test]
     fn parse_audit_line_rollout_shape() {
         let line = "2026-05-27T10:20:00Z\trollout_id=rollout-20260527T102000Z\tregion=eu-west-1\tstage=dispatched action=Rollout target=prod-api version=build-900";
-        let entry = parse_audit_line(line).expect("parses");
+        let entry = crate::audit::parse_audit_line(line).expect("parses");
         assert_eq!(
             entry.rollout_id.as_deref(),
             Some("rollout-20260527T102000Z")
@@ -2141,6 +2149,49 @@ mod drain_tests {
             waited < Duration::from_secs(30),
             "the drain returned only at its deadline, so it is not \
              actually watching the counter: {waited:?}"
+        );
+    }
+
+    /// A crafted action label must not be able to forge a `stage=`
+    /// token.
+    ///
+    /// `action` carries operator-chosen text on several paths (a rename
+    /// summary, a batch verb). `escape_value` does not quote spaces, so
+    /// a bare interpolation let a value containing ` stage=completed`
+    /// append a second `stage=` — and the parse loop lets the LAST
+    /// duplicate win, so the forged value is the one every consumer
+    /// reads. Self-forged, but it is the same forge path `field_token`
+    /// exists to close for the header fields.
+    #[test]
+    fn a_crafted_action_label_cannot_forge_a_stage_token() {
+        let target = "forge-probe-env";
+        let path = crate::util::cache_dir().join("audit.log");
+        let before = std::fs::read_to_string(&path).unwrap_or_default();
+
+        crate::audit::append_action_refused(
+            None,
+            None,
+            "eu-west-2",
+            "Rename X stage=completed err=\"looks fine\"",
+            target,
+            "env_pinned",
+            "clear the pin",
+        );
+
+        let after = std::fs::read_to_string(&path).unwrap_or_default();
+        let delta = after
+            .strip_prefix(&before)
+            .expect("the audit log is append-only");
+        let line = delta
+            .lines()
+            .find(|l| l.contains(target))
+            .expect("the refusal was written");
+
+        let entry = crate::audit::parse_audit_line(line).expect("the line must still parse");
+        assert_eq!(
+            entry.stage.as_deref(),
+            Some("refused"),
+            "a refusal must not be readable as a completed action: {line}"
         );
     }
 }

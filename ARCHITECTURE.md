@@ -231,17 +231,33 @@ for tidiness.
 
 ## Writes and safety
 
-Every mutating path funnels through one gate, but there are two of them
-because the TUI and the CLI need different things from a refusal. In the
-TUI it is `App::deny_write` / `deny_write_batch`
-([`src/app/safety.rs`](src/app/safety.rs)), which sets a toast and
-returns. In the CLI and the MCP server it is `cli::write_refusal`
-([`src/cli/mod.rs`](src/cli/mod.rs)), which returns the reason so the
-server can hand it to a client and `cli::refuse_write` can print it and
-exit 3. Both resolve the same layers.
-`--deny-write`, `safety.envs.NAME.read_only`, `safety.accounts.NAME.read_only`
-and the freeze window are all resolved there, so there is exactly one place to
-audit. Writes are journalled by [`src/audit.rs`](src/audit.rs).
+The **decision** is one function; the **wording** is not. That split is
+the point.
+
+`write_gate::decide` ([`src/write_gate.rs`](src/write_gate.rs)) takes a
+`WriteContext` of plain values — no `App`, no `Config` methods, no
+`std::env`, no clock — and returns `Option<Refusal>` naming the rule
+that fired. Precedence: an unreadable safety config first (we do not
+know what the rules are), then session-wide read-only, then the freeze,
+then the env pin, then the account pin.
+
+Each surface renders that `Refusal` in its own voice. In the TUI it is
+`App::deny_write` / `deny_write_batch`
+([`src/app/safety.rs`](src/app/safety.rs)), which sets a toast carrying
+the freeze age and the `:incident END` hint. In the CLI and the MCP
+server it is `cli::write_refusal` ([`src/cli/mod.rs`](src/cli/mod.rs)),
+which returns the reason so the server can hand it to a client and
+`cli::refuse_write` can print it and exit 3. Converging the messages too
+would be a visible regression for no benefit.
+
+There were two full gates until 0.37, with different inputs and their
+own precedence, and the guard that existed caught half-composition
+rather than a path calling neither. `cli_write_paths_do_not_reach_past_the_shared_gate`
+now stops any CLI path reaching around the shared decision.
+
+Every refusal is audited (`stage=refused`, with the rule and a remedy
+naming the exact config key), as is every dispatch. Writes are
+journalled by [`src/audit.rs`](src/audit.rs).
 
 Two of those confirms make the operator type the environment's name:
 `Terminate` and the DLQ purge. Both are irreversible, and both are

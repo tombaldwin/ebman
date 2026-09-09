@@ -1454,3 +1454,135 @@ async fn an_unreadable_safety_config_announces_itself_at_startup() {
         app.error_message
     );
 }
+
+/// A batch refusal must file one line per locked env, each matchable
+/// and each in that env's own region.
+///
+/// The joined form (`target=env-a,env-b`) matched no env, so `ebman
+/// audit --env env-a` found nothing — and the region lookup missed too
+/// and fell back to home, which is the wrong-region bug `region_for_name`
+/// carries a comment about.
+#[tokio::test]
+async fn a_batch_refusal_files_one_matchable_line_per_env() {
+    let a = "batch-refusal-probe-a";
+    let b = "batch-refusal-probe-b";
+    let path = crate::util::cache_dir().join("audit.log");
+    let before = std::fs::read_to_string(&path).unwrap_or_default();
+
+    let mut app = test_app();
+    for (n, region) in [(a, "us-east-1"), (b, "ap-south-1")] {
+        let mut env = mk_env(n, "uflexi", "Web", "Green");
+        env.region = Some(region.into());
+        app.environments.push(env);
+        app.cfg.safety_envs.insert(n.into(), true);
+    }
+    app.rebuild_view();
+
+    assert!(
+        app.deny_write_batch(&[a.to_string(), b.to_string()], "Terminate"),
+        "both envs are pinned"
+    );
+
+    let after = std::fs::read_to_string(&path).unwrap_or_default();
+    let delta = after
+        .strip_prefix(&before)
+        .expect("the audit log is append-only");
+
+    for (n, region) in [(a, "us-east-1"), (b, "ap-south-1")] {
+        let lines: Vec<&str> = delta
+            .lines()
+            .filter(|l| l.contains(&format!("target={n}")))
+            .collect();
+        assert_eq!(lines.len(), 1, "one matchable line for {n}: {delta}");
+        assert!(
+            lines[0].contains(&format!("region={region}")),
+            "each refusal takes its own env's region, not home: {}",
+            lines[0]
+        );
+    }
+    assert!(
+        !delta.contains(&format!("{a},{b}")),
+        "no joined target — it matches no env: {delta}"
+    );
+}
+
+/// The safety-config banner must survive a refresh.
+///
+/// It is not a transient notice: while the policy is only partially
+/// readable, every write is refused for the whole session. The refresh
+/// completion clears transient messages, which wiped it within one
+/// cycle — so a live session showed it briefly and then let the
+/// operator discover the refusal at a confirm modal instead. It
+/// persisted only under `--demo`, which never refreshes, which is why
+/// the demo-only test did not catch it.
+#[tokio::test]
+async fn the_safety_banner_survives_a_refresh() {
+    let cfg = crate::config::parse("safety.envs.uflexi-prod = true\n");
+    assert_eq!(
+        cfg.safety_parse_errors.len(),
+        1,
+        "fixture must be malformed"
+    );
+
+    let mut app = App::for_tests(crate::aws::AwsClient::stub(), cfg);
+    assert!(app.error_message.is_some(), "banner shows at startup");
+
+    // Drive a refresh the way a live session does: snapshot, then apply.
+    app.status_snapshot_at_refresh = Some((app.status_message.clone(), app.error_message.clone()));
+    app.apply_refresh(app.fanout_epoch, Ok(vec![]), vec![]);
+
+    let msg = app
+        .error_message
+        .as_deref()
+        .expect("the banner must survive — the writes are still refused");
+    assert!(msg.contains("writes refused"), "{msg}");
+
+    // A healthy config still ends the refresh quiet.
+    let clean = crate::config::parse("safety.envs.uflexi-prod.read_only = true\n");
+    let mut app = App::for_tests(crate::aws::AwsClient::stub(), clean);
+    app.status_snapshot_at_refresh = Some((app.status_message.clone(), app.error_message.clone()));
+    app.apply_refresh(app.fanout_epoch, Ok(vec![]), vec![]);
+    assert!(
+        app.error_message.is_none(),
+        "a healthy session must not gain a banner: {:?}",
+        app.error_message
+    );
+}
+
+/// A fleet-wide refusal must read as fleet-wide, not as a list of
+/// individually-locked envs.
+///
+/// `deny_write_batch` used to carry its own hand-written list of which
+/// rungs are env-independent, and the list drifted in the same release
+/// that added `SafetyConfigUnreadable` — so one broken config line
+/// produced "2 of 2 selected env(s) locked (a, b)", which describes
+/// per-env pins the operator does not have. The knowledge now lives on
+/// the `Refusal` enum, where a new variant cannot dodge the question.
+#[tokio::test]
+async fn a_fleet_wide_refusal_is_not_reported_as_per_env_pins() {
+    let cfg = crate::config::parse("safety.envs.uflexi-prod = true\n");
+    let mut app = App::for_tests(crate::aws::AwsClient::stub(), cfg);
+
+    let envs = vec!["env-a".to_string(), "env-b".to_string()];
+    assert!(app.deny_write_batch(&envs, "Terminate"), "must refuse");
+
+    let msg = app.error_message.as_deref().expect("a refusal toast");
+    assert!(
+        msg.contains("safety config unreadable"),
+        "the whole-fleet reason must lead: {msg}"
+    );
+    assert!(
+        !msg.contains("selected env(s) locked"),
+        "one broken config line is not a set of per-env pins: {msg}"
+    );
+
+    // The env-scoped rungs still produce the per-env list.
+    let mut app = test_app();
+    app.cfg.safety_envs.insert("env-a".into(), true);
+    assert!(app.deny_write_batch(&envs, "Terminate"));
+    let msg = app.error_message.as_deref().expect("a refusal toast");
+    assert!(
+        msg.contains("selected env(s) locked"),
+        "a real per-env pin must still name what to deselect: {msg}"
+    );
+}

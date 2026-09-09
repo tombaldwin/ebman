@@ -887,7 +887,7 @@ pub async fn run(args: &[String]) -> Result<()> {
     // :incident (a --dry-run plans nothing, so it stays allowed).
     // This path had the same blind spot action/replay had.
     if fix && yes {
-        crate::cli::refuse_if_frozen("ebman lint --fix");
+        crate::cli::refuse_if_frozen("ebman lint --fix", "SetOption");
     }
     if webhook.is_some() {
         // CLI mode installs no tracing subscriber — route webhook
@@ -1052,14 +1052,34 @@ pub async fn run(args: &[String]) -> Result<()> {
                     // exiting. Passing it explicitly rather than
                     // reaching for `pin_reason` keeps this path on the
                     // shared decision even so.
-                    if let Some(reason) = crate::cli::write_refusal(
-                        &safety_cfg,
-                        &env.name,
-                        &active_profile_for_safety,
-                        None,
-                        region_opt.as_deref(),
-                        "LintFix",
-                    ) {
+                    // A `--dry-run` preview goes through the pure
+                    // half: it dispatched nothing, so filing
+                    // `stage=refused` would fill the log with refusals
+                    // of writes that were never going to happen. Same
+                    // reasoning the exit-code branch below already
+                    // applies.
+                    let refusal = if yes {
+                        crate::cli::write_refusal(
+                            &safety_cfg,
+                            &env.name,
+                            &active_profile_for_safety,
+                            None,
+                            region_opt.as_deref(),
+                            // The label the fix DISPATCH logs, so a
+                            // refusal correlates with it under `ebman
+                            // audit --action SetOption`.
+                            "SetOption",
+                        )
+                    } else {
+                        crate::cli::write_refusal_parts(
+                            &safety_cfg,
+                            &env.name,
+                            &active_profile_for_safety,
+                            None,
+                        )
+                        .map(|(_, message, _)| message)
+                    };
+                    if let Some(reason) = refusal {
                         if !quiet {
                             eprintln!("ebman lint --fix: {reason}");
                         }
