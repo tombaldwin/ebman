@@ -416,14 +416,36 @@ pub(crate) fn parse(text: &str) -> Config {
                 }
             }
             other if other.starts_with("accounts.") => {
-                // `accounts.NAME.field = "value"`. Split on the dots so
-                // multi-line specs accumulate into one HashMap entry per
-                // NAME. Unknown fields are ignored so a future field
-                // addition can degrade gracefully on older binaries.
+                // `accounts.NAME.field = "value"`. Split on the LAST
+                // dot so multi-line specs accumulate into one HashMap
+                // entry per NAME. Unknown fields are ignored so a future
+                // field addition can degrade gracefully on older
+                // binaries.
+                //
+                // `rsplit_once`: the field is the last segment, so a
+                // dotted account name works. Splitting from the left
+                // read `accounts.company.prod.role_arn` as name
+                // `company`, field `prod.role_arn` — an unrecognised
+                // field, which this arm ignores by design, so the spec
+                // was silently never created and `:account company.prod`
+                // reported no such account. Profile names routinely
+                // contain dots.
                 let rest = other.trim_start_matches("accounts.");
-                let Some((name, field)) = rest.split_once('.') else {
+                let Some((name, field)) = rest.rsplit_once('.') else {
+                    // Preserve it: `:settings` rewrites this file from
+                    // the parsed config, so a `continue` here deletes
+                    // the operator's line on the next save.
+                    cfg.passthrough.push(line.to_string());
                     continue;
                 };
+                let name = name.trim();
+                if name.is_empty() {
+                    // `accounts..role_arn` would otherwise create a spec
+                    // under the empty name, which `contains_key` then
+                    // reports as a real account.
+                    cfg.passthrough.push(line.to_string());
+                    continue;
+                }
                 // The entry is created only once a field we recognise
                 // is seen. Creating it first meant a typo — or a key a
                 // newer release adds — left a spec with an empty ARN
@@ -1446,5 +1468,53 @@ explain.max_tokens = 512
         // name is still caught rather than swallowed into the name.
         let bad = parse("safety.accounts.company.prod.readonly = true\n");
         assert_eq!(bad.safety_parse_errors.len(), 1, "typo must still refuse");
+    }
+
+    /// Profile names routinely contain dots, and `accounts.NAME.field`
+    /// splits the key to find the field. Splitting from the LEFT read
+    /// `accounts.company.prod.role_arn` as name `company`, field
+    /// `prod.role_arn` — unrecognised, and this arm ignores unrecognised
+    /// fields by design, so the spec was silently never created and
+    /// `:account company.prod` reported no such account.
+    ///
+    /// Same bug as `safety.accounts.*` had; found while fixing that one.
+    #[test]
+    fn a_dotted_account_name_builds_its_spec() {
+        let cfg = parse(
+            "accounts.company.prod.role_arn = \"arn:aws:iam::1:role/r\"\n\
+             accounts.company.prod.region = \"eu-west-2\"\n",
+        );
+        let spec = cfg
+            .accounts
+            .get("company.prod")
+            .expect("a dotted account name must build a spec");
+        assert_eq!(spec.role_arn, "arn:aws:iam::1:role/r");
+        assert_eq!(spec.region.as_deref(), Some("eu-west-2"));
+        assert!(
+            !cfg.accounts.contains_key("company"),
+            "and must not create a phantom under the first segment: {:?}",
+            cfg.accounts.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// An `accounts.` line the parser cannot use must survive a save,
+    /// for the same reason a malformed safety pin must: `:settings`
+    /// rewrites the file from the parsed config, so a bare `continue`
+    /// deletes the operator's line.
+    #[test]
+    fn an_unusable_accounts_line_survives_a_save() {
+        for raw in [
+            "accounts.prod = \"oops\"",
+            "accounts..role_arn = \"arn:aws:iam::1:role/r\"",
+        ] {
+            let cfg = parse(&format!("{raw}\n"));
+            assert!(
+                !cfg.accounts.contains_key("") && !cfg.accounts.contains_key("prod"),
+                "{raw} must not create a phantom account: {:?}",
+                cfg.accounts.keys().collect::<Vec<_>>()
+            );
+            let out = serialize(&cfg);
+            assert!(out.contains(raw), "saving deleted {raw:?}: {out}");
+        }
     }
 }
