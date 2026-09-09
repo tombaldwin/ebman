@@ -159,6 +159,18 @@ your shell exports one, pin the region at registration:
 claude mcp add ebman --env AWS_REGION=us-west-1 -- ebman mcp serve
 ```
 
+
+Every tool carries the standard MCP `annotations` — `readOnlyHint`,
+`destructiveHint`, `idempotentHint`, `openWorldHint` — so a client can
+tell a read from a destructive write and prompt accordingly without
+parsing the description. `confirm_action` is annotated at its **worst
+case** (destructive, non-idempotent): it dispatches whatever is pending,
+which may be a terminate, and its token is single-use.
+
+These are hints. They are there so a client asks the right question, not
+as a control — the boundary is IAM, and `--allow-writes` is what
+actually gates the write surface.
+
 v1 is **reads-only** by default — no tool dispatches a write unless the server is started with `--allow-writes` (see Writes below). Tools (all take optional `profile` / `region`):
 
 | Tool | Returns | Notes |

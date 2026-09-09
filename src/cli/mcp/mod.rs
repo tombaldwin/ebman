@@ -33,6 +33,7 @@ use crate::{audit as audit_log, aws, cost_cache, demo_fixture, lint, terraform, 
 /// The MCP protocol revision this server claims. Clients offering a
 /// different revision get this one back (echo-negotiate); the golden
 /// frame test pins it so a bump is a conscious act.
+mod annotations;
 mod setup;
 mod tools;
 mod writes;

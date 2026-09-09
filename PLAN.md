@@ -165,16 +165,29 @@ one never happens. If that stops being true, the stage is wrong.
    because it only ever fired if someone introduced a violation; it now
    carries a canary that proves it detects on every run.
 
-2. **Emit MCP tool annotations** *(mechanical)*
+2. ~~Emit MCP tool annotations~~ — **done 2026-09-09.**
 
    `readOnlyHint` / `destructiveHint` / `idempotentHint` /
    `openWorldHint` on every tool descriptor. Verify the field names
    against the current spec revision first.
 
-   **Useful alone:** any MCP client can then distinguish a read from a
-   write without parsing prose. It is also how the action-attribute
-   vocabulary gets built — the thing stage 4 needs — so this is one
-   piece of work serving two purposes.
+   `src/cli/mcp/annotations.rs` holds one table classifying all 14
+   tools, applied in `tool_table` rather than at each descriptor so a
+   guard can check the table against what is actually advertised.
+   Verified on the wire by driving the real server over stdio in both
+   modes: 14 tools, 0 unannotated.
+
+   The classification that took the most thought is `confirm_action`,
+   annotated at its **worst case** — it dispatches whatever is pending,
+   which may be a terminate, so a client trusting `destructive: false`
+   would skip the prompt on exactly the call that needs one. It is also
+   the only non-idempotent tool: its token is single-use.
+
+   `restart`, `deploy` and `set_option` are deliberately NOT destructive.
+   Flagging everything teaches clients to ignore the flag.
+
+   Five mutations CAUGHT. As intended, the table doubles as stage 4's
+   action vocabulary.
 
 3. **Specify `ask` per surface** *(design — gate on stages 4–5)*
 
