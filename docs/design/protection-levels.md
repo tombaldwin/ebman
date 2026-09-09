@@ -318,6 +318,33 @@ So `ask` must be specified per surface, and the degradation named:
 | CLI | interactive prompt when a TTY is present; otherwise refuse with the document and exit 3 |
 | MCP | elicitation where the client supports it; **otherwise `deny` with `remedy: human`** — never silently downgraded to allow |
 
+**Decided 2026-09-09, and the "where the client supports it" is now
+measurable rather than hopeful.** Elicitation is a *client* capability
+declared at `initialize`, so the server can know per connection whether
+`ask` is expressible on that transport. ebman was discarding that field;
+it now captures and logs it (`client_supports_elicitation`), and nothing
+branches on it yet.
+
+That ordering is deliberate. The open question was whether elicitation
+is usable in the clients that matter, and the design note could not
+answer it. Guessing would have meant either building a middle rung that
+silently degrades to deny for everyone, or assuming support that is not
+there. Logging what real clients declare answers it with data before
+stage 5 depends on it — and if the answer turns out to be "almost
+nobody", that is the stop condition firing with evidence behind it.
+
+Two properties the detector must have, both pinned by tests: a client
+declaring elicitation is recognised (or `ask` degrades to a refusal for
+everyone, and the ladder's middle collapses), and a client declaring
+nothing is *not* treated as able to answer (or a level that should have
+asked will silently proceed).
+
+Note also what `ask` may **not** be wired to. ebman's two-phase
+`confirm_token` flow looks like the obvious mechanism and is not one:
+its own comment records that the agent which plans is the agent which
+receives the token. That is agent-confirms-itself with human
+*visibility* — a reasonable safeguard, and not a human in the loop.
+
 ### Decisions are not always one-shot
 
 The model assumes a single pre-flight "may I?". ebman's own multi-region
