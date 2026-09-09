@@ -145,6 +145,21 @@ what happened. `ebman` already writes an audit line per dispatch tagged
 with provenance (`via=mcp client=<name>`); the policy decision belongs
 on the same line.
 
+**Status: implemented, both halves.** Allows were already covered by the
+`dispatched`/`completed` pair. Denials were not covered at all — a
+refused write never dispatches, so nothing was written and repeated
+attempts against a pinned environment were indistinguishable from
+nobody trying. Refusals now emit `stage=refused` from all four
+enforcement funnels, carrying `rule=` (a stable token, because the
+rendered wording differs per surface by design) and `remedy=` (the
+specific config key, per Principle 3 — a refusal that says "a safety
+pin" leaves an agent to guess, and the guesses are retry, try a
+neighbouring env, or go edit the config).
+
+What is still missing is the *level* on the line: today it records which
+rule refused, not which rung the principal was on. That arrives with the
+levels themselves.
+
 ## Adopt, don't invent
 
 Most of this exists. Inventing it again costs interoperability.
