@@ -100,7 +100,8 @@ safety.accounts.prod.read_only = true
 # it pinned.
 #
 # The line itself is preserved on save, so opening `:settings` while a
-# pin is broken will not delete it. Names may contain dots — the field
+# pin is broken will not delete it. `ebman --demo` applies the same
+# parsing, so it is a safe way to check your pins before going live. Names may contain dots — the field
 # is the last segment, so `safety.accounts.company.prod.read_only` pins
 # the profile `company.prod`.
 

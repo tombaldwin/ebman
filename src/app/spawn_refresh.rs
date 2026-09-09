@@ -1132,6 +1132,18 @@ impl App {
                     self.status_message = None;
                     self.error_message = None;
                 }
+                // Re-assert the safety-config banner. It is not a
+                // transient notice: while the policy is only partially
+                // readable EVERY write is refused, for the whole
+                // session. Clearing it on the first refresh meant the
+                // operator learned about it at a confirm modal instead
+                // — which is exactly what `safety_config_warning`'s own
+                // doc comment calls a poor way to find out. It survived
+                // only under `--demo`, which never refreshes.
+                if self.error_message.is_none() {
+                    self.error_message =
+                        crate::app::safety_config_warning(&self.cfg.safety_parse_errors);
+                }
                 // AFTER the auto-clear above, not before it: a
                 // successful refresh wipes `error_message`, so a
                 // partial-failure notice set at the top of this

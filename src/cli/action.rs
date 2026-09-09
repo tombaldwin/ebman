@@ -77,6 +77,20 @@ enum CliAction {
 }
 
 impl CliAction {
+    /// The label the DISPATCH would log, so a refusal and a dispatch of
+    /// the same verb correlate under `ebman audit --action X`.
+    /// `AuditFilter` matches exactly, so a refusal logged under the CLI
+    /// token (`restart`) is invisible to a filter that finds the
+    /// dispatch (`RestartAppServer`).
+    fn audit_label(self) -> &'static str {
+        match self {
+            // Matches the two `append_action_dispatched` sites in
+            // `run_deploy`.
+            CliAction::Deploy => "Deploy",
+            CliAction::Verb(v) => v.audit_label(),
+        }
+    }
+
     fn parse(name: &str) -> Option<Self> {
         match name {
             "deploy" => Some(CliAction::Deploy),
@@ -263,7 +277,12 @@ pub async fn run(args: &[String]) -> Result<()> {
     // got a different reason depending on which surface refused it —
     // and the freeze is the more urgent of the two: fleet-wide,
     // session-scoped, and the thing that just changed.
-    refuse_write("ebman action", &env, None, action_name);
+    // The audit vocabulary, not the CLI token: a refusal logging
+    // `action=restart` while the dispatch logs `action=RestartAppServer`
+    // means `ebman audit --action RestartAppServer` shows the writes
+    // that happened and hides the ones that were stopped — which is the
+    // correlation this feature exists for.
+    refuse_write("ebman action", &env, None, action.audit_label());
     let aws = aws::AwsClient::with(None, None).await?;
 
     let verb = match action {

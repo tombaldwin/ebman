@@ -79,6 +79,26 @@ impl Refusal {
         }
     }
 
+    /// Whether this refusal is about ONE environment or the whole
+    /// session.
+    ///
+    /// `deny_write_batch` needs to know which rungs are env-independent
+    /// so a fleet-wide refusal reads as one, rather than as a list of
+    /// individually-locked envs. It used to carry its own hand-written
+    /// copy of that list — and the copy drifted in the same release
+    /// that added `SafetyConfigUnreadable`, because nothing pinned it
+    /// to the precedence it was mirroring. Keeping the knowledge on the
+    /// enum means a new variant cannot be added without answering this.
+    pub(crate) fn is_env_scoped(&self) -> bool {
+        match self {
+            Refusal::SafetyConfigUnreadable { .. } => false,
+            Refusal::GlobalReadOnly => false,
+            Refusal::Frozen => false,
+            Refusal::EnvPinned { .. } => true,
+            Refusal::AccountPinned { .. } => true,
+        }
+    }
+
     /// What the operator would have to change to make this write legal.
     ///
     /// Names the control, and only the control. A refusal that says

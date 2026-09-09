@@ -93,12 +93,16 @@ impl App {
     /// scans for per-env / per-account pins. Mirrors the precedence in
     /// [`App::is_read_only_for`]. `verb` names the op for the toast.
     pub(crate) fn deny_write_batch(&mut self, env_names: &[String], verb: &str) -> bool {
-        // Demo mode + global/freeze gates are env-independent: probe
-        // with the first env (or "") so the existing single-env path
-        // produces the familiar "demo mode …" / "read-only mode …" /
-        // "deploys frozen …" toast rather than a per-env list.
+        // Env-independent gates produce the familiar whole-fleet toast
+        // ("demo mode …" / "read-only mode …" / "deploys frozen …")
+        // rather than a per-env list. Which rungs those ARE is asked of
+        // `write_gate`, not restated here: this condition used to name
+        // them by hand and had already drifted by one — a config the
+        // parser could not read fell through to the per-env scan and
+        // reported "N of N selected env(s) locked", which describes
+        // pins the operator does not have.
         let probe = env_names.first().map(|s| s.as_str()).unwrap_or("");
-        if self.demo_mode || self.read_only || self.deploy_freeze.is_some() {
+        if self.demo_mode || self.refusal_for(probe).is_some_and(|r| !r.is_env_scoped()) {
             return self.deny_write(probe, verb);
         }
         let locked: Vec<String> = env_names
@@ -115,12 +119,18 @@ impl App {
         let reason = self
             .read_only_reason(&locked[0])
             .unwrap_or_else(|| "read-only mode".into());
-        // One line for the batch, naming every locked env: the refusal
-        // was refuse-all, and filing it per-env would imply the
-        // unlocked remainder went through, which is exactly the
-        // misreading `deny_write_batch` exists to prevent.
-        if let Some(refusal) = self.refusal_for(&locked[0]) {
-            self.audit_refusal(&locked.join(","), verb, &refusal);
+        // One line PER locked env, not one line naming them all joined.
+        //
+        // The joined form filed `target=env-a,env-b`, which matches no
+        // env — so `ebman audit --env env-a` found nothing, and
+        // `audit_refusal`'s region lookup missed too and fell back to
+        // the home region. That is the wrong-region bug `region_for_name`
+        // carries a comment about, reintroduced by a target string that
+        // was never an env name.
+        for env in &locked {
+            if let Some(refusal) = self.refusal_for(env) {
+                self.audit_refusal(env, verb, &refusal);
+            }
         }
         self.error_message = Some(format!(
             "{reason} — {verb} refused: {} of {} selected env(s) locked ({})",

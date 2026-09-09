@@ -142,6 +142,31 @@ impl Server {
     }
 }
 
+impl Server {
+    /// The write gate for both MCP phases.
+    ///
+    /// Demo goes through the pure half: a demo server still reads the
+    /// REAL cross-process freeze marker, so `ebman mcp serve --demo
+    /// --allow-writes` attempted during a live `:freeze-deploys` was
+    /// appending a real line to the real audit log. This module's own
+    /// docs promise demo writes none, and a refusal being genuine does
+    /// not make the fleet genuine.
+    fn refuse_write(
+        &self,
+        env: &str,
+        profile: &Option<String>,
+        region: Option<&str>,
+        action_label: &str,
+    ) -> Option<String> {
+        let freeze = crate::freeze::read_active();
+        if matches!(self.backend, Backend::Demo) {
+            return crate::cli::write_refusal_parts(&self.safety_cfg, env, profile, freeze)
+                .map(|(_, message, _)| message);
+        }
+        crate::cli::write_refusal(&self.safety_cfg, env, profile, freeze, region, action_label)
+    }
+}
+
 const RETIRED_TOKEN_MEMORY: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -334,11 +359,9 @@ impl Server {
         // construction, so a *pin* added during a long-lived session is
         // not seen until restart. This comment used to claim it was.
         let profile = arg_str(args, "profile");
-        if let Some(msg) = crate::cli::write_refusal(
-            &self.safety_cfg,
+        if let Some(msg) = self.refuse_write(
             &env_name,
             &profile,
-            crate::freeze::read_active(),
             arg_str(args, "region").as_deref(),
             verb.label(),
         ) {
@@ -574,14 +597,9 @@ impl Server {
             // were checked at plan time, but the token window is long
             // enough for an incident to be declared since. A refusal
             // here drops the plan — reality changed, re-plan required.
-            if let Some(msg) = crate::cli::write_refusal(
-                &self.safety_cfg,
-                &p.env,
-                &p.profile,
-                crate::freeze::read_active(),
-                p.region.as_deref(),
-                p.verb.label(),
-            ) {
+            if let Some(msg) =
+                self.refuse_write(&p.env, &p.profile, p.region.as_deref(), p.verb.label())
+            {
                 st.pending = None;
                 return Err(msg);
             }
@@ -900,6 +918,54 @@ mod tests {
         assert!(
             line.contains("region=eu-west-2"),
             "the region the agent asked for, not the home region: {line}"
+        );
+    }
+
+    /// A demo MCP server must refuse the same way and write nothing.
+    ///
+    /// Demo gets `Config::default()` (no pins), but `freeze::read_active`
+    /// reads the REAL cross-process marker — so a demo write attempted
+    /// during a live `:freeze-deploys` was appending a real line to the
+    /// real audit log, against this module's stated contract.
+    #[tokio::test]
+    async fn a_demo_server_refuses_without_writing_an_audit_line() {
+        let env_name = "mcp-demo-refusal-probe-env";
+        let mut cfg = crate::config::Config::default();
+        cfg.safety_envs.insert(env_name.into(), true);
+
+        let path = crate::util::cache_dir().join("audit.log");
+
+        // Real backend: refuses AND records.
+        let real = Server::with_config(false, false, true, cfg.clone());
+        let before = std::fs::read_to_string(&path).unwrap_or_default();
+        let _ = real
+            .tool_write_plan(WriteVerb::Terminate, &json!({"env": env_name}))
+            .await
+            .expect_err("pinned env must refuse");
+        let after = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            after
+                .strip_prefix(&before)
+                .unwrap_or(&after)
+                .contains(env_name),
+            "a real refusal must still be recorded"
+        );
+
+        // Demo backend: refuses, records NOTHING.
+        let demo = Server::with_config(true, false, true, cfg);
+        let before = std::fs::read_to_string(&path).unwrap_or_default();
+        let err = demo
+            .tool_write_plan(WriteVerb::Terminate, &json!({"env": env_name}))
+            .await
+            .expect_err("demo must still refuse — the verdict is real");
+        assert!(err.contains("safety.envs"), "{err}");
+        let after = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            !after
+                .strip_prefix(&before)
+                .unwrap_or(&after)
+                .contains(env_name),
+            "demo mode writes NO audit lines"
         );
     }
 }

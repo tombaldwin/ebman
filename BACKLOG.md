@@ -533,3 +533,43 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
 - **[bottom](https://github.com/ClementTsang/bottom)** — ratatui dashboard widget patterns; Metrics tab follows this.
 - **[harlequin](https://github.com/tconbeer/harlequin)** / **[atuin](https://github.com/atuinsh/atuin)** — fuzzy-find UI patterns for filtering long streams.
 - **[tig](https://github.com/jonas/tig)** — paged event-log + ref panel for timeline views.
+
+- [ ] **TUI refusal audit lines use toast verbs, not the dispatch
+  vocabulary.** `App::deny_write(env, verb)` passes the toast phrase
+  ("action menu", "config editing", ":capacity") straight to
+  `audit_refusal` as the `action=` token, while the matching dispatch
+  logs `Action`'s label (`Terminate`, `UpdateOptionSettings`). Since
+  `AuditFilter` matches exactly, `ebman audit --action Terminate` shows
+  the writes that happened and hides the ones that were stopped — the
+  correlation `stage=refused` exists for. The CLI half of this was fixed
+  in 0.37 (`CliAction::audit_label`, and lint passing `SetOption`); the
+  TUI half is 38 call sites whose verbs do not all map to a single
+  `Action` variant, so it wants per-site judgement rather than a
+  mechanical sweep. The injection risk is already closed — `action=` goes
+  through `field_token`. Found by the 0.37 correctness review.
+
+- [ ] **Split `cli::write_refusal` the way `app/safety.rs` is split.**
+  0.37 extracted `write_refusal_parts` (decide + render, pure) with
+  `write_refusal` as the auditing funnel, which fixed the demo-mode
+  leak. It stops short of the TUI's three-way shape (`refusal_for` /
+  `render_refusal` / `audit_refusal`): the CLI's rendering is still
+  inline in the pure half. Worth finishing when stage 5's `Decision`
+  lands, since that changes the return type anyway. Raised by the 0.37
+  architecture review.
+
+- [ ] **`config::parse`'s `alarm_dimensions` arm is ~50 lines inline.**
+  `parse` is ~240 lines, under the ~300 trigger but the closest to it.
+  Extracting `parse_alarm_dimensions(&str) -> Vec<String>` as a sibling
+  of `parse_profile_themes` would follow existing precedent and keep
+  `parse` a router. Raised by the 0.37 architecture review.
+
+- [ ] **The MCP annotations table is the wrong long-term home for the
+  action vocabulary.** `src/cli/mcp/annotations.rs` is `pub(super)`
+  inside the transport module and keyed by MCP tool names — including
+  `confirm_action`, which is transport machinery rather than an action —
+  and covers only the 14 MCP tools, while the action space the
+  protection levels must govern is wider (DLQ purge, alarm-create,
+  rollback, swap). When stage 5 needs it, move it to a neutral module
+  keyed by action verb and derive the MCP annotations from that, rather
+  than wiring the levels engine to `cli::mcp::annotations` and growing a
+  second table that drifts. Raised by the 0.37 architecture review.

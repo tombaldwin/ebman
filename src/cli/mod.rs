@@ -76,8 +76,23 @@ pub(crate) use crate::util::{json_escape as cli_esc, json_string};
 /// the pin refusal. These paths had the same blind spot the MCP
 /// write tools would have had: a fleet frozen mid-incident could
 /// still be written from a second terminal.
-pub(crate) fn refuse_if_frozen(prog: &str) {
+pub(crate) fn refuse_if_frozen(prog: &str, action_label: &str) {
     if let Some(m) = crate::freeze::read_active() {
+        // Audited like every other refusal. This was the one CLI
+        // refusal path the `stage=refused` work missed: it exits before
+        // reaching `write_refusal`, so a fleet-wide freeze stopping a
+        // `lint --fix` run left no trace while a per-env pin stopping
+        // the same run left one.
+        let refusal = crate::write_gate::Refusal::Frozen;
+        crate::audit::append_action_refused(
+            None,
+            std::env::var("AWS_PROFILE").ok().as_deref(),
+            "-",
+            action_label,
+            "-",
+            refusal.rule(),
+            &refusal.remedy(),
+        );
         eprintln!("{prog}: refusing — {}", crate::freeze::refusal_message(&m));
         std::process::exit(3);
     }
@@ -106,6 +121,45 @@ pub(crate) fn write_refusal(
     region: Option<&str>,
     action_label: &str,
 ) -> Option<String> {
+    let (refusal, message, pin_profile) =
+        write_refusal_parts(safety_cfg, env, profile, active_freeze)?;
+    // Record the attempt. Every CLI and MCP write path funnels through
+    // here, so this is the one place that sees a refusal on this side.
+    //
+    // The region is whatever the caller could honestly resolve. These
+    // refusals happen BEFORE any AWS client is built, and the rules
+    // (freeze, env pin, account pin) are region-independent anyway, so
+    // an unknown region is recorded as unknown rather than guessed at
+    // as home — a line filed against the wrong region is worse than one
+    // that admits it does not know.
+    crate::audit::append_action_refused(
+        None,
+        pin_profile.as_deref(),
+        region.unwrap_or("-"),
+        action_label,
+        env,
+        refusal.rule(),
+        &refusal.remedy(),
+    );
+    Some(message)
+}
+
+/// Decide and render, with NO side effect.
+///
+/// Split out because `--demo` must reach the same verdict while writing
+/// nothing: a demo MCP server still reads the real cross-process freeze
+/// marker, so a demo write attempt during a live incident was appending
+/// a real line to the real audit log. Demo's contract is that it touches
+/// nothing real, and the refusal being genuine does not change that.
+///
+/// Returns the refusal, its rendered message, and the profile the pin
+/// was resolved against.
+pub(crate) fn write_refusal_parts(
+    safety_cfg: &crate::config::Config,
+    env: &str,
+    profile: &Option<String>,
+    active_freeze: Option<crate::freeze::FreezeMarker>,
+) -> Option<(crate::write_gate::Refusal, String, Option<String>)> {
     // The profile fallback is resolved HERE rather than inside the
     // decision, which used to read `AWS_PROFILE` itself — an ambient
     // read that made it impossible to test without touching the process
@@ -127,29 +181,8 @@ pub(crate) fn write_refusal(
         safety_accounts: &safety_cfg.safety_accounts,
     })?;
 
-    // Record the attempt before rendering it. Every CLI and MCP write
-    // path funnels through here, so this is the one place that sees a
-    // refusal on this side — and until it did, a blocked write left no
-    // trace at all.
-    //
-    // The region is whatever the caller could honestly resolve. These
-    // refusals happen BEFORE any AWS client is built, and the rules
-    // (freeze, env pin, account pin) are region-independent anyway, so
-    // an unknown region is recorded as unknown rather than guessed at
-    // as home — a line filed against the wrong region is worse than one
-    // that admits it does not know.
-    crate::audit::append_action_refused(
-        None,
-        pin_profile.as_deref(),
-        region.unwrap_or("-"),
-        action_label,
-        env,
-        refusal.rule(),
-        &refusal.remedy(),
-    );
-
     // Wording stays the CLI's own — see `write_gate`'s module docs.
-    Some(match refusal {
+    let message = match &refusal {
         crate::write_gate::Refusal::SafetyConfigUnreadable { problem } => {
             format!("refusing {env} — safety config unreadable: {problem}")
         }
@@ -173,7 +206,8 @@ pub(crate) fn write_refusal(
         crate::write_gate::Refusal::GlobalReadOnly => {
             format!("refusing {env} — read-only mode")
         }
-    })
+    };
+    Some((refusal, message, pin_profile))
 }
 
 /// CLI wrapper over [`write_refusal`]: read the world, print, exit 3.
