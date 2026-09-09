@@ -97,6 +97,11 @@ pub(super) fn tool_table(allow_writes: bool) -> Value {
             arr.extend(writes::write_tool_descriptors());
         }
     }
+    // Annotate here rather than at each descriptor, so the
+    // classification lives in one table a guard can check against the
+    // advertised tools. Inline hints would drift the moment someone
+    // added a tool by copying its neighbour.
+    super::annotations::annotate(&mut tools);
     tools
 }
 
