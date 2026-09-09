@@ -66,12 +66,15 @@ impl App {
             ));
             return true;
         }
-        if !self.is_read_only_for(env_name) {
+        let Some(refusal) = self.refusal_for(env_name) else {
             return false;
-        }
-        let reason = self
-            .read_only_reason(env_name)
-            .unwrap_or_else(|| "read-only mode".into());
+        };
+        // Record the attempt. Until this landed a blocked write left no
+        // trace whatsoever — the dispatch never happened, so there was
+        // no dispatched/completed pair, and repeated attempts on a
+        // pinned env were indistinguishable from nobody trying.
+        self.audit_refusal(env_name, verb, &refusal);
+        let reason = self.render_refusal(&refusal);
         self.error_message = Some(format!("{reason} — {verb} disabled"));
         true
     }
@@ -112,6 +115,13 @@ impl App {
         let reason = self
             .read_only_reason(&locked[0])
             .unwrap_or_else(|| "read-only mode".into());
+        // One line for the batch, naming every locked env: the refusal
+        // was refuse-all, and filing it per-env would imply the
+        // unlocked remainder went through, which is exactly the
+        // misreading `deny_write_batch` exists to prevent.
+        if let Some(refusal) = self.refusal_for(&locked[0]) {
+            self.audit_refusal(&locked.join(","), verb, &refusal);
+        }
         self.error_message = Some(format!(
             "{reason} — {verb} refused: {} of {} selected env(s) locked ({})",
             locked.len(),
@@ -127,21 +137,35 @@ impl App {
     /// called this; defensive return). The three reasons are ordered
     /// to match `is_read_only_for`'s precedence.
     pub(crate) fn read_only_reason(&self, env_name: &str) -> Option<String> {
+        Some(self.render_refusal(&self.refusal_for(env_name)?))
+    }
+
+    /// The typed decision for `env_name`, before any wording is applied.
+    ///
+    /// Split out from `read_only_reason` because a refusal now has to be
+    /// *recorded* as well as shown, and the audit log needs the rule
+    /// name — which is precisely what rendering throws away.
+    pub(crate) fn refusal_for(&self, env_name: &str) -> Option<crate::write_gate::Refusal> {
         // The DECISION is `write_gate::decide`, shared with the CLI and
         // MCP paths. The WORDING below is not shared and should not be:
         // a toast can afford the freeze age and the `:incident END`
         // hint, and a CLI line cannot. Converging the messages too
         // would have been a visible regression for no benefit.
-        let refusal = crate::write_gate::decide(&crate::write_gate::WriteContext {
+        crate::write_gate::decide(&crate::write_gate::WriteContext {
             env: env_name,
             profile: self.context.profile.as_deref(),
             global_read_only: self.read_only,
             frozen: self.deploy_freeze.is_some(),
             safety_envs: &self.cfg.safety_envs,
             safety_accounts: &self.cfg.safety_accounts,
-        })?;
+        })
+    }
 
-        Some(match refusal {
+    /// Render a refusal in the TUI's voice — the freeze age, the
+    /// `:incident END` hint. See `write_gate`'s module docs for why this
+    /// is deliberately not shared with the CLI.
+    fn render_refusal(&self, refusal: &crate::write_gate::Refusal) -> String {
+        match refusal {
             crate::write_gate::Refusal::GlobalReadOnly => "read-only mode (global toggle)".into(),
             crate::write_gate::Refusal::Frozen => {
                 // `decide` only reports THAT a freeze applies; the
@@ -157,7 +181,7 @@ impl App {
                 // this module exists to avoid. Refuse with less detail
                 // instead.
                 let Some(freeze) = self.deploy_freeze.as_ref() else {
-                    return Some("deploys frozen".into());
+                    return "deploys frozen".into();
                 };
                 let age = (chrono::Utc::now() - freeze.frozen_at).num_seconds().max(0);
                 let age =
@@ -186,6 +210,23 @@ impl App {
             crate::write_gate::Refusal::AccountPinned { profile } => {
                 format!("read-only mode (account pinned via safety.accounts.{profile})")
             }
-        })
+        }
+    }
+
+    /// Record a refusal in the audit log.
+    ///
+    /// The region is the ROW's, not home: under a multi-region fan-out
+    /// the selected env is usually elsewhere, and an audit line filed
+    /// against the wrong region is worse than none.
+    fn audit_refusal(&self, target: &str, verb: &str, refusal: &crate::write_gate::Refusal) {
+        crate::audit::append_action_refused(
+            self.context.account_id.as_deref(),
+            self.context.profile.as_deref(),
+            &self.region_for_name(target),
+            verb,
+            target,
+            refusal.rule(),
+            &refusal.remedy(),
+        );
     }
 }

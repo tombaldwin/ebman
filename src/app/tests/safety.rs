@@ -1324,3 +1324,95 @@ async fn ctrl_chords_do_not_move_the_swap_target_picker() {
         );
     }
 }
+
+/// A refused write must leave a trace.
+///
+/// The gap this closes: a blocked write never dispatches, so no
+/// `dispatched`/`completed` pair was ever written and repeated attempts
+/// on a pinned env were indistinguishable from nobody trying at all.
+///
+/// Reads the log back rather than asserting on a formatter, so the
+/// wiring is pinned and not a copy of it. Follows the append-only
+/// delta convention from `tests/region.rs`: every test in this process
+/// shares one audit file, so the env name is unique to this test and
+/// the delta is taken with `strip_prefix`.
+#[tokio::test]
+async fn a_refused_write_is_recorded_with_its_rule_and_remedy() {
+    let env_name = "refusal-audit-probe-env";
+    let path = crate::util::cache_dir().join("audit.log");
+    let before = std::fs::read_to_string(&path).unwrap_or_default();
+
+    let mut app = test_app();
+    app.cfg.safety_envs.insert(env_name.into(), true);
+    assert!(app.deny_write(env_name, "Terminate"), "must refuse");
+
+    let after = std::fs::read_to_string(&path).unwrap_or_default();
+    let delta = after
+        .strip_prefix(&before)
+        .expect("the audit log is append-only");
+    let lines: Vec<&str> = delta.lines().filter(|l| l.contains(env_name)).collect();
+    assert_eq!(lines.len(), 1, "exactly one line for the refusal: {delta}");
+    let line = lines[0];
+
+    assert!(
+        line.contains("stage=refused"),
+        "a policy denial is not stage=skipped, which means a benign \
+         non-dispatch: {line}"
+    );
+    assert!(line.contains("action=Terminate"), "{line}");
+    assert!(
+        line.contains("rule=env_pinned"),
+        "the rule must be named by a stable token, not by prose that \
+         moves when a toast is reworded: {line}"
+    );
+    assert!(
+        line.contains(&format!("safety.envs.{env_name}.read_only")),
+        "the remedy must name the control that would have to change: {line}"
+    );
+}
+
+/// Demo mode refuses, and must STILL write no audit line.
+///
+/// `--demo` runs a synthetic fleet against a fake client; its whole
+/// contract is that it touches nothing real. A refusal is the easiest
+/// place to break that, because the refusal is genuine even though the
+/// fleet is not.
+#[tokio::test]
+async fn demo_mode_refuses_without_writing_an_audit_line() {
+    let env_name = "demo-refusal-probe-env";
+    let path = crate::util::cache_dir().join("audit.log");
+    let before = std::fs::read_to_string(&path).unwrap_or_default();
+
+    let mut app = test_app();
+    app.demo_mode = true;
+    app.cfg.safety_envs.insert(env_name.into(), true);
+    assert!(app.deny_write(env_name, "Terminate"), "demo must refuse");
+
+    let after = std::fs::read_to_string(&path).unwrap_or_default();
+    let delta = after.strip_prefix(&before).unwrap_or(&after);
+    assert!(
+        !delta.contains(env_name),
+        "demo mode writes NO audit lines: {delta}"
+    );
+}
+
+/// A write that is ALLOWED must not file a refusal.
+///
+/// Without this, an implementation that audits unconditionally passes
+/// the refusal test above while filing a denial for every legal write.
+#[tokio::test]
+async fn an_allowed_write_files_no_refusal() {
+    let env_name = "allowed-write-probe-env";
+    let path = crate::util::cache_dir().join("audit.log");
+    let before = std::fs::read_to_string(&path).unwrap_or_default();
+
+    let mut app = test_app();
+    assert!(!app.deny_write(env_name, "Restart"), "must allow");
+
+    let after = std::fs::read_to_string(&path).unwrap_or_default();
+    let delta = after.strip_prefix(&before).unwrap_or(&after);
+    assert!(
+        !delta.contains(env_name),
+        "an allowed write is not a refusal: {delta}"
+    );
+}
