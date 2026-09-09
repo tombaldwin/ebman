@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.37.0] — 2026-09-09
+
+**A safety release.** Three things that were meant to protect an
+environment were quietly failing open, and a fourth left no evidence
+that anything had been stopped. A safety control that fails open is
+worse than none, because it is trusted.
+
 ### Added
 
 - **MCP tool annotations.** Every tool descriptor now carries
@@ -2807,7 +2814,8 @@ Initial public release. Headline surface:
 - Published to crates.io as `ebman`.
 - Homebrew tap at `tombaldwin/homebrew-tap`.
 
-[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.36.0...HEAD
+[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.37.0...HEAD
+[0.37.0]: https://github.com/tombaldwin/ebman/compare/v0.36.0...v0.37.0
 [0.36.0]: https://github.com/tombaldwin/ebman/compare/v0.35.0...v0.36.0
 [0.35.0]: https://github.com/tombaldwin/ebman/compare/v0.34.2...v0.35.0
 [0.34.2]: https://github.com/tombaldwin/ebman/compare/v0.34.1...v0.34.2
