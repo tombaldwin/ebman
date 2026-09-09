@@ -594,8 +594,46 @@ pub(crate) fn config_path() -> PathBuf {
 /// crash mid-write can't truncate `config.toml`.
 pub(crate) fn save(cfg: &Config) -> std::io::Result<()> {
     let path = config_path();
+    refuse_to_clobber_unreadable(std::fs::read_to_string(&path).map(|_| ()), &path)?;
     let body = serialize(cfg);
     crate::util::write_atomic(&path, &body)
+}
+
+/// Refuse to overwrite a `config.toml` that exists but could not be
+/// read.
+///
+/// `write_atomic` renames over the target using DIRECTORY permissions,
+/// so a file the process cannot READ can still be replaced. That turns
+/// the fail-closed refusal into the thing it was protecting against:
+/// an unreadable config refuses every write, the refusal sends the
+/// operator to `:settings` to investigate, and saving there replaces
+/// the file — with a serialisation of a config that has none of its
+/// pins, because they could not be parsed. The refusal then lifts and
+/// the environment is writeable.
+///
+/// A *missing* file is fine — that is the ordinary first-run case, and
+/// there is nothing to destroy.
+///
+/// Takes the read result rather than performing it, so both arms are
+/// testable without engineering an unreadable file.
+fn refuse_to_clobber_unreadable(
+    read: std::io::Result<()>,
+    path: &std::path::Path,
+) -> std::io::Result<()> {
+    match read {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(std::io::Error::new(
+            e.kind(),
+            format!(
+                "{} exists but could not be read ({e}) — refusing to \
+                 overwrite it, because anything in it (including safety \
+                 pins) would be lost. Fix the file's permissions or \
+                 encoding, then retry.",
+                path.display()
+            ),
+        )),
+    }
 }
 
 /// Pure: render a `Config` into the TOML-ish line-oriented format the
@@ -1648,5 +1686,72 @@ explain.max_tokens = 512
         let ok = config_from_read(Ok("safety.envs.prod.read_only = true\n".into()), path);
         assert!(ok.safety_parse_errors.is_empty());
         assert_eq!(ok.safety_envs.get("prod"), Some(&true));
+    }
+
+    /// Saving must not destroy a config it could not read.
+    ///
+    /// The loop this breaks: an unreadable `config.toml` refuses every
+    /// write, the refusal sends the operator to `:settings` to find out
+    /// why, and the save replaces the file with a serialisation that has
+    /// none of the pins — because none could be parsed. The refusal
+    /// lifts and the environment is writeable. `write_atomic` renames
+    /// over the target using directory permissions, so being unable to
+    /// READ the file does not prevent replacing it.
+    #[test]
+    fn a_save_refuses_to_clobber_an_unreadable_config() {
+        use std::io::{Error, ErrorKind};
+        let path = std::path::Path::new("/tmp/does-not-matter/config.toml");
+
+        // Readable, and missing, both proceed.
+        assert!(refuse_to_clobber_unreadable(Ok(()), path).is_ok());
+        assert!(
+            refuse_to_clobber_unreadable(Err(Error::from(ErrorKind::NotFound)), path).is_ok(),
+            "first run has nothing to destroy"
+        );
+
+        for kind in [
+            ErrorKind::PermissionDenied,
+            ErrorKind::InvalidData,
+            ErrorKind::Other,
+        ] {
+            let err = refuse_to_clobber_unreadable(Err(Error::from(kind)), path)
+                .expect_err("{kind:?} must refuse the save");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("refusing to overwrite"),
+                "the operator must be told the save did not happen: {msg}"
+            );
+            assert!(msg.contains("config.toml"), "and which file: {msg}");
+        }
+    }
+
+    /// The guard must be WIRED, not merely present.
+    ///
+    /// `save` writes to the shared test config dir, so driving it for
+    /// real would race every other test that calls `load()`. This pins
+    /// the call instead: the previous version of this work tested the
+    /// helper alone, and the suite stayed green with the call removed
+    /// from `save` entirely.
+    #[test]
+    fn save_calls_the_clobber_guard() {
+        let src = std::fs::read_to_string("src/config.rs").expect("read own source");
+        let body = src
+            .split("pub(crate) fn save(cfg: &Config)")
+            .nth(1)
+            .expect("save is defined here")
+            .split("\n}")
+            .next()
+            .expect("save has a body");
+        assert!(
+            body.contains("refuse_to_clobber_unreadable("),
+            "save() must consult the guard before write_atomic, or an \
+             unreadable config.toml is replaced by one with no pins: {body}"
+        );
+        // Canary: the extraction must actually be finding `save`'s body
+        // and not an empty string, which would pass any `contains`.
+        assert!(
+            body.contains("write_atomic"),
+            "the body extraction is not finding save(): {body}"
+        );
     }
 }

@@ -76,7 +76,7 @@ pub(crate) use crate::util::{json_escape as cli_esc, json_string};
 /// the pin refusal. These paths had the same blind spot the MCP
 /// write tools would have had: a fleet frozen mid-incident could
 /// still be written from a second terminal.
-pub(crate) fn refuse_if_frozen(prog: &str, action_label: &str) {
+pub(crate) async fn refuse_if_frozen(prog: &str, action_label: &str) {
     if let Some(m) = crate::freeze::read_active() {
         // Audited like every other refusal. This was the one CLI
         // refusal path the `stage=refused` work missed: it exits before
@@ -94,7 +94,11 @@ pub(crate) fn refuse_if_frozen(prog: &str, action_label: &str) {
             &refusal.remedy(),
         );
         eprintln!("{prog}: refusing — {}", crate::freeze::refusal_message(&m));
-        std::process::exit(3);
+        // Drain first: the refusal's own webhook POST is spawned
+        // fire-and-forget, and `process::exit` cancels spawned tasks —
+        // so the notification that a write was STOPPED was the one an
+        // integration never received.
+        exit_after_drain(3).await;
     }
 }
 
@@ -221,7 +225,7 @@ pub(crate) fn write_refusal_unaudited(
 /// `subject` is what the message names — usually the env, but
 /// `audit replay` says "restart on api-prod", which is more useful and
 /// worth keeping.
-pub(crate) fn refuse_write(
+pub(crate) async fn refuse_write(
     prog: &str,
     subject: &str,
     env: &str,
@@ -245,7 +249,9 @@ pub(crate) fn refuse_write(
             .map(|r| format!("refusing {subject} — {r}"))
             .unwrap_or(reason);
         eprintln!("{prog}: {reason}");
-        std::process::exit(3);
+        // Same reason as `refuse_if_frozen`: without the drain the
+        // refusal's webhook POST dies with the process.
+        exit_after_drain(3).await;
     }
 }
 
@@ -617,5 +623,44 @@ mod write_gate_input_guard {
              AWS_PROFILE instead of the account the write runs under: \
              {offenders:?}"
         );
+    }
+
+    /// Both process-exiting refusal paths must drain webhooks first.
+    ///
+    /// `fire_webhook` is spawned fire-and-forget and `process::exit`
+    /// cancels spawned tasks, so the notification that a write was
+    /// STOPPED was the one an integration never received — while the
+    /// notification that one SUCCEEDED arrived, because the success
+    /// paths already drain. Pinned by source because the alternative is
+    /// exiting the test process.
+    #[test]
+    fn refusal_exits_drain_webhooks_first() {
+        let src = std::fs::read_to_string("src/cli/mod.rs").expect("read own source");
+        for f in [
+            "pub(crate) async fn refuse_if_frozen",
+            "pub(crate) async fn refuse_write",
+        ] {
+            let body = src
+                .split(f)
+                .nth(1)
+                .unwrap_or_else(|| panic!("{f} is defined here"))
+                .split("\n}")
+                .next()
+                .expect("has a body");
+            assert!(
+                body.contains("exit_after_drain("),
+                "{f} must drain before exiting, or the refusal's webhook \
+                 dies with the process: {body}"
+            );
+            assert!(
+                !body.contains("std::process::exit("),
+                "{f} must not bypass the draining exit: {body}"
+            );
+            // Canary: prove the body extraction found something real.
+            assert!(
+                body.contains("eprintln!"),
+                "body extraction is not finding {f}: {body}"
+            );
+        }
     }
 }
