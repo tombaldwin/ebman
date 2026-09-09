@@ -154,6 +154,7 @@ impl App {
         crate::write_gate::decide(&crate::write_gate::WriteContext {
             env: env_name,
             profile: self.context.profile.as_deref(),
+            safety_parse_errors: &self.cfg.safety_parse_errors,
             global_read_only: self.read_only,
             frozen: self.deploy_freeze.is_some(),
             safety_envs: &self.cfg.safety_envs,
@@ -166,6 +167,12 @@ impl App {
     /// is deliberately not shared with the CLI.
     fn render_refusal(&self, refusal: &crate::write_gate::Refusal) -> String {
         match refusal {
+            crate::write_gate::Refusal::SafetyConfigUnreadable { problem } => {
+                // The problem string names the offending line, which is
+                // the whole point: "your safety config is broken" sends
+                // the operator hunting.
+                format!("safety config unreadable — {problem}")
+            }
             crate::write_gate::Refusal::GlobalReadOnly => "read-only mode (global toggle)".into(),
             crate::write_gate::Refusal::Frozen => {
                 // `decide` only reports THAT a freeze applies; the

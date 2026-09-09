@@ -36,6 +36,9 @@ pub(crate) struct WriteContext<'a> {
     /// bool here because the *decision* is the same either way and only
     /// the message differs.
     pub frozen: bool,
+    /// Lines under `safety.` the parser could not fully understand.
+    /// Non-empty means the policy is only partially readable.
+    pub safety_parse_errors: &'a [String],
     pub safety_envs: &'a HashMap<String, bool>,
     pub safety_accounts: &'a HashMap<String, bool>,
 }
@@ -44,10 +47,19 @@ pub(crate) struct WriteContext<'a> {
 /// not the prose itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Refusal {
+    /// The safety config has a line this version cannot act on, so the
+    /// policy is only partially known.
+    SafetyConfigUnreadable {
+        problem: String,
+    },
     GlobalReadOnly,
     Frozen,
-    EnvPinned { env: String },
-    AccountPinned { profile: String },
+    EnvPinned {
+        env: String,
+    },
+    AccountPinned {
+        profile: String,
+    },
 }
 
 impl Refusal {
@@ -59,6 +71,7 @@ impl Refusal {
     /// needs a name that does not move when a toast is reworded.
     pub(crate) fn rule(&self) -> &'static str {
         match self {
+            Refusal::SafetyConfigUnreadable { .. } => "safety_config_unreadable",
             Refusal::GlobalReadOnly => "global_read_only",
             Refusal::Frozen => "frozen",
             Refusal::EnvPinned { .. } => "env_pinned",
@@ -76,6 +89,9 @@ impl Refusal {
     /// human.
     pub(crate) fn remedy(&self) -> String {
         match self {
+            Refusal::SafetyConfigUnreadable { problem } => {
+                format!("fix config.toml — {problem}")
+            }
             Refusal::GlobalReadOnly => {
                 "clear read-only mode (:readonly off, or restart without --read-only)".into()
             }
@@ -102,6 +118,23 @@ impl Refusal {
 /// pins because it is the incident lever — an operator who froze the
 /// fleet should be told that, not told about a pin they set last month.
 pub(crate) fn decide(ctx: &WriteContext<'_>) -> Option<Refusal> {
+    // FIRST, above every other rung. The others answer "does a rule
+    // forbid this write"; this one answers "do we know what the rules
+    // are". A parser that skipped what it could not read let
+    // `safety.envs.prod = true` — a pin missing its field — leave prod
+    // writeable, with nothing anywhere reporting it. An operator who
+    // writes a line under `safety.` has stated an intent to restrict,
+    // and the one reading that cannot be honoured is the one where a
+    // mistake costs most.
+    //
+    // Refusing everything rather than guessing which env was meant: the
+    // guess can be wrong, and `:settings` writes the config back, so a
+    // guessed pin would be promoted to a durable one.
+    if let Some(problem) = ctx.safety_parse_errors.first() {
+        return Some(Refusal::SafetyConfigUnreadable {
+            problem: problem.clone(),
+        });
+    }
     if ctx.global_read_only {
         return Some(Refusal::GlobalReadOnly);
     }
@@ -139,12 +172,17 @@ mod tests {
         fn new() -> Self {
             Self {
                 envs: map(&[("pinned-env", true), ("open-env", false)]),
-                // The empty-string key is deliberate. A malformed
-                // config line (`safety.accounts..read_only = true`)
-                // produces one, and without it in the fixture a bug
-                // that consults the account map with no profile
+                // The empty-string key is deliberate: without it, a
+                // bug that consults the account map with no profile
                 // resolved is indistinguishable from correct code —
                 // the lookup simply misses. Verified by mutation.
+                //
+                // It no longer models a real config line. It used to:
+                // `safety.accounts..read_only = true` produced an
+                // empty-string key, until the parser started refusing
+                // lines it cannot act on. Kept because the defence is
+                // still worth having and the map is `pub` — but it is a
+                // synthetic case now, not a reachable one.
                 accounts: map(&[("pinned-acct", true), ("open-acct", false), ("", true)]),
             }
         }
@@ -154,6 +192,7 @@ mod tests {
                 profile,
                 global_read_only: false,
                 frozen: false,
+                safety_parse_errors: &[],
                 safety_envs: &self.envs,
                 safety_accounts: &self.accounts,
             }
@@ -312,5 +351,46 @@ mod tests {
                 _ => {}
             }
         }
+    }
+
+    /// An unreadable safety policy refuses every write, and outranks
+    /// every other rung.
+    ///
+    /// The rung exists because the other four answer "does a rule forbid
+    /// this write", and this one answers "do we know what the rules
+    /// are". Ordering it below any of them would let a write through on
+    /// an env whose pin is exactly the line that failed to parse.
+    #[test]
+    fn an_unreadable_safety_config_refuses_every_write() {
+        let f = Fixture::new();
+        let errors = vec!["safety.envs.prod is missing a field".to_string()];
+
+        // Even an env with no pin at all, under no freeze, is refused.
+        let mut ctx = f.ctx("open-env", Some("open-acct"));
+        ctx.safety_parse_errors = &errors;
+        let refusal = decide(&ctx).expect("an unreadable policy must refuse");
+        assert_eq!(refusal.rule(), "safety_config_unreadable");
+        assert!(
+            refusal.remedy().contains("safety.envs.prod"),
+            "the remedy must name the offending line: {}",
+            refusal.remedy()
+        );
+
+        // And it outranks the freeze, which is otherwise the top rung.
+        let mut ctx = f.ctx("open-env", None);
+        ctx.safety_parse_errors = &errors;
+        ctx.frozen = true;
+        ctx.global_read_only = true;
+        assert_eq!(
+            decide(&ctx).map(|r| r.rule()),
+            Some("safety_config_unreadable"),
+            "a policy we cannot read outranks one we can"
+        );
+
+        // No errors → the other rungs behave exactly as before.
+        assert!(
+            decide(&f.ctx("open-env", Some("open-acct"))).is_none(),
+            "a clean config must still allow writes"
+        );
     }
 }

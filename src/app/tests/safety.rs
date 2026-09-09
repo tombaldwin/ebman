@@ -1416,3 +1416,41 @@ async fn an_allowed_write_files_no_refusal() {
         "an allowed write is not a refusal: {delta}"
     );
 }
+
+/// A partially-readable safety policy must announce itself at startup,
+/// not on the first blocked keystroke.
+///
+/// Driven through `for_tests`, which is the constructor `--demo` also
+/// builds on. That matters: `deny_write` documents `--demo` as the way
+/// to validate `safety.envs.*` before going live, so a demo session
+/// that stayed quiet about an unparseable pin would be hiding the one
+/// thing wrong with the config it was being used to check.
+#[tokio::test]
+async fn an_unreadable_safety_config_announces_itself_at_startup() {
+    let cfg = crate::config::parse("safety.envs.uflexi-prod = true\n");
+    assert_eq!(
+        cfg.safety_parse_errors.len(),
+        1,
+        "fixture must actually be malformed, or this test proves nothing"
+    );
+
+    let app = App::for_tests(crate::aws::AwsClient::stub(), cfg);
+    let msg = app
+        .error_message
+        .as_deref()
+        .expect("a policy that refuses every write must say so up front");
+    assert!(msg.contains("writes refused"), "{msg}");
+    assert!(
+        msg.contains("uflexi-prod"),
+        "the banner must name the offending line, not just that one exists: {msg}"
+    );
+
+    // And a clean config stays quiet.
+    let clean = crate::config::parse("safety.envs.uflexi-prod.read_only = true\n");
+    let app = App::for_tests(crate::aws::AwsClient::stub(), clean);
+    assert!(
+        app.error_message.is_none(),
+        "a healthy session must not open with a warning: {:?}",
+        app.error_message
+    );
+}

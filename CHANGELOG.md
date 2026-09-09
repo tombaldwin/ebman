@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **A safety line the parser cannot act on now refuses every write,
+  instead of being silently ignored.** This is a behaviour change with
+  real blast radius, and it is deliberate: previously
+  `safety.envs.prod = true` (field omitted), `safety.envs.prod.readonly
+  = true` (typo) and `safety.envs.prod.read_only = ture` (bad value)
+  were each skipped in silence, leaving the environment **writeable
+  while the operator believed it pinned**. A safety control that fails
+  open is worse than no safety control, because it is trusted.
+
+  ebman now refuses all writes while any line under `safety.` is
+  unreadable, names the offending line in the refusal, and says so in a
+  banner at startup (including under `--demo`, which is documented as
+  the way to validate pins before going live). Reads are unaffected.
+
+  It refuses rather than guessing which environment was meant: the guess
+  can be wrong, and `:settings` writes config.toml back, so a guessed
+  pin would be promoted into a durable one — turning a typo'd `read_only
+  = false` into a real `true`.
+
+  A field this version does not recognise is treated the same way, which
+  also covers reading a config written by a *newer* ebman: a safety
+  control this binary cannot enforce must not read as absent.
+
+  **If ebman starts refusing writes after this upgrade, the banner names
+  the line to fix.**
+
 ### Added
 
 - **Refused writes are now audited** (`stage=refused`). A write stopped

@@ -634,6 +634,11 @@ impl App {
     /// fields are merged onto before writing back to disk.
     pub(crate) fn current_config_snapshot(&self) -> Config {
         let mut snapshot = Config {
+            // Diagnostics about the operator's file, never written back
+            // — `save` does not serialise them, and carrying them into
+            // a snapshot that gets edited and re-saved would be the
+            // wrong direction entirely.
+            safety_parse_errors: Vec::new(),
             refresh_interval: self.refresh_interval,
             extra_regions: self.extra_regions.clone(),
             redact_default: Some(self.view.redact),

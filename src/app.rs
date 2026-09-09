@@ -1102,6 +1102,26 @@ async fn init_client(
     Ok((client, used_profile, used_region, warning))
 }
 
+/// Startup banner for a partially-readable safety policy.
+///
+/// A policy with a line this version cannot act on refuses every write
+/// (see `write_gate::decide`). Finding that out by attempting one —
+/// several keystrokes into a confirm modal — is a poor way to learn
+/// that config.toml has a typo in it.
+///
+/// `None` when the policy parsed cleanly, so a healthy session shows
+/// nothing.
+pub(crate) fn safety_config_warning(errors: &[String]) -> Option<String> {
+    let problem = errors.first()?;
+    let more = match errors.len() {
+        1 => String::new(),
+        n => format!(" (+{} more)", n - 1),
+    };
+    Some(format!(
+        "writes refused — safety config unreadable: {problem}{more}"
+    ))
+}
+
 impl App {
     pub async fn new(config: Config) -> Result<Self> {
         // Stash the notify-webhook URL globally before any audit
@@ -1371,6 +1391,7 @@ impl App {
                 profile_themes: config.profile_themes.clone(),
                 runbooks: config.runbooks.clone(),
                 safety_envs: config.safety_envs.clone(),
+                safety_parse_errors: config.safety_parse_errors.clone(),
                 safety_accounts: config.safety_accounts.clone(),
                 accounts: config.accounts.clone(),
                 base_theme_name: config.theme.clone(),
@@ -1445,6 +1466,9 @@ impl App {
         // Derive the tf-managed name set from the loaded tfstate
         // so the env-table badge can do O(1) lookups per row.
         app.refresh_tf_managed_envs();
+        if let Some(w) = safety_config_warning(&app.cfg.safety_parse_errors) {
+            app.error_message = Some(w);
+        }
         Ok(app)
     }
 
@@ -1663,6 +1687,7 @@ impl App {
                 profile_themes: config.profile_themes.clone(),
                 runbooks: config.runbooks.clone(),
                 safety_envs: config.safety_envs.clone(),
+                safety_parse_errors: config.safety_parse_errors.clone(),
                 safety_accounts: config.safety_accounts.clone(),
                 accounts: config.accounts.clone(),
                 base_theme_name: config.theme.clone(),
@@ -1682,6 +1707,14 @@ impl App {
             quit: false,
         };
         app.rebuild_view();
+        // Same banner as the live constructor. `--demo` is documented as
+        // the way to validate `safety.envs.*` / `safety.accounts.*`
+        // before going live (see `deny_write`), so a demo session that
+        // stayed silent about an unparseable pin would be validating
+        // the operator's config by hiding the one thing wrong with it.
+        if let Some(w) = safety_config_warning(&app.cfg.safety_parse_errors) {
+            app.error_message = Some(w);
+        }
         app
     }
 

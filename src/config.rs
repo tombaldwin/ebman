@@ -67,6 +67,24 @@ pub struct Config {
     /// key for AssumeRole'd accounts, or the AWS profile name
     /// otherwise). Lines use `safety.accounts.NAME.read_only = true`.
     pub(crate) safety_accounts: std::collections::HashMap<String, bool>,
+    /// Lines under `safety.` that could not be fully understood.
+    ///
+    /// Non-empty means the safety policy is only PARTIALLY readable,
+    /// and every write is refused until it is fixed — see
+    /// `write_gate::Refusal::SafetyConfigUnreadable`. Previously each of
+    /// these was skipped in silence, so `safety.envs.prod = true`
+    /// (missing `.read_only`), `safety.envs.prod.readonly = true` (typo)
+    /// and `safety.envs.prod.read_only = ture` (bad value) all left the
+    /// environment WRITEABLE while the operator believed it pinned.
+    ///
+    /// Deliberately not "guess which env they meant and pin that": the
+    /// guess can be wrong, and `:settings` writes the config back, so a
+    /// guessed pin would be silently promoted to a real one — turning a
+    /// typo'd `read_only = false` into a durable `true`.
+    ///
+    /// Not serialised by `save`. These are diagnostics about the
+    /// operator's file, not settings.
+    pub(crate) safety_parse_errors: Vec<String>,
     /// Optional outbound webhook for audit-line fan-out. Each audit
     /// line written to `~/.cache/ebman/audit.log` is also POSTed to
     /// this URL as JSON (fire-and-forget; failures don't block or
@@ -156,6 +174,7 @@ impl Default for Config {
             runbooks: std::collections::HashMap::new(),
             safety_envs: std::collections::HashMap::new(),
             safety_accounts: std::collections::HashMap::new(),
+            safety_parse_errors: Vec::new(),
             notify_webhook: None,
             command_aliases: std::collections::HashMap::new(),
             lint_disable: Vec::new(),
@@ -206,6 +225,68 @@ pub(crate) fn load_lint_disables() -> Vec<String> {
 /// lint --fix` even when they're enabled for reporting.
 pub(crate) fn load_lint_fix_disables() -> Vec<String> {
     load().lint_fix_disable
+}
+
+/// What one `safety.envs.NAME.FIELD` / `safety.accounts.NAME.FIELD`
+/// line means.
+///
+/// Every arm that is not `Valid` used to be a silent `continue`, which
+/// made a safety control fail OPEN: the operator wrote a pin, the
+/// parser dropped it, and the environment stayed writeable with nothing
+/// anywhere saying so.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SafetyPin {
+    Valid {
+        name: String,
+        read_only: bool,
+    },
+    /// Understood the shape, could not act on it. The caller records it
+    /// and every write is refused until the line is fixed.
+    Unreadable {
+        problem: String,
+    },
+}
+
+/// Parse the part of a safety key after `safety.envs.` /
+/// `safety.accounts.`, plus its value.
+///
+/// `scope` names the family for the error message ("safety.envs"), so
+/// the operator is told which line to look at rather than that
+/// "something under safety" is wrong.
+pub(crate) fn parse_safety_pin(scope: &str, rest: &str, value: &str) -> SafetyPin {
+    let unreadable = |problem: String| SafetyPin::Unreadable { problem };
+
+    let Some((name, field)) = rest.split_once('.') else {
+        // `safety.envs.prod = true` — the field was omitted entirely.
+        return unreadable(format!(
+            "{scope}.{rest} is missing a field — did you mean {scope}.{rest}.read_only?"
+        ));
+    };
+    let (name, field) = (name.trim(), field.trim());
+    if name.is_empty() {
+        return unreadable(format!("{scope}..{field} has an empty name"));
+    }
+    if field != "read_only" {
+        // Includes a plain typo (`readonly`) and a field a NEWER ebman
+        // understands but this one does not. Both are refused for the
+        // same reason: an unenforceable safety control is not a safety
+        // control, and silently ignoring one a newer binary would apply
+        // is the worst of the three outcomes.
+        return unreadable(format!(
+            "{scope}.{name}.{field} is not a setting this version understands \
+             (expected read_only)"
+        ));
+    }
+    match parse_bool(value) {
+        Some(read_only) => SafetyPin::Valid {
+            name: name.to_string(),
+            read_only,
+        },
+        None => unreadable(format!(
+            "{scope}.{name}.read_only = {value:?} is not a boolean \
+             (expected true/false, yes/no, on/off, 1/0)"
+        )),
+    }
 }
 
 pub(crate) fn parse(text: &str) -> Config {
@@ -374,13 +455,11 @@ pub(crate) fn parse(text: &str) -> Config {
             // future fields (statement_timeout-equivalent, etc.).
             other if other.starts_with("safety.envs.") => {
                 let rest = other.trim_start_matches("safety.envs.");
-                let Some((name, field)) = rest.split_once('.') else {
-                    continue;
-                };
-                if field.trim() == "read_only" {
-                    if let Some(b) = parse_bool(&value) {
-                        cfg.safety_envs.insert(name.to_string(), b);
+                match parse_safety_pin("safety.envs", rest, &value) {
+                    SafetyPin::Valid { name, read_only } => {
+                        cfg.safety_envs.insert(name, read_only);
                     }
+                    SafetyPin::Unreadable { problem } => cfg.safety_parse_errors.push(problem),
                 }
             }
             other if other.starts_with("alias.") => {
@@ -398,13 +477,11 @@ pub(crate) fn parse(text: &str) -> Config {
             }
             other if other.starts_with("safety.accounts.") => {
                 let rest = other.trim_start_matches("safety.accounts.");
-                let Some((name, field)) = rest.split_once('.') else {
-                    continue;
-                };
-                if field.trim() == "read_only" {
-                    if let Some(b) = parse_bool(&value) {
-                        cfg.safety_accounts.insert(name.to_string(), b);
+                match parse_safety_pin("safety.accounts", rest, &value) {
+                    SafetyPin::Valid { name, read_only } => {
+                        cfg.safety_accounts.insert(name, read_only);
                     }
+                    SafetyPin::Unreadable { problem } => cfg.safety_parse_errors.push(problem),
                 }
             }
             // Unrecognised at the top level too — preserved rather
@@ -826,6 +903,7 @@ accounts.staging.external_id = "abc-xyz"
             runbooks: std::collections::HashMap::new(),
             safety_envs: std::collections::HashMap::new(),
             safety_accounts: std::collections::HashMap::new(),
+            safety_parse_errors: Vec::new(),
             notify_webhook: Some("https://hooks.slack.com/services/EXAMPLE".into()),
             command_aliases: {
                 let mut m = std::collections::HashMap::new();
@@ -1211,5 +1289,86 @@ explain.max_tokens = 512
         // And a second save doesn't duplicate it.
         let twice = serialize(&parse(&out));
         assert_eq!(twice.matches("some_future_key").count(), 1, "{twice}");
+    }
+
+    /// Each of these was a silent `continue` before, and each left the
+    /// environment WRITEABLE while the operator believed it pinned.
+    /// That is a safety control failing open, which is the only
+    /// direction that actually costs anything.
+    #[test]
+    fn a_malformed_safety_line_is_reported_rather_than_skipped() {
+        let cases = [
+            // Field omitted entirely.
+            ("prod", "true"),
+            // Field misspelled — or understood by a NEWER ebman than
+            // this one, which is refused for the same reason: a control
+            // this binary cannot enforce must not read as absent.
+            ("prod.readonly", "true"),
+            ("prod.read_only_ish", "true"),
+            // Value is not a boolean.
+            ("prod.read_only", "ture"),
+            ("prod.read_only", ""),
+            // No name to attach the pin to.
+            (".read_only", "true"),
+        ];
+        for (rest, value) in cases {
+            match parse_safety_pin("safety.envs", rest, value) {
+                SafetyPin::Unreadable { problem } => {
+                    assert!(
+                        problem.contains("safety.envs"),
+                        "the message must name the line to fix: {problem}"
+                    );
+                }
+                other => panic!("safety.envs.{rest} = {value:?} must not parse: {other:?}"),
+            }
+        }
+    }
+
+    /// The other direction: well-formed lines must still parse, in every
+    /// boolean spelling. Without this, "refuse everything unparseable"
+    /// could be satisfied by refusing everything.
+    #[test]
+    fn well_formed_safety_lines_still_parse_cleanly() {
+        for (value, expected) in [
+            ("true", true),
+            ("YES", true),
+            ("on", true),
+            ("1", true),
+            ("false", false),
+            ("no", false),
+            ("off", false),
+            ("0", false),
+        ] {
+            assert_eq!(
+                parse_safety_pin("safety.envs", "prod.read_only", value),
+                SafetyPin::Valid {
+                    name: "prod".into(),
+                    read_only: expected
+                },
+                "{value} should parse as {expected}"
+            );
+        }
+
+        let cfg = parse("safety.envs.uflexi-prod.read_only = true\n");
+        assert!(
+            cfg.safety_parse_errors.is_empty(),
+            "a clean config must not refuse writes: {:?}",
+            cfg.safety_parse_errors
+        );
+        assert_eq!(cfg.safety_envs.get("uflexi-prod"), Some(&true));
+    }
+
+    /// Parse errors are diagnostics about the operator's file, not
+    /// settings. Writing them back would be nonsense, and a round-trip
+    /// through `:settings` must not invent config keys.
+    #[test]
+    fn parse_errors_are_not_serialised_back_out() {
+        let cfg = parse("safety.envs.prod = true\n");
+        assert_eq!(cfg.safety_parse_errors.len(), 1, "the line is malformed");
+        let rendered = serialize(&cfg);
+        assert!(
+            !rendered.contains("safety_parse_errors") && !rendered.contains("is missing a field"),
+            "diagnostics leaked into the saved config: {rendered}"
+        );
     }
 }

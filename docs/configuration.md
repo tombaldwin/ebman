@@ -86,6 +86,19 @@ accounts.prod.region = "eu-west-2"
 safety.envs.uflexi-prod.read_only = true
 safety.accounts.prod.read_only = true
 
+# These lines fail CLOSED. If ebman cannot act on a line under
+# `safety.` — the field omitted (`safety.envs.prod = true`), a typo
+# (`readonly`), a value that is not a boolean, or a field only a newer
+# ebman understands — it refuses EVERY write until the line is fixed,
+# names it at startup, and names it again in the refusal. Reads are
+# unaffected.
+#
+# It refuses rather than guessing which env you meant: a wrong guess
+# would be written back to this file by `:settings`, turning a typo'd
+# `read_only = false` into a durable `true`. Earlier versions skipped
+# these lines silently, which left the env writeable while you believed
+# it pinned.
+
 # Custom command aliases. `alias.NAME = "expansion"` lines map a
 # typed `:NAME` to a full command line. Args typed after the alias
 # name are appended to the expansion, so `alias.dp = "deploy
