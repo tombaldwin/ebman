@@ -126,11 +126,14 @@ pub(crate) fn write_refusal(
 
     // Wording stays the CLI's own — see `write_gate`'s module docs.
     Some(match refusal {
-        crate::write_gate::Refusal::Frozen => {
-            // Infallible: `frozen` was set from this very `Option`.
-            let m = active_freeze.as_ref()?;
-            crate::freeze::refusal_message(m)
-        }
+        crate::write_gate::Refusal::Frozen => match active_freeze.as_ref() {
+            Some(m) => crate::freeze::refusal_message(m),
+            // Unreachable — `frozen` was set from this very `Option` —
+            // but `?` here would propagate `None`, and `None` from this
+            // function means ALLOW. A fail-open branch in a write gate
+            // is not worth the brevity.
+            None => format!("refusing {env} — deploys frozen"),
+        },
         crate::write_gate::Refusal::EnvPinned { env: e } => {
             format!("refusing {env} — pinned by safety.envs.{e}.read_only")
         }
