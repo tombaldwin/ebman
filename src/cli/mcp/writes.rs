@@ -339,6 +339,8 @@ impl Server {
             &env_name,
             &profile,
             crate::freeze::read_active(),
+            arg_str(args, "region").as_deref(),
+            verb.label(),
         ) {
             return Err(msg);
         }
@@ -577,6 +579,8 @@ impl Server {
                 &p.env,
                 &p.profile,
                 crate::freeze::read_active(),
+                p.region.as_deref(),
+                p.verb.label(),
             ) {
                 st.pending = None;
                 return Err(msg);
@@ -698,7 +702,7 @@ mod tests {
     fn write_gate_refuses_under_freeze_and_pin() {
         let cfg = crate::config::Config::default();
         // No freeze, no pin -> clear.
-        assert!(crate::cli::write_refusal(&cfg, "prod", &None, None).is_none());
+        assert!(crate::cli::write_refusal(&cfg, "prod", &None, None, None, "Test").is_none());
         // Active freeze -> refusal names it + the remedy.
         let m = crate::freeze::FreezeMarker {
             pid: 4242,
@@ -706,12 +710,14 @@ mod tests {
             incident: true,
             at: "now".into(),
         };
-        let msg = crate::cli::write_refusal(&cfg, "prod", &None, Some(m)).expect("refused");
+        let msg =
+            crate::cli::write_refusal(&cfg, "prod", &None, Some(m), None, "Test").expect("refused");
         assert!(msg.contains("freeze active") && msg.contains(":incident END"));
         // Pin -> refusal (no freeze).
         let mut pinned = crate::config::Config::default();
         pinned.safety_envs.insert("prod".into(), true);
-        let msg2 = crate::cli::write_refusal(&pinned, "prod", &None, None).expect("pin refused");
+        let msg2 = crate::cli::write_refusal(&pinned, "prod", &None, None, None, "Test")
+            .expect("pin refused");
         assert!(msg2.contains("pinned by"));
     }
 
@@ -844,6 +850,56 @@ mod tests {
             can_ask_in_audit(json!({})).await,
             "false",
             "a client that cannot be asked must not be logged as if it could"
+        );
+    }
+
+    /// The headline case for `stage=refused`: an agent asks to
+    /// terminate a pinned environment, and the attempt leaves a trace.
+    ///
+    /// Before this, it left none. The refusal happens before any AWS
+    /// call, so no dispatched/completed pair was ever written — six
+    /// attempts against prod and an empty log looked identical.
+    ///
+    /// Driven through the real tool rather than through `write_refusal`
+    /// directly, because the funnel is the thing under test: a call
+    /// site that skipped it would pass a helper-level test cleanly.
+    #[tokio::test]
+    async fn a_refused_mcp_write_is_recorded_against_the_agent() {
+        let env_name = "mcp-refusal-probe-env";
+        let mut cfg = crate::config::Config::default();
+        cfg.safety_envs.insert(env_name.into(), true);
+        let s = Server::with_config(false, false, true, cfg);
+
+        let path = crate::util::cache_dir().join("audit.log");
+        let before = std::fs::read_to_string(&path).unwrap_or_default();
+
+        let err = s
+            .tool_write_plan(
+                WriteVerb::Terminate,
+                &json!({"env": env_name, "region": "eu-west-2"}),
+            )
+            .await
+            .expect_err("a pinned env must refuse");
+        assert!(err.contains("safety.envs"), "{err}");
+
+        let after = std::fs::read_to_string(&path).unwrap_or_default();
+        let delta = after
+            .strip_prefix(&before)
+            .expect("the audit log is append-only");
+        let lines: Vec<&str> = delta.lines().filter(|l| l.contains(env_name)).collect();
+        assert_eq!(lines.len(), 1, "exactly one refusal line: {delta}");
+        let line = lines[0];
+
+        assert!(line.contains("stage=refused"), "{line}");
+        assert!(
+            line.contains("action=Terminate"),
+            "the log must name what was attempted, not just that \
+             something was: {line}"
+        );
+        assert!(line.contains("rule=env_pinned"), "{line}");
+        assert!(
+            line.contains("region=eu-west-2"),
+            "the region the agent asked for, not the home region: {line}"
         );
     }
 }

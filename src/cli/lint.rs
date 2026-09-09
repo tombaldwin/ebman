@@ -1057,6 +1057,8 @@ pub async fn run(args: &[String]) -> Result<()> {
                         &env.name,
                         &active_profile_for_safety,
                         None,
+                        region_opt.as_deref(),
+                        "LintFix",
                     ) {
                         if !quiet {
                             eprintln!("ebman lint --fix: {reason}");

@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Refused writes are now audited** (`stage=refused`). A write stopped
+  by a safety control previously left no trace at all: the dispatch
+  never happened, so no `dispatched`/`completed` pair was written, and
+  repeated attempts against a pinned environment were indistinguishable
+  from nobody trying. Every refusal now records the rule that fired
+  (`rule=env_pinned` / `account_pinned` / `frozen` / `global_read_only`)
+  and a `remedy=` naming the specific control that would have to change
+  — `safety.envs.NAME.read_only`, not "a safety pin". Covers all four
+  enforcement funnels: the TUI's `deny_write` / `deny_write_batch`, and
+  the shared `cli::write_refusal` behind `ebman action`, `ebman action
+  rollout`, `ebman audit replay`, `ebman lint --fix`, and both MCP write
+  phases (plan and confirm).
+
+  `stage=refused` is deliberately distinct from `stage=skipped`, which
+  means a benign non-dispatch. Demo mode continues to write no audit
+  lines: the refusal is real, but the fleet is not. Where a refusal
+  happens before any AWS client exists the region is recorded as `-`
+  rather than guessed at — the rules are region-independent, and a line
+  filed against the wrong region is worse than one that admits it does
+  not know.
+
+
 ## [0.36.0] — 2026-08-28
 
 **A narrow-terminal release.** At 80 columns the fleet table did not say
