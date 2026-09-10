@@ -191,9 +191,15 @@ impl App {
         // the home region. That is the wrong-region bug `region_for_name`
         // carries a comment about, reintroduced by a target string that
         // was never an env name.
+        // Through the same mapping as the single-env path. Passing the
+        // raw verb here would file a batch `purge` as `action=purge`
+        // while a single one files `action=dlq-purge` — the exact
+        // correlation defect the table exists to fix, surviving in the
+        // sibling path.
+        let audit_action = refusal_action_label(verb);
         for env in &locked {
             if let Some(refusal) = self.refusal_for(env) {
-                self.audit_refusal(env, verb, &refusal);
+                self.audit_refusal(env, audit_action, &refusal);
             }
         }
         self.error_message = Some(format!(
@@ -312,10 +318,18 @@ impl App {
     /// refresh error or the "environments are NOT shown" partial-failure
     /// notice has no second channel, while a write refusal re-announces
     /// itself in full the moment anything is attempted.
-    pub(crate) fn effective_error_message(&self) -> Option<String> {
-        self.error_message
-            .clone()
-            .or_else(|| crate::app::safety_config_warning(&self.cfg.safety_parse_errors))
+    /// Borrows in the common case: this runs on every frame, and
+    /// cloning the message per render was a new allocation in the draw
+    /// path that the previous code (a plain `&app.error_message`) did
+    /// not have. Only the banner arm allocates, and only while the
+    /// safety config is broken — at which point every write is refused
+    /// anyway.
+    pub(crate) fn effective_error_message(&self) -> Option<std::borrow::Cow<'_, str>> {
+        match self.error_message.as_deref() {
+            Some(m) => Some(std::borrow::Cow::Borrowed(m)),
+            None => crate::app::safety_config_warning(&self.cfg.safety_parse_errors)
+                .map(std::borrow::Cow::Owned),
+        }
     }
 
     /// Record a refusal in the audit log.
