@@ -350,3 +350,108 @@ fn the_pin_applies_only_to_the_env_it_names() {
         stderr(&out)
     );
 }
+
+/// Run the binary with `HOME` pointed at a throwaway directory holding a
+/// LIVE cross-process freeze marker.
+///
+/// The marker names this test process's own pid, which is alive and
+/// started before the marker was written — exactly the shape
+/// `freeze::read_active` accepts. That is what makes a real refusal
+/// reachable from a test: a fabricated pid would be read as stale and
+/// the freeze would lift.
+///
+/// Behavioural, not a source guard. `docs/safety-and-privacy.md`
+/// promises "the CLI write paths refuse while a live TUI session holds
+/// a freeze", and until now nothing ran the binary to check it.
+fn ebman_with_freeze(reason: &str, incident: bool, args: &[&str]) -> Output {
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let home = std::env::temp_dir().join(format!(
+        "ebman-cli-freeze-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let cache = home.join(".cache/ebman");
+    if let Err(e) = std::fs::create_dir_all(&cache) {
+        panic!(
+            "could not create the temp cache dir {}: {e}",
+            cache.display()
+        );
+    }
+    // Same hand-rolled shape `freeze::write_marker_at` emits.
+    let body = format!(
+        "{{\"pid\":{},\"reason\":\"{reason}\",\"incident\":{incident},\"at\":\"{}\"}}\n",
+        std::process::id(),
+        chrono::Utc::now().to_rfc3339(),
+    );
+    if let Err(e) = std::fs::write(cache.join("freeze.json"), body) {
+        panic!("could not write the temp freeze marker: {e}");
+    }
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ebman"));
+    no_aws_credentials(&mut cmd)
+        .args(args)
+        .env("NO_COLOR", "1")
+        .env("HOME", &home)
+        .output()
+        .unwrap_or_else(|e| panic!("could not run ebman: {e}"))
+}
+
+/// A live freeze stops `lint --fix --yes` in a separate process.
+///
+/// The gate runs before any AWS client is built, so this needs no
+/// credentials — and that ordering is the whole point of the marker:
+/// a second terminal must not write to a fleet an operator froze
+/// mid-incident.
+#[test]
+fn a_live_freeze_refuses_a_cli_fix_run() {
+    let out = ebman_with_freeze(
+        "db migration",
+        false,
+        &["lint", "--fix", "--yes", "--env", "api-prod"],
+    );
+    let err = stderr(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "a freeze refusal is exit 3, same class as a pin: {err}"
+    );
+    assert!(
+        err.contains("db migration"),
+        "the operator must see WHY it is frozen: {err}"
+    );
+    assert!(err.contains(":thaw-deploys"), "and how to lift it: {err}");
+}
+
+/// An `:incident` freeze names the gesture that actually closes it.
+///
+/// A bare `:thaw-deploys` would lift the lock and leave the incident
+/// banner up, which is rarely what the operator meant — so the two
+/// markers must not produce the same remedy.
+#[test]
+fn an_incident_freeze_points_at_incident_end() {
+    let out = ebman_with_freeze(
+        "sev1",
+        true,
+        &["lint", "--fix", "--yes", "--env", "api-prod"],
+    );
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(3), "{err}");
+    assert!(
+        err.contains(":incident END"),
+        "an incident freeze must point at :incident END, not :thaw-deploys: {err}"
+    );
+}
+
+/// And with no marker, the run is NOT refused for a freeze.
+///
+/// Without this the two tests above would pass against a binary that
+/// refuses everything — the assertion "it exited 3 and said frozen"
+/// tells you nothing unless the unfrozen case differs.
+#[test]
+fn without_a_marker_nothing_is_refused_for_a_freeze() {
+    let out = ebman(&["lint", "--fix", "--yes", "--env", "api-prod"]);
+    let err = stderr(&out);
+    assert!(
+        !err.contains("deploys frozen"),
+        "no marker was written, so nothing may claim a freeze: {err}"
+    );
+}
