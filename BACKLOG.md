@@ -243,6 +243,78 @@ comparison flips, and the four biggest `ui/*` files contribute 505
 between them — render code, where a survivor means a wrong pixel rather
 than a wrong action. Working top-down by count is the wrong order.
 
+- [~] **`src/cli/lint.rs::run` is a god-function — 57 survivors in one
+  622-line body**, out of 87 for the file. 31 of them are `delete !` and
+  15 are `&&` → `||`: condition checks threaded through a single large
+  async CLI function that also does the AWS calls and the printing, so
+  none was reachable from a test.
+
+  **Partially addressed 2026-08-26: 6 of the 57 — the six that decide
+  anything, as opposed to the ~50 that decide whether a line prints.**
+
+  - **`filter_issues`** — `--min-severity` and `--rule`. Written out
+    twice (main path and `--watch` cycle path), both copies carrying the
+    same survivors. Which issues reach the operator is the entire output
+    of this subcommand. `>= min` includes the named level, and `>` would
+    silently drop exactly the severity that was asked for; the
+    `!rule_filter.is_empty()` guard is what stops an empty `--rule`
+    matching nothing and reporting a clean fleet.
+  - **`lint_exit_code`** — the matrix that gates CI. Every branch called
+    `std::process::exit` inline. The ordering is load-bearing:
+    issues-found (3) beats degraded (1) because 3 is actionable, and a
+    *clean but degraded* run must not pass green — a region skipped on
+    expired credentials otherwise looks identical to a passing check.
+    All eight cells named in one table.
+
+  Mutation-verified four ways: CAUGHT.
+
+  A third came out later: **`should_post_webhook`**, the
+  `lint --watch --webhook` change gate. Both halves survived, and each
+  has a pager consequence — `!=` flipped re-posts an unchanged finding
+  set every interval until someone mutes it, and dropping the
+  first-cycle-clean test pages "all clear" at an operator who never had
+  an alert. Mutation-verified both ways: CAUGHT.
+
+  **Measured what remains: 57 survivors in `run`, of which 28 are
+  `!quiet` / `!json` output suppression** — a mutation changes whether
+  a line prints. Of the other 29, the filters and exit code are now
+  covered. What is genuinely left is a handful of flag combinations
+  (`fix && yes`, `!to_set.is_empty() && yes`, the EBL015 skip) that sit
+  inline against `eprintln!` + `exit`.
+
+  **The `--watch` loop's own bookkeeping came out 2026-08-27** —
+  `baseline_drift` and `watch_sleep`, the last two decisions in this
+  body that weren't about whether a line prints:
+
+  - **`baseline_drift`** — `ebman lint --baseline` is a CI gate, so
+    `new_issues` is what fails someone's build. Comparison is by
+    `lint::issue_identity`, which hashes the env in: EBL001 on staging
+    must not be excused by EBL001 on prod sitting in the baseline, or a
+    fleet-wide regression walks straight through. `baseline_count` is
+    deduplicated because "N issues stable" means distinct issues.
+  - **`watch_sleep`** — start-to-start interval. Takes a
+    `chrono::Duration` so the backwards-clock case (NTP step,
+    suspend/resume) is a tested branch rather than an
+    `unwrap_or_default()` inside a `tokio::select!` arm, where the
+    wrong answer is a hot loop against the AWS API.
+
+  Six mutations, all CAUGHT. All 26 pre-existing tests in this file
+  were argument parsing.
+
+  **The remaining split is now a readability item, not a coverage one,
+  and the original framing was wrong.** `PLAN.md` recorded it as "what
+  makes its remaining ~29 survivors reachable at all" — but those are
+  the output-suppression ones, reachable only by asserting on captured
+  stdout, which is the lowest-value class here. Meanwhile the net for
+  refactoring 604 lines of the subcommand that gates users' CI is four
+  `tests/cli.rs` invocations, none behavioural. Build the integration
+  net first (the QA lane), then split.
+
+  The remaining structural work is splitting the one-shot body from the
+  `--watch` loop, which would make both reachable. Still wants scoping
+  deliberately: it is a real refactor of the largest function in the
+  crate, not a mid-run move.
+
 - [ ] **`ui/` draw functions — ~440 survivors, deliberately not
   covered.** Everything left in `ui/` sits inside a `draw_*` that writes
   to a ratatui `Frame`: `draw_table` (43), `draw_detail_health` (38),
