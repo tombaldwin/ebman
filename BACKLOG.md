@@ -323,6 +323,16 @@ than a wrong action. Working top-down by count is the wrong order.
   `tests/cli.rs` invocations, none behavioural. Build the integration
   net first (the QA lane), then split.
 
+  **Net started 2026-09-10.** `tests/cli.rs` gained the first
+  BEHAVIOURAL `lint` cases: a live cross-process freeze marker refuses
+  `lint --fix --yes` with exit 3, an `:incident` marker names
+  `:incident END` rather than `:thaw-deploys`, and a no-marker case
+  proves the refusal comes from the marker rather than from everything
+  failing. Reachable without credentials because the freeze gate runs
+  before the AWS client is built. Verified by hand: `scripts/mutate.sh`
+  runs `cargo test --lib`, which does not compile integration tests, so
+  a mutation there reports nothing at all.
+
   The remaining structural work is splitting the one-shot body from the
   `--watch` loop, which would make both reachable. Still wants scoping
   deliberately: it is a real refactor of the largest function in the
