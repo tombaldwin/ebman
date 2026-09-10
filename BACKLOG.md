@@ -257,11 +257,6 @@ comparison flips, and the four biggest `ui/*` files contribute 505
 between them — render code, where a survivor means a wrong pixel rather
 than a wrong action. Working top-down by count is the wrong order.
 
-- [ ] **`src/audit.rs` — the writer seam, ~15 survivors left** — of the
-  form `replace append_action_dispatched with ()`, plus `fire_webhook`
-  (3). The function *is* the I/O; same shape as the SDK seam, and
-  accounted for the same way rather than hidden.
-
 - [ ] **`src/aws/eb.rs` — `list_compatible_platforms`'s branch filter**,
   the last one. `list_events_inner`'s three came out 2026-08-27 by
   extracting `next_page_step` (the whole paging decision, as a

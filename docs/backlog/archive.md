@@ -3615,3 +3615,32 @@ own reasoning, not by effort.
   The entry's "real fix is a fake client layer" still stands for a
   behavioural test; it is not needed for these two properties.
 
+- [x] **`src/audit.rs` — the writer seam survivors** — closed 2026-09-10,
+  and the entry's framing was wrong in a way worth recording. It said
+  the ~15 survivors were all of the form "replace `append_action_dispatched`
+  with `()`" — the function IS the I/O, accounted for like the SDK seam.
+  True of the CALL. It says nothing about the CONTENT, and nobody had
+  mutated that.
+
+  Three real gaps came out of mutating the content instead:
+
+  1. `stage=dispatched` could be renamed with the whole suite green,
+     while `ebman audit replay` requires that exact token. Writer and
+     reader were coupled by a literal across two files, and every replay
+     test fed the reader a HAND-TYPED line — `replay_plan`'s own doc says
+     "unit-tested against synthetic lines". Closed with a round trip:
+     write a real line, parse it with the real parser, plan it with the
+     real planner.
+  2. `no_audit_writer_can_be_made_to_forge_a_second_line` claimed "every
+     writer that reaches the log" and drove three of eight. Widened to
+     all of them, which immediately failed — three times, on three
+     different writers.
+  3. Those three: `append_extras` interpolated the extras KEY raw (the
+     value was escaped), `dlq_op_detail` interpolated both `op` and
+     `env` raw, and `append_action_refused` — added the same day —
+     escaped `action` and `target` and left `rule` raw. None is
+     reachable today, because every one of those fields is a literal or
+     an AWS-constrained name at every call site. That is the point: the
+     property is "no writer can be made to forge a line", not "no writer
+     forges given who calls it this week".
+

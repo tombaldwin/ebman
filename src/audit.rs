@@ -539,12 +539,41 @@ fn field_token(key: &str, value: &str) -> String {
 
 fn append_extras(detail: &mut String, extras: &[(&str, &str)]) {
     for (k, v) in extras {
+        let k = sanitise_token(k);
         if v.is_empty() || v.contains(|c: char| c.is_whitespace() || c == '"' || c == '=') {
             detail.push_str(&format!(" {k}=\"{}\"", escape_value(v)));
         } else {
             detail.push_str(&format!(" {k}={v}"));
         }
     }
+}
+
+/// Reduce a bare token — an extras KEY, or the DLQ op verb — to
+/// characters that cannot break the wire format.
+///
+/// The value was already escaped; the key was interpolated raw, so a
+/// key containing a newline forged a second line that every consumer
+/// then read as a real entry. Not reachable today — every call site
+/// passes a `&'static str` literal — but "no writer can be made to
+/// forge a line" should hold unconditionally, not on the assumption
+/// that every future caller keeps passing literals.
+///
+/// Quoting would be wrong here: `"my key"=v` is not a shape the parser
+/// reads, and the DLQ op is a bare leading token with no key at all. So
+/// anything outside `[A-Za-z0-9_-]` becomes `_`. Total, and a no-op for
+/// every key and op in the tree — the `-` is in the set precisely
+/// because `dlq-replay` would otherwise be rewritten to `dlq_replay`
+/// and change the wire format this centralisation exists to preserve.
+fn sanitise_token(t: &str) -> String {
+    t.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 /// Pure: the tail of a rollout audit line. Extracted so the field set
@@ -705,9 +734,15 @@ pub(crate) fn append_action_refused(
     // `field_token`'s own comment exists to close for the header
     // fields.
     let detail = format!(
-        "stage=refused {} {} rule={rule} remedy=\"{}\"",
+        "stage=refused {} {} rule={} remedy=\"{}\"",
         field_token("action", action_label),
         field_token("target", target),
+        // `rule` comes from `Refusal::rule()`, a fixed set of
+        // `&'static str` — but "no writer can forge a line" is not
+        // supposed to depend on who the callers happen to be today.
+        // Escaping `action` and `target` and leaving this raw is
+        // exactly the gap the widened forge guard found.
+        sanitise_token(rule),
         escape_value(remedy)
     );
     write_audit_line(account, profile, region, &detail);
@@ -751,7 +786,11 @@ pub(crate) fn append_dlq_op(
 /// plus encoded extras. Split out so the wire shape is unit-testable
 /// without the file-write side effect.
 fn dlq_op_detail(op: &str, env: &str, extras: &[(&str, &str)]) -> String {
-    let mut detail = format!("{op} env={env}");
+    // Both raw until 0.37.1, so neither could be trusted not to break
+    // the line. `op` is a bare leading token with no key, so it is
+    // sanitised rather than quoted; `env` goes through `field_token`
+    // like every other value.
+    let mut detail = format!("{} {}", sanitise_token(op), field_token("env", env));
     append_extras(&mut detail, extras);
     detail
 }
@@ -1394,7 +1433,9 @@ mod tests {
                 || super::field_token("target", "a\"b=c").matches('"').count() == 2
         );
 
-        // Every writer that reaches the log, driven end to end.
+        // EVERY writer that reaches the log, driven end to end — and
+        // the word is load-bearing: this comment claimed it while
+        // covering three of eight.
         //
         // `audit.log` is process-global, so other tests append to it in
         // parallel — the assertion is therefore a property of every
@@ -1409,6 +1450,52 @@ mod tests {
         // value here is what makes this guard cover it.
         super::append_rollout(FORGE, Some(FORGE), FORGE, FORGE, FORGE, "dispatched", None);
         super::append_lint_fix(FORGE, FORGE, FORGE, FORGE, FORGE, FORGE, None);
+        // The rest of them. "Every writer" was this guard's own claim
+        // and it drove three of eight — so `append_action_skipped`,
+        // `append_action_refused` and the others could drop their
+        // escaping with the suite green. Found by mutating a writer
+        // this test does not reach and watching nothing fail.
+        // NOT "Terminate" for these two: `FORGE` impersonates
+        // `stage=completed action=Terminate`, so a genuine completed
+        // Terminate line would match the forgery signature below and
+        // fail as a false positive. The label only has to be a label.
+        super::append_action_completed(
+            Some(FORGE),
+            Some(FORGE),
+            FORGE,
+            "ProbeCompleted",
+            FORGE,
+            Err(FORGE),
+            &[(FORGE, FORGE)],
+        );
+        super::append_action_completed(
+            Some(FORGE),
+            Some(FORGE),
+            FORGE,
+            "ProbeCompleted",
+            FORGE,
+            Ok(()),
+            &[],
+        );
+        super::append_action_skipped(Some(FORGE), Some(FORGE), FORGE, "Terminate", FORGE, FORGE);
+        super::append_action_undone(Some(FORGE), Some(FORGE), FORGE, "Terminate", FORGE);
+        super::append_dlq_op(
+            Some(FORGE),
+            Some(FORGE),
+            FORGE,
+            FORGE,
+            FORGE,
+            &[(FORGE, FORGE)],
+        );
+        super::append_action_refused(
+            Some(FORGE),
+            Some(FORGE),
+            FORGE,
+            "Terminate",
+            FORGE,
+            FORGE,
+            FORGE,
+        );
 
         let body = std::fs::read_to_string(&path).expect("audit log written");
         let mut ours = 0usize;
@@ -1429,7 +1516,7 @@ mod tests {
                 );
             }
         }
-        assert!(ours >= 3, "the three writers' lines are in there");
+        assert!(ours >= 3, "the writers' lines are in there");
     }
 
     // ── sweep triage, 2026-08-26 ──────────────────────────────────────
@@ -2193,5 +2280,46 @@ mod drain_tests {
             Some("refused"),
             "a refusal must not be readable as a completed action: {line}"
         );
+    }
+
+    /// An extras KEY cannot break the wire format either.
+    ///
+    /// The value was escaped and the key was not, so a key carrying a
+    /// newline forged a second line. Every call site passes a literal
+    /// today, which is why it survived — the guard that should have
+    /// caught it drove three of eight writers and never passed a forged
+    /// key to any of them.
+    #[test]
+    fn an_extras_key_cannot_forge_a_field() {
+        let mut detail = String::from("stage=dispatched");
+        super::append_extras(
+            &mut detail,
+            &[
+                ("ok\nstage=completed action=Terminate", "v"),
+                ("version", "b1"),
+            ],
+        );
+        assert!(
+            !detail.contains('\n'),
+            "a forged key put a newline in the detail: {detail}"
+        );
+        assert!(
+            detail.contains(" version=b1"),
+            "ordinary keys must pass through untouched: {detail}"
+        );
+        // Every key in the tree is already an identifier, so this must
+        // be a no-op for them.
+        for k in [
+            "via",
+            "client",
+            "can_ask",
+            "version",
+            "settings",
+            "count",
+            "dlq-purge",
+            "sqs-delete",
+        ] {
+            assert_eq!(super::sanitise_token(k), k, "{k} must not be rewritten");
+        }
     }
 }
