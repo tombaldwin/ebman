@@ -1532,6 +1532,55 @@ mod rollout_freeze_tests {
             gate < dispatch,
             "the --yes gate must come BEFORE the dispatch, not after it"
         );
+
+        // And the gate must STOP, not merely complain.
+        //
+        // Checking the condition alone left a worse hole than the
+        // inversion it was written for: dropping the `exit(2)` leaves
+        // the warning printing — "would dispatch to N region(s); re-run
+        // with --yes to confirm" — and then dispatches to every region
+        // anyway. The operator sees the exact message that says it
+        // stopped. Verified NOT CAUGHT by mutation before this was
+        // added.
+        let gate_body = &body[gate..dispatch];
+        assert!(
+            gate_body.contains("std::process::exit(2)"),
+            "the --yes gate must exit, not just print — without this a \
+             rollout dispatches to every region after telling the \
+             operator it would not: {gate_body}"
+        );
+        // The count in that message is what the operator decides on, so
+        // it has to be the real one.
+        assert!(
+            gate_body.contains("regions.len()"),
+            "the confirmation prompt must report the real region count: \
+             {gate_body}"
+        );
+    }
+
+    /// The canary for the gate guard above.
+    ///
+    /// It slices between two `find` offsets, so a slice that came back
+    /// empty — or that stopped matching — would satisfy every
+    /// `contains` in the negative direction and pass silently.
+    #[test]
+    fn the_yes_gate_guard_can_see_its_landmarks() {
+        let sample = "if !yes {\n eprintln!(\"x {}\", regions.len());\n \
+                      std::process::exit(2);\n}\nlet rollout_id = format!(";
+        let gate = sample.find("if !yes {").expect("condition is findable");
+        let dispatch = sample
+            .find("let rollout_id = format!")
+            .expect("dispatch is findable");
+        assert!(gate < dispatch);
+        let gate_body = &sample[gate..dispatch];
+        assert!(gate_body.contains("std::process::exit(2)"));
+        assert!(gate_body.contains("regions.len()"));
+        // And the negative: a gate that only prints must not satisfy it.
+        let toothless = "if !yes {\n eprintln!(\"x\");\n}\n";
+        assert!(
+            !toothless.contains("std::process::exit(2)"),
+            "a non-exiting gate must be distinguishable"
+        );
     }
 
     /// A freeze halt must not exit 0.
