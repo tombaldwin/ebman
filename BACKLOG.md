@@ -39,20 +39,6 @@ Tier definitions:
 #### 0.29 queue — 0.28 pre-tag review deferrals (2026-08-20)
 
 The write/freeze pre-tag review (2 lenses) fixed 2 Critical + 2 Important + 1 Minor before tag (see CHANGELOG). Deferred, non-blocking:
-- [ ] **The six `Vec`-shaped Detail fetches still pair a value with a
-  `loading_*: bool`.** Surfaced 2026-08-24 by the `Fetch<T>` work, which
-  converted the two pairs that carried their own `Result` and stopped
-  there. These six (`events`, `instances`, `queues`, `metrics`, `tags`,
-  `env_vars`) settle into `DetailState`'s *shared* error slot instead, so
-  wrapping them in `Fetch<T>` adds an error arm nothing fills and changes
-  what the footer shows.
-
-  The decision it needs is a UI one, not a mechanical one: per-section
-  errors, or keep the single panel error. Recorded here rather than
-  inside the completed `Fetch<T>` entry because a follow-up buried in a
-  `[x]` item is invisible to anyone scanning for open work. See the
-  `Collapse the Option<T> + loading_* pairs` entry for the full analysis.
-
 - [ ] **`draw_table`'s `DisplayRow::Env` arm is still inline** (165
   lines of a 389-line function — re-measured 2026-08-28, it was recorded
   as ~200).

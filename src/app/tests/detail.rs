@@ -1448,3 +1448,206 @@ async fn x_arms_the_delete_belonging_to_the_focused_tab_and_no_other() {
         );
     }
 }
+
+/// A failed tags / env-vars fetch must be visible, not just logged.
+///
+/// `DetailFetch` had no `Tags` or `EnvVars` variant, so both handlers
+/// logged the failure with `tracing::warn!` and left the panel showing
+/// an EMPTY list — indistinguishable from an environment that genuinely
+/// has no tags and no environment variables. An AccessDenied on the
+/// config fetch read as a clean result, in the panel an operator uses
+/// during triage.
+#[tokio::test]
+async fn a_failed_config_fetch_is_shown_not_just_logged() {
+    for (msg, needle) in [
+        (
+            AppMsg::DetailTags {
+                gen: 0,
+                env_name: "api-prod".into(),
+                result: Err("AccessDenied: elasticbeanstalk:ListTagsForResource".into()),
+            },
+            "ListTagsForResource",
+        ),
+        (
+            AppMsg::DetailEnvVars {
+                gen: 0,
+                env_name: "api-prod".into(),
+                result: Err("AccessDenied: DescribeConfigurationSettings".into()),
+            },
+            "DescribeConfigurationSettings",
+        ),
+    ] {
+        let mut app = test_app();
+        app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
+        app.rebuild_view();
+        app.table_state.select(Some(0));
+        app.open_detail();
+
+        app.handle_msg(msg);
+
+        let d = app.detail.as_ref().expect("detail open");
+        let err = d
+            .error
+            .as_ref()
+            .unwrap_or_else(|| panic!("a failed fetch must surface: {needle}"));
+        assert!(
+            err.message.contains(needle),
+            "the operator must see which call failed: {}",
+            err.message
+        );
+    }
+}
+
+/// And a later success must clear it — without speaking for a sibling.
+#[tokio::test]
+async fn a_successful_config_refetch_clears_only_its_own_error() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "uflexi", "Web", "Green")];
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.open_detail();
+
+    app.handle_msg(AppMsg::DetailTags {
+        gen: 0,
+        env_name: "api-prod".into(),
+        result: Err("tags boom".into()),
+    });
+    assert!(app.detail.as_ref().unwrap().error.is_some());
+
+    // An ENV VARS success must not clear the TAGS error — that is the
+    // whole contract of `clear_error`: a success must not speak for a
+    // sibling fetch.
+    app.handle_msg(AppMsg::DetailEnvVars {
+        gen: 0,
+        env_name: "api-prod".into(),
+        result: Ok(vec![("K".into(), "V".into())]),
+    });
+    assert!(
+        app.detail
+            .as_ref()
+            .unwrap()
+            .error
+            .as_ref()
+            .is_some_and(|e| e.message.contains("tags boom")),
+        "an env-vars success must not clear the tags failure"
+    );
+
+    // The matching success does clear it.
+    app.handle_msg(AppMsg::DetailTags {
+        gen: 0,
+        env_name: "api-prod".into(),
+        result: Ok(vec![("t".into(), "v".into())]),
+    });
+    assert!(
+        app.detail.as_ref().unwrap().error.is_none(),
+        "the tags refetch succeeded, so its error must go"
+    );
+}
+
+/// Fetches with a `loading_*` flag but no `DetailFetch` variant to
+/// report a failure against.
+///
+/// Pure, over the source text, so the "one is missing" case can be
+/// proven to fail without adding a field to the real `DetailState` —
+/// which does not compile until every struct literal in the tree is
+/// updated, making the experiment inconclusive rather than a result.
+fn unpaired_detail_fetches(src: &str) -> Vec<String> {
+    let pascal = |snake: &str| -> String {
+        snake
+            .split('_')
+            .map(|w| {
+                let mut c = w.chars();
+                match c.next() {
+                    Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                    None => String::new(),
+                }
+            })
+            .collect()
+    };
+    let variants = src
+        .split("pub(crate) enum DetailFetch {")
+        .nth(1)
+        .and_then(|s| s.split('}').next())
+        .unwrap_or("");
+    src.lines()
+        .filter_map(|l| {
+            let t = l.trim();
+            t.strip_prefix("pub loading_")
+                .and_then(|r| r.strip_suffix(": bool,"))
+        })
+        .filter(|f| !variants.contains(&pascal(f)))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Every `loading_*` fetch must have a `DetailFetch` variant to report
+/// its failure against.
+///
+/// Two of the six did not, so their handlers had nowhere to put an
+/// error and logged it instead — leaving an empty panel that reads as
+/// "nothing configured". The pairing is invisible at a glance: adding a
+/// `loading_x` field and its handler is a natural change that gives no
+/// hint an error channel is also required.
+#[test]
+fn every_detail_fetch_can_report_a_failure() {
+    let src = std::fs::read_to_string("src/mode_detail.rs").expect("read mode_detail.rs");
+    let unpaired = unpaired_detail_fetches(&src);
+    assert!(
+        unpaired.is_empty(),
+        "these fetches have no `DetailFetch` variant, so a failure has \
+         nowhere to be reported and the panel shows an empty list that \
+         reads as 'nothing configured': {unpaired:?}"
+    );
+}
+
+/// The guard must FIRE on a missing pairing, not merely pass on a clean
+/// tree — a scan that stopped matching would look identical.
+#[test]
+fn the_unpaired_fetch_guard_fires_on_a_missing_variant() {
+    let synthetic = "\
+pub(crate) enum DetailFetch {
+    Events,
+}
+struct S {
+    pub loading_events: bool,
+    pub loading_probe: bool,
+}
+";
+    assert_eq!(
+        unpaired_detail_fetches(synthetic),
+        vec!["probe".to_string()],
+        "a flag with no variant must be reported"
+    );
+
+    let paired = "\
+pub(crate) enum DetailFetch {
+    Events,
+    Probe,
+}
+struct S {
+    pub loading_events: bool,
+    pub loading_probe: bool,
+}
+";
+    assert!(
+        unpaired_detail_fetches(paired).is_empty(),
+        "and a complete pairing must not be"
+    );
+}
+
+/// The canary: the scan and the snake→Pascal conversion must both work,
+/// or the loop above passes over an empty list.
+#[test]
+fn the_detail_fetch_scan_can_see_its_inputs() {
+    let src = std::fs::read_to_string("src/mode_detail.rs").expect("read mode_detail.rs");
+    assert!(
+        src.contains("pub loading_env_vars: bool,"),
+        "the field shape this guard scans for has changed"
+    );
+    assert!(
+        src.split("pub(crate) enum DetailFetch {")
+            .nth(1)
+            .is_some_and(|s| s.split('}').next().is_some_and(|v| v.contains("EnvVars"))),
+        "the variant shape this guard scans for has changed"
+    );
+}

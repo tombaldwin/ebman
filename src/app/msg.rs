@@ -1078,8 +1078,12 @@ impl App {
                     // mid-edit.
                     d.clamp_config_cursor();
                     d.revalidate_config_edit();
+                    d.clear_error(crate::mode_detail::DetailFetch::Tags);
                 }
-                Err(msg) => tracing::warn!(error = %msg, "tags fetch failed"),
+                Err(msg) => {
+                    tracing::warn!(error = %msg, "tags fetch failed");
+                    d.set_error(crate::mode_detail::DetailFetch::Tags, msg);
+                }
             }
         });
     }
@@ -1502,8 +1506,12 @@ impl App {
                     // mid-edit.
                     d.clamp_config_cursor();
                     d.revalidate_config_edit();
+                    d.clear_error(crate::mode_detail::DetailFetch::EnvVars);
                 }
-                Err(msg) => tracing::warn!(error = %msg, "env vars fetch failed"),
+                Err(msg) => {
+                    tracing::warn!(error = %msg, "env vars fetch failed");
+                    d.set_error(crate::mode_detail::DetailFetch::EnvVars, msg);
+                }
             }
         });
     }

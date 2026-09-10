@@ -388,6 +388,15 @@ pub(crate) enum DetailFetch {
     Instances,
     Metrics,
     Queues,
+    // Tags and EnvVars had no variant, so their handlers logged the
+    // failure with `tracing::warn!` and left the panel showing an empty
+    // list — indistinguishable from an env that genuinely has no tags
+    // and no environment variables. An AccessDenied on the config fetch
+    // read as a clean result, which is the misread this codebase treats
+    // as a bug everywhere else ("a failed probe must never become a
+    // false positive").
+    Tags,
+    EnvVars,
 }
 
 /// A Detail fetch failure, with the fetch that owns it.
