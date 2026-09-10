@@ -3531,3 +3531,68 @@ a stale premise, not outstanding work.
 - [x] **ALB listener + TLS cert config** — Done (tasks #108 + #111, 0.6). `:listeners` (2026-05-21) reads the env's `aws:elbv2:listener:*` namespaces grouped by port. `:listener-edit PORT` is a modal cert-rotation form: a single MultiSelect field whose options are the region's ISSUED ACM certificates (loaded live via a new `aws-sdk-acm` dependency + `acm:ListCertificates`), pre-selected with the listener's current `SSLCertificateArns`; submit writes the new cert set to `aws:elbv2:listener:<PORT>` through the option-settings path. Scope notes: delivered as a command (`:listener-edit 443`), not a Detail "LB tab" — a whole new tab was disproportionate to the feature. Protocol / SSLPolicy / ListenerEnabled / rules stay on `:set-option`; the form is scoped to cert rotation, the dominant edit. The ACM call shape is unverified against a live account (the SDK compiles against it).
 
 - [x] **Capacity profile beyond min/max + instance type** — Done. `:capacity` modal form (MinSize / MaxSize / InstanceType / Cooldown) shipped in 0.3.0; `a → Capacity` menu entry shipped in 0.3.1. Multi-instance-type / spot-base / scheduled-scaling fleets still missing but those are niche enough to drop from this list — operators using them are mostly EB CLI / Terraform users.
+
+## 0.37.0 review follow-ups — cleared 2026-09-10
+
+Seven of the nine items filed by the 0.37.0 review panel. The two left
+open are tied to stage 5 of the protection-levels work by the panel's
+own reasoning, not by effort.
+
+- [ ] **TUI refusal audit lines use toast verbs, not the dispatch
+  vocabulary.** `App::deny_write(env, verb)` passes the toast phrase
+  ("action menu", "config editing", ":capacity") straight to
+  `audit_refusal` as the `action=` token, while the matching dispatch
+  logs `Action`'s label (`Terminate`, `UpdateOptionSettings`). Since
+  `AuditFilter` matches exactly, `ebman audit --action Terminate` shows
+  the writes that happened and hides the ones that were stopped — the
+  correlation `stage=refused` exists for. The CLI half of this was fixed
+  in 0.37 (`CliAction::audit_label`, and lint passing `SetOption`); the
+  TUI half is 38 call sites whose verbs do not all map to a single
+  `Action` variant, so it wants per-site judgement rather than a
+  mechanical sweep. The injection risk is already closed — `action=` goes
+  through `field_token`. Found by the 0.37 correctness review.
+
+- [ ] **`config::parse`'s `alarm_dimensions` arm is ~50 lines inline.**
+  `parse` is ~240 lines, under the ~300 trigger but the closest to it.
+  Extracting `parse_alarm_dimensions(&str) -> Vec<String>` as a sibling
+  of `parse_profile_themes` would follow existing precedent and keep
+  `parse` a router. Raised by the 0.37 architecture review.
+
+- [ ] **CLI refusal webhooks are lost at `exit(3)`.** `append_action_refused`
+  fans out to `notify_webhook` via `tokio::spawn`, and `cli::refuse_write`
+  / `refuse_if_frozen` call `std::process::exit(3)` immediately after —
+  the class `exit_after_drain` exists to handle. The audit *file* line is
+  written synchronously and survives; only the webhook copy of a CLI
+  refusal is usually lost. Pre-existing for dispatched lines, extended to
+  refusals in 0.37. Found by the 0.37 correctness re-review.
+
+- [ ] **Derive the safety banner at render time instead of re-asserting
+  it.** 0.37 centralised the re-assertion in `App::reassert_safety_banner`
+  and calls it at the two sites that clear `error_message`. That is still
+  a convention each handler has to remember, and the first version had
+  already missed one of them. The better seam matches how `ui` already
+  works (renders from `&App`): have the status renderer fall back to
+  `safety_config_warning(&app.cfg.safety_parse_errors)` when the error
+  slot is empty, and delete both call sites, so forgetting becomes
+  impossible. Must preserve 0.37's ordering — the partial-failure notice
+  outranks the banner. Raised by the 0.37 architecture re-review.
+
+- [ ] **`Server::refuse_write` shares a name with `cli::refuse_write`.**
+  Different functions: the MCP one returns an `Option<String>` after
+  branching on demo, the CLI one loads config, prints and exits the
+  process. Rename the MCP one (`gate_refusal`?). ~10 minutes. Raised by
+  the 0.37 architecture re-review.
+
+- [ ] **`docs/commands.md` documents `[explain] enabled = true`.** The
+  line-based config parser only accepts `explain.enabled = true` (as
+  `src/llm.rs` correctly states), so a copied `[explain]` section
+  silently does nothing. Pre-existing; unrelated to 0.37's blast radius.
+  Found by the 0.37 release-readiness review.
+
+- [ ] **A `:settings` save can overwrite a config.toml that could not be
+  read.** 0.37 makes an unreadable-but-existing `config.toml` refuse
+  every write, but `write_atomic` renames over the file via directory
+  permissions — so saving from `:settings` while the file is unreadable
+  can destroy the very pins the refusal was protecting. The file-level
+  analogue of the "deleted by its own save" route closed at line level in
+  0.37. Found by the 0.37 correctness re-review.
