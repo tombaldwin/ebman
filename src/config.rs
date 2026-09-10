@@ -320,6 +320,49 @@ pub(crate) fn parse_safety_pin(scope: &str, rest: &str, value: &str) -> SafetyPi
     }
 }
 
+/// Resolve `alarm_dimensions = "A,B,-C"` into the dimension names that
+/// identify an environment.
+///
+/// Extracted from `parse`'s match so that stays a router — the arm was
+/// ~50 lines of rules, which is a function, not a case. The rules, each
+/// of which cost something:
+///
+/// - ADDITIONAL names on top of the canonical one, not a replacement:
+///   `:alarm-create` always writes `EnvironmentName`
+///   (`aws/cloudwatch.rs`), so dropping it would hide the alarms ebman
+///   itself creates along with every EB-native one — which during
+///   triage reads as "no alarms configured".
+/// - Rebuilt from the canonical name each time rather than appended to,
+///   so a second `alarm_dimensions =` line REPLACES the first as every
+///   other key does. Appending meant an operator editing by adding a
+///   line silently got the union of both, with no way to narrow it back.
+/// - A leading `-` removes a name — the escape hatch for the false
+///   positive this key exists to avoid. An operator whose RDS alarms
+///   carry an `EnvironmentName` dimension needs `"MyDim,-EnvironmentName"`
+///   to stop ebman claiming them; add-only left them no way back. `-`
+///   cannot collide with a real CloudWatch dimension name, so the opt-out
+///   cannot happen by accident.
+/// - An empty result falls back to the canonical name: an empty list
+///   matches nothing ever, and silently disabling the alarm panel is
+///   exactly the "no alarms configured" misread the default prevents.
+pub(crate) fn parse_alarm_dimensions(value: &str) -> Vec<String> {
+    let mut names = vec![crate::aws::ENV_DIMENSION.to_string()];
+    for name in crate::util::split_csv(value) {
+        match name.strip_prefix('-') {
+            Some(drop) => names.retain(|n| n != drop),
+            None => {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+    }
+    if names.is_empty() {
+        names.push(crate::aws::ENV_DIMENSION.to_string());
+    }
+    names
+}
+
 pub(crate) fn parse(text: &str) -> Config {
     let mut cfg = Config::default();
     for line in text.lines() {
@@ -381,49 +424,7 @@ pub(crate) fn parse(text: &str) -> Config {
             "required_tags" => {
                 cfg.required_tags = crate::util::split_csv(&value);
             }
-            "alarm_dimensions" => {
-                // ADDITIONAL names on top of the canonical one, not a
-                // replacement: `:alarm-create` always writes
-                // `EnvironmentName` (aws/cloudwatch.rs), so dropping it
-                // from the match would hide the alarms ebman itself
-                // creates along with every EB-native one — which during
-                // triage reads as "no alarms configured".
-                //
-                // Rebuilt from the canonical name each time rather than
-                // appended to, so a second `alarm_dimensions =` line
-                // REPLACES the first as every other key does. Appending
-                // meant an operator editing by adding a line silently
-                // got the union of both, with no way to narrow it back.
-                //
-                // A leading `-` removes a name — the escape hatch for
-                // the false positive this key exists to avoid. An
-                // operator whose RDS alarms carry an `EnvironmentName`
-                // dimension needs `"MyDim,-EnvironmentName"` to stop
-                // ebman claiming them; add-only left them no way back.
-                // `-` can't collide with a real CloudWatch dimension
-                // name, so the opt-out can't happen by accident.
-                let mut names = vec![crate::aws::ENV_DIMENSION.to_string()];
-                for name in crate::util::split_csv(&value) {
-                    match name.strip_prefix('-') {
-                        Some(drop) => names.retain(|n| n != drop),
-                        None => {
-                            if !names.contains(&name) {
-                                names.push(name);
-                            }
-                        }
-                    }
-                }
-                // An empty list matches nothing, ever — no operator
-                // means that by this key, and silently disabling the
-                // alarm panel is exactly the "no alarms configured"
-                // misread the canonical default exists to prevent.
-                // `-EnvironmentName` alone falls back rather than
-                // blinding the panel.
-                if names.is_empty() {
-                    names.push(crate::aws::ENV_DIMENSION.to_string());
-                }
-                cfg.alarm_dimensions = names;
-            }
+            "alarm_dimensions" => cfg.alarm_dimensions = parse_alarm_dimensions(&value),
             "profile_themes" => {
                 // Format: `prod:high-contrast,staging:dark,default:light`.
                 // Whitespace around tokens is tolerated; entries without a
@@ -1752,6 +1753,65 @@ explain.max_tokens = 512
         assert!(
             body.contains("write_atomic"),
             "the body extraction is not finding save(): {body}"
+        );
+    }
+
+    /// Each rule in `parse_alarm_dimensions` cost something to learn, so
+    /// each gets a case.
+    #[test]
+    fn alarm_dimensions_rules_each_hold() {
+        let canonical = crate::aws::ENV_DIMENSION.to_string();
+
+        // Additional, not a replacement — dropping the canonical name
+        // would hide the alarms ebman itself creates.
+        let names = parse_alarm_dimensions("MyDim");
+        assert!(names.contains(&canonical), "{names:?}");
+        assert!(names.contains(&"MyDim".to_string()), "{names:?}");
+
+        // `-` removes: the escape hatch for RDS alarms that carry an
+        // EnvironmentName dimension.
+        let names = parse_alarm_dimensions("MyDim,-EnvironmentName");
+        assert!(
+            !names.contains(&canonical),
+            "the opt-out must work: {names:?}"
+        );
+        assert_eq!(names, vec!["MyDim".to_string()]);
+
+        // Removing everything falls back rather than blinding the panel:
+        // an empty list matches nothing, which reads as "no alarms".
+        assert_eq!(
+            parse_alarm_dimensions("-EnvironmentName"),
+            vec![canonical.clone()]
+        );
+
+        // No duplicates, and the canonical name is not doubled when
+        // named explicitly.
+        let names = parse_alarm_dimensions("EnvironmentName,MyDim,MyDim");
+        assert_eq!(
+            names.iter().filter(|n| **n == canonical).count(),
+            1,
+            "{names:?}"
+        );
+        assert_eq!(
+            names.iter().filter(|n| *n == "MyDim").count(),
+            1,
+            "{names:?}"
+        );
+
+        // Empty value is the default.
+        assert_eq!(parse_alarm_dimensions(""), vec![canonical]);
+    }
+
+    /// The extraction must be WIRED — the arm has to call the helper,
+    /// not keep an inline copy that drifts while the tests pin the
+    /// helper.
+    #[test]
+    fn the_alarm_dimensions_key_goes_through_the_helper() {
+        let cfg = parse("alarm_dimensions = \"MyDim,-EnvironmentName\"\n");
+        assert_eq!(
+            cfg.alarm_dimensions,
+            vec!["MyDim".to_string()],
+            "the parse arm must apply the same rules as the helper"
         );
     }
 }
