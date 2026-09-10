@@ -145,13 +145,19 @@ impl Server {
 impl Server {
     /// The write gate for both MCP phases.
     ///
+    /// Named `gate_refusal` rather than `refuse_write` because
+    /// `cli::refuse_write` is a different function with different
+    /// behaviour — it loads the config, prints, and exits the process.
+    /// Two same-named neighbours where one exits and one returns is a
+    /// misreading waiting to happen.
+    ///
     /// Demo goes through the pure half: a demo server still reads the
     /// REAL cross-process freeze marker, so `ebman mcp serve --demo
     /// --allow-writes` attempted during a live `:freeze-deploys` was
     /// appending a real line to the real audit log. This module's own
     /// docs promise demo writes none, and a refusal being genuine does
     /// not make the fleet genuine.
-    fn refuse_write(
+    fn gate_refusal(
         &self,
         env: &str,
         profile: &Option<String>,
@@ -359,7 +365,7 @@ impl Server {
         // construction, so a *pin* added during a long-lived session is
         // not seen until restart. This comment used to claim it was.
         let profile = arg_str(args, "profile");
-        if let Some(msg) = self.refuse_write(
+        if let Some(msg) = self.gate_refusal(
             &env_name,
             &profile,
             arg_str(args, "region").as_deref(),
@@ -598,7 +604,7 @@ impl Server {
             // enough for an incident to be declared since. A refusal
             // here drops the plan — reality changed, re-plan required.
             if let Some(msg) =
-                self.refuse_write(&p.env, &p.profile, p.region.as_deref(), p.verb.label())
+                self.gate_refusal(&p.env, &p.profile, p.region.as_deref(), p.verb.label())
             {
                 st.pending = None;
                 return Err(msg);
