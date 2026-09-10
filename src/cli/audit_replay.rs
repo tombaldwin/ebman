@@ -548,4 +548,56 @@ mod tests {
         .expect_err("clone isn't replayable");
         assert!(err.contains("RestartAppServer"), "{err}");
     }
+
+    /// A line the WRITER produced must be replayable by the READER.
+    ///
+    /// Every other test here feeds `replay_plan` a hand-typed line —
+    /// `replay_plan`'s own doc says "unit-tested against synthetic
+    /// lines". So the reader is pinned against a copy of the writer's
+    /// format rather than the format itself, and the two can drift
+    /// apart with the whole suite green. Renaming `stage=dispatched` in
+    /// `audit.rs` is caught by nothing today; `ebman audit replay`
+    /// would simply stop finding anything to replay.
+    ///
+    /// This closes the loop: write a real line, parse it with the real
+    /// parser, and hand it to the real planner.
+    #[test]
+    fn a_line_the_writer_emitted_is_replayable() {
+        let env = "replay-roundtrip-probe-env";
+        let path = crate::util::cache_dir().join("audit.log");
+        let before = std::fs::read_to_string(&path).unwrap_or_default();
+
+        crate::audit::append_action_dispatched(
+            Some("123456789012"),
+            Some("staging"),
+            "eu-west-1",
+            // The label production actually writes — both the TUI
+            // (`format!("{action:?}")`) and the CLI (`CliVerb::ALL`)
+            // use the Debug name. Writing the legacy "Restart" here
+            // would test a spelling nothing emits any more.
+            "RestartAppServer",
+            env,
+            &[],
+        );
+
+        let after = std::fs::read_to_string(&path).unwrap_or_default();
+        let delta = after
+            .strip_prefix(&before)
+            .expect("the audit log is append-only");
+        let line = delta
+            .lines()
+            .find(|l| l.contains(env))
+            .expect("the writer emitted a line");
+
+        let entry = audit_log::parse_audit_line(line)
+            .unwrap_or_else(|| panic!("the writer's own line must parse: {line}"));
+        let plan = replay_plan(&entry).unwrap_or_else(|e| {
+            panic!("the writer's own line must be replayable, got: {e}\n  line: {line}")
+        });
+
+        assert_eq!(plan.env, env, "the target must survive the round trip");
+        assert_eq!(plan.region.as_deref(), Some("eu-west-1"));
+        assert_eq!(plan.profile.as_deref(), Some("staging"));
+        assert_eq!(plan.verb.label(), "RestartAppServer");
+    }
 }
