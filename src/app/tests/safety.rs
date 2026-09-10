@@ -1654,3 +1654,98 @@ async fn the_safety_banner_is_rendered_in_the_footer() {
         "a healthy session must not show the banner:\n{screen}"
     );
 }
+
+/// Every mapped audit label must be one something actually dispatches
+/// under, and every mapped toast verb must still be a real `deny_write`
+/// argument.
+///
+/// Both directions matter and fail differently. A value that matches no
+/// dispatch means the refusal correlates with nothing — the defect the
+/// table exists to fix, reintroduced by a typo. A key that no longer
+/// appears at a call site means a toast was reworded and quietly
+/// unmapped itself, which fails silently and looks like nothing.
+#[test]
+fn the_refusal_label_table_matches_the_dispatch_vocabulary() {
+    // EXCLUDING the file the table lives in. The first version of this
+    // guard scanned every source file, so a fabricated label was found
+    // in the table's own declaration and the check passed against
+    // exactly the defect it exists to catch — the table was its own
+    // evidence. Verified by mutation, which is the only reason it was
+    // noticed.
+    let src = crate::app::tests::scan::source_files();
+    let all: String = src
+        .iter()
+        .filter(|(path, _)| !path.ends_with("app/safety.rs"))
+        .map(|(_, t)| t.as_str())
+        .collect();
+    assert!(
+        !all.contains("(\"auto-rollback\", \"AutoRollback\")"),
+        "the table's own file is still in the corpus, so this guard \
+         cannot fail — a fabricated label would be found in the table's \
+         own declaration"
+    );
+
+    for (toast, audit) in crate::app::safety::REFUSAL_ACTION_LABELS {
+        assert!(
+            all.contains(&format!("\"{audit}\"")) || all.contains(&format!("Action::{audit}")),
+            "`{toast}` maps to `{audit}`, which nothing dispatches under — \
+             the refusal would correlate with no write at all"
+        );
+        assert!(
+            all.contains(&format!("\"{toast}\"")),
+            "`{toast}` is no longer passed to deny_write anywhere, so this \
+             mapping is dead and a reworded toast is silently unmapped"
+        );
+    }
+}
+
+/// The canary: the check above must be able to fail in both directions.
+#[test]
+fn the_refusal_label_table_check_can_fail() {
+    let all = "\"AlarmCreate\" and Action::Terminate and \"alarm-create\"";
+    assert!(all.contains("\"AlarmCreate\""), "value form is detectable");
+    assert!(
+        all.contains("Action::Terminate"),
+        "variant form is detectable"
+    );
+    assert!(all.contains("\"alarm-create\""), "key form is detectable");
+    assert!(
+        !all.contains("\"NotADispatchLabel\""),
+        "a fabricated label must NOT be found, or the check passes on anything"
+    );
+}
+
+/// The mapping must reach the audit line, not just exist in a table.
+///
+/// `deny_write` could pass the raw toast verb through and every
+/// table-level test would still pass — the helper-tested/wiring-untested
+/// gap. Drives a real refusal and reads the log back.
+#[tokio::test]
+async fn a_refusal_is_audited_under_the_label_its_dispatch_uses() {
+    let env_name = "label-mapping-probe-env";
+    let path = crate::util::cache_dir().join("audit.log");
+    let before = std::fs::read_to_string(&path).unwrap_or_default();
+
+    let mut app = test_app();
+    app.cfg.safety_envs.insert(env_name.into(), true);
+    // "purge" is the toast verb; `spawn_dlq` dispatches it as `dlq-purge`.
+    assert!(app.deny_write(env_name, "purge"), "must refuse");
+
+    let after = std::fs::read_to_string(&path).unwrap_or_default();
+    let delta = after
+        .strip_prefix(&before)
+        .expect("the audit log is append-only");
+    let line = delta
+        .lines()
+        .find(|l| l.contains(env_name))
+        .expect("the refusal was recorded");
+    assert!(
+        line.contains("action=dlq-purge"),
+        "the refusal must correlate with the write it would have been — \
+         `ebman audit --action dlq-purge` has to find both: {line}"
+    );
+    assert!(
+        !line.contains("action=purge "),
+        "and must not still carry the bare toast verb: {line}"
+    );
+}

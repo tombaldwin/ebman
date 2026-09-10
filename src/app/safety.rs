@@ -8,6 +8,57 @@
 
 use super::*;
 
+/// Toast verb → the label the matching DISPATCH audits under.
+///
+/// `AuditFilter` matches exactly, so a refusal filed under the toast
+/// phrase ("alarm-create") is invisible to `ebman audit --action
+/// AlarmCreate`, which finds the writes that succeeded. The whole point
+/// of recording refusals is putting the two side by side.
+///
+/// One table rather than a second argument at forty-odd call sites, and
+/// deliberately PARTIAL. Every entry here was checked against the
+/// dispatch in the same module; a verb that guards a chooser rather
+/// than a specific write — the action menu, a batch selection — has no
+/// single dispatch label to correlate with, so it is left alone and
+/// falls through to itself. Inventing one would be worse than the
+/// honest verb.
+///
+/// Both directions are guarded: every value must be a label something
+/// actually dispatches under, and every key must still appear at a
+/// `deny_write` call, so a renamed toast cannot silently unmap itself.
+pub(crate) const REFUSAL_ACTION_LABELS: &[(&str, &str)] = &[
+    ("auto-rollback", "AutoRollback"),
+    ("alarm-create", "AlarmCreate"),
+    ("alarm-delete", "AlarmDelete"),
+    ("terminate-instance", "TerminateInstance"),
+    ("custom-platform-delete", "DeleteCustomPlatform"),
+    ("delete-version", "DeleteAppVersion"),
+    ("deploy-from-s3", "DeployFromS3"),
+    ("deploy-from-local", "DeployFromLocal"),
+    ("tag edits", "UpdateTags"),
+    ("ssm-session", "SsmSession"),
+    ("config-apply", "ConfigApply"),
+    ("config-delete", "ConfigDelete"),
+    ("config-save", "ConfigSave"),
+    ("swap-cnames target", "SwapCnames"),
+    ("form submit", "UpdateOptionSettings"),
+    // The DLQ verbs are bare words because that is what the toast says;
+    // `spawn_dlq.rs` dispatches them under the `dlq-*` / `sqs-*` names.
+    ("delete", "sqs-delete"),
+    ("resend", "dlq-resend"),
+    ("purge", "dlq-purge"),
+    ("replay", "dlq-replay"),
+];
+
+/// The audit label for a toast verb — the verb itself when unmapped.
+pub(crate) fn refusal_action_label(verb: &str) -> &str {
+    REFUSAL_ACTION_LABELS
+        .iter()
+        .find(|(toast, _)| *toast == verb)
+        .map(|(_, audit)| *audit)
+        .unwrap_or(verb)
+}
+
 impl App {
     /// Resolve the effective read-only lock for a destructive action
     /// against `env_name`. Layered:
@@ -46,6 +97,19 @@ impl App {
     /// Saves duplicating the `is_read_only_for` + `read_only_reason`
     /// + `error_message` triplet at every call site (~25 of them).
     pub(crate) fn deny_write(&mut self, env_name: &str, verb: &str) -> bool {
+        self.deny_write_as(env_name, verb, refusal_action_label(verb))
+    }
+
+    /// `deny_write` with the audit label given explicitly.
+    ///
+    /// For sites that hold the dispatched `Action`: the toast wants the
+    /// friendly label ("Terminate env") and the audit wants the one the
+    /// DISPATCH writes (`format!("{action:?}")` → `Terminate`), so
+    /// `ebman audit --action Terminate` finds the refusals as well as
+    /// the writes. `AuditFilter` matches exactly, so a refusal filed
+    /// under the toast phrase is invisible to a filter that finds the
+    /// dispatch.
+    pub(crate) fn deny_write_as(&mut self, env_name: &str, verb: &str, audit_action: &str) -> bool {
         // `--demo` mode refuses writes outright (see spawn_action's
         // matching guard for the rationale — synthetic fleet, fake
         // AwsClient, real audit log).
@@ -73,7 +137,7 @@ impl App {
         // trace whatsoever — the dispatch never happened, so there was
         // no dispatched/completed pair, and repeated attempts on a
         // pinned env were indistinguishable from nobody trying.
-        self.audit_refusal(env_name, verb, &refusal);
+        self.audit_refusal(env_name, audit_action, &refusal);
         let reason = self.render_refusal(&refusal);
         self.error_message = Some(format!("{reason} — {verb} disabled"));
         true
