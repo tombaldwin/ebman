@@ -23,14 +23,19 @@ This page is the source-of-truth reference. Lint rule IDs follow the `EBL###` pa
 `config.toml`:
 
 ```toml
-[lint]
 # Skip rules entirely (no firing in TUI or CLI).
-disable = ["EBL017", "EBL019"]
+lint.disable = "EBL017,EBL019"
 
 # Skip auto-fix dispatch for specific rules. The rule still fires
 # and the issue is still reported; `--fix` just won't auto-remediate.
-fix_disable = ["EBL004"]
+lint.fix_disable = "EBL004"
 ```
+
+Dotted keys and a comma-separated string — `config.toml` is read by a
+line-based parser, so a `[lint]` table header with TOML arrays under it
+parses to nothing at all. (`commands.toml` and the project-local
+`.ebman/ebman.toml` DO accept table headers; they have their own
+parsers.)
 
 Project-local `.ebman/ebman.toml` supports the same keys and extends the user-level config (does not replace it).
 

@@ -1645,6 +1645,85 @@ mod docs_drift {
              docs/headless.md: {missing:?}"
         );
     }
+
+    /// A documented `config.toml` snippet must actually parse.
+    ///
+    /// `config.toml` is read by a LINE-based parser: dotted keys, one
+    /// per line. A `[lint]` table header with TOML arrays under it
+    /// parses to nothing whatsoever — and `docs/lint-rules.md`
+    /// documented exactly that, so an operator following the docs to
+    /// disable a lint rule got no effect at all, silently. It had
+    /// drifted from `docs/configuration.md`, which showed the working
+    /// dotted form all along.
+    ///
+    /// `commands.toml` and the project-local `.ebman/ebman.toml` DO
+    /// accept table headers — they have their own parsers — so this
+    /// checks the line-based families by name rather than banning `[`
+    /// everywhere.
+    #[test]
+    fn documented_config_toml_snippets_actually_parse() {
+        // The round trip: the doc's own example must disable rules.
+        let doc = std::fs::read_to_string("docs/lint-rules.md").expect("lint-rules.md");
+        let block = doc
+            .split("```toml")
+            .nth(1)
+            .expect("a toml example")
+            .split("```")
+            .next()
+            .expect("closed fence");
+        let cfg = crate::config::parse(block);
+        assert!(
+            !cfg.lint_disable.is_empty(),
+            "the documented lint example parses to nothing — following it \
+             would silently disable no rules at all:\n{block}"
+        );
+        assert!(
+            !cfg.lint_fix_disable.is_empty(),
+            "same for the fix_disable half:\n{block}"
+        );
+
+        // And no doc may show a table header for a line-based family.
+        const LINE_BASED: &[&str] = &["lint", "explain", "safety", "accounts", "alias"];
+        let mut offenders = Vec::new();
+        for entry in std::fs::read_dir("docs").expect("docs/") {
+            let path = entry.expect("entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("read");
+            for (n, line) in text.lines().enumerate() {
+                let t = line.trim();
+                let Some(inner) = t.strip_prefix('[').and_then(|r| r.strip_suffix(']')) else {
+                    continue;
+                };
+                let family = inner.split('.').next().unwrap_or("");
+                if LINE_BASED.contains(&family) {
+                    offenders.push(format!("{}:{}: {t}", path.display(), n + 1));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these documented table headers parse to nothing — `config.toml` \
+             is line-based, so the keys under them are silently ignored: \
+             {offenders:?}"
+        );
+    }
+
+    /// The canary: the scan above must be able to see an offender.
+    #[test]
+    fn the_table_header_scan_can_see_one() {
+        let family = |t: &str| -> Option<String> {
+            t.trim()
+                .strip_prefix('[')
+                .and_then(|r| r.strip_suffix(']'))
+                .map(|i| i.split('.').next().unwrap_or("").to_string())
+        };
+        assert_eq!(family("[lint]").as_deref(), Some("lint"));
+        assert_eq!(family("  [explain]  ").as_deref(), Some("explain"));
+        assert_eq!(family("[commands.tunnel]").as_deref(), Some("commands"));
+        assert_eq!(family("lint.disable = \"x\""), None);
+    }
 }
 
 /// Gaps found by `cargo mutants --in-diff` on the 0.34.0 lineup.
