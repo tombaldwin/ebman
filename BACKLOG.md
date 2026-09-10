@@ -534,20 +534,6 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
 - **[harlequin](https://github.com/tconbeer/harlequin)** / **[atuin](https://github.com/atuinsh/atuin)** — fuzzy-find UI patterns for filtering long streams.
 - **[tig](https://github.com/jonas/tig)** — paged event-log + ref panel for timeline views.
 
-- [ ] **TUI refusal audit lines use toast verbs, not the dispatch
-  vocabulary.** `App::deny_write(env, verb)` passes the toast phrase
-  ("action menu", "config editing", ":capacity") straight to
-  `audit_refusal` as the `action=` token, while the matching dispatch
-  logs `Action`'s label (`Terminate`, `UpdateOptionSettings`). Since
-  `AuditFilter` matches exactly, `ebman audit --action Terminate` shows
-  the writes that happened and hides the ones that were stopped — the
-  correlation `stage=refused` exists for. The CLI half of this was fixed
-  in 0.37 (`CliAction::audit_label`, and lint passing `SetOption`); the
-  TUI half is 38 call sites whose verbs do not all map to a single
-  `Action` variant, so it wants per-site judgement rather than a
-  mechanical sweep. The injection risk is already closed — `action=` goes
-  through `field_token`. Found by the 0.37 correctness review.
-
 - [ ] **Split `cli::write_refusal` the way `app/safety.rs` is split.**
   0.37 extracted `write_refusal_parts` (decide + render, pure) with
   `write_refusal` as the auditing funnel, which fixed the demo-mode
@@ -557,11 +543,16 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
   lands, since that changes the return type anyway. Raised by the 0.37
   architecture review.
 
-- [ ] **`config::parse`'s `alarm_dimensions` arm is ~50 lines inline.**
-  `parse` is ~240 lines, under the ~300 trigger but the closest to it.
-  Extracting `parse_alarm_dimensions(&str) -> Vec<String>` as a sibling
-  of `parse_profile_themes` would follow existing precedent and keep
-  `parse` a router. Raised by the 0.37 architecture review.
+- [ ] **A neutral action vocabulary, shared by refusals and dispatches.**
+  0.37.1 gave TUI refusals the dispatch label via a checked table
+  (`REFUSAL_ACTION_LABELS`) plus an explicit override where an `Action`
+  is in scope. That is correct but partial by construction: verbs that
+  guard a chooser rather than a specific write have no single dispatch
+  label, and the labels themselves are still string literals scattered
+  across the dispatch sites rather than one vocabulary. The table would
+  become derived rather than maintained once that vocabulary exists —
+  which is the same thing the MCP annotations item below needs. Do them
+  together, at stage 5.
 
 - [ ] **The MCP annotations table is the wrong long-term home for the
   action vocabulary.** `src/cli/mcp/annotations.rs` is `pub(super)`
@@ -573,42 +564,3 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
   keyed by action verb and derive the MCP annotations from that, rather
   than wiring the levels engine to `cli::mcp::annotations` and growing a
   second table that drifts. Raised by the 0.37 architecture review.
-
-- [ ] **CLI refusal webhooks are lost at `exit(3)`.** `append_action_refused`
-  fans out to `notify_webhook` via `tokio::spawn`, and `cli::refuse_write`
-  / `refuse_if_frozen` call `std::process::exit(3)` immediately after —
-  the class `exit_after_drain` exists to handle. The audit *file* line is
-  written synchronously and survives; only the webhook copy of a CLI
-  refusal is usually lost. Pre-existing for dispatched lines, extended to
-  refusals in 0.37. Found by the 0.37 correctness re-review.
-
-- [ ] **Derive the safety banner at render time instead of re-asserting
-  it.** 0.37 centralised the re-assertion in `App::reassert_safety_banner`
-  and calls it at the two sites that clear `error_message`. That is still
-  a convention each handler has to remember, and the first version had
-  already missed one of them. The better seam matches how `ui` already
-  works (renders from `&App`): have the status renderer fall back to
-  `safety_config_warning(&app.cfg.safety_parse_errors)` when the error
-  slot is empty, and delete both call sites, so forgetting becomes
-  impossible. Must preserve 0.37's ordering — the partial-failure notice
-  outranks the banner. Raised by the 0.37 architecture re-review.
-
-- [ ] **`Server::refuse_write` shares a name with `cli::refuse_write`.**
-  Different functions: the MCP one returns an `Option<String>` after
-  branching on demo, the CLI one loads config, prints and exits the
-  process. Rename the MCP one (`gate_refusal`?). ~10 minutes. Raised by
-  the 0.37 architecture re-review.
-
-- [ ] **`docs/commands.md` documents `[explain] enabled = true`.** The
-  line-based config parser only accepts `explain.enabled = true` (as
-  `src/llm.rs` correctly states), so a copied `[explain]` section
-  silently does nothing. Pre-existing; unrelated to 0.37's blast radius.
-  Found by the 0.37 release-readiness review.
-
-- [ ] **A `:settings` save can overwrite a config.toml that could not be
-  read.** 0.37 makes an unreadable-but-existing `config.toml` refuse
-  every write, but `write_atomic` renames over the file via directory
-  permissions — so saving from `:settings` while the file is unreadable
-  can destroy the very pins the refusal was protecting. The file-level
-  analogue of the "deleted by its own save" route closed at line level in
-  0.37. Found by the 0.37 correctness re-review.
