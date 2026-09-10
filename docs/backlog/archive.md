@@ -3644,3 +3644,27 @@ own reasoning, not by effort.
      property is "no writer can be made to forge a line", not "no writer
      forges given who calls it this week".
 
+- [x] **The six `Vec`-shaped Detail fetches** — closed 2026-09-10, by
+  fixing the bug the entry was standing next to rather than doing the
+  refactor it proposed.
+
+  The entry argued against itself correctly: these six settle into
+  `DetailState`'s shared error slot, so wrapping them in `Fetch<T>` adds
+  an error arm nothing fills. Checking whether the property `Fetch<T>`
+  protects was actually held found something worse. **Two of the six —
+  `tags` and `env_vars` — had no `DetailFetch` variant at all**, so
+  their handlers logged the failure with `tracing::warn!` and left the
+  panel showing an EMPTY LIST. An AccessDenied on the config fetch was
+  indistinguishable from an environment with no tags and no environment
+  variables, in the panel an operator reads during triage.
+
+  Both now report against the shared slot like their four siblings, and
+  the pairing is guarded: any `loading_*` flag without a matching
+  `DetailFetch` variant fails the build. The guard's core is pure over
+  source text, because adding a probe field to the real struct does not
+  compile until every `DetailState` literal is updated — which makes the
+  experiment inconclusive rather than a result.
+
+  The `Fetch<T>` migration itself stays undone and unproposed: the
+  objection in the original entry still stands.
+
