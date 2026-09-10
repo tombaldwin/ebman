@@ -566,7 +566,7 @@ impl App {
         action: Action,
         params: ParameterisedAction,
     ) {
-        if self.deny_write(&env.name, action.label()) {
+        if self.deny_write_as(&env.name, action.label(), &format!("{action:?}")) {
             return;
         }
         // A swap also writes to its target; see `deny_swap_target`.
