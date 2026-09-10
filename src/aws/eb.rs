@@ -746,6 +746,32 @@ pub(crate) struct EnvVpcContext {
     pub security_groups: Vec<String>,
 }
 
+/// Which filters a compatible-platform listing sends, as plain data.
+///
+/// Extracted so the branch decision is testable: `list_compatible_platforms`
+/// needs AWS to reach, so both directions of `if !branch.is_empty()`
+/// survived the whole suite. Dropping the branch filter lists EVERY
+/// ready platform — the `:upgrade-platform` picker would offer targets
+/// the environment cannot run — and applying it with an empty branch
+/// sends `begins_with ""`, which is a filter that matches nothing in
+/// some regions and everything in others.
+///
+/// `begins_with` rather than `=`: `branch` is the bare family when
+/// derived from a solution-stack name and the full branch when derived
+/// from an ARN, and both prefix the real `PlatformBranchName`.
+fn compatible_platform_filters(branch: &str) -> Vec<(&'static str, &'static str, String)> {
+    use aws_sdk_elasticbeanstalk::types::PlatformStatus;
+    let mut filters = vec![(
+        "PlatformStatus",
+        "=",
+        PlatformStatus::Ready.as_str().to_string(),
+    )];
+    if !branch.is_empty() {
+        filters.push(("PlatformBranchName", "begins_with", branch.to_string()));
+    }
+    filters
+}
+
 impl AwsClient {
     pub(crate) async fn list_events(&self, max: i32) -> Result<Vec<Event>> {
         Ok(self.list_events_inner(None, None, max, 1).await?.0)
@@ -1525,7 +1551,7 @@ impl AwsClient {
         &self,
         env_name: &str,
     ) -> Result<Vec<CustomPlatform>> {
-        use aws_sdk_elasticbeanstalk::types::{PlatformFilter, PlatformStatus};
+        use aws_sdk_elasticbeanstalk::types::PlatformFilter;
         // Read the env's current platform ARN.
         let desc = self
             .client
@@ -1546,25 +1572,16 @@ impl AwsClient {
             .clone()
             .unwrap_or_else(|| current_arn.clone());
         let branch = platform_branch_from(&stack_or_arn);
-        let owner_filter = PlatformFilter::builder()
-            .r#type("PlatformStatus")
-            .operator("=")
-            .values(PlatformStatus::Ready.as_str())
-            .build();
-        let mut filters = vec![owner_filter];
-        if !branch.is_empty() {
-            filters.push(
+        let filters: Vec<PlatformFilter> = compatible_platform_filters(&branch)
+            .into_iter()
+            .map(|(ty, op, value)| {
                 PlatformFilter::builder()
-                    .r#type("PlatformBranchName")
-                    // begins_with: `branch` is the bare family when
-                    // derived from a solution-stack name, the full
-                    // branch when derived from an ARN — both prefix
-                    // the real PlatformBranchName.
-                    .operator("begins_with")
-                    .values(branch.clone())
-                    .build(),
-            );
-        }
+                    .r#type(ty)
+                    .operator(op)
+                    .values(value)
+                    .build()
+            })
+            .collect();
         let (this, fs) = (self, &filters);
         let raw = super::paginate("ListPlatformVersions", move |token| async move {
             let mut req = this.client.list_platform_versions();
@@ -2148,7 +2165,7 @@ impl AwsClient {
 
 #[cfg(test)]
 mod paging_tests {
-    use super::{next_page_step, non_empty_label, PageStep};
+    use super::{compatible_platform_filters, next_page_step, non_empty_label, PageStep};
 
     #[test]
     fn a_token_within_the_page_budget_fetches_another_page() {
@@ -2223,5 +2240,91 @@ mod paging_tests {
         assert_eq!(non_empty_label(Some(String::new())), None);
         assert_eq!(non_empty_label(None), None);
         assert_eq!(non_empty_label(Some("v1.2".into())), Some("v1.2".into()));
+    }
+
+    /// Both directions of the branch filter, which survived the whole
+    /// suite because `list_compatible_platforms` needs AWS to reach.
+    ///
+    /// Dropping the filter lists EVERY ready platform, so the
+    /// `:upgrade-platform` picker offers targets the environment cannot
+    /// run. Applying it with an empty branch sends `begins_with ""`,
+    /// which is not a filter anyone meant to send.
+    #[test]
+    fn the_platform_branch_filter_is_applied_only_when_there_is_a_branch() {
+        let with = compatible_platform_filters("Python 3.11 running on 64bit Amazon Linux 2023");
+        assert_eq!(with.len(), 2, "status + branch: {with:?}");
+        assert!(
+            with.iter().any(|(ty, op, v)| *ty == "PlatformBranchName"
+                && *op == "begins_with"
+                && v.starts_with("Python 3.11")),
+            "the branch must be sent as a begins_with prefix: {with:?}"
+        );
+
+        let without = compatible_platform_filters("");
+        assert_eq!(
+            without.len(),
+            1,
+            "an empty branch must send NO branch filter, not an empty \
+             one — `begins_with \"\"` is not a filter anyone meant: \
+             {without:?}"
+        );
+        assert_eq!(without[0].0, "PlatformStatus");
+
+        // The status filter is present either way — without it the
+        // picker offers platforms that are still building or deleted.
+        for f in [&with, &without] {
+            assert!(
+                f.iter()
+                    .any(|(ty, op, v)| *ty == "PlatformStatus" && *op == "=" && v == "Ready"),
+                "every listing must filter to Ready platforms: {f:?}"
+            );
+        }
+    }
+
+    /// The extraction must be WIRED.
+    ///
+    /// `list_compatible_platforms` needs AWS to reach, so nothing
+    /// behavioural covers the call. Without this, the body could go
+    /// back to building filters inline and every test above would still
+    /// pass — pinning a helper while production drifts, which is the
+    /// failure mode the extraction was meant to end.
+    #[test]
+    fn the_platform_listing_uses_the_extracted_filters() {
+        let src = std::fs::read_to_string("src/aws/eb.rs").expect("read own source");
+        // Bounded at BOTH the next function and the test module. A
+        // slice that ran to EOF would swallow this test's own string
+        // literals, so the guard would be matching itself — and a
+        // textual mutation that rewrote the call site would rewrite the
+        // needle here too and keep passing. That is not hypothetical:
+        // mutating this file with `sed` did exactly that, and the run
+        // came back NOT CAUGHT for a reason that had nothing to do with
+        // the code.
+        let body = src
+            .split("pub(crate) async fn list_compatible_platforms(")
+            .nth(1)
+            .expect("the function moved or was renamed")
+            .split("\n#[cfg(test)]")
+            .next()
+            .expect("stops before the tests")
+            .split("\n    pub(crate) async fn ")
+            .next()
+            .expect("has a body");
+        assert!(
+            body.contains("compatible_platform_filters(&branch)"),
+            "the listing must build its filters through the tested \
+             helper: {body}"
+        );
+        // Canary: prove the slice found the real body rather than an
+        // empty string, which would satisfy the negative below.
+        assert!(
+            body.contains("ListPlatformVersions"),
+            "the body extraction is not finding the function: {body}"
+        );
+        assert!(
+            !body.contains(
+                "PlatformFilter::builder()\n                    .r#type(\"PlatformBranchName\")"
+            ),
+            "the inline branch filter came back alongside the helper: {body}"
+        );
     }
 }

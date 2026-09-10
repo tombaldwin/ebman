@@ -3668,3 +3668,20 @@ own reasoning, not by effort.
   The `Fetch<T>` migration itself stays undone and unproposed: the
   objection in the original entry still stands.
 
+- [x] **`src/aws/eb.rs` — `list_compatible_platforms`'s branch filter** —
+  closed 2026-09-10 the same way `list_events_inner`'s three were: the
+  decision extracted as plain data (`compatible_platform_filters`
+  returning `(type, operator, value)` triples), leaving the SDK
+  construction at the call site.
+
+  Both directions were unguarded. Dropping the branch filter lists EVERY
+  ready platform, so `:upgrade-platform` offers targets the environment
+  cannot run; applying it with an empty branch sends `begins_with ""`.
+
+  The wiring is pinned by a source guard, and that guard is worth a note.
+  Mutating the call site with `sed` came back NOT CAUGHT — because the
+  needle is a string literal in the same file, so the mutation rewrote
+  the guard's expectation along with the code. Mutating only the call
+  site line proved it fires. The guard's slice is now bounded at the
+  test module so it cannot match itself.
+
