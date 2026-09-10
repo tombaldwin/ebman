@@ -3596,3 +3596,22 @@ own reasoning, not by effort.
   can destroy the very pins the refusal was protecting. The file-level
   analogue of the "deleted by its own save" route closed at line level in
   0.37. Found by the 0.37 correctness re-review.
+
+- [x] **`run_rollout`'s `if !yes` confirmation gate** — closed 2026-09-10,
+  and the entry was half stale. It claimed the inversion (deleting the
+  `!`) had "nothing behind it"; a source guard,
+  `the_yes_gate_guards_the_dispatch`, had been added since and catches it
+  — verified by re-applying the mutation rather than by reading the
+  test.
+
+  What the guard did NOT cover was worse than the inversion it did:
+  dropping the `exit(2)` leaves the warning printing ("would dispatch to
+  N region(s); re-run with --yes to confirm") and then dispatches to
+  every region anyway, so the operator sees the exact message that says
+  it stopped. Confirmed NOT CAUGHT by mutation, then guarded — along
+  with the region count in that prompt, which is the number the operator
+  decides on and was also unpinned.
+
+  The entry's "real fix is a fake client layer" still stands for a
+  behavioural test; it is not needed for these two properties.
+

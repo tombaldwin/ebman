@@ -281,21 +281,6 @@ than a wrong action. Working top-down by count is the wrong order.
   max_pages` boundary and an empty-string token, which AWS does return
   and which paging on either loops forever or errors.
 
-- [ ] **`run_rollout`'s `if !yes` confirmation gate is untestable** —
-  found 2026-08-26 and NOT fixed. Deleting the `!` inverts it: `--yes`
-  would print "re-run with --yes" and exit 2, and *omitting* `--yes`
-  would dispatch the rollout. That is a safety inversion with nothing
-  behind it.
-
-  It cannot be reached from a test as things stand. The gate sits after
-  the per-region preflight, so an integration test without credentials
-  exits at `list_environments` long before it. Moving the gate ahead of
-  the preflight would make it testable but changes behaviour — today the
-  operator learns the env is missing from a region *before* being asked
-  to confirm, which is the better order. The real fix is the same one
-  the SDK seam needs: a fake client layer. Flagging rather than
-  guessing.
-
 - [~] **`src/cli/lint.rs::run` is a god-function — 57 survivors in one
   622-line body**, out of 87 for the file. 31 of them are `delete !` and
   15 are `&&` → `||`: condition checks threaded through a single large
