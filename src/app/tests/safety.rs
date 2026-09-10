@@ -1748,4 +1748,25 @@ async fn a_refusal_is_audited_under_the_label_its_dispatch_uses() {
         !line.contains("action=purge "),
         "and must not still carry the bare toast verb: {line}"
     );
+
+    // The BATCH path must map identically. It files its own audit lines
+    // rather than going through `deny_write`, so it had its own chance
+    // to pass the raw verb — and did, until this test.
+    let batch_env = "label-mapping-batch-probe";
+    let before = std::fs::read_to_string(&path).unwrap_or_default();
+    app.cfg.safety_envs.insert(batch_env.into(), true);
+    assert!(
+        app.deny_write_batch(&[batch_env.to_string()], "purge"),
+        "must refuse"
+    );
+    let after = std::fs::read_to_string(&path).unwrap_or_default();
+    let delta = after.strip_prefix(&before).expect("append-only");
+    let line = delta
+        .lines()
+        .find(|l| l.contains(batch_env))
+        .expect("the batch refusal was recorded");
+    assert!(
+        line.contains("action=dlq-purge"),
+        "a batch refusal must correlate the same way a single one does: {line}"
+    );
 }
