@@ -371,6 +371,30 @@ pub(crate) async fn fetch_env_lint_inputs(
     })
 }
 
+/// Whether `lint --fix` may dispatch option-setting writes.
+///
+/// Extracted because it is a WRITE gate sitting inline in a 622-line
+/// async body: dropping the `yes` half dispatches
+/// `update_env_option_settings` against a live account on a run the
+/// operator asked to preview, and nothing could reach it to say so.
+/// Verified NOT CAUGHT by mutation before this existed.
+fn fix_may_dispatch(yes: bool, pending: usize) -> bool {
+    yes && pending > 0
+}
+
+/// Whether the account-level EBL015 pass should run.
+///
+/// Skipped when the operator scoped the run to one env — the pass is
+/// account-wide, so it would report platforms unrelated to what they
+/// asked about — and when EBL015 is disabled, since `lint.disable` is a
+/// per-env registry and this pass sits outside it. Both halves survived
+/// mutation, so an ignored `lint.disable` and an unwanted extra
+/// `ListPlatformVersions` call on every scoped run were equally
+/// invisible.
+fn should_run_account_pass(env_scoped: bool, disabled: &[String]) -> bool {
+    !env_scoped && !disabled.iter().any(|d| d == "EBL015")
+}
+
 /// EBL015 account-level assembly, shared by `run` and the MCP `lint`
 /// tool: list custom platforms, resolve each branch's newest version
 /// date via `latest_platform_version_date`, and run the pure
@@ -1151,7 +1175,7 @@ pub async fn run(args: &[String]) -> Result<()> {
                             }
                         }
                     }
-                    if !to_set.is_empty() && yes {
+                    if fix_may_dispatch(yes, to_set.len()) {
                         match aws
                             .update_env_option_settings(&env.name, &to_set, &[])
                             .await
@@ -1227,7 +1251,7 @@ pub async fn run(args: &[String]) -> Result<()> {
             // skipped when linting a single --env (the operator scoped
             // the run) and in the common zero-custom-platform account
             // the extra cost is one empty list call.
-            if env_name.is_none() && !disabled.iter().any(|d| d == "EBL015") {
+            if should_run_account_pass(env_name.is_some(), &disabled) {
                 match fetch_stale_platform_issues(&aws, chrono::Utc::now()).await {
                     Ok((mut issues, warnings)) => {
                         if !quiet {
@@ -2247,7 +2271,7 @@ mod run_decision_tests {
 
 #[cfg(test)]
 mod webhook_gate_tests {
-    use super::should_post_webhook;
+    use super::{fix_may_dispatch, should_post_webhook, should_run_account_pass};
     use std::collections::BTreeSet;
 
     fn set(items: &[&str]) -> BTreeSet<String> {
@@ -2297,5 +2321,97 @@ mod webhook_gate_tests {
 
         // A different set of the same size still counts as a change.
         assert!(should_post_webhook(Some(&seen), &set(&["EBL009:other"])));
+    }
+
+    /// `lint --fix` must not dispatch without `--yes`.
+    ///
+    /// This is a write gate — it guards `update_env_option_settings`
+    /// against a live account. It sat inline in a 622-line async body
+    /// where nothing could reach it, so dropping the `yes` half made a
+    /// preview run write to AWS with the whole suite green.
+    #[test]
+    fn fix_dispatches_only_with_yes_and_something_to_do() {
+        assert!(
+            !fix_may_dispatch(false, 3),
+            "a preview must never dispatch, however much it planned"
+        );
+        assert!(
+            !fix_may_dispatch(true, 0),
+            "nothing planned means no call — an empty write is still a \
+             round trip against someone's account"
+        );
+        assert!(fix_may_dispatch(true, 1), "confirmed, with work to do");
+    }
+
+    /// The account-level EBL015 pass is skipped when scoped, and when
+    /// disabled.
+    ///
+    /// Both halves survived mutation. Ignoring `lint.disable` runs a
+    /// rule the operator turned off; ignoring the scope reports
+    /// account-wide platforms on a run about one environment, and costs
+    /// a `ListPlatformVersions` call every time.
+    #[test]
+    fn the_account_pass_respects_scope_and_disables() {
+        let none: Vec<String> = vec![];
+        let off = vec!["EBL015".to_string()];
+
+        assert!(
+            should_run_account_pass(false, &none),
+            "fleet-wide run with the rule enabled"
+        );
+        assert!(
+            !should_run_account_pass(true, &none),
+            "a run scoped to one env must not report account-wide findings"
+        );
+        assert!(
+            !should_run_account_pass(false, &off),
+            "a disabled rule must stay disabled here too"
+        );
+        assert!(!should_run_account_pass(true, &off), "and both together");
+
+        // A different disabled rule must not suppress this one.
+        assert!(
+            should_run_account_pass(false, &["EBL001".to_string()]),
+            "disabling a sibling rule must not disable EBL015"
+        );
+    }
+
+    /// Both extracted gates must be WIRED into `run`.
+    ///
+    /// Neither call site is reachable from a test — that is why the
+    /// decisions sat there unguarded in the first place — so the helper
+    /// tests above prove nothing about production on their own.
+    ///
+    /// The scan is bounded to the code BEFORE the first `#[cfg(test)]`,
+    /// following this file's own precedent. Without that bound it would
+    /// match the literals in these very tests, and a textual mutation
+    /// that rewrote the call site would rewrite the needle too and keep
+    /// passing — which happened to a sibling guard earlier and read as
+    /// a clean result.
+    #[test]
+    fn the_extracted_gates_are_wired_into_run() {
+        let src = std::fs::read_to_string("src/cli/lint.rs").expect("read own source");
+        let prod = src.split("#[cfg(test)]").next().expect("production half");
+
+        assert!(
+            prod.contains("fix_may_dispatch(yes, to_set.len())"),
+            "the option-write dispatch must go through the tested gate, \
+             or `--fix` can write without `--yes` again"
+        );
+        assert!(
+            prod.contains("should_run_account_pass(env_name.is_some(), &disabled)"),
+            "the EBL015 account pass must go through the tested gate"
+        );
+        // Canary: the production slice must be real, or both `contains`
+        // above would fail loudly rather than silently — but the
+        // negative below would pass on an empty string.
+        assert!(
+            prod.contains("pub async fn run"),
+            "the production slice is not finding `run`"
+        );
+        assert!(
+            !prod.contains("if !to_set.is_empty() && yes {"),
+            "the inline gate came back alongside the helper"
+        );
     }
 }

@@ -275,6 +275,19 @@ than a wrong action. Working top-down by count is the wrong order.
   first-cycle-clean test pages "all clear" at an operator who never had
   an alert. Mutation-verified both ways: CAUGHT.
 
+  **Two more logic gates came out 2026-09-10** — `fix_may_dispatch` and
+  `should_run_account_pass`, the two the entry below named as "a handful
+  of flag combinations that sit inline against `eprintln!` + `exit`".
+  Both were unguarded in both directions. `fix_may_dispatch` is a WRITE
+  gate: dropping its `yes` half dispatches `update_env_option_settings`
+  against a live account on a run the operator asked to preview.
+  `should_run_account_pass` ignoring `lint.disable` runs a rule that was
+  turned off; ignoring the scope reports account-wide findings on a run
+  about one env. Four mutations CAUGHT, plus a source guard pinning both
+  call sites — neither is reachable from a test, which is why they sat
+  there. The third named combination, `fix && yes && dry_run`, was
+  already covered.
+
   **Measured what remains: 57 survivors in `run`, of which 28 are
   `!quiet` / `!json` output suppression** — a mutation changes whether
   a line prints. Of the other 29, the filters and exit code are now
