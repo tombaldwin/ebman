@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.38.0] — 2026-09-16
+
+**Housekeeping.** Test fixtures, documentation examples and configuration
+samples now use neutral placeholder names throughout, matching the `poly-*`
+convention already used elsewhere in the suite. No functional change — the
+only code touched is test data and doc comments, plus a `cargo fmt` reflow
+where the shorter names let lines collapse.
+
+**Security.** `rustls` bumped to 0.23.45, picking up the fix for
+RUSTSEC-2026-0285 — TLS 1.3 handshake messages were accepted across
+encryption level boundaries.
+
 ## [0.37.0] — 2026-09-09
 
 **A safety release.** Three things that were meant to protect an
