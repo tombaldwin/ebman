@@ -36,6 +36,33 @@ Tier definitions:
 - **Tier 7** — polish and quality of life.
 - **Tier 8** — maybe / unprioritised; not committed to scope.
 
+#### Tier 0 — fixture hygiene (2026-09-16)
+
+- [ ] **A test that fails the build when a fixture looks real.** `cargo
+  package` ships everything git tracks bar `exclude`, so all 26 files under
+  `src/app/tests/` and the 62 inline `#[cfg(test)]` modules go to crates.io
+  verbatim, and docs.rs then renders them as browsable HTML. A placeholder
+  that isn't one is therefore published, indexed, and — since a crates.io
+  version cannot be unpublished, only yanked, and a yanked version stays
+  downloadable — permanent.
+
+  The check: fail on a bare 12-digit number outside an allowlist of the AWS
+  documentation dummies (`123456789012`, `111122223333`, `444455556666`,
+  `555555555555`, `777788889999`), and on anything ARN-shaped carrying an
+  account field that isn't in it. Same shape as the existing
+  `docs_drift::` tests, which is the precedent for a test that guards a
+  property of the repo rather than of the code.
+
+  **Why a linter of this kind earns its place:** the failure mode is that a
+  real value looks exactly like a fixture to a reviewer, and doubly so
+  beside genuine dummies — the eye reads "12 digits, test file, fine". No
+  amount of care at review time catches that reliably; a mechanical check
+  catches it every time and costs nothing to run.
+
+  Worth extending to the same question one level out: a test of a redaction
+  or masking function is the single likeliest place for a real value to be
+  pasted, because pasting one is how you prove the masking works.
+
 #### 0.29 queue — 0.28 pre-tag review deferrals (2026-08-20)
 
 The write/freeze pre-tag review (2 lenses) fixed 2 Critical + 2 Important + 1 Minor before tag (see CHANGELOG). Deferred, non-blocking:
