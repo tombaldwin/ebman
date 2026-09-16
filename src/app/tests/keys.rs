@@ -170,8 +170,7 @@ fn render_options_overlay_filters_to_namespace_when_given() {
             None,
         ),
     ];
-    let body =
-        crate::app::render_options_overlay(&rows, Some("aws:autoscaling:asg"), "poly-prod");
+    let body = crate::app::render_options_overlay(&rows, Some("aws:autoscaling:asg"), "poly-prod");
     assert!(body.contains("MinSize"));
     assert!(!body.contains("DeploymentPolicy"));
 }

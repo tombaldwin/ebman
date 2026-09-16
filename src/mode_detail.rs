@@ -1073,10 +1073,7 @@ mod tests {
     fn config_editable_items_lists_tags_sorted_then_env_vars_natural() {
         let mut d = empty_detail("Web");
         // Tags inserted out of order — expect case-insensitive sort.
-        d.tags = vec![
-            ("Zone".into(), "eu".into()),
-            ("app".into(), "poly".into()),
-        ];
+        d.tags = vec![("Zone".into(), "eu".into()), ("app".into(), "poly".into())];
         // Env vars keep natural (insertion) order, NOT sorted.
         d.env_vars = vec![("PORT".into(), "8080".into()), ("DEBUG".into(), "0".into())];
         let items = config_editable_items(&d);

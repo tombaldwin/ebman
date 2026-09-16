@@ -1113,9 +1113,7 @@ async fn list_application_versions_pages_through_next_token() {
     use aws_sdk_elasticbeanstalk::types::ApplicationVersionDescription;
 
     let page1 = mock!(Client::describe_application_versions)
-        .match_requests(|req| {
-            req.application_name() == Some("poly") && req.next_token().is_none()
-        })
+        .match_requests(|req| req.application_name() == Some("poly") && req.next_token().is_none())
         .then_output(|| {
             DescribeApplicationVersionsOutput::builder()
                 .application_versions(
@@ -1148,10 +1146,7 @@ async fn list_application_versions_pages_through_next_token() {
     let eb = mock_client!(aws_sdk_elasticbeanstalk, [&page1, &page2]);
     let client = client_with_eb(eb);
 
-    let versions = client
-        .list_application_versions("poly")
-        .await
-        .expect("ok");
+    let versions = client.list_application_versions("poly").await.expect("ok");
     let labels: Vec<&str> = versions.iter().map(|v| v.label.as_str()).collect();
     assert_eq!(
         labels,

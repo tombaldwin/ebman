@@ -166,8 +166,7 @@ fn format_deploy_preview_happy_path() {
             created: Some(now - chrono::Duration::days(1)),
         },
     ];
-    let body =
-        crate::app::format_deploy_preview("poly-prod", "build-141", "build-142", &versions);
+    let body = crate::app::format_deploy_preview("poly-prod", "build-141", "build-142", &versions);
     assert!(body.contains("env:        poly-prod"));
     assert!(body.contains("current:    build-141"));
     assert!(body.contains("candidate:  build-142"));
@@ -193,8 +192,7 @@ fn format_deploy_preview_rollback_warning_fires_when_older() {
         },
     ];
     // Deploying the OLDER version on top of the NEWER one → rollback.
-    let body =
-        crate::app::format_deploy_preview("poly-prod", "build-new", "build-old", &versions);
+    let body = crate::app::format_deploy_preview("poly-prod", "build-new", "build-old", &versions);
     assert!(
         body.contains("rollback"),
         "expected rollback warning, got: {body}"
