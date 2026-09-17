@@ -151,6 +151,19 @@ fn read_tool_table() -> Value {
             }
         },
         {
+            "name": "why",
+            "description": "Everything that bears on one environment's health, assembled in a single call: recent events, alarms, instances, dead-letter queue depth and its messages, and the application's recent versions. This is the TUI's `:why` overlay. Deliberately NOT a narrative — it puts the facts side by side and leaves the conclusion to the reader, because a confident wrong story is harder to disagree with than adjacent facts. CAVEATS: the dead-letter peek increments each returned message's `receive_count`, which counts every receive and is not a retry count. Any section that failed to fetch comes back as null with the reason in `errors`, so a partial answer is visible as partial rather than reading as \"nothing there\".",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "env": {"type": "string", "description": "Environment name (required)"},
+                    "profile": {"type": "string", "description": "AWS profile (default: ambient)"},
+                    "region": {"type": "string", "description": "AWS region (default: profile/env default)"}
+                },
+                "required": ["env"]
+            }
+        },
+        {
             "name": "lint",
             "description": "Run ebman's diagnostic rule engine over the fleet (or one env). CAVEATS: EBL011 (worker DLQ) never fires here — the lint path does not poll queues; call `worker_queues` for depth, and with `peek` for which task dead-lettered; EBL016 (live health probe) does not run in this tool. A clean result does NOT clear those rules. EBL015 (stale custom platforms, account-level) runs only when not scoped to a single env. Envs whose input fetch fails are skipped, not fatal — a `skipped_envs` array in the result lists them, so check it before treating the run as full coverage.",
             "inputSchema": {
@@ -254,6 +267,139 @@ pub(super) fn arg_str(args: &Value, key: &str) -> Option<String> {
 
 pub(super) fn arg_u64(args: &Value, key: &str) -> Option<u64> {
     args.get(key).and_then(Value::as_u64)
+}
+
+/// A `why` section's rendered JSON, or `null` with the reason recorded.
+///
+/// Extracted from `tool_why`'s closure so it is reachable: the closure
+/// needs AWS, and mutating it to return `[]` instead of `null` — or to
+/// swallow the error entirely — left the whole suite green. Both are
+/// the same defect, which is that "we could not look" starts reading as
+/// "there is nothing there", and during triage those are opposite
+/// conclusions.
+pub(super) fn section_or_error(
+    name: &str,
+    r: std::result::Result<String, String>,
+    errors: &mut Vec<(String, String)>,
+) -> String {
+    match r {
+        Ok(v) => v,
+        Err(e) => {
+            errors.push((name.to_string(), e));
+            "null".to_string()
+        }
+    }
+}
+
+/// The `why` bundle. Sections are pre-rendered JSON so each can be
+/// `null` independently — an unfetched section must never look like an
+/// empty one.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn render_why_json(
+    env: &str,
+    events: &str,
+    alarms: &str,
+    instances: &str,
+    queues: &str,
+    versions: &str,
+    errors: &[(String, String)],
+) -> String {
+    let errs: Vec<String> = errors
+        .iter()
+        .map(|(section, message)| {
+            format!(
+                "{{\"section\":{},\"error\":{}}}",
+                util::json_string(section),
+                util::json_string(message)
+            )
+        })
+        .collect();
+    format!(
+        "{{\"env\":{},\"events\":{},\"alarms\":{},\"instances\":{},\"queues\":{},\"recent_versions\":{},\"errors\":[{}]}}",
+        util::json_string(env),
+        events,
+        alarms,
+        instances,
+        queues,
+        versions,
+        errs.join(",")
+    )
+}
+
+fn render_alarms_json(alarms: &[aws::CwAlarm]) -> String {
+    let entries: Vec<String> = alarms
+        .iter()
+        .map(|a| {
+            format!(
+                "{{\"name\":{},\"state\":{},\"reason\":{},\"metric\":{},\"namespace\":{}}}",
+                util::json_string(&a.name),
+                util::json_string(&a.state),
+                util::json_string(&a.state_reason),
+                util::json_string(&a.metric_name),
+                util::json_string(&a.namespace)
+            )
+        })
+        .collect();
+    format!("[{}]", entries.join(","))
+}
+
+fn render_instances_json(instances: &[aws::Instance]) -> String {
+    let entries: Vec<String> = instances
+        .iter()
+        .map(|i| {
+            let causes: Vec<String> = i.causes.iter().map(|c| util::json_string(c)).collect();
+            format!(
+                "{{\"id\":{},\"health\":{},\"color\":{},\"instance_type\":{},\"availability_zone\":{},\"launched_at\":{},\"causes\":[{}]}}",
+                util::json_string(&i.id),
+                util::json_string(&i.health),
+                util::json_string(&i.color),
+                util::json_string(&i.instance_type),
+                util::json_string(&i.availability_zone),
+                i.launched_at
+                    .map(|t| util::json_string(&t.to_rfc3339()))
+                    .unwrap_or_else(|| "null".into()),
+                causes.join(",")
+            )
+        })
+        .collect();
+    format!("[{}]", entries.join(","))
+}
+
+fn render_versions_json(versions: &[aws::AppVersion]) -> String {
+    let entries: Vec<String> = versions
+        .iter()
+        .take(10)
+        .map(|v| {
+            format!(
+                "{{\"label\":{},\"description\":{},\"created\":{}}}",
+                util::json_string(&v.label),
+                util::json_string(&v.description),
+                v.created
+                    .map(|t| util::json_string(&t.to_rfc3339()))
+                    .unwrap_or_else(|| "null".into())
+            )
+        })
+        .collect();
+    format!("[{}]", entries.join(","))
+}
+
+/// Render events as JSON. Shared by `recent_events` and `why`: a second
+/// copy is how two surfaces start disagreeing about the same records.
+fn render_events_json(events: &[aws::Event]) -> String {
+    let entries: Vec<String> = events
+        .iter()
+        .map(|e| {
+            format!(
+                "{{\"at\":{},\"env\":{},\"severity\":{},\"message\":{}}}",
+                e.at.map(|t| util::json_string(&t.to_rfc3339()))
+                    .unwrap_or_else(|| "null".into()),
+                util::json_string(&e.env),
+                util::json_string(&e.severity),
+                util::json_string(&e.message),
+            )
+        })
+        .collect();
+    format!("[{}]", entries.join(","))
 }
 
 /// Render a `recent_logs` answer.
@@ -399,6 +545,7 @@ impl Server {
             }
             "worker_queues" => self.tool_worker_queues(args).await,
             "recent_logs" => self.tool_recent_logs(args).await,
+            "why" => self.tool_why(args).await,
             "lint" => self.tool_lint(args).await,
             "get_option_settings" => self.tool_option_settings(args).await,
             "drift" => self.tool_drift(args).await,
@@ -749,6 +896,102 @@ impl Server {
         )))
     }
 
+    /// The `:why` bundle: every fact bearing on one env's health, in
+    /// one call.
+    ///
+    /// Six fetches that an operator otherwise makes by hand. Each is
+    /// independent and each can fail on its own — a section that failed
+    /// is `null` with its reason in `errors`, never an empty array,
+    /// because "we could not look" and "there is nothing there" are
+    /// opposite conclusions during triage.
+    ///
+    /// No narrative. The facts go side by side and the reader draws the
+    /// conclusion: a generated sentence is confidently wrong in a way
+    /// adjacent facts are not.
+    async fn tool_why(&self, args: &Value) -> Result<String, String> {
+        let env_name = arg_str(args, "env").ok_or("'env' is required")?;
+        let envs = self.fetch_envs(args).await?;
+        let env = envs
+            .iter()
+            .find(|e| e.name == env_name)
+            .ok_or_else(|| format!("env '{env_name}' not found"))?;
+        let app = env.application.clone();
+
+        if matches!(self.backend, Backend::Demo) {
+            let queues = demo_fixture::worker_queues_for_env(&env_name);
+            let events = demo_fixture::events_for_env(&env_name);
+            return Ok(render_why_json(
+                &env_name,
+                &render_events_json(&events),
+                "null",
+                "null",
+                &render_worker_queues_json(&queues, &[], false),
+                "null",
+                &[],
+            ));
+        }
+
+        let client = self.client(args).await?;
+        let mut errors: Vec<(String, String)> = Vec::new();
+        // Each section records its own failure rather than aborting the
+        // bundle: five good sections and one error is a far more useful
+        // answer than one error.
+        let mut section = |name: &str, r: std::result::Result<String, String>| -> String {
+            section_or_error(name, r, &mut errors)
+        };
+
+        let events = section(
+            "events",
+            client
+                .list_events_for_env(&env_name, 50)
+                .await
+                .map(|e| render_events_json(&e))
+                .map_err(|e| e.to_string()),
+        );
+        let alarms = section(
+            "alarms",
+            client
+                .list_alarms_for_env(&env_name, &self.safety_cfg.alarm_dimensions)
+                .await
+                .map(|a| render_alarms_json(&a))
+                .map_err(|e| e.to_string()),
+        );
+        let instances = section(
+            "instances",
+            client
+                .list_instances(&env_name)
+                .await
+                .map(|i| render_instances_json(&i))
+                .map_err(|e| e.to_string()),
+        );
+        let versions = section(
+            "recent_versions",
+            client
+                .list_application_versions(&app)
+                .await
+                .map(|v| render_versions_json(&v))
+                .map_err(|e| e.to_string()),
+        );
+        let queues = match client.describe_worker_queues(&app, &env_name).await {
+            Ok(q) => {
+                let msgs = match q.dlq_url.as_deref() {
+                    Some(url) => client.peek_messages(url, 5).await.unwrap_or_default(),
+                    None => Vec::new(),
+                };
+                let peeked = q.dlq_url.is_some();
+                render_worker_queues_json(&q, &msgs, peeked)
+            }
+            Err(e) => {
+                errors.push(("queues".into(), e.to_string()));
+                "null".to_string()
+            }
+        };
+
+        Ok(render_why_json(
+            &env_name, &events, &alarms, &instances, &queues, &versions, &errors,
+        ))
+    }
+
     /// The newest log lines for an env — the "has it recovered?" read.
     ///
     /// Reports `complete` because the failure mode here is a plausible
@@ -888,20 +1131,7 @@ impl Server {
                 .map_err(|e| tool_error(&profile, "describe_events", &e.to_string()))?
             }
         };
-        let entries: Vec<String> = events
-            .iter()
-            .map(|e| {
-                format!(
-                    "{{\"at\":{},\"env\":{},\"severity\":{},\"message\":{}}}",
-                    e.at.map(|t| util::json_string(&t.to_rfc3339()))
-                        .unwrap_or_else(|| "null".into()),
-                    util::json_string(&e.env),
-                    util::json_string(&e.severity),
-                    util::json_string(&e.message),
-                )
-            })
-            .collect();
-        Ok(format!("[{}]", entries.join(",")))
+        Ok(render_events_json(&events))
     }
 
     async fn tool_list_versions(&self, args: &Value) -> Result<String, String> {

@@ -81,6 +81,7 @@ pub(super) const TOOL_ATTRS: &[(&str, ToolAttrs)] = &[
     // actionable rather than merely cautionary.
     ("worker_queues", ToolAttrs::read()),
     ("recent_logs", ToolAttrs::read()),
+    ("why", ToolAttrs::read()),
     ("lint", ToolAttrs::read()),
     ("drift", ToolAttrs::read()),
     ("fleet_cost", ToolAttrs::read()),
