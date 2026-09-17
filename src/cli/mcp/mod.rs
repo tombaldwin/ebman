@@ -262,8 +262,20 @@ impl Server {
                         // a discoverability block that grows into prose
                         // gets skimmed like a licence.
                         "instructions": concat!(
-                            "ebman is a fleet console for AWS Elastic Beanstalk. This surface exposes reads, ",
+                            "ebman ", env!("CARGO_PKG_VERSION"),
+                            " — a fleet console for AWS Elastic Beanstalk. This surface exposes reads, ",
                             "plus two-phase writes when the server was started with --allow-writes.\n\n",
+                            // The version is in `serverInfo` too, but a
+                            // client need not surface that field, and an
+                            // agent reads THIS. It matters because the
+                            // list below is a claim about what a
+                            // specific build can do: a reader on an old
+                            // binary was reporting capability gaps as
+                            // facts for two days without knowing it was
+                            // two releases behind, and had no way to
+                            // tell from where it sat.
+                            "Check this against the latest release before reporting a capability as missing — ",
+                            "this list describes THIS build.\n\n",
                             "Capabilities ebman HAS that this surface does NOT expose — ask the operator to run them, ",
                             "or ask for them to be exposed here:\n",
                             "- Worker queue depth and a non-destructive message peek, including which scheduled task ",
@@ -1234,6 +1246,22 @@ mod tests {
         assert!(
             instructions.contains("TUI"),
             "and must say where: {instructions}"
+        );
+
+        // The build version, IN the text. It is in `serverInfo` as well,
+        // but a client need not surface that field and the agent reads
+        // this — and the capability list above is a claim about a
+        // specific build. A reader on a three-week-old binary spent two
+        // days reporting capability gaps as facts, with no way to tell
+        // from where it sat that it was two releases behind.
+        assert!(
+            instructions.contains(env!("CARGO_PKG_VERSION")),
+            "the instructions must name the build they describe: {instructions}"
+        );
+        assert_eq!(
+            resp["result"]["serverInfo"]["version"],
+            env!("CARGO_PKG_VERSION"),
+            "and must agree with serverInfo"
         );
 
         // If a queue TOOL ever ships, this note becomes a lie. Fail
