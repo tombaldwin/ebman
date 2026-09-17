@@ -299,9 +299,8 @@ impl Server {
                             "- Dead-letter message MANAGEMENT — resend to the main queue, delete one, purge: TUI, ",
                             "Detail view, Queues tab, `d`. Reading queue depth and peeking at messages IS exposed ",
                             "here, as `worker_queues`.\n",
-                            "- Correlated triage for one env — alarms, deploys, DLQ, events, instances and queues ",
-                            "assembled together: TUI, `:why`.\n",
-                            "- Live log tail: TUI, Detail view, Logs tab.\n\n",
+                            "- A LIVE log tail (streaming, follows new lines): TUI, Detail view, Logs tab. ",
+                            "Point-in-time log queries ARE exposed here, as `recent_logs`.\n\n",
                             "Tool descriptions carry CAVEATS naming what each tool cannot see. They are accurate and ",
                             "worth reading: a clean result from a tool does not clear what that tool never checked."
                         )
@@ -927,6 +926,7 @@ mod tests {
                 "list_environments",
                 "worker_queues",
                 "recent_logs",
+                "why",
                 "lint",
                 "get_option_settings",
                 "drift",
@@ -1272,7 +1272,11 @@ mod tests {
             .to_string();
 
         // Each TUI-only capability, and the fact it is TUI-only.
-        for needle in ["resend", "purge", ":why", "log tail"] {
+        // What is TUI-only TODAY. This list has shrunk twice as tools
+        // shipped — queues, then `:why` and point-in-time logs — and
+        // each time the guard failed first and the block was corrected,
+        // which is the behaviour wanted from it.
+        for needle in ["resend", "purge", "LIVE log tail"] {
             assert!(
                 instructions.to_lowercase().contains(&needle.to_lowercase()),
                 "the instructions must name `{needle}` as available elsewhere: {instructions}"
@@ -1479,6 +1483,109 @@ mod tests {
         assert!(
             desc.contains("complete"),
             "and the field that tells you which you have: {desc}"
+        );
+    }
+
+    /// The `why` bundle puts the facts side by side in one call.
+    ///
+    /// Five sections assembled by hand across five calls during a real
+    /// incident. The bundle is deliberately not a narrative: adjacent
+    /// facts let a reader be wrong in their own name, where a confident
+    /// generated sentence does not.
+    #[tokio::test]
+    async fn why_returns_every_section_in_one_call() {
+        let s = demo_server();
+        let envs = rpc(
+            &s,
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                   "params":{"name":"list_environments","arguments":{}}}),
+        )
+        .await
+        .expect("envs");
+        let env_name = envs["result"]["content"][0]["text"]
+            .as_str()
+            .and_then(|t| t.split("\"name\":\"").nth(1))
+            .and_then(|r| r.split('"').next())
+            .expect("an env")
+            .to_string();
+
+        let resp = rpc(
+            &s,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
+                   "params":{"name":"why","arguments":{"env": env_name}}}),
+        )
+        .await
+        .expect("why answers");
+        let body = resp["result"]["content"][0]["text"].as_str().expect("text");
+        let parsed: Value = serde_json::from_str(body).expect("valid JSON");
+
+        for section in ["events", "alarms", "instances", "queues", "recent_versions"] {
+            assert!(
+                parsed.get(section).is_some(),
+                "`{section}` must be present even when null — a missing key \
+                 and an empty one read differently: {body}"
+            );
+        }
+        assert!(
+            parsed["errors"].is_array(),
+            "a partial bundle must be visibly partial: {body}"
+        );
+    }
+
+    /// A failed section is null WITH a reason, never an empty array.
+    ///
+    /// "We could not look" and "there is nothing there" are opposite
+    /// conclusions during triage, and an empty array says the second
+    /// while meaning the first.
+    #[test]
+    fn a_failed_why_section_is_null_with_its_reason() {
+        let bundle = super::tools::render_why_json(
+            "api-prod",
+            "[]",
+            "null",
+            "[]",
+            "null",
+            "[]",
+            &[
+                ("alarms".to_string(), "AccessDenied".to_string()),
+                ("queues".to_string(), "throttled".to_string()),
+            ],
+        );
+        let parsed: Value = serde_json::from_str(&bundle).expect("valid JSON");
+        assert!(parsed["alarms"].is_null(), "{bundle}");
+        assert!(parsed["queues"].is_null(), "{bundle}");
+        assert!(
+            parsed["events"].is_array() && parsed["instances"].is_array(),
+            "sections that succeeded must still be there: {bundle}"
+        );
+        let errs = parsed["errors"].as_array().expect("errors array");
+        assert_eq!(errs.len(), 2, "{bundle}");
+        assert!(
+            errs.iter()
+                .any(|e| e["section"] == "alarms" && e["error"] == "AccessDenied"),
+            "the reason must survive, not just the fact of failure: {bundle}"
+        );
+    }
+
+    /// A failed section must be `null` with its reason, not an empty
+    /// array and not a silent success.
+    #[test]
+    fn a_failed_section_is_null_and_recorded() {
+        let mut errors: Vec<(String, String)> = Vec::new();
+        let ok = super::tools::section_or_error("events", Ok("[1,2]".into()), &mut errors);
+        assert_eq!(ok, "[1,2]", "a good section passes through untouched");
+        assert!(errors.is_empty(), "and records nothing");
+
+        let bad = super::tools::section_or_error("alarms", Err("AccessDenied".into()), &mut errors);
+        assert_eq!(
+            bad, "null",
+            "a failed section must be null — `[]` would read as \"no alarms\", \
+             which is the opposite of \"we could not check\""
+        );
+        assert_eq!(
+            errors,
+            vec![("alarms".to_string(), "AccessDenied".to_string())],
+            "and the reason must be kept, not just the fact of failure"
         );
     }
 }

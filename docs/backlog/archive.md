@@ -3710,3 +3710,20 @@ own reasoning, not by effort.
   now guards the narrower claim that dead-letter MANAGEMENT (resend /
   delete / purge) stays TUI-only.
 
+- [x] **`:why` bundle over MCP** — shipped 2026-09-18 as `why`. Five
+  fetches an operator otherwise makes by hand, in one call. Each section
+  fails independently and a failed one is `null` WITH its reason in
+  `errors`, never an empty array: "could not look" and "nothing there"
+  are opposite conclusions during triage. Deliberately not a narrative —
+  the field reporter who asked for it argued against one, on the grounds
+  that a confident wrong sentence is harder to disagree with than
+  adjacent facts, and they were right.
+
+- [x] **`recent_logs` over MCP** — shipped 2026-09-18. The existing
+  CloudWatch code is a watermark tail (oldest-first, correct for
+  streaming); a point query needs the opposite, and the obvious
+  implementation gets it backwards because `FilterLogEvents` returns
+  matches oldest-first. `complete` reports whether the window was fully
+  read, because a truncated window hands back the OLDEST lines and
+  answers "is this still running?" with evidence from hours ago.
+

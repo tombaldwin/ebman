@@ -562,14 +562,6 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
   than wiring the levels engine to `cli::mcp::annotations` and growing a
   second table that drifts. Raised by the 0.37 architecture review.
 
-- [ ] **Expose the `:why` correlation bundle over MCP.** Alarms,
-  deploys, DLQ, events, instances and queues for one env, assembled —
-  the TUI already does this. The reporter of the worker incident
-  assembled the same bundle by hand across five calls and confirmed a
-  single bundle would have answered it. Explicitly NOT a generated
-  narrative: adjacent facts let a reader be wrong in their own name,
-  where a confident wrong sentence does not.
-
 - [ ] **`drift` cannot see environments whose tfstate is remote.**
   `terraform::find_tfstate` walks ancestors for a local file, so a fleet
   on an HCP/S3 backend — which is the fleet anyone runs in anger — has
@@ -578,12 +570,3 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
   for months, corrupting ~37,000 rows. Drift would have caught it and
   could not run. Needs a decision on scope: read a configured state
   path/URL, or accept HCP with a token.
-
-- [ ] **A `recent_logs` point query over MCP.** The CloudWatch Logs
-  client exists (`src/aws/logs.rs`) but only as a forward tail. Design
-  constraint from the field, worth writing into the tool: `aws logs
-  filter-log-events --limit` returns the EARLIEST matches in the window,
-  not the latest, so a naive "recent" query reads as "the task stopped
-  hours ago" when it is running fine — plausible enough to be hard to
-  notice. Default newest-first. (The existing tail is correct as-is: it
-  is watermark-driven and wants earliest-first. Do not "fix" it.)
