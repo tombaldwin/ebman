@@ -206,6 +206,17 @@ jobs:
           # in a pinned checkout is worse than a pin that breaks loudly.
           git clone --filter=blob:none https://github.com/tombaldwin/candor-rust ~/candor
           (cd ~/candor && git checkout --quiet 9ba8c6580832e6bed6839ca383a24edb591f401d && ./install.sh)
+          # A pin orphaned by a history rewrite STILL CHECKS OUT: GitHub serves unreachable
+          # objects to fetch until it garbage-collects, on no published schedule. So the line
+          # above proves nothing, and this job passed for a week on a commit that existed in no
+          # history. Reachability is the only property that actually fails, and --contains
+          # answers it on the clone we have already made. Zero refs means the pin is living on
+          # borrowed time and will break on a morning with nothing to correlate it to, in
+          # somebody else's pipeline. Fail here instead, while the cause is still on screen.
+          if [ "$(cd ~/candor && git for-each-ref --contains 9ba8c6580832e6bed6839ca383a24edb591f401d 2>/dev/null | wc -l)" -eq 0 ]; then
+            echo "::error ::candor-rust pin 9ba8c658 is unreachable — a rewrite orphaned it. Remap it: find the same subject+author date on main, and check the file this step RUNS is the same blob."
+            exit 1
+          fi
           # `install.sh` DEGRADES rather than fails when the nightly
           # build doesn't work: it builds only the stable crates, and
           # `cargo candor` keeps working via the syntactic scanner. That
