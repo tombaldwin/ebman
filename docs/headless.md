@@ -129,6 +129,16 @@ would grandfather whatever the outage hid.
 
 ## MCP server (`ebman mcp serve`)
 
+The `initialize` response carries an `instructions` block naming the
+capabilities ebman has that this surface does **not** expose — worker
+queue depth and message peek, the `:why` correlation bundle, the live
+log tail — and where they live in the TUI. An agent can only see the
+tool list, so without that a TUI-only capability is indistinguishable
+from one ebman lacks; on a real incident that sent the diagnosis out
+into raw `aws sqs` calls while ebman had had a DLQ peek all along. A
+test fails if a tool ships that makes the block stale.
+
+
 A stdio MCP server exposing ebman's read surface as tools, so Claude Code (or any MCP client) can query fleet state first-class:
 
 ```bash
