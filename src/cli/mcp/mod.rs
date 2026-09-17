@@ -926,6 +926,7 @@ mod tests {
             vec![
                 "list_environments",
                 "worker_queues",
+                "recent_logs",
                 "lint",
                 "get_option_settings",
                 "drift",
@@ -1424,6 +1425,60 @@ mod tests {
             "a derived DLQ url that returns nothing is ordinary; a reported \
              one that does is an anomaly — the consumer cannot tell without \
              this: {desc}"
+        );
+    }
+
+    /// `recent_logs` must report whether it reached the newest lines.
+    ///
+    /// The failure this guards is a plausible wrong answer, not an
+    /// error: `FilterLogEvents` returns matches oldest-first, so a
+    /// truncated window hands back the OLDEST lines and answers "is
+    /// this still running?" with evidence from hours ago. `complete`
+    /// is the only thing that tells a reader which they are holding.
+    #[tokio::test]
+    async fn recent_logs_says_whether_it_reached_the_newest() {
+        let resp = rpc(
+            &demo_server(),
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                   "params":{"name":"recent_logs","arguments":{"env":"any"}}}),
+        )
+        .await
+        .expect("recent_logs answers");
+        let body = resp["result"]["content"][0]["text"]
+            .as_str()
+            .expect("text payload");
+        let parsed: Value = serde_json::from_str(body).expect("valid JSON");
+        assert!(
+            parsed["complete"].is_boolean(),
+            "every answer must say whether the window was fully read: {body}"
+        );
+        assert!(parsed["events"].is_array(), "{body}");
+    }
+
+    /// And the caveat must be where an agent reads it.
+    #[tokio::test]
+    async fn recent_logs_warns_about_oldest_first() {
+        let resp = rpc(
+            &demo_server(),
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        )
+        .await
+        .expect("tools/list");
+        let desc = resp["result"]["tools"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .find(|t| t["name"] == "recent_logs")
+            .and_then(|t| t["description"].as_str())
+            .expect("recent_logs is advertised")
+            .to_string();
+        assert!(
+            desc.contains("oldest-first") || desc.contains("oldest first"),
+            "the trap must be named: {desc}"
+        );
+        assert!(
+            desc.contains("complete"),
+            "and the field that tells you which you have: {desc}"
         );
     }
 }

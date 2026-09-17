@@ -194,6 +194,20 @@ pub(crate) fn format_insights_results(
     out
 }
 
+/// Push `ev` and drop from the FRONT until at most `want` remain.
+///
+/// Extracted so it is production code a test can reach: the fetch loop
+/// needs CloudWatch, and a test that re-implemented this discipline
+/// inline passed happily while the real function popped from the wrong
+/// end. Dropping from the back would keep the OLDEST events, which is
+/// precisely the answer this whole function exists to avoid giving.
+fn keep_newest(kept: &mut std::collections::VecDeque<LogEvent>, ev: LogEvent, want: usize) {
+    kept.push_back(ev);
+    while kept.len() > want {
+        kept.pop_front();
+    }
+}
+
 impl AwsClient {
     /// Discover the CloudWatch Logs groups an EB env streams to. EB names
     /// them under the prefix `/aws/elasticbeanstalk/{env}/...` so we
@@ -220,6 +234,76 @@ impl AwsClient {
         let mut out: Vec<String> = raw.into_iter().filter_map(|g| g.log_group_name).collect();
         out.sort();
         Ok(out)
+    }
+
+    /// The NEWEST events in a window — a point query, not a tail.
+    ///
+    /// `FilterLogEvents` returns matches oldest-first and truncates at
+    /// `limit` or its 1MB cap, so the obvious implementation ("ask for
+    /// N") hands back the N OLDEST events in the window. Applied to a
+    /// question like "is this task still running", that reads as "it
+    /// stopped hours ago" when it is running fine — plausible enough to
+    /// be acted on, and reported from the field as a repeated trap.
+    ///
+    /// So: page forward through the window and keep the tail. The
+    /// second return value is whether the window was fully consumed. It
+    /// is the load-bearing part: when the page cap is hit, what we hold
+    /// is the OLDEST part of the window and the newest events are the
+    /// ones missing — the caller must be told to narrow `since_ms`
+    /// rather than shown a plausible wrong answer.
+    pub(crate) async fn fetch_latest_log_events(
+        &self,
+        log_group: &str,
+        since_ms: i64,
+        want: usize,
+        filter_pattern: Option<&str>,
+    ) -> Result<(Vec<LogEvent>, bool)> {
+        // Deliberately higher than the tail's per-poll cap: a tail is
+        // called again in 15 seconds, this is called once and must not
+        // report incomplete for an ordinary window.
+        const MAX_PAGES: usize = 20;
+        let want = want.clamp(1, 1000);
+        let mut kept: std::collections::VecDeque<LogEvent> = std::collections::VecDeque::new();
+        let mut next_token: Option<String> = None;
+        let mut complete = true;
+
+        for page in 0..MAX_PAGES {
+            let mut req = self
+                .cw_logs
+                .filter_log_events()
+                .log_group_name(log_group)
+                .start_time(since_ms);
+            if let Some(p) = filter_pattern.filter(|p| !p.is_empty()) {
+                req = req.filter_pattern(p);
+            }
+            if let Some(t) = next_token.take() {
+                req = req.next_token(t);
+            }
+            let resp = req.send().await.wrap_err("FilterLogEvents failed")?;
+            for e in resp.events.unwrap_or_default() {
+                keep_newest(
+                    &mut kept,
+                    LogEvent {
+                        timestamp_ms: e.timestamp.unwrap_or(since_ms),
+                        stream: e.log_stream_name.unwrap_or_default(),
+                        message: e.message.unwrap_or_default(),
+                    },
+                    want,
+                );
+            }
+            match resp.next_token {
+                Some(t) if !t.is_empty() => {
+                    next_token = Some(t);
+                    if page == MAX_PAGES - 1 {
+                        // Stopped early: the events we are holding are
+                        // the OLDEST part of the window.
+                        complete = false;
+                    }
+                }
+                _ => break,
+            }
+        }
+        Ok((kept.into_iter().collect(), complete))
     }
 
     /// Fetch events from one CW Logs group since `since_ms` (Unix
@@ -439,5 +523,49 @@ impl AwsClient {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod latest_events_tests {
+    use super::{keep_newest, LogEvent};
+
+    fn ev(ts: i64) -> LogEvent {
+        LogEvent {
+            timestamp_ms: ts,
+            stream: "s".into(),
+            message: format!("line {ts}"),
+        }
+    }
+
+    /// The rolling tail keeps the NEWEST `want`, not the first `want`.
+    ///
+    /// The whole point of the function: `FilterLogEvents` yields
+    /// oldest-first, so keeping the head would answer "what happened
+    /// recently" with the start of the window.
+    #[test]
+    fn the_rolling_tail_keeps_the_newest() {
+        let mut kept = std::collections::VecDeque::new();
+        for ts in 1..=10i64 {
+            keep_newest(&mut kept, ev(ts), 3);
+        }
+        assert_eq!(
+            kept.iter().map(|e| e.timestamp_ms).collect::<Vec<_>>(),
+            vec![8, 9, 10],
+            "a tail that dropped from the back would keep the OLDEST lines"
+        );
+    }
+
+    /// A window shorter than `want` comes back whole and in order.
+    #[test]
+    fn a_short_window_is_not_padded_or_reordered() {
+        let mut kept = std::collections::VecDeque::new();
+        for ts in [5i64, 6, 7] {
+            keep_newest(&mut kept, ev(ts), 50);
+        }
+        assert_eq!(
+            kept.iter().map(|e| e.timestamp_ms).collect::<Vec<_>>(),
+            vec![5, 6, 7]
+        );
     }
 }

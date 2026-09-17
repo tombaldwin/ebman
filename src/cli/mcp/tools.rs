@@ -134,6 +134,23 @@ fn read_tool_table() -> Value {
             }
         },
         {
+            "name": "recent_logs",
+            "description": "The NEWEST log lines for an environment from CloudWatch Logs. CAVEATS: returns the newest in the window, not the oldest — `FilterLogEvents` itself returns matches oldest-first, so a naive query answers \"is this still running?\" with lines from hours ago and looks plausible doing it. If `complete` is false the window held more than could be read and what you have is the OLDEST part of it: narrow `since_minutes` rather than trusting the result. `log_group` defaults to the environment's own groups (`/aws/elasticbeanstalk/<env>/…`); if the env has none, the result says so rather than erroring. `filter` is CloudWatch Logs filter-pattern syntax, not a regex.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "env": {"type": "string", "description": "Environment name (required)"},
+                    "since_minutes": {"type": "integer", "description": "How far back to look (default 60)"},
+                    "limit": {"type": "integer", "description": "Max lines to return, newest last (default 50, max 1000)"},
+                    "filter": {"type": "string", "description": "CloudWatch Logs filter pattern, e.g. ERROR"},
+                    "log_group": {"type": "string", "description": "One specific group; default is every group for the env"},
+                    "profile": {"type": "string", "description": "AWS profile (default: ambient)"},
+                    "region": {"type": "string", "description": "AWS region (default: profile/env default)"}
+                },
+                "required": ["env"]
+            }
+        },
+        {
             "name": "lint",
             "description": "Run ebman's diagnostic rule engine over the fleet (or one env). CAVEATS: EBL011 (worker DLQ) never fires here — the lint path does not poll queues; call `worker_queues` for depth, and with `peek` for which task dead-lettered; EBL016 (live health probe) does not run in this tool. A clean result does NOT clear those rules. EBL015 (stale custom platforms, account-level) runs only when not scoped to a single env. Envs whose input fetch fails are skipped, not fatal — a `skipped_envs` array in the result lists them, so check it before treating the run as full coverage.",
             "inputSchema": {
@@ -237,6 +254,44 @@ pub(super) fn arg_str(args: &Value, key: &str) -> Option<String> {
 
 pub(super) fn arg_u64(args: &Value, key: &str) -> Option<u64> {
     args.get(key).and_then(Value::as_u64)
+}
+
+/// Render a `recent_logs` answer.
+///
+/// `complete` sits at the top level rather than beside the events
+/// because it changes how the whole array should be read: false means
+/// these are the OLDEST lines in the window, not the newest, which is
+/// the opposite of what the tool is for.
+fn render_recent_logs_json(
+    env: &str,
+    groups: &[String],
+    complete: bool,
+    events: &[(String, crate::aws::LogEvent)],
+) -> String {
+    let esc = crate::util::json_escape;
+    let gs: Vec<String> = groups.iter().map(|g| format!("\"{}\"", esc(g))).collect();
+    let evs: Vec<String> = events
+        .iter()
+        .map(|(group, e)| {
+            let ts = chrono::DateTime::from_timestamp_millis(e.timestamp_ms)
+                .map(|d| d.to_rfc3339())
+                .unwrap_or_default();
+            format!(
+                "{{\"timestamp\":\"{}\",\"group\":\"{}\",\"stream\":\"{}\",\"message\":\"{}\"}}",
+                esc(&ts),
+                esc(group),
+                esc(&e.stream),
+                esc(&e.message)
+            )
+        })
+        .collect();
+    format!(
+        "{{\"env\":\"{}\",\"groups\":[{}],\"complete\":{},\"events\":[{}]}}",
+        esc(env),
+        gs.join(","),
+        complete,
+        evs.join(",")
+    )
 }
 
 /// Render worker queue state as JSON.
@@ -343,6 +398,7 @@ impl Server {
                 Ok(crate::cli::envs::render_envs_json(&envs))
             }
             "worker_queues" => self.tool_worker_queues(args).await,
+            "recent_logs" => self.tool_recent_logs(args).await,
             "lint" => self.tool_lint(args).await,
             "get_option_settings" => self.tool_option_settings(args).await,
             "drift" => self.tool_drift(args).await,
@@ -691,6 +747,64 @@ impl Server {
         Ok(jsonl_to_array(&audit_log::render_audit_entries_json(
             &entries[start..],
         )))
+    }
+
+    /// The newest log lines for an env — the "has it recovered?" read.
+    ///
+    /// Reports `complete` because the failure mode here is a plausible
+    /// wrong answer rather than an error: a truncated window hands back
+    /// the OLDEST lines in it, which reads as "the task stopped running
+    /// hours ago" for a task that is running fine.
+    async fn tool_recent_logs(&self, args: &Value) -> Result<String, String> {
+        let env_name = arg_str(args, "env").ok_or("'env' is required")?;
+        let since_minutes = arg_u64(args, "since_minutes")
+            .unwrap_or(60)
+            .clamp(1, 10_080);
+        let limit = arg_u64(args, "limit").unwrap_or(50).clamp(1, 1000) as usize;
+        let filter = arg_str(args, "filter");
+
+        if matches!(self.backend, Backend::Demo) {
+            return Ok(format!(
+                "{{\"env\":\"{}\",\"groups\":[],\"complete\":true,\"events\":[],\"note\":\"demo mode reads no logs\"}}",
+                crate::util::json_escape(&env_name)
+            ));
+        }
+
+        let client = self.client(args).await?;
+        let profile = arg_str(args, "profile");
+        let groups = match arg_str(args, "log_group") {
+            Some(g) => vec![g],
+            None => client
+                .discover_env_log_groups(&env_name)
+                .await
+                .map_err(|e| tool_error(&profile, "discover_env_log_groups", &e.to_string()))?,
+        };
+
+        let since_ms = (chrono::Utc::now() - chrono::Duration::minutes(since_minutes as i64))
+            .timestamp_millis();
+        let mut events: Vec<(String, crate::aws::LogEvent)> = Vec::new();
+        let mut complete = true;
+        for g in &groups {
+            let (evs, done) = client
+                .fetch_latest_log_events(g, since_ms, limit, filter.as_deref())
+                .await
+                .map_err(|e| tool_error(&profile, "fetch_latest_log_events", &e.to_string()))?;
+            // One incomplete group makes the whole answer incomplete —
+            // a consumer cannot act on "some of this is the oldest part
+            // of the window" per group.
+            complete &= done;
+            events.extend(evs.into_iter().map(|e| (g.clone(), e)));
+        }
+        // Merge across groups, then keep the newest `limit` overall:
+        // each group was capped independently, so the union can exceed
+        // it and would otherwise be ordered by group rather than time.
+        events.sort_by_key(|(_, e)| e.timestamp_ms);
+        if events.len() > limit {
+            events.drain(0..events.len() - limit);
+        }
+        Ok(render_recent_logs_json(
+            &env_name, &groups, complete, &events,
+        ))
     }
 
     /// Worker queue state for one env — the read that turned EB's
