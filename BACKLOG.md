@@ -562,16 +562,6 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
   than wiring the levels engine to `cli::mcp::annotations` and growing a
   second table that drifts. Raised by the 0.37 architecture review.
 
-- [ ] **Expose worker queues over MCP.** Depth and the non-destructive
-  peek already exist (`src/aws/sqs.rs`) and now carry the
-  `beanstalk.sqsd.*` task attributes; the TUI uses them and MCP has no
-  tool for them. Closes lint's EBL011 caveat at the same time — the rule
-  cannot fire over MCP because queue depths aren't polled there. Field
-  feedback from a live worker incident rates this the highest-value read
-  ebman does not expose. Needs: tool shape (depth only, or depth +
-  peek?), annotations (`readOnly`, `openWorld`), and a caveat noting
-  that a peek inflates `ApproximateReceiveCount`.
-
 - [ ] **Expose the `:why` correlation bundle over MCP.** Alarms,
   deploys, DLQ, events, instances and queues for one env, assembled —
   the TUI already does this. The reporter of the worker incident

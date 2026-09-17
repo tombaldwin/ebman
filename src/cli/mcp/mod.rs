@@ -296,9 +296,9 @@ impl Server {
                             "this list describes THIS build.\n\n",
                             "Capabilities ebman HAS that this surface does NOT expose — ask the operator to run them, ",
                             "or ask for them to be exposed here:\n",
-                            "- Worker queue depth and a non-destructive message peek, including which scheduled task ",
-                            "dead-lettered (`beanstalk.sqsd.task_name` / `path` / `scheduled_time`): TUI, Detail view, ",
-                            "Queues tab, `d`. This is also why lint's EBL011 never fires here.\n",
+                            "- Dead-letter message MANAGEMENT — resend to the main queue, delete one, purge: TUI, ",
+                            "Detail view, Queues tab, `d`. Reading queue depth and peeking at messages IS exposed ",
+                            "here, as `worker_queues`.\n",
                             "- Correlated triage for one env — alarms, deploys, DLQ, events, instances and queues ",
                             "assembled together: TUI, `:why`.\n",
                             "- Live log tail: TUI, Detail view, Logs tab.\n\n",
@@ -925,6 +925,7 @@ mod tests {
             names,
             vec![
                 "list_environments",
+                "worker_queues",
                 "lint",
                 "get_option_settings",
                 "drift",
@@ -936,8 +937,23 @@ mod tests {
             "tool registry changed — update docs/headless.md's table"
         );
         // Coverage caveats are part of the contract, not prose fluff.
-        let lint_desc = tools[1]["description"].as_str().unwrap();
+        //
+        // Looked up by NAME, not position: this indexed `tools[1]` and
+        // broke when a tool was inserted ahead of `lint` — a failure
+        // about tool ORDER dressed up as one about lint's caveats,
+        // which is the wrong thing to be told.
+        let lint_desc = tools
+            .iter()
+            .find(|t| t["name"] == "lint")
+            .and_then(|t| t["description"].as_str())
+            .expect("lint is advertised");
         assert!(lint_desc.contains("EBL011") && lint_desc.contains("EBL016"));
+        // And the caveat must point somewhere reachable: EBL011 not
+        // firing here is only actionable if it names what does.
+        assert!(
+            lint_desc.contains("worker_queues"),
+            "the EBL011 caveat must name the tool that DOES see queues: {lint_desc}"
+        );
         for t in tools {
             assert!(t["inputSchema"]["type"] == "object", "schema shape");
             assert!(
@@ -1255,7 +1271,7 @@ mod tests {
             .to_string();
 
         // Each TUI-only capability, and the fact it is TUI-only.
-        for needle in ["queue", "peek", ":why", "log tail"] {
+        for needle in ["resend", "purge", ":why", "log tail"] {
             assert!(
                 instructions.to_lowercase().contains(&needle.to_lowercase()),
                 "the instructions must name `{needle}` as available elsewhere: {instructions}"
@@ -1294,10 +1310,120 @@ mod tests {
             .iter()
             .filter_map(|t| t["name"].as_str().map(str::to_string))
             .collect();
+        // The staleness half, re-aimed. It fired for real when
+        // `worker_queues` shipped — the block still said queues were
+        // TUI-only — which is the whole point of pinning capabilities
+        // rather than prose. Now it guards the claim that MANAGEMENT
+        // (resend / delete / purge) stays TUI-only.
         assert!(
-            !names.iter().any(|n| n.contains("queue")),
-            "a queue tool exists now, so the instructions claiming queues \
-             are TUI-only are stale: {names:?}"
+            !names
+                .iter()
+                .any(|n| n.contains("resend") || n.contains("purge")),
+            "a dead-letter management tool exists now, so the instructions \
+             claiming that is TUI-only are stale: {names:?}"
+        );
+    }
+
+    /// The queue tool answers the question EB's health text does not.
+    ///
+    /// "1 message in Dead Letter Queue" names no task; the whole
+    /// diagnosis of a real incident hinged on which one, and that took
+    /// three raw `aws sqs` calls because this surface had no tool for
+    /// it.
+    #[tokio::test]
+    async fn worker_queues_reports_depth_and_whether_it_looked() {
+        let s = demo_server();
+        let envs = rpc(
+            &s,
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                   "params":{"name":"list_environments","arguments":{}}}),
+        )
+        .await
+        .expect("envs");
+        let listing = envs["result"]["content"][0]["text"].as_str().expect("text");
+        let env_name = listing
+            .split("\"name\":\"")
+            .nth(1)
+            .and_then(|r| r.split('"').next())
+            .expect("an env in the demo fleet")
+            .to_string();
+
+        let resp = rpc(
+            &s,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
+                   "params":{"name":"worker_queues","arguments":{"env": env_name}}}),
+        )
+        .await
+        .expect("worker_queues answers");
+        let body = resp["result"]["content"][0]["text"]
+            .as_str()
+            .expect("text payload");
+        let parsed: Value = serde_json::from_str(body).expect("valid JSON");
+
+        assert!(parsed["main_queue"].is_object(), "{body}");
+        assert!(parsed["dead_letter_queue"].is_object(), "{body}");
+        // "we did not look" must be distinguishable from "nothing
+        // there" — the same empty array otherwise, and they mean
+        // opposite things during triage.
+        assert_eq!(
+            parsed["peeked"], false,
+            "peek defaults off, and the response must say so: {body}"
+        );
+        assert!(parsed["messages"].is_array(), "{body}");
+    }
+
+    /// `env` is required — without it the tool would have to pick one.
+    #[tokio::test]
+    async fn worker_queues_requires_an_env() {
+        let resp = rpc(
+            &demo_server(),
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                   "params":{"name":"worker_queues","arguments":{}}}),
+        )
+        .await
+        .expect("a response");
+        let text = serde_json::to_string(&resp).expect("serialisable");
+        assert!(
+            text.contains("'env' is required"),
+            "must refuse rather than guess an env: {text}"
+        );
+    }
+
+    /// The counter caveat must be stated where an agent will read it.
+    ///
+    /// A peek increments `receive_count`, which counts every receive —
+    /// an operator watching it climb across calls would conclude the
+    /// task is still failing. That was measured on a live message
+    /// (2 → 4 from three peeks), so the warning is fact, not caution.
+    #[tokio::test]
+    async fn the_queue_tool_warns_that_a_peek_inflates_the_receive_count() {
+        let resp = rpc(
+            &demo_server(),
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        )
+        .await
+        .expect("tools/list");
+        let desc = resp["result"]["tools"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .find(|t| t["name"] == "worker_queues")
+            .and_then(|t| t["description"].as_str())
+            .expect("worker_queues is advertised")
+            .to_string();
+        assert!(
+            desc.contains("receive_count"),
+            "the caveat must name the field it is about: {desc}"
+        );
+        assert!(
+            desc.contains("not a retry count") || desc.contains("NOT a retry count"),
+            "and must say what it is not: {desc}"
+        );
+        assert!(
+            desc.contains("dlq_origin"),
+            "a derived DLQ url that returns nothing is ordinary; a reported \
+             one that does is an anomaly — the consumer cannot tell without \
+             this: {desc}"
         );
     }
 }

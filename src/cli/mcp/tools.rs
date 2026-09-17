@@ -119,8 +119,23 @@ fn read_tool_table() -> Value {
             }
         },
         {
+            "name": "worker_queues",
+            "description": "Worker-tier SQS queue state for one environment: depth on the main queue and the dead-letter queue, and — with `peek` — which scheduled task dead-lettered. This is the answer to EB's \"1 message in Dead Letter Queue\" health text, which names no task. CAVEATS: web-tier envs have no queues and return empty, not an error. `dlq_origin` says whether EB NAMED the dead-letter queue (`reported`) or ebman derived it by the `<main>-dlq` naming convention (`derived`) — a derived URL that returns nothing is the ordinary case for an env with no DLQ, while a reported one that does is a real anomaly. A `peek` is non-destructive (messages are never deleted and return to the queue) BUT it increments each returned message's `receive_count` by one per call: that field counts every receive, including this tool's, so it is NOT a retry count and must not be read as one.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "env": {"type": "string", "description": "Environment name (required)"},
+                    "peek": {"type": "boolean", "description": "Also read dead-letter messages and their `beanstalk.sqsd.*` task attributes. Default false — depth alone touches nothing."},
+                    "max": {"type": "integer", "description": "Max messages to peek (default 10)"},
+                    "profile": {"type": "string", "description": "AWS profile (default: ambient)"},
+                    "region": {"type": "string", "description": "AWS region (default: profile/env default)"}
+                },
+                "required": ["env"]
+            }
+        },
+        {
             "name": "lint",
-            "description": "Run ebman's diagnostic rule engine over the fleet (or one env). CAVEATS: EBL011 (worker DLQ) never fires here (queue depths aren't polled outside the TUI — the TUI's Queues tab has depth and a message peek showing which task dead-lettered); EBL016 (live health probe) does not run in this tool. A clean result does NOT clear those rules. EBL015 (stale custom platforms, account-level) runs only when not scoped to a single env. Envs whose input fetch fails are skipped, not fatal — a `skipped_envs` array in the result lists them, so check it before treating the run as full coverage.",
+            "description": "Run ebman's diagnostic rule engine over the fleet (or one env). CAVEATS: EBL011 (worker DLQ) never fires here — the lint path does not poll queues; call `worker_queues` for depth, and with `peek` for which task dead-lettered; EBL016 (live health probe) does not run in this tool. A clean result does NOT clear those rules. EBL015 (stale custom platforms, account-level) runs only when not scoped to a single env. Envs whose input fetch fails are skipped, not fatal — a `skipped_envs` array in the result lists them, so check it before treating the run as full coverage.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -224,6 +239,77 @@ pub(super) fn arg_u64(args: &Value, key: &str) -> Option<u64> {
     args.get(key).and_then(Value::as_u64)
 }
 
+/// Render worker queue state as JSON.
+///
+/// `peeked` is reported explicitly so a consumer can tell "no messages
+/// in the dead-letter queue" from "we did not look" — the two are the
+/// same empty array otherwise, and they mean opposite things during
+/// triage.
+fn render_worker_queues_json(
+    queues: &aws::WorkerQueues,
+    messages: &[aws::QueueMessage],
+    peeked: bool,
+) -> String {
+    let stats = |s: &Option<aws::QueueStats>| match s {
+        Some(s) => format!(
+            "{{\"visible\":{},\"in_flight\":{},\"delayed\":{}}}",
+            s.visible, s.in_flight, s.delayed
+        ),
+        None => "null".to_string(),
+    };
+    let url = |u: &Option<String>| match u {
+        Some(u) => format!("\"{}\"", crate::util::json_escape(u)),
+        None => "null".to_string(),
+    };
+    let origin = match queues.dlq_origin {
+        Some(aws::DlqOrigin::Reported) => "\"reported\"",
+        Some(aws::DlqOrigin::Derived) => "\"derived\"",
+        None => "null",
+    };
+    let msgs: Vec<String> = messages
+        .iter()
+        .map(|m| {
+            let task = match &m.task {
+                Some(t) => {
+                    let f = |v: &Option<String>| match v {
+                        Some(v) => format!("\"{}\"", crate::util::json_escape(v)),
+                        None => "null".to_string(),
+                    };
+                    format!(
+                        "{{\"name\":{},\"path\":{},\"scheduled_time\":{}}}",
+                        f(&t.name),
+                        f(&t.path),
+                        f(&t.scheduled_time_raw)
+                    )
+                }
+                None => "null".to_string(),
+            };
+            let sent = match m.sent_at {
+                Some(t) => format!("\"{}\"", crate::util::json_escape(&t.to_rfc3339())),
+                None => "null".to_string(),
+            };
+            format!(
+                "{{\"id\":\"{}\",\"sent_at\":{},\"receive_count\":{},\"task\":{},\"body\":\"{}\"}}",
+                crate::util::json_escape(&m.id),
+                sent,
+                m.receive_count,
+                task,
+                crate::util::json_escape(&m.body)
+            )
+        })
+        .collect();
+    format!(
+        "{{\"main_queue\":{{\"url\":{},\"stats\":{}}},\"dead_letter_queue\":{{\"url\":{},\"stats\":{},\"origin\":{}}},\"peeked\":{},\"messages\":[{}]}}",
+        url(&queues.main_url),
+        stats(&queues.main_stats),
+        url(&queues.dlq_url),
+        stats(&queues.dlq_stats),
+        origin,
+        peeked,
+        msgs.join(",")
+    )
+}
+
 impl Server {
     /// Build the per-call AWS client. Errors go through the shared
     /// credential rewrite so an expired SSO token surfaces as the
@@ -256,6 +342,7 @@ impl Server {
                 let envs = self.fetch_envs(args).await?;
                 Ok(crate::cli::envs::render_envs_json(&envs))
             }
+            "worker_queues" => self.tool_worker_queues(args).await,
             "lint" => self.tool_lint(args).await,
             "get_option_settings" => self.tool_option_settings(args).await,
             "drift" => self.tool_drift(args).await,
@@ -604,6 +691,55 @@ impl Server {
         Ok(jsonl_to_array(&audit_log::render_audit_entries_json(
             &entries[start..],
         )))
+    }
+
+    /// Worker queue state for one env — the read that turned EB's
+    /// "1 message in Dead Letter Queue" into a named task.
+    ///
+    /// Depth always; messages only on `peek`, because a peek increments
+    /// each returned message's receive count and the default path
+    /// should touch nothing.
+    async fn tool_worker_queues(&self, args: &Value) -> Result<String, String> {
+        let env_name = arg_str(args, "env").ok_or("'env' is required")?;
+        let peek = args.get("peek").and_then(Value::as_bool).unwrap_or(false);
+        let max = arg_u64(args, "max")
+            .map(|m| i32::try_from(m.min(100)).unwrap_or(10))
+            .unwrap_or(10)
+            .max(1);
+
+        let envs = self.fetch_envs(args).await?;
+        let env = envs
+            .iter()
+            .find(|e| e.name == env_name)
+            .ok_or_else(|| format!("env '{env_name}' not found"))?;
+
+        if matches!(self.backend, Backend::Demo) {
+            // Demo never peeks: the fixture's queues are synthetic and
+            // there is no SQS behind them. `peeked` is reported as asked
+            // so the shape matches the live path.
+            let queues = demo_fixture::worker_queues_for_env(&env_name);
+            return Ok(render_worker_queues_json(&queues, &[], peek));
+        }
+
+        let client = self.client(args).await?;
+        let queues = client
+            .describe_worker_queues(&env.application, &env_name)
+            .await
+            .map_err(|e| {
+                tool_error(
+                    &arg_str(args, "profile"),
+                    "describe_worker_queues",
+                    &e.to_string(),
+                )
+            })?;
+
+        let messages = match (peek, queues.dlq_url.as_deref()) {
+            (true, Some(url)) => client.peek_messages(url, max).await.map_err(|e| {
+                tool_error(&arg_str(args, "profile"), "peek_messages", &e.to_string())
+            })?,
+            _ => Vec::new(),
+        };
+        Ok(render_worker_queues_json(&queues, &messages, peek))
     }
 
     async fn tool_recent_events(&self, args: &Value) -> Result<String, String> {

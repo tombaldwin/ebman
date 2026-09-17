@@ -73,6 +73,13 @@ pub(super) const TOOL_ATTRS: &[(&str, ToolAttrs)] = &[
     ("recent_events", ToolAttrs::read()),
     ("get_option_settings", ToolAttrs::read()),
     ("list_versions", ToolAttrs::read()),
+    // Read-only despite a peek nudging `receive_count`: annotating a
+    // diagnostic read as a mutation would make clients prompt for it,
+    // and "flagging everything teaches clients to ignore the flag"
+    // applies here as much as it does to `restart`. The counter effect
+    // is stated loudly in the description instead, where it is
+    // actionable rather than merely cautionary.
+    ("worker_queues", ToolAttrs::read()),
     ("lint", ToolAttrs::read()),
     ("drift", ToolAttrs::read()),
     ("fleet_cost", ToolAttrs::read()),
