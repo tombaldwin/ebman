@@ -242,7 +242,39 @@ impl Server {
                     "result": {
                         "protocolVersion": version,
                         "capabilities": {"tools": {}},
-                        "serverInfo": {"name": "ebman", "version": env!("CARGO_PKG_VERSION")}
+                        "serverInfo": {"name": "ebman", "version": env!("CARGO_PKG_VERSION")},
+                        // What this surface does NOT expose, and where
+                        // it lives instead.
+                        //
+                        // An agent can only see the tool list, so a
+                        // capability that exists in the TUI and not here
+                        // is indistinguishable from one ebman does not
+                        // have — and the agent reasonably concludes the
+                        // gap is absolute and reaches for raw `aws`
+                        // calls. That happened on a real incident: the
+                        // whole diagnosis hinged on a DLQ peek this
+                        // server had no tool for, while the TUI had had
+                        // one all along.
+                        //
+                        // Deliberately short and specific. The tool
+                        // CAVEATS are the most-read part of this surface
+                        // precisely because they are not boilerplate;
+                        // a discoverability block that grows into prose
+                        // gets skimmed like a licence.
+                        "instructions": concat!(
+                            "ebman is a fleet console for AWS Elastic Beanstalk. This surface exposes reads, ",
+                            "plus two-phase writes when the server was started with --allow-writes.\n\n",
+                            "Capabilities ebman HAS that this surface does NOT expose — ask the operator to run them, ",
+                            "or ask for them to be exposed here:\n",
+                            "- Worker queue depth and a non-destructive message peek, including which scheduled task ",
+                            "dead-lettered (`beanstalk.sqsd.task_name` / `path` / `scheduled_time`): TUI, Detail view, ",
+                            "Queues tab, `d`. This is also why lint's EBL011 never fires here.\n",
+                            "- Correlated triage for one env — alarms, deploys, DLQ, events, instances and queues ",
+                            "assembled together: TUI, `:why`.\n",
+                            "- Live log tail: TUI, Detail view, Logs tab.\n\n",
+                            "Tool descriptions carry CAVEATS naming what each tool cannot see. They are accurate and ",
+                            "worth reading: a clean result from a tool does not clear what that tool never checked."
+                        )
                     }
                 }))
             }
@@ -1162,5 +1194,64 @@ mod tests {
         );
         let msg = tool_error(&None, "op", "some unrelated failure");
         assert!(msg.contains("op failed"), "got: {msg}");
+    }
+
+    /// `initialize` must tell a client what ebman can do that this
+    /// surface does not expose.
+    ///
+    /// An agent sees only the tool list, so a TUI-only capability is
+    /// indistinguishable from one ebman lacks — and the reasonable
+    /// conclusion is that the gap is absolute. On a real incident that
+    /// sent the diagnosis out into raw `aws sqs` calls while ebman had
+    /// had a DLQ peek all along.
+    ///
+    /// Pinned to the capabilities rather than the prose: this must fail
+    /// when a gap CLOSES and the note goes stale, not merely when
+    /// someone rewords it.
+    #[tokio::test]
+    async fn initialize_names_what_this_surface_cannot_do() {
+        let s = Server::new(true, false, false);
+        let resp = s
+            .handle_request(&json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": PROTOCOL_VERSION, "capabilities": {},
+                           "clientInfo": {"name": "probe", "version": "1"}}
+            }))
+            .await
+            .expect("initialize responds");
+        let instructions = resp["result"]["instructions"]
+            .as_str()
+            .expect("initialize must carry instructions")
+            .to_string();
+
+        // Each TUI-only capability, and the fact it is TUI-only.
+        for needle in ["queue", "peek", ":why", "log tail"] {
+            assert!(
+                instructions.to_lowercase().contains(&needle.to_lowercase()),
+                "the instructions must name `{needle}` as available elsewhere: {instructions}"
+            );
+        }
+        assert!(
+            instructions.contains("TUI"),
+            "and must say where: {instructions}"
+        );
+
+        // If a queue TOOL ever ships, this note becomes a lie. Fail
+        // here so it is updated with the tool rather than left behind.
+        let tools = s
+            .handle_request(&json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}))
+            .await
+            .expect("tools/list responds");
+        let names: Vec<String> = tools["result"]["tools"]
+            .as_array()
+            .expect("a tool array")
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_string))
+            .collect();
+        assert!(
+            !names.iter().any(|n| n.contains("queue")),
+            "a queue tool exists now, so the instructions claiming queues \
+             are TUI-only are stale: {names:?}"
+        );
     }
 }
