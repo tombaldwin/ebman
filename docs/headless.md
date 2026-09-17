@@ -175,7 +175,7 @@ v1 is **reads-only** by default — no tool dispatches a write unless the server
 
 | Tool | Returns | Notes |
 |---|---|---|
-| `list_environments` | env list | same schema as `ebman envs --json` |
+| `list_environments` | env list | same schema as `ebman envs --json`: `name`, `application`, `tier` (Web/Worker), `status`, `health`, `platform`, `cname`, `version_label`, `updated` (EB's `DateUpdated`, RFC3339 or null), `region` (or null). **`updated` is the environment's last change, NOT a health-since** — an env that went Yellow on its own still reports the last config change, so do not read it as when the health moved. |
 | `lint` | rule findings | EBL011 never fires here (no queue polling) and EBL016 doesn't run (no live HTTP probe) — stated in the tool description. The EBL020 X-Ray probe, the EBL018 WAF probe, and the EBL015 account-level pass all run (EBL015 only when not scoped to one env) |
 | `get_option_settings` | one env's resolved options | env-var **values** + `DBPassword` redacted by default (keys visible) |
 | `drift` | terraform drift report | tfstate discovered from the server's cwd; pass `tfstate_path` otherwise |

@@ -1400,10 +1400,49 @@ pub(super) fn draw_why_red_overlay(f: &mut Frame, area: Rect, app: &mut App) {
                                         Style::default().fg(theme.muted),
                                     ),
                                     Span::styled(
-                                        format!("  · received {}×", m.receive_count),
+                                        // "received N×" reads as "sqsd
+                                        // retried it N times", and that is
+                                        // not what SQS counts: every
+                                        // receive increments it, including
+                                        // ebman's own non-destructive
+                                        // peeks. Measured on a live DLQ
+                                        // message during an incident — it
+                                        // went 2 to 4 while being looked
+                                        // at. An operator watching the
+                                        // number climb across refreshes
+                                        // would conclude the task is still
+                                        // failing.
+                                        format!("  · received {}× (incl. reads)", m.receive_count),
                                         Style::default().fg(theme.muted),
                                     ),
                                 ]));
+                                // The task, when there is one. This is
+                                // the line that answers "which scheduled
+                                // job failed" — the question that took
+                                // three raw AWS calls to answer before
+                                // these attributes were requested.
+                                if let Some(t) = &m.task {
+                                    let mut bits: Vec<String> = Vec::new();
+                                    if let Some(n) = &t.name {
+                                        bits.push(n.clone());
+                                    }
+                                    if let Some(p) = &t.path {
+                                        bits.push(p.clone());
+                                    }
+                                    // The raw string, not the parsed one:
+                                    // if EB changes the format the
+                                    // operator should still see what was
+                                    // actually sent.
+                                    if let Some(when) = &t.scheduled_time_raw {
+                                        bits.push(format!("scheduled {when}"));
+                                    }
+                                    if !bits.is_empty() {
+                                        lines.push(Line::from(Span::styled(
+                                            format!("      task: {}", bits.join("  ·  ")),
+                                            Style::default().fg(theme.text),
+                                        )));
+                                    }
+                                }
                                 lines.push(Line::from(Span::styled(
                                     format!("      {}", truncate_for_display(&m.body, 100)),
                                     Style::default().fg(theme.text),

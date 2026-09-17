@@ -302,6 +302,7 @@ async fn the_dlq_viewer_renders_its_messages() {
             body: "poison pill payload".into(),
             receive_count: 7,
             sent_at: None,
+            task: None,
         }],
         list_state: Default::default(),
         loading: false,
@@ -378,6 +379,7 @@ fn msg(id: &str) -> crate::aws::QueueMessage {
         body: "{}".into(),
         receive_count: 1,
         sent_at: None,
+        task: None,
     }
 }
 
