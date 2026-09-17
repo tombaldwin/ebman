@@ -118,6 +118,21 @@ safety.accounts.prod.read_only = true
 # registry-load time so they have zero per-env cost. Project-local
 # `.ebman/ebman.toml` can extend (never override) this list via
 # `[lint]\ndisable = ["EBL001"]`.
+# Where `drift` reads Terraform state when there is no
+# `terraform.tfstate` to find by walking up from the current directory.
+#
+# This is what makes drift usable on a fleet whose state lives in a
+# remote backend (HCP, S3, Consul). ebman does not talk to those
+# backends and holds no token for them — pull the state once and point
+# at the file:
+#
+#   terraform state pull > ~/.config/ebman/uflexi.tfstate
+#
+# One command, works for every backend, and your Terraform credentials
+# stay where they already are. Precedence: `--tfstate PATH` (or the MCP
+# `tfstate_path` argument), then this key, then discovery from cwd.
+# terraform.state_path = "~/.config/ebman/uflexi.tfstate"
+
 # lint.disable = "EBL003,EBL006"
 
 # Per-rule opt-out for `ebman lint --fix`. Listed rules still

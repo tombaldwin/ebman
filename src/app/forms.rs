@@ -639,6 +639,7 @@ impl App {
             // a snapshot that gets edited and re-saved would be the
             // wrong direction entirely.
             safety_parse_errors: Vec::new(),
+            terraform_state_path: self.cfg.terraform_state_path.clone(),
             refresh_interval: self.refresh_interval,
             extra_regions: self.extra_regions.clone(),
             redact_default: Some(self.view.redact),

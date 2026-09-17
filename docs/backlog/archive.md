@@ -3727,3 +3727,21 @@ own reasoning, not by effort.
   read, because a truncated window hands back the OLDEST lines and
   answers "is this still running?" with evidence from hours ago.
 
+- [x] **`drift` against remote tfstate** — shipped 2026-09-18, and the
+  scope turned out much smaller than the entry implied. `--tfstate PATH`
+  and the MCP `tfstate_path` argument already existed; what was missing
+  was a way to set it ONCE (`terraform.state_path` in config.toml) and
+  any hint that the remote case was solvable at all. The old message
+  said "pass --tfstate", which is actionable if you have a file and
+  useless if your state is in HCP — a reader concludes ebman cannot do
+  this, when one `terraform state pull` away it can.
+
+  Deliberately NOT a backend integration: no HCP client, no token, no
+  new network surface. `terraform state pull > state.json` is one
+  command, works for every backend rather than the one we implemented,
+  and leaves Terraform credentials where they already are.
+
+  Resolution is explicit → config → discovery, and the empty-config-value
+  case falls through rather than resolving to `""`. Two mutations
+  CAUGHT.
+
