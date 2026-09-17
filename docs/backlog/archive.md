@@ -3685,3 +3685,28 @@ own reasoning, not by effort.
   site line proved it fires. The guard's slice is now bounded at the
   test module so it cannot match itself.
 
+- [x] **Expose worker queues over MCP** — shipped 2026-09-18 as
+  `worker_queues`. There was no reason it was missing: the capability
+  (`describe_worker_queues` + `peek_messages`) had been there all along,
+  the TUI used it, and no decision to exclude it was ever recorded. Just
+  absence, found by an agent on a live incident falling back to three
+  raw `aws sqs` calls.
+
+  Depth always; messages only on `peek`, defaulting off, because a peek
+  increments each returned message's `receive_count`. `peeked` is
+  reported in the response so "we did not look" is distinguishable from
+  "nothing there" — the same empty array otherwise, and opposite
+  meanings during triage. Annotated read-only with the counter effect
+  stated loudly in the description rather than flagged as a mutation:
+  making clients prompt for a diagnostic read is the same mistake as
+  marking everything destructive.
+
+  The EBL011 caveat now names `worker_queues` instead of stopping at
+  "does not fire here", so it points at something an agent can call.
+
+  Notable: the staleness guard written the day before FIRED on this
+  change — the instructions block still claimed queues were TUI-only.
+  That is exactly what pinning capabilities rather than prose is for. It
+  now guards the narrower claim that dead-letter MANAGEMENT (resend /
+  delete / purge) stays TUI-only.
+
