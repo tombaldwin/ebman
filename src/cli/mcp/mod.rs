@@ -265,15 +265,33 @@ impl Server {
                             "ebman ", env!("CARGO_PKG_VERSION"),
                             " — a fleet console for AWS Elastic Beanstalk. This surface exposes reads, ",
                             "plus two-phase writes when the server was started with --allow-writes.\n\n",
-                            // The version is in `serverInfo` too, but a
-                            // client need not surface that field, and an
-                            // agent reads THIS. It matters because the
-                            // list below is a claim about what a
-                            // specific build can do: a reader on an old
-                            // binary was reporting capability gaps as
-                            // facts for two days without knowing it was
-                            // two releases behind, and had no way to
-                            // tell from where it sat.
+                            // NOT redundant with `serverInfo.version`.
+                            // Confirmed, not assumed: an agent on Claude
+                            // Code went looking for `serverInfo` and
+                            // could not reach it — the client consumes
+                            // the handshake and never passes server
+                            // identity through. So this block is the
+                            // only version signal an MCP client is
+                            // GUARANTEED to see, because it is content
+                            // the server authors rather than protocol
+                            // metadata the client may drop.
+                            //
+                            // The general rule, worth keeping in mind
+                            // for anything added here: "the client can
+                            // see X in the handshake" and "the agent can
+                            // see X" are different claims, and the gap
+                            // between them is invisible from this side.
+                            // Anything an agent MUST know goes in
+                            // authored content. Annotations are the
+                            // other case and are fine — they are aimed
+                            // at the client, which does read them.
+                            //
+                            // It matters because the list below is a
+                            // claim about what a specific build can do:
+                            // a reader on an old binary spent two days
+                            // reporting capability gaps as facts without
+                            // knowing it was two releases behind, and
+                            // had no way to tell from where it sat.
                             "Check this against the latest release before reporting a capability as missing — ",
                             "this list describes THIS build.\n\n",
                             "Capabilities ebman HAS that this surface does NOT expose — ask the operator to run them, ",
