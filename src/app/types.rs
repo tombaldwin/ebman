@@ -1013,6 +1013,9 @@ pub(crate) struct ResolvedConfig {
     /// policy is only partially known, and a safety control that cannot
     /// be enforced must not read as absent.
     pub safety_parse_errors: Vec<String>,
+    /// `terraform.state_path` — tfstate location for fleets whose state
+    /// is in a remote backend and therefore not discoverable from cwd.
+    pub terraform_state_path: Option<String>,
     /// Named AssumeRole accounts (`accounts.NAME.*`).
     pub accounts: std::collections::HashMap<String, crate::config::AccountSpec>,
     /// Base theme name (`theme = …`), kept separate from the running

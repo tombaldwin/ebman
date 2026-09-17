@@ -768,22 +768,20 @@ impl Server {
         if matches!(self.backend, Backend::Demo) {
             return Ok(terraform::render_drift_json(None, &[]));
         }
-        let (state, used_path) = match arg_str(args, "tfstate_path") {
-            Some(p) => {
-                let path = std::path::PathBuf::from(&p);
-                let state = terraform::load_from_path(&path)
-                    .ok_or_else(|| format!("could not parse tfstate at '{p}'"))?;
-                (state, Some(path))
-            }
-            None => {
-                let found = terraform::find_tfstate(std::path::Path::new(".")).ok_or(
-                    "no terraform.tfstate discovered walking up from cwd — pass tfstate_path",
-                )?;
-                let state = terraform::load_from_path(&found)
-                    .ok_or_else(|| format!("could not parse tfstate at '{}'", found.display()))?;
-                (state, Some(found))
-            }
-        };
+        // Explicit argument, then `terraform.state_path`, then
+        // discovery — the same order the CLI uses. Without the config
+        // rung a fleet on a remote backend has no drift at all over
+        // MCP, because discovery only ever finds a local file.
+        let explicit = arg_str(args, "tfstate_path").map(std::path::PathBuf::from);
+        let path = terraform::resolve_state_path(
+            explicit.as_deref(),
+            self.safety_cfg.terraform_state_path.as_deref(),
+            std::path::Path::new("."),
+        )
+        .ok_or_else(|| terraform::no_state_hint("tfstate_path"))?;
+        let state = terraform::load_from_path(&path)
+            .ok_or_else(|| format!("could not parse tfstate at '{}'", path.display()))?;
+        let (state, used_path) = (state, Some(path));
         let profile = arg_str(args, "profile");
         let client = self.client(args).await?;
         let envs = client

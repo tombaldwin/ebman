@@ -120,6 +120,21 @@ pub async fn run(args: &[String]) -> Result<()> {
         }
     };
 
+    // Explicit flag, then `terraform.state_path`, then discovery. The
+    // config rung is what makes this usable on a fleet whose state is
+    // in a remote backend and therefore never discoverable from cwd.
+    let configured = crate::config::load().terraform_state_path;
+    let tfstate_path = terraform::resolve_state_path(
+        tfstate_path.as_deref(),
+        configured.as_deref(),
+        tfdir
+            .as_deref()
+            .unwrap_or(std::path::Path::new("."))
+            .to_path_buf()
+            .canonicalize()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .as_path(),
+    );
     let (tf_state, used_path) = if let Some(path) = tfstate_path.as_ref() {
         let Some(state) = terraform::load_from_path(path) else {
             eprintln!(
@@ -141,8 +156,8 @@ pub async fn run(args: &[String]) -> Result<()> {
                     println!("{{\"tfstate\":null,\"envs\":[]}}");
                 } else {
                     eprintln!(
-                        "ebman drift: no terraform.tfstate found under {}",
-                        abs.display()
+                        "ebman drift: {}",
+                        terraform::no_state_hint("--tfstate PATH")
                     );
                 }
             }

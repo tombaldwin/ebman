@@ -561,12 +561,3 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
   keyed by action verb and derive the MCP annotations from that, rather
   than wiring the levels engine to `cli::mcp::annotations` and growing a
   second table that drifts. Raised by the 0.37 architecture review.
-
-- [ ] **`drift` cannot see environments whose tfstate is remote.**
-  `terraform::find_tfstate` walks ancestors for a local file, so a fleet
-  on an HCP/S3 backend — which is the fleet anyone runs in anger — has
-  no drift at all. Field report: a Terraform change silently blanked
-  `JVM Options` on one env and a worker ran in UTC instead of Pacific
-  for months, corrupting ~37,000 rows. Drift would have caught it and
-  could not run. Needs a decision on scope: read a configured state
-  path/URL, or accept HCP with a token.

@@ -85,6 +85,15 @@ pub struct Config {
     /// Not serialised by `save`. These are diagnostics about the
     /// operator's file, not settings.
     pub(crate) safety_parse_errors: Vec<String>,
+    /// `terraform.state_path` — where to read tfstate when no
+    /// `terraform.tfstate` is discoverable by walking up from cwd.
+    ///
+    /// This is what makes `drift` usable on a fleet whose state lives in
+    /// a remote backend (HCP, S3, Consul). ebman does not talk to those
+    /// backends and holds no token for them: the operator runs
+    /// `terraform state pull > somewhere.json` and points this at it,
+    /// which works for every backend rather than the one we implemented.
+    pub(crate) terraform_state_path: Option<String>,
     /// Optional outbound webhook for audit-line fan-out. Each audit
     /// line written to `~/.cache/ebman/audit.log` is also POSTed to
     /// this URL as JSON (fire-and-forget; failures don't block or
@@ -175,6 +184,7 @@ impl Default for Config {
             safety_envs: std::collections::HashMap::new(),
             safety_accounts: std::collections::HashMap::new(),
             safety_parse_errors: Vec::new(),
+            terraform_state_path: None,
             notify_webhook: None,
             command_aliases: std::collections::HashMap::new(),
             lint_disable: Vec::new(),
@@ -385,6 +395,9 @@ pub(crate) fn parse(text: &str) -> Config {
             }
             "extra_regions" => {
                 cfg.extra_regions = crate::util::split_csv(&value);
+            }
+            "terraform.state_path" => {
+                cfg.terraform_state_path = Some(value).filter(|v| !v.is_empty())
             }
             "redact_default" => cfg.redact_default = parse_bool(&value),
             "grouped_default" => cfg.grouped_default = parse_bool(&value),
@@ -1034,6 +1047,7 @@ accounts.staging.external_id = "abc-xyz"
             safety_envs: std::collections::HashMap::new(),
             safety_accounts: std::collections::HashMap::new(),
             safety_parse_errors: Vec::new(),
+            terraform_state_path: None,
             notify_webhook: Some("https://hooks.slack.com/services/EXAMPLE".into()),
             command_aliases: {
                 let mut m = std::collections::HashMap::new();

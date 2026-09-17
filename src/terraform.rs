@@ -268,6 +268,53 @@ fn extract_tags(v: Option<&serde_json::Value>) -> std::collections::BTreeMap<Str
     out
 }
 
+/// Where to read tfstate from, in precedence order.
+///
+/// Explicit path (flag or tool argument), then `terraform.state_path`
+/// from config, then discovery by walking up from cwd.
+///
+/// The config rung is what makes `drift` usable at all on a fleet whose
+/// state lives in a remote backend. Discovery only ever finds a LOCAL
+/// file, so a team on HCP or S3 — which is most teams running this in
+/// anger — had no drift, and the one incident that would have been
+/// caught by it (a Terraform change silently blanking `JVM Options`,
+/// a worker running in UTC for months) happened on exactly such a
+/// fleet.
+///
+/// ebman deliberately does not talk to those backends and holds no
+/// token for them: `terraform state pull > state.json` is one command,
+/// works for every backend, and keeps credentials where they already
+/// are.
+pub(crate) fn resolve_state_path(
+    explicit: Option<&Path>,
+    configured: Option<&str>,
+    start: &Path,
+) -> Option<std::path::PathBuf> {
+    if let Some(p) = explicit {
+        return Some(p.to_path_buf());
+    }
+    if let Some(p) = configured.filter(|p| !p.is_empty()) {
+        return Some(std::path::PathBuf::from(p));
+    }
+    find_tfstate(start)
+}
+
+/// What to tell an operator when no tfstate could be found.
+///
+/// Names the remote-backend case explicitly. The previous message said
+/// only "pass --tfstate", which is actionable if you HAVE a file and
+/// useless if your state is in HCP — the reader is left thinking ebman
+/// cannot do this, when one `terraform state pull` away it can.
+pub(crate) fn no_state_hint(flag: &str) -> String {
+    format!(
+        "no terraform.tfstate found walking up from the current directory. \
+         Pass {flag}, or set `terraform.state_path` in config.toml. If your \
+         state is in a remote backend (HCP, S3, Consul), run `terraform \
+         state pull > tfstate.json` and point at that — ebman reads state \
+         files, it does not talk to backends."
+    )
+}
+
 /// Discover and load tfstate from cwd. Returns `None` when no
 /// tfstate ancestor exists, the file is unreadable, or the JSON
 /// is malformed. Same swallowing contract as `project::load_from_cwd`.
@@ -1042,6 +1089,68 @@ mod tests {
             (fields[1].tf_value.as_str(), fields[1].live_value.as_str()),
             ("2", "4"),
             "a non-secret must stay readable — the drift signal is the point"
+        );
+    }
+}
+
+#[cfg(test)]
+mod state_path_tests {
+    use super::{no_state_hint, resolve_state_path};
+    use std::path::{Path, PathBuf};
+
+    /// Explicit beats config beats discovery.
+    ///
+    /// The config rung is the one that matters: discovery only ever
+    /// finds a LOCAL file, so a fleet whose state is in a remote
+    /// backend had no drift at all — and drift is the tool that would
+    /// have caught a Terraform change silently blanking `JVM Options`
+    /// on a live worker.
+    #[test]
+    fn the_state_path_precedence_is_explicit_then_config_then_discovery() {
+        let explicit = PathBuf::from("/tmp/explicit.json");
+        let nowhere = Path::new("/nonexistent-for-this-test");
+
+        assert_eq!(
+            resolve_state_path(Some(&explicit), Some("/tmp/configured.json"), nowhere),
+            Some(explicit.clone()),
+            "an explicit flag must win over config"
+        );
+        assert_eq!(
+            resolve_state_path(None, Some("/tmp/configured.json"), nowhere),
+            Some(PathBuf::from("/tmp/configured.json")),
+            "config must be used when no flag is given"
+        );
+        assert_eq!(
+            resolve_state_path(None, None, nowhere),
+            None,
+            "and with neither, discovery over a path with no tfstate finds nothing"
+        );
+        // An empty config value is not a path — it would resolve to ""
+        // and fail with a confusing "could not parse tfstate at ''".
+        assert_eq!(
+            resolve_state_path(None, Some(""), nowhere),
+            None,
+            "an empty config value must fall through to discovery"
+        );
+    }
+
+    /// The hint must name the remote-backend case.
+    ///
+    /// "pass --tfstate" is actionable if you have a file and useless if
+    /// your state is in HCP — the reader concludes ebman cannot do this,
+    /// when one `terraform state pull` away it can.
+    #[test]
+    fn the_no_state_hint_names_the_remote_backend_case() {
+        let h = no_state_hint("--tfstate PATH");
+        assert!(h.contains("--tfstate PATH"), "{h}");
+        assert!(h.contains("terraform.state_path"), "{h}");
+        assert!(
+            h.contains("terraform state pull"),
+            "the remote-backend workflow is the whole point of the hint: {h}"
+        );
+        assert!(
+            h.contains("does not talk to backends"),
+            "and it must be clear ebman reads files rather than fetching: {h}"
         );
     }
 }
