@@ -352,6 +352,7 @@ pub(super) fn open_dlq_state(env: &str) -> crate::app::DlqState {
             body: "{}".into(),
             receive_count: 1,
             sent_at: None,
+            task: None,
         }],
         list_state,
         loading: false,

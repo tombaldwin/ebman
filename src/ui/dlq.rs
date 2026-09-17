@@ -75,14 +75,34 @@ pub(crate) fn draw_dlq(f: &mut Frame, area: Rect, app: &mut App) {
                 // Char-safe truncation: the body is arbitrary producer
                 // data, and a byte slice at 80 panics mid-draw when a
                 // multi-byte char straddles the boundary.
-                let preview = truncate_for_display(m.body.lines().next().unwrap_or(""), 80);
+                // For an EB worker task the body is the fixed literal
+                // "elasticbeanstalk scheduled job" — it carries nothing,
+                // and showing it wastes the widest column in the view on
+                // the same string for every row. The task name and path
+                // are the answer to "which task failed", which is the
+                // question this screen exists for.
+                let preview = match &m.task {
+                    Some(t) if t.name.is_some() || t.path.is_some() => {
+                        let name = t.name.as_deref().unwrap_or("(unnamed task)");
+                        match t.path.as_deref() {
+                            Some(p) => format!("{name}  {p}"),
+                            None => name.to_string(),
+                        }
+                    }
+                    _ => m.body.lines().next().unwrap_or("").to_string(),
+                };
+                let preview = truncate_for_display(&preview, 80);
                 ListItem::new(Line::from(vec![
                     Span::styled(
                         format!(" {:<20} ", m.id),
                         Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        format!("recv:{:<3} ", m.receive_count),
+                        // `~` because SQS's own name for this is
+                        // ApproximateReceiveCount and every read
+                        // inflates it — ebman's peeks included. Without
+                        // the marker the number reads as a retry count.
+                        format!("recv~{:<3} ", m.receive_count),
                         Style::default().fg(theme.health_yellow),
                     ),
                     Span::styled(format!("{:>5} ", age), Style::default().fg(theme.muted)),
