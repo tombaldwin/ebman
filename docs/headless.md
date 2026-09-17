@@ -138,6 +138,15 @@ from one ebman lacks; on a real incident that sent the diagnosis out
 into raw `aws sqs` calls while ebman had had a DLQ peek all along. A
 test fails if a tool ships that makes the block stale.
 
+The block also opens with the running build's version. That is **not**
+redundant with `serverInfo.version`: a client consumes the handshake and
+need not pass server identity on to the agent — Claude Code does not —
+so authored content is the only version signal an agent is guaranteed to
+see. The same distinction applies to anything added here: *the client
+can see X* and *the agent can see X* are different claims, and the gap
+is invisible from the server side. Tool annotations are the deliberate
+exception, since they are aimed at the client.
+
 
 A stdio MCP server exposing ebman's read surface as tools, so Claude Code (or any MCP client) can query fleet state first-class:
 
