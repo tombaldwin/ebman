@@ -190,8 +190,22 @@ jobs:
           # not change underfoot: an unrelated push to candor-rust would
           # otherwise land in the next ebman CI run with no review here.
           # Bump deliberately.
+          #
+          # REMAPPED 2026-09-17. The old pin (a7f0113…) was a commit in candor-rust that a
+          # history rewrite on 2026-09-16 made unreachable. It still RESOLVED — GitHub serves
+          # unreachable objects until it garbage-collects, on no published schedule — so CI
+          # stayed green and would have begun failing on some later morning with nothing on
+          # our side to correlate it with. A pin is neither a ref nor an artifact, so it
+          # survives every sweep that looks at refs, tags, tarballs or caches; the only check
+          # that finds it is grepping for hardcoded hashes and resolving each one.
+          #
+          # The replacement is the same commit in the rewritten history — same subject, same
+          # author date. Its tree DIFFERS by one line in crates/candor-query/src/tour.rs,
+          # which is the redaction itself. install.sh, the only file this step runs, is the
+          # identical blob (396e2121…), verified before swapping: a silently different script
+          # in a pinned checkout is worse than a pin that breaks loudly.
           git clone --filter=blob:none https://github.com/tombaldwin/candor-rust ~/candor
-          (cd ~/candor && git checkout --quiet a7f01138a1ceea6b2e05dc92995ee47ee9219201 && ./install.sh)
+          (cd ~/candor && git checkout --quiet 9ba8c6580832e6bed6839ca383a24edb591f401d && ./install.sh)
           # `install.sh` DEGRADES rather than fails when the nightly
           # build doesn't work: it builds only the stable crates, and
           # `cargo candor` keeps working via the syntactic scanner. That
