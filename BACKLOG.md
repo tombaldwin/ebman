@@ -691,3 +691,20 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
   named rungs per principal rather than one binary switch. Recorded here
   because it has stopped being hypothetical: someone wants a narrow
   capability and the only way to give it is a wide one.
+
+- [ ] **Scope `--allow-writes` by verb** — `--allow-writes=dlq_delete,dlq_resend`.
+  The smallest thing that resolves the forcing incident behind the
+  protection-levels work: a client wanted to delete one dead-lettered
+  message and the only grant available was terminate-on-Prod.
+
+  The gating point already exists — `tool_table(self.allow_writes)`,
+  consulted both when advertising tools and at dispatch — so unscoped
+  verbs stay unadvertised rather than advertised-then-refused. Pure
+  ceiling, so Principle 5 holds trivially: it is a server flag, not
+  request content. Touches no config parser, no decision type, no audit
+  stage, and prejudges nothing — a level later compiles down to a verb
+  set.
+
+  ~half a day, against ~two weeks for the full levels + attestation
+  design. Two independent reviews landed on this as the first slice.
+  See `docs/design/protection-levels.md`, "The smallest useful slice".
