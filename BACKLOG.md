@@ -588,6 +588,31 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
   is the wrong shape for this. Consider instead requiring that a doc
   block contain exactly one summary-then-blank opening.
 
+- [ ] **Runtime grants — permission without a restart.** Designed in
+  `docs/design/runtime-grants.md` (2026-09-18). 0.40.0 made the write
+  grant narrow but not reachable: getting `dlq_delete` means stopping,
+  editing the MCP registration and restarting the client, which is the
+  moment most people abandon the tool. The maintainer's verdict on being
+  shown it — "I'd probably stop bothering" — is the motivation.
+
+  Shape: the flag stops meaning "may do" and starts meaning "may ask
+  about", set once and wide. Grants become runtime and time-boxed,
+  issued either by the operator (`ebman grant`, reusing the
+  `src/freeze.rs` cross-process marker) or by the agent asking via
+  elicitation. `notifications/tools/list_changed` makes write tools
+  appear mid-session with no restart.
+
+  The operator route does not depend on elicitation, which is what makes
+  this buildable before the client question is settled.
+
+  Blocked on two client behaviours that must be measured, not assumed:
+  whether Claude Code declares elicitation (documentary evidence says
+  yes; no measurement yet — needs one real client connection to 0.40.0,
+  which only the maintainer can initiate), and whether it refetches on
+  `tools/list_changed`.
+
+  ~a few days. `src/freeze.rs` supplies the hard part.
+
 - [ ] **No guard catches a refusal path that audits nothing.**
   `write_refusal_paths_are_audited` pins the two callers of
   `write_refusal_unaudited` — it detects a path that reaches for the
