@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.39.0] — 2026-09-18
+
+**An agent-surface release.** A worker environment went Yellow on one
+dead-lettered message, and diagnosing it took three raw `aws sqs` calls
+because ebman could say the queue had a message but not which task it
+was — while the TUI had had a dead-letter peek all along. Four tools
+close that gap, and the `initialize` handshake now tells a client what
+this surface does *not* expose, so the next gap is discoverable instead
+of invisible.
+
 ### Added
 
 - **`worker_queues` MCP tool** — main and dead-letter queue depth for an
@@ -2929,7 +2939,9 @@ Initial public release. Headline surface:
 - Published to crates.io as `ebman`.
 - Homebrew tap at `tombaldwin/homebrew-tap`.
 
-[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.37.0...HEAD
+[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.39.0...HEAD
+[0.39.0]: https://github.com/tombaldwin/ebman/compare/v0.38.0...v0.39.0
+[0.38.0]: https://github.com/tombaldwin/ebman/compare/v0.37.0...v0.38.0
 [0.37.0]: https://github.com/tombaldwin/ebman/compare/v0.36.0...v0.37.0
 [0.36.0]: https://github.com/tombaldwin/ebman/compare/v0.35.0...v0.36.0
 [0.35.0]: https://github.com/tombaldwin/ebman/compare/v0.34.2...v0.35.0
