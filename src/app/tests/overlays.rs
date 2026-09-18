@@ -1007,3 +1007,81 @@ async fn x_arms_the_delete_confirm_rather_than_deleting() {
         app.error_message
     );
 }
+
+/// `:why` must name the dead-lettered task, and must not present the
+/// receive count as a retry count.
+///
+/// This is the line that answered a real incident — "which scheduled
+/// job failed" — and it was a render-path change with no coverage:
+/// mutating the task block away left the whole suite green.
+#[tokio::test]
+async fn the_why_overlay_names_the_dead_lettered_task() {
+    let mut app = test_app();
+    app.environments = vec![mk_env("api-prod", "poly", "Worker", "Yellow")];
+    app.view.invalidate();
+    app.rebuild_view();
+    app.table_state.select(Some(0));
+    app.current_overlay = Some(crate::app::Overlay::WhyRed {
+        env_name: "api-prod".into(),
+        tier: "Worker".into(),
+        events: Some(Ok(Vec::new())),
+        alarms: Some(Ok(Vec::new())),
+        instances: Some(Ok(Vec::new())),
+        deploys: Some(Ok(Vec::new())),
+        // The peek section only renders when the queue reports depth —
+        // `dlq_visible > 0`. Leaving this None renders no DLQ block at
+        // all, and the test would have been asserting against a screen
+        // that never had the chance to show a task.
+        queues: Some(Ok(crate::aws::WorkerQueues {
+            main_url: Some("https://sqs/q".into()),
+            dlq_url: Some("https://sqs/q-dlq".into()),
+            main_stats: Some(crate::aws::QueueStats {
+                visible: 0,
+                in_flight: 0,
+                delayed: 0,
+            }),
+            dlq_stats: Some(crate::aws::QueueStats {
+                visible: 1,
+                in_flight: 0,
+                delayed: 0,
+            }),
+            dlq_origin: Some(crate::aws::DlqOrigin::Reported),
+        })),
+        dlq_messages: Some(Ok(vec![crate::aws::QueueMessage {
+            id: "m-1".into(),
+            receipt_handle: "rh-1".into(),
+            body: "elasticbeanstalk scheduled job".into(),
+            receive_count: 4,
+            sent_at: None,
+            task: Some(crate::aws::SqsdTask {
+                name: Some("WHYTASKCANARY sweep".into()),
+                path: Some("/STCleanupUnattendedJobs.do".into()),
+                scheduled_time_raw: Some("2026-09-17 06:04:00 UTC".into()),
+                scheduled_at: None,
+            }),
+        }])),
+        session_id: 1,
+        cursor: 0,
+    });
+
+    let out = render(&mut app, 200, 44);
+    assert!(
+        out.contains("WHYTASKCANARY sweep"),
+        "the task name is the answer EB's health text withholds:\n{out}"
+    );
+    assert!(
+        out.contains("/STCleanupUnattendedJobs.do"),
+        "and the path, which is what makes it findable in the app:\n{out}"
+    );
+    assert!(
+        out.contains("2026-09-17 06:04:00 UTC"),
+        "the scheduled time is what correlates it with the platform \
+         update that caused it — and is shown RAW, so a format change \
+         degrades to what EB sent:\n{out}"
+    );
+    assert!(
+        out.contains("incl. reads"),
+        "the receive count includes ebman's own peeks and must not read \
+         as a retry count:\n{out}"
+    );
+}

@@ -414,4 +414,35 @@ mod tests {
             .unwrap_err()
             .contains("--tfstate expects"));
     }
+
+    /// Both drift surfaces must consult `terraform.state_path`.
+    ///
+    /// `resolve_state_path` is tested directly, but passing `None` for
+    /// the config rung at either call site restores the bug it exists
+    /// to fix — a fleet on a remote backend gets no drift — and the
+    /// resolver's own tests would still pass. Neither site is reachable
+    /// from a test: the CLI one reads config from disk and exits, the
+    /// MCP one needs AWS.
+    #[test]
+    fn both_drift_paths_consult_the_configured_state_path() {
+        for (file, needle) in [
+            ("src/cli/drift.rs", "configured.as_deref()"),
+            (
+                "src/cli/mcp/tools.rs",
+                "self.safety_cfg.terraform_state_path.as_deref()",
+            ),
+        ] {
+            let src = std::fs::read_to_string(file).unwrap_or_else(|e| panic!("{file}: {e}"));
+            let prod = src.split("#[cfg(test)]").next().unwrap_or("");
+            assert!(
+                prod.contains("resolve_state_path("),
+                "{file} must resolve through the shared precedence"
+            );
+            assert!(
+                prod.contains(needle),
+                "{file} must pass the CONFIGURED path, not None — otherwise \
+                 a fleet whose state is remote has no drift at all"
+            );
+        }
+    }
 }
