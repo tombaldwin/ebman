@@ -386,6 +386,22 @@ mod tests {
         let tight = wrapped_verbs(&verbs, 1);
         assert_eq!(tight.lines().count(), verbs.len(), "{tight:?}");
 
+        // The width boundary exactly. A line that exactly fills the
+        // budget must NOT wrap: `>=` here instead of `>` wraps one
+        // verb early, and the sweep found that mutation survives every
+        // other case in this test.
+        let pair: Vec<String> = ["ab", "cd"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            wrapped_verbs(&pair, 6),
+            "  ab, cd\n",
+            "`ab, cd` is exactly 6 wide and must stay on one line"
+        );
+        assert_eq!(
+            wrapped_verbs(&pair, 5),
+            "  ab,\n  cd\n",
+            "one narrower, and it must wrap"
+        );
+
         // One verb, and none.
         assert_eq!(wrapped_verbs(&verbs[..1], 62), "  deploy\n");
         assert_eq!(wrapped_verbs(&[], 62), "");
