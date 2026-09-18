@@ -588,16 +588,25 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
   of work.
 
 - [ ] **Possible flake in `a_derived_dlq_that_does_not_exist_still_answers`.**
-  The 0.39.0 release review reported ONE failure in ~46 runs and could
-  not reproduce it in 45 subsequent isolated runs, nor capture the
-  panic. I could not reproduce it either: 60 isolated runs and 12 whole
-  -module runs, zero failures. The reviewer's own full-suite run failed
-  on a different, uncommitted test in a shared tree, which is the more
-  likely explanation for one confused observation — but "probably that"
-  is not the same as knowing. Recorded rather than declared absent: if
-  it appears in CI, the shape to look at is `aws_smithy_mocks` rule
-  exhaustion under `RuleMode::MatchAny` when rules are shared across
-  concurrent tests.
+  One failure in ~46 runs, reported by the 0.39.0 release review and
+  never reproduced: 45 follow-ups by the reviewer, then 60 isolated runs,
+  12 whole-module runs and 40 orchestration-module runs here. 157 clean
+  runs against one observation.
+
+  Two hypotheses tested and both wrong. Cross-test rule sharing: the
+  fixtures construct a fresh `Rule` per call, so nothing is shared.
+  `RuleMode::MatchAny` exhaustion: `MatchAny` does not consume rules,
+  which is why it is used — the tests that need a rule served repeatedly
+  already depend on that.
+
+  The likeliest remaining explanation is the reviewer's own note that
+  its full-suite run failed on a DIFFERENT, uncommitted test in a shared
+  tree while two agents edited it. That is consistent with one confused
+  observation and needs no defect.
+
+  Left open rather than closed because unreproducible is not absent. If
+  CI ever sees it, the thing to capture is the panic itself — every
+  reproduction attempt so far has had to infer from a pass/fail count.
 
 - [ ] **An operator-level switch for peeked message bodies
   (`mcp.peek_bodies = false`).** `worker_queues --peek` and `why` return
