@@ -613,6 +613,15 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
 
   ~a few days. `src/freeze.rs` supplies the hard part.
 
+  **Layer four — assume-role elevation — is designed but deliberately
+  out of scope for the first cut** (`runtime-grants.md`, "Layer four").
+  `sts:AssumeRole` is the time-boxed grant done properly: STS enforces
+  the TTL, the role policy is the ceiling, and CloudTrail audits it
+  independently of ebman. `AwsClient::assume_role` already exists for
+  cross-account switching, so the plumbing is there. Buys nothing for a
+  setup running as admin, which is why it is not first. Target: a
+  release soon after.
+
 - [ ] **No guard catches a refusal path that audits nothing.**
   `write_refusal_paths_are_audited` pins the two callers of
   `write_refusal_unaudited` — it detects a path that reaches for the
