@@ -192,7 +192,7 @@ fn read_tool_table() -> Value {
         },
         {
             "name": "drift",
-            "description": "Terraform drift report: live env config vs the tfstate's recorded settings. tfstate discovery walks up from the SERVER's working directory (correct for project-scoped .mcp.json which launches in the repo; pass tfstate_path otherwise). Drifted env-var values and DBPassword are redacted like get_option_settings (the drifted signal survives; --no-redact disables).",
+            "description": "Terraform drift report: live env config vs the tfstate's recorded settings. State resolution: the `tfstate_path` argument, then `terraform.state_path` in config.toml, then discovery from the SERVER's working directory (correct for project-scoped .mcp.json which launches in the repo). For a fleet whose state is in a remote backend (HCP, S3, Consul), `terraform state pull > state.json` and set the config key — ebman reads state files and does not talk to backends. The report carries a `state` block (`serial`, `lineage`, `pulled_at`): a pulled file goes stale silently, and ebman cannot tell whether its serial is current, so it names the one it compared. Drifted env-var values and DBPassword are redacted like get_option_settings (the drifted signal survives; --no-redact disables).",
             "inputSchema": {
                 "type": "object",
                 "properties": {

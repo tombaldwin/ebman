@@ -586,3 +586,15 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
   so nothing shipped is affected and it blocks no release. Needs a real
   fix to that parser rather than a version pin, which is its own piece
   of work.
+
+- [ ] **Possible flake in `a_derived_dlq_that_does_not_exist_still_answers`.**
+  The 0.39.0 release review reported ONE failure in ~46 runs and could
+  not reproduce it in 45 subsequent isolated runs, nor capture the
+  panic. I could not reproduce it either: 60 isolated runs and 12 whole
+  -module runs, zero failures. The reviewer's own full-suite run failed
+  on a different, uncommitted test in a shared tree, which is the more
+  likely explanation for one confused observation — but "probably that"
+  is not the same as knowing. Recorded rather than declared absent: if
+  it appears in CI, the shape to look at is `aws_smithy_mocks` rule
+  exhaustion under `RuleMode::MatchAny` when rules are shared across
+  concurrent tests.
