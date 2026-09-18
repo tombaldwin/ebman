@@ -248,6 +248,30 @@ environment the credentials reach. It composes with the pins: a narrow
 grant plus `safety.envs.prod.read_only = true` is "delete DLQ messages
 anywhere except prod".
 
+**You make this edit, not your agent.** The grant is small enough to
+look like a routine change you could hand off, and that is exactly the
+trap: the party that benefits from a grant is not the party that makes
+it. It is also enforced rather than merely discouraged — an agent in
+Claude Code that tries to add this flag to its own MCP config has the
+edit refused outright, classified as self-modification. Not a prompt it
+can accept; a denial. (Reported first-hand from one client; treat the
+principle as general and the specific behaviour as that client's.)
+
+So the instruction is: **operator edits the config, operator restarts
+the client.** Never "ask your agent to add `--allow-writes=…`" — in at
+least one major client that describes something which cannot happen.
+
+**Restart the client, don't just reconnect.** Whether a client's
+reconnect re-reads the config and re-spawns with the new argv, or
+reuses the spawn command cached at session start, is client behaviour
+ebman cannot see and we have not established for any specific client.
+The failure mode if it caches matters: the server comes back without
+the verb, `tools/list` omits it, and that reads as "the feature does
+not work" rather than "the flag has not taken effect yet". A full
+client restart is correct under either behaviour, so prefer it. If a
+verb you granted is missing from `tools/list`, restart before
+concluding anything.
+
 The nameable verbs are `deploy`, `restart`, `rebuild`, `terminate`,
 `set_option`, `dlq_resend`, `dlq_delete`, `dlq_purge`. `confirm_action`
 is not one — it is the second phase of every write and rides along with

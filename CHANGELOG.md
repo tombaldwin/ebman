@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **A verb grant says whose job it is.** Field-reported from a session
+  that upgraded to 0.40.0, went to scope its own server to
+  `--allow-writes=dlq_delete` — the narrowest grant, the exact case the
+  feature was built for — and had the edit refused by its client as
+  self-modification. The refusal was right; the wasted attempt was
+  avoidable. A read-only server's `instructions` block now says
+  explicitly that asking is the agent's whole part in it, and
+  `docs/headless.md` says the operator makes the edit rather than
+  presenting it as a step a reader might delegate. The grant is small
+  enough to look routine, and that is exactly what makes people try to
+  hand it off.
+
+- **Restart the client after changing the flag, don't just reconnect.**
+  Whether a client re-reads its config on reconnect or reuses the argv
+  cached at session start is client behaviour ebman cannot see, and we
+  have not established it for any specific client. The failure mode if
+  it caches is ours by shape: the server returns without the verb,
+  `tools/list` omits it, and that reads as "the feature is broken"
+  rather than "the flag has not taken effect". A full restart is
+  correct under either behaviour. A narrow grant's `instructions` now
+  tells the agent to suspect this before concluding a granted verb is
+  missing.
+
 ## [0.40.0] - 2026-09-18
 
 ### Added

@@ -171,9 +171,13 @@ impl WriteScope {
     /// choice, instead of asking the operator to widen the grant.
     fn agent_summary(&self) -> String {
         match self {
-            WriteScope::None => "This server is READ-ONLY: no write tool is available. Ask the \
+            WriteScope::None => "This server is READ-ONLY: no write tool is available. ASK the \
                  operator to restart it with --allow-writes (optionally \
-                 --allow-writes=verb,verb to grant only what you need)."
+                 --allow-writes=verb,verb to grant only what you need) — asking \
+                 is the whole of your part in it. Do not edit the MCP config \
+                 yourself: a grant is not yours to make, and in at least one \
+                 client that edit is refused as self-modification, so trying it \
+                 costs a denial and teaches nothing."
                 .to_string(),
             WriteScope::All => "Writes are ENABLED for every verb, via the two-phase \
                  plan-then-confirm protocol."
@@ -182,7 +186,11 @@ impl WriteScope {
                 "Writes are NARROWLY granted: {} only, via the two-phase plan-then-confirm \
                  protocol. Any other write verb is absent from this list because it was NOT \
                  GRANTED, not because ebman lacks it — say so and ask the operator to widen \
-                 the grant rather than reporting it as unsupported.",
+                 the grant rather than reporting it as unsupported. Asking is your part; \
+                 the config edit is theirs. If they say they granted a verb and it is still \
+                 missing here, the likeliest cause is a client that reconnected without \
+                 re-reading its config — ask them to restart the client before either of you \
+                 concludes it is broken.",
                 v.join(", ")
             ),
         }
@@ -3193,5 +3201,37 @@ mod tests {
         );
         assert!(!wants_file_logging(&a(&["mcp", "setup", "--allow-writes"])));
         assert!(!wants_file_logging(&a(&["mcp"])), "a bare usage error");
+    }
+
+    /// The instructions tell the agent that a grant is not its to make.
+    ///
+    /// A peer session on 0.40.0 went to scope its own server to
+    /// `--allow-writes=dlq_delete` — the narrowest grant, the exact
+    /// case the feature was built for — and its client refused the
+    /// edit as self-modification. The refusal was correct; the wasted
+    /// attempt was avoidable. Nothing on this surface said whose job
+    /// the edit was, and `tools/list` showing no write tools reads as
+    /// "go and enable them".
+    #[test]
+    fn the_instructions_say_a_grant_is_not_the_agents_to_make() {
+        let read_only = WriteScope::None.agent_summary();
+        assert!(
+            read_only.contains("Do not edit the MCP config yourself"),
+            "a read-only server must say whose job the grant is: {read_only}"
+        );
+        assert!(
+            read_only.contains("self-modification"),
+            "and warn that trying costs a denial: {read_only}"
+        );
+
+        // A narrow grant needs the other half: the verb it is missing
+        // may have been granted already and not picked up.
+        let narrow = WriteScope::Only(vec!["dlq_delete".into()]).agent_summary();
+        assert!(
+            narrow.contains("restart the client"),
+            "a client that reconnects without re-reading its config shows the \
+             verb as absent, which reads as a broken feature: {narrow}"
+        );
+        assert!(narrow.contains("Asking is your part"), "{narrow}");
     }
 }
