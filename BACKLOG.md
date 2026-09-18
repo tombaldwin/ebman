@@ -598,3 +598,27 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
   it appears in CI, the shape to look at is `aws_smithy_mocks` rule
   exhaustion under `RuleMode::MatchAny` when rules are shared across
   concurrent tests.
+
+- [ ] **An operator-level switch for peeked message bodies
+  (`mcp.peek_bodies = false`).** `worker_queues --peek` and `why` return
+  each message's `body` verbatim, which ebman cannot redact — the
+  description is currently the only thing between a peek and a payload
+  in a Jira ticket, and it relies on agent discipline the tool cannot
+  enforce. A field report put it plainly: that fleet's queue payloads
+  are job dispatches for a live staffing platform, so a body can carry
+  seller and buyer identifiers.
+
+  The point that makes this cheap: **the diagnosis never needed the
+  body.** `SqsdTask` (name / path / scheduled_time) is a separate field
+  from `body` in the same message, and the incident that motivated
+  `worker_queues` was answered entirely from the attributes — for a
+  cron task the body is the fixed literal "elasticbeanstalk scheduled
+  job" and carries nothing. So suppressing bodies costs nothing for
+  worker-task triage and removes the whole class of exposure for
+  app-posted payloads.
+
+  Shape: a config key (operator-set, not agent-set — an agent must not
+  be able to widen its own access), defaulting to current behaviour so
+  it is not a silent change, with the tool description stating which
+  mode is active. Consider whether the TUI's DLQ viewer should honour
+  it too; it shows bodies for non-task messages.
