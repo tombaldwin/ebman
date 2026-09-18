@@ -130,7 +130,9 @@ safety.accounts.prod.read_only = true
 #
 # One command, works for every backend, and your Terraform credentials
 # stay where they already are. Precedence: `--tfstate PATH` (or the MCP
-# `tfstate_path` argument), then this key, then discovery from cwd.
+# `tfstate_path` argument), then an explicit `--tfdir` (the named
+# directory's discovery wins — a flag must never lose to a config
+# default), then this key, then discovery from cwd.
 # terraform.state_path = "~/.config/ebman/poly.tfstate"
 #
 # A pulled file goes stale silently, so drift reports the state's

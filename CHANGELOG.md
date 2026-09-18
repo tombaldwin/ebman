@@ -47,7 +47,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   drift at all. ebman does not talk to those backends and holds no token
   for them: `terraform state pull > state.json` and point at the file.
   Precedence is `--tfstate PATH` / the MCP `tfstate_path` argument, then
-  this key, then discovery.
+  an explicit `--tfdir` (the named directory's discovery wins — a flag
+  must never lose to a config default), then this key, then discovery
+  from the current directory.
 
 - **MCP `initialize` carries an `instructions` block** naming the build
   version and the capabilities ebman has that this surface does not
@@ -90,6 +92,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `sqs:ReceiveMessage`, a different permission from the attributes call
   that produced the depth, so this is an ordinary IAM shape. It now
   records the failure and reports that it did not look.
+
+- **`worker_queues --peek` failed the whole call when an environment had
+  no dead-letter queue.** ebman derives a DLQ URL by the `<main>-dlq`
+  convention when EB names none, and a derived URL that names no real
+  queue is the ordinary case — the depth path treats it as exactly that.
+  The peek path did not, so `NonExistentQueue` failed the call and
+  discarded the depth answer already in hand. `why` was quieter and
+  worse: it recorded a spurious "could not look" for every healthy
+  worker environment whose derived guess missed. Both gate on the depth
+  result now, and `peeked` reports whether ebman actually looked rather
+  than what was asked — `worker_queues` and `why` previously answered
+  that differently for the same environment.
 
 - **`recent_logs` could exceed the MCP tool timeout.** The log-group
   fan-out was unbounded and sequential; it is capped at 8 groups and
