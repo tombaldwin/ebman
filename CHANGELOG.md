@@ -45,6 +45,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   is not advertised, so a client reaching one is working from a stale
   tool list or probing, and that is invisible any other way.
 
+- **A demo peek no longer claims to have looked.** `worker_queues` with
+  `peek` against a `--demo` server reported `peeked: true, messages: []`
+  beside a dead-letter depth of 12 — an explicit all-clear on a queue
+  the server never opened, next to the number contradicting it. Demo has
+  no SQS behind it, so `peeked` is now `false`: the field reports
+  whether ebman looked, not what was asked for. Third site of one
+  defect — `dlq_peek_outcome` and the live path were each fixed for it
+  already, and this was the only one with no test.
+
 - **Dead-letter management over MCP** — `dlq_resend`, `dlq_delete` and
   `dlq_purge`, two-phase like every other write and available only under
   `--allow-writes`. Until now ebman could diagnose a worker environment
