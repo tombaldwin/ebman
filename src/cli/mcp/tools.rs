@@ -853,10 +853,18 @@ impl Server {
         // rung a fleet on a remote backend has no drift at all over
         // MCP, because discovery only ever finds a local file.
         let explicit = arg_str(args, "tfstate_path").map(std::path::PathBuf::from);
+        // The ABSOLUTE cwd, not `"."`. `Path::new(".").ancestors()`
+        // yields exactly `"."` and `""` — so discovery checked the
+        // server's own directory and nothing above it, while the tool
+        // description said it walks up from there. A project-scoped
+        // `.mcp.json` launches in the repo root and usually got away
+        // with it; a server started one directory down silently found
+        // nothing. `load_from_cwd` and the CLI both canonicalise first.
+        let start = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let path = terraform::resolve_state_path(
             explicit.as_deref(),
             self.safety_cfg.terraform_state_path.as_deref(),
-            std::path::Path::new("."),
+            &start,
         )
         .ok_or_else(|| terraform::no_state_hint("tfstate_path"))?;
         let state = terraform::load_from_path(&path)

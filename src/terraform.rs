@@ -1282,6 +1282,32 @@ mod state_path_tests {
             Some(PathBuf::from("/srv/state.json"))
         );
     }
+
+    /// Discovery must be able to walk UP.
+    ///
+    /// `Path::new(".").ancestors()` yields exactly `"."` and `""` — two
+    /// entries, neither of them a parent — so a relative start makes
+    /// `find_tfstate` check one directory and stop, while every caller's
+    /// documentation says it walks up. Pinned on the ancestor count
+    /// rather than on a filesystem hit, so the test needs no fixture
+    /// tree and still fails for a relative start.
+    #[test]
+    fn discovery_from_a_relative_start_cannot_walk_up() {
+        let relative: Vec<_> = Path::new(".").ancestors().collect();
+        assert_eq!(
+            relative.len(),
+            2,
+            "a relative start has no parents to walk: {relative:?}"
+        );
+
+        let absolute = std::env::current_dir().expect("cwd");
+        assert!(
+            absolute.ancestors().count() > 2,
+            "an absolute start does — which is why every caller must \
+             canonicalise before discovery: {}",
+            absolute.display()
+        );
+    }
 }
 
 #[cfg(test)]

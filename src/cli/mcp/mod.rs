@@ -2154,4 +2154,26 @@ mod tests {
             );
         }
     }
+
+    /// The MCP drift tool must canonicalise before discovery.
+    ///
+    /// Source-scanned: the discovery path needs a real filesystem walk
+    /// and an AWS client to reach. `Path::new(".")` there means
+    /// discovery checks the server's own directory and nothing above
+    /// it, which contradicts the tool's own description.
+    #[test]
+    fn mcp_drift_discovery_starts_from_an_absolute_path() {
+        let src = std::fs::read_to_string("src/cli/mcp/tools.rs").expect("read source");
+        let prod = src.split("\n#[cfg(test)]\nmod ").next().unwrap_or_default();
+        assert!(
+            prod.contains("std::env::current_dir()"),
+            "drift discovery must start from the absolute cwd, or it \
+             cannot walk up at all"
+        );
+        // Canary: prove the slice found real code.
+        assert!(
+            prod.contains("resolve_state_path("),
+            "the production slice is not finding the resolution"
+        );
+    }
 }
