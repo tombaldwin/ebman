@@ -129,6 +129,14 @@ would grandfather whatever the outage hid.
 
 ## MCP server (`ebman mcp serve`)
 
+Every tool response is prefixed with a warning when the binary on disk
+is no longer the one this server is running — what `brew upgrade` does
+to a server already in flight. The handshake carries the version, but
+the handshake has already happened, so `initialize` cannot tell a client
+about an upgrade that came later. The notice names the running version
+and says to reconnect (in Claude Code: `/mcp`, Reconnect), which
+re-spawns the child from the current binary and re-runs the handshake.
+
 The `initialize` response carries an `instructions` block naming the
 capabilities ebman has that this surface does **not** expose — worker
 queue depth and message peek, the `:why` correlation bundle, the live

@@ -107,6 +107,85 @@ enum Backend {
     Demo,
 }
 
+/// Identity of the binary this server is running.
+///
+/// Captured once at startup so a later `stat` of the same path can tell
+/// whether the file was replaced underneath the running process — which
+/// is exactly what `brew upgrade` does, leaving the server on the old
+/// inode with no way for a client to notice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExeIdentity {
+    pub path: String,
+    /// `None` when the binary could not be stat'ed. Kept rather than
+    /// defaulted: "we could not look" must not become "unchanged".
+    pub inode: Option<u64>,
+}
+
+impl ExeIdentity {
+    fn of(path: &std::path::Path) -> Self {
+        use std::os::unix::fs::MetadataExt;
+        Self {
+            path: path.display().to_string(),
+            inode: std::fs::metadata(path).ok().map(|m| m.ino()),
+        }
+    }
+
+    pub(crate) fn current() -> Option<Self> {
+        std::env::current_exe().ok().map(|p| Self::of(&p))
+    }
+
+    /// Build an identity pointing at an arbitrary path.
+    ///
+    /// Test seam. Without it the prepend is only reachable by replacing
+    /// the test binary underneath itself, so the WIRING would go
+    /// untested while the pure halves passed — the gap this session has
+    /// hit repeatedly.
+    #[cfg(test)]
+    pub(crate) fn for_tests(path: &std::path::Path) -> Self {
+        Self::of(path)
+    }
+
+    /// Re-stat the same path and report whether it is now a different
+    /// file.
+    fn is_stale(&self) -> bool {
+        staleness(self.inode, Self::of(std::path::Path::new(&self.path)).inode)
+    }
+}
+
+/// Whether the binary on disk is a different file from the one running.
+///
+/// Pure so both directions are testable without replacing a binary
+/// underneath a test process. Deliberately conservative: an unreadable
+/// file is NOT reported stale. Verified empirically that replacing a
+/// file changes its inode while `current_exe()` still resolves the
+/// path — that is the whole mechanism.
+///
+/// Unknown on either side means unknown, never "changed": a server that
+/// cried staleness whenever it could not stat itself would be noise,
+/// and noise is how a real warning gets ignored.
+pub(crate) fn staleness(at_start: Option<u64>, now: Option<u64>) -> bool {
+    match (at_start, now) {
+        (Some(a), Some(b)) => a != b,
+        _ => false,
+    }
+}
+
+/// The line prepended to a tool response when the running binary is no
+/// longer the one on disk.
+///
+/// Says what is running, what changed, and what to do. An agent cannot
+/// act on "you are stale" — it can act on "reconnect".
+pub(crate) fn stale_binary_notice(path: &str) -> String {
+    format!(
+        "[ebman {} is running, but a different build is now installed at {}. \
+         This server keeps the old one until the connection is re-established \
+         — reconnect (in Claude Code: /mcp, Reconnect) to pick it up. \
+         Results below are from the running build.]",
+        env!("CARGO_PKG_VERSION"),
+        path
+    )
+}
+
 pub(crate) struct Server {
     backend: Backend,
     redact: bool,
@@ -137,6 +216,14 @@ pub(crate) struct Server {
     /// `clientInfo.name` from initialize — lands in audit extras so
     /// agent-dispatched writes are attributable.
     client_name: std::sync::Mutex<String>,
+    /// The binary this server started from.
+    ///
+    /// `brew upgrade` replaces the file underneath a running server,
+    /// which then keeps answering from the old build with nothing to
+    /// tell a client. A reader spent two days reporting capability gaps
+    /// against a stale binary for exactly this reason — the handshake
+    /// carries the version, but the handshake already happened.
+    exe: Option<ExeIdentity>,
     /// Test seam: an injected client, used in place of building one per
     /// call.
     ///
@@ -180,6 +267,7 @@ impl Server {
             dispatching: std::sync::atomic::AtomicBool::new(false),
             client_name: std::sync::Mutex::new("unknown".to_string()),
             client_supports_elicitation: std::sync::atomic::AtomicBool::new(false),
+            exe: ExeIdentity::current(),
             #[cfg(test)]
             injected_client: None,
         }
@@ -191,6 +279,13 @@ impl Server {
     /// `Backend::Aws`, deliberately: the demo backend short-circuits
     /// most tool bodies before they reach a client, which is precisely
     /// the orchestration this exists to exercise.
+    /// Point the staleness check at a path a test controls.
+    #[cfg(test)]
+    pub(crate) fn watching_exe(mut self, path: &std::path::Path) -> Self {
+        self.exe = Some(ExeIdentity::for_tests(path));
+        self
+    }
+
     #[cfg(test)]
     pub(crate) fn with_injected_client(
         allow_writes: bool,
@@ -382,6 +477,14 @@ impl Server {
                 let (text, is_error) = match outcome {
                     Ok(body) => (body, false),
                     Err(msg) => (msg, true),
+                };
+                // Prepended rather than added as a field: every tool
+                // returns its own JSON shape, and a client that renders
+                // the text sees this whatever it does with structure.
+                // One assembly point, so no tool can forget it.
+                let text = match self.exe.as_ref().filter(|e| e.is_stale()) {
+                    Some(e) => format!("{}\n{text}", stale_binary_notice(&e.path)),
+                    None => text,
                 };
                 Some(json!({
                     "jsonrpc": "2.0",
@@ -2175,5 +2278,133 @@ mod tests {
             prod.contains("resolve_state_path("),
             "the production slice is not finding the resolution"
         );
+    }
+
+    /// Staleness is "the file changed", and unknown is never "changed".
+    ///
+    /// Verified empirically before this was built: replacing a binary
+    /// underneath a running process changes its inode while
+    /// `current_exe()` still resolves the path. That is the whole
+    /// mechanism — a `brew upgrade` leaves the server on the old inode.
+    #[test]
+    fn a_replaced_binary_is_stale_and_an_unreadable_one_is_not() {
+        assert!(
+            super::staleness(Some(100), Some(200)),
+            "a different inode is a different file — that is an upgrade"
+        );
+        assert!(
+            !super::staleness(Some(100), Some(100)),
+            "the same file is not stale, however often it is checked"
+        );
+        // Unknown on either side must NOT report stale. A server crying
+        // staleness whenever it cannot stat itself is noise, and noise
+        // is how a real warning gets ignored.
+        assert!(!super::staleness(None, Some(200)), "unknown start");
+        assert!(!super::staleness(Some(100), None), "unknown now");
+        assert!(!super::staleness(None, None), "unknown both");
+    }
+
+    /// The notice must be actionable, not merely alarming.
+    #[test]
+    fn the_stale_notice_says_what_to_do_about_it() {
+        let n = super::stale_binary_notice("/opt/homebrew/bin/ebman");
+        assert!(
+            n.contains(env!("CARGO_PKG_VERSION")),
+            "it must name the version actually RUNNING — the cached \
+             instructions block cannot be refreshed mid-connection, so \
+             this is the only truthful version an agent sees: {n}"
+        );
+        assert!(n.contains("/opt/homebrew/bin/ebman"), "and where: {n}");
+        assert!(
+            n.contains("reconnect") || n.contains("Reconnect"),
+            "an agent cannot act on \"you are stale\" — it can act on \
+             \"reconnect\": {n}"
+        );
+    }
+
+    /// A current server must say nothing.
+    ///
+    /// Without this the feature could prepend on every call and both
+    /// tests above would still pass — a warning on every response is
+    /// indistinguishable from no warning at all.
+    #[tokio::test]
+    async fn a_current_binary_adds_no_notice() {
+        let s = demo_server();
+        let resp = rpc(
+            &s,
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                   "params":{"name":"list_environments","arguments":{}}}),
+        )
+        .await
+        .expect("answers");
+        let text = resp["result"]["content"][0]["text"].as_str().expect("text");
+        assert!(
+            !text.contains("is running, but a different build"),
+            "this binary has not been replaced, so there is nothing to \
+             report: {text}"
+        );
+        // And the payload is still the payload — the prepend must not
+        // have eaten it.
+        assert!(text.starts_with('['), "still JSON: {text}");
+    }
+
+    /// A stale server must SAY so, on a real response.
+    ///
+    /// The pure halves are tested above; this is the wiring. It points
+    /// the check at a file the test controls, replaces it — which is
+    /// what `brew upgrade` does — and drives a real tool call.
+    #[tokio::test]
+    async fn a_stale_server_prepends_the_notice_to_its_answer() {
+        let dir = std::env::temp_dir().join(format!("ebman-exe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let fake = dir.join("ebman");
+        std::fs::write(&fake, b"v1").expect("write");
+
+        let s = Server::new(true, false, false).watching_exe(&fake);
+
+        // Unchanged: no notice.
+        let quiet = rpc(
+            &s,
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                   "params":{"name":"list_environments","arguments":{}}}),
+        )
+        .await
+        .expect("answers");
+        assert!(
+            !quiet["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or("")
+                .contains("a different build"),
+            "nothing has changed yet"
+        );
+
+        // Replace the file — a new inode, as an upgrade produces.
+        let replacement = dir.join("ebman.new");
+        std::fs::write(&replacement, b"v2").expect("write");
+        std::fs::rename(&replacement, &fake).expect("rename");
+
+        let loud = rpc(
+            &s,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
+                   "params":{"name":"list_environments","arguments":{}}}),
+        )
+        .await
+        .expect("answers");
+        let text = loud["result"]["content"][0]["text"].as_str().expect("text");
+        assert!(
+            text.contains("a different build is now installed"),
+            "the server must say the binary changed underneath it: {text}"
+        );
+        assert!(
+            text.contains(env!("CARGO_PKG_VERSION")),
+            "naming the version actually running, which is the only \
+             truthful one an agent sees once instructions are cached: {text}"
+        );
+        assert!(
+            text.contains('['),
+            "and the payload must survive the prepend: {text}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
