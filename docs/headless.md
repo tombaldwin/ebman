@@ -249,6 +249,13 @@ An ungranted verb is **absent** from `tools/list` and **refused** at
 dispatch, at both the plan and confirm phases. Absent alone would leave
 it callable by a client holding a list cached from a wider grant.
 
+Calling one anyway returns a refusal naming the flag that would grant
+it — **not** `unknown tool`, which would tell the agent ebman lacks the
+verb. The attempt is audited as `rule=not_granted`: a client reaching
+an unadvertised verb is working from a stale list or probing, and that
+is invisible any other way. A name that is not a verb at all is still a
+`-32602` protocol error.
+
 An unknown verb is a startup error naming the typo and listing what is
 known — `--allow-writes=dlq_delte` fails rather than silently granting
 nothing (which would look exactly like a working narrow grant until the

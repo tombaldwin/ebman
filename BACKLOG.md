@@ -587,6 +587,30 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
   fix to that parser rather than a version pin, which is its own piece
   of work.
 
+- [ ] **No guard catches a refusal path that audits nothing.**
+  `write_refusal_paths_are_audited` pins the two callers of
+  `write_refusal_unaudited` — it detects a path that reaches for the
+  known escape hatch, not a path that reaches for neither helper.
+
+  The verb-scope work (0.40) added exactly that: a new refusal that
+  returned `Err` and wrote no line. Green suite, green clippy, and it
+  was found by reading the diff against the 0.37 rationale rather than
+  by anything mechanical. The blind spot 0.37 closed is therefore
+  re-openable by any new gate, and gates are what the protection-levels
+  work adds.
+
+  Not obviously guardable: "a `return Err` that should have audited"
+  has no syntactic signature, and most `return Err`s in these functions
+  are validation errors that correctly audit nothing. Two shapes worth
+  weighing before building either — a marker type that a refusal must
+  be constructed through (turns it into a compile-time obligation, but
+  touches every call site), or a runtime counter asserting refusal
+  lines against refusal returns in a test harness (cheaper, weaker,
+  needs every path exercised).
+
+  Do not widen `ALLOWED` to make anything quiet here — the list is the
+  hatch, not the fix.
+
 - [ ] **Possible flake in `a_derived_dlq_that_does_not_exist_still_answers`.**
   One failure in ~46 runs, reported by the 0.39.0 release review and
   never reproduced: 45 follow-ups by the reviewer, then 60 isolated runs,
