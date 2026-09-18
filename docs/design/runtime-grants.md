@@ -5,8 +5,9 @@
 the objection below. It reshapes stage 5 of
 [protection-levels.md](protection-levels.md) rather than following it:
 that note assumed the ceiling was static and put the flexibility in
-named levels. This one says the ceiling should be static **and wide**,
-with the flexibility in time-boxed grants.
+named levels. This one says the ceiling should come from things the
+operator already maintains — IAM, and a config that may only forbid —
+with permission granted in the conversation, at the moment of need.
 
 ## The problem
 
@@ -51,33 +52,71 @@ Elicitation alone does not give that. **Elicitation authorises an
 instance; a ceiling bounds the space.** They are different jobs and the
 design needs both.
 
+## The rule that resolves it: config may only say no
+
+The maintainer's framing, and the cleanest thing in this note:
+
+> Setting flags and restarting isn't good. What would be OK is
+> restrictive — a user CHOOSING in advance not to ever allow writes.
+
+That is the asymmetry the design turns on. **Pre-configuring a
+restriction is fine**: it is decided calmly, once, it only ever
+narrows, and it never interrupts. **Pre-configuring a permission is
+not**: it requires predicting what you will need, and the cost is paid
+at the worst possible moment.
+
+So the config may only ever say *no*. `safety.envs.prod.read_only =
+true` is already exactly the right shape — a standing refusal, set in
+advance. What is missing is a global form of it, and the removal of the
+opt-in permission entirely.
+
+This keeps the property the flag was protecting. The injection concern
+was "bound what can be proposed, so a tired human is not the only
+defence" — the restrictions **are** that bound. The difference is that
+the operator opts out of what they do not want, rather than opting in
+to everything they might need.
+
 ## The shape
 
-**The flag stops meaning "may do" and starts meaning "may ask about".**
+**There is no pre-set permission.** The `--allow-writes` flag stops
+being a capability decision at all. Write tools are advertised by
+default, subject to whatever the operator has forbidden.
 
-Set once at install, deliberately wide, because a grant to *ask* costs
-nothing. `--allow-writes` with no verbs becomes the sensible default
-rather than the reckless one.
+**Permission happens at the moment of need, in the conversation.**
+Three mechanisms, in preference order:
 
-**Grants happen at runtime, and expire.** Two routes:
+1. **The client's own tool prompt.** Claude Code already has a tool
+   approval system, and ebman already annotates every write
+   `destructiveHint: true`, `readOnlyHint: false`. If the client
+   prompts on that, the operator gets in-conversation approval with
+   **no new ebman machinery at all** — the only reason it does not
+   happen today is that write tools are not advertised without the
+   flag, which the section above removes.
 
-1. **Operator issues one.** `ebman grant dlq_delete --env poly-batch
-   --ttl 1h`, or `:grant` in the TUI. This reuses the cross-process
-   marker machinery that `:freeze-deploys` already uses — the TUI
-   writes, the MCP server reads it live on the next gate check, with the
-   pid-liveness and pid-reuse handling already solved in `src/freeze.rs`.
-2. **Agent asks.** MCP elicitation: the server pauses mid-call and asks
-   the client to put a prompt in front of the operator.
+   The two-phase shape lands well here: the plan call is harmless and
+   puts the full detail in the transcript, so the prompt arrives on
+   `confirm_action`, immediately after the operator has read the plan.
+   Its weakness is that the prompt says "allow confirm_action?" and
+   shows a token — opaque about *what* is being confirmed.
 
-Either way the server then emits `notifications/tools/list_changed`, the
-client refetches, and the write tools appear **mid-session**. No
-restart, no file.
+2. **ebman elicitation.** Server-authored prompt, so it can carry the
+   plan and the foreclosure line. Mechanism 1 is the gate; this is what
+   makes the gate legible. Needs the client to declare elicitation.
 
-**Route 1 does not depend on elicitation.** This is the load-bearing
-property of the design and the reason it is buildable now: if a client
-does not support elicitation, the operator approves in the TUI or a
-terminal instead, and the feature still works. Elicitation is an
-upgrade, not a prerequisite.
+3. **Operator-issued grant** — `ebman grant dlq_delete --env poly-batch
+   --ttl 1h`, or `:grant` in the TUI, reusing the cross-process marker
+   machinery `:freeze-deploys` already uses, with the pid-liveness and
+   reuse handling solved in `src/freeze.rs`. **The fallback**, for
+   clients that cannot elicit and for pre-opening a window when the
+   operator already knows they are about to do twenty of these.
+
+When a grant is issued by route 3 the server emits
+`notifications/tools/list_changed`, the client refetches, and write
+tools appear **mid-session**. No restart, no file.
+
+**Route 3 needs no elicitation**, which is what keeps the feature
+buildable if the measurement comes back negative — but it is the
+consolation prize, not the design.
 
 ### The plan IS the permission request
 
@@ -183,27 +222,39 @@ message I meant, is the count right — and never for a discretionary
 one.** The fixture case is the type specimen: every mechanical fact in
 that prompt was correct and the right answer was still no.
 
-**Consequence for the two routes, which this note had backwards.**
-Issuing a grant is discretionary; confirming a specific action inside
-one is mechanical. So:
+**This looked like an argument for moving grants to the operator route
+— `ebman grant …` in a terminal — and that conclusion was drafted here
+and then overruled.** The maintainer's response, on being told grants
+would be issued by him after shipping:
 
-- **Grants** belong on the operator route, where the person has their
-  context — `ebman grant …` or `:grant`, neither of which is a restart.
-- **Elicitation** is well suited to confirmation *within* an existing
-  grant, and poorly suited to issuing one.
+> WHY WOULD WE NEED TO GRANT IT AFTER WE SHIP — surely that's the point,
+> that we don't have to do that.
 
-That makes the elicitation measurement less load-bearing than this note
-first claimed: it decides whether per-action confirmation is available,
-not whether the feature works.
+He is right, and the draft had reintroduced the original friction
+wearing different clothes. A terminal command is not a restart, but it
+is still leaving the conversation to pre-authorise something, which is
+the thing being designed away.
 
-**Unresolved, and the maintainer's call.** This is in tension with what
-he originally asked for — that the agent be able to ask for the unlock
-itself, and not have to leave the conversation. The tension is real and
-should not be designed away silently. A defensible middle: let
-elicitation carry the grant *request*, on the stated assumption that
-the operator has the conversation, while refusing to optimise the
-dialog to stand alone. ebman cannot detect whether a human is reading
-the transcript, so the choice is a posture, not a check.
+**Ruling: elicitation carries the grant request. The CLI route is the
+fallback**, for clients that cannot elicit and for pre-opening a window
+when the operator already knows they are about to do twenty of these.
+
+What survives from the argument above is the discipline, not the
+routing: **the dialog must not be built to stand alone.** No importing
+the agent's reasoning into it, no enriching it until an
+under-informed approval feels adequate. The design assumes the operator
+has the conversation, states that assumption plainly, and declines to
+paper over the case where they do not. ebman cannot detect whether a
+human is reading the transcript, so this is a posture, not a check —
+and the honest form of the posture is to keep the prompt thin and the
+context elsewhere.
+
+**Which re-promotes the measurement.** An earlier draft demoted it on
+the reasoning that grants came from the operator anyway. That reasoning
+is dead. If the client cannot elicit, there is no server→client→human
+channel mid-call, the in-conversation ask is not buildable, and the
+operator is left with exactly the CLI friction this note exists to
+remove.
 
 #### Where it becomes noise: volume, not detail
 
@@ -269,6 +320,24 @@ reporting capability gaps against a binary two releases old. The
 version line in the `instructions` block exists because of that. `mcp
 doctor` is the same fix for capabilities: **a fact with no route to its
 consumer is not a fact that consumer has.**
+
+## The four layers, named
+
+The note grew section by section and called the last one "layer four"
+without ever naming the others. For a reader who was not in the
+conversation:
+
+| layer | what it answers | who maintains it |
+|---|---|---|
+| 1. **IAM** | what is *possible* | the operator, in roles they already audit |
+| 2. **Restrictions** (`safety.*`) | what is *forbidden here*, standing | the operator, in config that may only say no |
+| 3. **The ask** | what is happening *now* | the operator, in the conversation |
+| 4. **Assume-role** | a *temporary* widening of layer 1 | AWS, enforced by STS |
+
+Layer 1 is enforced by AWS and is the only real boundary. Layer 2 is
+fast, offline and expresses what IAM cannot — freeze, incident, "never
+this environment". Layer 3 is the human gate. Layer 4 is designed and
+deliberately not in the first cut.
 
 ## Layer four: borrow the permission from AWS
 
@@ -352,11 +421,12 @@ materially different assurance from the one this note otherwise offers.
 
 ## What this is not
 
-**Not a security boundary.** Anything that can write files can write the
-grant marker, exactly as it could edit a config key. This protects
+**Layers 2 and 3 are not a security boundary.** Anything that can write
+files can write the grant marker or the restriction config. They protect
 against mistake, drift and momentum — which is what actually goes wrong
 — and the docs must say so plainly rather than implying more. ebman's
-existing line holds: the boundary is IAM.
+existing line holds: the boundary is IAM, which is layers 1 and 4, and
+is the reason those are in this design at all.
 
 **Not per-action prompting by default.** If forty messages dead-letter,
 prompting per message produces rubber-stamping, which is worse than a
@@ -371,7 +441,10 @@ Two are client behaviour and cannot be settled from inside ebman. Both
 should be answered before building, not designed around:
 
 - **Does Claude Code declare elicitation support?** Decides whether
-  route 2 is a primary path or an upgrade. The instrument that measures
+  mechanism 2 exists at all. If it does not, the in-conversation ask
+  falls back to whatever mechanism 1 gives for free, and the operator
+  is left with the CLI grant for anything more — which is the friction
+  this note exists to remove. The instrument that measures
   this was dead until 0.40.0 — `ebman mcp serve` had no file logging at
   all, so the one `tracing::` call on the surface wrote nowhere. It now
   records `elicitation=<bool>` per connection. **No measurement yet**:
@@ -397,7 +470,20 @@ should be answered before building, not designed around:
   is running inside. One connection writes the line.
 - **Does the client refetch on `tools/list_changed`?** If it ignores the
   notification, the feature degrades to "the agent must already know the
-  tool name" — workable but poor, and worth knowing first.
+  tool name" — workable but poor, and worth knowing first. Note this
+  only bites mechanism 3: under mechanisms 1 and 2 the tools are always
+  advertised, so nothing needs refetching.
+
+- **Does Claude Code prompt before calling a tool annotated
+  `destructiveHint: true`?** This decides how much of mechanism 1 comes
+  for free, and it is the cheapest of the three to find out: it is
+  answered the first time an agent attempts a write against an
+  advertised tool. Unknown, and not assumed either way.
+
+Answered since drafting: **`/mcp` shows tools, not declared
+capabilities** — checked by the maintainer. So `ebman mcp doctor` tells
+an operator something the client does not, which is the case for
+building it.
 
 And one that is ours:
 
@@ -405,6 +491,27 @@ And one that is ours:
   construction. TTL makes that mostly safe, but the freeze marker's
   pid-liveness logic exists because "mostly" was not good enough there
   either.
+
+## Implementation order
+
+1. **Invert the config.** Restrictions only: a global standing
+   `read_only`, alongside the per-env pins that already exist. Remove
+   the opt-in permission. This is the change the maintainer's rule
+   implies, it stands regardless of what the client can do, and it is
+   the bulk of the work.
+2. **Advertise write tools by default**, subject to those restrictions.
+   On a client that prompts for destructive tools this alone may
+   deliver mechanism 1 — in-conversation approval, no further work.
+3. **Elicitation** (mechanism 2), if the measurement says it is
+   available, to make the prompt say something worth reading: the plan,
+   and what the action forecloses.
+4. **Operator-issued grants** (mechanism 3) with TTL, `list_changed`,
+   visibility and audit correlation.
+5. **Assume-role** (layer 4), targeted at a release soon after.
+
+Steps 2 and 3 are small once 1 is done. The honest unknown is how much
+of this the client gives for free at step 2, which is answered the
+first time an agent attempts a write.
 
 ## Cost
 
