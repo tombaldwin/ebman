@@ -858,6 +858,19 @@ impl Server {
                 st.pending = None;
                 return Err("confirm_token expired — re-plan required".into());
             }
+            // The plan already cleared the scope, so this can only
+            // fire if the two gates disagree. That is exactly why it
+            // is here: the plan gate and this one are the only things
+            // standing between a cached tool list and a dispatch, and
+            // a scope that held at plan time but not at confirm is a
+            // bug worth failing on rather than dispatching through.
+            if !self.write_scope.allows(p.verb.tool_name()) {
+                let name = p.verb.tool_name();
+                st.pending = None;
+                return Err(format!(
+                    "'{name}' is not in this server's write scope — plan dropped"
+                ));
+            }
             if p.verb == WriteVerb::Terminate {
                 let supplied = arg_str(args, "confirm_name").unwrap_or_default();
                 if supplied != p.env {
@@ -1355,6 +1368,57 @@ mod tests {
         assert!(
             body.contains("p.verb == WriteVerb::DlqResend"),
             "only a resend sends: {body}"
+        );
+    }
+
+    /// The confirm-time scope gate can actually fire.
+    ///
+    /// It is unreachable through the normal path — a plan only exists
+    /// because the plan gate let it through — which makes it exactly
+    /// the kind of guard that rots unnoticed. A guard that cannot be
+    /// shown to fail is worse than none, because it reads as coverage.
+    /// So reach it the only way anything could: install a plan whose
+    /// verb the scope does not admit, as a client would if the two
+    /// gates ever disagreed.
+    #[tokio::test]
+    async fn the_confirm_gate_refuses_a_plan_outside_the_scope() {
+        let s = Server::with_scope(
+            true,
+            false,
+            crate::cli::mcp::WriteScope::Only(vec!["dlq_delete".into()]),
+        );
+        {
+            let mut st = s.writes.lock().await;
+            st.install(PendingWrite {
+                token: "tok".into(),
+                verb: WriteVerb::Terminate,
+                env: "prod".into(),
+                version: None,
+                settings: Vec::new(),
+                profile: None,
+                region: None,
+                expires_at: tokio::time::Instant::now() + std::time::Duration::from_secs(60),
+                name_retry_used: false,
+                dlq_message_id: None,
+                dlq_url: None,
+            });
+        }
+
+        let err = s
+            .tool_confirm_action(&json!({"confirm_token": "tok", "confirm_name": "prod"}))
+            .await
+            .expect_err("terminate is outside the grant");
+        assert!(
+            err.contains("not in this server's write scope"),
+            "the refusal must name the scope: {err}"
+        );
+
+        // And the plan is DROPPED, not left confirmable: a rejected
+        // plan that survives is one retry away from dispatching.
+        let st = s.writes.lock().await;
+        assert!(
+            st.pending.is_none(),
+            "a plan the scope rejects must not stay confirmable"
         );
     }
 }
