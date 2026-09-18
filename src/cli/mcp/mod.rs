@@ -615,10 +615,25 @@ impl Server {
                     .get("arguments")
                     .cloned()
                     .unwrap_or_else(|| json!({}));
-                if !tool_table(&self.write_scope)
+                let advertised = tool_table(&self.write_scope)
                     .as_array()
-                    .is_some_and(|t| t.iter().any(|d| d["name"] == name.as_str()))
-                {
+                    .is_some_and(|t| t.iter().any(|d| d["name"] == name.as_str()));
+                // A real verb this server was not granted falls through
+                // to the scope gate rather than being answered here, so
+                // it comes back as a refusal naming the flag — and gets
+                // audited. `unknown tool` would be a lie in the shape
+                // that matters: it teaches the agent ebman LACKS the
+                // verb, contradicting the scope line in `instructions`.
+                let ungranted_verb = writes::write_verb_names().contains(&name);
+                if !advertised && !ungranted_verb {
+                    // A real verb that this server was not granted is
+                    // NOT an unknown tool, and saying so would teach
+                    // the agent that ebman lacks it — the exact
+                    // confusion the `instructions` scope line exists to
+                    // prevent, contradicted by the per-call error. Say
+                    // which it is, and let the refusal path audit the
+                    // attempt: a client calling an unadvertised verb is
+                    // working from a stale list or probing.
                     return Some(json!({
                         "jsonrpc": "2.0",
                         "id": id,
@@ -2856,6 +2871,45 @@ mod tests {
             instructions.contains("NOT GRANTED"),
             "and say that the rest is withheld rather than missing: {instructions}"
         );
+
+        // Calling an ungranted verb must say SO, not "unknown tool".
+        // "Unknown" is a lie in the shape that matters: it teaches the
+        // agent ebman lacks terminate, which directly contradicts the
+        // scope line in `instructions` and is the reading that sends it
+        // off to report a capability gap instead of asking.
+        let call = rpc(
+            &s,
+            json!({"jsonrpc":"2.0","id":9,"method":"tools/call",
+                   "params":{"name":"terminate","arguments":{"env":"demo-prod"}}}),
+        )
+        .await
+        .expect("tools/call");
+        assert!(
+            call.get("error").is_none(),
+            "an ungranted verb is a tool refusal, not a protocol error: {call}"
+        );
+        let text = call["result"]["content"][0]["text"]
+            .as_str()
+            .expect("text content");
+        assert!(
+            text.contains("not in this server's write scope"),
+            "the refusal must name the scope: {text}"
+        );
+        assert!(
+            !text.contains("unknown tool"),
+            "and must not claim the tool does not exist: {text}"
+        );
+        assert_eq!(call["result"]["isError"], json!(true));
+
+        // A genuinely unknown name is still a protocol error.
+        let bogus = rpc(
+            &s,
+            json!({"jsonrpc":"2.0","id":10,"method":"tools/call",
+                   "params":{"name":"no_such_tool","arguments":{}}}),
+        )
+        .await
+        .expect("tools/call");
+        assert_eq!(bogus["error"]["code"], json!(-32602), "{bogus}");
 
         // And the dispatch gate refuses it even if a client held a
         // cached list from a wider grant.
