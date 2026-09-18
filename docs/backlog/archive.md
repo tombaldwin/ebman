@@ -3808,3 +3808,36 @@ the grounds that it prejudges nothing: a named level later compiles
 down to a verb set. The operator decision behind it was that a uniform
 grant was wanted — no tiered ceremony — because Demo matters as much as
 Prod when clients are watching it.
+
+### Closed late — done in code, left open in the list (2026-09-18)
+
+Found by auditing `BACKLOG.md` against the tree rather than reading it.
+All three were implemented and shipped; none was moved here at the
+time, so the open list carried finished work. That is the failure
+`CLAUDE.md` warns about — an open list nobody can trust gets re-read
+and re-implemented.
+
+- **Dead-letter management over MCP** — `dlq_resend` / `dlq_delete` /
+  `dlq_purge` shipped, two-phase, with the design the item specified:
+  the plan carries the message **id**, not a receipt handle, because a
+  handle expires with the peek's 5s visibility timeout while a confirm
+  token lives 60 — dead for 55 of the 60 seconds the plan stays
+  confirmable. Confirm re-receives, matches the planned id, and refuses
+  if it is gone rather than acting on whatever is at the head of the
+  queue. Both bad implementations the item named were avoided.
+
+- **MCP `drift` discovery never walks up** — `tool_drift` passed
+  `Path::new(".")`, whose `ancestors()` yields only `"."` and `""`, so
+  discovery checked the server's own directory while the tool
+  description claimed it walked up. Now `std::env::current_dir()`, as
+  `load_from_cwd` and the CLI both do.
+
+- **Dead branch in `cli::drift` after the resolver landed** — the
+  `else` arm re-ran `find_tfstate` after `resolve_state_path` had
+  already done discovery over the same start, so its load-and-parse
+  path was unreachable. Collapsed, removing a second copy of the
+  load-error path that could have drifted from the first.
+
+Two items remain open that are *adjacent* to this work and were checked
+in the same pass, deliberately left open: `--demo` reaching real AWS on
+the DLQ write verbs, and the operator switch for peeked message bodies.
