@@ -18,7 +18,8 @@
 //! `CARGO_BIN_EXE_ebman` is set by cargo for integration tests, so the
 //! path is exact and no `cargo run` round-trip is involved.
 
-use std::process::{Command, Output};
+use std::io::Write;
+use std::process::{Command, Output, Stdio};
 
 fn ebman(args: &[&str]) -> Output {
     // HOME is redirected even for the cases that do not care about
@@ -549,5 +550,84 @@ fn a_tfdir_that_does_not_exist_is_an_error() {
     assert!(
         err.contains("--tfdir"),
         "and must name the flag that was wrong: {err:?}"
+    );
+}
+
+/// The MCP server reads `mcp.peek_bodies` from the operator's config
+/// and tells the agent when it is off.
+///
+/// Spawned as the real binary, because that is the only way to cover
+/// the wiring. The unit tests inject a `Config` straight into the
+/// server, so they would still pass if `config::load()` were never
+/// called, if the field were dropped between the file and
+/// `safety_cfg`, or if the key were parsed into the wrong place. Each
+/// of those is a silent privacy regression: the operator sets the key,
+/// the server ignores it, and nothing says so.
+///
+/// `HOME` is redirected — `util::test_or_home`'s `cfg(test)` redirect
+/// does not reach a spawned release binary, which is also what makes
+/// the redirect the thing under test here.
+///
+/// No AWS is needed: `tools/list` is answered from the static table.
+#[test]
+fn mcp_serve_honours_peek_bodies_from_the_operator_config() {
+    let descriptions = |config: Option<&str>, tag: &str| -> String {
+        let home =
+            std::env::temp_dir().join(format!("ebman-cli-peekbodies-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let dir = home.join(".config/ebman");
+        if let Some(body) = config {
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(dir.join("config.toml"), body);
+        } else {
+            let _ = std::fs::create_dir_all(&home);
+        }
+
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_ebman"));
+        no_aws_credentials(&mut cmd);
+        let mut child = cmd
+            .args(["mcp", "serve"])
+            .env("NO_COLOR", "1")
+            .env("HOME", &home)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap_or_else(|e| panic!("could not spawn ebman: {e}"));
+
+        let frames = concat!(
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+            "\n"
+        );
+        if let Some(mut si) = child.stdin.take() {
+            let _ = si.write_all(frames.as_bytes());
+        }
+        let out = child
+            .wait_with_output()
+            .unwrap_or_else(|e| panic!("ebman mcp serve did not exit: {e}"));
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+
+    let off = descriptions(Some("mcp.peek_bodies = false\n"), "off");
+    assert!(
+        off.contains("BODIES ARE WITHHELD"),
+        "the server must read the key and declare the policy to the agent; \
+         without that, a withheld body is indistinguishable from an empty \
+         queue. Got: {off}"
+    );
+
+    // The control. Without it this passes on a server that always
+    // declares the policy, which would be its own defect — the note is
+    // a deviation notice, not boilerplate.
+    let on = descriptions(None, "on");
+    assert!(
+        !on.contains("BODIES ARE WITHHELD"),
+        "a default server must not claim to withhold anything: {on}"
+    );
+    assert!(
+        on.contains("worker_queues"),
+        "sanity: the control run must have produced a real tool list: {on}"
     );
 }
