@@ -4194,3 +4194,243 @@ fn newest_date_picks_the_latest_not_the_earliest() {
     // survivor in every sweep. Noted so the next triage skips it rather
     // than trying to write a test that cannot exist.
 }
+
+/// The newest-first point query, through the real SDK path.
+///
+/// `fetch_latest_log_events` had no test: it needs CloudWatch, so only
+/// its rolling-tail helper was covered. The paging, the `complete`
+/// flag and the filter pattern were all unpinned — and this is the
+/// function whose entire reason to exist is not returning the oldest
+/// lines in the window.
+#[tokio::test]
+async fn latest_log_events_returns_the_newest_across_pages() {
+    use aws_sdk_cloudwatchlogs::operation::filter_log_events::FilterLogEventsOutput;
+    use aws_sdk_cloudwatchlogs::types::FilteredLogEvent;
+
+    let ev = |ts: i64, msg: &'static str| {
+        FilteredLogEvent::builder()
+            .timestamp(ts)
+            .event_id(format!("e{ts}"))
+            .log_stream_name("i-abc")
+            .message(msg)
+            .build()
+    };
+
+    // Two pages, oldest-first as CloudWatch actually returns them.
+    let page1 = aws_smithy_mocks::mock!(CwLogsClient::filter_log_events)
+        .match_requests(|req| req.next_token().is_none())
+        .then_output(move || {
+            FilterLogEventsOutput::builder()
+                .events(ev(1_000, "oldest"))
+                .events(ev(2_000, "older"))
+                .next_token("PAGE_2")
+                .build()
+        });
+    let page2 = aws_smithy_mocks::mock!(CwLogsClient::filter_log_events)
+        .match_requests(|req| req.next_token() == Some("PAGE_2"))
+        .then_output(move || {
+            FilterLogEventsOutput::builder()
+                .events(ev(3_000, "newer"))
+                .events(ev(4_000, "newest"))
+                .build()
+        });
+    let cw_logs = aws_smithy_mocks::mock_client!(aws_sdk_cloudwatchlogs, [&page1, &page2]);
+    let client = client_with_cw_logs(cw_logs);
+
+    let (events, complete) = client
+        .fetch_latest_log_events("/aws/eb/env", 0, 2, None)
+        .await
+        .expect("ok");
+
+    assert_eq!(
+        events
+            .iter()
+            .map(|e| e.message.as_str())
+            .collect::<Vec<_>>(),
+        vec!["newer", "newest"],
+        "asking for 2 must give the NEWEST 2 — CloudWatch returns \
+         oldest-first, so the naive implementation gives \"oldest\" and \
+         \"older\" and reads as a task that stopped hours ago"
+    );
+    assert!(
+        complete,
+        "the last page carried no token, so the window was fully read"
+    );
+}
+
+/// When the page cap is hit, the answer must say so.
+///
+/// This is the load-bearing half: a truncated window leaves us holding
+/// the OLDEST part of it, which is the opposite of what was asked for.
+/// Silently returning those is the failure the `complete` flag exists
+/// to prevent.
+#[tokio::test]
+async fn a_truncated_window_reports_incomplete() {
+    use aws_sdk_cloudwatchlogs::operation::filter_log_events::FilterLogEventsOutput;
+    use aws_sdk_cloudwatchlogs::types::FilteredLogEvent;
+
+    // Every page hands back another token: the cap is reached and never
+    // exhausted.
+    let endless = aws_smithy_mocks::mock!(CwLogsClient::filter_log_events).then_output(|| {
+        FilterLogEventsOutput::builder()
+            .events(
+                FilteredLogEvent::builder()
+                    .timestamp(1_000)
+                    .event_id("e1")
+                    .log_stream_name("i-abc")
+                    .message("line")
+                    .build(),
+            )
+            .next_token("MORE")
+            .build()
+    });
+    // `MatchAny` so the one rule serves every page: the point of this
+    // fixture is a window that NEVER exhausts, and a sequential rule is
+    // consumed after its first use.
+    let cw_logs = aws_smithy_mocks::mock_client!(
+        aws_sdk_cloudwatchlogs,
+        aws_smithy_mocks::RuleMode::MatchAny,
+        [&endless]
+    );
+    let client = client_with_cw_logs(cw_logs);
+
+    let (events, complete) = client
+        .fetch_latest_log_events("/aws/eb/env", 0, 10, None)
+        .await
+        .expect("ok");
+    assert!(
+        !complete,
+        "the page cap was hit with a token outstanding — the caller must \
+         be told to narrow the window rather than shown the oldest lines \
+         as though they were the newest"
+    );
+    assert!(!events.is_empty(), "and what was read is still returned");
+}
+
+/// A filter pattern must reach the request.
+///
+/// Dropping it silently returns every line in the window, which looks
+/// like a working query with a lot of noise rather than a broken one.
+#[tokio::test]
+async fn the_log_filter_pattern_reaches_the_request() {
+    use aws_sdk_cloudwatchlogs::operation::filter_log_events::FilterLogEventsOutput;
+
+    let filtered = aws_smithy_mocks::mock!(CwLogsClient::filter_log_events)
+        .match_requests(|req| req.filter_pattern() == Some("ERROR"))
+        .then_output(|| FilterLogEventsOutput::builder().build());
+    let cw_logs = aws_smithy_mocks::mock_client!(aws_sdk_cloudwatchlogs, [&filtered]);
+    let client = client_with_cw_logs(cw_logs);
+
+    // The mock only matches when the pattern is present, so this
+    // resolving at all is the assertion.
+    let (events, _) = client
+        .fetch_latest_log_events("/aws/eb/env", 0, 10, Some("ERROR"))
+        .await
+        .expect("the request must carry filter_pattern=ERROR");
+    assert!(events.is_empty());
+}
+
+/// The task attributes, end to end through the SDK.
+///
+/// `sqsd_task_from` was tested against a hand-built map and the request
+/// line was pinned by a source guard — but nothing connected the two.
+/// This drives `peek_messages` against a mocked SQS that only answers
+/// when `MessageAttributeNames` is present, so the request AND the
+/// extraction are covered by the same test.
+#[tokio::test]
+async fn peek_messages_asks_for_and_extracts_the_sqsd_task() {
+    use aws_sdk_sqs::operation::receive_message::ReceiveMessageOutput;
+    use aws_sdk_sqs::types::{Message, MessageAttributeValue};
+
+    let attr = |v: &str| {
+        MessageAttributeValue::builder()
+            .data_type("String")
+            .string_value(v)
+            .build()
+            .expect("valid attribute")
+    };
+
+    let rule = mock!(SqsClient::receive_message)
+        // The assertion that matters: the request must ASK for custom
+        // attributes. Without this the mock never matches and the call
+        // fails — which is exactly what happens against real SQS, only
+        // silently, as a message with no task.
+        .match_requests(|req| req.message_attribute_names().iter().any(|n| n == "All"))
+        .then_output(move || {
+            ReceiveMessageOutput::builder()
+                .messages(
+                    Message::builder()
+                        .message_id("m-1")
+                        .receipt_handle("rh-1")
+                        .body("elasticbeanstalk scheduled job")
+                        .message_attributes(
+                            "beanstalk.sqsd.task_name",
+                            attr("Remove unattended jobs"),
+                        )
+                        .message_attributes(
+                            "beanstalk.sqsd.path",
+                            attr("/STCleanupUnattendedJobs.do"),
+                        )
+                        .message_attributes(
+                            "beanstalk.sqsd.scheduled_time",
+                            attr("2026-09-17 06:04:00 UTC"),
+                        )
+                        .build(),
+                )
+                .build()
+        });
+    let sqs =
+        aws_smithy_mocks::mock_client!(aws_sdk_sqs, aws_smithy_mocks::RuleMode::MatchAny, [&rule]);
+    let client = client_with_sqs(sqs);
+
+    let msgs = client
+        .peek_messages("https://sqs/q-dlq", 1)
+        .await
+        .expect("the request must carry MessageAttributeNames");
+    assert_eq!(msgs.len(), 1);
+    let task = msgs[0]
+        .task
+        .as_ref()
+        .expect("an EB worker task must be extracted from the attributes");
+    assert_eq!(task.name.as_deref(), Some("Remove unattended jobs"));
+    assert_eq!(task.path.as_deref(), Some("/STCleanupUnattendedJobs.do"));
+    assert_eq!(
+        task.scheduled_at.map(|d| d.to_rfc3339()),
+        Some("2026-09-17T06:04:00+00:00".to_string()),
+        "and EB's own time format must parse on the way through"
+    );
+}
+
+/// An ordinary queue message is not a task.
+///
+/// The peek must not manufacture an empty `SqsdTask` for a message that
+/// carries none of the attributes — it would render as a blank "task:"
+/// line in the DLQ viewer and in `why`.
+#[tokio::test]
+async fn peek_messages_leaves_a_plain_message_without_a_task() {
+    use aws_sdk_sqs::operation::receive_message::ReceiveMessageOutput;
+    use aws_sdk_sqs::types::Message;
+
+    let rule = mock!(SqsClient::receive_message).then_output(|| {
+        ReceiveMessageOutput::builder()
+            .messages(
+                Message::builder()
+                    .message_id("m-2")
+                    .receipt_handle("rh-2")
+                    .body("ORDER-4471-RETRY")
+                    .build(),
+            )
+            .build()
+    });
+    let sqs =
+        aws_smithy_mocks::mock_client!(aws_sdk_sqs, aws_smithy_mocks::RuleMode::MatchAny, [&rule]);
+    let client = client_with_sqs(sqs);
+
+    let msgs = client.peek_messages("https://sqs/q", 1).await.expect("ok");
+    assert_eq!(msgs.len(), 1);
+    assert!(
+        msgs[0].task.is_none(),
+        "a message with no sqsd attributes must have no task"
+    );
+    assert_eq!(msgs[0].body, "ORDER-4471-RETRY");
+}
