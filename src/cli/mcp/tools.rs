@@ -269,6 +269,35 @@ pub(super) fn arg_u64(args: &Value, key: &str) -> Option<u64> {
     args.get(key).and_then(Value::as_u64)
 }
 
+/// Turn a dead-letter peek result into `(messages, peeked)`, recording
+/// a failure rather than swallowing it.
+///
+/// The first version was `peek_messages(...).unwrap_or_default()` with
+/// `peeked = dlq_url.is_some()`, which reported `peeked: true,
+/// messages: []` when the peek FAILED — "we looked, there is nothing
+/// there" for a queue we were denied. Reading messages needs
+/// `sqs:ReceiveMessage`, a different permission from the attributes
+/// call that produced the depth, so this is an ordinary IAM shape and
+/// not a corner case.
+///
+/// It is also the exact distinction `peeked` and `errors` exist to
+/// preserve, destroyed by an `unwrap_or_default` at the one call site —
+/// which is why CLAUDE.md says to grep for those after widening a type.
+pub(super) fn dlq_peek_outcome(
+    peek: Option<std::result::Result<Vec<crate::aws::QueueMessage>, String>>,
+    errors: &mut Vec<(String, String)>,
+) -> (Vec<crate::aws::QueueMessage>, bool) {
+    match peek {
+        // No dead-letter queue: nothing to look at, and we did not look.
+        None => (Vec::new(), false),
+        Some(Ok(msgs)) => (msgs, true),
+        Some(Err(e)) => {
+            errors.push(("dlq_peek".to_string(), e));
+            (Vec::new(), false)
+        }
+    }
+}
+
 /// A `why` section's rendered JSON, or `null` with the reason recorded.
 ///
 /// Extracted from `tool_why`'s closure so it is reachable: the closure
@@ -994,11 +1023,16 @@ impl Server {
         );
         let queues = match client.describe_worker_queues(&app, &env_name).await {
             Ok(q) => {
-                let msgs = match q.dlq_url.as_deref() {
-                    Some(url) => client.peek_messages(url, 5).await.unwrap_or_default(),
-                    None => Vec::new(),
+                let peek = match q.dlq_url.as_deref() {
+                    Some(url) => Some(
+                        client
+                            .peek_messages(url, 5)
+                            .await
+                            .map_err(|e| e.to_string()),
+                    ),
+                    None => None,
                 };
-                let peeked = q.dlq_url.is_some();
+                let (msgs, peeked) = dlq_peek_outcome(peek, &mut errors);
                 render_worker_queues_json(&q, &msgs, peeked)
             }
             Err(e) => {
