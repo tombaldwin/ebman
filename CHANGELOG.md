@@ -6,6 +6,95 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **`worker_queues` MCP tool** — main and dead-letter queue depth for an
+  environment, and with `peek` the dead-lettered messages including
+  which scheduled task they came from (`beanstalk.sqsd.task_name` /
+  `path` / `scheduled_time`). This is the answer to EB's "1 message in
+  Dead Letter Queue" health text, which names no task. `dlq_origin`
+  distinguishes a queue EB *reported* from one ebman derived by the
+  `<main>-dlq` convention: a derived URL returning nothing is the
+  ordinary case for an env with no DLQ, while a reported one that does
+  is a real anomaly.
+
+  `peek` defaults **off**, because a peek increments each returned
+  message's `receive_count` — that field counts every receive, ebman's
+  own included, and is **not** a retry count.
+
+- **`why` MCP tool** — the TUI's `:why` overlay: events, alarms,
+  instances, dead-letter queue with its messages, and recent
+  application versions for one environment, in a single call.
+  Deliberately not a narrative. A section that failed to fetch comes
+  back `null` with its reason in `errors`, never an empty array —
+  "could not look" and "nothing there" are opposite conclusions during
+  triage.
+
+- **`recent_logs` MCP tool** — the **newest** log lines for an
+  environment, with a `complete` flag. `FilterLogEvents` returns matches
+  oldest-first, so a naive "last 50" hands back the *first* 50 in the
+  window and answers "is this still running?" with evidence from hours
+  ago. `complete: false` means the window was truncated and what you
+  hold is its oldest part — narrow `since_minutes` rather than trusting
+  it. **Not redacted**: log lines are free text and ebman's redaction is
+  namespace-and-key based, so anything an application logged reaches the
+  client.
+
+- **`terraform.state_path` config key** — where `drift` reads Terraform
+  state when no `terraform.tfstate` is discoverable from the current
+  directory. This is what makes drift usable on a fleet whose state
+  lives in a remote backend (HCP, S3, Consul), which previously had no
+  drift at all. ebman does not talk to those backends and holds no token
+  for them: `terraform state pull > state.json` and point at the file.
+  Precedence is `--tfstate PATH` / the MCP `tfstate_path` argument, then
+  this key, then discovery.
+
+- **MCP `initialize` carries an `instructions` block** naming the build
+  version and the capabilities ebman has that this surface does not
+  expose, with where they live. An MCP client can only see the tool
+  list, so a TUI-only capability was indistinguishable from one ebman
+  lacks.
+
+- **Dead-letter messages carry their worker task everywhere.** The DLQ
+  viewer and the `:why` overlay now show the task name, path and
+  scheduled time instead of the message body — for an EB cron task the
+  body is the fixed literal `elasticbeanstalk scheduled job` and carries
+  nothing.
+
+### Changed
+
+- **`drift` output carries the state it compared** — a `state` block
+  with `serial`, `lineage` and the state file's `pulled_at`. A pulled
+  `state.json` goes stale silently, and a drift report against a
+  six-day-old file looks exactly like one against current state. ebman
+  cannot tell whether a serial is the latest, so it names which one it
+  used. Additive: existing fields are unchanged.
+
+- **`list_environments` / `ebman envs --json` gained `tier`, `updated`
+  and `region`.** All three were already on the record and dropped in
+  serialisation, so a consumer could not tell a worker from a web
+  environment except by guessing at the name, and had no timestamp to
+  tell a sixteen-hour-old condition from a live one. `updated` is EB's
+  `DateUpdated` — the environment's last change, **not** a health-since.
+
+- **The DLQ view marks the receive count approximate** — `recv~N` and
+  "received N× (incl. reads)". SQS's `ApproximateReceiveCount`
+  increments on every receive including ebman's own peeks, so rendered
+  bare it read as a retry count and climbed while an operator watched.
+
+### Fixed
+
+- **A failed dead-letter peek reported as an empty queue.** `why` peeked
+  with `unwrap_or_default()` and reported `peeked: true, messages: []`
+  when the peek was *denied* — reading messages needs
+  `sqs:ReceiveMessage`, a different permission from the attributes call
+  that produced the depth, so this is an ordinary IAM shape. It now
+  records the failure and reports that it did not look.
+
+- **`recent_logs` could exceed the MCP tool timeout.** The log-group
+  fan-out was unbounded and sequential; it is capped at 8 groups and
+  reports `complete: false` when it truncates.
+
 ## [0.38.0] — 2026-09-16
 
 **Housekeeping.** Test fixtures, documentation examples and configuration
