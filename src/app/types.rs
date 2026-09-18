@@ -977,7 +977,15 @@ pub(crate) struct EventPanel {
 /// don't clutter the top-level state. Round-tripped by `:settings` via
 /// `current_config_snapshot`; reassigned wholesale on profile/config
 /// reload. Pure config — runtime UI state stays on `App`.
-#[derive(Debug, Clone, Default)]
+// NO `Default` derive, deliberately. `mcp_peek_bodies` is a mirror
+// whose safe value is `true`, and a derived bool default is `false` —
+// so `..Default::default()` at a future construction site would
+// silently withhold message bodies AND write `mcp.peek_bodies = false`
+// into the operator's config on the next `:settings` save, a setting
+// they never chose. Nothing called it; both sites build the struct
+// explicitly, which is what makes a missing field a compile error
+// rather than a wrong default.
+#[derive(Debug, Clone)]
 pub(crate) struct ResolvedConfig {
     /// Mirror of `Config::notify_webhook` (fan-out reads a process-wide
     /// `OnceLock` in [`crate::audit`]; held here for `:settings` save).

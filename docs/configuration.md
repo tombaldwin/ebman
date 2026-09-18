@@ -164,6 +164,11 @@ safety.accounts.prod.read_only = true
 # which mode is active, so an agent can tell a withheld body from an
 # empty one.
 #
+# Scoped to the MCP surface, as the `mcp.` prefix says. The TUI's own
+# dead-letter viewer still shows bodies: you are looking at your own
+# screen, and the exposure this guards is a payload reaching an agent
+# transcript or a ticket, not your terminal.
+#
 # Operator-set only. An agent cannot turn this on for itself.
 #
 # Not honoured by `ebman mcp serve --demo`, which reads no operator
