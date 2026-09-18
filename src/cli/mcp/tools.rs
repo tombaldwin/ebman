@@ -1229,21 +1229,25 @@ impl Server {
             .ok_or_else(|| format!("env '{env_name}' not found"))?;
 
         if matches!(self.backend, Backend::Demo) {
-            // Demo never peeks: the fixture's queues are synthetic and
-            // there is no SQS behind them. So `peeked` is FALSE even
-            // when a peek was asked for — it reports whether we looked,
-            // not what was requested.
+            // Demo looks at the FIXTURE, never at SQS. `peeked` still
+            // reports whether we looked, so it tracks the request here
+            // — the fixture is a real thing to look at, and what comes
+            // back is what is in it.
             //
-            // It passed `peek` through, for shape parity with the live
-            // path. Shape parity does not need the boolean to lie: a
-            // demo peek of `poly-batch` answered `peeked: true,
+            // Before the fixture had messages this had to be `false`:
+            // a demo peek of `poly-batch` answered `peeked: true,
             // messages: []` beside `visible: 12`, which reads as "the
-            // dead-letter queue is empty" — a false all-clear, next to
-            // the depth that contradicts it. This is the third site of
-            // the same defect; `dlq_peek_outcome` and the live path
-            // above were each fixed for it already.
+            // dead-letter queue is empty" — a false all-clear next to
+            // the depth contradicting it. The honest fix then was to
+            // stop claiming to have looked; the better one is to have
+            // something to look at.
             let queues = demo_fixture::worker_queues_for_env(&env_name);
-            return Ok(render_worker_queues_json(&queues, &[], false));
+            let msgs = if peek {
+                demo_fixture::dlq_messages_for_env(&env_name)
+            } else {
+                Vec::new()
+            };
+            return Ok(render_worker_queues_json(&queues, &msgs, peek));
         }
 
         let client = self.client(args).await?;
@@ -1648,39 +1652,78 @@ mod renderer_tests {
         assert_eq!(e["message"], "task finished");
     }
 
-    /// A demo peek must not claim to have looked.
+    /// A demo peek reports what it actually found.
     ///
-    /// Demo has no SQS behind it, so it never peeks — but it passed the
-    /// REQUEST flag through as the answer. `poly-batch` came back
-    /// `peeked: true, messages: []` beside `visible: 12`: an explicit
-    /// all-clear on a dead-letter queue the server never opened, next
-    /// to the depth that contradicts it. An agent triaging that env
-    /// reads "the DLQ is empty" and stops.
+    /// The defect this replaces: `peeked: true, messages: []` beside a
+    /// dead-letter depth of 12 — an explicit all-clear on a queue the
+    /// server never opened, next to the number contradicting it. An
+    /// agent triaging that env reads "the DLQ is empty" and stops.
     ///
-    /// The third site of one defect — `dlq_peek_outcome` and the live
-    /// path were each fixed for it — and the only one with no test,
-    /// which is why it survived both fixes.
+    /// Fixed twice. First by refusing to claim a look that never
+    /// happened (`peeked: false`), then properly, by giving demo a
+    /// fixture with messages in it — so the answer is honest AND the
+    /// triage story is walkable without an AWS account.
+    ///
+    /// The assertion is the INVARIANT, not the current value: a peek
+    /// that reports success must return something when the queue is
+    /// not empty. Flipping `peeked` to a constant passes neither half.
     #[tokio::test]
-    async fn a_demo_peek_does_not_claim_to_have_looked() {
+    async fn a_demo_peek_reports_what_it_found() {
         let s = Server::with_scope(true, false, crate::cli::mcp::WriteScope::None);
-        let body = s
-            .tool_worker_queues(&json!({"env": "poly-batch", "peek": true}))
-            .await
-            .expect("demo worker_queues");
-        let v: Value = serde_json::from_str(&body).expect("json");
+        let read = |v: &Value| -> (bool, usize, u64) {
+            (
+                v["peeked"].as_bool().expect("peeked"),
+                v["messages"].as_array().map(Vec::len).expect("messages"),
+                v["dead_letter_queue"]["stats"]["visible"]
+                    .as_u64()
+                    .unwrap_or(0),
+            )
+        };
 
-        assert_eq!(
-            v["peeked"], false,
-            "demo never opens the queue, so it must not report that it did: {v}"
-        );
-        // The fixture that makes the lie visible: a non-empty DLQ.
+        let asked: Value = serde_json::from_str(
+            &s.tool_worker_queues(&json!({"env": "poly-batch", "peek": true}))
+                .await
+                .expect("demo worker_queues"),
+        )
+        .expect("json");
+        let (peeked, msgs, visible) = read(&asked);
+        assert!(visible > 0, "this test needs a non-empty demo DLQ: {asked}");
         assert!(
-            v["dead_letter_queue"]["stats"]["visible"]
-                .as_u64()
-                .is_some_and(|n| n > 0),
-            "this test needs a non-empty demo DLQ to be meaningful: {v}"
+            peeked,
+            "a peek was asked for and the fixture was read: {asked}"
         );
-        assert_eq!(v["messages"].as_array().map(Vec::len), Some(0), "{v}");
+        assert!(
+            msgs > 0,
+            "reporting a successful peek of a queue holding {visible} while returning \
+             nothing is the false all-clear this guards: {asked}"
+        );
+        assert!(
+            msgs < visible as usize,
+            "a peek samples; returning the whole depth teaches the shape wrong: {asked}"
+        );
+
+        // Not asked for: we did not look, and say so.
+        let unasked: Value = serde_json::from_str(
+            &s.tool_worker_queues(&json!({"env": "poly-batch"}))
+                .await
+                .expect("demo worker_queues"),
+        )
+        .expect("json");
+        let (peeked, msgs, _) = read(&unasked);
+        assert!(!peeked, "no peek was asked for: {unasked}");
+        assert_eq!(msgs, 0, "{unasked}");
+
+        // The fixture carries both shapes a consumer must handle: an EB
+        // scheduled task, and a message that is not one at all.
+        let tasks: Vec<&Value> = asked["messages"].as_array().expect("arr").iter().collect();
+        assert!(
+            tasks.iter().any(|m| m["task"]["name"].is_string()),
+            "one message must be an EB worker task: {asked}"
+        );
+        assert!(
+            tasks.iter().any(|m| m["task"].is_null()),
+            "and one must not, so `task: null` is exercised: {asked}"
+        );
     }
 
     #[test]

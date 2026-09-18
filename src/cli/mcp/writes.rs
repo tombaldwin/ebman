@@ -741,11 +741,24 @@ impl Server {
                 // Resolve the queue at plan time so the plan can say
                 // WHICH queue, and so a web-tier env is refused here
                 // rather than at confirm.
-                let client = self.client(args).await?;
-                let queues = client
-                    .describe_worker_queues(&env.application, &env.name)
-                    .await
-                    .map_err(|e| tool_error(&profile, "describe_worker_queues", &e.to_string()))?;
+                // Demo resolves from the fixture and never builds a
+                // client. It used to fall straight through to the AWS
+                // calls below, against this module's own promise that
+                // demo plans synthetically: `peek_messages` is not
+                // side-effect-free — it increments `receive_count` on
+                // every message it returns — so `--demo` could alter
+                // metadata on a live queue.
+                let queues = if matches!(self.backend, Backend::Demo) {
+                    demo_fixture::worker_queues_for_env(&env.name)
+                } else {
+                    let client = self.client(args).await?;
+                    client
+                        .describe_worker_queues(&env.application, &env.name)
+                        .await
+                        .map_err(|e| {
+                            tool_error(&profile, "describe_worker_queues", &e.to_string())
+                        })?
+                };
                 let url = queues
                     .dlq_url
                     .clone()
@@ -767,12 +780,19 @@ impl Server {
                     // token lives 60.
                     let id = arg_str(args, "message_id")
                         .ok_or("'message_id' is required (from `worker_queues` with peek)")?;
-                    let found = client
-                        .peek_messages(&url, 10)
-                        .await
-                        .map_err(|e| tool_error(&profile, "peek_messages", &e.to_string()))?
-                        .into_iter()
-                        .find(|m| m.id == id);
+                    let found = if matches!(self.backend, Backend::Demo) {
+                        demo_fixture::dlq_messages_for_env(&env.name)
+                            .into_iter()
+                            .find(|m| m.id == id)
+                    } else {
+                        self.client(args)
+                            .await?
+                            .peek_messages(&url, 10)
+                            .await
+                            .map_err(|e| tool_error(&profile, "peek_messages", &e.to_string()))?
+                            .into_iter()
+                            .find(|m| m.id == id)
+                    };
                     let Some(msg) = found else {
                         return Err(format!(
                             "message '{id}' is not in the dead-letter queue right now — \
@@ -1515,5 +1535,65 @@ mod tests {
             line.contains("region=eu-west-2"),
             "against the region the call named, not home: {line}"
         );
+    }
+
+    /// The DLQ verbs plan from the fixture in demo, never from AWS.
+    ///
+    /// The module promises demo "plans and dispatches synthetically —
+    /// no AWS, no audit, no webhook", and `restart` honoured it while
+    /// these three did not: they built a real client and called
+    /// `describe_worker_queues`, then `peek_messages`. Dispatch was
+    /// already demo-guarded, so no real message could be deleted — but
+    /// `peek_messages` is not side-effect-free. Its own tool
+    /// description says it increments `receive_count` on every message
+    /// it returns, so `--demo` could alter metadata on a live queue.
+    ///
+    /// The demo `AwsClient` is a fail-loudly stub, which is what makes
+    /// this test sharp: a path that reaches for AWS does not quietly
+    /// return something plausible, it errors. So a PLAN coming back at
+    /// all is proof the fixture served it.
+    #[tokio::test]
+    async fn the_dlq_verbs_plan_from_the_fixture_in_demo() {
+        let s = Server::with_scope(true, false, crate::cli::mcp::WriteScope::All);
+        let msg = crate::demo_fixture::dlq_messages_for_env("poly-batch");
+        let id = msg.first().expect("the fixture has a message").id.clone();
+
+        for (verb, args) in [
+            (
+                WriteVerb::DlqDelete,
+                json!({"env": "poly-batch", "message_id": id}),
+            ),
+            (
+                WriteVerb::DlqResend,
+                json!({"env": "poly-batch", "message_id": id}),
+            ),
+            (WriteVerb::DlqPurge, json!({"env": "poly-batch"})),
+        ] {
+            let body = s
+                .tool_write_plan(verb, &args)
+                .await
+                .unwrap_or_else(|e| panic!("{:?} must plan from the fixture: {e}", verb));
+            let v: Value = serde_json::from_str(&body).expect("json");
+            assert_eq!(v["pending"], json!(true), "{verb:?}: {v}");
+            assert!(
+                v["plan"]["queue"]
+                    .as_str()
+                    .is_some_and(|q| q.ends_with("poly-batch-dlq")),
+                "{verb:?} must name the fixture's dead-letter queue: {v}"
+            );
+        }
+
+        // And an id the fixture does not hold is refused, rather than
+        // demo accepting anything — a plan that names a message which
+        // is not there is the silent target swap this surface exists
+        // to prevent.
+        let err = s
+            .tool_write_plan(
+                WriteVerb::DlqDelete,
+                &json!({"env": "poly-batch", "message_id": "not-a-real-id"}),
+            )
+            .await
+            .expect_err("an unknown id must be refused even in demo");
+        assert!(err.contains("not in the dead-letter queue"), "{err}");
     }
 }

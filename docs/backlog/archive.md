@@ -3841,3 +3841,35 @@ and re-implemented.
 Two items remain open that are *adjacent* to this work and were checked
 in the same pass, deliberately left open: `--demo` reaching real AWS on
 the DLQ write verbs, and the operator switch for peeked message bodies.
+
+### `--demo` made hermetic on the DLQ verbs (0.40, 2026-09-18)
+
+`restart` planned synthetically as the module promises; `dlq_resend` /
+`dlq_delete` / `dlq_purge` did not — they built a real client and
+called `describe_worker_queues`, then `peek_messages`. Dispatch was
+already demo-guarded, so no real message could ever be deleted, but
+`peek_messages` is not side-effect-free: its own tool description says
+it increments `receive_count` on every message it returns. So `--demo`
+could alter metadata on a live queue.
+
+Fixed with the shape the item recommended — a fixture, not a special
+case. `demo_fixture::dlq_messages_for_env` returns two synthetic
+dead-lettered messages for `poly-batch`: one an EB scheduled task
+(`Remove unattended jobs`), one carrying no `beanstalk.sqsd.*`
+attributes at all, so the `task: null` shape is exercised too. Fewer
+than the DLQ's depth of 12, because a real peek samples.
+
+That also retired the `peeked: false` stopgap. Demo now has something
+to look at, so the flag tracks the request honestly rather than having
+to disclaim a look that never happened.
+
+The whole triage story is now walkable with **no AWS credentials at
+all**: peek the DLQ, read which scheduled task dead-lettered, plan the
+delete, confirm it. Verified over stdio with every `AWS_*` variable
+stripped and the credentials files pointed at `/dev/null`.
+
+### `syn` 2 → 3 (2026-09-18)
+
+Closed late. Dependabot #11 merged at 14:10 the same day and CI on main
+is green; `key_arm_order.rs` reads the guard off `Pat::Guard` as syn 3
+requires. The item was still filed as four red CI jobs.
