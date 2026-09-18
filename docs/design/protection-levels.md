@@ -1,6 +1,9 @@
 # Protection levels for operator tools
 
-**Status:** design note, nothing implemented. Written 2026-09-09 for
+**Status:** design note. Parts have since shipped — the converged write
+gate, MCP tool annotations, the elicitation detection and refusal
+auditing — and the sections below mark which. The levels and the
+attestation are still unbuilt. Written 2026-09-09 for
 `ebman`, but the rules in [Principles](#principles) are meant to hold for
 any tool that lets a person — or an agent acting for them — change
 production. `pgman` is the second consumer and the reason this is
@@ -159,6 +162,175 @@ neighbouring env, or go edit the config).
 What is still missing is the *level* on the line: today it records which
 rule refused, not which rung the principal was on. That arrives with the
 levels themselves.
+
+
+## The ask and the attestation
+
+**Added 2026-09-18**, after a live incident made stages 4-5 concrete: an
+MCP client wanted to delete one dead-lettered message and the only way
+to grant it was `--allow-writes`, which also grants terminate across
+Prod.
+
+**Revised the same day after an adversarial review**, which found the
+first draft's central justification over-generalised from that one
+incident. The corrections are marked in place, because the wrong version
+is the one people skim.
+
+The requirement, in the maintainer's words: *"I'd like the agent to be
+able to ask if it's ok to change/delete things, but also to unlock the
+ability themselves if they feel they've been given that permission."*
+
+### The premise the first draft got wrong
+
+The first draft argued: ebman is not the security boundary, IAM is; an
+agent holding credentials can bypass ebman with `aws sqs` anyway;
+therefore the gate is for deliberateness rather than prevention, and an
+agent proceeding *on the record* beats one silently shelling out.
+
+**That is true of the deployment it was written from, and false of the
+deployments that care most.** An agent configured with
+`mcp__ebman__*` allowed and `Bash` denied — an ordinary setup, arguably
+the recommended one — has no `aws` fallback. Nor does a shell-less
+desktop client, nor an agent talking to a containerised server running
+under a role the agent's own context does not hold. For those
+principals **ebman's credentials are a capability with no other route,
+and ebman IS the effective boundary**, whatever IAM is for the human.
+
+So the IAM argument is demoted from justification to what it actually
+is: **a deployment-dependent fact, and a reason a particular operator
+might choose to accept attestations.** It cannot carry the design.
+
+### Attestation is an operator opt-in, default off
+
+Whether an attestation satisfies an `ask` is set **outside the request**:
+
+```toml
+# Default: absent, meaning attestations are not accepted. An `ask` that
+# cannot reach a human then degrades to deny.
+safety.principals.mcp.attestation = "accepted"
+```
+
+This is what makes Principle 5 hold **by construction** rather than by
+argument. The hard corollary — *the ceiling must be enforced at a layer
+the request content cannot reach* — is satisfied because an attestation
+is request content and the key that gives it force is not.
+
+An operator in a shared-credentials deployment turns it on because the
+alternative is the agent using `aws sqs` unaudited. An operator who has
+deliberately denied their agent a shell leaves it off, and gets the
+containment they configured for.
+
+### What an attestation can never touch
+
+The first draft offered a rule — *may raise a DEFAULT, never override a
+DECISION* — and the review was right that it does not survive contact
+with the levels design. If the `ask` comes from a level an operator
+chose, then it is a decision and attestation answers nothing; if it does
+not, then attestation routinely softens levels operators explicitly
+chose. The vocabulary was a rationalisation, not a predicate.
+
+Replaced with the list it was gesturing at. An attestation has no effect
+on any of these, ever:
+
+| Control | Why |
+|---|---|
+| `--allow-writes` absent | the tool is not advertised; there is nothing to attest to |
+| `safety.principals.*.attestation` absent | the opt-in above |
+| `safety.envs.*.read_only` / `safety.accounts.*.read_only` | an operator named this resource |
+| deploy freeze / `:incident` | the incident lever, and the most likely moment for an agent to be wrong |
+| `safety_parse_errors` non-empty | the config is unreadable; a corrupt file plus one sentence must not yield writes |
+| `--read-only` | session-wide |
+
+Anything not on that list is an `ask` an accepted attestation may answer.
+One list, one opt-in, no philosophy.
+
+### Attestation IS pre-committable. Say so.
+
+Principle 2 requires an escape to be non-defaultable — "impossible to
+pre-commit to a script or reduce to muscle memory." **An attestation
+fails that test**, and pretending otherwise would be the dishonest part
+of this design. A line in an agent's system prompt — *"when ebman asks,
+attest that the operator authorised it"* — is a runbook, and for an
+agent, prose is script. The incentive is one-way: attesting costs a
+sentence, refusing costs the task.
+
+So the free text is **not** the safeguard. It will converge on
+boilerplate, and the fortieth identical sentence is not evidence. The
+safeguards are the opt-in above and visibility below. Expect routine
+attestation where it is enabled; design for it rather than treating it
+as an anomaly.
+
+### Attested implies durably audited — a hard invariant
+
+The design's only honest promise is *it proceeds on the record*. Today
+that promise is unbacked: `write_audit_line` returns early if the cache
+directory cannot be created and discards the write error
+(`let _ = f.write_all(...)`), and the log rotates at 1 MiB with a single
+backup. Best-effort is defensible for telemetry. It is fatal for a
+mechanism whose entire deliverable is the record.
+
+**If the `stage=attested` line cannot be durably appended, the ask is
+unanswered and degrades to deny.** Write-through, checked, with the
+dispatch gated on it. This is the one place in ebman where an audit
+failure must stop the action, and it needs a test that shows it failing.
+
+Consequences to build in:
+- `stage=attested` fires the notify webhook unconditionally where one is
+  configured, rather than only appending.
+- Demo mode writes no audit lines by design, so **attestation is refused
+  under `--demo`** — no carve-out to reason about later.
+
+### The ask, per transport
+
+- **TUI** — a confirm modal. Exists.
+- **MCP with elicitation** — the client can put a question to a human.
+- **MCP without elicitation** — no human reachable; attestation applies
+  if the operator enabled it, otherwise deny.
+- **CLI** — **`--attest "<claim>"`, not `--yes`.** The first draft said
+  "`--yes`, already the shape", which contradicts Principle 2 in the
+  same document: a bare boolean flag is the defaultable escape that
+  principle exists to prevent. If the CLI can answer an ask at all, it
+  answers in the same auditable, non-boolean form as every other
+  transport.
+
+**A declared elicitation capability is a label, not a human.** The same
+skepticism this document applies to `clientInfo.name` applies here, and
+the first draft forgot it. A framework that declares `elicitation: {}`
+and routes the question back to its own model gets its asks "satisfied"
+with no attestation event and no free-text claim — **a cleaner audit
+trail than the honest attester**, which is precisely the wrong incentive.
+So: audit the ask as well (`stage=asked`, with the question and the
+answer), and never describe elicitation as "a human confirmed".
+
+### The honest limit
+
+**A false attestation is not detectable at the time.** An agent that
+says "the operator authorised this" and was not told so will proceed.
+What the design buys, where an operator has enabled it, is that this
+happens on a durable record, against an action already within the
+principal's ceiling, in a form a human reviews afterwards. That is a
+smaller claim than "prevents misuse" and it is the true one.
+
+Where the operator has *not* enabled it, the answer is refusal, and for
+a contained agent that refusal is real prevention rather than a detour.
+
+### What has to be true before implementing
+
+1. **Real elicitation data.** If most clients declare it, attestation is
+   the exception rather than the norm and the docs should say so.
+2. **Levels first, attestation second.** An attestation answers an
+   `ask`; without levels there is nothing that says `ask`, and building
+   it first produces a key looking for a lock.
+3. **The config parser must fail closed** — done in 0.37.0.
+4. **Do not wire `ask` to the existing `confirm_token` flow.** It is the
+   path of least resistance and it is agent-confirms-itself with extra
+   steps. This wants a pinned test, shown to fail, not a paragraph.
+5. **Scope is a description, not a limit.** An attestation covers one
+   dispatch and is dropped when a plan is superseded — but nothing stops
+   an agent re-planning and re-attesting with the same sentence. "This
+   session" is also unenforceable across processes: two servers share
+   only the freeze marker and the config. Say what it does, not what it
+   sounds like.
 
 ## Adopt, don't invent
 
