@@ -561,3 +561,28 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
   keyed by action verb and derive the MCP annotations from that, rather
   than wiring the levels engine to `cli::mcp::annotations` and growing a
   second table that drifts. Raised by the 0.37 architecture review.
+
+- [ ] **MCP `drift` discovery never walks up.** `tool_drift` passes
+  `Path::new(".")` to `resolve_state_path`, and `Path::new(".").ancestors()`
+  yields only `"."` and `""` — so discovery checks the server's cwd and
+  nothing above it, while the tool description says it "walks up from
+  the server's working directory". Pre-existing since v0.38.0 and
+  verified unchanged; mitigated by the `tfstate_path` argument and the
+  `terraform.state_path` config rung. Fix is one line
+  (`std::env::current_dir()` first, as `load_from_cwd` and the CLI both
+  do). Deliberately not taken two days before a tag for a case nobody
+  has hit. Found by the 0.39.0 correctness review.
+
+- [ ] **Dead branch in `cli::drift` after the resolver landed.** The
+  `else` arm re-runs `find_tfstate` after `resolve_state_path` already
+  tried discovery over the same start, so its load-and-parse path is
+  unreachable; only the no-state message executes. Tidy-up, no
+  behaviour change. Found by the 0.39.0 correctness review.
+
+- [ ] **`syn` 2 → 3 breaks `key_arm_order.rs`** (dependabot #11).
+  `syn` 3.0 changed `Arm::guard`'s shape and the guard that enforces
+  this repo's Ctrl match-arm rule uses it directly — four CI jobs fail
+  with `no field 'guard' on type '&Arm'`. `syn` is a **dev-dependency**,
+  so nothing shipped is affected and it blocks no release. Needs a real
+  fix to that parser rather than a version pin, which is its own piece
+  of work.

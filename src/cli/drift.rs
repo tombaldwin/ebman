@@ -162,7 +162,15 @@ pub async fn run(args: &[String]) -> Result<()> {
         let Some(found) = terraform::find_tfstate(&abs) else {
             if !quiet {
                 if json {
-                    println!("{{\"tfstate\":null,\"envs\":[]}}");
+                    // Through the renderer, not a hand-written
+                    // literal: the literal predated the `state` block
+                    // and so omitted it, while every other drift
+                    // response carries it. A consumer parsing the
+                    // no-state case found a missing key where the rest
+                    // of the surface gives an explicit null — and this
+                    // file's own test says a missing key and a null one
+                    // read differently.
+                    println!("{}", terraform::render_drift_json(None, None, &[]));
                 } else {
                     eprintln!(
                         "ebman drift: {}",
@@ -489,6 +497,38 @@ mod tests {
         assert!(
             prod.contains("resolve_state_path("),
             "the production slice is not finding the resolution"
+        );
+    }
+
+    /// The no-tfstate JSON must have the same SHAPE as every other
+    /// drift response.
+    ///
+    /// It was a hand-written literal that predated the `state` block,
+    /// so it omitted it — a consumer parsing the degenerate case found
+    /// a missing key where the rest of the surface gives an explicit
+    /// null. `render_drift_json`'s own test insists those read
+    /// differently.
+    #[test]
+    fn the_no_tfstate_json_carries_every_key() {
+        let rendered = terraform::render_drift_json(None, None, &[]);
+        let v: serde_json::Value = serde_json::from_str(&rendered).expect("valid JSON");
+        for key in ["tfstate", "state", "envs"] {
+            assert!(
+                v.get(key).is_some(),
+                "the no-state response must carry `{key}` — a missing key \
+                 and a null one read differently: {rendered}"
+            );
+        }
+        assert!(v["tfstate"].is_null() && v["state"].is_null());
+        assert!(v["envs"].as_array().is_some_and(|e| e.is_empty()));
+
+        // And the CLI must emit exactly that, not a literal of its own.
+        let src = std::fs::read_to_string("src/cli/drift.rs").expect("read own source");
+        let prod = src.split("\n#[cfg(test)]\nmod ").next().unwrap_or_default();
+        assert!(
+            !prod.contains(r#""tfstate\":null,\"envs\":[]"#),
+            "the hand-written literal is back and will drift from the \
+             renderer again"
         );
     }
 }
