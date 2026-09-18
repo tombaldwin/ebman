@@ -93,8 +93,21 @@ pub(super) fn run(args: &[String]) -> Result<()> {
     let known: Vec<String> = super::writes::write_verb_names();
     let known_refs: Vec<&str> = known.iter().map(String::as_str).collect();
     let mut scope = WriteScope::None;
+    let mut saw_write_flag = false;
     for arg in args.iter().skip(2) {
         if let Some(rest) = arg.strip_prefix("--allow-writes") {
+            // Same reasoning as `serve`: last-wins would let a stray
+            // second flag widen a narrow grant in silence, and this
+            // command's output is pasted into a config and lived with.
+            if saw_write_flag {
+                eprintln!(
+                    "ebman mcp setup: --allow-writes given more than once — a second \
+                     one would silently widen the first. Name every verb in one flag: \
+                     --allow-writes=a,b"
+                );
+                std::process::exit(2);
+            }
+            saw_write_flag = true;
             let value = match rest {
                 "" => None,
                 v => match v.strip_prefix('=') {
