@@ -14,6 +14,45 @@ use color_eyre::eyre::Result;
 
 const SETUP_USAGE: &str = "usage: ebman mcp setup [--allow-writes[=verb,verb]]";
 
+/// Lay a verb list out as indented lines no wider than `width`.
+///
+/// The list is derived from the descriptor table, so it grows whenever
+/// the write surface does — interpolated inline it had already reached
+/// 145 columns against surrounding text that wraps at 65, which in a
+/// narrow terminal is the one paragraph that reflows into a mess. The
+/// same reason the 0.36 release existed.
+fn wrapped_verbs(verbs: &[String], width: usize) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for (i, v) in verbs.iter().enumerate() {
+        let piece = if i + 1 == verbs.len() {
+            v.clone()
+        } else {
+            format!("{v},")
+        };
+        // `+ 1` for the space that would join them. A verb longer than
+        // the whole width still gets its own line rather than being
+        // split — a broken identifier is worse than a long line.
+        if !cur.is_empty() && cur.chars().count() + 1 + piece.chars().count() > width {
+            lines.push(std::mem::take(&mut cur));
+        }
+        if cur.is_empty() {
+            cur = piece;
+        } else {
+            cur.push(' ');
+            cur.push_str(&piece);
+        }
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+    lines
+        .iter()
+        .map(|l| format!("  {l}\n"))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
 /// Pure: the setup text. The scope swaps the headline command, the
 /// `.mcp.json` args, and the note.
 pub(super) fn render(scope: &WriteScope) -> String {
@@ -49,33 +88,30 @@ pub(super) fn render(scope: &WriteScope) -> String {
             // out, and went stale the moment the three DLQ verbs
             // shipped: this text still offered five tools while the
             // server advertised eight.
-            s.push_str(&format!(
-                "Writes are ON for every verb ({}), each two-phase (a plan,\n",
-                super::writes::write_verb_names().join(" / ")
-            ));
-            s.push_str("then an explicit confirm) and behind the same pins / read-only /\n");
-            s.push_str("incident freeze as the TUI. Every dispatch is audit-logged.\n\n");
+            s.push_str("Writes are ON for every verb, each two-phase (a plan, then an\n");
+            s.push_str("explicit confirm) and behind the same pins / read-only / incident\n");
+            s.push_str("freeze as the TUI. Every dispatch is audit-logged. The verbs:\n\n");
+            s.push_str(&wrapped_verbs(&super::writes::write_verb_names(), 62));
+            s.push('\n');
             s.push_str("To grant less, name the verbs you need:\n");
             s.push_str("  ebman mcp setup --allow-writes=dlq_resend,dlq_delete\n\n");
         }
         WriteScope::Only(v) => {
-            s.push_str(&format!(
-                "Writes are ON for {} ONLY. Every other write verb is neither\n",
-                v.join(" / ")
-            ));
-            s.push_str("advertised nor dispatchable by this server. Each is two-phase (a\n");
-            s.push_str("plan, then an explicit confirm), behind the same pins / read-only /\n");
-            s.push_str("incident freeze as the TUI, and audit-logged.\n\n");
+            s.push_str("Writes are ON for these verbs ONLY. Every other write verb is\n");
+            s.push_str("neither advertised nor dispatchable by this server. Each is\n");
+            s.push_str("two-phase (a plan, then an explicit confirm), behind the same\n");
+            s.push_str("pins / read-only / incident freeze as the TUI, and audit-logged.\n\n");
+            s.push_str(&wrapped_verbs(v, 62));
+            s.push('\n');
         }
         WriteScope::None => {
             s.push_str("Reads only by default (list_environments, lint, drift, cost, …).\n");
             s.push_str("Re-run with --allow-writes for the opt-in two-phase write tools,\n");
             s.push_str("or name just the ones you want:\n");
-            s.push_str(&format!(
-                "  ebman mcp setup --allow-writes={}\n",
-                super::writes::write_verb_names().join(",")
-            ));
             s.push_str("  ebman mcp setup --allow-writes=dlq_resend,dlq_delete\n\n");
+            s.push_str("The verbs you can name:\n\n");
+            s.push_str(&wrapped_verbs(&super::writes::write_verb_names(), 62));
+            s.push('\n');
         }
     }
     s.push_str("If your shell exports AWS_REGION, pin it at registration — the\n");
@@ -308,5 +344,50 @@ mod tests {
                 "`{verb}` is advertised by the server but missing from setup: {s}"
             );
         }
+    }
+
+    /// The verb list wraps, and keeps every verb intact.
+    #[test]
+    fn wrapped_verbs_wraps_without_splitting_a_verb() {
+        let verbs: Vec<String> = ["deploy", "restart", "rebuild", "terminate", "set_option"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let out = wrapped_verbs(&verbs, 24);
+        for line in out.lines() {
+            assert!(
+                line.chars().count() <= 26,
+                "line over the budget (2 indent + 24): {line:?}"
+            );
+        }
+        // Every verb survives, exactly once, comma-separated with no
+        // trailing comma — the output is pasted into a shell.
+        let flat = out.replace('\n', " ");
+        for v in &verbs {
+            assert_eq!(flat.matches(v.as_str()).count(), 1, "{v} in {flat:?}");
+        }
+        assert!(
+            !flat.trim_end().ends_with(','),
+            "no trailing comma: {flat:?}"
+        );
+        assert!(out.ends_with('\n'), "each line is terminated: {out:?}");
+        assert!(
+            out.lines().all(|l| l.starts_with("  ")),
+            "every line is indented: {out:?}"
+        );
+        assert!(
+            out.lines().count() > 1,
+            "this list must have wrapped: {out:?}"
+        );
+
+        // A width nothing fits in still emits whole verbs, one per
+        // line: a split identifier is worse than a long line.
+        let tight = wrapped_verbs(&verbs, 1);
+        assert_eq!(tight.lines().count(), verbs.len(), "{tight:?}");
+
+        // One verb, and none.
+        assert_eq!(wrapped_verbs(&verbs[..1], 62), "  deploy\n");
+        assert_eq!(wrapped_verbs(&[], 62), "");
     }
 }

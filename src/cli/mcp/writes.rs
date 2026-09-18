@@ -143,20 +143,6 @@ impl Server {
 }
 
 impl Server {
-    /// The write gate for both MCP phases.
-    ///
-    /// Named `gate_refusal` rather than `refuse_write` because
-    /// `cli::refuse_write` is a different function with different
-    /// behaviour — it loads the config, prints, and exits the process.
-    /// Two same-named neighbours where one exits and one returns is a
-    /// misreading waiting to happen.
-    ///
-    /// Demo goes through the pure half: a demo server still reads the
-    /// REAL cross-process freeze marker, so `ebman mcp serve --demo
-    /// --allow-writes` attempted during a live `:freeze-deploys` was
-    /// appending a real line to the real audit log. This module's own
-    /// docs promise demo writes none, and a refusal being genuine does
-    /// not make the fleet genuine.
     /// Record a scope refusal, and render it.
     ///
     /// A refusal that leaves no `stage=refused` line is the pre-0.37
@@ -192,6 +178,20 @@ impl Server {
         )
     }
 
+    /// The write gate for both MCP phases.
+    ///
+    /// Named `gate_refusal` rather than `refuse_write` because
+    /// `cli::refuse_write` is a different function with different
+    /// behaviour — it loads the config, prints, and exits the process.
+    /// Two same-named neighbours where one exits and one returns is a
+    /// misreading waiting to happen.
+    ///
+    /// Demo goes through the pure half: a demo server still reads the
+    /// REAL cross-process freeze marker, so `ebman mcp serve --demo
+    /// --allow-writes` attempted during a live `:freeze-deploys` was
+    /// appending a real line to the real audit log. This module's own
+    /// docs promise demo writes none, and a refusal being genuine does
+    /// not make the fleet genuine.
     fn gate_refusal(
         &self,
         env: &str,
@@ -405,8 +405,6 @@ fn mint_token() -> String {
     digest[..16].iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Tool descriptors for the write surface — appended to tools/list
-/// ONLY under `--allow-writes` (spec: the listing is honest).
 /// The write verbs `--allow-writes` can name.
 ///
 /// Derived from the descriptor table rather than a second list, so a
@@ -429,6 +427,9 @@ pub(super) fn write_verb_names() -> Vec<String> {
 /// delete it could never confirm.
 pub(super) const CONFIRM_TOOL: &str = "confirm_action";
 
+/// Tool descriptors for the write surface — appended to tools/list
+/// ONLY under the verbs `--allow-writes` granted (spec: the listing is
+/// honest).
 pub(super) fn write_tool_descriptors() -> Vec<Value> {
     let confirm_note = "TWO-PHASE: this tool DISPATCHES NOTHING. It validates and returns {pending:true, confirm_token, plan}; you must surface the plan, then call confirm_action with the token (60s TTL, single-use) to dispatch. Dispatch-only — poll the read tools for progress.";
     vec![
@@ -568,9 +569,6 @@ pub(super) fn write_tool_descriptors() -> Vec<Value> {
 }
 
 impl Server {
-    /// Phase 1 for every write verb: shared gates (writes enabled,
-    /// not mid-dispatch, freeze, pins, env exists), verb-specific
-    /// validation, then a pending plan + token.
     /// Test seam: reach the plan gate without a tools/call frame.
     #[cfg(test)]
     pub(super) async fn tool_write_plan_for_tests(
@@ -581,6 +579,9 @@ impl Server {
         self.tool_write_plan(verb, args).await
     }
 
+    /// Phase 1 for every write verb: shared gates (verb in scope,
+    /// writes enabled, not mid-dispatch, freeze, pins, env exists),
+    /// verb-specific validation, then a pending plan + token.
     pub(super) async fn tool_write_plan(
         &self,
         verb: WriteVerb,
