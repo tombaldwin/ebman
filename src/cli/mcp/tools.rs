@@ -135,7 +135,7 @@ fn read_tool_table() -> Value {
         },
         {
             "name": "recent_logs",
-            "description": "The NEWEST log lines for an environment from CloudWatch Logs. CAVEATS: returns the newest in the window, not the oldest — `FilterLogEvents` itself returns matches oldest-first, so a naive query answers \"is this still running?\" with lines from hours ago and looks plausible doing it. If `complete` is false the window held more than could be read and what you have is the OLDEST part of it: narrow `since_minutes` rather than trusting the result. `log_group` defaults to the environment's own groups (`/aws/elasticbeanstalk/<env>/…`); if the env has none, the result says so rather than erroring. `filter` is CloudWatch Logs filter-pattern syntax, not a regex.",
+            "description": "The NEWEST log lines for an environment from CloudWatch Logs. NOT REDACTED: log lines are free text and this tool returns them verbatim, so anything an application logged — tokens, connection strings, customer data — reaches the client. ebman's redaction is namespace-and-key based (`get_option_settings`, `drift`, `audit_log`) and cannot apply here; use `filter` to narrow what you pull rather than relying on it being scrubbed. CAVEATS: returns the newest in the window, not the oldest — `FilterLogEvents` itself returns matches oldest-first, so a naive query answers \"is this still running?\" with lines from hours ago and looks plausible doing it. If `complete` is false the window held more than could be read and what you have is the OLDEST part of it: narrow `since_minutes` rather than trusting the result. `log_group` defaults to the environment's own groups (`/aws/elasticbeanstalk/<env>/…`); if the env has none, the result says so rather than erroring. `filter` is CloudWatch Logs filter-pattern syntax, not a regex.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -429,6 +429,25 @@ fn render_events_json(events: &[aws::Event]) -> String {
         })
         .collect();
     format!("[{}]", entries.join(","))
+}
+
+/// Cap how many log groups one `recent_logs` call walks, and say
+/// whether anything was dropped.
+///
+/// Bounded like the drift and lint fan-outs, for the same reason: the
+/// loop is sequential and each group costs up to 20 paged calls, so an
+/// env with many groups walks past the 30s tool timeout and the client
+/// sees a dead tool rather than a partial answer.
+///
+/// A truncated group list makes the answer incomplete, because the
+/// dropped groups might hold the newest lines — the same instruction
+/// `complete: false` already carries. An EXPLICIT `log_group` is never
+/// truncated: the caller named one, so there is nothing to drop.
+fn cap_log_groups(groups: Vec<String>, explicit: bool) -> (Vec<String>, bool) {
+    const MAX_GROUPS: usize = 8;
+    let dropped = groups.len() > MAX_GROUPS;
+    let kept: Vec<String> = groups.into_iter().take(MAX_GROUPS).collect();
+    (kept, explicit || !dropped)
 }
 
 /// Merge per-group results into one newest-last, `limit`-capped list.
@@ -1096,8 +1115,15 @@ impl Server {
 
         let since_ms = (chrono::Utc::now() - chrono::Duration::minutes(since_minutes as i64))
             .timestamp_millis();
+        // Bounded like the drift and lint fan-outs, and for the same
+        // reason: this loop is sequential and each group costs up to 20
+        // paged calls, so an env with many log groups walks straight
+        // past the 30s tool timeout and the client sees a dead tool
+        // rather than a partial answer. Truncating is reported, not
+        // hidden — `complete: false` already means "narrow the window",
+        // and a dropped group is the same instruction.
+        let (groups, mut complete) = cap_log_groups(groups, arg_str(args, "log_group").is_some());
         let mut events: Vec<(String, crate::aws::LogEvent)> = Vec::new();
-        let mut complete = true;
         for g in &groups {
             let (evs, done) = client
                 .fetch_latest_log_events(g, since_ms, limit, filter.as_deref())
@@ -1655,5 +1681,35 @@ mod renderer_tests {
             few.iter().map(|(_, e)| e.timestamp_ms).collect::<Vec<_>>(),
             vec![1, 9]
         );
+    }
+
+    /// The group cap must report truncation, not hide it.
+    ///
+    /// The dropped groups might hold the newest lines, so a silently
+    /// truncated fan-out answers "here are the newest" with the newest
+    /// of an arbitrary subset — the same wrong answer `complete` exists
+    /// to prevent, arriving by a different route.
+    #[test]
+    fn capping_the_group_list_marks_the_answer_incomplete() {
+        let many: Vec<String> = (0..12).map(|i| format!("group-{i}")).collect();
+        let (kept, complete) = cap_log_groups(many, false);
+        assert_eq!(kept.len(), 8, "the fan-out is bounded");
+        assert!(
+            !complete,
+            "four groups were dropped and they might hold the newest lines"
+        );
+
+        // Under the cap: nothing dropped, nothing to report.
+        let few: Vec<String> = (0..3).map(|i| format!("group-{i}")).collect();
+        let (kept, complete) = cap_log_groups(few, false);
+        assert_eq!(kept.len(), 3);
+        assert!(complete, "nothing was dropped");
+
+        // An explicitly-named group is never truncated — the caller
+        // chose it, so there is nothing to drop and nothing to warn
+        // about.
+        let (kept, complete) = cap_log_groups(vec!["chosen".into()], true);
+        assert_eq!(kept, vec!["chosen".to_string()]);
+        assert!(complete);
     }
 }

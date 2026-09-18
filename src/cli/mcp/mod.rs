@@ -1517,6 +1517,15 @@ mod tests {
             desc.contains("complete"),
             "and the field that tells you which you have: {desc}"
         );
+        // Redaction is namespace-and-key based and cannot reach free
+        // text, so this tool hands over whatever the application
+        // logged. "Redaction-by-default" is a property a reader
+        // attributes to the whole surface; the exception has to be
+        // stated where it is acted on.
+        assert!(
+            desc.contains("NOT REDACTED"),
+            "the one read tool that cannot be redacted must say so: {desc}"
+        );
     }
 
     /// The `why` bundle puts the facts side by side in one call.
