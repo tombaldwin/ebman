@@ -620,20 +620,18 @@ impl Server {
                     .is_some_and(|t| t.iter().any(|d| d["name"] == name.as_str()));
                 // A real verb this server was not granted falls through
                 // to the scope gate rather than being answered here, so
-                // it comes back as a refusal naming the flag — and gets
+                // it comes back as a refusal naming the flag, and gets
                 // audited. `unknown tool` would be a lie in the shape
-                // that matters: it teaches the agent ebman LACKS the
-                // verb, contradicting the scope line in `instructions`.
-                let ungranted_verb = writes::write_verb_names().contains(&name);
-                if !advertised && !ungranted_verb {
-                    // A real verb that this server was not granted is
-                    // NOT an unknown tool, and saying so would teach
-                    // the agent that ebman lacks it — the exact
-                    // confusion the `instructions` scope line exists to
-                    // prevent, contradicted by the per-call error. Say
-                    // which it is, and let the refusal path audit the
-                    // attempt: a client calling an unadvertised verb is
-                    // working from a stale list or probing.
+                // that matters: it teaches the agent that ebman LACKS
+                // the verb, contradicting the scope line in
+                // `instructions` and sending it off to report a
+                // capability gap instead of asking.
+                //
+                // Evaluated second, and only when the name is not
+                // advertised: it rebuilds the whole descriptor table,
+                // and the overwhelmingly common case is an ordinary
+                // read tool that is already advertised.
+                if !advertised && !writes::write_verb_names().contains(&name) {
                     return Some(json!({
                         "jsonrpc": "2.0",
                         "id": id,

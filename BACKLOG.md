@@ -587,6 +587,32 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
   fix to that parser rather than a version pin, which is its own piece
   of work.
 
+- [ ] **Doc comments merged onto the wrong item, tree-wide.** Inserting
+  a new function directly below an existing doc comment attaches that
+  comment to the NEW item and leaves the original undocumented. The
+  merged block then reads as one doc that contradicts itself — one
+  instance opened "Named `gate_refusal` rather than `refuse_write`
+  because…" while sitting on a function called `refuse_out_of_scope`.
+
+  Three were introduced in the 0.40 verb-scope work and fixed there.
+  A tree scan for the signature (a doc line ending a paragraph,
+  followed by a summary line, followed by a blank `///`) returns **19
+  candidates across 15 files**. Three were checked by hand: two were
+  real merges (`src/app/spawn_refresh.rs`, `src/cli/action.rs`) and one
+  was a false positive (`src/aws.rs` — a field doc with an ordinary
+  paragraph break). The rest are untriaged; bullet lists and
+  two-sentence paragraphs both trip the heuristic, so the count is
+  candidates, not defects.
+
+  Not folded into 0.40: triage needs a judgement per site about which
+  text belongs to which item, and it spans 15 modules — the
+  more-than-3-modules stop condition.
+
+  The scan is worth keeping as a guard only if the false-positive rate
+  comes down; as written it would need an allowlist, and an allowlist
+  is the wrong shape for this. Consider instead requiring that a doc
+  block contain exactly one summary-then-blank opening.
+
 - [ ] **No guard catches a refusal path that audits nothing.**
   `write_refusal_paths_are_audited` pins the two callers of
   `write_refusal_unaudited` — it detects a path that reaches for the
