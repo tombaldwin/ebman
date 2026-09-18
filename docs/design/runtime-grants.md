@@ -103,6 +103,75 @@ The second is a decision a person can actually make at 11pm. The first
 is one they will approve on reflex. This costs nothing to build: the
 plan already renders in exactly that form.
 
+#### But a plan is silent about the stakes
+
+**Reviewed 2026-09-18 and this section was wrong as first written.** A
+plan describes the operation, and the reason to refuse usually lives
+outside the operation.
+
+The example above is accurate, specific, and complete about the action
+— and if it had appeared in front of the maintainer that morning he
+would have approved it, because nothing in it says *this message is the
+only live fixture for an end-to-end test of a feature shipped an hour
+ago*. That was the actual reason to keep it. It is not a property of
+the message, the task, or the queue. It is a property of the week.
+
+So the failure mode is not an under-specified plan. It is a plan fully
+specified about mechanics and silent about stakes, which is **more**
+dangerous than a vague one: it reads as complete, and a prompt that
+looks like it contains everything relevant discourages the pause in
+which the operator remembers what it does not contain.
+
+**The plan must state what the action FORECLOSES, not only what it
+does.** For a delete: *this message will not be readable again, and it
+is the only one in the queue.* Derivable from state we already hold,
+one line, and the sentence that would have caused the pause.
+
+This is [ARCHITECTURE.md](../../ARCHITECTURE.md) rule 6 — *a result must
+carry its own negative space* — applied to a plan rather than a result.
+The same rule that makes `peeked` report whether we looked makes a plan
+report what it destroys.
+
+#### The plan must stay server-authored
+
+A permission prompt written by the party requesting permission is a
+persuasion surface regardless of intent. The worry is not a scheming
+agent; it is the ordinary gradient where an agent that writes plans, and
+notices which plans get approved, writes more of those. Nobody has to
+decide that for it to happen.
+
+**ebman already has the right property and the design must protect it
+rather than build it.** Every field in a plan — action, env,
+application, health, status, queue url, message id, task name, recent
+events — is rendered server-side from AWS or fixture state through
+`util::json_string`. There is no agent-supplied prose anywhere in a
+plan. The agent chooses *which* thing, never how it is described.
+
+Which means the reviewer's suggested addition — let the agent supply a
+short reason, marked as the requester's claim — is the one part of this
+that would **introduce** the risk rather than contain it. Recommendation:
+do not add it. The agent's argument already exists, in the conversation
+the operator is reading. Copying it inside ebman's frame gives it
+authority it has not earned, and the operator loses the ability to tell
+the tool's account of the world from the requester's case for acting on
+it. Keep those in different places, which is where they are now.
+
+#### Where it becomes noise: volume, not detail
+
+Rich plans survive being read three times and stop being read at the
+fourth. Forty dead-lettered messages from one bad deploy, each with a
+beautifully specific prompt, and by the fifth the operator is clicking
+through a form.
+
+So, explicitly: **plan-as-prompt is the shape of the FIRST ask, and
+approving it issues the window.** It is not the shape of every
+subsequent act inside that window, or the window buys nothing. The
+time-boxed grant is what stops detail from decaying into ceremony.
+
+And a repeat should announce itself: *"this is the second time you have
+been asked about this message"* is cheap, and a repeat is the signal
+that either the grant is not sticking or something is looping.
+
 ### Scope grants to env + verb + TTL
 
 Not just verb. Incidents are about one environment, and
