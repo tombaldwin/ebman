@@ -53,7 +53,8 @@ struct McpArgs {
 }
 
 const MCP_USAGE: &str =
-    "usage: ebman mcp <serve [--demo] [--no-redact] [--allow-writes] | setup [--allow-writes]>";
+    "usage: ebman mcp <serve [--demo] [--no-redact] [--allow-writes[=verb,verb]] \
+     | setup [--allow-writes[=verb,verb]]>";
 
 fn parse_mcp_args(args: &[String]) -> Result<McpArgs, String> {
     // args[0] = "mcp"; the only sub-verb is "serve".
@@ -63,12 +64,27 @@ fn parse_mcp_args(args: &[String]) -> Result<McpArgs, String> {
     let mut demo = false;
     let mut no_redact = false;
     let mut write_scope = WriteScope::None;
+    let mut saw_write_flag = false;
     let known: Vec<String> = writes::write_verb_names();
     let known_refs: Vec<&str> = known.iter().map(String::as_str).collect();
     for arg in args.iter().skip(2) {
         // `--allow-writes` alone still means every verb, so an existing
         // `.mcp.json` keeps working. `--allow-writes=a,b` narrows it.
         if let Some(rest) = arg.strip_prefix("--allow-writes") {
+            // Repeating it is an error, not last-wins. Last-wins is the
+            // ordinary convention and wrong here: `--allow-writes=dlq_delete
+            // --allow-writes` would silently widen a deliberately narrow
+            // grant to every verb, which is the fail-open this flag exists
+            // to remove. A `.mcp.json` args array is hand-edited often
+            // enough for a stray duplicate to be plausible.
+            if saw_write_flag {
+                return Err(format!(
+                    "ebman mcp: --allow-writes given more than once — a second one \
+                     would silently widen the first. Name every verb in one flag: \
+                     --allow-writes=a,b — {MCP_USAGE}"
+                ));
+            }
+            saw_write_flag = true;
             let value = match rest {
                 "" => None,
                 v => Some(v.strip_prefix('=').ok_or_else(|| {
@@ -133,7 +149,16 @@ impl WriteScope {
     }
 
     pub(crate) fn any(&self) -> bool {
-        !matches!(self, WriteScope::None)
+        match self {
+            WriteScope::None => false,
+            WriteScope::All => true,
+            // An empty `Only` grants nothing, so it must READ as
+            // nothing. The parser cannot produce one, but a scope that
+            // answered `any() == true` while `allows()` refused every
+            // verb would advertise `confirm_action` beside no verb to
+            // confirm — a server that looks write-capable and is not.
+            WriteScope::Only(v) => !v.is_empty(),
+        }
     }
 
     /// How this grant reads to the AGENT, for the `instructions` block.
@@ -2947,5 +2972,72 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A second `--allow-writes` is an error, not last-wins.
+    ///
+    /// `--allow-writes=dlq_delete --allow-writes` under last-wins
+    /// silently widens a deliberately narrow grant to every verb —
+    /// the fail-open this flag exists to remove, reachable by a stray
+    /// duplicate in a hand-edited `.mcp.json` args array.
+    #[test]
+    fn a_repeated_write_flag_cannot_silently_widen_the_grant() {
+        let args = |v: &[&str]| -> Vec<String> {
+            std::iter::once("mcp")
+                .chain(std::iter::once("serve"))
+                .chain(v.iter().copied())
+                .map(str::to_string)
+                .collect()
+        };
+
+        let err = parse_mcp_args(&args(&["--allow-writes=dlq_delete", "--allow-writes"]))
+            .expect_err("a second flag must not widen the first");
+        assert!(
+            err.contains("more than once"),
+            "the error must name the duplication: {err}"
+        );
+        assert!(
+            err.contains("--allow-writes=a,b"),
+            "and say what to do instead: {err}"
+        );
+        // The rendered message, not the literal: a wrapped string
+        // without a continuation embeds the newline and the next
+        // line's indent, and this one goes to a one-line status bar.
+        assert!(
+            !err.contains("  "),
+            "a wrapped literal left a gap in the rendered message: {err:?}"
+        );
+
+        // Narrowing order does not rescue it either.
+        assert!(parse_mcp_args(&args(&["--allow-writes", "--allow-writes=dlq_delete"])).is_err());
+
+        // One flag is still fine.
+        let ok = parse_mcp_args(&args(&["--allow-writes=dlq_delete"])).expect("one flag is valid");
+        assert_eq!(ok.write_scope, WriteScope::Only(vec!["dlq_delete".into()]));
+    }
+
+    /// A grant of nothing must read as nothing.
+    ///
+    /// The parser cannot build an empty `Only`, but a scope answering
+    /// `any() == true` while `allows()` refused every verb would
+    /// advertise `confirm_action` beside no verb to confirm — a server
+    /// that looks write-capable and is not.
+    #[test]
+    fn an_empty_grant_is_not_a_grant() {
+        let empty = WriteScope::Only(Vec::new());
+        assert!(
+            !empty.any(),
+            "an empty grant must not read as write-capable"
+        );
+        let names: Vec<String> = tool_table(&empty)
+            .as_array()
+            .expect("array")
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_string))
+            .collect();
+        assert!(
+            !names.iter().any(|n| n == "confirm_action"),
+            "nothing to confirm, so nothing should offer to confirm it: {names:?}"
+        );
     }
 }
