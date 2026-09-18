@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.39.1] — 2026-09-18
+
+**A same-day patch.** Two `drift` paths could report against the wrong
+state — one silently, on a typo — and a running MCP server had no way to
+tell a client its binary had been upgraded underneath it.
+
 ### Added
 
 - **`ebman mcp serve` notices when its own binary is replaced.** A
@@ -20,6 +26,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   OLD version, so the only truthful version an agent sees is the one on
   the response.
 
+
+### Fixed
+
+- **`ebman drift --tfdir` pointed at a directory that does not exist
+  silently used the current directory instead.** Run from anywhere
+  holding a `terraform.tfstate`, `drift --tfdir /typo` compared the live
+  fleet against whatever state that file describes — a confident drift
+  report about the wrong fleet, reached by a typo. It now exits 2 naming
+  the flag.
+
+- **MCP `drift` could not discover a tfstate above the server's working
+  directory**, though its description said it walks up.
+  `Path::new(".").ancestors()` yields only `"."` and `""`, so discovery
+  checked one directory and stopped. A project-scoped `.mcp.json`
+  launching in the repo root usually got away with it; a server started
+  one directory down silently found nothing.
 
 ## [0.39.0] — 2026-09-18
 
@@ -2954,7 +2976,8 @@ Initial public release. Headline surface:
 - Published to crates.io as `ebman`.
 - Homebrew tap at `tombaldwin/homebrew-tap`.
 
-[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.39.0...HEAD
+[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.39.1...HEAD
+[0.39.1]: https://github.com/tombaldwin/ebman/compare/v0.39.0...v0.39.1
 [0.39.0]: https://github.com/tombaldwin/ebman/compare/v0.38.0...v0.39.0
 [0.38.0]: https://github.com/tombaldwin/ebman/compare/v0.37.0...v0.38.0
 [0.37.0]: https://github.com/tombaldwin/ebman/compare/v0.36.0...v0.37.0
