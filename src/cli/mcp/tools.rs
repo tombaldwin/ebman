@@ -1230,10 +1230,20 @@ impl Server {
 
         if matches!(self.backend, Backend::Demo) {
             // Demo never peeks: the fixture's queues are synthetic and
-            // there is no SQS behind them. `peeked` is reported as asked
-            // so the shape matches the live path.
+            // there is no SQS behind them. So `peeked` is FALSE even
+            // when a peek was asked for — it reports whether we looked,
+            // not what was requested.
+            //
+            // It passed `peek` through, for shape parity with the live
+            // path. Shape parity does not need the boolean to lie: a
+            // demo peek of `poly-batch` answered `peeked: true,
+            // messages: []` beside `visible: 12`, which reads as "the
+            // dead-letter queue is empty" — a false all-clear, next to
+            // the depth that contradicts it. This is the third site of
+            // the same defect; `dlq_peek_outcome` and the live path
+            // above were each fixed for it already.
             let queues = demo_fixture::worker_queues_for_env(&env_name);
-            return Ok(render_worker_queues_json(&queues, &[], peek));
+            return Ok(render_worker_queues_json(&queues, &[], false));
         }
 
         let client = self.client(args).await?;
@@ -1636,6 +1646,41 @@ mod renderer_tests {
         );
         assert_eq!(e["stream"], "i-0abc");
         assert_eq!(e["message"], "task finished");
+    }
+
+    /// A demo peek must not claim to have looked.
+    ///
+    /// Demo has no SQS behind it, so it never peeks — but it passed the
+    /// REQUEST flag through as the answer. `poly-batch` came back
+    /// `peeked: true, messages: []` beside `visible: 12`: an explicit
+    /// all-clear on a dead-letter queue the server never opened, next
+    /// to the depth that contradicts it. An agent triaging that env
+    /// reads "the DLQ is empty" and stops.
+    ///
+    /// The third site of one defect — `dlq_peek_outcome` and the live
+    /// path were each fixed for it — and the only one with no test,
+    /// which is why it survived both fixes.
+    #[tokio::test]
+    async fn a_demo_peek_does_not_claim_to_have_looked() {
+        let s = Server::with_scope(true, false, crate::cli::mcp::WriteScope::None);
+        let body = s
+            .tool_worker_queues(&json!({"env": "poly-batch", "peek": true}))
+            .await
+            .expect("demo worker_queues");
+        let v: Value = serde_json::from_str(&body).expect("json");
+
+        assert_eq!(
+            v["peeked"], false,
+            "demo never opens the queue, so it must not report that it did: {v}"
+        );
+        // The fixture that makes the lie visible: a non-empty DLQ.
+        assert!(
+            v["dead_letter_queue"]["stats"]["visible"]
+                .as_u64()
+                .is_some_and(|n| n > 0),
+            "this test needs a non-empty demo DLQ to be meaningful: {v}"
+        );
+        assert_eq!(v["messages"].as_array().map(Vec::len), Some(0), "{v}");
     }
 
     #[test]

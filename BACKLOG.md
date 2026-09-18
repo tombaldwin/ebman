@@ -587,6 +587,48 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
   fix to that parser rather than a version pin, which is its own piece
   of work.
 
+- [ ] **`--demo` reaches real AWS on the three DLQ write verbs.** The
+  module promises "Demo mode plans and 'dispatches' synthetically — no
+  AWS, no audit, no webhook", and `docs/headless.md` repeats it.
+  `restart` honours that. `dlq_resend` / `dlq_delete` / `dlq_purge` do
+  not: their plan branch builds a real client and calls
+  `describe_worker_queues`, and the resend/delete pair then calls
+  `peek_messages`.
+
+  Reproduce with credentials in the environment:
+
+      ebman mcp serve --demo --allow-writes
+
+  then `tools/call` `dlq_delete` with `{"env":"poly-batch",
+  "message_id":"abc-123"}`. Without credentials it fails
+  `DescribeEnvironmentResources: service error` — which is how it was
+  found; with them it succeeds against the real account.
+
+  **Dispatch is not affected** — `dispatch_write` returns synthetic
+  success for demo, so a demo confirm never deletes a real message.
+  The exposure is the plan phase only, and it is two things: real read
+  calls from the mode that promises none, and `peek_messages` is not
+  side-effect-free — the tool's own description says it increments each
+  returned message's `receive_count` by one per call. So a `--demo`
+  server can alter metadata on a live queue.
+
+  Three shapes, no obvious winner, which is why this is filed rather
+  than fixed:
+
+  1. **Synthetic plan from the fixture.** Matches `restart` and the
+     documented promise. Needs demo DLQ *messages*, which do not exist
+     — `worker_queues_for_env` has depths but no bodies. Also the best
+     outcome: it would make the whole triage story demo-able, and would
+     let the demo peek honestly report `peeked: true` instead of the
+     `false` it now correctly returns.
+  2. **Accept any `message_id` in demo** and synthesise a plan around
+     it. Cheapest. Fake in a way the other demo paths are not.
+  3. **Refuse the DLQ verbs in demo**, naming why. Honest and hermetic,
+     but breaks the "demo plans synthetically" promise in a different
+     direction.
+
+  Recommend 1. Related to the `peeked` fix that exposed this.
+
 - [ ] **Doc comments merged onto the wrong item, tree-wide.** Inserting
   a new function directly below an existing doc comment attaches that
   comment to the NEW item and leaves the original undocumented. The
