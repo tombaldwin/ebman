@@ -243,6 +243,15 @@ mod packaging {
         // quiet in the environment that matters.
         let out = match std::process::Command::new("git")
             .args(["ls-files"])
+            // `LC_ALL=C`, so the stderr match below is not
+            // locale-dependent. git translates "not a git repository" —
+            // Apple Git ships no translations, Homebrew and Linux git
+            // do — so on a localised machine the skip condition would
+            // not match and this would fail loudly instead of skipping.
+            // Loud is the safer wrong direction, but a guard that
+            // cannot run where `cargo mutants` runs is not much of a
+            // guard.
+            .env("LC_ALL", "C")
             .output()
         {
             Ok(out) => out,
