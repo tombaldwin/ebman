@@ -235,7 +235,11 @@ impl App {
             env: env_name,
             profile: self.context.profile.as_deref(),
             safety_parse_errors: &self.cfg.safety_parse_errors,
-            global_read_only: self.read_only,
+            // Standing OR session. `safety.read_only` is decided in
+            // advance and must not be liftable by the in-session
+            // toggle, or "choosing in advance never to allow writes"
+            // means nothing the moment someone presses a key.
+            global_read_only: self.read_only || self.cfg.safety_read_only,
             frozen: self.deploy_freeze.is_some(),
             safety_envs: &self.cfg.safety_envs,
             safety_accounts: &self.cfg.safety_accounts,

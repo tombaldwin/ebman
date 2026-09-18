@@ -141,6 +141,25 @@ safety.accounts.prod.read_only = true
 # backend — so it names what it compared and leaves the judgement to
 # you. Re-pull before trusting a clean report.
 
+# Refuse every write, everywhere, standing. The bluntest control there
+# is, and the one to reach for if you want ebman to be a viewer.
+#
+# It outranks everything: the TUI's own read-only toggle cannot lift it,
+# `ebman action` honours it, and the MCP surface refuses before a plan
+# is issued. Unset it in this file to lift it — deliberately, and not
+# mid-incident by pressing a key.
+#
+# There is a config key to FORBID writes and deliberately none to allow
+# them. A standing restriction is decided calmly, once, and only
+# narrows; a standing permission has to predict what you will need and
+# gets paid for at the worst possible moment. So config may only ever
+# say no.
+#
+# A value that is not a boolean is a parse error, and a `safety.*` parse
+# error refuses every write until it is fixed — `safety.read_only =
+# ture` fails closed rather than silently meaning false.
+# safety.read_only = true
+
 # Return dead-lettered message BODIES on an MCP peek. Default true —
 # current behaviour, so leaving this alone changes nothing.
 #
