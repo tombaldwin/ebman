@@ -36,7 +36,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
   Bare `--allow-writes` still means every verb, so existing `.mcp.json`
   registrations are unaffected. `ebman mcp setup --allow-writes=a,b`
-  prints the matching config.
+  prints the matching config. Repeating the flag is an error rather
+  than last-wins, since a stray second one would silently widen a
+  deliberately narrow grant.
+
+  Refusals are audited as `rule=not_granted` with the flag that would
+  grant them, at both the plan and confirm phases — an ungranted verb
+  is not advertised, so a client reaching one is working from a stale
+  tool list or probing, and that is invisible any other way.
 
 - **Dead-letter management over MCP** — `dlq_resend`, `dlq_delete` and
   `dlq_purge`, two-phase like every other write and available only under
