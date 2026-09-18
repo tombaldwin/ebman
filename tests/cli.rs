@@ -512,13 +512,42 @@ fn drift_json_with_no_state_is_well_formed() {
         panic!("could not create the empty dir: {e}");
     }
     let out = ebman(&["drift", "--tfdir", &empty.display().to_string(), "--json"]);
+    assert_eq!(out.status.code(), Some(0), "no state is not an error");
     let body = stdout(&out);
-    let trimmed = body.trim();
-    for key in ["\"tfstate\"", "\"state\"", "\"envs\""] {
+    // PARSED, not substring-matched: the test claimed "well-formed" and
+    // only checked that three strings appeared, which a malformed
+    // document containing them would satisfy.
+    let v: serde_json::Value = serde_json::from_str(body.trim())
+        .unwrap_or_else(|e| panic!("the no-state JSON must parse: {e}\n{body}"));
+    for key in ["tfstate", "state", "envs"] {
         assert!(
-            trimmed.contains(key),
-            "the no-state JSON must carry {key} — a missing key and a \
-             null one read differently to a consumer: {trimmed:?}"
+            v.get(key).is_some(),
+            "a missing key and a null one read differently to a consumer: {body}"
         );
     }
+}
+
+/// A `--tfdir` that does not resolve must be an error, not a silent
+/// fall-back to the current directory.
+///
+/// It became `"."`, so `drift --tfdir /no/such/dir` run from a
+/// directory containing a `terraform.tfstate` reported confidently on
+/// whatever fleet THAT state describes — a wrong-fleet report reached
+/// by a typo, which is the failure `lineage` exposes after the fact and
+/// this prevents up front.
+#[test]
+fn a_tfdir_that_does_not_exist_is_an_error() {
+    let out = ebman(&["drift", "--tfdir", "/no/such/directory-for-this-test"]);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a bad --tfdir must exit 2, not proceed against another fleet's \
+         state: stderr={:?}",
+        stderr(&out)
+    );
+    let err = stderr(&out);
+    assert!(
+        err.contains("--tfdir"),
+        "and must name the flag that was wrong: {err:?}"
+    );
 }
