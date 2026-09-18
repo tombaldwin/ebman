@@ -3745,3 +3745,30 @@ own reasoning, not by effort.
   case falls through rather than resolving to `""`. Two mutations
   CAUGHT.
 
+- [x] **MCP tool orchestration is testable** — closed 2026-09-18, same
+  day it was filed. `Server` takes an injected `AwsClient` under
+  `cfg(test)` (`with_injected_client`), the way `App::for_tests` does,
+  and `client()` short-circuits to it. `AwsClient` is not `Clone`, so
+  `client()` returns `Arc<AwsClient>` — transparent to all fourteen
+  call sites, which each bind it and call methods.
+
+  That closes the last layer: renderers, extracted decisions, AWS-layer
+  calls and now the tool bodies themselves. Three mutations CAUGHT that
+  nothing below this layer could reach — a peek reading the MAIN queue
+  instead of the dead-letter one, a peek happening without the flag,
+  and an unknown env silently resolving to the first in the fleet.
+
+  The tests immediately earned it: `worker_queues_does_not_peek_unless_asked`
+  failed on an UNMATCHED call, revealing that `describe_worker_queues`
+  falls back to `DescribeConfigurationSettings` when EB names no
+  dead-letter queue. Correct behaviour, undocumented in any test until
+  the fixture had to model it.
+
+  Also fixed a guard this work broke: `both_drift_paths_consult_the_configured_state_path`
+  split its source scan at the first `#[cfg(test)]`, and the new
+  injected-client seam is a `#[cfg(test)]` statement inside production
+  code — so the slice truncated above the code it checks and the guard
+  failed reporting a missing wiring that was there. It now splits at a
+  test MODULE. The same cut would have silently hidden a real violation
+  below it.
+

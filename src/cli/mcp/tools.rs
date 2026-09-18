@@ -559,11 +559,28 @@ impl Server {
     /// Build the per-call AWS client. Errors go through the shared
     /// credential rewrite so an expired SSO token surfaces as the
     /// `aws sso login` hint the agent can relay, not SDK noise.
-    pub(super) async fn client(&self, args: &Value) -> Result<aws::AwsClient, String> {
+    pub(super) async fn client(
+        &self,
+        args: &Value,
+    ) -> Result<std::sync::Arc<aws::AwsClient>, String> {
+        // An injected client short-circuits construction, so tool
+        // ORCHESTRATION can be driven without ambient credentials —
+        // which calls did this body make, with which arguments. The
+        // layers under it are covered; this is the one that was not,
+        // and it is where the dead-letter peek bug lived.
+        // `Arc`, not the client itself: `AwsClient` is not `Clone`
+        // (it holds SDK clients that are cheap to share but not to
+        // duplicate), and every call site binds it and calls methods,
+        // so an `Arc` is transparent to all fourteen of them.
+        #[cfg(test)]
+        if let Some(c) = &self.injected_client {
+            return Ok(std::sync::Arc::clone(c));
+        }
         let profile = arg_str(args, "profile");
         let region = arg_str(args, "region");
         aws::AwsClient::with(profile.clone(), region)
             .await
+            .map(std::sync::Arc::new)
             .map_err(|e| tool_error(&profile, "AwsClient", &e.to_string()))
     }
 
