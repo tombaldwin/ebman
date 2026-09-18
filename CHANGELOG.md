@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **`list_environments` reported `region: null` on every row.** The
+  field shipped in 0.39.0 and was never populated: `DescribeEnvironments`
+  does not return a region, and the helper that stamps one was called
+  only by the multi-region fan-out — so every other caller, including
+  the MCP tool that advertises the field, got null. Found against a live
+  fleet by a client that passed `region` explicitly and got null back.
+
+- **A `lint` result now names the rules it could not check.** The tool
+  description said EBL011 never fires there, and that was not enough:
+  linting an environment that was Yellow *because of* a dead-lettered
+  message returned two unrelated findings and nothing about the queue,
+  so the reader sees findings and concludes lint has looked. The result
+  now carries `rules_not_checked`, pointing at `worker_queues` — the
+  same treatment `skipped_envs` already gets, because a caveat you have
+  to go back and look up is a caveat that gets skipped.
+
+
 ## [0.39.1] — 2026-09-18
 
 **A same-day patch.** Two `drift` paths could report against the wrong

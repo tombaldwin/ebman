@@ -87,6 +87,31 @@ pub(super) fn append_skipped_envs(body: String, skipped: &[String]) -> String {
     append_string_array(body, "skipped_envs", skipped)
 }
 
+/// Rules that CANNOT fire over MCP, attached to every lint result.
+///
+/// The description already says so, and that was not enough. Linting an
+/// environment that is Yellow BECAUSE of a dead-lettered message
+/// returns unrelated warnings and nothing about the queue — so a reader
+/// who did not re-read the description sees two findings and concludes
+/// lint is happy with it. Observed against a live fleet, on exactly
+/// that environment.
+///
+/// In the RESULT, next to the findings, the way `skipped_envs` already
+/// reports degraded coverage: a caveat an agent has to go back and look
+/// up is a caveat that gets skipped.
+pub(super) fn append_cannot_fire(body: String) -> String {
+    append_string_array(
+        body,
+        "rules_not_checked",
+        &[
+            "EBL011 (worker dead-letter queue) — call `worker_queues`, \
+             with `peek` for which task dead-lettered"
+                .to_string(),
+            "EBL016 (live health probe) — not run by this tool".to_string(),
+        ],
+    )
+}
+
 /// The static tool table. Descriptions carry the coverage caveats —
 /// an agent treats "no findings" as authoritative, so a wiring gap
 /// (EBL011/016/020 can't fire here) must be stated IN the tool.
@@ -789,7 +814,10 @@ impl Server {
             all_issues.retain(|i| rule_filter.contains(&i.rule_id));
         }
         Ok(append_string_array(
-            append_skipped_envs(lint::render_issues_json(&all_issues), &skipped),
+            append_cannot_fire(append_skipped_envs(
+                lint::render_issues_json(&all_issues),
+                &skipped,
+            )),
             "warnings",
             &platform_warnings,
         ))

@@ -4434,3 +4434,40 @@ async fn peek_messages_leaves_a_plain_message_without_a_task() {
     );
     assert_eq!(msgs[0].body, "ORDER-4471-RETRY");
 }
+
+/// `list_environments` must label rows with the region it queried.
+///
+/// `map_env` sets `region: None` — DescribeEnvironments does not return
+/// one — and `stamp_region` was called ONLY by the multi-region fan-out
+/// helpers. So every other caller got `region: null`, including the MCP
+/// tool that advertises the field in its own description. Found against
+/// a live fleet by a client that passed `region` explicitly and got
+/// null back on every row.
+#[tokio::test]
+async fn list_environments_labels_rows_with_the_resolved_region() {
+    use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsOutput;
+    use aws_sdk_elasticbeanstalk::types::EnvironmentDescription;
+
+    let rule = mock!(Client::describe_environments).then_output(|| {
+        DescribeEnvironmentsOutput::builder()
+            .environments(
+                EnvironmentDescription::builder()
+                    .environment_name("poly-prod-wk")
+                    .application_name("poly")
+                    .build(),
+            )
+            .build()
+    });
+    let eb = mock_client!(aws_sdk_elasticbeanstalk, [&rule]);
+    // `client_with_eb` resolves to us-east-1.
+    let client = client_with_eb(eb);
+    let envs = client.list_environments().await.expect("ok");
+
+    assert_eq!(envs.len(), 1);
+    assert_eq!(
+        envs[0].region.as_deref(),
+        Some("us-east-1"),
+        "a row with no region cannot be acted on region-scoped, and the \
+         MCP tool advertises the field"
+    );
+}

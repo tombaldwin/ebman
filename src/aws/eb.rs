@@ -2145,7 +2145,21 @@ impl AwsClient {
         // it, the MCP tools refuse a write on it. A short list there is
         // a wrong answer, not a shorter one.
         .complete("DescribeEnvironments")?;
-        Ok(raw.into_iter().map(map_env).collect())
+        let mut envs: Vec<Environment> = raw.into_iter().map(map_env).collect();
+        // Stamp here, not only in the multi-region fan-out helpers.
+        // `map_env` sets `region: None` because DescribeEnvironments
+        // does not return one, and `stamp_region` was called only by
+        // `list_environments_in_region` / `_for_account` — so every
+        // caller of this method got `region: null`, including the MCP
+        // `list_environments` tool that advertises the field. Found
+        // against a live fleet: the field was added and never
+        // populated.
+        //
+        // `self.context.region` is what this client RESOLVED to, which
+        // is the same value the fan-out stamps and the one a
+        // region-scoped follow-up action must use.
+        stamp_region(&mut envs, &self.context.region);
+        Ok(envs)
     }
 
     /// Flat list of every solution-stack name available in this region
