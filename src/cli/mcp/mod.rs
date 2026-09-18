@@ -2450,4 +2450,58 @@ mod tests {
         // The findings themselves must survive alongside it.
         assert!(v["issues"].is_array(), "{body}");
     }
+
+    /// Rule 6: a result must carry its own negative space.
+    ///
+    /// Not a sweep — what "negative space" looks like differs per tool,
+    /// so there is nothing generic to walk. This pins the five places
+    /// the remedy already exists, each added after someone was misled
+    /// rather than before, so removing one is a deliberate act rather
+    /// than an oversight.
+    ///
+    /// The list is the point. Five separate features saying the same
+    /// thing — *here is the edge of what I looked at* — and every one
+    /// arrived as a bug report. ARCHITECTURE.md states the rule so the
+    /// sixth is designed in.
+    #[test]
+    fn every_result_that_can_be_partial_says_so() {
+        // PRODUCTION halves only. Reading whole files let this test's
+        // own field names satisfy it — the guard was its own evidence,
+        // and removing a field came back green. Caught by mutation, and
+        // it is the second time in this file that a source scan has
+        // needed protecting from itself.
+        let prod = |path: &str| -> String {
+            std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("{path}: {e}"))
+                .split("\n#[cfg(test)]\nmod ")
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        };
+        let src = format!(
+            "{}{}",
+            prod("src/cli/mcp/tools.rs"),
+            prod("src/cli/mcp/mod.rs")
+        );
+        // Canary: the slices must be finding real code.
+        assert!(
+            src.contains("pub(super) fn append_cannot_fire"),
+            "the production slice is not finding tools.rs"
+        );
+
+        for (field, what_it_bounds) in [
+            ("rules_not_checked", "lint rules that cannot fire over MCP"),
+            ("skipped_envs", "environments whose input fetch failed"),
+            ("peeked", "whether a dead-letter queue was actually read"),
+            ("complete", "whether a log window was fully consumed"),
+            ("errors", "which sections of a `why` bundle failed"),
+        ] {
+            assert!(
+                src.contains(field),
+                "`{field}` is gone — it bounded {what_it_bounds}, and \
+                 without it that absence reads as an answer. See rule 6 \
+                 in ARCHITECTURE.md before removing it."
+            );
+        }
+    }
 }

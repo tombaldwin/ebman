@@ -94,14 +94,18 @@ The loop itself is `App::run`: it selects over terminal input, the `AppMsg`
 channel, and timers, mutates `App`, and redraws. AWS work never blocks it —
 every call is a spawned task that reports back as an `AppMsg`.
 
-## The five rules
+## The six rules
 
 The compiler won't catch you breaking these, so each has something else
 behind it. Rule 1 is enforced by the type system — the story of how that came
 about is in `src/app/view_state.rs`. Rules 2, 3, 4 and 5 each have a test that
 walks the tree (`every_spawn_declares_whether_it_is_per_env`,
-`generation_guard.rs`, `key_arm_order.rs`, `no_tui_stdout.rs`). Four of the
-five have bitten.
+`generation_guard.rs`, `key_arm_order.rs`, `no_tui_stdout.rs`). Five of the
+six have bitten — and rule 6 has bitten more often than any of them.
+
+Rule 6 is the odd one: it has no single guard, because what it forbids is
+shaped differently at every surface. It is stated here so the next
+instance is designed rather than discovered.
 
 **1. Mutating view state means rebuilding the view.**
 The table `ui` draws is a filtered, optionally grouped projection of
@@ -228,6 +232,35 @@ empty. The rule that used to live in a comment lives in the signature.
 The other field clusters on `App` — tail, palette, throttle, status —
 have no comparable invariant today. Group them when one appears, not
 for tidiness.
+
+**6. A result must carry its own negative space.**
+Report what was not done, not only what was. A result that is accurate about
+its own scope and silent about that scope's edges reads as an answer when it
+is an absence — and the reader has no way to tell, because the two look
+identical.
+
+Stated by an MCP client that had found five instances of it in a fortnight,
+and it is their wording: *a result reports what the system did, never what it
+could not do, so the negative space is invisible at exactly the moment it
+matters.* The instances, each shipped as its own bug:
+
+- a clean `lint` that never polled the worker queue — on an environment that
+  was unhealthy *because of* that queue
+- `peeked: true` on a dead-letter peek that was denied
+- a `serverInfo` version truthful about a process nobody was talking to
+- a `/mcp` Reconnect action unreachable by the agent that needed it
+- a binary three releases old, whose missing features looked like features
+  never written
+
+The remedy already exists in five places and arrived five separate times:
+`rules_not_checked` and `skipped_envs` on lint, `peeked` on a queue peek,
+`complete` on a log query, `errors` on the `:why` bundle. Each says the same
+thing — *here is the edge of what I looked at* — and each was added after
+someone was misled rather than before.
+
+So when adding a result shape, ask what it cannot see and give that a field.
+Absence is not nothing; it is a claim, and an unstated claim is the one that
+gets believed.
 
 ## Writes and safety
 
