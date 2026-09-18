@@ -115,11 +115,25 @@ pub(super) fn append_cannot_fire(body: String) -> String {
 /// The static tool table. Descriptions carry the coverage caveats —
 /// an agent treats "no findings" as authoritative, so a wiring gap
 /// (EBL011/016/020 can't fire here) must be stated IN the tool.
-pub(super) fn tool_table(allow_writes: bool) -> Value {
+pub(super) fn tool_table(scope: &super::WriteScope) -> Value {
     let mut tools = read_tool_table();
-    if allow_writes {
+    if scope.any() {
         if let Some(arr) = tools.as_array_mut() {
-            arr.extend(writes::write_tool_descriptors());
+            // Only the scoped verbs are advertised. A verb outside the
+            // scope is absent rather than present-and-refused: a client
+            // that cannot see a tool will not plan around it, and the
+            // dispatch gate still refuses it in case one cached an
+            // older list.
+            arr.extend(writes::write_tool_descriptors().into_iter().filter(|d| {
+                d.get("name").and_then(|n| n.as_str()).is_some_and(|n| {
+                    // `confirm_action` rides along with any grant —
+                    // it is the second phase of every write rather
+                    // than a verb of its own, so filtering it out
+                    // would leave a narrow grant able to plan a write
+                    // and never dispatch it.
+                    n == writes::CONFIRM_TOOL || scope.allows(n)
+                })
+            }));
         }
     }
     // Annotate here rather than at each descriptor, so the
@@ -1465,7 +1479,7 @@ mod tests {
             "the source scan found only {}",
             arms.len()
         );
-        let advertised = names_in(&tool_table(true));
+        let advertised = names_in(&tool_table(&crate::cli::mcp::WriteScope::All));
 
         let mut missing: Vec<&String> = advertised.iter().filter(|n| !arms.contains(n)).collect();
         missing.sort();
@@ -1489,7 +1503,7 @@ mod tests {
         // The membership check in `mod.rs` makes the table the authority
         // on what can be called at all, so a write tool leaking into the
         // read-only table opens a write surface — not a listing cosmetic.
-        let read_only = names_in(&tool_table(false));
+        let read_only = names_in(&tool_table(&crate::cli::mcp::WriteScope::None));
         let writes: Vec<String> = super::super::writes::write_tool_descriptors()
             .iter()
             .map(|d| d["name"].as_str().expect("name").to_string())
@@ -1501,7 +1515,7 @@ mod tests {
                 "{w} is advertised with --allow-writes off"
             );
         }
-        let enabled = names_in(&tool_table(true));
+        let enabled = names_in(&tool_table(&crate::cli::mcp::WriteScope::All));
         for w in &writes {
             assert!(enabled.contains(w), "{w} missing under --allow-writes");
         }
