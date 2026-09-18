@@ -144,51 +144,39 @@ pub async fn run(args: &[String]) -> Result<()> {
             .unwrap_or_else(|_| std::path::PathBuf::from("."))
             .as_path(),
     );
-    let (tf_state, used_path) = if let Some(path) = tfstate_path.as_ref() {
-        let Some(state) = terraform::load_from_path(path) else {
-            eprintln!(
-                "ebman drift: could not read or parse tfstate at {}",
-                path.display()
-            );
-            std::process::exit(2);
-        };
-        (state, Some(path.clone()))
-    } else {
-        let start = tfdir
-            .as_deref()
-            .unwrap_or(std::path::Path::new("."))
-            .to_path_buf();
-        let abs = start.canonicalize().unwrap_or(start);
-        let Some(found) = terraform::find_tfstate(&abs) else {
-            if !quiet {
-                if json {
-                    // Through the renderer, not a hand-written
-                    // literal: the literal predated the `state` block
-                    // and so omitted it, while every other drift
-                    // response carries it. A consumer parsing the
-                    // no-state case found a missing key where the rest
-                    // of the surface gives an explicit null — and this
-                    // file's own test says a missing key and a null one
-                    // read differently.
-                    println!("{}", terraform::render_drift_json(None, None, &[]));
-                } else {
-                    eprintln!(
-                        "ebman drift: {}",
-                        terraform::no_state_hint("--tfstate PATH")
-                    );
-                }
+    // One resolution, one load. `resolve_state_path` above already
+    // applied the full precedence INCLUDING discovery over the same
+    // start, so the old `else` branch re-ran `find_tfstate` and its
+    // load arm was unreachable — only its "nothing found" message ever
+    // executed. Collapsing removes a second copy of the load-and-parse
+    // error path that could drift from this one.
+    let Some(path) = tfstate_path else {
+        if !quiet {
+            if json {
+                // Through the renderer, not a hand-written literal:
+                // the literal predated the `state` block and so
+                // omitted it, while every other drift response carries
+                // it. A consumer parsing the no-state case found a
+                // missing key where the rest of the surface gives an
+                // explicit null.
+                println!("{}", terraform::render_drift_json(None, None, &[]));
+            } else {
+                eprintln!(
+                    "ebman drift: {}",
+                    terraform::no_state_hint("--tfstate PATH")
+                );
             }
-            return Ok(());
-        };
-        let Some(state) = terraform::load_from_path(&found) else {
-            eprintln!(
-                "ebman drift: could not parse tfstate at {}",
-                found.display()
-            );
-            std::process::exit(2);
-        };
-        (state, Some(found))
+        }
+        return Ok(());
     };
+    let Some(tf_state) = terraform::load_from_path(&path) else {
+        eprintln!(
+            "ebman drift: could not read or parse tfstate at {}",
+            path.display()
+        );
+        std::process::exit(2);
+    };
+    let used_path = Some(path);
 
     let multi_region = regions.len() > 1;
     let mut reports: Vec<(Option<String>, String, bool, Vec<terraform::DriftField>)> = Vec::new();
