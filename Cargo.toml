@@ -118,7 +118,7 @@ proc-macro2 = { version = "1", features = ["span-locations"] }
 # proc-macro2 token trees would be a sixth hand-rolled parser in a
 # codebase that has been wrong five times, which is the argument against
 # doing it that way. Already in the lock file transitively.
-syn = { version = "2", features = ["full", "visit"] }
+syn = { version = "3", features = ["full", "visit"] }
 # Property tests for the four hand-rolled parsers. `parse_audit_line` is
 # a char scanner with 13 `chars[i]` sites, hand-guarded by `while i < n`,
 # running over a file on disk that can be truncated mid-write — the one
