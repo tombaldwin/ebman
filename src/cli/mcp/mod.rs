@@ -137,6 +137,20 @@ pub(crate) struct Server {
     /// `clientInfo.name` from initialize — lands in audit extras so
     /// agent-dispatched writes are attributable.
     client_name: std::sync::Mutex<String>,
+    /// Test seam: an injected client, used in place of building one per
+    /// call.
+    ///
+    /// Everything BELOW the tool bodies is now covered — renderers,
+    /// extracted decisions, the AWS-layer calls via `aws_smithy_mocks`
+    /// — but the orchestration itself was not, because `client()`
+    /// builds a real `AwsClient` from ambient credentials. That is the
+    /// layer the `tool_why` dead-letter peek bug lived in, and it
+    /// survived a full review there.
+    ///
+    /// `App::for_tests` takes its client the same way, for the same
+    /// reason.
+    #[cfg(test)]
+    injected_client: Option<std::sync::Arc<aws::AwsClient>>,
 }
 
 impl Server {
@@ -166,7 +180,26 @@ impl Server {
             dispatching: std::sync::atomic::AtomicBool::new(false),
             client_name: std::sync::Mutex::new("unknown".to_string()),
             client_supports_elicitation: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            injected_client: None,
         }
+    }
+
+    /// Build a server whose tool bodies talk to `client` instead of
+    /// ambient AWS.
+    ///
+    /// `Backend::Aws`, deliberately: the demo backend short-circuits
+    /// most tool bodies before they reach a client, which is precisely
+    /// the orchestration this exists to exercise.
+    #[cfg(test)]
+    pub(crate) fn with_injected_client(
+        allow_writes: bool,
+        safety_cfg: crate::config::Config,
+        client: aws::AwsClient,
+    ) -> Self {
+        let mut s = Self::with_config(false, false, allow_writes, safety_cfg);
+        s.injected_client = Some(std::sync::Arc::new(client));
+        s
     }
 
     /// One JSON-RPC frame in, at most one out (`None` for
@@ -1646,5 +1679,256 @@ mod tests {
             errors.is_empty(),
             "an env with no dead-letter queue is ordinary, not an error"
         );
+    }
+
+    /// Orchestration tests: the tool BODIES, driven against a mocked
+    /// SDK.
+    ///
+    /// Everything under these was already covered — renderers, extracted
+    /// decisions, the AWS-layer calls. What was not is which calls a
+    /// tool makes and with what, and that is the layer the `tool_why`
+    /// dead-letter peek bug lived in: it survived a full review because
+    /// nothing could reach it.
+    mod orchestration {
+        use super::*;
+        use aws_sdk_elasticbeanstalk::Client as EbClient;
+        use aws_sdk_sqs::Client as SqsClient;
+
+        fn client_with(eb: EbClient, sqs: SqsClient) -> crate::aws::AwsClient {
+            let cfg = aws_config::SdkConfig::builder()
+                .region(aws_config::Region::new("us-west-1"))
+                .behavior_version(aws_config::BehaviorVersion::latest())
+                .build();
+            crate::aws::AwsClient::for_tests(
+                eb,
+                sqs,
+                aws_sdk_cloudwatch::Client::new(&cfg),
+                aws_sdk_cloudwatchlogs::Client::new(&cfg),
+                aws_sdk_s3::Client::new(&cfg),
+                aws_sdk_ec2::Client::new(&cfg),
+            )
+        }
+
+        fn env_listing() -> aws_smithy_mocks::Rule {
+            use aws_sdk_elasticbeanstalk::operation::describe_environments::DescribeEnvironmentsOutput;
+            use aws_sdk_elasticbeanstalk::types::EnvironmentDescription;
+            aws_smithy_mocks::mock!(EbClient::describe_environments).then_output(|| {
+                DescribeEnvironmentsOutput::builder()
+                    .environments(
+                        EnvironmentDescription::builder()
+                            .environment_name("uflexi-prod-wk")
+                            .application_name("uflexi")
+                            .status("Ready".into())
+                            .health("Yellow".into())
+                            .tier(
+                                aws_sdk_elasticbeanstalk::types::EnvironmentTier::builder()
+                                    .name("Worker")
+                                    .build(),
+                            )
+                            .build(),
+                    )
+                    .build()
+            })
+        }
+
+        /// `worker_queues` must resolve the env's queues and, with
+        /// `peek`, read messages from the DEAD-LETTER url — not the
+        /// main one.
+        #[tokio::test]
+        async fn worker_queues_peeks_the_dead_letter_queue() {
+            use aws_sdk_elasticbeanstalk::operation::describe_environment_resources::DescribeEnvironmentResourcesOutput;
+            use aws_sdk_elasticbeanstalk::types::{EnvironmentResourceDescription, Queue};
+            use aws_sdk_sqs::operation::get_queue_attributes::GetQueueAttributesOutput;
+            use aws_sdk_sqs::operation::receive_message::ReceiveMessageOutput;
+            use aws_sdk_sqs::types::{Message, MessageAttributeValue, QueueAttributeName};
+
+            let resources = aws_smithy_mocks::mock!(EbClient::describe_environment_resources)
+                .then_output(|| {
+                    DescribeEnvironmentResourcesOutput::builder()
+                        .environment_resources(
+                            EnvironmentResourceDescription::builder()
+                                .queues(
+                                    Queue::builder()
+                                        .name("WorkerQueue")
+                                        .url("https://sqs/main")
+                                        .build(),
+                                )
+                                .queues(
+                                    Queue::builder()
+                                        .name("WorkerDeadLetterQueue")
+                                        .url("https://sqs/main-dlq")
+                                        .build(),
+                                )
+                                .build(),
+                        )
+                        .build()
+                });
+            let attrs =
+                aws_smithy_mocks::mock!(SqsClient::get_queue_attributes).then_output(|| {
+                    GetQueueAttributesOutput::builder()
+                        .attributes(QueueAttributeName::ApproximateNumberOfMessages, "1")
+                        .attributes(
+                            QueueAttributeName::ApproximateNumberOfMessagesNotVisible,
+                            "0",
+                        )
+                        .attributes(QueueAttributeName::ApproximateNumberOfMessagesDelayed, "0")
+                        .build()
+                });
+            // Matches ONLY the dead-letter url. A body that peeked the
+            // main queue would get no match and no task.
+            let peek = aws_smithy_mocks::mock!(SqsClient::receive_message)
+                .match_requests(|req| req.queue_url() == Some("https://sqs/main-dlq"))
+                .then_output(|| {
+                    let attr = |v: &str| {
+                        MessageAttributeValue::builder()
+                            .data_type("String")
+                            .string_value(v)
+                            .build()
+                            .expect("valid")
+                    };
+                    ReceiveMessageOutput::builder()
+                        .messages(
+                            Message::builder()
+                                .message_id("m-1")
+                                .receipt_handle("rh-1")
+                                .body("elasticbeanstalk scheduled job")
+                                .message_attributes(
+                                    "beanstalk.sqsd.task_name",
+                                    attr("ORCHCANARY sweep"),
+                                )
+                                .build(),
+                        )
+                        .build()
+                });
+
+            let eb = aws_smithy_mocks::mock_client!(
+                aws_sdk_elasticbeanstalk,
+                aws_smithy_mocks::RuleMode::MatchAny,
+                [&env_listing(), &resources]
+            );
+            let sqs = aws_smithy_mocks::mock_client!(
+                aws_sdk_sqs,
+                aws_smithy_mocks::RuleMode::MatchAny,
+                [&attrs, &peek]
+            );
+            let s = Server::with_injected_client(
+                false,
+                crate::config::Config::default(),
+                client_with(eb, sqs),
+            );
+
+            let out = s
+                .call_tool(
+                    "worker_queues",
+                    &json!({"env": "uflexi-prod-wk", "peek": true}),
+                )
+                .await
+                .expect("worker_queues answers");
+            let v: Value = serde_json::from_str(&out).expect("valid JSON");
+
+            assert_eq!(v["dead_letter_queue"]["stats"]["visible"], 1);
+            assert_eq!(v["peeked"], true);
+            assert_eq!(
+                v["messages"][0]["task"]["name"], "ORCHCANARY sweep",
+                "the peek must read the DEAD-LETTER queue and carry the \
+                 task through: {out}"
+            );
+        }
+
+        /// Without `peek` the tool must not call ReceiveMessage at all.
+        ///
+        /// The default path is documented as touching nothing, and a
+        /// peek increments a counter an operator reads. The mock has no
+        /// receive_message rule, so a body that peeked anyway fails.
+        #[tokio::test]
+        async fn worker_queues_does_not_peek_unless_asked() {
+            use aws_sdk_elasticbeanstalk::operation::describe_environment_resources::DescribeEnvironmentResourcesOutput;
+            use aws_sdk_elasticbeanstalk::types::{EnvironmentResourceDescription, Queue};
+            use aws_sdk_sqs::operation::get_queue_attributes::GetQueueAttributesOutput;
+            use aws_sdk_sqs::types::QueueAttributeName;
+
+            let resources = aws_smithy_mocks::mock!(EbClient::describe_environment_resources)
+                .then_output(|| {
+                    DescribeEnvironmentResourcesOutput::builder()
+                        .environment_resources(
+                            EnvironmentResourceDescription::builder()
+                                .queues(
+                                    Queue::builder()
+                                        .name("WorkerQueue")
+                                        .url("https://sqs/main")
+                                        .build(),
+                                )
+                                .build(),
+                        )
+                        .build()
+                });
+            let attrs =
+                aws_smithy_mocks::mock!(SqsClient::get_queue_attributes).then_output(|| {
+                    GetQueueAttributesOutput::builder()
+                        .attributes(QueueAttributeName::ApproximateNumberOfMessages, "0")
+                        .build()
+                });
+            // EB named no dead-letter queue, so `describe_worker_queues`
+            // falls back to `aws:elasticbeanstalk:sqsd` option settings
+            // looking for an explicit override. Discovered by this test
+            // failing on an UNMATCHED call — which is exactly the
+            // orchestration detail these tests exist to pin, and which
+            // nothing below this layer could have shown.
+            let settings = aws_smithy_mocks::mock!(EbClient::describe_configuration_settings)
+                .then_output(|| {
+                    aws_sdk_elasticbeanstalk::operation::describe_configuration_settings::DescribeConfigurationSettingsOutput::builder().build()
+                });
+            let eb = aws_smithy_mocks::mock_client!(
+                aws_sdk_elasticbeanstalk,
+                aws_smithy_mocks::RuleMode::MatchAny,
+                [&env_listing(), &resources, &settings]
+            );
+            let sqs = aws_smithy_mocks::mock_client!(
+                aws_sdk_sqs,
+                aws_smithy_mocks::RuleMode::MatchAny,
+                [&attrs]
+            );
+            let s = Server::with_injected_client(
+                false,
+                crate::config::Config::default(),
+                client_with(eb, sqs),
+            );
+
+            let out = s
+                .call_tool("worker_queues", &json!({"env": "uflexi-prod-wk"}))
+                .await
+                .expect("depth-only must not need a receive_message rule");
+            let v: Value = serde_json::from_str(&out).expect("valid JSON");
+            assert_eq!(v["peeked"], false, "{out}");
+            assert!(
+                v["messages"].as_array().is_some_and(|m| m.is_empty()),
+                "{out}"
+            );
+        }
+
+        /// An env the fleet does not contain must be refused, not
+        /// silently queried.
+        #[tokio::test]
+        async fn worker_queues_refuses_an_unknown_env() {
+            let eb = aws_smithy_mocks::mock_client!(
+                aws_sdk_elasticbeanstalk,
+                aws_smithy_mocks::RuleMode::MatchAny,
+                [&env_listing()]
+            );
+            let cfg = aws_config::SdkConfig::builder()
+                .region(aws_config::Region::new("us-west-1"))
+                .behavior_version(aws_config::BehaviorVersion::latest())
+                .build();
+            let s = Server::with_injected_client(
+                false,
+                crate::config::Config::default(),
+                client_with(eb, SqsClient::new(&cfg)),
+            );
+            let err = s
+                .call_tool("worker_queues", &json!({"env": "no-such-env"}))
+                .await
+                .expect_err("an unknown env must be an error");
+            assert!(err.contains("not found"), "{err}");
+        }
     }
 }

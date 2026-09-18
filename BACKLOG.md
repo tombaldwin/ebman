@@ -561,23 +561,3 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
   keyed by action verb and derive the MCP annotations from that, rather
   than wiring the levels engine to `cli::mcp::annotations` and growing a
   second table that drifts. Raised by the 0.37 architecture review.
-
-- [ ] **The MCP `tool_*` bodies are still only reachable with AWS.**
-  0.39.0 closed the layers around them: every renderer, every extracted
-  decision, and the two new AWS-layer functions (`fetch_latest_log_events`,
-  `peek_messages`' attribute extraction) are now covered — the last two
-  through `aws_smithy_mocks`, which the repo already uses and which
-  turned out to reach further than the "needs a fake client layer" note
-  assumed.
-
-  What remains is the orchestration itself: that `tool_worker_queues`
-  calls `describe_worker_queues` with the right arguments, that
-  `tool_why` fans out to the right six calls, that `tool_recent_logs`
-  discovers groups before querying them. Thin glue over tested parts,
-  but the `tool_why` peek bug lived in exactly this layer and sat there
-  through a full review.
-
-  The shape that would close it: let `Server` take an injected
-  `AwsClient` the way `App::for_tests` does, so a mocked-SDK client can
-  be driven through `call_tool`. `Server::with_config` is already the
-  test seam for config; this is the same move for the client.

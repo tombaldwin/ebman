@@ -433,7 +433,15 @@ mod tests {
             ),
         ] {
             let src = std::fs::read_to_string(file).unwrap_or_else(|e| panic!("{file}: {e}"));
-            let prod = src.split("#[cfg(test)]").next().unwrap_or("");
+            // Split at a test MODULE, not at any `#[cfg(test)]`. A
+            // `#[cfg(test)]` on a statement inside production code —
+            // the injected-client seam in `tools.rs` is one — truncated
+            // the slice above everything after it, and this guard
+            // failed reporting a missing wiring that was there all
+            // along. A scan that cannot see the code it checks is worse
+            // than no scan: this one cried wolf, but the same cut would
+            // silently hide a real violation below it.
+            let prod = src.split("\n#[cfg(test)]\nmod ").next().unwrap_or_default();
             assert!(
                 prod.contains("resolve_state_path("),
                 "{file} must resolve through the shared precedence"
