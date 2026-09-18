@@ -234,11 +234,30 @@ mod packaging {
     /// `.gitignore`.
     #[test]
     fn no_backup_or_scratch_files_are_tracked() {
-        let out = std::process::Command::new("git")
+        // `cargo mutants` builds in a scratch COPY of the tree with no
+        // `.git`, so `git ls-files` fails there through no fault of the
+        // code under test. Skipping is right — but only after proving
+        // the repository is genuinely absent, never on any git failure:
+        // "git errored" and "there is no repo" are different, and
+        // treating the first as the second is how this guard would go
+        // quiet in the environment that matters.
+        let out = match std::process::Command::new("git")
             .args(["ls-files"])
             .output()
-            .expect("git ls-files");
-        assert!(out.status.success(), "git ls-files failed");
+        {
+            Ok(out) => out,
+            Err(e) => panic!("could not run git: {e}"),
+        };
+        if !out.status.success() {
+            let no_repo = String::from_utf8_lossy(&out.stderr).contains("not a git repository");
+            assert!(
+                no_repo,
+                "git ls-files failed for a reason other than a missing \
+                 repository: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
         let files = String::from_utf8_lossy(&out.stdout);
         assert!(
             files.lines().count() > 50,
