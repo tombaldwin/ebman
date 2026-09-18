@@ -76,6 +76,34 @@ fn is_modifier_guard(guard: &syn::Expr) -> bool {
 /// Every char literal reached through a `KeyCode::Char(..)` pattern, following
 /// the pattern nesting the keymap actually uses: `|` alternations, tuple
 /// patterns like `(KeyCode::Char('y'), Mode::Detail)`, parens and references.
+/// The guard expression on a match arm.
+///
+/// `syn` 3 removed `Arm::guard` and represents a guarded arm as
+/// `Pat::Guard { pat, guard }` — the guard moved from the arm to the
+/// pattern. Extracted into a named function because the same structural
+/// change has to be applied in two places, and missing the second one
+/// leaves this rule compiling and checking nothing.
+fn arm_guard(arm: &syn::Arm) -> Option<&syn::Expr> {
+    match &arm.pat {
+        syn::Pat::Guard(g) => Some(&g.guard),
+        _ => None,
+    }
+}
+
+/// The pattern with any guard wrapper removed.
+///
+/// Under `syn` 3 a guarded arm's `pat` IS the `Pat::Guard` wrapper, so
+/// a walker looking for `KeyCode::Char(..)` finds nothing inside it.
+/// This rule's whole job is ordering guarded Ctrl arms against
+/// unguarded ones for the same character, so failing to unwrap would
+/// make it see no guarded arms at all.
+fn unguarded_pat(pat: &syn::Pat) -> &syn::Pat {
+    match pat {
+        syn::Pat::Guard(g) => &g.pat,
+        other => other,
+    }
+}
+
 fn chars_in_pattern(pat: &syn::Pat, out: &mut Vec<char>) {
     match pat {
         syn::Pat::TupleStruct(ts) => {
@@ -154,13 +182,18 @@ impl<'ast> Visit<'ast> for MatchVisitor {
 
         let mut arms: Vec<CharArm> = Vec::new();
         for (index, arm) in m.arms.iter().enumerate() {
-            let guarded = arm
-                .guard
-                .as_ref()
-                .is_some_and(|(_, g)| is_modifier_guard(g));
+            // `syn` 3 removed `Arm::guard`: a guarded arm is now a
+            // `Pat::Guard { pat, guard }`, following Rust's
+            // guard-patterns RFC. The guard moved from the ARM to the
+            // PATTERN, so both reads below had to move with it.
+            let guarded = arm_guard(arm).is_some_and(is_modifier_guard);
             let line = arm.pat.span().start().line;
             let mut chars = Vec::new();
-            chars_in_pattern(&arm.pat, &mut chars);
+            // Unwrap the guard wrapper before walking for characters.
+            // Without this a guarded arm contributes NO chars, so the
+            // rule silently stops seeing exactly the arms it exists to
+            // order — a guard that compiles, runs, and checks nothing.
+            chars_in_pattern(unguarded_pat(&arm.pat), &mut chars);
             for ch in chars {
                 arms.push(CharArm {
                     ch,
@@ -387,5 +420,58 @@ fn every_source_file_puts_guarded_key_arms_first() {
         offenders.is_empty(),
         "ARCHITECTURE rule 4 violated:\n{}",
         offenders.join("\n")
+    );
+}
+
+/// The canary: the rule must still DETECT a violation.
+///
+/// Without this the sweep passes identically whether it is working or
+/// blind — a clean tree and a broken parser look the same. That became
+/// concrete with `syn` 3, which moved the guard from the ARM to the
+/// PATTERN: `chars_in_pattern` on a `Pat::Guard` wrapper finds no
+/// characters, so the rule would have compiled, run, reported zero
+/// offenders, and checked nothing.
+#[test]
+fn the_key_arm_rule_can_see_a_violation() {
+    // An unguarded 'p' BEFORE the Ctrl-guarded 'p' — the shadowing this
+    // rule exists to stop, since the compiler does not warn on it.
+    let bad = r#"
+        fn handle(k: KeyCode, m: KeyModifiers) {
+            match k {
+                KeyCode::Char('p') => purge(),
+                KeyCode::Char('p') if m.contains(KeyModifiers::CONTROL) => pin(),
+                _ => {}
+            }
+        }
+    "#;
+    let (violations, _) = shadowed_key_arms(bad);
+    assert_eq!(
+        violations.len(),
+        1,
+        "the rule must flag an unguarded arm shadowing a guarded one: {violations:?}"
+    );
+    assert_eq!(violations[0].ch, 'p');
+
+    // And the correct order must NOT be flagged, or the rule is just
+    // noise that everyone learns to ignore.
+    let good = r#"
+        fn handle(k: KeyCode, m: KeyModifiers) {
+            match k {
+                KeyCode::Char('p') if m.contains(KeyModifiers::CONTROL) => pin(),
+                KeyCode::Char('p') => purge(),
+                _ => {}
+            }
+        }
+    "#;
+    let (violations, chars_seen) = shadowed_key_arms(good);
+    assert!(
+        violations.is_empty(),
+        "correct order must pass: {violations:?}"
+    );
+    assert!(
+        chars_seen.contains(&'p'),
+        "and the walk must have SEEN the 'p' arms — an empty set here \
+         means the parser stopped extracting characters from guarded \
+         patterns, which is exactly how this rule goes quiet: {chars_seen:?}"
     );
 }
