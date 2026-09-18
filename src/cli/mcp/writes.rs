@@ -157,6 +157,41 @@ impl Server {
     /// appending a real line to the real audit log. This module's own
     /// docs promise demo writes none, and a refusal being genuine does
     /// not make the fleet genuine.
+    /// Record a scope refusal, and render it.
+    ///
+    /// A refusal that leaves no `stage=refused` line is the pre-0.37
+    /// blind spot — a blocked write and no attempt at all look
+    /// identical in the log. This one is worth seeing more than most:
+    /// an ungranted verb is not advertised, so a client reaching it is
+    /// working from a stale tool list or probing the surface, and
+    /// neither is visible any other way.
+    ///
+    /// Demo writes nothing real, matching `gate_refusal`: the refusal
+    /// is genuine, the fleet is not.
+    fn refuse_out_of_scope(
+        &self,
+        verb: WriteVerb,
+        env: Option<&str>,
+        region: Option<&str>,
+    ) -> String {
+        let name = verb.tool_name();
+        if !matches!(self.backend, Backend::Demo) {
+            crate::audit::append_action_refused(
+                None,
+                None,
+                region.unwrap_or("-"),
+                verb.label(),
+                env.unwrap_or("-"),
+                "not_granted",
+                &format!("restart the MCP server with --allow-writes={name}"),
+            );
+        }
+        format!(
+            "'{name}' is not in this server's write scope — start it with \
+             --allow-writes, or --allow-writes={name} to grant just this one"
+        )
+    }
+
     fn gate_refusal(
         &self,
         env: &str,
@@ -557,11 +592,10 @@ impl Server {
         // otherwise reach the body. Belt-and-braces, and the braces are
         // the ones that matter after a scope is narrowed.
         if !self.write_scope.allows(verb.tool_name()) {
-            return Err(format!(
-                "'{}' is not in this server's write scope — start it with \
-                 --allow-writes, or --allow-writes={} to grant just this one",
-                verb.tool_name(),
-                verb.tool_name()
+            return Err(self.refuse_out_of_scope(
+                verb,
+                arg_str(args, "env").as_deref(),
+                arg_str(args, "region").as_deref(),
             ));
         }
         if self.dispatching.load(std::sync::atomic::Ordering::SeqCst) {
@@ -865,10 +899,12 @@ impl Server {
             // a scope that held at plan time but not at confirm is a
             // bug worth failing on rather than dispatching through.
             if !self.write_scope.allows(p.verb.tool_name()) {
-                let name = p.verb.tool_name();
+                let (verb, env, region) = (p.verb, p.env.clone(), p.region.clone());
                 st.pending = None;
+                drop(st);
                 return Err(format!(
-                    "'{name}' is not in this server's write scope — plan dropped"
+                    "{} — plan dropped",
+                    self.refuse_out_of_scope(verb, Some(&env), region.as_deref())
                 ));
             }
             if p.verb == WriteVerb::Terminate {
@@ -1419,6 +1455,64 @@ mod tests {
         assert!(
             st.pending.is_none(),
             "a plan the scope rejects must not stay confirmable"
+        );
+    }
+
+    /// A verb refused for being ungranted leaves a trace.
+    ///
+    /// Modelled on `a_refused_mcp_write_is_recorded_against_the_agent`,
+    /// and for a sharper reason: an ungranted verb is not advertised,
+    /// so a client that calls one is working from a stale tool list or
+    /// probing the surface. Without a line, six such attempts and none
+    /// look identical — the pre-0.37 blind spot, reintroduced by a new
+    /// refusal path rather than by regressing an old one.
+    #[tokio::test]
+    async fn an_out_of_scope_write_is_recorded_against_the_agent() {
+        let env_name = "mcp-scope-refusal-probe-env";
+        let s = Server::with_config(
+            false,
+            false,
+            crate::cli::mcp::WriteScope::Only(vec!["dlq_delete".into()]),
+            crate::config::Config::default(),
+        );
+
+        let path = crate::util::cache_dir().join("audit.log");
+        let before = std::fs::read_to_string(&path).unwrap_or_default();
+
+        let err = s
+            .tool_write_plan(
+                WriteVerb::Terminate,
+                &json!({"env": env_name, "region": "eu-west-2"}),
+            )
+            .await
+            .expect_err("terminate was not granted");
+        assert!(err.contains("not in this server's write scope"), "{err}");
+
+        let after = std::fs::read_to_string(&path).unwrap_or_default();
+        let delta = after
+            .strip_prefix(&before)
+            .expect("the audit log is append-only");
+        let lines: Vec<&str> = delta.lines().filter(|l| l.contains(env_name)).collect();
+        assert_eq!(lines.len(), 1, "exactly one refusal line: {delta}");
+        let line = lines[0];
+
+        assert!(line.contains("stage=refused"), "{line}");
+        assert!(
+            line.contains("action=Terminate"),
+            "the log must name what was attempted: {line}"
+        );
+        assert!(
+            line.contains("rule=not_granted"),
+            "and why, distinctly from a pin or a freeze — the remedy is \
+             a different one: {line}"
+        );
+        assert!(
+            line.contains("--allow-writes=terminate"),
+            "and the remedy names the exact flag: {line}"
+        );
+        assert!(
+            line.contains("region=eu-west-2"),
+            "against the region the call named, not home: {line}"
         );
     }
 }
