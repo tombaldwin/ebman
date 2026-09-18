@@ -647,3 +647,47 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
   it is not a silent change, with the tool description stating which
   mode is active. Consider whether the TUI's DLQ viewer should honour
   it too; it shows bodies for non-task messages.
+
+- [ ] **Dead-letter management over MCP — resend / delete / purge.**
+  Requested via a field report: an environment held Warning for days by
+  one dead-lettered message, where the tool that diagnosed it could not
+  finish the job. "A console that can name the problem and not act on
+  it is an odd shape" is a fair criticism, and this is the first case
+  where the read-only MCP surface has cost something operational rather
+  than theoretical.
+
+  **The trap, and it is not an edge case.** SQS deletes by RECEIPT
+  HANDLE, not message id, and a handle is only valid while the message
+  is invisible. `peek_messages` uses `visibility_timeout(5)`; the
+  two-phase write scheme's `CONFIRM_TTL_SECS` is **60**. So a handle
+  issued at plan time is dead for 55 of the 60 seconds the plan remains
+  confirmable — the failure is the DEFAULT path, not a race. Reported by
+  the same field session; the arithmetic is worse than they knew.
+
+  Two bad implementations to avoid: failing at confirm with a raw SQS
+  error that reads like a permissions problem, or re-receiving at
+  confirm and deleting whatever is at the head of the queue NOW. The
+  second is a silent target swap — the plan names one message, the write
+  removes another, and nothing says they differed.
+
+  The shape to build: re-receive at confirm, verify the message id
+  matches the plan, refuse on mismatch. And the result states which id
+  it ACTUALLY deleted rather than which it was asked to — rule 6 applied
+  to a write.
+
+  Three operations, three risk profiles — resend retries work, delete
+  removes one known thing, purge discards everything present including
+  messages that arrived after the plan. Do not collapse them behind a
+  mode flag, and do not default to purge.
+
+- [ ] **`--allow-writes` is all-or-nothing, and that is now blocking a
+  real grant.** Enabling it to delete one SQS message also grants
+  deploy / restart / rebuild / terminate / set_option across every
+  environment the credentials reach, Prod included. A field session
+  declined to ask for it on exactly those grounds, which is the correct
+  call and also the evidence that the flag is too coarse.
+
+  This is what `docs/design/protection-levels.md` stages 4-5 exist for —
+  named rungs per principal rather than one binary switch. Recorded here
+  because it has stopped being hypothetical: someone wants a narrow
+  capability and the only way to give it is a wide one.
