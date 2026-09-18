@@ -2038,5 +2038,120 @@ mod tests {
                  `true` here claims an empty queue that does not exist: {out}"
             );
         }
+
+        /// `why` must not record a spurious "we could not look" when the
+        /// env simply has no dead-letter queue.
+        ///
+        /// Sibling of `a_derived_dlq_that_does_not_exist_still_answers`,
+        /// and it exists because that fix was applied to `why` as well
+        /// and left UNTESTED — mutating the gate away came back green.
+        /// `why` is the body the injected-client seam was built for, so
+        /// an untested fix here is the gap the seam exists to close.
+        #[tokio::test]
+        async fn why_records_no_dlq_error_when_there_is_no_dlq() {
+            use aws_sdk_elasticbeanstalk::operation::describe_environment_resources::DescribeEnvironmentResourcesOutput;
+            use aws_sdk_elasticbeanstalk::types::{EnvironmentResourceDescription, Queue};
+            use aws_sdk_sqs::operation::get_queue_attributes::GetQueueAttributesOutput;
+            use aws_sdk_sqs::types::QueueAttributeName;
+
+            let resources = aws_smithy_mocks::mock!(EbClient::describe_environment_resources)
+                .then_output(|| {
+                    DescribeEnvironmentResourcesOutput::builder()
+                        .environment_resources(
+                            EnvironmentResourceDescription::builder()
+                                .queues(
+                                    Queue::builder()
+                                        .name("WorkerQueue")
+                                        .url("https://sqs/main")
+                                        .build(),
+                                )
+                                .build(),
+                        )
+                        .build()
+                });
+            let settings = aws_smithy_mocks::mock!(EbClient::describe_configuration_settings)
+                .then_output(|| {
+                    aws_sdk_elasticbeanstalk::operation::describe_configuration_settings::DescribeConfigurationSettingsOutput::builder().build()
+                });
+            // `why` fans out to five more calls; every one errors here so
+            // the bundle records them — which is fine, because the
+            // assertion is specifically about `dlq_peek` NOT being among
+            // them.
+            let main_attrs = aws_smithy_mocks::mock!(SqsClient::get_queue_attributes)
+                .match_requests(|req| req.queue_url() == Some("https://sqs/main"))
+                .then_output(|| {
+                    GetQueueAttributesOutput::builder()
+                        .attributes(QueueAttributeName::ApproximateNumberOfMessages, "0")
+                        .build()
+                });
+            let dlq_missing = aws_smithy_mocks::mock!(SqsClient::get_queue_attributes)
+                .match_requests(|req| req.queue_url() == Some("https://sqs/main-dlq"))
+                .then_error(|| {
+                    aws_sdk_sqs::operation::get_queue_attributes::GetQueueAttributesError::generic(
+                        aws_smithy_types::error::ErrorMetadata::builder()
+                            .code("AWS.SimpleQueueService.NonExistentQueue")
+                            .message("The specified queue does not exist")
+                            .build(),
+                    )
+                });
+
+            // `why` also fans out to events, instances and versions.
+            // The mock HARD-FAILS on an unmatched call rather than
+            // erroring the section, so each needs a rule even though
+            // this test asserts about none of them.
+            let events = aws_smithy_mocks::mock!(EbClient::describe_events).then_output(|| {
+                aws_sdk_elasticbeanstalk::operation::describe_events::DescribeEventsOutput::builder(
+                )
+                .build()
+            });
+            let health = aws_smithy_mocks::mock!(EbClient::describe_instances_health)
+                .then_output(|| {
+                    aws_sdk_elasticbeanstalk::operation::describe_instances_health::DescribeInstancesHealthOutput::builder().build()
+                });
+            let versions = aws_smithy_mocks::mock!(EbClient::describe_application_versions)
+                .then_output(|| {
+                    aws_sdk_elasticbeanstalk::operation::describe_application_versions::DescribeApplicationVersionsOutput::builder().build()
+                });
+            let eb = aws_smithy_mocks::mock_client!(
+                aws_sdk_elasticbeanstalk,
+                aws_smithy_mocks::RuleMode::MatchAny,
+                [
+                    &env_listing(),
+                    &resources,
+                    &settings,
+                    &events,
+                    &health,
+                    &versions
+                ]
+            );
+            let sqs = aws_smithy_mocks::mock_client!(
+                aws_sdk_sqs,
+                aws_smithy_mocks::RuleMode::MatchAny,
+                [&main_attrs, &dlq_missing]
+            );
+            let s = Server::with_injected_client(
+                false,
+                crate::config::Config::default(),
+                client_with(eb, sqs),
+            );
+
+            let out = s
+                .call_tool("why", &json!({"env": "poly-prod-wk"}))
+                .await
+                .expect("why answers");
+            let v: Value = serde_json::from_str(&out).expect("valid JSON");
+
+            let errors = v["errors"].as_array().expect("errors array");
+            assert!(
+                !errors.iter().any(|e| e["section"] == "dlq_peek"),
+                "an env with no dead-letter queue is ordinary — recording \
+                 `dlq_peek` as a failure is triage noise in the array that \
+                 exists to make partial answers load-bearing: {out}"
+            );
+            assert_eq!(
+                v["queues"]["peeked"], false,
+                "and we did not look, because there was nothing to look at: {out}"
+            );
+        }
     }
 }
