@@ -8,6 +8,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **Every write plan now says what it forecloses.** A plan described
+  the operation and was silent about the stakes, which is worse than
+  vague: it reads as complete, and a prompt that looks complete
+  discourages the pause in which you remember what it omits.
+
+  The type specimen is real. A dead-lettered message whose plan named
+  the id, the task, the age and the receive count — all correct — and
+  which was the only live fixture for a feature shipped an hour
+  earlier. No amount of detail about the message would have surfaced
+  that. *"The message is destroyed. SQS has no undelete and ebman keeps
+  no copy"* might have.
+
+  The variance across verbs is half the value: `restart` says "nothing
+  else — no state is lost and nothing here needs undoing", and reading
+  the two together teaches the difference without being told. Queue
+  depths are reported as SQS's approximate count rather than as fact,
+  because "the only message in the queue" is a firmer claim than
+  `ApproximateNumberOfMessages` supports.
+
 - **`safety.read_only = true`** — a standing refusal of every write,
   everywhere. The bluntest control there is, and the one to reach for
   if you want ebman to be a viewer.

@@ -292,6 +292,80 @@ pub(super) enum WriteVerb {
     DlqPurge,
 }
 
+/// What this action destroys that cannot be got back.
+///
+/// A plan describes the operation; the reason to refuse usually lives
+/// outside it. That gap is not closed by more detail about the
+/// mechanics — a prompt fully specified about what it does and silent
+/// about what it costs reads as complete, and a prompt that looks
+/// complete discourages the pause in which the operator remembers what
+/// it does not contain.
+///
+/// The type specimen: a dead-lettered message whose plan named the id,
+/// the task, the age and the receive count, all correct, and which was
+/// the only live fixture for a feature shipped an hour earlier. No
+/// amount of detail about the message would have surfaced that. "It is
+/// destroyed, and ebman keeps no copy" might have.
+///
+/// This is ARCHITECTURE.md rule 6 — a result must carry its own
+/// negative space — applied to a plan rather than a result.
+///
+/// The variance across verbs is deliberate and is half the value. An
+/// operator who reads "nothing that cannot be redone" for `restart`
+/// and "no undelete, and ebman keeps no copy" for `dlq_delete` learns
+/// the difference between them without being told.
+///
+/// `dlq_visible` is SQS's `ApproximateNumberOfMessages`, and is
+/// reported as approximate rather than as a count. Saying "it is the
+/// only message in the queue" would be a firmer claim than the source
+/// supports, which is the failure this function exists to avoid.
+pub(super) fn forecloses(verb: WriteVerb, dlq_visible: Option<i64>) -> String {
+    let queue_note = || match dlq_visible {
+        Some(1) => " SQS reports 1 message in the queue, approximately.".to_string(),
+        Some(n) => format!(" SQS reports about {n} messages in the queue."),
+        None => String::new(),
+    };
+    match verb {
+        WriteVerb::DlqDelete => format!(
+            "The message is destroyed. SQS has no undelete and ebman keeps no \
+             copy, so nothing here can return it.{}",
+            queue_note()
+        ),
+        WriteVerb::DlqResend => format!(
+            "The message leaves the dead-letter queue. If it fails again it \
+             dead-letters again, carrying its receive count forward — so this \
+             is reversible only in the sense that the message still exists.{}",
+            queue_note()
+        ),
+        WriteVerb::DlqPurge => format!(
+            "Every message in the queue is destroyed, including any that arrive \
+             between now and your confirmation — those are not in this plan and \
+             cannot be. None of them can be recovered.{}",
+            queue_note()
+        ),
+        WriteVerb::Terminate => "The environment and its instances are destroyed. Its saved \
+             configuration remains, so an environment can be rebuilt from \
+             it — but anything written to instance-local storage, and this \
+             environment's CNAME while it is gone, are not recoverable."
+            .to_string(),
+        WriteVerb::Rebuild => "Every instance is replaced. Anything written to instance-local \
+             storage is not recoverable; the environment and its \
+             configuration survive."
+            .to_string(),
+        WriteVerb::Deploy => "The running version stops serving. It remains an application \
+             version and can be redeployed, so this is recoverable — the \
+             cost is the time in between."
+            .to_string(),
+        WriteVerb::Restart => "In-flight requests on the instances are dropped. Nothing else — \
+             no state is lost and nothing here needs undoing."
+            .to_string(),
+        WriteVerb::SetOption => "The previous values are replaced. They are shown above and can \
+             be set back, so this is recoverable — but a change that triggers \
+             an environment update will bounce instances to apply it."
+            .to_string(),
+    }
+}
+
 impl WriteVerb {
     /// Every verb. Exhaustiveness is pinned by a guard, not by hope:
     /// `every_write_verb_round_trips_through_the_tool_table` compares
@@ -635,6 +709,9 @@ impl Server {
         let mut plan_extra = String::new();
         let mut dlq_message_id: Option<String> = None;
         let mut dlq_url: Option<String> = None;
+        // Captured for the foreclosure line, which needs to say how
+        // much else is in the queue. Only the DLQ branch resolves it.
+        let mut dlq_visible: Option<i64> = None;
 
         match verb {
             WriteVerb::Deploy => {
@@ -765,6 +842,7 @@ impl Server {
                     .filter(|_| queues.dlq_stats.is_some())
                     .ok_or_else(|| format!("env '{}' has no dead-letter queue", env.name))?;
 
+                dlq_visible = queues.dlq_stats.as_ref().map(|s| s.visible);
                 if verb == WriteVerb::DlqPurge {
                     let visible = queues.dlq_stats.as_ref().map(|s| s.visible).unwrap_or(0);
                     plan_extra = format!(
@@ -881,13 +959,14 @@ impl Server {
             "call confirm_action with the confirm_token to dispatch".to_string()
         };
         Ok(format!(
-            "{{\"pending\":true,\"confirm_token\":{},\"expires_in_secs\":{CONFIRM_TTL_SECS},\"plan\":{{\"action\":{},\"env\":{},\"application\":{},\"health\":{},\"status\":{}{plan_extra}{events_json}}},\"next\":{}}}",
+            "{{\"pending\":true,\"confirm_token\":{},\"expires_in_secs\":{CONFIRM_TTL_SECS},\"plan\":{{\"action\":{},\"env\":{},\"application\":{},\"health\":{},\"status\":{},\"forecloses\":{}{plan_extra}{events_json}}},\"next\":{}}}",
             util::json_string(&token),
             util::json_string(verb.label()),
             util::json_string(&env.name),
             util::json_string(&env.application),
             util::json_string(&env.health),
             util::json_string(&env.status),
+            util::json_string(&forecloses(verb, dlq_visible)),
             util::json_string(&next),
         ))
     }
@@ -1581,6 +1660,22 @@ mod tests {
                     .is_some_and(|q| q.ends_with("poly-batch-dlq")),
                 "{verb:?} must name the fixture's dead-letter queue: {v}"
             );
+            // The WIRING, not just the function. A mutation replacing
+            // the rendered value with "" left the suite green: the
+            // foreclosure was unit-tested and unreachable-in-practice,
+            // which is the shape CLAUDE.md warns about — pin the wiring,
+            // not just the branch.
+            let f = v["plan"]["forecloses"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{verb:?} plan carries no forecloses: {v}"));
+            assert!(
+                f.len() > 40,
+                "{verb:?} must say what it destroys, in the plan itself: {f:?}"
+            );
+            assert!(
+                f.contains("queue"),
+                "{verb:?} is a queue operation and its foreclosure should say so: {f:?}"
+            );
         }
 
         // And an id the fixture does not hold is refused, rather than
@@ -1595,5 +1690,66 @@ mod tests {
             .await
             .expect_err("an unknown id must be refused even in demo");
         assert!(err.contains("not in the dead-letter queue"), "{err}");
+    }
+
+    /// Every verb says what it forecloses, and says it in one clean line.
+    ///
+    /// Two properties in one test because they failed together. The
+    /// foreclosure text must exist for every verb — a plan silent about
+    /// stakes reads as complete, which is worse than a vague one — and
+    /// it must render without an indentation hole.
+    ///
+    /// The hole is not hypothetical: these literals shipped with
+    /// 14-space gaps twice while being written, because a generator ate
+    /// the `\` continuations. `no_wrapped_string_literal_leaves_an_
+    /// indentation_hole` passes clean against the collapsed form, so
+    /// the only thing that catches it is asserting on the RENDERED
+    /// string.
+    #[test]
+    fn every_verb_states_what_it_forecloses() {
+        for verb in WriteVerb::ALL {
+            for depth in [None, Some(1), Some(12)] {
+                let t = forecloses(verb, depth);
+                assert!(t.len() > 40, "{verb:?} must say what it destroys: {t:?}");
+                assert!(
+                    !t.contains("  "),
+                    "{verb:?} has an indentation hole — a wrapped literal lost its \
+                     continuation, and this renders into a one-line prompt: {t:?}"
+                );
+                assert!(t.ends_with('.'), "{verb:?}: {t:?}");
+            }
+        }
+
+        // The destructive tail must say it cannot be undone. Without
+        // this the test passes on eight copies of "nothing happens".
+        for verb in [WriteVerb::DlqDelete, WriteVerb::DlqPurge] {
+            let t = forecloses(verb, Some(12));
+            assert!(
+                t.contains("recover") || t.contains("return it"),
+                "{verb:?} destroys data and must say so: {t:?}"
+            );
+        }
+        // And the cheap end must say it is cheap, or the variance that
+        // makes the field informative is lost.
+        let restart = forecloses(WriteVerb::Restart, None);
+        assert!(
+            restart.contains("Nothing else"),
+            "restart is cheap and should read as cheap: {restart:?}"
+        );
+
+        // The count is SQS's approximate one and must not be stated as
+        // fact — "the only message in the queue" is a firmer claim than
+        // the source supports.
+        let one = forecloses(WriteVerb::DlqDelete, Some(1));
+        assert!(one.contains("approximately"), "{one:?}");
+        assert!(
+            !one.contains("only message"),
+            "an approximate count must not be rendered as certainty: {one:?}"
+        );
+        // No queue known, no queue sentence invented.
+        assert!(
+            !forecloses(WriteVerb::DlqDelete, None).contains("SQS reports"),
+            "with no depth available, say nothing about the depth"
+        );
     }
 }
