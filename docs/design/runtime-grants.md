@@ -156,6 +156,55 @@ authority it has not earned, and the operator loses the ability to tell
 the tool's account of the world from the requester's case for acting on
 it. Keep those in different places, which is where they are now.
 
+#### A plan is basis for a mechanical yes, never a discretionary one
+
+The argument above — that the agent's case lives in the conversation,
+so it need not be imported into the plan — assumes the operator is
+reading the conversation. **Elicitation is precisely the case where
+they may not be.** That is its appeal: approval happens in-client, at
+the moment of need, without going anywhere else. In a remote or
+headless-adjacent setup the dialog may be all they see, and at that
+point the plan really is the entire basis for the decision.
+
+The tempting fix is to import the agent's reason into the dialog. That
+is wrong for the reason already given, and the right conclusion is the
+uncomfortable one:
+
+> If the operator cannot see why the agent is asking, they should not
+> be approving a discretionary write on the strength of the plan alone.
+
+That is a reason to refuse, not a reason to enrich the prompt. An
+approval given without the context is not a more efficient approval; it
+is a worse one, and the dialog must not be built to make it feel
+adequate.
+
+**So the plan is sufficient basis for a MECHANICAL yes — is this the
+message I meant, is the count right — and never for a discretionary
+one.** The fixture case is the type specimen: every mechanical fact in
+that prompt was correct and the right answer was still no.
+
+**Consequence for the two routes, which this note had backwards.**
+Issuing a grant is discretionary; confirming a specific action inside
+one is mechanical. So:
+
+- **Grants** belong on the operator route, where the person has their
+  context — `ebman grant …` or `:grant`, neither of which is a restart.
+- **Elicitation** is well suited to confirmation *within* an existing
+  grant, and poorly suited to issuing one.
+
+That makes the elicitation measurement less load-bearing than this note
+first claimed: it decides whether per-action confirmation is available,
+not whether the feature works.
+
+**Unresolved, and the maintainer's call.** This is in tension with what
+he originally asked for — that the agent be able to ask for the unlock
+itself, and not have to leave the conversation. The tension is real and
+should not be designed away silently. A defensible middle: let
+elicitation carry the grant *request*, on the stated assumption that
+the operator has the conversation, while refusing to optimise the
+dialog to stand alone. ebman cannot detect whether a human is reading
+the transcript, so the choice is a posture, not a check.
+
 #### Where it becomes noise: volume, not detail
 
 Rich plans survive being read three times and stop being read at the
