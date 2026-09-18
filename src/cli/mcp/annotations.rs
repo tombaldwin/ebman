@@ -108,6 +108,14 @@ pub(super) const TOOL_ATTRS: &[(&str, ToolAttrs)] = &[
     ("set_option", ToolAttrs::write(false, true)),
     // The environment is gone and is not coming back.
     ("terminate", ToolAttrs::write(true, true)),
+    // Destructive, and `dlq_purge` deliberately reads as no less so
+    // than `terminate`. An environment can be rebuilt from its
+    // configuration; a purged message is gone and there is nothing to
+    // rebuild it from. Non-idempotent, all three: the second call acts
+    // on a different queue state than the first.
+    ("dlq_resend", ToolAttrs::write(false, false)),
+    ("dlq_delete", ToolAttrs::write(true, false)),
+    ("dlq_purge", ToolAttrs::write(true, false)),
     //
     // `confirm_action` is the second half of the two-phase write flow,
     // and it dispatches whatever is pending — which may be a

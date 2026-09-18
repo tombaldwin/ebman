@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Dead-letter management over MCP** — `dlq_resend`, `dlq_delete` and
+  `dlq_purge`, two-phase like every other write and available only under
+  `--allow-writes`. Until now ebman could diagnose a worker environment
+  held unhealthy by one dead-lettered message and not act on it.
+
+  Resend and delete name one message by `message_id` from a
+  `worker_queues` peek, and the plan carries that **id rather than a
+  receipt handle**. SQS deletes by handle, and a handle is valid only
+  while the message is invisible: the peek uses a 5-second visibility
+  timeout while a confirm token lives 60, so a handle captured at plan
+  time is dead for 55 of the 60 seconds the plan stays confirmable.
+  Confirm re-reads the queue, finds the planned id, and **refuses if it
+  is gone** — rather than acting on whatever is at the head of the
+  queue, which would remove a different message than the plan named and
+  say nothing about it.
+
+  Resend sends before deleting: the other order loses the message
+  outright if the send fails, while this one can duplicate it, and a
+  duplicate in a worker queue is the recoverable failure.
+
+  `dlq_purge` is annotated as destructively as `terminate` and its
+  description says why — an environment can be rebuilt from its
+  configuration, and a purged message cannot.
+
+
 ### Fixed
 
 - **`list_environments` reported `region: null` on every row.** The
