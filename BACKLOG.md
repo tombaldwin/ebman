@@ -680,31 +680,3 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
   messages that arrived after the plan. Do not collapse them behind a
   mode flag, and do not default to purge.
 
-- [ ] **`--allow-writes` is all-or-nothing, and that is now blocking a
-  real grant.** Enabling it to delete one SQS message also grants
-  deploy / restart / rebuild / terminate / set_option across every
-  environment the credentials reach, Prod included. A field session
-  declined to ask for it on exactly those grounds, which is the correct
-  call and also the evidence that the flag is too coarse.
-
-  This is what `docs/design/protection-levels.md` stages 4-5 exist for —
-  named rungs per principal rather than one binary switch. Recorded here
-  because it has stopped being hypothetical: someone wants a narrow
-  capability and the only way to give it is a wide one.
-
-- [ ] **Scope `--allow-writes` by verb** — `--allow-writes=dlq_delete,dlq_resend`.
-  The smallest thing that resolves the forcing incident behind the
-  protection-levels work: a client wanted to delete one dead-lettered
-  message and the only grant available was terminate-on-Prod.
-
-  The gating point already exists — `tool_table(self.allow_writes)`,
-  consulted both when advertising tools and at dispatch — so unscoped
-  verbs stay unadvertised rather than advertised-then-refused. Pure
-  ceiling, so Principle 5 holds trivially: it is a server flag, not
-  request content. Touches no config parser, no decision type, no audit
-  stage, and prejudges nothing — a level later compiles down to a verb
-  set.
-
-  ~half a day, against ~two weeks for the full levels + attestation
-  design. Two independent reviews landed on this as the first slice.
-  See `docs/design/protection-levels.md`, "The smallest useful slice".

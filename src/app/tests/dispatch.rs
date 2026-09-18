@@ -1646,6 +1646,37 @@ mod docs_drift {
         );
     }
 
+    /// Every verb `--allow-writes` can name must be documented.
+    ///
+    /// The list in `docs/headless.md` is prose, so nothing structural
+    /// stops it going stale — and the equivalent list in `mcp setup`
+    /// did exactly that, still offering five verbs while the server
+    /// advertised eight. An operator choosing a narrow grant reads
+    /// this list to know what they may name.
+    #[test]
+    fn every_write_verb_is_documented() {
+        let docs = std::fs::read_to_string("docs/headless.md").expect("read headless.md");
+        let verbs = crate::cli::mcp::write_verb_names_for_docs();
+        assert!(
+            verbs.len() >= 8,
+            "found only {} write verbs — extractor broken: {verbs:?}",
+            verbs.len()
+        );
+        // Backticked, not a bare substring. A substring test passes on
+        // a mangled mention — `dlq_purgeX` "contains" `dlq_purge` — so
+        // it would green-light exactly the rename this guard exists to
+        // catch. The docs write every verb as code anyway.
+        let missing: Vec<&String> = verbs
+            .iter()
+            .filter(|v| !docs.contains(&format!("`{v}`")))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "write verbs --allow-writes accepts but not documented as code \
+             in docs/headless.md: {missing:?}"
+        );
+    }
+
     /// A documented `config.toml` snippet must actually parse.
     ///
     /// `config.toml` is read by a LINE-based parser: dotted keys, one

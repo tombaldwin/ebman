@@ -8,6 +8,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Verb-scoped `--allow-writes`** — `--allow-writes=dlq_resend,dlq_delete`
+  grants exactly those verbs and nothing else. Until now the flag was
+  all-or-nothing: letting an agent clear one dead-lettered message also
+  handed it `terminate` over every environment the credentials reach,
+  which is a poor trade for the environment holding a demo tomorrow.
+
+  It composes with the existing pins rather than replacing them — a
+  narrow grant plus `safety.envs.prod.read_only = true` expresses
+  "delete DLQ messages anywhere except prod".
+
+  An ungranted verb is **absent** from `tools/list` and **refused at
+  dispatch**, at both the plan and confirm phases. Absent alone would
+  leave it reachable by a client holding a tool list cached from a
+  wider grant.
+
+  The parse fails closed: `--allow-writes=dlq_delte` is a startup error
+  naming the typo and listing the known verbs. Silently granting
+  nothing would look exactly like a working narrow grant until the
+  first write was refused; silently granting everything would be worse.
+
+  The grant is stated in the `initialize` instructions block, because a
+  withheld tool is simply missing from `tools/list` and missing is
+  ambiguous — it reads as "ebman cannot do this" when it means "you
+  were not granted this". An agent can now say which it is and ask for
+  the grant to be widened.
+
+  Bare `--allow-writes` still means every verb, so existing `.mcp.json`
+  registrations are unaffected. `ebman mcp setup --allow-writes=a,b`
+  prints the matching config.
+
 - **Dead-letter management over MCP** — `dlq_resend`, `dlq_delete` and
   `dlq_purge`, two-phase like every other write and available only under
   `--allow-writes`. Until now ebman could diagnose a worker environment

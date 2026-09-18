@@ -115,6 +115,11 @@ mutation sweep, 0.35.0 and 0.36.0) is closed — see `CHANGELOG.md` and
 
 ### Now — protection levels
 
+*Stages 1-4 and 4b are done. Stage 5 (levels + the `Decision` type) is
+the next substantial one and remains blocked on the elicitation data
+stage 3 instruments — the ladder's middle rungs are defined in terms of
+asking, and 4b deliberately did not prejudge them.*
+
 The design note is agreed in principle. What follows is the
 implementation order, and the ordering is the important part: the
 reviews showed that doing these in the obvious sequence produces work
@@ -243,6 +248,37 @@ one never happens. If that stops being true, the stage is wrong.
    added that nothing read; `pin_reason` as a third gate). Adding it
    early would not have made stage 5 cheaper; it would have shipped a
    plausible-looking struct field that no test could fail on.
+
+4b. ~~Verb-scoped `--allow-writes`~~ — **done 2026-09-18.** Taken
+   ahead of stage 5, on evidence.
+
+   `--allow-writes=dlq_resend,dlq_delete` grants those verbs and
+   nothing else. Not in the original order; it went in front of the
+   levels because the coarse flag had stopped being a design concern
+   and started blocking a real grant — a field session declined to ask
+   for write access rather than accept terminate-on-Prod as the price
+   of deleting one dead-lettered message.
+
+   Half a day against stage 5's two weeks, and it prejudges nothing: a
+   named level later compiles down to a verb set. Pure ceiling, so
+   Principle 5 holds trivially — a server flag, not request content.
+
+   The operator ruling that shaped it: a **uniform** grant, no tiered
+   ceremony per environment. Demo is not a lesser Prod when a client is
+   watching it, and a ladder that says otherwise teaches operators to
+   click through the cheap rungs.
+
+   Two defects, both found by guards rather than by review — worth
+   noting because both were in the new work and both read as fine:
+   `confirm_action` was being filtered out of a narrow grant (every
+   narrow grant could plan a write and never dispatch one), and `mcp
+   setup` had been advertising five write verbs since the three DLQ
+   ones shipped. Both lists are now derived; a `docs_drift` guard pins
+   the third.
+
+   Eleven mutations CAUGHT, two of which were only caught after the
+   first attempt at them proved to be a no-op — one did not compile,
+   one was semantically identical to the original.
 
 5. **Levels, and the decision type they need** *(behaviour)*
 
