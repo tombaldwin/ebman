@@ -59,6 +59,21 @@ pub(crate) struct TfEnv {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct TfState {
     pub envs: Vec<TfEnv>,
+    /// Terraform's own `serial`, incremented on every state write.
+    ///
+    /// Surfaced because a pulled state file goes stale silently: the
+    /// drift report against a six-day-old `state.json` looks exactly
+    /// like one against current state, and says the fleet matches
+    /// intent when intent has moved. ebman cannot know whether this
+    /// serial is the latest — it does not talk to the backend — so the
+    /// honest thing is to show which one was compared and let the
+    /// reader judge.
+    pub serial: Option<u64>,
+    /// Terraform's `lineage` — identifies the state's ancestry. A
+    /// different lineage means a DIFFERENT state file, not an older
+    /// one: pointing `terraform.state_path` at the wrong workspace
+    /// produces a confident report about the wrong fleet.
+    pub lineage: Option<String>,
 }
 
 impl TfState {
@@ -87,6 +102,10 @@ impl TfState {
 struct RawTfState {
     #[serde(default)]
     resources: Vec<RawResource>,
+    #[serde(default)]
+    serial: Option<u64>,
+    #[serde(default)]
+    lineage: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -208,7 +227,11 @@ pub(crate) fn parse(text: &str) -> Option<TfState> {
             }
         }
     }
-    Some(TfState { envs })
+    Some(TfState {
+        envs,
+        serial: raw.serial,
+        lineage: raw.lineage,
+    })
 }
 
 /// Pull the fields ebman compares from a single instance's
@@ -266,6 +289,42 @@ fn extract_tags(v: Option<&serde_json::Value>) -> std::collections::BTreeMap<Str
         }
     }
     out
+}
+
+/// Where a drift comparison's Terraform state came from, and how old
+/// the file is.
+///
+/// A pulled `state.json` goes stale silently. The drift report against
+/// a six-day-old file looks exactly like one against current state, and
+/// says the fleet matches intent when intent has moved — the same shape
+/// as a version string that is right when written and wrong afterwards.
+///
+/// ebman cannot tell whether `serial` is the LATEST: it reads state
+/// files and does not talk to backends. So it shows which state was
+/// compared and when the file was written, and leaves the judgement
+/// where the information is.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct StateProvenance {
+    pub serial: Option<u64>,
+    pub lineage: Option<String>,
+    /// The state FILE's mtime — when it was pulled, not when Terraform
+    /// last wrote the state. For a human this is the more actionable of
+    /// the two: "pulled six days ago" lands faster than a serial.
+    pub pulled_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl StateProvenance {
+    pub(crate) fn of(state: &TfState, path: Option<&Path>) -> Self {
+        let pulled_at = path
+            .and_then(|p| std::fs::metadata(p).ok())
+            .and_then(|m| m.modified().ok())
+            .map(chrono::DateTime::<chrono::Utc>::from);
+        Self {
+            serial: state.serial,
+            lineage: state.lineage.clone(),
+            pulled_at,
+        }
+    }
 }
 
 /// Where to read tfstate from, in precedence order.
@@ -443,6 +502,7 @@ pub(crate) fn compute_drift(
 /// ```
 pub(crate) fn render_drift_json(
     tfstate_path: Option<&Path>,
+    provenance: Option<&StateProvenance>,
     reports: &[(String, bool, Vec<DriftField>)],
 ) -> String {
     let mut out = String::from("{");
@@ -452,6 +512,38 @@ pub(crate) fn render_drift_json(
             out.push('"');
             push_escaped(&mut out, &p.display().to_string());
             out.push('"');
+        }
+        None => out.push_str("null"),
+    }
+    // Provenance next to the verdict, not appended after it: the
+    // report reads as authoritative and this is what qualifies it.
+    out.push_str(",\"state\":");
+    match provenance {
+        Some(p) => {
+            out.push_str("{\"serial\":");
+            match p.serial {
+                Some(n) => out.push_str(&n.to_string()),
+                None => out.push_str("null"),
+            }
+            out.push_str(",\"lineage\":");
+            match &p.lineage {
+                Some(l) => {
+                    out.push('"');
+                    push_escaped(&mut out, l);
+                    out.push('"');
+                }
+                None => out.push_str("null"),
+            }
+            out.push_str(",\"pulled_at\":");
+            match p.pulled_at {
+                Some(t) => {
+                    out.push('"');
+                    push_escaped(&mut out, &t.to_rfc3339());
+                    out.push('"');
+                }
+                None => out.push_str("null"),
+            }
+            out.push('}');
         }
         None => out.push_str("null"),
     }
@@ -1017,7 +1109,7 @@ mod tests {
                 live_value: "8".into(),
             }],
         )];
-        let json = render_drift_json(Some(Path::new("./terraform.tfstate")), &reports);
+        let json = render_drift_json(Some(Path::new("./terraform.tfstate")), None, &reports);
         // Round-trip through the YAML-superset parser to confirm
         // it's valid JSON.
         // A JSON parser, so "valid JSON" is what this actually
@@ -1037,7 +1129,7 @@ mod tests {
 
     #[test]
     fn render_drift_json_null_path_when_no_tfstate_discovered() {
-        let json = render_drift_json(None, &[]);
+        let json = render_drift_json(None, None, &[]);
         assert!(json.contains("\"tfstate\":null"));
     }
 
@@ -1152,5 +1244,72 @@ mod state_path_tests {
             h.contains("does not talk to backends"),
             "and it must be clear ebman reads files rather than fetching: {h}"
         );
+    }
+}
+
+#[cfg(test)]
+mod provenance_tests {
+    use super::{parse, render_drift_json, StateProvenance};
+
+    const STATE: &str = r#"{
+        "version": 4,
+        "serial": 86,
+        "lineage": "1f2e3d4c-5b6a-7890-abcd-ef1234567890",
+        "resources": []
+    }"#;
+
+    /// `serial` and `lineage` must survive parsing.
+    ///
+    /// A pulled state file goes stale silently: the drift report against
+    /// a six-day-old `state.json` is indistinguishable from one against
+    /// current state, and says the fleet matches intent when intent has
+    /// moved. ebman cannot know whether a serial is the latest — it
+    /// reads files and does not talk to backends — so showing which one
+    /// was compared is the honest maximum.
+    #[test]
+    fn the_state_identity_survives_parsing() {
+        let st = parse(STATE).expect("valid tfstate");
+        assert_eq!(st.serial, Some(86));
+        assert_eq!(
+            st.lineage.as_deref(),
+            Some("1f2e3d4c-5b6a-7890-abcd-ef1234567890"),
+            "lineage identifies a DIFFERENT state, not an older one — \
+             pointing at the wrong workspace reports confidently on the \
+             wrong fleet"
+        );
+    }
+
+    /// A state file without them still parses. Older Terraform versions
+    /// and hand-made fixtures omit both, and drift must not refuse to
+    /// run over a missing provenance field.
+    #[test]
+    fn a_state_without_identity_still_parses() {
+        let st = parse(r#"{"version":4,"resources":[]}"#).expect("valid");
+        assert_eq!(st.serial, None);
+        assert_eq!(st.lineage, None);
+    }
+
+    /// The drift report must CARRY the provenance, beside the verdict.
+    #[test]
+    fn the_drift_report_carries_the_state_it_compared() {
+        let st = parse(STATE).expect("valid");
+        // No path: `pulled_at` is unknowable without a file, and must
+        // be null rather than invented.
+        let prov = StateProvenance::of(&st, None);
+        assert_eq!(prov.serial, Some(86));
+        assert_eq!(prov.pulled_at, None);
+
+        let json = render_drift_json(None, Some(&prov), &[]);
+        assert!(json.contains("\"serial\":86"), "{json}");
+        assert!(
+            json.contains("1f2e3d4c-5b6a-7890-abcd-ef1234567890"),
+            "{json}"
+        );
+        assert!(json.contains("\"pulled_at\":null"), "{json}");
+
+        // And with no provenance at all the field is null, not absent —
+        // a missing key and a null one read differently to a consumer.
+        let bare = render_drift_json(None, None, &[]);
+        assert!(bare.contains("\"state\":null"), "{bare}");
     }
 }

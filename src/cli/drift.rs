@@ -284,7 +284,14 @@ pub async fn run(args: &[String]) -> Result<()> {
                 .collect();
             println!(
                 "{}",
-                terraform::render_drift_json(used_path.as_deref(), &shaped)
+                terraform::render_drift_json(
+                    used_path.as_deref(),
+                    Some(&terraform::StateProvenance::of(
+                        &tf_state,
+                        used_path.as_deref(),
+                    )),
+                    &shaped,
+                )
             );
         } else {
             for (region, env, managed, drift) in &reports {

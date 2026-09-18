@@ -132,6 +132,12 @@ safety.accounts.prod.read_only = true
 # stay where they already are. Precedence: `--tfstate PATH` (or the MCP
 # `tfstate_path` argument), then this key, then discovery from cwd.
 # terraform.state_path = "~/.config/ebman/uflexi.tfstate"
+#
+# A pulled file goes stale silently, so drift reports the state's
+# `serial`, `lineage` and the file's mtime alongside the verdict. ebman
+# cannot tell whether that serial is current — it never contacts the
+# backend — so it names what it compared and leaves the judgement to
+# you. Re-pull before trusting a clean report.
 
 # lint.disable = "EBL003,EBL006"
 
