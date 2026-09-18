@@ -402,6 +402,21 @@ fn render_events_json(events: &[aws::Event]) -> String {
     format!("[{}]", entries.join(","))
 }
 
+/// Merge per-group results into one newest-last, `limit`-capped list.
+///
+/// Each group is fetched and capped independently, so the union can
+/// exceed `limit` AND arrives ordered by group rather than by time — a
+/// reader scanning the tail of the array would see the last group's
+/// oldest lines rather than the fleet's newest. Extracted because it
+/// sits in an AWS-only path: mutating away the sort, and the trim, both
+/// left the whole suite green.
+fn merge_newest(events: &mut Vec<(String, crate::aws::LogEvent)>, limit: usize) {
+    events.sort_by_key(|(_, e)| e.timestamp_ms);
+    if events.len() > limit {
+        events.drain(0..events.len() - limit);
+    }
+}
+
 /// Render a `recent_logs` answer.
 ///
 /// `complete` sits at the top level rather than beside the events
@@ -1043,13 +1058,7 @@ impl Server {
             complete &= done;
             events.extend(evs.into_iter().map(|e| (g.clone(), e)));
         }
-        // Merge across groups, then keep the newest `limit` overall:
-        // each group was capped independently, so the union can exceed
-        // it and would otherwise be ordered by group rather than time.
-        events.sort_by_key(|(_, e)| e.timestamp_ms);
-        if events.len() > limit {
-            events.drain(0..events.len() - limit);
-        }
+        merge_newest(&mut events, limit);
         Ok(render_recent_logs_json(
             &env_name, &groups, complete, &events,
         ))
@@ -1347,5 +1356,253 @@ mod tests {
         for w in &writes {
             assert!(enabled.contains(w), "{w} missing under --allow-writes");
         }
+    }
+}
+
+#[cfg(test)]
+mod renderer_tests {
+    use super::*;
+
+    /// Every renderer below is reached ONLY through an AWS path, so
+    /// none of them had a test — mutating each one during a pre-release
+    /// review left the whole suite green. They are the JSON an agent
+    /// actually consumes, which makes them the last place that should
+    /// be unpinned.
+    ///
+    /// Testing the SHAPE, not a golden string: these must stay parseable
+    /// and carry their fields, and rewording a key is a deliberate
+    /// wire-format change that should break something.
+    fn parse(json: &str) -> Value {
+        serde_json::from_str(json)
+            .unwrap_or_else(|e| panic!("renderer emitted invalid JSON: {e}\n{json}"))
+    }
+
+    #[test]
+    fn alarms_render_state_and_reason() {
+        let alarms = vec![aws::CwAlarm {
+            name: "prod-5xx".into(),
+            state: "ALARM".into(),
+            state_reason: "Threshold crossed: 3 datapoints".into(),
+            metric_name: "HTTPCode_Target_5XX_Count".into(),
+            namespace: "AWS/ApplicationELB".into(),
+        }];
+        let v = parse(&render_alarms_json(&alarms));
+        assert_eq!(v[0]["name"], "prod-5xx");
+        assert_eq!(
+            v[0]["state"], "ALARM",
+            "the state is the whole point of listing an alarm"
+        );
+        assert!(
+            v[0]["reason"]
+                .as_str()
+                .is_some_and(|r| r.contains("Threshold")),
+            "the reason is what makes an ALARM actionable: {v}"
+        );
+        assert_eq!(render_alarms_json(&[]), "[]", "no alarms is an empty array");
+    }
+
+    #[test]
+    fn instances_render_their_causes() {
+        let instances = vec![aws::Instance {
+            id: "i-0abc".into(),
+            health: "Degraded".into(),
+            color: "Yellow".into(),
+            causes: vec!["ELB health failing".into(), "High CPU".into()],
+            instance_type: "t3.medium".into(),
+            availability_zone: "us-west-1a".into(),
+            launched_at: None,
+        }];
+        let v = parse(&render_instances_json(&instances));
+        assert_eq!(v[0]["id"], "i-0abc");
+        assert_eq!(v[0]["health"], "Degraded");
+        let causes = v[0]["causes"].as_array().expect("causes array");
+        assert_eq!(
+            causes.len(),
+            2,
+            "causes are the diagnosis — dropping them leaves only a colour: {v}"
+        );
+        assert_eq!(
+            v[0]["launched_at"],
+            Value::Null,
+            "an absent launch time must be null, not a defaulted now"
+        );
+    }
+
+    #[test]
+    fn versions_are_capped_and_ordered_as_given() {
+        let many: Vec<aws::AppVersion> = (0..25)
+            .map(|i| aws::AppVersion {
+                label: format!("build-{i}"),
+                description: String::new(),
+                created: None,
+            })
+            .collect();
+        let v = parse(&render_versions_json(&many));
+        let arr = v.as_array().expect("array");
+        assert_eq!(
+            arr.len(),
+            10,
+            "the bundle caps versions — an unbounded list buries the rest \
+             of the report"
+        );
+        assert_eq!(
+            arr[0]["label"], "build-0",
+            "and keeps the caller's order rather than re-sorting"
+        );
+    }
+
+    #[test]
+    fn recent_logs_render_a_timestamp_per_line() {
+        let events = vec![(
+            "/aws/elasticbeanstalk/api-prod/var/log/web.stdout.log".to_string(),
+            crate::aws::LogEvent {
+                timestamp_ms: 1_789_625_040_068,
+                stream: "i-0abc".into(),
+                message: "task finished".into(),
+            },
+        )];
+        let v = parse(&render_recent_logs_json("api-prod", &[], true, &events));
+        assert_eq!(v["env"], "api-prod");
+        assert_eq!(v["complete"], true);
+        let e = &v["events"][0];
+        assert!(
+            e["timestamp"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("2026-")),
+            "a log line without a timestamp cannot be correlated with anything: {v}"
+        );
+        assert_eq!(e["stream"], "i-0abc");
+        assert_eq!(e["message"], "task finished");
+    }
+
+    #[test]
+    fn worker_queues_render_the_task_and_the_origin() {
+        let queues = aws::WorkerQueues {
+            main_url: Some("https://sqs/main".into()),
+            dlq_url: Some("https://sqs/main-dlq".into()),
+            main_stats: Some(crate::aws::QueueStats {
+                visible: 0,
+                in_flight: 2,
+                delayed: 0,
+            }),
+            dlq_stats: Some(crate::aws::QueueStats {
+                visible: 1,
+                in_flight: 0,
+                delayed: 0,
+            }),
+            dlq_origin: Some(aws::DlqOrigin::Derived),
+        };
+        let msgs = vec![crate::aws::QueueMessage {
+            id: "m-1".into(),
+            receipt_handle: String::new(),
+            body: "elasticbeanstalk scheduled job".into(),
+            receive_count: 4,
+            sent_at: None,
+            task: Some(crate::aws::SqsdTask {
+                name: Some("Remove unattended jobs".into()),
+                path: Some("/STCleanupUnattendedJobs.do".into()),
+                scheduled_time_raw: Some("2026-09-17 06:04:00 UTC".into()),
+                scheduled_at: None,
+            }),
+        }];
+        let v = parse(&render_worker_queues_json(&queues, &msgs, true));
+
+        assert_eq!(v["dead_letter_queue"]["stats"]["visible"], 1);
+        assert_eq!(
+            v["dead_letter_queue"]["origin"], "derived",
+            "a derived url returning nothing is ordinary; a reported one \
+             that does is an anomaly — the consumer cannot tell without this"
+        );
+        assert_eq!(v["peeked"], true);
+        let t = &v["messages"][0]["task"];
+        assert_eq!(
+            t["name"], "Remove unattended jobs",
+            "the task name is the answer EB's health text does not give: {v}"
+        );
+        assert_eq!(t["scheduled_time"], "2026-09-17 06:04:00 UTC");
+        assert_eq!(v["messages"][0]["receive_count"], 4);
+
+        // A message that is not an EB task renders task: null, not an
+        // empty object that reads as a task with no name.
+        let plain = vec![crate::aws::QueueMessage {
+            id: "m-2".into(),
+            receipt_handle: String::new(),
+            body: "{}".into(),
+            receive_count: 1,
+            sent_at: None,
+            task: None,
+        }];
+        let v = parse(&render_worker_queues_json(&queues, &plain, true));
+        assert_eq!(v["messages"][0]["task"], Value::Null);
+    }
+
+    /// A web-tier env has no queues at all: nulls, not an error and not
+    /// zeroes that read as "the queue is empty".
+    #[test]
+    fn an_env_with_no_queues_renders_nulls() {
+        let none = aws::WorkerQueues {
+            main_url: None,
+            dlq_url: None,
+            main_stats: None,
+            dlq_stats: None,
+            dlq_origin: None,
+        };
+        let v = parse(&render_worker_queues_json(&none, &[], false));
+        assert_eq!(v["main_queue"]["url"], Value::Null);
+        assert_eq!(
+            v["main_queue"]["stats"],
+            Value::Null,
+            "no queue is not a queue with zero messages"
+        );
+        assert_eq!(v["dead_letter_queue"]["origin"], Value::Null);
+        assert_eq!(v["peeked"], false);
+    }
+
+    /// Per-group results must merge by TIME and cap to `limit`.
+    ///
+    /// Groups are fetched and capped independently, so the union
+    /// arrives ordered by group. Without the sort, the tail of the
+    /// array is the last group's oldest lines rather than the fleet's
+    /// newest — the same wrong answer this whole tool exists to avoid,
+    /// arriving by a different route.
+    #[test]
+    fn groups_merge_by_time_and_cap_to_the_limit() {
+        let ev = |group: &str, ts: i64| {
+            (
+                group.to_string(),
+                crate::aws::LogEvent {
+                    timestamp_ms: ts,
+                    stream: "s".into(),
+                    message: format!("{group}@{ts}"),
+                },
+            )
+        };
+        // Arrives grouped: web's three, then worker's three, interleaved
+        // in time.
+        let mut events = vec![
+            ev("web", 10),
+            ev("web", 30),
+            ev("web", 50),
+            ev("worker", 20),
+            ev("worker", 40),
+            ev("worker", 60),
+        ];
+        merge_newest(&mut events, 3);
+        assert_eq!(
+            events
+                .iter()
+                .map(|(_, e)| e.timestamp_ms)
+                .collect::<Vec<_>>(),
+            vec![40, 50, 60],
+            "the newest three across BOTH groups, in time order"
+        );
+
+        // Under the limit: everything survives, still time-ordered.
+        let mut few = vec![ev("worker", 9), ev("web", 1)];
+        merge_newest(&mut few, 50);
+        assert_eq!(
+            few.iter().map(|(_, e)| e.timestamp_ms).collect::<Vec<_>>(),
+            vec![1, 9]
+        );
     }
 }

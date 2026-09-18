@@ -986,3 +986,78 @@ async fn the_dlq_destructive_keys_arm_only_what_they_should() {
         app.error_message
     );
 }
+
+/// The DLQ view must name the task, and must not present the receive
+/// count as a retry count.
+///
+/// Both are render-path changes and neither was covered: mutating the
+/// task preview back to the message body, and `recv~` back to `recv:`,
+/// left the whole suite green during a pre-release review.
+///
+/// For an EB worker task the body is the fixed literal "elasticbeanstalk
+/// scheduled job" — the same string on every row — so rendering it
+/// wastes the widest column on nothing and answers none of the question
+/// the screen exists for.
+#[tokio::test]
+async fn the_dlq_view_names_the_task_and_marks_the_count_approximate() {
+    let mut app = test_app();
+    let mut state = open_dlq_state("api-prod");
+    state.messages = vec![crate::aws::QueueMessage {
+        id: "m-1".into(),
+        receipt_handle: "rh-1".into(),
+        body: "elasticbeanstalk scheduled job".into(),
+        receive_count: 4,
+        sent_at: None,
+        task: Some(crate::aws::SqsdTask {
+            name: Some("Remove unattended jobs".into()),
+            path: Some("/STCleanupUnattendedJobs.do".into()),
+            scheduled_time_raw: Some("2026-09-17 06:04:00 UTC".into()),
+            scheduled_at: None,
+        }),
+    }];
+    app.dlq = Some(state);
+    app.mode = crate::app::Mode::Dlq;
+
+    let screen = render(&mut app, 200, 40);
+    assert!(
+        screen.contains("Remove unattended jobs"),
+        "the task name is what the screen is for:\n{screen}"
+    );
+    assert!(
+        !screen.contains("elasticbeanstalk scheduled job"),
+        "the fixed cron body carries nothing and must not take the \
+         widest column:\n{screen}"
+    );
+    assert!(
+        screen.contains("recv~"),
+        "the receive count includes ebman's own peeks — rendered as a \
+         bare `recv:` it reads as a retry count:\n{screen}"
+    );
+}
+
+/// A message that is not an EB task still renders its body.
+///
+/// Without this the preview change could drop the body entirely and the
+/// test above would still pass — it only asserts the cron literal is
+/// absent.
+#[tokio::test]
+async fn a_plain_dlq_message_still_shows_its_body() {
+    let mut app = test_app();
+    let mut state = open_dlq_state("api-prod");
+    state.messages = vec![crate::aws::QueueMessage {
+        id: "m-2".into(),
+        receipt_handle: "rh-2".into(),
+        body: "ORDER-4471-RETRY".into(),
+        receive_count: 1,
+        sent_at: None,
+        task: None,
+    }];
+    app.dlq = Some(state);
+    app.mode = crate::app::Mode::Dlq;
+
+    let screen = render(&mut app, 200, 40);
+    assert!(
+        screen.contains("ORDER-4471-RETRY"),
+        "a non-task message has nothing BUT its body:\n{screen}"
+    );
+}
