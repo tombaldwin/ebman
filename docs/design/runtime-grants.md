@@ -76,6 +76,47 @@ defence" — the restrictions **are** that bound. The difference is that
 the operator opts out of what they do not want, rather than opting in
 to everything they might need.
 
+## Parity with the TUI is the default
+
+The maintainer's ruling, and the argument that makes the rest cohere:
+
+> The default (ie no flag) should be maximum permissions, just like a
+> user using the TUI app.
+
+Same tool, same credentials, same operator. The TUI can terminate prod
+today with no flag and no opt-in; requiring one on the MCP surface was
+never justified by a different threat, only by unfamiliarity with the
+consumer. A surface that is more restrictive than the tool it wraps
+teaches people that the restriction is ceremony, which is how they
+learn to switch it off permanently.
+
+**What this retires, and what survives inverted.** It retires
+`--allow-writes` as a permission — shipped in 0.40.0, designed away the
+following day, which is the right outcome but should be recorded rather
+than buried. `WriteScope` itself survives, inverted: the same type,
+parser, two-layer gating and tests, re-read as a **restriction** —
+"only these verbs may ever be asked about" — which is config-may-only-
+say-no shaped. The default flips from `None` to `All`.
+
+**The constraint that comes with it, and it is a hard one.** Under the
+previous design, a missing approval gate left the operator *safe by
+default*: no elicitation meant falling back to a flag. Under this one a
+missing gate leaves them *open by default*. The TUI's gate is that a
+human is typing, and that `:terminate` demands the environment name
+back. The MCP surface's gate is the client prompt or elicitation — and
+neither has been measured.
+
+So: **verify the gate before flipping the default, not after.** Step 2
+of the implementation order below is conditional on knowing that either
+the client prompts on `destructiveHint`, or elicitation is available.
+If neither holds, the choice is between open-with-a-loud-warning and
+holding the flip until there is a gate — a judgement to make with the
+measurement in hand, not in advance of it.
+
+It also means existing users upgrading move from read-only to
+write-capable. That belongs at the top of a changelog, not in a
+footnote.
+
 ## The shape
 
 **There is no pre-set permission.** The `--allow-writes` flag stops
@@ -502,6 +543,11 @@ And one that is ours:
 2. **Advertise write tools by default**, subject to those restrictions.
    On a client that prompts for destructive tools this alone may
    deliver mechanism 1 — in-conversation approval, no further work.
+
+   **Conditional on the gate existing.** Flipping this default without
+   knowing that the client prompts, or that elicitation is available,
+   converts a safe-by-default surface into an open-by-default one. Do
+   not ship the flip and the measurement in the same release.
 3. **Elicitation** (mechanism 2), if the measurement says it is
    available, to make the prompt say something worth reading: the plan,
    and what the action forecloses.
