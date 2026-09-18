@@ -1381,6 +1381,7 @@ impl App {
             notify_bell: config.notify_bell,
             cfg: ResolvedConfig {
                 notify_webhook: config.notify_webhook.clone(),
+                mcp_peek_bodies: config.mcp_peek_bodies,
                 command_aliases: config.command_aliases.clone(),
                 lint_disable: config.lint_disable.clone(),
                 explain_settings,
@@ -1675,6 +1676,7 @@ impl App {
             notify_bell: config.notify_bell,
             cfg: ResolvedConfig {
                 notify_webhook: config.notify_webhook.clone(),
+                mcp_peek_bodies: config.mcp_peek_bodies,
                 command_aliases: config.command_aliases.clone(),
                 lint_disable: config.lint_disable.clone(),
                 explain_settings,

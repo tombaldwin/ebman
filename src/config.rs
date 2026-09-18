@@ -93,6 +93,29 @@ pub struct Config {
     /// backends and holds no token for them: the operator runs
     /// `terraform state pull > somewhere.json` and points this at it,
     /// which works for every backend rather than the one we implemented.
+    /// Return dead-lettered message BODIES on a peek.
+    ///
+    /// Defaults to `true` — current behaviour, so enabling the switch
+    /// is a choice and leaving it alone changes nothing. The default
+    /// is not a judgement that bodies are harmless; it is that turning
+    /// them off silently can cost the operator the answer.
+    ///
+    /// `beanstalk.sqsd.*` (task name / path / scheduled time) is a
+    /// separate field from `body` in the same message, so suppressing
+    /// one leaves the other intact — that is structural. But those
+    /// attributes are set by EB's worker daemon for its own scheduled
+    /// tasks; a message an APPLICATION posted to the worker queue
+    /// carries its identity in the body or nowhere, which is why
+    /// `peek_messages` asks for `All` attributes in the first place.
+    /// So for that shape, `false` removes the only diagnostic content
+    /// there is, and an operator who cannot see it will not know what
+    /// they are missing.
+    ///
+    /// Operator-set only, never agent-set: an agent must not be able
+    /// to widen its own access. The tool description states which mode
+    /// is active, so a peek that returns no bodies reads as a policy
+    /// choice rather than an empty queue.
+    pub(crate) mcp_peek_bodies: bool,
     pub(crate) terraform_state_path: Option<String>,
     /// Optional outbound webhook for audit-line fan-out. Each audit
     /// line written to `~/.cache/ebman/audit.log` is also POSTed to
@@ -184,6 +207,7 @@ impl Default for Config {
             safety_envs: std::collections::HashMap::new(),
             safety_accounts: std::collections::HashMap::new(),
             safety_parse_errors: Vec::new(),
+            mcp_peek_bodies: true,
             terraform_state_path: None,
             notify_webhook: None,
             command_aliases: std::collections::HashMap::new(),
@@ -395,6 +419,11 @@ pub(crate) fn parse(text: &str) -> Config {
             }
             "extra_regions" => {
                 cfg.extra_regions = crate::util::split_csv(&value);
+            }
+            "mcp.peek_bodies" => {
+                if let Some(b) = parse_bool(&value) {
+                    cfg.mcp_peek_bodies = b;
+                }
             }
             "terraform.state_path" => {
                 cfg.terraform_state_path = Some(value).filter(|v| !v.is_empty())
@@ -668,6 +697,12 @@ pub(crate) fn serialize(cfg: &Config) -> String {
     }
     if let Some(b) = cfg.grouped_default {
         out.push_str(&format!("grouped_default = {b}\n"));
+    }
+    // Only when it differs from the default: writing `true` into every
+    // saved config would make the key look like something :settings
+    // manages, and it is deliberately operator-only.
+    if !cfg.mcp_peek_bodies {
+        out.push_str("mcp.peek_bodies = false\n");
     }
     out.push_str(&format!("theme = \"{}\"\n", cfg.theme));
     out.push_str(&format!("icons = \"{}\"\n", cfg.icons));
@@ -1047,6 +1082,7 @@ accounts.staging.external_id = "abc-xyz"
             safety_envs: std::collections::HashMap::new(),
             safety_accounts: std::collections::HashMap::new(),
             safety_parse_errors: Vec::new(),
+            mcp_peek_bodies: true,
             terraform_state_path: None,
             notify_webhook: Some("https://hooks.slack.com/services/EXAMPLE".into()),
             command_aliases: {
@@ -1827,5 +1863,51 @@ explain.max_tokens = 512
             vec!["MyDim".to_string()],
             "the parse arm must apply the same rules as the helper"
         );
+    }
+
+    /// `mcp.peek_bodies` survives a `:settings` round-trip.
+    ///
+    /// The switch is worthless if opening a form turns it back on.
+    /// `:settings` rebuilds a whole `Config` from App state and saves
+    /// that, so any key the App does not carry is silently reset to
+    /// its default — and this key's default is `true`. It is mirrored
+    /// into `ResolvedConfig` for exactly this reason and no other; the
+    /// TUI never otherwise reads it.
+    #[test]
+    fn peek_bodies_survives_a_settings_save() {
+        let cfg = parse("mcp.peek_bodies = false\n");
+        assert!(!cfg.mcp_peek_bodies, "parsed");
+
+        let round_tripped = parse(&serialize(&cfg));
+        assert!(
+            !round_tripped.mcp_peek_bodies,
+            "a save must not re-enable message bodies"
+        );
+
+        // The default is not written out — it is operator-only, not a
+        // key `:settings` manages, and emitting `true` into every
+        // saved config would imply otherwise.
+        let on = crate::config::Config::default();
+        assert!(on.mcp_peek_bodies);
+        assert!(
+            !serialize(&on).contains("peek_bodies"),
+            "the default must not be serialised"
+        );
+        assert!(
+            parse(&serialize(&on)).mcp_peek_bodies,
+            "and absence must still read as on"
+        );
+    }
+
+    /// An unparseable value leaves the stricter setting in place.
+    #[test]
+    fn a_malformed_peek_bodies_value_does_not_flip_it_on() {
+        let mut cfg = parse("mcp.peek_bodies = false\nmcp.peek_bodies = yes-please\n");
+        assert!(
+            !cfg.mcp_peek_bodies,
+            "a value that does not parse must not widen access"
+        );
+        cfg = parse("mcp.peek_bodies = FALSE\n");
+        assert!(!cfg.mcp_peek_bodies, "case-insensitive booleans parse");
     }
 }

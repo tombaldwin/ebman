@@ -115,8 +115,15 @@ pub(super) fn append_cannot_fire(body: String) -> String {
 /// The static tool table. Descriptions carry the coverage caveats —
 /// an agent treats "no findings" as authoritative, so a wiring gap
 /// (EBL011/016/020 can't fire here) must be stated IN the tool.
-pub(super) fn tool_table(scope: &super::WriteScope) -> Value {
+pub(super) fn tool_table(scope: &super::WriteScope, peek_bodies: bool) -> Value {
     let mut tools = read_tool_table();
+    if !peek_bodies {
+        // The agent must be told the policy is ON, or a withheld body
+        // reads as an empty one. The description is the only channel
+        // that reaches it — a config key it cannot see, and a
+        // placeholder it might not look at, are not a contract.
+        note_withheld_bodies(&mut tools);
+    }
     if scope.any() {
         if let Some(arr) = tools.as_array_mut() {
             // Only the scoped verbs are advertised. A verb outside the
@@ -142,6 +149,38 @@ pub(super) fn tool_table(scope: &super::WriteScope) -> Value {
     // added a tool by copying its neighbour.
     super::annotations::annotate(&mut tools);
     tools
+}
+
+/// Tell the agent that `mcp.peek_bodies = false` is in force.
+///
+/// Appended to the description of every tool that can return a message
+/// body. Without it the suppression is invisible at the point of use:
+/// the operator sees the config, the agent sees a body that is not
+/// there, and "withheld" and "empty" are the same observation.
+fn note_withheld_bodies(tools: &mut Value) {
+    const NOTE: &str = " BODIES ARE WITHHELD on this server (`mcp.peek_bodies = false`): each message's `body` is replaced with a marker naming that setting, NOT omitted, so a withheld body is never an empty one. The `beanstalk.sqsd.*` task fields are unaffected. A message posted by an application rather than by EB's scheduler carries no such fields, so for those this server can tell you a message dead-lettered and not what it was — say so rather than reporting the queue as uninformative.";
+    let Some(arr) = tools.as_array_mut() else {
+        return;
+    };
+    for t in arr.iter_mut() {
+        // The two tools that can carry a body. Keyed by name rather
+        // than by scanning descriptions, so adding a third is a
+        // deliberate edit here and not an accident of wording.
+        let carries_body = t
+            .get("name")
+            .and_then(|n| n.as_str())
+            .is_some_and(|n| n == "worker_queues" || n == "why");
+        if !carries_body {
+            continue;
+        }
+        if let Some(d) = t.get_mut("description").and_then(|d| d.as_str()).map(|d| {
+            let mut s = d.to_string();
+            s.push_str(NOTE);
+            s
+        }) {
+            t["description"] = json!(d);
+        }
+    }
 }
 
 fn read_tool_table() -> Value {
@@ -552,6 +591,7 @@ fn render_worker_queues_json(
     queues: &aws::WorkerQueues,
     messages: &[aws::QueueMessage],
     peeked: bool,
+    bodies: bool,
 ) -> String {
     let stats = |s: &Option<aws::QueueStats>| match s {
         Some(s) => format!(
@@ -591,13 +631,24 @@ fn render_worker_queues_json(
                 Some(t) => format!("\"{}\"", crate::util::json_escape(&t.to_rfc3339())),
                 None => "null".to_string(),
             };
+            // `body` is REPLACED, never dropped. A missing key reads as
+            // "this message had no body", which is a different claim
+            // and the one an agent would act on — the same
+            // absence-that-reads-as-an-answer shape `peeked` exists to
+            // prevent. The placeholder says what happened and which
+            // control produced it.
+            let body = if bodies {
+                format!("\"{}\"", crate::util::json_escape(&m.body))
+            } else {
+                "\"(withheld: mcp.peek_bodies = false)\"".to_string()
+            };
             format!(
-                "{{\"id\":\"{}\",\"sent_at\":{},\"receive_count\":{},\"task\":{},\"body\":\"{}\"}}",
+                "{{\"id\":\"{}\",\"sent_at\":{},\"receive_count\":{},\"task\":{},\"body\":{}}}",
                 crate::util::json_escape(&m.id),
                 sent,
                 m.receive_count,
                 task,
-                crate::util::json_escape(&m.body)
+                body
             )
         })
         .collect();
@@ -1072,7 +1123,7 @@ impl Server {
                 &render_events_json(&events),
                 "null",
                 "null",
-                &render_worker_queues_json(&queues, &[], false),
+                &render_worker_queues_json(&queues, &[], false, self.safety_cfg.mcp_peek_bodies),
                 "null",
                 &[],
             ));
@@ -1136,7 +1187,7 @@ impl Server {
                     None => None,
                 };
                 let (msgs, peeked) = dlq_peek_outcome(peek, &mut errors);
-                render_worker_queues_json(&q, &msgs, peeked)
+                render_worker_queues_json(&q, &msgs, peeked, self.safety_cfg.mcp_peek_bodies)
             }
             Err(e) => {
                 errors.push(("queues".into(), e.to_string()));
@@ -1247,7 +1298,12 @@ impl Server {
             } else {
                 Vec::new()
             };
-            return Ok(render_worker_queues_json(&queues, &msgs, peek));
+            return Ok(render_worker_queues_json(
+                &queues,
+                &msgs,
+                peek,
+                self.safety_cfg.mcp_peek_bodies,
+            ));
         }
 
         let client = self.client(args).await?;
@@ -1287,6 +1343,7 @@ impl Server {
             &queues,
             &messages,
             peek && peekable,
+            self.safety_cfg.mcp_peek_bodies,
         ))
     }
 
@@ -1493,7 +1550,7 @@ mod tests {
             "the source scan found only {}",
             arms.len()
         );
-        let advertised = names_in(&tool_table(&crate::cli::mcp::WriteScope::All));
+        let advertised = names_in(&tool_table(&crate::cli::mcp::WriteScope::All, true));
 
         let mut missing: Vec<&String> = advertised.iter().filter(|n| !arms.contains(n)).collect();
         missing.sort();
@@ -1517,7 +1574,7 @@ mod tests {
         // The membership check in `mod.rs` makes the table the authority
         // on what can be called at all, so a write tool leaking into the
         // read-only table opens a write surface — not a listing cosmetic.
-        let read_only = names_in(&tool_table(&crate::cli::mcp::WriteScope::None));
+        let read_only = names_in(&tool_table(&crate::cli::mcp::WriteScope::None, true));
         let writes: Vec<String> = super::super::writes::write_tool_descriptors()
             .iter()
             .map(|d| d["name"].as_str().expect("name").to_string())
@@ -1529,7 +1586,7 @@ mod tests {
                 "{w} is advertised with --allow-writes off"
             );
         }
-        let enabled = names_in(&tool_table(&crate::cli::mcp::WriteScope::All));
+        let enabled = names_in(&tool_table(&crate::cli::mcp::WriteScope::All, true));
         for w in &writes {
             assert!(enabled.contains(w), "{w} missing under --allow-writes");
         }
@@ -1756,7 +1813,7 @@ mod renderer_tests {
                 scheduled_at: None,
             }),
         }];
-        let v = parse(&render_worker_queues_json(&queues, &msgs, true));
+        let v = parse(&render_worker_queues_json(&queues, &msgs, true, true));
 
         assert_eq!(v["dead_letter_queue"]["stats"]["visible"], 1);
         assert_eq!(
@@ -1783,7 +1840,7 @@ mod renderer_tests {
             sent_at: None,
             task: None,
         }];
-        let v = parse(&render_worker_queues_json(&queues, &plain, true));
+        let v = parse(&render_worker_queues_json(&queues, &plain, true, true));
         assert_eq!(v["messages"][0]["task"], Value::Null);
     }
 
@@ -1798,7 +1855,7 @@ mod renderer_tests {
             dlq_stats: None,
             dlq_origin: None,
         };
-        let v = parse(&render_worker_queues_json(&none, &[], false));
+        let v = parse(&render_worker_queues_json(&none, &[], false, true));
         assert_eq!(v["main_queue"]["url"], Value::Null);
         assert_eq!(
             v["main_queue"]["stats"],
@@ -1885,5 +1942,79 @@ mod renderer_tests {
         let (kept, complete) = cap_log_groups(vec!["chosen".into()], true);
         assert_eq!(kept, vec!["chosen".to_string()]);
         assert!(complete);
+    }
+
+    /// `mcp.peek_bodies = false` withholds bodies and says so.
+    ///
+    /// Requested by a field report: that fleet's worker payloads are
+    /// job dispatches for a live staffing platform, so a body can
+    /// carry seller and buyer identifiers, and the tool description
+    /// was the only thing between a peek and a Jira ticket.
+    #[tokio::test]
+    async fn peek_bodies_off_withholds_the_body_and_says_so() {
+        let mut cfg = crate::config::Config::default();
+        assert!(
+            cfg.mcp_peek_bodies,
+            "the default must be current behaviour — turning bodies off \
+             silently would cost the operator the answer on app-posted \
+             messages, which carry their identity nowhere else"
+        );
+        cfg.mcp_peek_bodies = false;
+        let s = Server::with_config(true, false, crate::cli::mcp::WriteScope::None, cfg);
+
+        let v: Value = serde_json::from_str(
+            &s.tool_worker_queues(&json!({"env": "poly-batch", "peek": true}))
+                .await
+                .expect("worker_queues"),
+        )
+        .expect("json");
+
+        let msgs = v["messages"].as_array().expect("messages");
+        assert!(!msgs.is_empty(), "need messages to withhold: {v}");
+        for m in msgs {
+            // Replaced, not dropped. An absent key reads as "no body",
+            // which is a different claim than "not shown to you".
+            let body = m["body"]
+                .as_str()
+                .expect("body must still be present, as a marker");
+            assert!(
+                body.contains("mcp.peek_bodies"),
+                "the marker must name the control that produced it: {body}"
+            );
+            // The task fields survive — separate fields on the same
+            // message, which is what makes the switch usable at all.
+            if m["task"].is_object() {
+                assert!(
+                    m["task"]["name"].is_string(),
+                    "suppressing the body must not suppress the task: {m}"
+                );
+            }
+        }
+
+        // And the agent is told, in the only channel that reaches it.
+        let listed = tool_table(&crate::cli::mcp::WriteScope::None, false);
+        let desc = |name: &str| -> String {
+            listed
+                .as_array()
+                .expect("arr")
+                .iter()
+                .find(|t| t["name"] == name)
+                .and_then(|t| t["description"].as_str())
+                .unwrap_or_default()
+                .to_string()
+        };
+        for tool in ["worker_queues", "why"] {
+            assert!(
+                desc(tool).contains("BODIES ARE WITHHELD"),
+                "`{tool}` can return a body and must declare the policy"
+            );
+        }
+        // Default mode says nothing — the note is a deviation notice,
+        // not boilerplate every server carries.
+        let normal = tool_table(&crate::cli::mcp::WriteScope::None, true);
+        assert!(
+            !normal.to_string().contains("BODIES ARE WITHHELD"),
+            "the note must not appear when bodies are on"
+        );
     }
 }

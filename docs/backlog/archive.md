@@ -3873,3 +3873,39 @@ stripped and the credentials files pointed at `/dev/null`.
 Closed late. Dependabot #11 merged at 14:10 the same day and CI on main
 is green; `key_arm_order.rs` reads the guard off `Pat::Guard` as syn 3
 requires. The item was still filed as four red CI jobs.
+
+### `mcp.peek_bodies` (0.40, 2026-09-18)
+
+An operator switch to withhold dead-lettered message bodies from the
+MCP surface. `worker_queues --peek` and `why` returned each body
+verbatim, and ebman cannot redact one: redaction is namespace-and-key
+based, a queue body is free text the operator's own application wrote.
+The tool description was the only thing between a peek and a payload in
+a ticket, and it relied on agent discipline the tool could not enforce.
+
+The item asked for a precondition before implementing — establish
+whether the `beanstalk.sqsd.*` attributes carry the diagnosis for
+app-posted tasks, since if they do not, a default of `false` silently
+costs the operator the answer. That question did not have to be
+resolved: the shape the item proposed *regardless* was "default to
+current behaviour and state the active mode in the tool description",
+which is safe under either answer. Shipped as that, with the tension
+written into the config docs so an operator turning it off knows what
+they give up.
+
+Three things the implementation turned on:
+
+- **The body key is replaced, not dropped.** An absent key reads as
+  "this message had no body", which is a different claim and the one an
+  agent would act on — the same absence-that-reads-as-an-answer shape
+  the `peeked` flag exists to prevent.
+- **The tool descriptions declare the policy** when it is active. A
+  config key is invisible to the agent; without the note, withheld and
+  empty are the same observation.
+- **`ResolvedConfig` mirrors the key** even though the TUI never reads
+  it. `:settings` rebuilds a whole `Config` from App state and saves
+  that, so a key the App does not carry is reset to its default — and
+  this one defaults to on. An operator who turned bodies off and opened
+  the settings form would have got them back with no indication. A
+  mutation proved the config-level round-trip test did not cover that
+  path; a second test now drives `current_config_snapshot` directly.

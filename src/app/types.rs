@@ -982,6 +982,15 @@ pub(crate) struct ResolvedConfig {
     /// Mirror of `Config::notify_webhook` (fan-out reads a process-wide
     /// `OnceLock` in [`crate::audit`]; held here for `:settings` save).
     pub notify_webhook: Option<String>,
+    /// Mirror of `Config::mcp_peek_bodies`, held for the same reason
+    /// and no other: the TUI never reads it — it governs the MCP
+    /// surface — but `:settings` rebuilds a whole `Config` from App
+    /// state before saving, so a key absent from here is silently
+    /// reset to its default on the next save. For this key that means
+    /// an operator who turned message bodies OFF gets them back on by
+    /// opening the settings form, which is the regression the switch
+    /// exists to prevent.
+    pub mcp_peek_bodies: bool,
     /// `config.toml` `alias.NAME = "expansion"` command aliases.
     pub command_aliases: std::collections::HashMap<String, String>,
     /// Operator-disabled lint rule IDs (`lint.disable = "EBL001,…"`).

@@ -180,11 +180,14 @@ mod tests {
     #[test]
     fn every_advertised_tool_is_classified() {
         for allow_writes in [false, true] {
-            let table = super::super::tools::tool_table(&if allow_writes {
-                super::super::WriteScope::All
-            } else {
-                super::super::WriteScope::None
-            });
+            let table = super::super::tools::tool_table(
+                &if allow_writes {
+                    super::super::WriteScope::All
+                } else {
+                    super::super::WriteScope::None
+                },
+                true,
+            );
             let arr = table.as_array().expect("tools/list is an array");
             assert!(
                 arr.len() >= 8,
@@ -226,7 +229,7 @@ mod tests {
     #[test]
     fn no_table_entry_names_a_tool_that_is_gone() {
         let advertised: Vec<String> =
-            super::super::tools::tool_table(&crate::cli::mcp::WriteScope::All)
+            super::super::tools::tool_table(&crate::cli::mcp::WriteScope::All, true)
                 .as_array()
                 .expect("array")
                 .iter()
@@ -269,7 +272,7 @@ mod tests {
         // The distinction the whole feature exists for. Asserted over
         // the real tables in both modes, so a tool moving between them
         // cannot keep a stale hint.
-        let reads = super::super::tools::tool_table(&crate::cli::mcp::WriteScope::None);
+        let reads = super::super::tools::tool_table(&crate::cli::mcp::WriteScope::None, true);
         for tool in reads.as_array().expect("array") {
             let name = tool["name"].as_str().expect("name");
             assert_eq!(
@@ -278,7 +281,7 @@ mod tests {
             );
         }
 
-        let with_writes = super::super::tools::tool_table(&crate::cli::mcp::WriteScope::All);
+        let with_writes = super::super::tools::tool_table(&crate::cli::mcp::WriteScope::All, true);
         let write_names: Vec<&str> = with_writes
             .as_array()
             .expect("array")

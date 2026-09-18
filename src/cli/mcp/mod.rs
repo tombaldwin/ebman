@@ -647,7 +647,7 @@ impl Server {
             "tools/list" => Some(json!({
                 "jsonrpc": "2.0",
                 "id": id,
-                "result": {"tools": tool_table(&self.write_scope)}
+                "result": {"tools": tool_table(&self.write_scope, self.safety_cfg.mcp_peek_bodies)}
             })),
             "tools/call" => {
                 let params = req.get("params").cloned().unwrap_or_else(|| json!({}));
@@ -660,7 +660,7 @@ impl Server {
                     .get("arguments")
                     .cloned()
                     .unwrap_or_else(|| json!({}));
-                let advertised = tool_table(&self.write_scope)
+                let advertised = tool_table(&self.write_scope, self.safety_cfg.mcp_peek_bodies)
                     .as_array()
                     .is_some_and(|t| t.iter().any(|d| d["name"] == name.as_str()));
                 // A real verb this server was not granted falls through
@@ -973,7 +973,7 @@ mod tests {
     #[tokio::test]
     async fn write_tools_appear_only_under_allow_writes() {
         let list = |s: &Server| {
-            let arr = tool_table(&s.write_scope);
+            let arr = tool_table(&s.write_scope, true);
             arr.as_array()
                 .unwrap()
                 .iter()
@@ -3035,7 +3035,7 @@ mod tests {
             "a write verb exists in one table and not the other: nameable={nameable:?}"
         );
 
-        let advertised: Vec<String> = tool_table(&WriteScope::All)
+        let advertised: Vec<String> = tool_table(&WriteScope::All, true)
             .as_array()
             .expect("array")
             .iter()
@@ -3126,7 +3126,7 @@ mod tests {
             !empty.any(),
             "an empty grant must not read as write-capable"
         );
-        let names: Vec<String> = tool_table(&empty)
+        let names: Vec<String> = tool_table(&empty, true)
             .as_array()
             .expect("array")
             .iter()
