@@ -258,6 +258,42 @@ pub(super) enum WriteVerb {
 }
 
 impl WriteVerb {
+    /// Every verb. Exhaustiveness is pinned by a guard, not by hope:
+    /// `every_write_verb_round_trips_through_the_tool_table` compares
+    /// this against the descriptor table, so a variant added to one
+    /// and not the other fails the build.
+    #[cfg(test)]
+    pub(super) const ALL: [WriteVerb; 8] = [
+        WriteVerb::Deploy,
+        WriteVerb::Restart,
+        WriteVerb::Rebuild,
+        WriteVerb::Terminate,
+        WriteVerb::SetOption,
+        WriteVerb::DlqResend,
+        WriteVerb::DlqDelete,
+        WriteVerb::DlqPurge,
+    ];
+
+    /// The MCP tool name this verb is advertised as.
+    ///
+    /// Separate from `label()`, which is the AUDIT name: the audit
+    /// vocabulary matches what the TUI dispatches under (`dlq-purge`)
+    /// while the tool name is what a client calls (`dlq_purge`). Both
+    /// are needed and conflating them would make either the scope flag
+    /// or `ebman audit --action` wrong.
+    pub(super) fn tool_name(self) -> &'static str {
+        match self {
+            WriteVerb::Deploy => "deploy",
+            WriteVerb::Restart => "restart",
+            WriteVerb::Rebuild => "rebuild",
+            WriteVerb::Terminate => "terminate",
+            WriteVerb::SetOption => "set_option",
+            WriteVerb::DlqResend => "dlq_resend",
+            WriteVerb::DlqDelete => "dlq_delete",
+            WriteVerb::DlqPurge => "dlq_purge",
+        }
+    }
+
     fn label(self) -> &'static str {
         match self {
             WriteVerb::Deploy => "Deploy",
@@ -336,6 +372,28 @@ fn mint_token() -> String {
 
 /// Tool descriptors for the write surface — appended to tools/list
 /// ONLY under `--allow-writes` (spec: the listing is honest).
+/// The write verbs `--allow-writes` can name.
+///
+/// Derived from the descriptor table rather than a second list, so a
+/// verb cannot be addable-but-unknown or known-but-unaddable. A guard
+/// pins the two together.
+pub(super) fn write_verb_names() -> Vec<String> {
+    write_tool_descriptors()
+        .iter()
+        .filter_map(|d| d.get("name").and_then(|n| n.as_str()))
+        .filter(|n| *n != CONFIRM_TOOL)
+        .map(str::to_string)
+        .collect()
+}
+
+/// The second phase of every write, and not a verb.
+///
+/// It dispatches whatever a plan already authorised, so it is neither
+/// separately grantable nor separately withholdable: a scope that
+/// advertised `dlq_delete` without this would let an agent plan a
+/// delete it could never confirm.
+pub(super) const CONFIRM_TOOL: &str = "confirm_action";
+
 pub(super) fn write_tool_descriptors() -> Vec<Value> {
     let confirm_note = "TWO-PHASE: this tool DISPATCHES NOTHING. It validates and returns {pending:true, confirm_token, plan}; you must surface the plan, then call confirm_action with the token (60s TTL, single-use) to dispatch. Dispatch-only — poll the read tools for progress.";
     vec![
@@ -478,14 +536,33 @@ impl Server {
     /// Phase 1 for every write verb: shared gates (writes enabled,
     /// not mid-dispatch, freeze, pins, env exists), verb-specific
     /// validation, then a pending plan + token.
+    /// Test seam: reach the plan gate without a tools/call frame.
+    #[cfg(test)]
+    pub(super) async fn tool_write_plan_for_tests(
+        &self,
+        verb: WriteVerb,
+        args: &Value,
+    ) -> Result<String, String> {
+        self.tool_write_plan(verb, args).await
+    }
+
     pub(super) async fn tool_write_plan(
         &self,
         verb: WriteVerb,
         args: &Value,
     ) -> Result<String, String> {
-        if !self.allow_writes {
-            // Unreachable via the gated table; belt-and-braces.
-            return Err("writes are disabled — start the server with --allow-writes".into());
+        // The VERB, not merely "writes are on". Unreachable via the
+        // scoped table — an out-of-scope tool is not advertised — but a
+        // client holding a cached list from a wider grant would
+        // otherwise reach the body. Belt-and-braces, and the braces are
+        // the ones that matter after a scope is narrowed.
+        if !self.write_scope.allows(verb.tool_name()) {
+            return Err(format!(
+                "'{}' is not in this server's write scope — start it with \
+                 --allow-writes, or --allow-writes={} to grant just this one",
+                verb.tool_name(),
+                verb.tool_name()
+            ));
         }
         if self.dispatching.load(std::sync::atomic::Ordering::SeqCst) {
             return Err("another write is in flight — wait for it to complete".into());
@@ -762,7 +839,7 @@ impl Server {
 
     /// Phase 2: dispatch the pending plan.
     pub(super) async fn tool_confirm_action(&self, args: &Value) -> Result<String, String> {
-        if !self.allow_writes {
+        if !self.write_scope.any() {
             return Err("writes are disabled — start the server with --allow-writes".into());
         }
         let token = arg_str(args, "confirm_token").ok_or("'confirm_token' is required")?;
@@ -1052,7 +1129,7 @@ mod tests {
     #[tokio::test]
     async fn the_audit_line_reflects_the_capability_the_client_declared() {
         async fn can_ask_in_audit(caps: serde_json::Value) -> String {
-            let s = Server::new(true, false, false);
+            let s = Server::with_scope(true, false, WriteScope::None);
             let _ = s
                 .handle_request(&json!({
                     "jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -1097,7 +1174,7 @@ mod tests {
         let env_name = "mcp-refusal-probe-env";
         let mut cfg = crate::config::Config::default();
         cfg.safety_envs.insert(env_name.into(), true);
-        let s = Server::with_config(false, false, true, cfg);
+        let s = Server::with_config(false, false, WriteScope::All, cfg);
 
         let path = crate::util::cache_dir().join("audit.log");
         let before = std::fs::read_to_string(&path).unwrap_or_default();
@@ -1147,7 +1224,7 @@ mod tests {
         let path = crate::util::cache_dir().join("audit.log");
 
         // Real backend: refuses AND records.
-        let real = Server::with_config(false, false, true, cfg.clone());
+        let real = Server::with_config(false, false, WriteScope::All, cfg.clone());
         let before = std::fs::read_to_string(&path).unwrap_or_default();
         let _ = real
             .tool_write_plan(WriteVerb::Terminate, &json!({"env": env_name}))
@@ -1163,7 +1240,7 @@ mod tests {
         );
 
         // Demo backend: refuses, records NOTHING.
-        let demo = Server::with_config(true, false, true, cfg);
+        let demo = Server::with_config(true, false, WriteScope::All, cfg);
         let before = std::fs::read_to_string(&path).unwrap_or_default();
         let err = demo
             .tool_write_plan(WriteVerb::Terminate, &json!({"env": env_name}))

@@ -180,7 +180,11 @@ mod tests {
     #[test]
     fn every_advertised_tool_is_classified() {
         for allow_writes in [false, true] {
-            let table = super::super::tools::tool_table(allow_writes);
+            let table = super::super::tools::tool_table(&if allow_writes {
+                super::super::WriteScope::All
+            } else {
+                super::super::WriteScope::None
+            });
             let arr = table.as_array().expect("tools/list is an array");
             assert!(
                 arr.len() >= 8,
@@ -221,12 +225,13 @@ mod tests {
     /// tests already checks both directions; this is the same rule.
     #[test]
     fn no_table_entry_names_a_tool_that_is_gone() {
-        let advertised: Vec<String> = super::super::tools::tool_table(true)
-            .as_array()
-            .expect("array")
-            .iter()
-            .filter_map(|t| t["name"].as_str().map(str::to_string))
-            .collect();
+        let advertised: Vec<String> =
+            super::super::tools::tool_table(&crate::cli::mcp::WriteScope::All)
+                .as_array()
+                .expect("array")
+                .iter()
+                .filter_map(|t| t["name"].as_str().map(str::to_string))
+                .collect();
         assert!(
             advertised.len() >= 8,
             "the tool table failed to build; this guard would pass vacuously"
@@ -264,7 +269,7 @@ mod tests {
         // The distinction the whole feature exists for. Asserted over
         // the real tables in both modes, so a tool moving between them
         // cannot keep a stale hint.
-        let reads = super::super::tools::tool_table(false);
+        let reads = super::super::tools::tool_table(&crate::cli::mcp::WriteScope::None);
         for tool in reads.as_array().expect("array") {
             let name = tool["name"].as_str().expect("name");
             assert_eq!(
@@ -273,7 +278,7 @@ mod tests {
             );
         }
 
-        let with_writes = super::super::tools::tool_table(true);
+        let with_writes = super::super::tools::tool_table(&crate::cli::mcp::WriteScope::All);
         let write_names: Vec<&str> = with_writes
             .as_array()
             .expect("array")

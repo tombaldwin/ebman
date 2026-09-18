@@ -49,7 +49,7 @@ const TOOL_TIMEOUT_SECS: u64 = 30;
 struct McpArgs {
     demo: bool,
     no_redact: bool,
-    allow_writes: bool,
+    write_scope: WriteScope,
 }
 
 const MCP_USAGE: &str =
@@ -62,23 +62,143 @@ fn parse_mcp_args(args: &[String]) -> Result<McpArgs, String> {
     }
     let mut demo = false;
     let mut no_redact = false;
-    let mut allow_writes = false;
+    let mut write_scope = WriteScope::None;
+    let known: Vec<String> = writes::write_verb_names();
+    let known_refs: Vec<&str> = known.iter().map(String::as_str).collect();
     for arg in args.iter().skip(2) {
+        // `--allow-writes` alone still means every verb, so an existing
+        // `.mcp.json` keeps working. `--allow-writes=a,b` narrows it.
+        if let Some(rest) = arg.strip_prefix("--allow-writes") {
+            let value = match rest {
+                "" => None,
+                v => Some(v.strip_prefix('=').ok_or_else(|| {
+                    format!("ebman mcp: expected `--allow-writes=verbs` — {MCP_USAGE}")
+                })?),
+            };
+            write_scope =
+                parse_write_scope(value, &known_refs).map_err(|e| format!("ebman mcp: {e}"))?;
+            continue;
+        }
         match arg.as_str() {
             "--demo" => demo = true,
             "--no-redact" => no_redact = true,
-            // Flag-only opt-in by spec: write capability must be
-            // visible in the process table / .mcp.json, never hidden
-            // in a config file.
-            "--allow-writes" => allow_writes = true,
             other => return Err(format!("ebman mcp: unknown flag '{other}' — {MCP_USAGE}")),
         }
     }
     Ok(McpArgs {
         demo,
         no_redact,
-        allow_writes,
+        write_scope,
     })
+}
+
+/// Which write verbs this server may dispatch.
+///
+/// `--allow-writes` was a single bool: enabling it to delete one
+/// dead-lettered message also granted deploy, restart, rebuild,
+/// terminate and set_option across every environment the credentials
+/// reach. A client declined the grant on exactly those grounds, which
+/// is both the right call and the evidence the flag was too coarse.
+///
+/// Scoping stays a SERVER FLAG rather than moving into config, so
+/// `docs/design/protection-levels.md` Principle 5 holds trivially: the
+/// ceiling is set outside the request and no request content can raise
+/// it. It is also visible in the process table and in `.mcp.json`,
+/// which is why write capability was flag-only in the first place.
+///
+/// Deliberately NOT per-environment. Differentiated ceremony — ask on
+/// prod, proceed on demo — was considered and declined: on this fleet
+/// the demo environment is client-facing, so it is not the low-stakes
+/// tier that argument assumes. A gate costing the same everywhere is
+/// also the one an operator keeps reading.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WriteScope {
+    /// No write tool is advertised or dispatched.
+    None,
+    /// Every write verb — what a bare `--allow-writes` has always meant.
+    All,
+    /// Only these verbs. Others are not advertised AND refused at
+    /// dispatch; unadvertised alone would leave a tool callable by a
+    /// client that had cached an older list.
+    Only(Vec<String>),
+}
+
+impl WriteScope {
+    pub(crate) fn allows(&self, tool: &str) -> bool {
+        match self {
+            WriteScope::None => false,
+            WriteScope::All => true,
+            WriteScope::Only(v) => v.iter().any(|t| t == tool),
+        }
+    }
+
+    pub(crate) fn any(&self) -> bool {
+        !matches!(self, WriteScope::None)
+    }
+
+    /// How this grant reads to the AGENT, for the `instructions` block.
+    ///
+    /// A withheld tool is simply absent from `tools/list`, and absent
+    /// is ambiguous: it reads as "ebman cannot do this" when it means
+    /// "you were not granted this". That is the same confusion the
+    /// version line above exists to prevent, and it has the same cost
+    /// — an agent reporting a capability gap that is really a config
+    /// choice, instead of asking the operator to widen the grant.
+    fn agent_summary(&self) -> String {
+        match self {
+            WriteScope::None => "This server is READ-ONLY: no write tool is available. Ask the \
+                 operator to restart it with --allow-writes (optionally \
+                 --allow-writes=verb,verb to grant only what you need)."
+                .to_string(),
+            WriteScope::All => "Writes are ENABLED for every verb, via the two-phase \
+                 plan-then-confirm protocol."
+                .to_string(),
+            WriteScope::Only(v) => format!(
+                "Writes are NARROWLY granted: {} only, via the two-phase plan-then-confirm \
+                 protocol. Any other write verb is absent from this list because it was NOT \
+                 GRANTED, not because ebman lacks it — say so and ask the operator to widen \
+                 the grant rather than reporting it as unsupported.",
+                v.join(", ")
+            ),
+        }
+    }
+}
+
+/// Parse the value half of `--allow-writes[=a,b]`.
+///
+/// An unknown verb is an ERROR, never a silent skip. A typo'd
+/// `--allow-writes=dlq_delte` that quietly granted nothing would look
+/// exactly like a working narrow grant until the first write was
+/// refused; one that quietly granted everything would be worse. Same
+/// fail-closed reasoning as the safety-pin parser.
+pub(crate) fn parse_write_scope(value: Option<&str>, known: &[&str]) -> Result<WriteScope, String> {
+    let Some(v) = value else {
+        return Ok(WriteScope::All);
+    };
+    let mut out = Vec::new();
+    for raw in v.split(',') {
+        let name = raw.trim();
+        if name.is_empty() {
+            continue;
+        }
+        if !known.contains(&name) {
+            let mut sorted: Vec<&str> = known.to_vec();
+            sorted.sort_unstable();
+            return Err(format!(
+                "unknown write verb '{name}' — known verbs: {}",
+                sorted.join(", ")
+            ));
+        }
+        if !out.iter().any(|e| e == name) {
+            out.push(name.to_string());
+        }
+    }
+    if out.is_empty() {
+        return Err("--allow-writes= was given with no verbs — omit the \
+                    `=` to allow all, or name at least one"
+            .into());
+    }
+    Ok(WriteScope::Only(out))
 }
 
 /// Non-object frames (batch arrays, bare scalars) are invalid
@@ -189,7 +309,7 @@ pub(crate) fn stale_binary_notice(path: &str) -> String {
 pub(crate) struct Server {
     backend: Backend,
     redact: bool,
-    allow_writes: bool,
+    write_scope: WriteScope,
     /// Safety config loaded once at startup (pins). Demo servers get
     /// the default (hermetic).
     safety_cfg: crate::config::Config,
@@ -241,13 +361,17 @@ pub(crate) struct Server {
 }
 
 impl Server {
-    pub(crate) fn new(demo: bool, no_redact: bool, allow_writes: bool) -> Self {
+    /// The one constructor. It takes a scope rather than a bool
+    /// because a bool could only ever mean "all or nothing", and
+    /// spelling that as `true` at eight call sites is how the wider
+    /// grant becomes the default nobody notices.
+    pub(crate) fn with_scope(demo: bool, no_redact: bool, scope: WriteScope) -> Self {
         let safety_cfg = if demo {
             crate::config::Config::default()
         } else {
             crate::config::load()
         };
-        Self::with_config(demo, no_redact, allow_writes, safety_cfg)
+        Self::with_config(demo, no_redact, scope, safety_cfg)
     }
 
     /// Test seam: inject the safety config (pin tests must not read
@@ -255,13 +379,13 @@ impl Server {
     pub(crate) fn with_config(
         demo: bool,
         no_redact: bool,
-        allow_writes: bool,
+        scope: WriteScope,
         safety_cfg: crate::config::Config,
     ) -> Self {
         Server {
             backend: if demo { Backend::Demo } else { Backend::Aws },
             redact: !no_redact,
-            allow_writes,
+            write_scope: scope,
             safety_cfg,
             writes: tokio::sync::Mutex::new(writes::WriteState::default()),
             dispatching: std::sync::atomic::AtomicBool::new(false),
@@ -288,11 +412,11 @@ impl Server {
 
     #[cfg(test)]
     pub(crate) fn with_injected_client(
-        allow_writes: bool,
+        scope: WriteScope,
         safety_cfg: crate::config::Config,
         client: aws::AwsClient,
     ) -> Self {
-        let mut s = Self::with_config(false, false, allow_writes, safety_cfg);
+        let mut s = Self::with_config(false, false, scope, safety_cfg);
         s.injected_client = Some(std::sync::Arc::new(client));
         s
     }
@@ -389,10 +513,14 @@ impl Server {
                         // precisely because they are not boilerplate;
                         // a discoverability block that grows into prose
                         // gets skimmed like a licence.
-                        "instructions": concat!(
+                        "instructions": format!(
+                            "{}{}\n\n{}",
+                            concat!(
                             "ebman ", env!("CARGO_PKG_VERSION"),
                             " — a fleet console for AWS Elastic Beanstalk. This surface exposes reads, ",
-                            "plus two-phase writes when the server was started with --allow-writes.\n\n",
+                            "plus two-phase writes when the server was started with --allow-writes.\n\n"),
+                            self.write_scope.agent_summary(),
+                            concat!(
                             // NOT redundant with `serverInfo.version`.
                             // Confirmed, not assumed: an agent on Claude
                             // Code went looking for `serverInfo` and
@@ -430,7 +558,7 @@ impl Server {
                             "Point-in-time log queries ARE exposed here, as `recent_logs`.\n\n",
                             "Tool descriptions carry CAVEATS naming what each tool cannot see. They are accurate and ",
                             "worth reading: a clean result from a tool does not clear what that tool never checked."
-                        )
+                        ))
                     }
                 }))
             }
@@ -440,7 +568,7 @@ impl Server {
             "tools/list" => Some(json!({
                 "jsonrpc": "2.0",
                 "id": id,
-                "result": {"tools": tool_table(self.allow_writes)}
+                "result": {"tools": tool_table(&self.write_scope)}
             })),
             "tools/call" => {
                 let params = req.get("params").cloned().unwrap_or_else(|| json!({}));
@@ -453,7 +581,7 @@ impl Server {
                     .get("arguments")
                     .cloned()
                     .unwrap_or_else(|| json!({}));
-                if !tool_table(self.allow_writes)
+                if !tool_table(&self.write_scope)
                     .as_array()
                     .is_some_and(|t| t.iter().any(|d| d["name"] == name.as_str()))
                 {
@@ -520,7 +648,7 @@ pub async fn run(args: &[String]) -> Result<()> {
     let McpArgs {
         demo,
         no_redact,
-        allow_writes,
+        write_scope,
     } = match parse_mcp_args(args) {
         Ok(parsed) => parsed,
         Err(msg) => {
@@ -530,10 +658,10 @@ pub async fn run(args: &[String]) -> Result<()> {
     };
     // Writes fan audit lines out to the configured webhook — the
     // reads-only server stays free of the config-disk read.
-    if allow_writes && !demo {
+    if write_scope.any() && !demo {
         crate::audit::init_from_config_disk();
     }
-    let server = Arc::new(Server::new(demo, no_redact, allow_writes));
+    let server = Arc::new(Server::with_scope(demo, no_redact, write_scope.clone()));
     // Frame-level tools/call concurrency cap (see the spawn site).
     let tool_slots = Arc::new(tokio::sync::Semaphore::new(16));
 
@@ -660,7 +788,7 @@ pub async fn run(args: &[String]) -> Result<()> {
     // by the per-call timeout — then exits.
     drop(out_tx);
     let _ = writer.await;
-    if allow_writes {
+    if write_scope.any() {
         crate::audit::drain_webhooks(std::time::Duration::from_secs(12)).await;
     }
     Ok(())
@@ -685,7 +813,7 @@ mod tests {
         use std::sync::atomic::Ordering;
 
         async fn declares(caps: serde_json::Value) -> bool {
-            let s = Server::new(true, false, false);
+            let s = Server::with_scope(true, false, WriteScope::None);
             let _ = s
                 .handle_request(&json!({
                 "jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -728,11 +856,11 @@ mod tests {
     }
 
     fn demo_server() -> Server {
-        Server::new(true, false, false)
+        Server::with_scope(true, false, WriteScope::None)
     }
 
     fn demo_writes_server() -> Server {
-        Server::new(true, false, true)
+        Server::with_scope(true, false, WriteScope::All)
     }
 
     async fn rpc(server: &Server, frame: Value) -> Option<Value> {
@@ -753,7 +881,7 @@ mod tests {
     #[tokio::test]
     async fn write_tools_appear_only_under_allow_writes() {
         let list = |s: &Server| {
-            let arr = tool_table(s.allow_writes);
+            let arr = tool_table(&s.write_scope);
             arr.as_array()
                 .unwrap()
                 .iter()
@@ -997,7 +1125,7 @@ mod tests {
         let mut cfg = crate::config::Config::default();
         cfg.safety_envs
             .insert(demo_fixture::envs()[0].name.clone(), true);
-        let s = Server::with_config(true, false, true, cfg);
+        let s = Server::with_config(true, false, WriteScope::All, cfg);
         let env = demo_fixture::envs()[0].name.clone();
         let (err, plan) = call(&s, "restart", json!({"env": env})).await;
         assert!(err, "pinned env must refuse");
@@ -1192,7 +1320,7 @@ mod tests {
         assert!(body.contains("(redacted)"));
         assert!(body.contains("\"redacted\":true"));
         // --no-redact opt-out passes values through.
-        let open = Server::new(true, true, false);
+        let open = Server::with_scope(true, true, WriteScope::None);
         let resp = rpc(
             &open,
             json!({"jsonrpc":"2.0","id":10,"method":"tools/call",
@@ -1297,7 +1425,7 @@ mod tests {
 
     #[tokio::test]
     async fn id_less_requests_are_notifications_and_get_no_response() {
-        let server = Server::new(true, false, false);
+        let server = Server::with_scope(true, false, WriteScope::None);
         let req: Value = serde_json::from_str(
             r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"nope"}}"#,
         )
@@ -1392,7 +1520,7 @@ mod tests {
     /// someone rewords it.
     #[tokio::test]
     async fn initialize_names_what_this_surface_cannot_do() {
-        let s = Server::new(true, false, false);
+        let s = Server::with_scope(true, false, WriteScope::None);
         let resp = s
             .handle_request(&json!({
                 "jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -1931,7 +2059,7 @@ mod tests {
                 [&attrs, &peek]
             );
             let s = Server::with_injected_client(
-                false,
+                WriteScope::None,
                 crate::config::Config::default(),
                 client_with(eb, sqs),
             );
@@ -2008,7 +2136,7 @@ mod tests {
                 [&attrs]
             );
             let s = Server::with_injected_client(
-                false,
+                WriteScope::None,
                 crate::config::Config::default(),
                 client_with(eb, sqs),
             );
@@ -2039,7 +2167,7 @@ mod tests {
                 .behavior_version(aws_config::BehaviorVersion::latest())
                 .build();
             let s = Server::with_injected_client(
-                false,
+                WriteScope::None,
                 crate::config::Config::default(),
                 client_with(eb, SqsClient::new(&cfg)),
             );
@@ -2120,7 +2248,7 @@ mod tests {
                 [&main_attrs, &dlq_missing]
             );
             let s = Server::with_injected_client(
-                false,
+                WriteScope::None,
                 crate::config::Config::default(),
                 client_with(eb, sqs),
             );
@@ -2236,7 +2364,7 @@ mod tests {
                 [&main_attrs, &dlq_missing]
             );
             let s = Server::with_injected_client(
-                false,
+                WriteScope::None,
                 crate::config::Config::default(),
                 client_with(eb, sqs),
             );
@@ -2341,7 +2469,7 @@ mod tests {
                 [&attrs, &peek]
             );
             let s = Server::with_injected_client(
-                true,
+                WriteScope::All,
                 crate::config::Config::default(),
                 client_with(eb, sqs),
             );
@@ -2479,7 +2607,7 @@ mod tests {
         let fake = dir.join("ebman");
         std::fs::write(&fake, b"v1").expect("write");
 
-        let s = Server::new(true, false, false).watching_exe(&fake);
+        let s = Server::with_scope(true, false, WriteScope::None).watching_exe(&fake);
 
         // Unchanged: no notice.
         let quiet = rpc(
@@ -2621,6 +2749,194 @@ mod tests {
                  without it that absence reads as an answer. See rule 6 \
                  in ARCHITECTURE.md before removing it."
             );
+        }
+    }
+
+    /// A narrowed grant advertises only what it named, and refuses the
+    /// rest at dispatch too.
+    ///
+    /// The forcing case: a client wanted to delete one dead-lettered
+    /// message, and the only grant available also handed it terminate
+    /// across every environment the credentials reach.
+    #[tokio::test]
+    async fn a_scoped_grant_advertises_and_dispatches_only_its_verbs() {
+        let scope = WriteScope::Only(vec!["dlq_delete".into(), "dlq_resend".into()]);
+        let s = Server::with_config(true, false, scope, crate::config::Config::default());
+
+        let resp = rpc(&s, json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
+            .await
+            .expect("tools/list");
+        let names: Vec<String> = resp["result"]["tools"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_string))
+            .collect();
+
+        assert!(names.iter().any(|n| n == "dlq_delete"), "{names:?}");
+        assert!(names.iter().any(|n| n == "dlq_resend"), "{names:?}");
+        for ungranted in [
+            "terminate",
+            "deploy",
+            "restart",
+            "rebuild",
+            "set_option",
+            "dlq_purge",
+        ] {
+            assert!(
+                !names.iter().any(|n| n == ungranted),
+                "`{ungranted}` was not granted and must not be advertised — a \
+                 client that cannot see a tool does not plan around it: {names:?}"
+            );
+        }
+        // Reads are unaffected by the scope.
+        assert!(names.iter().any(|n| n == "list_environments"), "{names:?}");
+        // And the confirm half of the two-phase protocol rides along:
+        // without it the grant could plan a delete and never dispatch
+        // one, which is a broken server rather than a narrow one.
+        assert!(
+            names.iter().any(|n| n == "confirm_action"),
+            "a narrow grant must still be able to confirm what it planned: {names:?}"
+        );
+
+        // The agent must be able to tell "not granted" from "ebman
+        // can't do this" — a withheld tool is simply absent from
+        // tools/list, and absent alone is ambiguous. tools/list reaches
+        // the agent; the REASON only does if the server authors it.
+        let init = rpc(
+            &s,
+            json!({"jsonrpc":"2.0","id":0,"method":"initialize",
+                   "params":{"protocolVersion":"2025-06-18","capabilities":{},
+                             "clientInfo":{"name":"t","version":"0"}}}),
+        )
+        .await
+        .expect("initialize");
+        let instructions = init["result"]["instructions"]
+            .as_str()
+            .expect("instructions are the only version/scope signal an agent is guaranteed");
+        assert!(
+            instructions.contains("dlq_delete") && instructions.contains("dlq_resend"),
+            "the instructions must name what WAS granted: {instructions}"
+        );
+        assert!(
+            instructions.contains("NOT GRANTED"),
+            "and say that the rest is withheld rather than missing: {instructions}"
+        );
+
+        // And the dispatch gate refuses it even if a client held a
+        // cached list from a wider grant.
+        let err = s
+            .tool_write_plan_for_tests(writes::WriteVerb::Terminate, &json!({"env": "x"}))
+            .await
+            .expect_err("terminate is outside the scope");
+        assert!(
+            err.contains("not in this server's write scope"),
+            "the refusal must name the scope, not read as a missing tool: {err}"
+        );
+        assert!(
+            err.contains("--allow-writes=terminate"),
+            "and say how to grant it: {err}"
+        );
+
+        // The positive half: a granted verb gets PAST the scope gate.
+        // Without this the test would still pass if `allows` returned
+        // false for everything, which is a grant that grants nothing.
+        let granted = s
+            .tool_write_plan_for_tests(writes::WriteVerb::DlqDelete, &json!({}))
+            .await;
+        if let Err(e) = &granted {
+            assert!(
+                !e.contains("not in this server's write scope"),
+                "`dlq_delete` was granted and must clear the scope gate \
+                 (any later complaint about arguments is fine): {e}"
+            );
+        }
+    }
+
+    /// An unknown verb in the flag is an error, never a silent skip.
+    ///
+    /// A typo'd `--allow-writes=dlq_delte` that quietly granted nothing
+    /// looks exactly like a working narrow grant until the first write
+    /// is refused; one that quietly granted everything would be worse.
+    #[test]
+    fn a_mistyped_write_verb_is_refused_at_startup() {
+        let known = ["dlq_delete", "terminate"];
+        let err = super::parse_write_scope(Some("dlq_delte"), &known)
+            .expect_err("a typo must not be silently ignored");
+        assert!(err.contains("dlq_delte"), "name the typo: {err}");
+        assert!(err.contains("dlq_delete"), "and list what IS known: {err}");
+
+        // Bare `--allow-writes` keeps meaning everything, so an
+        // existing .mcp.json is unaffected.
+        assert_eq!(
+            super::parse_write_scope(None, &known).expect("bare is valid"),
+            WriteScope::All
+        );
+        // `--allow-writes=` with nothing after it is a mistake, not an
+        // empty grant that silently disables writes.
+        assert!(super::parse_write_scope(Some(""), &known).is_err());
+        assert!(super::parse_write_scope(Some("  , ,"), &known).is_err());
+
+        assert_eq!(
+            super::parse_write_scope(Some("terminate, dlq_delete ,terminate"), &known)
+                .expect("valid"),
+            WriteScope::Only(vec!["terminate".into(), "dlq_delete".into()]),
+            "whitespace tolerated, duplicates collapsed, order kept"
+        );
+    }
+
+    /// Every verb round-trips: the name `--allow-writes` accepts is
+    /// the name the tool is advertised as is the name the dispatch
+    /// gate checks.
+    ///
+    /// Three spellings of one thing, and two of them are hand-written.
+    /// Drift between them does not fail loudly — it makes
+    /// `--allow-writes=dlq_purge` advertise the tool and then refuse it
+    /// at dispatch, which reads as a broken server rather than a typo.
+    /// A mutation changing one arm of `tool_name` to `dlq-purge` walked
+    /// straight past the first version of this guard.
+    #[test]
+    fn every_write_verb_round_trips_through_the_tool_table() {
+        let nameable = writes::write_verb_names();
+        assert_eq!(
+            nameable.len(),
+            writes::WriteVerb::ALL.len(),
+            "a write verb exists in one table and not the other: nameable={nameable:?}"
+        );
+
+        let advertised: Vec<String> = tool_table(&WriteScope::All)
+            .as_array()
+            .expect("array")
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_string))
+            .collect();
+
+        for verb in writes::WriteVerb::ALL {
+            let name = verb.tool_name();
+            assert!(
+                nameable.iter().any(|n| n == name),
+                "`{name}` is what the dispatch gate checks but not a name \
+                 --allow-writes accepts: {nameable:?}"
+            );
+            assert!(
+                advertised.contains(&name.to_string()),
+                "`{name}` is checkable but never advertised: {advertised:?}"
+            );
+
+            // One discriminating case per verb: a grant of exactly this
+            // verb admits it and nothing else. Sampling a single verb
+            // would leave the other seven asserted by analogy.
+            let only = WriteScope::Only(vec![name.to_string()]);
+            assert!(only.allows(name), "a grant of `{name}` must allow it");
+            for other in writes::WriteVerb::ALL {
+                if other.tool_name() != name {
+                    assert!(
+                        !only.allows(other.tool_name()),
+                        "a grant of `{name}` must not allow `{}`",
+                        other.tool_name()
+                    );
+                }
+            }
         }
     }
 }
