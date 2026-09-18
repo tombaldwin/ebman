@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **`ebman mcp serve` notices when its own binary is replaced.** A
+  `brew upgrade` swaps the file underneath a running server, which then
+  keeps answering from the old build with nothing to tell a client — and
+  `initialize` cannot help, because the handshake already happened. Every
+  tool response is now prefixed with a warning naming the version
+  actually running and the path that changed, and saying to reconnect.
+
+  This is also what makes a future reload-in-place honest: after a
+  re-exec the client's cached `instructions` block would still name the
+  OLD version, so the only truthful version an agent sees is the one on
+  the response.
+
+
 ## [0.39.0] — 2026-09-18
 
 **An agent-surface release.** A worker environment went Yellow on one
