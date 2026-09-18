@@ -455,3 +455,70 @@ fn without_a_marker_nothing_is_refused_for_a_freeze() {
         "no marker was written, so nothing may claim a freeze: {err}"
     );
 }
+
+/// `--quiet` must actually suppress, and its absence must not.
+///
+/// A surviving mutant found this: deleting the `!` from `if !quiet`
+/// inverts the flag, so `--quiet` prints and a normal run goes silent.
+/// Nothing caught it — `quiet` was tested at the argument-parsing level
+/// and never at the behaviour, which is the difference between "the
+/// flag was read" and "the flag did anything".
+///
+/// Reachable without credentials because the no-tfstate path returns
+/// before any AWS client is built. `--tfdir` points at a directory with
+/// no state, so discovery finds nothing.
+#[test]
+fn drift_quiet_suppresses_the_no_state_message() {
+    let empty = std::env::temp_dir().join(format!("ebman-drift-empty-{}", std::process::id()));
+    if let Err(e) = std::fs::create_dir_all(&empty) {
+        panic!("could not create the empty dir: {e}");
+    }
+    let dir = empty.display().to_string();
+
+    // Without --quiet: the hint is printed, and it names the remote
+    // backend workflow rather than stopping at "pass --tfstate".
+    let loud = ebman(&["drift", "--tfdir", &dir]);
+    let err = stderr(&loud);
+    assert!(
+        err.contains("no terraform.tfstate"),
+        "a normal run must say it found nothing: {err:?}"
+    );
+    assert!(
+        err.contains("terraform state pull"),
+        "and must name the remote-backend workflow — the old message \
+         stopped at \"pass --tfstate\", which is useless if your state \
+         is in HCP: {err:?}"
+    );
+
+    // With --quiet: nothing on either stream.
+    let hushed = ebman(&["drift", "--tfdir", &dir, "--quiet"]);
+    assert!(
+        stderr(&hushed).is_empty() && stdout(&hushed).is_empty(),
+        "--quiet must suppress both streams, got stderr={:?} stdout={:?}",
+        stderr(&hushed),
+        stdout(&hushed)
+    );
+}
+
+/// `--json` with no tfstate must still be parseable JSON carrying every
+/// key.
+///
+/// The shape was a hand-written literal until 0.39.0 and omitted the
+/// `state` block every other drift response carries.
+#[test]
+fn drift_json_with_no_state_is_well_formed() {
+    let empty = std::env::temp_dir().join(format!("ebman-drift-json-{}", std::process::id()));
+    if let Err(e) = std::fs::create_dir_all(&empty) {
+        panic!("could not create the empty dir: {e}");
+    }
+    let out = ebman(&["drift", "--tfdir", &empty.display().to_string(), "--json"]);
+    let body = stdout(&out);
+    let trimmed = body.trim();
+    for key in ["\"tfstate\"", "\"state\"", "\"envs\""] {
+        assert!(
+            trimmed.contains(key),
+            "the no-state JSON must carry {key} — a missing key and a \
+             null one read differently to a consumer: {trimmed:?}"
+        );
+    }
+}
