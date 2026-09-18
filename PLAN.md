@@ -210,6 +210,19 @@ one never happens. If that stops being true, the stage is wrong.
    assumed. ebman was throwing that field away; it now captures and logs
    it, and nothing branches on it yet.
 
+   **The instrument was dead until 2026-09-18, and stage 5 was waiting
+   on data it could never receive.** Every subcommand returns from
+   `main` before `init_logging` — deliberate, and correct for a flag
+   that prints and exits, but the MCP server is a daemon. The whole
+   subcommand surface held exactly one `tracing::` call and it was this
+   one. A probe declaring elicitation support moved the log by zero
+   bytes. `mcp serve` now initialises file logging (`setup` does not —
+   it promises it writes no files); the same probe now records
+   `elicitation=true`, and a plain client `elicitation=false`.
+
+   So the count starts at zero on 2026-09-18, not at the stage-3 date.
+   Nothing observed before then was recorded anywhere.
+
    **The stop condition is now instrumented rather than hypothetical.**
    If the logs show almost no client declaring elicitation, the ladder's
    middle rungs collapse to deny and stages 4–5 need re-planning — but

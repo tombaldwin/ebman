@@ -55,7 +55,23 @@ async fn main() -> Result<()> {
             "audit" => return ebman::cli::audit::run(&args).await,
             // Reads-only in v1: no audit lines, no config-gated
             // webhook fan-out — so no init_from_config_disk.
-            "mcp" => return ebman::cli::mcp::run(&args).await,
+            //
+            // `serve` is the one subcommand that DOES want logging.
+            // Every arm here returns before `init_logging` below, which
+            // is right for a flag that prints and exits and wrong for a
+            // daemon: the MCP server's `tracing::` calls went nowhere,
+            // including the one recording client elicitation support.
+            // File-only — `serve` speaks JSON-RPC on stdout.
+            "mcp" => {
+                if ebman::cli::mcp::wants_file_logging(&args) {
+                    // Dropped deliberately: the handle only exists for
+                    // the TUI's `:log-level` reload, and the appender
+                    // writes synchronously, so there is nothing to
+                    // flush on the way out.
+                    let _ = init_logging()?;
+                }
+                return ebman::cli::mcp::run(&args).await;
+            }
             "explain" => return ebman::cli::explain::run(&args).await,
             "versions" => return ebman::cli::versions::run(&args).await,
             // Pure printer: no AWS, no audit, no config read.
