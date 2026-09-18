@@ -631,3 +631,119 @@ fn mcp_serve_honours_peek_bodies_from_the_operator_config() {
         "sanity: the control run must have produced a real tool list: {on}"
     );
 }
+
+/// `--demo` must not touch AWS, on ANY tool.
+///
+/// The module promises demo "plans and dispatches synthetically — no
+/// AWS, no audit, no webhook". That promise is kept by a branch at
+/// each of sixteen `self.client()` call sites, which is convention,
+/// not construction — and it was broken: the three DLQ verbs resolved
+/// their queue through a real client at plan time. Dispatch was
+/// guarded, so nothing could be deleted, but `peek_messages` is not
+/// side-effect-free — it increments `receive_count` on every message
+/// it returns — so a demo server could alter metadata on a live queue.
+///
+/// A source scan cannot catch this. A per-function check for
+/// `Backend::Demo` reports the defect as GUARDED, because
+/// `tool_write_plan` is long and its other arms mention demo; that was
+/// verified against the pre-fix tree. So this drives the real binary
+/// instead, with credentials that cannot work and an endpoint on a
+/// closed port, and asserts every tool answers from the fixture.
+///
+/// Any new tool is covered automatically: the list comes from
+/// `tools/list`, not from a list maintained here.
+#[test]
+fn demo_mode_never_reaches_aws_on_any_tool() {
+    let home = std::env::temp_dir().join(format!("ebman-cli-demoaws-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&home);
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ebman"));
+    no_aws_credentials(&mut cmd);
+    let mut child = cmd
+        .args(["mcp", "serve", "--demo", "--allow-writes"])
+        .env("NO_COLOR", "1")
+        .env("HOME", &home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap_or_else(|e| panic!("could not spawn ebman: {e}"));
+
+    // Arguments wide enough that every tool gets past validation and
+    // reaches the body — a tool refused for a missing argument would
+    // pass this test without proving anything.
+    let args = r#"{"env":"poly-batch","application":"poly","version":"2026-31.0","peek":true,"message_id":"d3b07384-d9a0-4f1e-9f3a-11c0ffee0001","namespace":"aws:elasticbeanstalk:application:environment","option_name":"X","value":"1","confirm_token":"x"}"#;
+
+    let mut frames = String::new();
+    frames.push_str(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#);
+    frames.push('\n');
+    frames.push_str(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
+    frames.push('\n');
+    // Every tool name this build advertises, by index so the reply can
+    // be attributed back to one.
+    for name in TOOL_NAMES {
+        frames.push_str(&format!(
+            r#"{{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{{"name":"{name}","arguments":{args}}}}}"#
+        ));
+        frames.push('\n');
+    }
+    if let Some(mut si) = child.stdin.take() {
+        let _ = si.write_all(frames.as_bytes());
+    }
+    let out = child
+        .wait_with_output()
+        .unwrap_or_else(|e| panic!("ebman mcp serve did not exit: {e}"));
+    let body = String::from_utf8_lossy(&out.stdout).into_owned();
+
+    // The advertised set must match what we drove, or the test is
+    // covering less than it claims.
+    for name in TOOL_NAMES {
+        assert!(
+            body.contains(&format!("\"{name}\"")),
+            "`{name}` was not advertised — the driven list has drifted from the \
+             real one, so this test is covering less than it looks: {body}"
+        );
+    }
+
+    // An AWS call that cannot succeed surfaces as SDK/transport noise.
+    for needle in [
+        "service error",
+        "dispatch failure",
+        "ConnectorError",
+        "io error",
+        "NoCredentials",
+        "DescribeEnvironment",
+    ] {
+        assert!(
+            !body.contains(needle),
+            "a --demo server produced `{needle}` — something reached for AWS. \
+             Demo must answer from the fixture on every tool.\n{body}"
+        );
+    }
+}
+
+/// The tools driven by `demo_mode_never_reaches_aws_on_any_tool`.
+///
+/// Listed rather than parsed so a tool going missing from `tools/list`
+/// fails loudly instead of quietly shrinking the test's coverage.
+const TOOL_NAMES: &[&str] = &[
+    "list_environments",
+    "worker_queues",
+    "recent_logs",
+    "why",
+    "lint",
+    "get_option_settings",
+    "drift",
+    "audit_log",
+    "recent_events",
+    "list_versions",
+    "fleet_cost",
+    "deploy",
+    "restart",
+    "rebuild",
+    "terminate",
+    "set_option",
+    "confirm_action",
+    "dlq_resend",
+    "dlq_delete",
+    "dlq_purge",
+];
