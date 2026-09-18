@@ -1131,7 +1131,7 @@ mod tests {
         assert_eq!(fields[0].live_value, "(redacted)");
         assert_eq!(fields[1].live_value, "6", "non-secret options untouched");
         assert_eq!(fields[2].tf_value, "v1", "non-option kinds untouched");
-        let rendered = terraform::render_drift_json(None, &reports);
+        let rendered = terraform::render_drift_json(None, None, &reports);
         assert!(!rendered.contains("hunter2"), "no secret in the payload");
     }
 

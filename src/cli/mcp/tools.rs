@@ -766,7 +766,7 @@ impl Server {
     async fn tool_drift(&self, args: &Value) -> Result<String, String> {
         // Demo mode ships no tfstate — honest empty report.
         if matches!(self.backend, Backend::Demo) {
-            return Ok(terraform::render_drift_json(None, &[]));
+            return Ok(terraform::render_drift_json(None, None, &[]));
         }
         // Explicit argument, then `terraform.state_path`, then
         // discovery — the same order the CLI uses. Without the config
@@ -840,7 +840,14 @@ impl Server {
             redact_drift_reports(&mut reports);
         }
         Ok(append_skipped_envs(
-            terraform::render_drift_json(used_path.as_deref(), &reports),
+            terraform::render_drift_json(
+                used_path.as_deref(),
+                Some(&terraform::StateProvenance::of(
+                    &state,
+                    used_path.as_deref(),
+                )),
+                &reports,
+            ),
             &skipped,
         ))
     }

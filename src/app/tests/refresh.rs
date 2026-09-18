@@ -995,6 +995,8 @@ async fn refresh_tf_managed_envs_derives_set_from_tf_state() {
     let mut app = test_app();
     assert!(app.tf_managed_envs.is_empty(), "starts empty");
     app.tf_state = Some(crate::terraform::TfState {
+        serial: None,
+        lineage: None,
         envs: vec![
             crate::terraform::TfEnv {
                 name: "prod-api".into(),
