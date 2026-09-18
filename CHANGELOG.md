@@ -45,6 +45,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   is not advertised, so a client reaching one is working from a stale
   tool list or probing, and that is invisible any other way.
 
+- **`mcp.peek_bodies = false`** — withhold dead-lettered message bodies
+  from the MCP surface. `worker_queues` with `peek` and `why` return
+  each body verbatim and ebman cannot redact it: redaction is
+  namespace-and-key based and a queue body is free text your own
+  application wrote. Reported from a fleet whose worker payloads are
+  job dispatches for a live staffing platform, where a body can carry
+  seller and buyer identifiers.
+
+  Defaults to current behaviour, and deliberately. EB's worker daemon
+  sets `beanstalk.sqsd.task_name` / `.path` / `.scheduled_time` on the
+  tasks it schedules, and those survive the switch — separate fields on
+  the same message. But a message an *application* posted to the queue
+  has no such attributes: its identity is in the body or nowhere. On
+  those, `false` removes the only diagnostic content there is, so it is
+  a choice an operator makes knowingly rather than a default they
+  inherit.
+
+  The `body` key is replaced with a marker naming the setting, never
+  dropped — an absent key reads as "this message had no body", which is
+  a different claim. The `worker_queues` and `why` tool descriptions
+  declare the policy when it is active, so an agent can tell a withheld
+  body from an empty one and say which. Operator-set only: an agent
+  cannot widen its own access, and a TUI `:settings` save cannot
+  silently turn bodies back on.
+
 - **`ebman mcp serve` now writes to `~/.cache/ebman/ebman.log`.** Every
   subcommand returns from `main` before logging is initialised — right
   for a flag that prints and exits, wrong for a long-lived daemon

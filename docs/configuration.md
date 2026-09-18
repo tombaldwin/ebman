@@ -141,6 +141,36 @@ safety.accounts.prod.read_only = true
 # backend — so it names what it compared and leaves the judgement to
 # you. Re-pull before trusting a clean report.
 
+# Return dead-lettered message BODIES on an MCP peek. Default true —
+# current behaviour, so leaving this alone changes nothing.
+#
+# `worker_queues` with `peek` and `why` return each message's body
+# verbatim, and ebman cannot redact it: redaction here is
+# namespace-and-key based and a queue body is free text your own
+# application wrote. If those payloads carry customer identifiers, this
+# is the control that keeps them out of an agent transcript.
+#
+# Know what you give up. EB's worker daemon sets
+# `beanstalk.sqsd.task_name` / `.path` / `.scheduled_time` on the tasks
+# IT schedules, and those survive this switch — they are separate
+# fields on the same message. A message your APPLICATION posted to the
+# worker queue has no such attributes: its identity is in the body or
+# nowhere. So on those, `false` removes the only diagnostic content
+# there is.
+#
+# The body key is never dropped, only replaced with a marker naming
+# this setting — a missing key would read as "this message had no
+# body", which is a different claim. The MCP tool description states
+# which mode is active, so an agent can tell a withheld body from an
+# empty one.
+#
+# Operator-set only. An agent cannot turn this on for itself.
+#
+# Not honoured by `ebman mcp serve --demo`, which reads no operator
+# config at all by design — its queue bodies are fixture data, so there
+# is nothing to withhold. Test the setting against a real server.
+# mcp.peek_bodies = false
+
 # lint.disable = "EBL003,EBL006"
 
 # Per-rule opt-out for `ebman lint --fix`. Listed rules still

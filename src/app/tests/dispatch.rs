@@ -2586,3 +2586,47 @@ async fn multi_select_space_toggles_the_option_under_the_cursor() {
         "space deselects the option under the cursor"
     );
 }
+
+/// `mcp.peek_bodies = false` survives the `:settings` form.
+///
+/// The switch keeps queue payloads out of an agent transcript, and it
+/// is worthless if opening a settings form turns it back on.
+/// `current_config_snapshot` rebuilds a whole `Config` from App state
+/// and `:settings` saves THAT, so a key the App does not carry is
+/// silently reset to its default — and this key defaults to on.
+///
+/// The config-level round-trip test does not cover this: it goes
+/// parse → serialize → parse, while the reset happens in the snapshot
+/// between them. Hardcoding `true` here passed the whole suite.
+#[test]
+fn a_settings_snapshot_preserves_withheld_peek_bodies() {
+    let cfg = crate::config::Config {
+        mcp_peek_bodies: false,
+        ..crate::config::Config::default()
+    };
+    let app = crate::app::App::for_tests(crate::aws::AwsClient::stub(), cfg);
+
+    let snapshot = app.current_config_snapshot();
+    assert!(
+        !snapshot.mcp_peek_bodies,
+        "the snapshot :settings saves must not re-enable message bodies"
+    );
+
+    // And through the serialiser the form actually writes.
+    let written = crate::config::parse(&crate::config::serialize(&snapshot));
+    assert!(
+        !written.mcp_peek_bodies,
+        "nor may the written file: an operator who turned bodies off and \
+         opened :settings would get them back with no indication"
+    );
+
+    // The other direction, so this cannot pass by always answering no.
+    let on = crate::app::App::for_tests(
+        crate::aws::AwsClient::stub(),
+        crate::config::Config::default(),
+    );
+    assert!(
+        on.current_config_snapshot().mcp_peek_bodies,
+        "the default must round-trip as on"
+    );
+}

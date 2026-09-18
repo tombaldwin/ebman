@@ -639,6 +639,10 @@ impl App {
             // a snapshot that gets edited and re-saved would be the
             // wrong direction entirely.
             safety_parse_errors: Vec::new(),
+            // Carried through unchanged: an MCP-surface policy the
+            // :settings form does not edit, and dropping it here would
+            // silently re-enable bodies on the next save.
+            mcp_peek_bodies: self.cfg.mcp_peek_bodies,
             terraform_state_path: self.cfg.terraform_state_path.clone(),
             refresh_interval: self.refresh_interval,
             extra_regions: self.extra_regions.clone(),
