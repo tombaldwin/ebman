@@ -198,6 +198,25 @@ pub(crate) fn write_verb_names_for_docs() -> Vec<String> {
     writes::write_verb_names()
 }
 
+/// Whether this server should read the audit config from disk.
+///
+/// Extracted from `run` because `run` is the process entry — it owns
+/// stdin, stdout and the event loop, so no lib test reaches it and a
+/// mutation sweep reports every decision inside it as uncovered. Both
+/// halves of this one were: flipping `&&` to `||` and dropping the `!`
+/// each left the suite green.
+///
+/// Neither is cosmetic. The first makes a reads-only server read the
+/// config disk it is documented not to touch; the second inverts demo
+/// and live, so the hermetic mode gains a webhook and the real one
+/// loses it.
+///
+/// Same move as `no_state_output` for the same reason: a decision only
+/// reachable through I/O is a decision no test can pin.
+pub(crate) fn should_init_audit(scope: &WriteScope, demo: bool) -> bool {
+    scope.any() && !demo
+}
+
 /// Parse the value half of `--allow-writes[=a,b]`.
 ///
 /// An unknown verb is an ERROR, never a silent skip. A typo'd
@@ -705,7 +724,7 @@ pub async fn run(args: &[String]) -> Result<()> {
     };
     // Writes fan audit lines out to the configured webhook — the
     // reads-only server stays free of the config-disk read.
-    if write_scope.any() && !demo {
+    if should_init_audit(&write_scope, demo) {
         crate::audit::init_from_config_disk();
     }
     let server = Arc::new(Server::with_scope(demo, no_redact, write_scope.clone()));
@@ -3090,6 +3109,37 @@ mod tests {
         assert!(
             !names.iter().any(|n| n == "confirm_action"),
             "nothing to confirm, so nothing should offer to confirm it: {names:?}"
+        );
+    }
+
+    /// The audit-init decision, pinned outside `run`.
+    ///
+    /// A reads-only server must not read the config disk, and a demo
+    /// server must not acquire a webhook. Both are decided on one line
+    /// inside the process entry, where no lib test reaches — the
+    /// mutation sweep found `&&` → `||` and a dropped `!` both survive
+    /// there, which is why the decision moved out.
+    #[test]
+    fn only_a_live_write_capable_server_reads_the_audit_config() {
+        let narrow = WriteScope::Only(vec!["dlq_delete".into()]);
+
+        assert!(should_init_audit(&WriteScope::All, false));
+        assert!(
+            should_init_audit(&narrow, false),
+            "a narrow grant still dispatches writes, so it still audits"
+        );
+
+        assert!(
+            !should_init_audit(&WriteScope::None, false),
+            "a reads-only server must not touch the config disk"
+        );
+        assert!(
+            !should_init_audit(&WriteScope::All, true),
+            "demo must not acquire a webhook — `||` here would give it one"
+        );
+        assert!(
+            !should_init_audit(&WriteScope::None, true),
+            "and neither half alone is enough — dropping the `!` inverts this"
         );
     }
 }
