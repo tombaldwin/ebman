@@ -45,6 +45,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   is not advertised, so a client reaching one is working from a stale
   tool list or probing, and that is invisible any other way.
 
+- **`ebman mcp serve` now writes to `~/.cache/ebman/ebman.log`.** Every
+  subcommand returns from `main` before logging is initialised — right
+  for a flag that prints and exits, wrong for a long-lived daemon
+  nobody watches interactively. The entire subcommand surface contained
+  exactly one `tracing::` call, and it was the one recording whether a
+  connecting MCP client supports elicitation. It had written nothing
+  and could not. File-only: `serve` speaks JSON-RPC on stdout, so a
+  stdout layer would corrupt the protocol. `ebman mcp setup` is
+  unaffected — it is a pure printer that writes no files.
+
 - **A demo peek no longer claims to have looked.** `worker_queues` with
   `peek` against a `--demo` server reported `peeked: true, messages: []`
   beside a dead-letter depth of 12 — an explicit all-clear on a queue

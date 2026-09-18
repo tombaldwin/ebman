@@ -198,6 +198,32 @@ pub(crate) fn write_verb_names_for_docs() -> Vec<String> {
     writes::write_verb_names()
 }
 
+/// Does this `ebman mcp …` invocation want file logging switched on?
+///
+/// `serve` does; `setup` does not. The split matters in both
+/// directions. `setup` is a pure printer whose module doc promises it
+/// writes **no** files, and opening a log would make that false.
+/// `serve` is a long-lived daemon nobody watches interactively, so a
+/// log is the only way to see anything it says.
+///
+/// This exists because every subcommand returns from `main` BEFORE
+/// `init_logging`, by a deliberate design that predates the MCP server
+/// ("handle CLI flags before any TUI / logging setup so they print
+/// cleanly"). Correct for `--version`; wrong for a daemon. The whole
+/// subcommand surface contained exactly one `tracing::` call, and it
+/// was the one recording whether a connecting MCP client supports
+/// elicitation — the measurement `PLAN.md` stage 3 installed to turn
+/// stage 5's stop condition from a guess into data. It had written
+/// nothing, and could not: a probe declaring elicitation support moved
+/// the log by zero bytes.
+///
+/// Logging here is FILE-ONLY and must stay that way. `serve` speaks
+/// JSON-RPC on stdout; a stdout layer would interleave log lines into
+/// the protocol and break every client.
+pub fn wants_file_logging(args: &[String]) -> bool {
+    args.get(1).map(String::as_str) == Some("serve")
+}
+
 /// Whether this server should read the audit config from disk.
 ///
 /// Extracted from `run` because `run` is the process entry — it owns
@@ -3141,5 +3167,31 @@ mod tests {
             !should_init_audit(&WriteScope::None, true),
             "and neither half alone is enough — dropping the `!` inverts this"
         );
+    }
+
+    /// `serve` logs to a file; `setup` writes nothing.
+    ///
+    /// Both directions are load-bearing: `setup`'s module doc promises
+    /// it writes no files, and `serve` is a daemon whose only voice is
+    /// the log — it had none, so the elicitation measurement stage 5
+    /// waits on recorded nothing at all.
+    #[test]
+    fn only_the_mcp_daemon_opens_a_log_file() {
+        let a = |v: &[&str]| -> Vec<String> { v.iter().map(|s| s.to_string()).collect() };
+
+        assert!(wants_file_logging(&a(&["mcp", "serve"])));
+        assert!(wants_file_logging(&a(&[
+            "mcp",
+            "serve",
+            "--demo",
+            "--allow-writes"
+        ])));
+
+        assert!(
+            !wants_file_logging(&a(&["mcp", "setup"])),
+            "setup is a pure printer that promises it writes no files"
+        );
+        assert!(!wants_file_logging(&a(&["mcp", "setup", "--allow-writes"])));
+        assert!(!wants_file_logging(&a(&["mcp"])), "a bare usage error");
     }
 }
