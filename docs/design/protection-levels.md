@@ -314,6 +314,102 @@ smaller claim than "prevents misuse" and it is the true one.
 Where the operator has *not* enabled it, the answer is refusal, and for
 a contained agent that refusal is real prevention rather than a detour.
 
+### Structure, not prose: where the rule lives
+
+A buildability review supplied a better mechanism than the list above,
+and it is worth stating as the design rather than an implementation
+note.
+
+**Keep `decide` pure and keep the attestation out of `WriteContext`
+entirely.** `decide` returns `Ask` for level-default cases and `Deny`
+for pins, freezes and unreadable config; the *caller* satisfies an `Ask`
+with an attestation. The transport layer then **physically cannot
+convert a `Deny`** — there is no code path from an attestation to the
+decision function.
+
+That turns "an attestation may raise a default, never override a
+decision" from a sentence someone must remember into a shape the type
+system enforces. It also keeps the seam extractable for `pgman`, which
+was the reason `WriteContext` holds only borrowed values.
+
+### The gap that makes levels bigger than they look
+
+`decide` **takes no action today.** It answers "may anything write to
+this env", never "may *terminate* this env". A ladder that distinguishes
+reversible writes from irreversible ones cannot be evaluated without
+per-action attributes in the context, and the attributes that exist
+(`ToolAttrs` in `cli/mcp/annotations.rs`) are `pub(super)` inside the
+MCP module — unreachable from `write_gate` and the TUI.
+
+Worse, there are **three action vocabularies with no mapping**: MCP tool
+names (`dlq_purge`), the TUI's toast verbs via `deny_write_as`, and the
+CLI's `action_label` strings. The backlog already carries "a neutral
+action vocabulary, shared by refusals and dispatches" as a stage-5
+prerequisite; this is the thing that makes it load-bearing rather than
+tidy. Budget it as part of levels, not as a separate nicety.
+
+### Elicitation is a frame-loop change, not a handler arm
+
+The first draft treated "ask over MCP" as available once the capability
+is detected. It is not. The server's loop treats every inbound frame as
+a client request and matches on `method`; a client's **response** to a
+server-initiated `elicitation/create` — a frame with an `id` and a
+`result` and no `method` — has no route, and today would be answered
+with an unknown-method error.
+
+Implementing it needs a server-side request-id allocator disjoint from
+client ids, a pending-elicitations map, and the frame loop learning to
+distinguish responses from requests — a change to that loop's
+fundamental contract.
+
+And it collides with something the design never mentioned:
+**`TOOL_TIMEOUT_SECS` is 30**, while a human answering a question
+routinely takes longer. Either elicitation-bearing calls get a much
+longer bound — a client-visible behaviour change — or the module's
+documented "every call inside the 30s tool bound" contract is rewritten.
+That is a maintainer decision, not an implementation detail.
+
+### Config has two consequences the draft missed
+
+- **The serializer deletes what it does not emit.** `:settings` rewrites
+  `config.toml` from the parsed config, and passthrough only preserves
+  lines the parser did *not* recognise. A `safety.level` the parser
+  understands but the serializer never writes is **deleted on the next
+  save**. Emission plus a round-trip test is mandatory before any config
+  example is published.
+- **Older binaries refuse everything.** A `safety.level` line hits the
+  0.37 fail-closed catch-all in any earlier ebman, which means
+  `SafetyConfigUnreadable`, which means every write refused including
+  the TUI's. Correct by design, and worth one sentence in the docs so it
+  is not discovered on a second machine.
+
+**A contradiction to resolve before building:** an earlier section says
+an unparseable *or absent* safety stanza resolves every principal to
+`observe`. Applied literally, a fresh install's TUI operator is
+read-only until they configure something — which breaks every existing
+user and contradicts this document's own migration guarantee. The
+buildable reading is that **absent** means per-transport defaults (the
+TUI keeps today's behaviour; MCP is already gated by `--allow-writes`),
+and only **unparseable** forces `observe`. The document must pick one;
+as written it is not implementable without a regression.
+
+### The smallest useful slice, and it is not levels
+
+**Scope `--allow-writes` by verb**: `--allow-writes=dlq_delete,dlq_resend`.
+
+It resolves the forcing incident directly — the client wanted to delete
+one dead-lettered message and could only be given terminate-on-Prod. The
+gating point already exists and is consulted both when advertising tools
+and at dispatch, so unscoped verbs stay unadvertised, which satisfies
+the "not even advertised" row of the table above.
+
+It is pure ceiling, so Principle 5 holds trivially: it is a server flag.
+It touches no config parser, no decision type, no audit stage, and
+prejudges nothing — a level later compiles down to a verb set.
+
+Roughly half a day against roughly two weeks for the full design. If
+only one thing from this section is ever built, it should be this one.
+
 ### What has to be true before implementing
 
 1. **Real elicitation data.** If most clients declare it, attestation is
@@ -325,7 +421,13 @@ a contained agent that refusal is real prevention rather than a detour.
 4. **Do not wire `ask` to the existing `confirm_token` flow.** It is the
    path of least resistance and it is agent-confirms-itself with extra
    steps. This wants a pinned test, shown to fail, not a paragraph.
-5. **Scope is a description, not a limit.** An attestation covers one
+5. **The attestation is agent-authored free text** — the most
+   attacker-shaped string the audit log will ever carry. It goes through
+   `escape_value` like every other value and gets its own case in the
+   existing forge guard, which exists because a crafted field could
+   otherwise inject a second `stage=` token that consumers read instead
+   of the real one.
+6. **Scope is a description, not a limit.** An attestation covers one
    dispatch and is dropped when a plan is superseded — but nothing stops
    an agent re-planning and re-attesting with the same sentence. "This
    session" is also unenforceable across processes: two servers share
