@@ -3772,3 +3772,39 @@ own reasoning, not by effort.
   test MODULE. The same cut would have silently hidden a real violation
   below it.
 
+
+### Verb-scoped `--allow-writes` (0.40, 2026-09-18)
+
+Closed both halves of the forcing case recorded in `BACKLOG.md`: the
+flag was all-or-nothing, so granting an agent the ability to delete one
+dead-lettered message also granted terminate across every environment
+the credentials reach. A field session declined to ask for it on
+exactly those grounds — the correct call, and the evidence that the
+flag was too coarse.
+
+- `--allow-writes=verb,verb` grants exactly those verbs. Bare
+  `--allow-writes` still means all of them, so existing registrations
+  were unaffected.
+- Ungranted verbs are unadvertised **and** refused at dispatch (plan
+  and confirm phases both). Unadvertised alone would leave a verb
+  reachable by a client holding a cached tool list.
+- Fail-closed parse: an unknown verb is a startup error naming the typo.
+- The grant is stated in the `initialize` instructions block, so an
+  agent can distinguish "not granted" from "ebman can't do this".
+
+Two defects surfaced while building it, both caught by guards rather
+than by review:
+
+- `confirm_action` was being filtered out of a narrow grant — it is the
+  second phase of every write, not a verb, so every narrow grant would
+  have been able to plan a write and never dispatch one.
+- `mcp setup` had been listing five write verbs since the three DLQ
+  verbs shipped. The list is now derived, and a `docs_drift` guard pins
+  the equivalent list in `docs/headless.md`.
+
+Chosen over the full levels-and-attestation design in
+`docs/design/protection-levels.md` (~half a day against ~two weeks) on
+the grounds that it prejudges nothing: a named level later compiles
+down to a verb set. The operator decision behind it was that a uniform
+grant was wanted — no tiered ceremony — because Demo matters as much as
+Prod when clients are watching it.

@@ -166,11 +166,12 @@ ebman mcp serve --no-redact                       # disable get_option_settings 
 
 ### Wiring it up (`ebman mcp setup`)
 
-Not sure how to register it? Run `ebman mcp setup` — it prints the exact commands (the `claude mcp add` line, a `.mcp.json` snippet for other clients, and the `AWS_REGION` pin) from the installed binary. It's the secure way to hand setup to an agent: the instructions come from the signed binary you already installed, so there's no remote file to fetch, tamper with, or auto-execute. `--allow-writes` prints the write-enabled form. It's print-only — it never edits a client's config.
+Not sure how to register it? Run `ebman mcp setup` — it prints the exact commands (the `claude mcp add` line, a `.mcp.json` snippet for other clients, and the `AWS_REGION` pin) from the installed binary. It's the secure way to hand setup to an agent: the instructions come from the signed binary you already installed, so there's no remote file to fetch, tamper with, or auto-execute. `--allow-writes` prints the write-enabled form; `--allow-writes=dlq_resend,dlq_delete` prints a narrow one. It's print-only — it never edits a client's config.
 
 ```bash
 ebman mcp setup                    # reads-only registration instructions
 ebman mcp setup --allow-writes     # the write-enabled form
+ebman mcp setup --allow-writes=dlq_resend,dlq_delete   # only these two verbs
 ```
 
 ### Discovery (MCP Registry)
@@ -219,13 +220,49 @@ Tool calls run concurrently with a 30s bound; expired-credential errors surface 
 
 ### Writes (`--allow-writes`, 0.28+)
 
-Start the server with `--allow-writes` (flag only — never a config key, so write capability is visible in the process table and `.mcp.json`) and five write tools plus `confirm_action` appear in `tools/list`. Without the flag they're absent entirely.
+Start the server with `--allow-writes` (flag only — never a config key, so write capability is visible in the process table and `.mcp.json`) and the write tools plus `confirm_action` appear in `tools/list`. Without the flag they're absent entirely.
 
 ```bash
 claude mcp add ebman -- ebman mcp serve --allow-writes
 ```
 
-**Every write is two-phase.** The verb tool (`deploy` / `restart` / `rebuild` / `terminate` / `set_option`) validates and returns a plan — it dispatches nothing:
+#### Granting only some verbs (0.40+)
+
+`--allow-writes=verb,verb` grants exactly those and nothing else:
+
+```bash
+claude mcp add ebman -- ebman mcp serve --allow-writes=dlq_resend,dlq_delete
+```
+
+An agent triaging a red environment can then clear the dead-lettered
+message holding it red, without also holding `terminate` over every
+environment the credentials reach. It composes with the pins: a narrow
+grant plus `safety.envs.prod.read_only = true` is "delete DLQ messages
+anywhere except prod".
+
+The nameable verbs are `deploy`, `restart`, `rebuild`, `terminate`,
+`set_option`, `dlq_resend`, `dlq_delete`, `dlq_purge`. `confirm_action`
+is not one — it is the second phase of every write and rides along with
+any grant.
+
+An ungranted verb is **absent** from `tools/list` and **refused** at
+dispatch, at both the plan and confirm phases. Absent alone would leave
+it callable by a client holding a list cached from a wider grant.
+
+An unknown verb is a startup error naming the typo and listing what is
+known — `--allow-writes=dlq_delte` fails rather than silently granting
+nothing (which would look exactly like a working narrow grant until the
+first write) or silently granting everything.
+
+Bare `--allow-writes` still means every verb, so existing registrations
+are unaffected. The `initialize` instructions block states the grant, so
+an agent can tell "not granted" from "ebman can't do this" and ask you
+to widen it rather than reporting a capability gap.
+
+`ebman mcp setup --allow-writes=dlq_resend,dlq_delete` prints the
+matching `.mcp.json`.
+
+**Every write is two-phase.** The verb tool (`deploy` / `restart` / `rebuild` / `terminate` / `set_option` / `dlq_resend` / `dlq_delete` / `dlq_purge`) validates and returns a plan — it dispatches nothing:
 
 ```json
 {"pending":true,"confirm_token":"…","expires_in_secs":60,

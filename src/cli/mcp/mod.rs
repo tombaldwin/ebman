@@ -164,6 +164,15 @@ impl WriteScope {
     }
 }
 
+/// The write verbs, for the docs-drift guard in `app::tests`.
+///
+/// `writes` is private to this module; this is the one seam out, kept
+/// narrow deliberately rather than widening the module's visibility.
+#[cfg(test)]
+pub(crate) fn write_verb_names_for_docs() -> Vec<String> {
+    writes::write_verb_names()
+}
+
 /// Parse the value half of `--allow-writes[=a,b]`.
 ///
 /// An unknown verb is an ERROR, never a silent skip. A typo'd
