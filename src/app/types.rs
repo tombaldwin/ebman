@@ -990,6 +990,18 @@ pub(crate) struct ResolvedConfig {
     /// Mirror of `Config::notify_webhook` (fan-out reads a process-wide
     /// `OnceLock` in [`crate::audit`]; held here for `:settings` save).
     pub notify_webhook: Option<String>,
+    /// Mirror of `Config::safety_read_only` — a STANDING refusal of
+    /// every write, distinct from `App::read_only`, which is the
+    /// session toggle.
+    ///
+    /// Held here for two reasons, not one. `:settings` rebuilds a whole
+    /// `Config` from App state, so a key absent from here is reset on
+    /// save — and for this key that would silently lift a write
+    /// refusal the operator set deliberately. And the gate ORs the two:
+    /// a standing restriction must not be liftable by the session
+    /// toggle, or "choosing in advance" means nothing.
+    pub safety_read_only: bool,
+
     /// Mirror of `Config::mcp_peek_bodies`, held for the same reason
     /// and no other: the TUI never reads it — it governs the MCP
     /// surface — but `:settings` rebuilds a whole `Config` from App

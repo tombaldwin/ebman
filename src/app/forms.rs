@@ -642,6 +642,10 @@ impl App {
             // Carried through unchanged: an MCP-surface policy the
             // :settings form does not edit, and dropping it here would
             // silently re-enable bodies on the next save.
+            // Carried, not defaulted: a `:settings` save must never
+            // lift a standing write refusal the operator set on
+            // purpose.
+            safety_read_only: self.cfg.safety_read_only,
             mcp_peek_bodies: self.cfg.mcp_peek_bodies,
             terraform_state_path: self.cfg.terraform_state_path.clone(),
             refresh_interval: self.refresh_interval,

@@ -181,11 +181,14 @@ pub(crate) fn write_refusal_unaudited(
     let refusal = crate::write_gate::decide(&crate::write_gate::WriteContext {
         env,
         profile: pin_profile.as_deref(),
-        // The CLI has no session-wide toggle; that rung exists for the
-        // TUI. Passing `false` leaves this path's precedence exactly as
-        // it was: freeze, then env pin, then account pin.
+        // The CLI has no session toggle, but it does honour the
+        // STANDING one. This used to pass `false` unconditionally,
+        // which was correct while the rung was TUI-only and became a
+        // hole the moment `safety.read_only` existed: an operator who
+        // forbade writes in config would still have had them from
+        // `ebman action`.
         safety_parse_errors: &safety_cfg.safety_parse_errors,
-        global_read_only: false,
+        global_read_only: safety_cfg.safety_read_only,
         frozen: active_freeze.is_some(),
         safety_envs: &safety_cfg.safety_envs,
         safety_accounts: &safety_cfg.safety_accounts,
@@ -662,5 +665,34 @@ mod write_gate_input_guard {
                 "body extraction is not finding {f}: {body}"
             );
         }
+    }
+
+    /// `safety.read_only` reaches the CLI, not just the TUI.
+    ///
+    /// This path passed `global_read_only: false` unconditionally,
+    /// which was correct while the rung was TUI-only and became a hole
+    /// the moment the config key existed: an operator who forbade
+    /// writes in `config.toml` would still have had them from `ebman
+    /// action`. Closed, and pinned here because a mutation showed the
+    /// fix was unpinned — the suite stayed green with the old `false`
+    /// restored.
+    #[test]
+    fn a_standing_read_only_refuses_cli_writes() {
+        let cfg = crate::config::Config {
+            safety_read_only: true,
+            ..crate::config::Config::default()
+        };
+
+        let refusal = super::write_refusal_unaudited(&cfg, "any-env", &None, None);
+        let (rule, message, _) = refusal.expect("a standing read-only must refuse");
+        assert_eq!(rule.rule(), "global_read_only", "{message}");
+
+        // The control: without it, this env is writeable. Without this
+        // the test would pass against a gate that refuses everything.
+        let open = crate::config::Config::default();
+        assert!(
+            super::write_refusal_unaudited(&open, "any-env", &None, None).is_none(),
+            "no standing restriction means no refusal"
+        );
     }
 }

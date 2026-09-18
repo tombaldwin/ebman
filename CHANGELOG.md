@@ -8,6 +8,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **`safety.read_only = true`** — a standing refusal of every write,
+  everywhere. The bluntest control there is, and the one to reach for
+  if you want ebman to be a viewer.
+
+  It outranks everything: the TUI's own read-only toggle cannot lift
+  it, `ebman action` honours it, and the MCP surface refuses before a
+  plan is issued. Unset it in the file to lift it — deliberately, and
+  not mid-incident by pressing a key.
+
+  First piece of the permission model in `docs/design/runtime-grants.md`:
+  **config may only ever say no.** There is a key to forbid writes and
+  deliberately none to allow them, because a standing restriction is
+  decided calmly and only narrows, while a standing permission has to
+  predict what you will need and gets paid for at the worst moment.
+
+  A value that is not a boolean is a parse error, and a `safety.*`
+  parse error refuses every write until it is fixed — `safety.read_only
+  = ture` fails closed rather than silently meaning false.
+
 - **A verb grant says whose job it is.** Field-reported from a session
   that upgraded to 0.40.0, went to scope its own server to
   `--allow-writes=dlq_delete` — the narrowest grant, the exact case the

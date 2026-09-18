@@ -2630,3 +2630,44 @@ fn a_settings_snapshot_preserves_withheld_peek_bodies() {
         "the default must round-trip as on"
     );
 }
+
+/// A standing `safety.read_only` outranks the session toggle.
+///
+/// "Choosing in advance never to allow writes" means nothing if
+/// pressing a key in-session lifts it. The TUI gate ORs the standing
+/// restriction with the session one for exactly this reason — the
+/// session toggle may only ever ADD a refusal, never remove one.
+#[test]
+fn a_standing_read_only_cannot_be_lifted_in_session() {
+    let cfg = crate::config::Config {
+        safety_read_only: true,
+        ..crate::config::Config::default()
+    };
+    let mut app = crate::app::App::for_tests(crate::aws::AwsClient::stub(), cfg);
+
+    // Session toggle OFF — the standing restriction must still bite.
+    app.read_only = false;
+    assert!(
+        app.read_only_reason("any-env").is_some(),
+        "config forbade writes; a session toggle must not lift that"
+    );
+
+    // And it survives into the snapshot `:settings` would save.
+    assert!(
+        app.current_config_snapshot().safety_read_only,
+        "a save must not drop the standing refusal"
+    );
+
+    // The control: without the standing restriction, the session
+    // toggle governs as before. Without this the test would pass on an
+    // app that refuses everything unconditionally.
+    let mut open = crate::app::App::for_tests(
+        crate::aws::AwsClient::stub(),
+        crate::config::Config::default(),
+    );
+    open.read_only = false;
+    assert!(
+        open.read_only_reason("any-env").is_none(),
+        "no standing restriction and no session toggle means writes are allowed"
+    );
+}

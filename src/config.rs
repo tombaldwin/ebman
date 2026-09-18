@@ -93,6 +93,20 @@ pub struct Config {
     /// backends and holds no token for them: the operator runs
     /// `terraform state pull > somewhere.json` and points this at it,
     /// which works for every backend rather than the one we implemented.
+    /// A standing refusal of every write, everywhere.
+    ///
+    /// `safety.read_only = true`. The highest-precedence rung in
+    /// `write_gate`, which already existed and had no way to be set
+    /// from config — only the TUI's session toggle reached it.
+    ///
+    /// This is the shape the whole permission model is moving toward:
+    /// **config may only ever say no.** A standing restriction is
+    /// decided calmly, once, and only narrows; a standing permission
+    /// has to predict what you will need and is paid for at the worst
+    /// moment. So there is a config key to forbid writes and there is
+    /// deliberately none to allow them.
+    pub(crate) safety_read_only: bool,
+
     /// Return dead-lettered message BODIES on a peek.
     ///
     /// Defaults to `true` — current behaviour, so enabling the switch
@@ -207,6 +221,7 @@ impl Default for Config {
             safety_envs: std::collections::HashMap::new(),
             safety_accounts: std::collections::HashMap::new(),
             safety_parse_errors: Vec::new(),
+            safety_read_only: false,
             mcp_peek_bodies: true,
             terraform_state_path: None,
             notify_webhook: None,
@@ -610,11 +625,25 @@ pub(crate) fn parse(text: &str) -> Config {
             // (`safety.regions.*`). Same reasoning the field check
             // already applies: a safety control this binary cannot
             // enforce must not read as absent.
+            // Fail-closed like the pins: a value that cannot be read
+            // is recorded as a parse error, which refuses every write
+            // until it is fixed. A `safety.read_only = ture` that
+            // silently meant `false` would be the exact defect the pin
+            // parser was rewritten to stop.
+            "safety.read_only" => match parse_bool(&value) {
+                Some(b) => cfg.safety_read_only = b,
+                None => {
+                    cfg.safety_parse_errors.push(format!(
+                        "safety.read_only = {value} is not a boolean (expected true or false)"
+                    ));
+                    cfg.passthrough.push(line.to_string());
+                }
+            },
             other if other.starts_with("safety.") => {
                 cfg.safety_parse_errors.push(format!(
                     "{other} is not a safety setting this version understands \
-                     (expected safety.envs.NAME.read_only or \
-                     safety.accounts.NAME.read_only)"
+                     (expected safety.read_only, safety.envs.NAME.read_only \
+                     or safety.accounts.NAME.read_only)"
                 ));
                 cfg.passthrough.push(line.to_string());
             }
@@ -701,6 +730,9 @@ pub(crate) fn serialize(cfg: &Config) -> String {
     // Only when it differs from the default: writing `true` into every
     // saved config would make the key look like something :settings
     // manages, and it is deliberately operator-only.
+    if cfg.safety_read_only {
+        out.push_str("safety.read_only = true\n");
+    }
     if !cfg.mcp_peek_bodies {
         out.push_str("mcp.peek_bodies = false\n");
     }
@@ -1066,6 +1098,9 @@ accounts.staging.external_id = "abc-xyz"
         profile_themes.insert("prod".into(), "high-contrast".into());
         profile_themes.insert("staging".into(), "dark".into());
         let cfg = Config {
+            // Set, so the round-trip proves a standing write refusal
+            // survives a :settings save rather than defaulting away.
+            safety_read_only: true,
             refresh_interval: Duration::from_secs(45),
             extra_regions: vec!["eu-south-2".into(), "ap-southeast-4".into()],
             redact_default: Some(true),
@@ -1909,5 +1944,57 @@ explain.max_tokens = 512
         );
         cfg = parse("mcp.peek_bodies = FALSE\n");
         assert!(!cfg.mcp_peek_bodies, "case-insensitive booleans parse");
+    }
+
+    /// `safety.read_only` forbids writes, and fails closed when it
+    /// cannot be read.
+    ///
+    /// The first config key that is purely a restriction. There is
+    /// deliberately no counterpart that grants — a standing refusal is
+    /// decided calmly and only narrows, while a standing permission
+    /// has to predict what you will need.
+    #[test]
+    fn a_standing_read_only_forbids_writes_and_fails_closed() {
+        assert!(
+            !parse("").safety_read_only,
+            "absent means not forbidden — this key only ever adds a refusal"
+        );
+        assert!(parse("safety.read_only = true\n").safety_read_only);
+        assert!(!parse("safety.read_only = false\n").safety_read_only);
+
+        // A value that cannot be read must not quietly mean `false`.
+        // `safety.*` parse errors refuse every write until fixed, so
+        // this fails closed rather than lifting the restriction.
+        let bad = parse("safety.read_only = ture\n");
+        assert!(
+            !bad.safety_parse_errors.is_empty(),
+            "an unreadable safety value must be recorded, not ignored"
+        );
+        let msg = &bad.safety_parse_errors[0];
+        assert!(
+            msg.contains("safety.read_only"),
+            "must name the line: {msg}"
+        );
+        // The RENDERED message, not the literal. This very line shipped
+        // with a 26-space hole: a Python heredoc ate the `\`
+        // continuation and produced the collapsed form, which the
+        // wrapped-literal guard cannot see (it only catches the
+        // multi-line shape). The error bar is one line, so the hole
+        // pushes the rest off a narrow terminal.
+        assert!(
+            !msg.contains("  "),
+            "a wrapped literal left a gap in the rendered message: {msg:?}"
+        );
+
+        // Survives a :settings save.
+        let on = parse("safety.read_only = true\n");
+        assert!(
+            parse(&serialize(&on)).safety_read_only,
+            "a save must not lift a standing write refusal"
+        );
+        assert!(
+            !serialize(&parse("")).contains("safety.read_only"),
+            "and the default must not be written out"
+        );
     }
 }

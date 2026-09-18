@@ -1381,6 +1381,7 @@ impl App {
             notify_bell: config.notify_bell,
             cfg: ResolvedConfig {
                 notify_webhook: config.notify_webhook.clone(),
+                safety_read_only: config.safety_read_only,
                 mcp_peek_bodies: config.mcp_peek_bodies,
                 command_aliases: config.command_aliases.clone(),
                 lint_disable: config.lint_disable.clone(),
@@ -1676,6 +1677,7 @@ impl App {
             notify_bell: config.notify_bell,
             cfg: ResolvedConfig {
                 notify_webhook: config.notify_webhook.clone(),
+                safety_read_only: config.safety_read_only,
                 mcp_peek_bodies: config.mcp_peek_bodies,
                 command_aliases: config.command_aliases.clone(),
                 lint_disable: config.lint_disable.clone(),
