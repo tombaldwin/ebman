@@ -42,7 +42,7 @@ use chrono::{TimeZone, Utc};
 use crate::app::App;
 use crate::aws::{
     AppVersion, CwAlarm, DlqOrigin, EnvInstanceCounts, Environment, Event as EbEvent, Instance,
-    QueueStats, WorkerQueues,
+    QueueMessage, QueueStats, SqsdTask, WorkerQueues,
 };
 
 /// Anchor timestamp the fixture is computed against. Stable across
@@ -233,6 +233,59 @@ pub(crate) fn deploys_for_app(app_name: &str) -> Vec<AppVersion> {
         mk("build-820", "chore: bump otel-collector", 192),
         mk("build-817", "perf: cache HEAD on hot path", 1500),
         mk("build-814", "feat: add reconciler retry policy", 4320),
+    ]
+}
+
+/// Synthetic dead-lettered messages, so the triage story is walkable
+/// without an AWS account.
+///
+/// Demo used to have queue *depths* and no bodies, which left two
+/// holes. A peek reported nothing while the depth beside it said 12 —
+/// a shape the `peeked` flag had to lie about — and the three DLQ
+/// write verbs had nothing to plan against, so they reached for a real
+/// client and made real calls from the mode that promises none.
+///
+/// Fewer messages than the DLQ's `visible` count, deliberately: a real
+/// peek samples up to 10 of however many are there, and a fixture that
+/// returned exactly the depth would teach the shape wrong.
+///
+/// The first is the case the whole feature exists for — a scheduled EB
+/// worker task that dead-lettered and is holding an environment
+/// unhealthy. The second carries no `beanstalk.sqsd.*` attributes at
+/// all, which is the ordinary-queue shape a consumer must not assume
+/// away.
+pub(crate) fn dlq_messages_for_env(env_name: &str) -> Vec<QueueMessage> {
+    if env_name != "poly-batch" {
+        return Vec::new();
+    }
+    vec![
+        QueueMessage {
+            id: "d3b07384-d9a0-4f1e-9f3a-11c0ffee0001".into(),
+            // Demo never deletes, so this is never redeemed. Shaped
+            // like a real handle so nothing downstream learns to
+            // expect a short one.
+            receipt_handle: "AQEBdemo0001".into(),
+            body: "elasticbeanstalk scheduled job".into(),
+            receive_count: 4,
+            sent_at: Some(fixture_now() - chrono::Duration::hours(9)),
+            task: Some(SqsdTask {
+                name: Some("Remove unattended jobs".into()),
+                path: Some("/STCleanupUnattendedJobs.do".into()),
+                scheduled_time_raw: Some("2026-05-24 06:04:00 UTC".into()),
+                scheduled_at: Utc.with_ymd_and_hms(2026, 5, 24, 6, 4, 0).single(),
+            }),
+        },
+        QueueMessage {
+            id: "5d41402a-bc4b-4a76-b971-11c0ffee0002".into(),
+            receipt_handle: "AQEBdemo0002".into(),
+            body: "{\"job\":\"reindex\",\"tenant\":\"acme\",\"attempt\":3}".into(),
+            receive_count: 3,
+            sent_at: Some(fixture_now() - chrono::Duration::hours(2)),
+            // Not an EB task: no `beanstalk.sqsd.*` attributes. Renders
+            // `task: null`, which is a different thing from a task with
+            // no name.
+            task: None,
+        },
     ]
 }
 
