@@ -664,6 +664,18 @@ impl Server {
             "deploy" => self.tool_write_plan(writes::WriteVerb::Deploy, args).await,
             "restart" => self.tool_write_plan(writes::WriteVerb::Restart, args).await,
             "rebuild" => self.tool_write_plan(writes::WriteVerb::Rebuild, args).await,
+            "dlq_resend" => {
+                self.tool_write_plan(writes::WriteVerb::DlqResend, args)
+                    .await
+            }
+            "dlq_delete" => {
+                self.tool_write_plan(writes::WriteVerb::DlqDelete, args)
+                    .await
+            }
+            "dlq_purge" => {
+                self.tool_write_plan(writes::WriteVerb::DlqPurge, args)
+                    .await
+            }
             "terminate" => {
                 self.tool_write_plan(writes::WriteVerb::Terminate, args)
                     .await

@@ -173,6 +173,68 @@ impl Server {
     }
 }
 
+/// Resend or delete the message the plan NAMED, or refuse.
+///
+/// The whole point is the id check. SQS deletes by receipt handle, and
+/// a handle is only valid while the message is invisible: the peek that
+/// issues one uses a 5-second visibility timeout while a confirm token
+/// lives 60 seconds. So a handle captured at plan time is dead for 55
+/// of the 60 seconds the plan stays confirmable — carrying it would
+/// fail almost always.
+///
+/// The fix that looks obvious and is worse: re-receive at confirm and
+/// act on whatever comes back. That deletes the head of the queue,
+/// which may not be the message the plan described, and nothing in the
+/// output would say they differed — a silent target swap. So: re-receive
+/// to get a FRESH handle, find the planned id among what came back, and
+/// refuse if it is not there.
+///
+/// Refusing is the right failure. The message may have been consumed,
+/// redriven or deleted by someone else in the interval, and every one
+/// of those means the plan no longer describes reality.
+async fn dispatch_dlq_message(
+    client: &crate::aws::AwsClient,
+    p: &PendingWrite,
+) -> Result<(), String> {
+    let (Some(url), Some(want)) = (p.dlq_url.as_deref(), p.dlq_message_id.as_deref()) else {
+        return Err("plan carried no queue url or message id".into());
+    };
+    // A fresh receive: the handle from plan time is expired by now.
+    let msgs = client
+        .peek_messages(url, 10)
+        .await
+        .map_err(|e| format!("re-reading the queue failed: {e}"))?;
+    let Some(msg) = msgs.into_iter().find(|m| m.id == want) else {
+        return Err(format!(
+            "message '{want}' is no longer in the dead-letter queue — it may have been \
+             consumed, redriven or removed since the plan was made. Nothing was \
+             changed; re-run `worker_queues` with peek and plan again."
+        ));
+    };
+    if p.verb == WriteVerb::DlqResend {
+        // Send first, delete second. The other order can lose the
+        // message outright if the send fails; this order can duplicate
+        // it, and a duplicate in a worker queue is the recoverable
+        // failure — sqsd tasks are retried by design.
+        client
+            .send_message(&main_queue_for(url), &msg.body)
+            .await
+            .map_err(|e| format!("resend failed, message left in the dead-letter queue: {e}"))?;
+    }
+    client
+        .delete_message(url, &msg.receipt_handle)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// The main queue a dead-letter queue drains from.
+///
+/// EB names the pair `<name>` and `<name>-dlq`, which is the same
+/// convention `derive_dlq_url` applies in the other direction.
+fn main_queue_for(dlq_url: &str) -> String {
+    dlq_url.strip_suffix("-dlq").unwrap_or(dlq_url).to_string()
+}
+
 const RETIRED_TOKEN_MEMORY: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,6 +244,17 @@ pub(super) enum WriteVerb {
     Rebuild,
     Terminate,
     SetOption,
+    /// Move one dead-lettered message back to the main queue.
+    DlqResend,
+    /// Delete one dead-lettered message.
+    DlqDelete,
+    /// Empty the dead-letter queue.
+    ///
+    /// The bluntest write here, and arguably more destructive than
+    /// `Terminate`: an environment can be rebuilt from its
+    /// configuration, and a purged message is gone. It also takes
+    /// anything that arrived AFTER the plan was made.
+    DlqPurge,
 }
 
 impl WriteVerb {
@@ -192,6 +265,12 @@ impl WriteVerb {
             WriteVerb::Rebuild => "Rebuild",
             WriteVerb::Terminate => "Terminate",
             WriteVerb::SetOption => "SetOption",
+            // The labels `spawn_dlq` already audits under, so a TUI
+            // purge and an MCP purge correlate under
+            // `ebman audit --action dlq-purge`.
+            WriteVerb::DlqResend => "dlq-resend",
+            WriteVerb::DlqDelete => "sqs-delete",
+            WriteVerb::DlqPurge => "dlq-purge",
         }
     }
 }
@@ -208,6 +287,23 @@ pub(super) struct PendingWrite {
     /// Terminate only: one `confirm_name` mismatch keeps the token
     /// alive for a single retry; the second drops the plan.
     pub name_retry_used: bool,
+    /// DLQ resend / delete: the message this plan names.
+    ///
+    /// The ID, deliberately — NOT the receipt handle. SQS deletes by
+    /// handle, and a handle is only valid while the message is
+    /// invisible: the peek that issues one uses a 5-second visibility
+    /// timeout while a confirm token lives 60, so a handle captured at
+    /// plan time is dead for 55 of the 60 seconds the plan stays
+    /// confirmable. Carrying the handle would fail almost always; the
+    /// alternative that "works" is re-receiving at confirm and deleting
+    /// whatever is at the head of the queue now, which removes a
+    /// different message than the plan named and says nothing about it.
+    ///
+    /// So confirm re-receives, finds THIS id, and refuses if it is not
+    /// there.
+    pub dlq_message_id: Option<String>,
+    /// The dead-letter queue URL resolved at plan time.
+    pub dlq_url: Option<String>,
 }
 
 /// Token TTL — long enough for an agent round-trip, short enough
@@ -334,6 +430,47 @@ pub(super) fn write_tool_descriptors() -> Vec<Value> {
                 "required": ["confirm_token"]
             }
         }),
+        json!({
+            "name": "dlq_resend",
+            "description": format!("Move ONE dead-lettered message back to the main worker queue, so sqsd retries the task. Identify it by `message_id` from `worker_queues` with peek. {confirm_note} The plan names the message id and task; confirm re-reads the queue and acts on THAT id, refusing if it is no longer there — a receipt handle cannot survive the token window, and acting on whatever is at the head of the queue instead would silently target a different message. Sends before deleting: the other order can lose the message if the send fails, while this order can duplicate it, and a duplicate in a worker queue is the recoverable failure."),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "env": {"type": "string", "description": "Environment name (required)"},
+                    "message_id": {"type": "string", "description": "From `worker_queues` with peek (required)"},
+                    "profile": {"type": "string"},
+                    "region": {"type": "string"}
+                },
+                "required": ["env", "message_id"]
+            }
+        }),
+        json!({
+            "name": "dlq_delete",
+            "description": format!("Delete ONE dead-lettered message. Identify it by `message_id` from `worker_queues` with peek. IRREVERSIBLE: unlike restarting or rebuilding an environment, a deleted message cannot be recovered — there is no configuration to rebuild it from. {confirm_note} The plan names the message id and task; confirm re-reads the queue and acts on THAT id, refusing if it is no longer there."),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "env": {"type": "string", "description": "Environment name (required)"},
+                    "message_id": {"type": "string", "description": "From `worker_queues` with peek (required)"},
+                    "profile": {"type": "string"},
+                    "region": {"type": "string"}
+                },
+                "required": ["env", "message_id"]
+            }
+        }),
+        json!({
+            "name": "dlq_purge",
+            "description": format!("Empty the dead-letter queue. THE MOST DESTRUCTIVE TOOL HERE — arguably more so than `terminate`: an environment can be rebuilt from its configuration, and purged messages are gone. It also removes anything that arrived AFTER the plan was made, so the count in the plan is what was there then, not what will be deleted. Prefer `dlq_delete` when you know which message you mean. {confirm_note}"),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "env": {"type": "string", "description": "Environment name (required)"},
+                    "profile": {"type": "string"},
+                    "region": {"type": "string"}
+                },
+                "required": ["env"]
+            }
+        }),
     ]
 }
 
@@ -384,6 +521,8 @@ impl Server {
         let mut version: Option<String> = None;
         let mut settings: Vec<(String, String, String)> = Vec::new();
         let mut plan_extra = String::new();
+        let mut dlq_message_id: Option<String> = None;
+        let mut dlq_url: Option<String> = None;
 
         match verb {
             WriteVerb::Deploy => {
@@ -486,6 +625,63 @@ impl Server {
                     .collect();
                 plan_extra = format!(",\"changes\":[{}]", rows.join(","));
             }
+            WriteVerb::DlqResend | WriteVerb::DlqDelete | WriteVerb::DlqPurge => {
+                // Resolve the queue at plan time so the plan can say
+                // WHICH queue, and so a web-tier env is refused here
+                // rather than at confirm.
+                let client = self.client(args).await?;
+                let queues = client
+                    .describe_worker_queues(&env.application, &env.name)
+                    .await
+                    .map_err(|e| tool_error(&profile, "describe_worker_queues", &e.to_string()))?;
+                let url = queues
+                    .dlq_url
+                    .clone()
+                    .filter(|_| queues.dlq_stats.is_some())
+                    .ok_or_else(|| format!("env '{}' has no dead-letter queue", env.name))?;
+
+                if verb == WriteVerb::DlqPurge {
+                    let visible = queues.dlq_stats.as_ref().map(|s| s.visible).unwrap_or(0);
+                    plan_extra = format!(
+                        ",\"queue\":{},\"messages_now\":{}",
+                        util::json_string(&url),
+                        visible
+                    );
+                } else {
+                    // The message must exist NOW, and the plan names it
+                    // by id. Confirm re-receives and matches this id —
+                    // it cannot carry a receipt handle, which expires
+                    // with the 5-second visibility timeout while the
+                    // token lives 60.
+                    let id = arg_str(args, "message_id")
+                        .ok_or("'message_id' is required (from `worker_queues` with peek)")?;
+                    let found = client
+                        .peek_messages(&url, 10)
+                        .await
+                        .map_err(|e| tool_error(&profile, "peek_messages", &e.to_string()))?
+                        .into_iter()
+                        .find(|m| m.id == id);
+                    let Some(msg) = found else {
+                        return Err(format!(
+                            "message '{id}' is not in the dead-letter queue right now — \
+                             re-run `worker_queues` with peek to see what is there"
+                        ));
+                    };
+                    let task = msg
+                        .task
+                        .as_ref()
+                        .and_then(|t| t.name.clone())
+                        .unwrap_or_else(|| "(not an EB worker task)".into());
+                    plan_extra = format!(
+                        ",\"queue\":{},\"message_id\":{},\"task\":{}",
+                        util::json_string(&url),
+                        util::json_string(&id),
+                        util::json_string(&task)
+                    );
+                    dlq_message_id = Some(id);
+                }
+                dlq_url = Some(url);
+            }
             WriteVerb::Restart | WriteVerb::Rebuild | WriteVerb::Terminate => {}
         }
 
@@ -536,6 +732,8 @@ impl Server {
                 expires_at: tokio::time::Instant::now()
                     + std::time::Duration::from_secs(CONFIRM_TTL_SECS),
                 name_retry_used: false,
+                dlq_message_id: dlq_message_id.clone(),
+                dlq_url: dlq_url.clone(),
             });
         }
 
@@ -694,6 +892,11 @@ impl Server {
                 .update_env_option_settings(&p.env, &p.settings, &[])
                 .await
                 .map_err(|e| e.to_string()),
+            WriteVerb::DlqPurge => match p.dlq_url.as_deref() {
+                Some(url) => client.purge_queue(url).await.map_err(|e| e.to_string()),
+                None => Err("plan carried no queue url".into()),
+            },
+            WriteVerb::DlqResend | WriteVerb::DlqDelete => dispatch_dlq_message(&client, p).await,
         };
         crate::audit::append_action_completed(
             None,
@@ -779,6 +982,8 @@ mod tests {
             region: None,
             expires_at: tokio::time::Instant::now() + std::time::Duration::from_secs(60),
             name_retry_used: false,
+            dlq_message_id: None,
+            dlq_url: None,
         };
         st.install(plan("tok-a"));
         assert!(st.retired.is_empty(), "the first plan replaces nothing");
@@ -972,6 +1177,107 @@ mod tests {
                 .unwrap_or(&after)
                 .contains(env_name),
             "demo mode writes NO audit lines"
+        );
+    }
+
+    /// The plan carries the message ID, never a receipt handle.
+    ///
+    /// SQS deletes by handle, and a handle is valid only while the
+    /// message is invisible: the peek that issues one uses a 5-second
+    /// visibility timeout, while a confirm token lives 60. So a handle
+    /// captured at plan time is dead for 55 of the 60 seconds the plan
+    /// stays confirmable — carrying it would fail almost always, which
+    /// at least fails loudly. The variant that ships is re-receiving at
+    /// confirm and acting on whatever comes back, which removes a
+    /// different message than the plan named and says nothing about it.
+    #[test]
+    fn the_confirm_window_outlives_a_receipt_handle() {
+        // The arithmetic that makes this the default path rather than a
+        // race. If either constant moves, the reasoning in
+        // `dispatch_dlq_message` needs re-reading.
+        // Read the peek's visibility timeout out of the source rather
+        // than restating it: `assert!(CONFIRM_TTL_SECS > 5)` is
+        // constant-folded, so clippy rightly calls it an assertion that
+        // cannot fail — the "test that is worse than none" shape this
+        // repo keeps finding.
+        let sqs = std::fs::read_to_string("src/aws/sqs.rs").expect("sqs.rs");
+        let visibility: u64 = sqs
+            .split(".visibility_timeout(")
+            .nth(1)
+            .and_then(|r| r.split(')').next())
+            .and_then(|n| n.trim().parse().ok())
+            .expect("the peek sets a visibility timeout");
+        assert!(
+            CONFIRM_TTL_SECS > visibility,
+            "a confirm token ({CONFIRM_TTL_SECS}s) outliving the peek's \
+             {visibility}s visibility timeout is WHY the plan carries an \
+             id rather than a receipt handle. If this ever stops being \
+             true, re-read the comment on `PendingWrite::dlq_message_id` \
+             before simplifying anything."
+        );
+        // And the plan type must not be able to carry a handle.
+        let src = std::fs::read_to_string("src/cli/mcp/writes.rs").expect("own source");
+        let decl = src
+            .split("pub(super) struct PendingWrite {")
+            .nth(1)
+            .and_then(|r| r.split('}').next())
+            .expect("PendingWrite is declared here");
+        assert!(
+            !decl.contains("receipt_handle"),
+            "a receipt handle in the plan is dead before the token \
+             expires: {decl}"
+        );
+        assert!(decl.contains("dlq_message_id"), "{decl}");
+    }
+
+    /// The main queue is the dead-letter URL without its suffix.
+    #[test]
+    fn the_main_queue_is_the_dlq_without_its_suffix() {
+        assert_eq!(
+            main_queue_for("https://sqs/awseb-e-abc-stack-AWSEBWorkerQueue-xyz-dlq"),
+            "https://sqs/awseb-e-abc-stack-AWSEBWorkerQueue-xyz"
+        );
+        // Not a dlq-suffixed url: returned unchanged rather than
+        // mangled. Resending to a queue we guessed wrong would put the
+        // message somewhere nobody is reading.
+        assert_eq!(main_queue_for("https://sqs/plain"), "https://sqs/plain");
+    }
+
+    /// Resend sends BEFORE deleting.
+    ///
+    /// The other order can lose the message outright: delete succeeds,
+    /// send fails, and the message exists nowhere. This order can
+    /// duplicate it, and a duplicate in a worker queue is the
+    /// recoverable failure — sqsd tasks are retried by design, so a
+    /// task running twice is a known shape and a task vanishing is not.
+    ///
+    /// Source-pinned because the dispatch needs SQS: mutating the
+    /// ordering away left the whole suite green.
+    #[test]
+    fn a_resend_sends_before_it_deletes() {
+        let src = std::fs::read_to_string("src/cli/mcp/writes.rs").expect("own source");
+        let body = src
+            .split("async fn dispatch_dlq_message(")
+            .nth(1)
+            .and_then(|r| r.split("\n}").next())
+            .expect("the dispatch is defined here");
+        let send = body.find("send_message(");
+        let del = body.find("delete_message(");
+        assert!(
+            body.contains("send_message("),
+            "the resend path must send: {body}"
+        );
+        assert!(
+            send < del,
+            "send must come before delete — the other order loses the \
+             message when the send fails, and there is nothing to \
+             recover it from: {body}"
+        );
+        // The send must be conditional on the verb: a plain delete that
+        // also resent would put the message back every time.
+        assert!(
+            body.contains("p.verb == WriteVerb::DlqResend"),
+            "only a resend sends: {body}"
         );
     }
 }

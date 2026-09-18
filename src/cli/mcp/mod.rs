@@ -424,9 +424,8 @@ impl Server {
                             "this list describes THIS build.\n\n",
                             "Capabilities ebman HAS that this surface does NOT expose — ask the operator to run them, ",
                             "or ask for them to be exposed here:\n",
-                            "- Dead-letter message MANAGEMENT — resend to the main queue, delete one, purge: TUI, ",
-                            "Detail view, Queues tab, `d`. Reading queue depth and peeking at messages IS exposed ",
-                            "here, as `worker_queues`.\n",
+                            "- Nothing queue-related: depth and peek are `worker_queues`, and resend / delete / ",
+                            "purge are `dlq_resend` / `dlq_delete` / `dlq_purge` under --allow-writes.\n",
                             "- A LIVE log tail (streaming, follows new lines): TUI, Detail view, Logs tab. ",
                             "Point-in-time log queries ARE exposed here, as `recent_logs`.\n\n",
                             "Tool descriptions carry CAVEATS naming what each tool cannot see. They are accurate and ",
@@ -1407,12 +1406,16 @@ mod tests {
             .expect("initialize must carry instructions")
             .to_string();
 
-        // Each TUI-only capability, and the fact it is TUI-only.
-        // What is TUI-only TODAY. This list has shrunk twice as tools
-        // shipped — queues, then `:why` and point-in-time logs — and
-        // each time the guard failed first and the block was corrected,
-        // which is the behaviour wanted from it.
-        for needle in ["resend", "purge", "LIVE log tail"] {
+        // What is TUI-only TODAY. This list has shrunk three times as
+        // tools shipped — queues, then `:why` and point-in-time logs,
+        // now dead-letter management — and each time the guard failed
+        // first and the block was corrected, which is the behaviour
+        // wanted from it.
+        // One entry today; it was three. Kept as a list because the
+        // shape is "what is TUI-only", and the next capability to ship
+        // should shorten this rather than restructure it.
+        const TUI_ONLY: &[&str] = &["LIVE log tail"];
+        for needle in TUI_ONLY {
             assert!(
                 instructions.to_lowercase().contains(&needle.to_lowercase()),
                 "the instructions must name `{needle}` as available elsewhere: {instructions}"
@@ -2254,6 +2257,122 @@ mod tests {
             assert_eq!(
                 v["queues"]["peeked"], false,
                 "and we did not look, because there was nothing to look at: {out}"
+            );
+        }
+
+        /// Confirm must act on the message the PLAN named, or refuse.
+        ///
+        /// The dangerous implementation re-receives at confirm and acts
+        /// on whatever comes back — deleting the head of the queue,
+        /// which may not be what the plan described, with nothing in
+        /// the output saying they differed. A silent target swap.
+        ///
+        /// Here the message is gone by confirm time, which is ordinary:
+        /// something else consumed, redrove or removed it in the token
+        /// window. The confirm must refuse and say nothing changed.
+        #[tokio::test]
+        async fn a_dlq_delete_refuses_when_the_planned_message_is_gone() {
+            use aws_sdk_elasticbeanstalk::operation::describe_environment_resources::DescribeEnvironmentResourcesOutput;
+            use aws_sdk_elasticbeanstalk::types::{EnvironmentResourceDescription, Queue};
+            use aws_sdk_sqs::operation::get_queue_attributes::GetQueueAttributesOutput;
+            use aws_sdk_sqs::operation::receive_message::ReceiveMessageOutput;
+            use aws_sdk_sqs::types::{Message, QueueAttributeName};
+
+            let resources = aws_smithy_mocks::mock!(EbClient::describe_environment_resources)
+                .then_output(|| {
+                    DescribeEnvironmentResourcesOutput::builder()
+                        .environment_resources(
+                            EnvironmentResourceDescription::builder()
+                                .queues(
+                                    Queue::builder()
+                                        .name("WorkerQueue")
+                                        .url("https://sqs/main")
+                                        .build(),
+                                )
+                                .queues(
+                                    Queue::builder()
+                                        .name("WorkerDeadLetterQueue")
+                                        .url("https://sqs/main-dlq")
+                                        .build(),
+                                )
+                                .build(),
+                        )
+                        .build()
+                });
+            let attrs =
+                aws_smithy_mocks::mock!(SqsClient::get_queue_attributes).then_output(|| {
+                    GetQueueAttributesOutput::builder()
+                        .attributes(QueueAttributeName::ApproximateNumberOfMessages, "2")
+                        .build()
+                });
+            // Plan time: m-1 is present. Confirm time: only m-2 is —
+            // the head of the queue is now a DIFFERENT message, which
+            // is exactly the swap this must not perform.
+            let seq = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let seq2 = std::sync::Arc::clone(&seq);
+            let peek = aws_smithy_mocks::mock!(SqsClient::receive_message).then_output(move || {
+                let first = seq2.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+                let id = if first { "m-1" } else { "m-2" };
+                ReceiveMessageOutput::builder()
+                    .messages(
+                        Message::builder()
+                            .message_id(id)
+                            .receipt_handle(format!("rh-{id}"))
+                            .body("payload")
+                            .build(),
+                    )
+                    .build()
+            });
+
+            // The plan path also pulls recent events for its summary.
+            let events = aws_smithy_mocks::mock!(EbClient::describe_events).then_output(|| {
+                aws_sdk_elasticbeanstalk::operation::describe_events::DescribeEventsOutput::builder(
+                )
+                .build()
+            });
+            let eb = aws_smithy_mocks::mock_client!(
+                aws_sdk_elasticbeanstalk,
+                aws_smithy_mocks::RuleMode::MatchAny,
+                [&env_listing(), &resources, &events]
+            );
+            let sqs = aws_smithy_mocks::mock_client!(
+                aws_sdk_sqs,
+                aws_smithy_mocks::RuleMode::MatchAny,
+                [&attrs, &peek]
+            );
+            let s = Server::with_injected_client(
+                true,
+                crate::config::Config::default(),
+                client_with(eb, sqs),
+            );
+
+            let plan = s
+                .call_tool(
+                    "dlq_delete",
+                    &json!({"env": "poly-prod-wk", "message_id": "m-1"}),
+                )
+                .await
+                .expect("m-1 is present at plan time");
+            let token = plan
+                .split("\"confirm_token\":\"")
+                .nth(1)
+                .and_then(|r| r.split('"').next())
+                .expect("a token")
+                .to_string();
+            assert!(plan.contains("m-1"), "the plan names the message: {plan}");
+
+            let err = s
+                .call_tool("confirm_action", &json!({"confirm_token": token}))
+                .await
+                .expect_err("m-1 is gone by confirm time — this must refuse");
+            assert!(
+                err.contains("no longer in the dead-letter queue"),
+                "it must say the planned message is gone, not delete m-2 \
+                 quietly: {err}"
+            );
+            assert!(
+                !err.contains("m-2"),
+                "and must not have touched the message that IS there: {err}"
             );
         }
     }
