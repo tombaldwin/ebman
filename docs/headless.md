@@ -216,6 +216,14 @@ v1 is **reads-only** by default — no tool dispatches a write unless the server
 | `list_versions` | app versions for an env's app | default 50 |
 | `fleet_cost` | cached $/month per env | cache-only; never calls Cost Explorer |
 
+**Exit codes.** `serve` exits 0 when stdin closes, and 2 on any usage
+error — an unknown flag, a `--allow-writes` value naming a verb that
+does not exist, `--allow-writes=` with no verbs after it, or
+`--allow-writes` given more than once. All four are refused at startup
+rather than at first use, so a bad registration fails when you make it
+rather than the first time an agent tries to write. `setup` is the
+same: 0, or 2 on a usage error.
+
 Tool calls run concurrently with a 30s bound; expired-credential errors surface as the `aws sso login --profile X` hint so the agent can relay it. Failures come back as `isError` tool results, not protocol errors.
 
 ### Writes (`--allow-writes`, 0.28+)
