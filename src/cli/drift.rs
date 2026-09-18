@@ -103,6 +103,40 @@ fn parse_drift_args(args: &[String]) -> Result<DriftArgs, String> {
     })
 }
 
+/// What the no-tfstate path emits.
+///
+/// Extracted as a value because the harness that found the gap cannot
+/// see the alternative. `cargo mutants` runs `-- --lib`, so a
+/// behavioural test in `tests/cli.rs` does not compile there: the
+/// `delete !` mutant on `if !quiet` was reported MISSED, covered by an
+/// integration test, and reported MISSED again. A decision that returns
+/// a value is reachable from a lib test and therefore from the gate.
+///
+/// `quiet` wins over `json`: an operator who asked for silence gets it,
+/// and a CI script that passes both is asking for nothing rather than
+/// for JSON.
+#[derive(Debug, PartialEq, Eq)]
+enum NoState {
+    Silent,
+    Json(String),
+    Hint(String),
+}
+
+fn no_state_output(quiet: bool, json: bool) -> NoState {
+    if quiet {
+        return NoState::Silent;
+    }
+    if json {
+        // Through the renderer, not a hand-written literal: the literal
+        // predated the `state` block and so omitted it, while every
+        // other drift response carries it. A consumer parsing the
+        // no-state case found a missing key where the rest of the
+        // surface gives an explicit null.
+        return NoState::Json(terraform::render_drift_json(None, None, &[]));
+    }
+    NoState::Hint(terraform::no_state_hint("--tfstate PATH"))
+}
+
 pub async fn run(args: &[String]) -> Result<()> {
     let DriftArgs {
         env_name,
@@ -133,62 +167,50 @@ pub async fn run(args: &[String]) -> Result<()> {
     // report about the wrong fleet, which is the failure `lineage`
     // exists to expose after the fact and this prevents up front.
     let configured = if tfdir.is_some() { None } else { configured };
-    let tfstate_path = terraform::resolve_state_path(
-        tfstate_path.as_deref(),
-        configured.as_deref(),
-        tfdir
-            .as_deref()
-            .unwrap_or(std::path::Path::new("."))
-            .to_path_buf()
-            .canonicalize()
-            .unwrap_or_else(|_| std::path::PathBuf::from("."))
-            .as_path(),
-    );
-    let (tf_state, used_path) = if let Some(path) = tfstate_path.as_ref() {
-        let Some(state) = terraform::load_from_path(path) else {
-            eprintln!(
-                "ebman drift: could not read or parse tfstate at {}",
-                path.display()
-            );
-            std::process::exit(2);
-        };
-        (state, Some(path.clone()))
-    } else {
-        let start = tfdir
-            .as_deref()
-            .unwrap_or(std::path::Path::new("."))
-            .to_path_buf();
-        let abs = start.canonicalize().unwrap_or(start);
-        let Some(found) = terraform::find_tfstate(&abs) else {
-            if !quiet {
-                if json {
-                    // Through the renderer, not a hand-written
-                    // literal: the literal predated the `state` block
-                    // and so omitted it, while every other drift
-                    // response carries it. A consumer parsing the
-                    // no-state case found a missing key where the rest
-                    // of the surface gives an explicit null — and this
-                    // file's own test says a missing key and a null one
-                    // read differently.
-                    println!("{}", terraform::render_drift_json(None, None, &[]));
-                } else {
-                    eprintln!(
-                        "ebman drift: {}",
-                        terraform::no_state_hint("--tfstate PATH")
-                    );
-                }
+    // A `--tfdir` that does not resolve is an error, not a fall-back to
+    // cwd. It silently became `"."`, so `drift --tfdir /no/such/dir`
+    // with a tfstate in the current directory reported confidently on
+    // whatever fleet THAT state describes — the wrong-fleet shape this
+    // file's own comments warn about, reached by a typo. An operator
+    // who named a directory must hear that the name was wrong.
+    let start = match tfdir.as_deref() {
+        Some(dir) => match dir.canonicalize() {
+            Ok(abs) => abs,
+            Err(e) => {
+                eprintln!("ebman drift: --tfdir {}: {e}", dir.display());
+                std::process::exit(2);
             }
-            return Ok(());
-        };
-        let Some(state) = terraform::load_from_path(&found) else {
-            eprintln!(
-                "ebman drift: could not parse tfstate at {}",
-                found.display()
-            );
-            std::process::exit(2);
-        };
-        (state, Some(found))
+        },
+        // No `--tfdir`: discovery starts from the absolute cwd.
+        // `Path::new(".").ancestors()` yields only `"."` and `""`, so a
+        // relative start cannot walk up at all — the same defect just
+        // fixed in the MCP drift path.
+        None => std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
     };
+    let tfstate_path =
+        terraform::resolve_state_path(tfstate_path.as_deref(), configured.as_deref(), &start);
+    // One resolution, one load. `resolve_state_path` above already
+    // applied the full precedence INCLUDING discovery over the same
+    // start, so the old `else` branch re-ran `find_tfstate` and its
+    // load arm was unreachable — only its "nothing found" message ever
+    // executed. Collapsing removes a second copy of the load-and-parse
+    // error path that could drift from this one.
+    let Some(path) = tfstate_path else {
+        match no_state_output(quiet, json) {
+            NoState::Silent => {}
+            NoState::Json(body) => println!("{body}"),
+            NoState::Hint(msg) => eprintln!("ebman drift: {msg}"),
+        }
+        return Ok(());
+    };
+    let Some(tf_state) = terraform::load_from_path(&path) else {
+        eprintln!(
+            "ebman drift: could not read or parse tfstate at {}",
+            path.display()
+        );
+        std::process::exit(2);
+    };
+    let used_path = Some(path);
 
     let multi_region = regions.len() > 1;
     let mut reports: Vec<(Option<String>, String, bool, Vec<terraform::DriftField>)> = Vec::new();
@@ -530,5 +552,54 @@ mod tests {
             "the hand-written literal is back and will drift from the \
              renderer again"
         );
+    }
+
+    /// `--quiet` must suppress, and its absence must not.
+    ///
+    /// This lives in the LIB, deliberately. The behavioural version in
+    /// `tests/cli.rs` is the better test and does not close the gap:
+    /// every `cargo mutants` invocation here passes `-- --lib`, so
+    /// integration tests are never compiled and the `delete !` mutant
+    /// on `if !quiet` was reported MISSED, covered by an integration
+    /// test, and reported MISSED again. A decision that returns a value
+    /// is reachable from where the gate actually looks.
+    #[test]
+    fn the_no_state_output_respects_quiet_and_json() {
+        assert_eq!(
+            no_state_output(true, false),
+            NoState::Silent,
+            "--quiet must suppress the hint"
+        );
+        assert_eq!(
+            no_state_output(true, true),
+            NoState::Silent,
+            "--quiet wins over --json: an operator who asked for silence \
+             gets it, and a script passing both is asking for nothing"
+        );
+
+        match no_state_output(false, false) {
+            NoState::Hint(h) => assert!(
+                h.contains("terraform state pull"),
+                "the hint must name the remote-backend workflow — \
+                 \"pass --tfstate\" alone is useless if your state is in \
+                 HCP: {h}"
+            ),
+            other => panic!("a normal run must print the hint, got {other:?}"),
+        }
+
+        match no_state_output(false, true) {
+            NoState::Json(body) => {
+                let v: serde_json::Value =
+                    serde_json::from_str(&body).expect("the no-state JSON must parse");
+                for key in ["tfstate", "state", "envs"] {
+                    assert!(
+                        v.get(key).is_some(),
+                        "a missing key and a null one read differently to a \
+                         consumer: {body}"
+                    );
+                }
+            }
+            other => panic!("--json must emit JSON, got {other:?}"),
+        }
     }
 }
