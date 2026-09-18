@@ -353,7 +353,12 @@ pub(crate) fn resolve_state_path(
         return Some(p.to_path_buf());
     }
     if let Some(p) = configured.filter(|p| !p.is_empty()) {
-        return Some(std::path::PathBuf::from(p));
+        // Tilde-expanded: this value is hand-written in config.toml and
+        // the documented example is `~/.config/ebman/poly.tfstate`.
+        // Without this, following the documentation verbatim exits 2
+        // with "could not read or parse tfstate at ~/…" — a config key
+        // whose own example does not work.
+        return Some(std::path::PathBuf::from(crate::app::expand_tilde(p)));
     }
     find_tfstate(start)
 }
@@ -1243,6 +1248,38 @@ mod state_path_tests {
         assert!(
             h.contains("does not talk to backends"),
             "and it must be clear ebman reads files rather than fetching: {h}"
+        );
+    }
+
+    /// The documented config example must actually work.
+    ///
+    /// `configuration.md` shows `terraform.state_path =
+    /// "~/.config/ebman/poly.tfstate"`. Without expansion, following
+    /// the documentation verbatim exits 2 with "could not read or parse
+    /// tfstate at ~/…" — a config key whose own example fails.
+    #[test]
+    fn a_configured_state_path_expands_a_leading_tilde() {
+        let nowhere = Path::new("/nonexistent-for-this-test");
+        let resolved = resolve_state_path(None, Some("~/.config/ebman/poly.tfstate"), nowhere)
+            .expect("the config rung resolves");
+        assert!(
+            !resolved.to_string_lossy().starts_with('~'),
+            "a leading tilde must be expanded, not passed to the filesystem: {}",
+            resolved.display()
+        );
+        assert!(
+            resolved
+                .to_string_lossy()
+                .ends_with(".config/ebman/poly.tfstate"),
+            "and the rest of the path must survive: {}",
+            resolved.display()
+        );
+
+        // A path with no tilde is untouched — expansion must not
+        // rewrite an absolute path someone deliberately gave.
+        assert_eq!(
+            resolve_state_path(None, Some("/srv/state.json"), nowhere),
+            Some(PathBuf::from("/srv/state.json"))
         );
     }
 }

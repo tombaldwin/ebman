@@ -126,12 +126,12 @@ safety.accounts.prod.read_only = true
 # backends and holds no token for them — pull the state once and point
 # at the file:
 #
-#   terraform state pull > ~/.config/ebman/uflexi.tfstate
+#   terraform state pull > ~/.config/ebman/poly.tfstate
 #
 # One command, works for every backend, and your Terraform credentials
 # stay where they already are. Precedence: `--tfstate PATH` (or the MCP
 # `tfstate_path` argument), then this key, then discovery from cwd.
-# terraform.state_path = "~/.config/ebman/uflexi.tfstate"
+# terraform.state_path = "~/.config/ebman/poly.tfstate"
 #
 # A pulled file goes stale silently, so drift reports the state's
 # `serial`, `lineage` and the file's mtime alongside the verdict. ebman

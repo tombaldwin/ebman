@@ -90,8 +90,8 @@ mod envs_json_tests {
 
     fn env() -> Environment {
         Environment {
-            name: "Uflexi-prod-wk".into(),
-            application: "uflexi".into(),
+            name: "poly-prod-wk".into(),
+            application: "poly".into(),
             status: "Ready".into(),
             health: "Yellow".into(),
             platform: "Java 17".into(),
@@ -128,8 +128,8 @@ mod envs_json_tests {
         // The pre-existing fields must survive — this is a documented
         // shape shared with `ebman envs --json`.
         for old in [
-            "\"name\":\"Uflexi-prod-wk\"",
-            "\"application\":\"uflexi\"",
+            "\"name\":\"poly-prod-wk\"",
+            "\"application\":\"poly\"",
             "\"health\":\"Yellow\"",
             "\"version_label\":\"build-900\"",
         ] {

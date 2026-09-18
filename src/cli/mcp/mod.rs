@@ -1458,7 +1458,11 @@ mod tests {
             "and must say what it is not: {desc}"
         );
         assert!(
-            desc.contains("dlq_origin"),
+            // The field as EMITTED (`dead_letter_queue.origin`), not
+            // the internal Rust field name — the description is what an
+            // agent reads and then looks for in the JSON, and those two
+            // disagreed.
+            desc.contains("dead_letter_queue.origin"),
             "a derived DLQ url that returns nothing is ordinary; a reported \
              one that does is an anomaly — the consumer cannot tell without \
              this: {desc}"
@@ -1725,8 +1729,8 @@ mod tests {
                 DescribeEnvironmentsOutput::builder()
                     .environments(
                         EnvironmentDescription::builder()
-                            .environment_name("uflexi-prod-wk")
-                            .application_name("uflexi")
+                            .environment_name("poly-prod-wk")
+                            .application_name("poly")
                             .status("Ready".into())
                             .health("Yellow".into())
                             .tier(
@@ -1829,7 +1833,7 @@ mod tests {
             let out = s
                 .call_tool(
                     "worker_queues",
-                    &json!({"env": "uflexi-prod-wk", "peek": true}),
+                    &json!({"env": "poly-prod-wk", "peek": true}),
                 )
                 .await
                 .expect("worker_queues answers");
@@ -1904,7 +1908,7 @@ mod tests {
             );
 
             let out = s
-                .call_tool("worker_queues", &json!({"env": "uflexi-prod-wk"}))
+                .call_tool("worker_queues", &json!({"env": "poly-prod-wk"}))
                 .await
                 .expect("depth-only must not need a receive_message rule");
             let v: Value = serde_json::from_str(&out).expect("valid JSON");
@@ -1938,6 +1942,101 @@ mod tests {
                 .await
                 .expect_err("an unknown env must be an error");
             assert!(err.contains("not found"), "{err}");
+        }
+
+        /// A derived dead-letter URL that names no real queue must not
+        /// fail the call.
+        ///
+        /// `describe_worker_queues` treats NonExistentQueue on a DERIVED
+        /// url as THE "this env has no dead-letter queue" shape — it
+        /// swallows the error and leaves `dlq_stats: None` with
+        /// `dlq_url: Some`. Peeking that url raised it again, and the
+        /// `?` failed the whole tool call, discarding the depth answer
+        /// we already had. On the case the tool's own description calls
+        /// ordinary.
+        ///
+        /// The mock has NO receive_message rule: a body that still
+        /// peeks gets an unmatched call and fails.
+        #[tokio::test]
+        async fn a_derived_dlq_that_does_not_exist_still_answers() {
+            use aws_sdk_elasticbeanstalk::operation::describe_environment_resources::DescribeEnvironmentResourcesOutput;
+            use aws_sdk_elasticbeanstalk::types::{EnvironmentResourceDescription, Queue};
+            use aws_sdk_sqs::operation::get_queue_attributes::GetQueueAttributesOutput;
+            use aws_sdk_sqs::types::QueueAttributeName;
+
+            // EB names only the main queue, so the DLQ url is derived.
+            let resources = aws_smithy_mocks::mock!(EbClient::describe_environment_resources)
+                .then_output(|| {
+                    DescribeEnvironmentResourcesOutput::builder()
+                        .environment_resources(
+                            EnvironmentResourceDescription::builder()
+                                .queues(
+                                    Queue::builder()
+                                        .name("WorkerQueue")
+                                        .url("https://sqs/main")
+                                        .build(),
+                                )
+                                .build(),
+                        )
+                        .build()
+                });
+            let settings = aws_smithy_mocks::mock!(EbClient::describe_configuration_settings)
+                .then_output(|| {
+                    aws_sdk_elasticbeanstalk::operation::describe_configuration_settings::DescribeConfigurationSettingsOutput::builder().build()
+                });
+            // The main queue answers; the derived `-dlq` does not exist.
+            let main_attrs = aws_smithy_mocks::mock!(SqsClient::get_queue_attributes)
+                .match_requests(|req| req.queue_url() == Some("https://sqs/main"))
+                .then_output(|| {
+                    GetQueueAttributesOutput::builder()
+                        .attributes(QueueAttributeName::ApproximateNumberOfMessages, "3")
+                        .build()
+                });
+            let dlq_missing = aws_smithy_mocks::mock!(SqsClient::get_queue_attributes)
+                .match_requests(|req| req.queue_url() == Some("https://sqs/main-dlq"))
+                .then_error(|| {
+                    aws_sdk_sqs::operation::get_queue_attributes::GetQueueAttributesError::generic(
+                        aws_smithy_types::error::ErrorMetadata::builder()
+                            .code("AWS.SimpleQueueService.NonExistentQueue")
+                            .message("The specified queue does not exist")
+                            .build(),
+                    )
+                });
+
+            let eb = aws_smithy_mocks::mock_client!(
+                aws_sdk_elasticbeanstalk,
+                aws_smithy_mocks::RuleMode::MatchAny,
+                [&env_listing(), &resources, &settings]
+            );
+            let sqs = aws_smithy_mocks::mock_client!(
+                aws_sdk_sqs,
+                aws_smithy_mocks::RuleMode::MatchAny,
+                [&main_attrs, &dlq_missing]
+            );
+            let s = Server::with_injected_client(
+                false,
+                crate::config::Config::default(),
+                client_with(eb, sqs),
+            );
+
+            let out = s
+                .call_tool(
+                    "worker_queues",
+                    &json!({"env": "poly-prod-wk", "peek": true}),
+                )
+                .await
+                .expect("a missing derived DLQ must not fail the call");
+            let v: Value = serde_json::from_str(&out).expect("valid JSON");
+
+            assert_eq!(
+                v["main_queue"]["stats"]["visible"], 3,
+                "the depth answer we already had must survive: {out}"
+            );
+            assert_eq!(
+                v["peeked"], false,
+                "there was nothing to peek, so we did not look — saying \
+                 `true` here claims an empty queue that does not exist: {out}"
+            );
         }
     }
 }

@@ -109,7 +109,7 @@ fn read_tool_table() -> Value {
     json!([
         {
             "name": "list_environments",
-            "description": "List Elastic Beanstalk environments (name, application, status, health, platform, cname, version_label). Same schema as `ebman envs --json`.",
+            "description": "List Elastic Beanstalk environments (name, application, tier, status, health, platform, cname, version_label, updated, region). Same schema as `ebman envs --json`.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -120,7 +120,7 @@ fn read_tool_table() -> Value {
         },
         {
             "name": "worker_queues",
-            "description": "Worker-tier SQS queue state for one environment: depth on the main queue and the dead-letter queue, and — with `peek` — which scheduled task dead-lettered. This is the answer to EB's \"1 message in Dead Letter Queue\" health text, which names no task. CAVEATS: web-tier envs have no queues and return empty, not an error. `dlq_origin` says whether EB NAMED the dead-letter queue (`reported`) or ebman derived it by the `<main>-dlq` naming convention (`derived`) — a derived URL that returns nothing is the ordinary case for an env with no DLQ, while a reported one that does is a real anomaly. A `peek` is non-destructive (messages are never deleted and return to the queue) BUT it increments each returned message's `receive_count` by one per call: that field counts every receive, including this tool's, so it is NOT a retry count and must not be read as one.",
+            "description": "Worker-tier SQS queue state for one environment: depth on the main queue and the dead-letter queue, and — with `peek` — which scheduled task dead-lettered. NOT REDACTED under `peek`: each message's body is returned verbatim, and a worker queue carries whatever your application POSTed to it — ebman's redaction is namespace-and-key based and cannot touch free text. This is the answer to EB's \"1 message in Dead Letter Queue\" health text, which names no task. CAVEATS: web-tier envs have no queues and return empty, not an error. `dead_letter_queue.origin` says whether EB NAMED the dead-letter queue (`reported`) or ebman derived it by the `<main>-dlq` naming convention (`derived`) — a derived URL that returns nothing is the ordinary case for an env with no DLQ, while a reported one that does is a real anomaly. A `peek` is non-destructive (messages are never deleted and return to the queue) BUT it increments each returned message's `receive_count` by one per call: that field counts every receive, including this tool's, so it is NOT a retry count and must not be read as one.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -152,7 +152,7 @@ fn read_tool_table() -> Value {
         },
         {
             "name": "why",
-            "description": "Everything that bears on one environment's health, assembled in a single call: recent events, alarms, instances, dead-letter queue depth and its messages, and the application's recent versions. This is the TUI's `:why` overlay. Deliberately NOT a narrative — it puts the facts side by side and leaves the conclusion to the reader, because a confident wrong story is harder to disagree with than adjacent facts. CAVEATS: the dead-letter peek increments each returned message's `receive_count`, which counts every receive and is not a retry count. Any section that failed to fetch comes back as null with the reason in `errors`, so a partial answer is visible as partial rather than reading as \"nothing there\".",
+            "description": "Everything that bears on one environment's health, assembled in a single call: recent events, alarms, instances, dead-letter queue depth and its messages, and the application's recent versions. NOT REDACTED: this peeks the dead-letter queue automatically (up to 5 messages, no opt-in) and returns each body verbatim — a worker queue carries whatever your application POSTed to it. This is the TUI's `:why` overlay. Deliberately NOT a narrative — it puts the facts side by side and leaves the conclusion to the reader, because a confident wrong story is harder to disagree with than adjacent facts. CAVEATS: the dead-letter peek increments each returned message's `receive_count`, which counts every receive and is not a retry count. Any section that failed to fetch comes back as null with the reason in `errors`, so a partial answer is visible as partial rather than reading as \"nothing there\".",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1059,7 +1059,12 @@ impl Server {
         );
         let queues = match client.describe_worker_queues(&app, &env_name).await {
             Ok(q) => {
-                let peek = match q.dlq_url.as_deref() {
+                // Same gate as `worker_queues`: without it, every
+                // healthy worker env whose derived DLQ guess missed
+                // recorded a spurious "we could not look" in `errors`,
+                // which is triage noise in the array that exists to
+                // make partial answers load-bearing.
+                let peek = match q.dlq_url.as_deref().filter(|_| q.dlq_stats.is_some()) {
                     Some(url) => Some(
                         client
                             .peek_messages(url, 5)
@@ -1181,13 +1186,32 @@ impl Server {
                 )
             })?;
 
-        let messages = match (peek, queues.dlq_url.as_deref()) {
+        // Gated on `dlq_stats`, not on `dlq_url`. A DERIVED url — one
+        // ebman guessed by the `<main>-dlq` convention — routinely names
+        // a queue that does not exist, and `describe_worker_queues`
+        // treats that as THE genuine "this env has no dead-letter
+        // queue" shape: it swallows NonExistentQueue and leaves
+        // `dlq_stats: None` with `dlq_url: Some`. Peeking that url
+        // raises NonExistentQueue again, and the `?` here failed the
+        // WHOLE call — throwing away the depth answer we already had,
+        // on the case the tool's own description calls ordinary.
+        let peekable = queues.dlq_stats.is_some();
+        let messages = match (peek && peekable, queues.dlq_url.as_deref()) {
             (true, Some(url)) => client.peek_messages(url, max).await.map_err(|e| {
                 tool_error(&arg_str(args, "profile"), "peek_messages", &e.to_string())
             })?,
             _ => Vec::new(),
         };
-        Ok(render_worker_queues_json(&queues, &messages, peek))
+        // `peeked` reports whether we LOOKED, not what was asked for.
+        // Passing the request flag through said "we looked, it was
+        // empty" for a queue that does not exist — the exact
+        // distinction this field carries, and `why` already answered it
+        // the other way for the same env.
+        Ok(render_worker_queues_json(
+            &queues,
+            &messages,
+            peek && peekable,
+        ))
     }
 
     async fn tool_recent_events(&self, args: &Value) -> Result<String, String> {

@@ -12,8 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   environment, and with `peek` the dead-lettered messages including
   which scheduled task they came from (`beanstalk.sqsd.task_name` /
   `path` / `scheduled_time`). This is the answer to EB's "1 message in
-  Dead Letter Queue" health text, which names no task. `dlq_origin`
-  distinguishes a queue EB *reported* from one ebman derived by the
+  Dead Letter Queue" health text, which names no task.
+  `dead_letter_queue.origin` distinguishes a queue EB *reported* from one ebman derived by the
   `<main>-dlq` convention: a derived URL returning nothing is the
   ordinary case for an env with no DLQ, while a reported one that does
   is a real anomaly.

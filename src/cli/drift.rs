@@ -124,6 +124,15 @@ pub async fn run(args: &[String]) -> Result<()> {
     // config rung is what makes this usable on a fleet whose state is
     // in a remote backend and therefore never discoverable from cwd.
     let configured = crate::config::load().terraform_state_path;
+    // `--tfdir` suppresses the config rung. An explicit flag must never
+    // lose to a config default: with `terraform.state_path` set
+    // globally, `ebman drift --tfdir ~/git/fleetB` silently ignored
+    // fleetB's local state and compared fleetB's LIVE environments
+    // against fleetA's intent. Where both accounts have an `api-prod`
+    // — an ordinary naming convention — that is a confident drift
+    // report about the wrong fleet, which is the failure `lineage`
+    // exists to expose after the fact and this prevents up front.
+    let configured = if tfdir.is_some() { None } else { configured };
     let tfstate_path = terraform::resolve_state_path(
         tfstate_path.as_deref(),
         configured.as_deref(),
@@ -452,5 +461,34 @@ mod tests {
                  a fleet whose state is remote has no drift at all"
             );
         }
+    }
+
+    /// An explicit `--tfdir` must suppress the config rung.
+    ///
+    /// `resolve_state_path` puts config above discovery, and `--tfdir`
+    /// feeds discovery — so with `terraform.state_path` set globally,
+    /// `ebman drift --tfdir ~/git/fleetB` silently ignored fleetB's
+    /// local state and compared fleetB's LIVE environments against
+    /// fleetA's intent. Where both accounts have an `api-prod` — an
+    /// ordinary naming convention — that is a confident drift report
+    /// about the wrong fleet.
+    ///
+    /// Source-scanned because the call reads config from disk and
+    /// exits; the same shape as its sibling guard below.
+    #[test]
+    fn an_explicit_tfdir_outranks_the_configured_state_path() {
+        let src = std::fs::read_to_string("src/cli/drift.rs").expect("read own source");
+        let prod = src.split("\n#[cfg(test)]\nmod ").next().unwrap_or_default();
+        assert!(
+            prod.contains("if tfdir.is_some() { None } else { configured }"),
+            "an explicit --tfdir must suppress the config default, or a \
+             global terraform.state_path silently wins over the directory \
+             the operator named"
+        );
+        // Canary: the slice must be finding real code.
+        assert!(
+            prod.contains("resolve_state_path("),
+            "the production slice is not finding the resolution"
+        );
     }
 }
