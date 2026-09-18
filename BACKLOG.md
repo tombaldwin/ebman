@@ -608,14 +608,30 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
   are job dispatches for a live staffing platform, so a body can carry
   seller and buyer identifiers.
 
-  The point that makes this cheap: **the diagnosis never needed the
-  body.** `SqsdTask` (name / path / scheduled_time) is a separate field
-  from `body` in the same message, and the incident that motivated
-  `worker_queues` was answered entirely from the attributes — for a
-  cron task the body is the fixed literal "elasticbeanstalk scheduled
-  job" and carries nothing. So suppressing bodies costs nothing for
-  worker-task triage and removes the whole class of exposure for
-  app-posted payloads.
+  What is VERIFIED: `SqsdTask` (name / path / scheduled_time) is a
+  separate field from `body` in the same message, so suppressing one
+  does not suppress the other. That is structural and holds.
+
+  What is NOT verified, and the entry originally overstated it: that
+  the body is uninformative. The evidence is ONE captured cron message
+  whose body was the fixed literal "elasticbeanstalk scheduled job",
+  plus a reporter's note that their incident was answered from EB
+  events and CloudWatch rather than from the queue at all. That is
+  consistency, not confirmation — and `src/aws/sqs.rs:180` already
+  says the opposite case exists: the peek asks for `All` attributes
+  precisely so "a task posted by an application rather than by sqsd
+  cron is not silently truncated". An app-posted task may carry its
+  identity IN the body, in which case a default of `false` silently
+  costs the operator the answer and they will not know what they are
+  missing — the same absence-that-reads-as-an-answer shape this whole
+  thread has been circling.
+
+  So before implementing: establish from sqsd's documented behaviour,
+  or from fixtures of BOTH shapes, whether the attributes carry the
+  diagnosis for app-posted tasks too. If they do not, the switch is
+  still worth having but must default to current behaviour and say in
+  the tool description which mode is active — which is the shape
+  proposed below regardless.
 
   Shape: a config key (operator-set, not agent-set — an agent must not
   be able to widen its own access), defaulting to current behaviour so
