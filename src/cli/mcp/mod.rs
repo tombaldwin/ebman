@@ -1588,4 +1588,63 @@ mod tests {
             "and the reason must be kept, not just the fact of failure"
         );
     }
+
+    /// A FAILED dead-letter peek must not report as an empty queue.
+    ///
+    /// Reading messages needs `sqs:ReceiveMessage`, a different
+    /// permission from the attributes call that produced the depth — so
+    /// "depth says 1, peek denied" is an ordinary IAM shape. Reported as
+    /// `peeked: true, messages: []` it reads as "we looked, the queue is
+    /// clean", which is the opposite of what happened and the exact
+    /// distinction `peeked` exists to preserve.
+    #[test]
+    fn a_denied_dlq_peek_is_not_an_empty_queue() {
+        use crate::aws::QueueMessage;
+        let msg = || QueueMessage {
+            id: "m-1".into(),
+            receipt_handle: String::new(),
+            body: "b".into(),
+            receive_count: 1,
+            sent_at: None,
+            task: None,
+        };
+
+        // Success: messages, and we looked.
+        let mut errors = Vec::new();
+        let (msgs, peeked) = super::tools::dlq_peek_outcome(Some(Ok(vec![msg()])), &mut errors);
+        assert_eq!(msgs.len(), 1);
+        assert!(peeked);
+        assert!(errors.is_empty());
+
+        // Failure: no messages, we did NOT look, and the reason survives.
+        let mut errors = Vec::new();
+        let (msgs, peeked) = super::tools::dlq_peek_outcome(
+            Some(Err("AccessDenied: sqs:ReceiveMessage".into())),
+            &mut errors,
+        );
+        assert!(msgs.is_empty());
+        assert!(
+            !peeked,
+            "a denied peek must not claim we looked — that turns \
+             'permission missing' into 'queue is clean'"
+        );
+        assert_eq!(
+            errors,
+            vec![(
+                "dlq_peek".to_string(),
+                "AccessDenied: sqs:ReceiveMessage".to_string()
+            )],
+            "and the reason must reach the caller, not just the fact"
+        );
+
+        // No dead-letter queue at all: nothing to look at, did not look,
+        // and NOT an error — a web-tier env is not a failure.
+        let mut errors = Vec::new();
+        let (msgs, peeked) = super::tools::dlq_peek_outcome(None, &mut errors);
+        assert!(msgs.is_empty() && !peeked);
+        assert!(
+            errors.is_empty(),
+            "an env with no dead-letter queue is ordinary, not an error"
+        );
+    }
 }
