@@ -270,6 +270,86 @@ version line in the `instructions` block exists because of that. `mcp
 doctor` is the same fix for capabilities: **a fact with no route to its
 consumer is not a fact that consumer has.**
 
+## Layer four: borrow the permission from AWS
+
+**Designed, not built. Target: a release soon.** Recorded here at the
+maintainer's request so it can ship without being redesigned. It buys
+nothing for a setup that already runs as admin — uFlexi's does — and is
+aimed at everyone else.
+
+The observation that makes it worth doing: **`sts:AssumeRole` IS the
+time-boxed grant, done properly.** Everything the sections above
+hand-roll, AWS already does better.
+
+| hand-rolled | AWS equivalent |
+|---|---|
+| TTL on a marker file, honoured by ebman | session duration, enforced by STS |
+| the `--allow-writes` ceiling | the role's policy, which the operator already maintains and audits |
+| ebman's audit log | CloudTrail, written independently of ebman |
+| "not a security boundary — anything that can write files can write the marker" | assumed credentials, which cannot be forged locally |
+
+That last row matters most. The note admits below that a grant marker
+protects against mistake and drift but not against a compromised agent.
+An assumed role does not need the caveat.
+
+### It reuses machinery that already exists
+
+`AwsClient::assume_role` (`src/aws.rs`) already assumes a role from a
+source profile, with `external_id` support and a `role_session_name`,
+and `config::AccountSpec` already holds the shape. It was built for
+cross-account switching; this points the same mechanism at capability
+elevation *within* an account. The new work is a duration, a menu, and
+the ask — not the plumbing.
+
+### Shape
+
+Config lists roles that MAY be assumed. That is a menu, not a grant,
+which keeps it on the right side of the rule that config never says
+"yes, now":
+
+```toml
+[roles.dlq_cleanup]
+role_arn = "arn:aws:iam::123456789012:role/EbmanDlqCleanup"
+max_session_secs = 900
+```
+
+The flow: the agent needs a write the current credentials cannot do →
+ebman sees the gap (by `iam:SimulatePrincipalPolicy`, or by having been
+told) → it asks, in the conversation, naming the role and the duration
+→ on approval it assumes, and the window IS the STS session. It expires
+by construction, with no expiry logic of ebman's to get wrong.
+
+### Attribution is the sleeper benefit
+
+`role_session_name` should carry the client and the grant id —
+`ebman-claude-<grant>` rather than today's `ebman-<target>`. CloudTrail
+then shows which agent session performed which API call, in a log ebman
+does not write and cannot edit. An operator can answer "what did the
+agent actually do" without trusting ebman's own audit trail, which is a
+materially different assurance from the one this note otherwise offers.
+
+### Limits, to state rather than discover
+
+- **15 minutes is the STS floor** for a session. "For the next two
+  minutes" is not expressible.
+- **MFA-gated roles do not work unattended.** A role requiring MFA
+  cannot be assumed by a background agent.
+- **Setup cost is real**: the base principal needs `sts:AssumeRole` on
+  each role, and somebody has to write the policies. This is a feature
+  for operators who already run scoped IAM, not a way to introduce them
+  to it.
+- **It buys nothing for admin-mode setups.** If the base credentials are
+  already unrestricted, assuming a narrower role is a pure downgrade the
+  agent could decline to take. It is worth having anyway — the downgrade
+  is the point — but it must be opt-in, and it must not be presented as
+  protection where the base identity is unconstrained.
+- **Simulation is not enforcement.** `SimulatePrincipalPolicy` can
+  return allow where SCPs, resource policies, session policies or
+  conditions will deny. Advisory only. And the probe itself needs
+  permission: a denied probe is "could not check", never a clean bill of
+  health — `ProbeOutcome` in `src/cli/lint.rs` already encodes that
+  distinction and the reason for it.
+
 ## What this is not
 
 **Not a security boundary.** Anything that can write files can write the
