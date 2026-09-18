@@ -2407,4 +2407,47 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// A lint RESULT must name the rules that cannot fire.
+    ///
+    /// The description said so and that was not enough. Linting an
+    /// environment that was Yellow because of a dead-lettered message
+    /// returned two unrelated findings and nothing about the queue — so
+    /// the reader sees findings, concludes lint has looked, and the
+    /// actual cause of the health state is invisible. Observed against a
+    /// live fleet.
+    #[tokio::test]
+    async fn a_lint_result_names_the_rules_it_could_not_check() {
+        let resp = rpc(
+            &demo_server(),
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                   "params":{"name":"lint","arguments":{}}}),
+        )
+        .await
+        .expect("lint answers");
+        let body = resp["result"]["content"][0]["text"].as_str().expect("text");
+        let v: Value = serde_json::from_str(body).expect("valid JSON");
+
+        let not_checked = v["rules_not_checked"].as_array().unwrap_or_else(|| {
+            panic!("every lint result must say what it could not check: {body}")
+        });
+        let joined = not_checked
+            .iter()
+            .filter_map(|x| x.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            joined.contains("EBL011"),
+            "the worker-DLQ rule never fires here and the result must say \
+             so, not only the description: {body}"
+        );
+        assert!(
+            joined.contains("worker_queues"),
+            "and must point at the tool that DOES see queues — a caveat \
+             that points nowhere leaves the reader with \"lint says it is \
+             fine\": {body}"
+        );
+        // The findings themselves must survive alongside it.
+        assert!(v["issues"].is_array(), "{body}");
+    }
 }
