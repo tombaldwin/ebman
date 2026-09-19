@@ -213,7 +213,7 @@ fn read_tool_table() -> Value {
         },
         {
             "name": "recent_logs",
-            "description": "The NEWEST log lines for an environment from CloudWatch Logs. NOT REDACTED: log lines are free text and this tool returns them verbatim, so anything an application logged — tokens, connection strings, customer data — reaches the client. ebman's redaction is namespace-and-key based (`get_option_settings`, `drift`, `audit_log`) and cannot apply here; use `filter` to narrow what you pull rather than relying on it being scrubbed. CAVEATS: returns the newest in the window, not the oldest — `FilterLogEvents` itself returns matches oldest-first, so a naive query answers \"is this still running?\" with lines from hours ago and looks plausible doing it. If `complete` is false the SCAN stopped early and what you have is the OLDEST part of the window: narrow `since_minutes` rather than trusting the result. `complete` is about the scan, NOT about the result — `truncated_by_limit` is the other half, and says the window held more than `limit` so you have the newest slice of a larger set. Both can be true at once: a complete scan of two hours returning the newest 5 of thousands is `complete: true, truncated_by_limit: true`, and reading the first without the second gives you \"that is all there was\". `log_group` defaults to the environment's own groups (`/aws/elasticbeanstalk/<env>/…`); if the env has none, the result says so rather than erroring. `filter` is CloudWatch Logs filter-pattern syntax, not a regex.",
+            "description": "The NEWEST log lines for an environment from CloudWatch Logs. NOT REDACTED: log lines are free text and this tool returns them verbatim, so anything an application logged — tokens, connection strings, customer data — reaches the client. ebman's redaction is namespace-and-key based (`get_option_settings`, `drift`, `audit_log`) and cannot apply here; use `filter` to narrow what you pull rather than relying on it being scrubbed. CAVEATS: returns the newest in the window, not the oldest — `FilterLogEvents` itself returns matches oldest-first, so a naive query answers \"is this still running?\" with lines from hours ago and looks plausible doing it. If `complete` is false the SCAN stopped early and what you have is the OLDEST part of the window: narrow `since_minutes` rather than trusting the result. `complete` is about the scan, NOT about the result — `truncated_by_limit` is the other half, and says the window held more than `limit` so you have the newest slice of a larger set. Both can be true at once: a complete scan of two hours returning the newest 5 of thousands is `complete: true, truncated_by_limit: true`, and reading the first without the second gives you \"that is all there was\". When `complete` is FALSE and `truncated_by_limit` is true, what you hold is the newest slice of the OLDEST scanned prefix — a middle slice, not the newest overall; narrow the window before reading anything into the ordering. `log_group` defaults to the environment's own groups (`/aws/elasticbeanstalk/<env>/…`); if the env has none, the result says so rather than erroring. `filter` is CloudWatch Logs filter-pattern syntax, not a regex.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -603,17 +603,30 @@ fn empty_queue_reason(tier: &str, queues: &aws::WorkerQueues) -> Option<&'static
     if queues.main_url.is_some() || queues.dlq_url.is_some() {
         return None;
     }
+    // Three-way, not two. `tier` is "Web" / "Worker" / "?" — EB can
+    // omit the tier block entirely, and an unrecognised name passes
+    // through verbatim. Treating everything-not-Worker as web asserted
+    // "there is nothing here to read" about an env whose tier ebman
+    // does not know, which CLOSES the triage question with a claim it
+    // cannot support: the same defect class this field exists to fix,
+    // inverted for the third value.
     if tier.eq_ignore_ascii_case("Worker") {
         // A worker env SHOULD have a queue. EB reporting none is not
         // the ordinary case and should not read like one.
         Some(
             "worker tier, but EB reported no queues for this environment — unexpected; \
-              check the environment's configuration",
+             check the environment's configuration",
+        )
+    } else if tier.eq_ignore_ascii_case("Web") || tier.eq_ignore_ascii_case("WebServer") {
+        Some(
+            "web tier — web environments have no worker queues, so there is nothing \
+             here to read",
         )
     } else {
         Some(
-            "web tier — web environments have no worker queues, so there is nothing \
-              here to read",
+            "the environment's tier could not be determined, so whether queues are \
+             expected here is unknown — treat their absence as unconfirmed rather than \
+             as an answer",
         )
     }
 }
@@ -1139,7 +1152,41 @@ impl Server {
                 .filter(|ro| **ro)
                 .count();
 
+        // The freeze is the ONE gate rung that changes mid-connection:
+        // `gate_refusal` re-reads the cross-process marker on every
+        // dispatch, so a `:freeze-deploys` from a live TUI session
+        // refuses every MCP write while it stands. Doctor promised "the
+        // standing restrictions in force" and never looked — during an
+        // incident it reported writes as available, and an incident is
+        // exactly when a triage agent calls this. A local file read,
+        // so it costs nothing the AWS-free contract forbids.
+        let frozen = crate::freeze::read_active().is_some();
+        // Every write is refused when the safety config cannot be
+        // parsed — `write_gate::decide` checks that FIRST and
+        // unconditionally. Reporting only `safety_read_only` here said
+        // `all_writes_refused: false` about a server refusing
+        // everything.
+        let unreadable = !self.safety_cfg.safety_parse_errors.is_empty();
+        let all_refused = self.safety_cfg.safety_read_only || unreadable || frozen;
+
         let mut notes: Vec<String> = Vec::new();
+        if unreadable {
+            notes.push(
+                "The safety config could not be parsed, which fails CLOSED: every write is \
+                 refused until the operator fixes it. This is not a fault in ebman and \
+                 retrying will not clear it."
+                    .into(),
+            );
+        }
+        if frozen {
+            notes.push(
+                "A deploy freeze is active (set from a TUI session), so every write is \
+                 refused while it stands. It is the one restriction here that can lift \
+                 without anything restarting — the operator clears it with :thaw-deploys \
+                 or :incident END."
+                    .into(),
+            );
+        }
         if self.safety_cfg.safety_read_only {
             notes.push(
                 "safety.read_only is set: EVERY write is refused, everywhere. No grant \
@@ -1187,7 +1234,7 @@ impl Server {
             util::json_string(&client),
             elicits,
             util::json_string(&writes),
-            self.safety_cfg.safety_read_only,
+            all_refused,
             pinned,
             !self.safety_cfg.safety_parse_errors.is_empty(),
             self.redact,
@@ -1382,7 +1429,12 @@ impl Server {
 
         if matches!(self.backend, Backend::Demo) {
             return Ok(format!(
-                "{{\"env\":\"{}\",\"groups\":[],\"complete\":true,\"events\":[],\"note\":\"demo mode reads no logs\"}}",
+                // Hand-built, and it went stale the moment
+                // `truncated_by_limit` was added: a client keying on
+                // the field the tool description promises got a
+                // missing key in demo. Both flags, both false, because
+                // nothing was read and nothing was cut.
+                "{{\"env\":\"{}\",\"groups\":[],\"complete\":true,\"truncated_by_limit\":false,\"events\":[],\"note\":\"demo mode reads no logs\"}}",
                 crate::util::json_escape(&env_name)
             ));
         }
@@ -1465,7 +1517,15 @@ impl Server {
             // stop claiming to have looked; the better one is to have
             // something to look at.
             let queues = demo_fixture::worker_queues_for_env(&env_name);
-            let msgs = if peek {
+            // The SAME gate as the live path below, not a second copy
+            // of the intent. Passing raw `peek` here answered
+            // `peeked: true` for a web env with no queue at all — "we
+            // looked, it was empty" about a queue that does not exist,
+            // which is exactly the defect the live gate was added to
+            // stop, reintroduced on the path agents rehearse against.
+            // Found by review three commits after the live fix.
+            let peekable = queues.dlq_stats.is_some();
+            let msgs = if peek && peekable {
                 demo_fixture::dlq_messages_for_env(&env_name)
             } else {
                 Vec::new()
@@ -1473,7 +1533,7 @@ impl Server {
             return Ok(render_worker_queues_json(
                 &queues,
                 &msgs,
-                peek,
+                peek && peekable,
                 self.safety_cfg.mcp_peek_bodies,
                 empty_queue_reason(&env.tier, &queues),
             ));
@@ -1954,6 +2014,33 @@ mod renderer_tests {
         assert!(!peeked, "no peek was asked for: {unasked}");
         assert_eq!(msgs, 0, "{unasked}");
 
+        // A WEB env in demo: no queue to look at, so the demo path must
+        // apply the same `peekable` gate the live path does. It did
+        // not — it passed the request flag through and answered
+        // `peeked: true` beside a null queue, which is "we looked, it
+        // was empty" about a queue that does not exist. The live fix
+        // for that shipped three commits earlier; this is the same
+        // defect on the path agents actually rehearse against, and the
+        // test above cannot see it because `poly-batch` HAS a queue.
+        let web: Value = serde_json::from_str(
+            &s.tool_worker_queues(&json!({"env": "poly-prod-api", "peek": true}))
+                .await
+                .expect("demo worker_queues"),
+        )
+        .expect("json");
+        assert_eq!(
+            web["peeked"],
+            json!(false),
+            "there is no queue here, so no look happened however it was asked for: {web}"
+        );
+        assert!(web["dead_letter_queue"]["url"].is_null(), "{web}");
+        assert!(
+            web["reason"]
+                .as_str()
+                .is_some_and(|r| r.contains("web tier")),
+            "and the reason must say why there is nothing: {web}"
+        );
+
         // The fixture carries both shapes a consumer must handle: an EB
         // scheduled task, and a message that is not one at all.
         let tasks: Vec<&Value> = asked["messages"].as_array().expect("arr").iter().collect();
@@ -2332,6 +2419,28 @@ mod renderer_tests {
         let s = Server::with_config(false, false, crate::cli::mcp::WriteScope::All, cfg);
 
         let v: Value = serde_json::from_str(&s.tool_doctor()).expect("json");
+        // A server refusing EVERY write must say so in the field named
+        // for that fact. `write_gate::decide` checks parse errors
+        // first and unconditionally, so reporting only
+        // `safety_read_only` here answered "writes are available" about
+        // a server that refuses all of them.
+        assert_eq!(
+            v["standing_restrictions"]["all_writes_refused"],
+            json!(true),
+            "an unreadable safety config refuses every write and the summary field \
+             must reflect it, not only the detail field: {v}"
+        );
+        let notes = v["notes"]
+            .as_array()
+            .expect("notes")
+            .iter()
+            .filter_map(|n| n.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            notes.contains("fails CLOSED"),
+            "and must say retrying will not help: {notes}"
+        );
         assert_eq!(
             v["standing_restrictions"]["config_unreadable"],
             json!(true),
@@ -2367,6 +2476,25 @@ mod renderer_tests {
         let worker = empty_queue_reason("Worker", &none).expect("a worker env has a reason");
         assert!(worker.contains("unexpected"), "{worker}");
         assert_ne!(web, worker, "the two cases mean different things");
+
+        // THREE tiers, not two. `tier` is "Web" / "Worker" / "?" — EB
+        // can omit the tier block, and an unrecognised name passes
+        // through verbatim. A two-way branch claimed "web tier, nothing
+        // here to read" about an env whose tier ebman does not know,
+        // closing the triage question with a claim it cannot support.
+        for unknown in ["?", "SomethingNew", ""] {
+            let r = empty_queue_reason(unknown, &none)
+                .unwrap_or_else(|| panic!("{unknown:?} must still get a reason"));
+            assert!(
+                r.contains("could not be determined"),
+                "{unknown:?} must not be asserted as a web tier: {r}"
+            );
+            assert!(
+                r.contains("unconfirmed"),
+                "and must leave the question open rather than closing it: {r}"
+            );
+            assert_ne!(r, web, "{unknown:?} is not known to be a web env");
+        }
 
         // With queues present there is nothing to explain, and a
         // reason beside real data is noise.

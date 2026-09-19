@@ -19,6 +19,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   agent cannot tell "you can't do this" from "nobody told you who can",
   and the second is cheap to fix.
 
+### Fixed
+
+- **A demo peek claimed to have looked at a queue that does not
+  exist.** `worker_queues --peek` on a web-tier env in demo mode
+  answered `peeked: true` beside a null queue — "we looked, it was
+  empty" about something that was never there. The live path was fixed
+  for exactly this and the demo path kept a second copy of the
+  intent, so the fix landed on one of them. Demo now applies the same
+  gate. Found by review, three commits after the live fix.
+
+- **`doctor` reported writes as available while every write was
+  refused.** `all_writes_refused` was wired to `safety.read_only`
+  alone, but `write_gate` refuses everything — first and
+  unconditionally — when the safety config cannot be parsed, and also
+  while a deploy freeze is active. A freeze is the one restriction that
+  changes mid-connection, and an incident is exactly when a triage
+  agent calls `doctor`. Both now fold into the field and carry a note.
+
+- **An unknown environment tier was reported as a web tier.**
+  `worker_queues`' new `reason` field treated anything not `Worker` as
+  web — but EB can omit the tier block entirely, yielding `"?"`. The
+  result claimed "there is nothing here to read" about an environment
+  whose tier ebman does not know, closing the triage question with an
+  unsupportable claim. Now a third case that leaves it open.
+
+- **The `instructions` block named the wrong control when two standing
+  refusals held.** It checked `safety.read_only` before parse errors
+  while `write_gate` checks the reverse, so an operator with both was
+  told to clear the key that was not causing the refusals they saw.
+
 - **`recent_logs` distinguishes a complete scan from a complete
   result.** Field-reported against a live fleet: two hours of nginx
   access log, `limit: 5`, five newest rows back and `complete: true`
