@@ -560,34 +560,35 @@ nobody reads. Per-action asks are right for the destructive tail
 Two are client behaviour and cannot be settled from inside ebman. Both
 should be answered before building, not designed around:
 
-- **Does Claude Code declare elicitation support?** Decides whether
-  mechanism 2 exists at all. If it does not, the in-conversation ask
-  falls back to whatever mechanism 1 gives for free, and the operator
-  is left with the CLI grant for anything more — which is the friction
-  this note exists to remove. The instrument that measures
-  this was dead until 0.40.0 — `ebman mcp serve` had no file logging at
-  all, so the one `tracing::` call on the surface wrote nowhere. It now
-  records `elicitation=<bool>` per connection. **No measurement yet**:
-  every line currently in the log is a synthetic probe.
+- ~~**Does Claude Code declare elicitation support?**~~ **ANSWERED,
+  2026-09-19: yes.**
 
-  *Documentary* evidence, which is not the same claim: Claude Code's
-  own MCP documentation describes elicitation dialogs as implemented,
-  in passing, while explaining call backgrounding — "the server is
-  blocked on your input, not slow, so Claude Code defers the move until
-  the dialog closes". A client that has worked out the interaction
-  between elicitation and backgrounding is not one that declines the
-  capability. Predicted value: `true`. If it comes back `false`, Claude
-  Code implements the dialogs without declaring the capability to stdio
-  servers, which would itself be worth knowing.
+      MCP client connected client=claude-code elicitation=true
 
-  Design elicitation as the primary path on that basis, but do not skip
-  the check: *documented support* and *a declared capability on this
-  transport* are different claims.
+  One real client connection to ebman 0.41.0, after `/mcp` Reconnect.
+  The peer session's prediction, recorded before the fact, was `true`;
+  the documentary evidence (Claude Code's own docs describing
+  elicitation dialogs while explaining call backgrounding) pointed the
+  same way. Now measured rather than inferred.
 
-  **The measurement needs the maintainer, not an agent.** It requires a
-  real Claude Code client to connect to ebman 0.40.0, and restarting
-  the client is a human action — an agent cannot restart the session it
-  is running inside. One connection writes the line.
+  **Two consequences, and they unblock the rest of this note.**
+
+  Mechanism 2 is available: the server CAN put a question in front of
+  the operator mid-call, so the in-conversation ask is buildable and
+  does not fall back to the CLI grant the maintainer objected to.
+
+  And the precondition on step 2 is met. Flipping write tools to
+  advertised-by-default was conditional on a gate existing — either the
+  client prompting on `destructiveHint`, or elicitation. Elicitation
+  exists, so the flip converts a safe-by-default surface into one that
+  is gated rather than open. That was the one thing standing between
+  this design and being built.
+
+  The instrument that produced this line was dead until 0.40.0: `ebman
+  mcp serve` had no file logging at all, so the single `tracing::` call
+  on the surface wrote nowhere. The measurement was three releases and
+  one bug away from being available, and nobody knew.
+
 - ~~**Does the client refetch on `tools/list_changed`?**~~ **Moot.**
   Under parity-by-default the tool set never varies, so ebman has no
   reason to send the notification and the client's handling of it does
