@@ -119,67 +119,111 @@ footnote.
 
 ## The shape
 
-**There is no pre-set permission.** The `--allow-writes` flag stops
-being a capability decision at all. Write tools are advertised by
-default, subject to whatever the operator has forbidden.
+**The unit of authorisation is the operator's REQUEST.** Not the
+individual action, and not a span of time.
 
-**Permission happens at the moment of need, in the conversation.**
-Three mechanisms, in preference order:
+That is the maintainer's criterion and it is the thing the rest of this
+note failed to settle:
 
-1. **The client's own tool prompt.** Claude Code already has a tool
-   approval system, and ebman already annotates every write
-   `destructiveHint: true`, `readOnlyHint: false`. If the client
-   prompts on that, the operator gets in-conversation approval with
-   **no new ebman machinery at all** — the only reason it does not
-   happen today is that write tools are not advertised without the
-   flag, which the section above removes.
+> If I ask to delete certain messages, 1 confirmation is fine. More
+> than that and it's easier to do it myself — so what's the point in
+> the tool?
 
-   The two-phase shape lands well here: the plan call is harmless and
-   puts the full detail in the transcript, so the prompt arrives on
-   `confirm_action`, immediately after the operator has read the plan.
-   Its weakness is that the prompt says "allow confirm_action?" and
-   shows a token — opaque about *what* is being confirmed.
+A safety model that drives the operator off the tool has protected
+nothing. Per-action prompting fails that test at four messages. A
+time-boxed window passes it by authorising actions nobody has yet
+described, which fails a different test.
 
-2. **ebman elicitation.** Server-authored prompt, so it can carry the
-   plan and the foreclosure line. Mechanism 1 is the gate; this is what
-   makes the gate legible. Needs the client to declare elicitation.
+So: *"delete messages A, B, C and D"* produces ONE plan covering
+exactly those four, ONE confirmation, and dispatches exactly those
+four. Nothing outside the enumerated set is authorised, and the
+authority expires the instant it is used.
 
-3. **Operator-issued grant** — `ebman grant dlq_delete --env poly-batch
-   --ttl 1h`, or `:grant` in the TUI, reusing the cross-process marker
-   machinery `:freeze-deploys` already uses, with the pid-liveness and
-   reuse handling solved in `src/freeze.rs`. **The fallback**, for
-   clients that cannot elicit and for pre-opening a window when the
-   operator already knows they are about to do twenty of these.
+### Why this beats both alternatives
 
-**Corrected after the parity ruling.** An earlier draft had route 3
-making write tools "appear mid-session" via
-`notifications/tools/list_changed`. That only makes sense on a server
-where they were *absent* — and parity-by-default means they never are.
-Two consequences, both of which shrink the work:
+- **No fatigue.** One ask per thing the operator asked for.
+- **No unsupervised future.** A window authorises actions nobody has
+  described; this authorises a list and nothing else.
+- **A stronger injection bound than a window, not weaker.** Everything
+  that can happen is named in the text the operator approves. A
+  persuaded agent cannot act outside the list, because the list *is*
+  the authorisation. Under a window it could.
+- **It survives the mechanical/discretionary test** that killed
+  windows: the operator says yes to a specific and complete
+  description, which is exactly the mechanical yes a plan can carry.
 
-- **`tools/list_changed` is not needed.** Restrictions are per
-  environment and tools are global, so no grant ever changes the tool
-  set. Nothing appears, so nothing needs announcing. It stays out
-  until something actually varies the listing.
-- **A grant is a temporary lift of a standing restriction**, not an
-  addition of capability. "prod is `read_only`, and for the next hour
-  `dlq_delete` is allowed there." That is still a permission, and still
-  consistent with *config may only say no*: the config's no is
-  permanent and the lift is transient and made in the conversation,
-  which is the whole distinction this note turns on.
+### What already exists, and the one thing that does not
 
-Which also means route 3 is much smaller than it looked — a marker
-with a TTL that `write_gate` consults, not a capability system.
+The two-phase protocol IS request-as-unit approval, conversationally:
+the agent plans, the plan lands in the transcript, the operator reads
+it and says go, the agent confirms. That works today.
+
+What is missing is that **nothing forces the operator into the loop**.
+An agent can plan and immediately confirm without ever surfacing the
+plan. The protocol is honour-system, and an honour system is not a
+gate.
+
+**That is what elicitation buys, and it is the whole of what it buys.**
+At confirm time the server asks the operator directly, showing the
+plan, rather than trusting that the agent surfaced it. One dialog, one
+answer, the batch dispatches.
+
+### The trigger rule, stated plainly
+
+Earlier drafts never said when the ask fires, which made the note
+unbuildable. It fires here:
+
+> **Every write dispatches through `confirm_action`, and on a
+> connection that declared elicitation, `confirm_action` asks the
+> operator. There is no write that skips it and no state in which it is
+> suppressed.**
+
+No exceptions for non-destructive verbs, no "first ask issues a
+window", no verb tiers. One rule, and the batch is what keeps it cheap.
+
+### Clients that cannot be asked keep the flag
+
+The capability is known at handshake, so the decision is per
+connection:
+
+- **Declares elicitation** → write tools advertised by default, subject
+  to standing restrictions, and every confirm asks.
+- **Does not** → the `--allow-writes` opt-in stays, exactly as it
+  behaves today.
+
+This resolves the ordering hazard a reviewer found in an earlier draft,
+which had step 2 (advertise by default) shipping before step 3 (build
+the ask) and leaving a window of open surface with no gate. Under this
+rule the flip and the gate are the same change: the surface opens only
+for connections that can be asked, so they cannot ship apart.
+
+### Above a readable size, refuse
+
+Four messages enumerate. Two hundred do not, and a plan that
+summarises — "200 messages matching X" — asks the operator to approve
+something they have not read. That is the appearance of control
+without control, which this note rejects everywhere else.
+
+So a plan that cannot be enumerated is refused, naming the cap. The
+operator narrows the selection or uses `dlq_purge`, which is one
+deliberate action carrying one honest foreclosure line.
+
+### Partial failure reports what did not happen
+
+Batch dispatch continues past a failure and reports per item. Stopping
+at the second of four leaves two in an unknown state and forces a
+re-plan against a fleet that has changed underneath; continuing gives a
+complete account. Rule 6 applies to the result: it names what
+succeeded, what did not, and why.
 
 ### The plan IS the permission request
 
 The best idea here is free, because the machinery already exists.
 
 Every write is two-phase: a plan, then a confirm. **Planning is
-read-only** — it validates, resolves the queue, names the message — so
-it can be allowed with no grant at all. That means the plan can be
-produced *before* permission is sought, and then used as the content of
-the request.
+read-only** — it validates, resolves the queue, names the messages — so
+it can be allowed with no approval at all. The plan then becomes the
+content of the request.
 
 The prompt an operator sees stops being a category judgement:
 
@@ -191,206 +235,106 @@ and becomes a factual one:
 > unattended jobs", dead-lettered 9h ago, receive_count 4. Queue depth
 > 12.
 
-The second is a decision a person can actually make at 11pm. The first
-is one they will approve on reflex. This costs nothing to build: the
-plan already renders in exactly that form.
+The second is a decision a person can make at 11pm. The first is one
+they will approve on reflex.
 
 #### But a plan is silent about the stakes
 
-**Reviewed 2026-09-18 and this section was wrong as first written.** A
-plan describes the operation, and the reason to refuse usually lives
-outside the operation.
+**Reviewed and this section was wrong as first written.** A plan
+describes the operation, and the reason to refuse usually lives outside
+the operation.
 
-The example above is accurate, specific, and complete about the action
-— and if it had appeared in front of the maintainer that morning he
-would have approved it, because nothing in it says *this message is the
-only live fixture for an end-to-end test of a feature shipped an hour
-ago*. That was the actual reason to keep it. It is not a property of
-the message, the task, or the queue. It is a property of the week.
+The example above is accurate, specific and complete about the action —
+and if it had appeared in front of the maintainer that morning he would
+have approved it, because nothing in it says *this message is the only
+live fixture for an end-to-end test of a feature shipped an hour ago*.
+That was the actual reason to keep it. It is not a property of the
+message, the task or the queue. It is a property of the week.
 
 So the failure mode is not an under-specified plan. It is a plan fully
 specified about mechanics and silent about stakes, which is **more**
 dangerous than a vague one: it reads as complete, and a prompt that
-looks like it contains everything relevant discourages the pause in
-which the operator remembers what it does not contain.
+looks complete discourages the pause in which the operator remembers
+what it does not contain.
 
 **The plan must state what the action FORECLOSES, not only what it
 does.** For a delete: *this message will not be readable again, and it
-is the only one in the queue.* Derivable from state we already hold,
-one line, and the sentence that would have caused the pause.
+is the only one in the queue.* Derivable from state already held, one
+line, and the sentence that would have caused the pause.
 
-This is [ARCHITECTURE.md](../../ARCHITECTURE.md) rule 6 — *a result must
-carry its own negative space* — applied to a plan rather than a result.
-The same rule that makes `peeked` report whether we looked makes a plan
-report what it destroys.
+This is [ARCHITECTURE.md](../../ARCHITECTURE.md) rule 6 — *a result
+must carry its own negative space* — applied to a plan rather than a
+result. Shipped in 0.41.0.
+
+For a batch the foreclosure line aggregates: four messages destroyed,
+none recoverable after the undo window, and the queue depth after.
 
 #### The plan must stay server-authored
 
 A permission prompt written by the party requesting permission is a
 persuasion surface regardless of intent. The worry is not a scheming
-agent; it is the ordinary gradient where an agent that writes plans, and
-notices which plans get approved, writes more of those. Nobody has to
-decide that for it to happen.
+agent; it is the ordinary gradient where an agent that writes plans,
+and notices which plans get approved, writes more of those.
 
 **ebman already has the right property and the design must protect it
-rather than build it.** Every field in a plan — action, env,
-application, health, status, queue url, message id, task name, recent
-events — is rendered server-side from AWS or fixture state through
-`util::json_string`. There is no agent-supplied prose anywhere in a
-plan. The agent chooses *which* thing, never how it is described.
+rather than build it.** Every field in a plan is rendered server-side
+from AWS or fixture state. There is no agent-supplied prose in a plan;
+the agent chooses *which* thing, never how it is described.
 
-Which means the reviewer's suggested addition — let the agent supply a
-short reason, marked as the requester's claim — is the one part of this
-that would **introduce** the risk rather than contain it. Recommendation:
-do not add it. The agent's argument already exists, in the conversation
-the operator is reading. Copying it inside ebman's frame gives it
-authority it has not earned, and the operator loses the ability to tell
-the tool's account of the world from the requester's case for acting on
-it. Keep those in different places, which is where they are now.
+One correction from review: this is not absolute. `set_option`'s plan
+renders old → new values, and the new value is an agent-supplied
+string appearing inside ebman's frame. The accurate claim is *no
+agent-supplied description* — payload values appear, as the operation
+itself rather than as argument about it.
+
+Which means the suggestion to let the agent supply a short reason,
+marked as its claim, is the one part that would **introduce** the risk.
+Declined. The agent's argument already exists in the conversation;
+copying it inside ebman's frame gives it authority it has not earned.
 
 #### A plan is basis for a mechanical yes, never a discretionary one
 
-The argument above — that the agent's case lives in the conversation,
-so it need not be imported into the plan — assumes the operator is
-reading the conversation. **Elicitation is precisely the case where
-they may not be.** That is its appeal: approval happens in-client, at
-the moment of need, without going anywhere else. In a remote or
-headless-adjacent setup the dialog may be all they see, and at that
-point the plan really is the entire basis for the decision.
+That argument — the agent's case lives in the conversation — assumes
+the operator is reading the conversation, and elicitation is precisely
+where they may not be.
 
-The tempting fix is to import the agent's reason into the dialog. That
-is wrong for the reason already given, and the right conclusion is the
+The tempting fix is to import the agent's reason into the dialog. It is
+wrong for the reason just given, and the right conclusion is the
 uncomfortable one:
 
 > If the operator cannot see why the agent is asking, they should not
 > be approving a discretionary write on the strength of the plan alone.
 
-That is a reason to refuse, not a reason to enrich the prompt. An
-approval given without the context is not a more efficient approval; it
-is a worse one, and the dialog must not be built to make it feel
-adequate.
+That is a reason to refuse, not to enrich the prompt. The dialog must
+not be built to make an under-informed approval feel adequate.
 
-**So the plan is sufficient basis for a MECHANICAL yes — is this the
-message I meant, is the count right — and never for a discretionary
-one.** The fixture case is the type specimen: every mechanical fact in
-that prompt was correct and the right answer was still no.
-
-**This looked like an argument for moving grants to the operator route
-— `ebman grant …` in a terminal — and that conclusion was drafted here
-and then overruled.** The maintainer's response, on being told grants
-would be issued by him after shipping:
-
-> WHY WOULD WE NEED TO GRANT IT AFTER WE SHIP — surely that's the point,
-> that we don't have to do that.
-
-He is right, and the draft had reintroduced the original friction
-wearing different clothes. A terminal command is not a restart, but it
-is still leaving the conversation to pre-authorise something, which is
-the thing being designed away.
-
-**Ruling: elicitation carries the grant request. The CLI route is the
-fallback**, for clients that cannot elicit and for pre-opening a window
-when the operator already knows they are about to do twenty of these.
-
-What survives from the argument above is the discipline, not the
-routing: **the dialog must not be built to stand alone.** No importing
-the agent's reasoning into it, no enriching it until an
-under-informed approval feels adequate. The design assumes the operator
-has the conversation, states that assumption plainly, and declines to
-paper over the case where they do not. ebman cannot detect whether a
-human is reading the transcript, so this is a posture, not a check —
-and the honest form of the posture is to keep the prompt thin and the
-context elsewhere.
-
-**Which re-promotes the measurement.** An earlier draft demoted it on
-the reasoning that grants came from the operator anyway. That reasoning
-is dead. If the client cannot elicit, there is no server→client→human
-channel mid-call, the in-conversation ask is not buildable, and the
-operator is left with exactly the CLI friction this note exists to
-remove.
-
-#### Where it becomes noise: volume, not detail
-
-Rich plans survive being read three times and stop being read at the
-fourth. Forty dead-lettered messages from one bad deploy, each with a
-beautifully specific prompt, and by the fifth the operator is clicking
-through a form.
-
-So, explicitly: **plan-as-prompt is the shape of the FIRST ask, and
-approving it issues the window.** It is not the shape of every
-subsequent act inside that window, or the window buys nothing. The
-time-boxed grant is what stops detail from decaying into ceremony.
-
-And a repeat should announce itself: *"this is the second time you have
-been asked about this message"* is cheap, and a repeat is the signal
-that either the grant is not sticking or something is looping.
-
-### Scope grants to env + verb + TTL
-
-Not just verb. Incidents are about one environment, and
-`dlq_delete on poly-batch for 1h` is both tighter and closer to how the
-operator is already thinking. It also collapses most of the injection
-concern: a persuaded agent still cannot act outside the environment the
-human named.
-
-### Declaring an incident revokes outstanding grants
-
-`:freeze-deploys` / `:incident` already exist and are already read
-cross-process by the MCP server. Composing them is nearly free and is
-the right instinct — the moment things go wrong is the moment ambient
-permission should lapse, not persist.
-
-### Visibility, or we have traded one failure for its mirror
-
-The flag's failure mode is *permanent and forgotten*. Dynamic grants
-risk the opposite: *invisible and unaccounted*. Both are the same
-defect — the operator cannot answer "what can this thing do right now?"
-
-So: live grants visible in the TUI (header pill or `:grants`), and the
-audit line records **which grant authorised each write**, not just that
-a write happened. That closes the loop — "granted at 23:04 for one hour,
-used twice by 23:12" should be reconstructable from the log.
-
-### `ebman mcp doctor`
-
-The server learns at handshake exactly what the client declared. It
-should say so:
-
-    Claude Code — elicitation: no · tools/list_changed: yes
-    → operator-issued grants will work; agent-initiated asks will not.
-
-This is an adoption fix more than a debugging one. It is the difference
-between "this feature is broken" and "your client does not carry that
-half", and an agent reporting the former is a support cost that never
-had to exist.
-
-The pattern is established and has already cost something. On
-2026-09-17 the TUI's update checker wrote
-`newer ebman released on crates.io current="0.36.0" latest=0.38.0` to
-the log three times. The information was correct, timely, and in the
-right file — and had no route to the agent, which spent that period
-reporting capability gaps against a binary two releases old. The
-version line in the `instructions` block exists because of that. `mcp
-doctor` is the same fix for capabilities: **a fact with no route to its
-consumer is not a fact that consumer has.**
+**Request-as-unit keeps this honest** in a way windows did not. The
+approval covers exactly what the plan describes, so a complete
+description is a sufficient basis for it. A window required the
+operator to authorise actions the plan did not describe, which is the
+discretionary case wearing a mechanical costume.
 
 ## The four layers, named
-
-The note grew section by section and called the last one "layer four"
-without ever naming the others. For a reader who was not in the
-conversation:
 
 | layer | what it answers | who maintains it |
 |---|---|---|
 | 1. **IAM** | what is *possible* | the operator, in roles they already audit |
 | 2. **Restrictions** (`safety.*`) | what is *forbidden here*, standing | the operator, in config that may only say no |
-| 3. **The ask** | what is happening *now* | the operator, in the conversation |
+| 3. **The ask** | is THIS request approved | the operator, once per request, at confirm |
 | 4. **Assume-role** | a *temporary* widening of layer 1 | AWS, enforced by STS |
 
-Layer 1 is enforced by AWS and is the only real boundary. Layer 2 is
-fast, offline and expresses what IAM cannot — freeze, incident, "never
-this environment". Layer 3 is the human gate. Layer 4 is designed and
+Layer 1 is enforced by AWS and is the only boundary that holds against
+a principal with a shell. Layer 2 is fast, offline, and expresses what
+IAM cannot — freeze, incident, "never this environment". Layer 3 fires
+on every write, exactly once per request. Layer 4 is designed and
 deliberately not in the first cut.
+
+An earlier draft left layer 3 with no trigger rule, which a reviewer
+correctly called out as making the note unbuildable: two incompatible
+models coexisted, one where the ask fires only to lift a restriction
+and one where it fires on every write. Under the first, an operator who
+configures nothing is never asked anything, and the injection defence
+for the default user is nothing. The trigger rule above settles it.
 
 ## Layer four: borrow the permission from AWS
 
@@ -399,20 +343,32 @@ maintainer's request so it can ship without being redesigned. It buys
 nothing for a setup that already runs as admin — uFlexi's does — and is
 aimed at everyone else.
 
-The observation that makes it worth doing: **`sts:AssumeRole` IS the
-time-boxed grant, done properly.** Everything the sections above
-hand-roll, AWS already does better.
+**Rewritten after request-as-unit.** An earlier draft sold this as
+"`sts:AssumeRole` IS the time-boxed grant, done properly" — a fair
+argument against the hand-rolled TTLs and grant markers that draft
+proposed, and moot now those are deleted. The case for layer 4 is
+simpler and does not depend on them.
 
-| hand-rolled | AWS equivalent |
-|---|---|
-| TTL on a marker file, honoured by ebman | session duration, enforced by STS |
-| the `--allow-writes` ceiling | the role's policy, which the operator already maintains and audits |
-| ebman's audit log | CloudTrail, written independently of ebman |
-| "not a security boundary — anything that can write files can write the marker" | assumed credentials, which cannot be forged locally |
+**It is the only ceiling that holds against a principal with a shell.**
+Layers 2 and 3 are ebman asking nicely: anything that can write files
+can edit the restriction config, and anything that can call tools can
+decline to surface a plan. For an agent confined to MCP that is a real
+boundary — see the deployment note below — but for one with shell
+access it is a courtesy. IAM is not, and assume-role is how an operator
+gives an agent a narrow IAM identity for a stretch of work without
+handing it their own.
 
-That last row matters most. The note admits below that a grant marker
-protects against mistake and drift but not against a compromised agent.
-An assumed role does not need the caveat.
+| | ebman's layers 2-3 | assume-role |
+|---|---|---|
+| enforced by | ebman, locally | AWS |
+| forgeable by a shell | yes | no |
+| audited in | ebman's log | CloudTrail, independently |
+| expires | when the request completes | when the STS session does |
+
+The last column is the honest difference: request-as-unit authority
+ends the moment it is used, which is tighter than any session. What
+assume-role adds is not a longer leash but a *credential* that is
+narrow regardless of what ebman does.
 
 ### It reuses machinery that already exists
 
@@ -557,93 +513,80 @@ nobody reads. Per-action asks are right for the destructive tail
 
 ## Open questions
 
-Two are client behaviour and cannot be settled from inside ebman. Both
-should be answered before building, not designed around:
+Client behaviour, and what has been settled:
 
 - ~~**Does Claude Code declare elicitation support?**~~ **ANSWERED,
   2026-09-19: yes.**
 
       MCP client connected client=claude-code elicitation=true
 
-  One real client connection to ebman 0.41.0, after `/mcp` Reconnect.
-  The peer session's prediction, recorded before the fact, was `true`;
-  the documentary evidence (Claude Code's own docs describing
-  elicitation dialogs while explaining call backgrounding) pointed the
-  same way. Now measured rather than inferred.
-
-  **Two consequences, and they unblock the rest of this note.**
-
-  Mechanism 2 is available: the server CAN put a question in front of
-  the operator mid-call, so the in-conversation ask is buildable and
-  does not fall back to the CLI grant the maintainer objected to.
-
-  And the precondition on step 2 is met. Flipping write tools to
-  advertised-by-default was conditional on a gate existing — either the
-  client prompting on `destructiveHint`, or elicitation. Elicitation
-  exists, so the flip converts a safe-by-default surface into one that
-  is gated rather than open. That was the one thing standing between
-  this design and being built.
-
-  The instrument that produced this line was dead until 0.40.0: `ebman
-  mcp serve` had no file logging at all, so the single `tracing::` call
-  on the surface wrote nowhere. The measurement was three releases and
-  one bug away from being available, and nobody knew.
+  One real connection to ebman 0.41.0 after `/mcp` Reconnect. The
+  instrument that produced it was dead until 0.40.0 — every subcommand
+  returned from `main` before `init_logging`, so the single `tracing::`
+  call on the MCP surface wrote to a subscriber that was never
+  installed. The measurement deciding the shape of this design was
+  three releases and one unnoticed bug away from being unavailable.
 
 - ~~**Does the client refetch on `tools/list_changed`?**~~ **Moot.**
-  Under parity-by-default the tool set never varies, so ebman has no
-  reason to send the notification and the client's handling of it does
-  not matter. Removed rather than left as an open question nobody needs
-  answered.
+  Nothing varies the tool set mid-connection. The advertised surface is
+  decided once, at handshake, by whether the connection declared
+  elicitation.
 
-- **Does Claude Code prompt before calling a tool annotated
-  `destructiveHint: true`?** This decides how much of mechanism 1 comes
-  for free, and it is the cheapest of the three to find out: it is
-  answered the first time an agent attempts a write against an
-  advertised tool. Unknown, and not assumed either way.
+- **Does an elicitation dialog survive `TOOL_TIMEOUT_SECS`?** The cap
+  is 30s (`src/cli/mcp/mod.rs`) and a human deciding whether to delete
+  production data will routinely take longer. A reviewer flagged that
+  protection-levels.md already established the answer in principle —
+  an unanswerable ask degrades to DENY, never to allow — but the frame
+  loop's contract has to change to keep a call alive while a dialog is
+  open. **This is the first thing to establish when building**, because
+  it is the difference between a gate and a tool that times out under
+  use. A peer session reports Claude Code does not background a call
+  blocked on an open dialog, which suggests the client handles its half.
 
-Answered since drafting: **`/mcp` shows tools, not declared
-capabilities** — checked by the maintainer. So `ebman mcp doctor` tells
-an operator something the client does not, which is the case for
-building it.
+- **Is a declined ask audited, and what is the agent told?** It should
+  be: a decline leaves no trace today, and "the operator said no" is
+  exactly the near-miss the `stage=refused` work exists to make
+  visible. The agent should be told plainly it was declined, with no
+  remedy naming a control — because the control is a person who has
+  just said no, and an agent that retries a decline is the failure mode
+  here.
 
-And one that is ours:
-
-- **Does a grant survive a server restart?** A marker file says yes by
-  construction. TTL makes that mostly safe, but the freeze marker's
-  pid-liveness logic exists because "mostly" was not good enough there
-  either.
+Answered since drafting: `/mcp` shows tools, not declared capabilities
+— checked by the maintainer — so `ebman mcp doctor` tells an operator
+something the client does not.
 
 ## Implementation order
 
-1. **Invert the config.** Restrictions only: a global standing
-   `read_only`, alongside the per-env pins that already exist. Remove
-   the opt-in permission. This is the change the maintainer's rule
-   implies, it stands regardless of what the client can do, and it is
-   the bulk of the work.
-2. **Advertise write tools by default**, subject to those restrictions.
-   On a client that prompts for destructive tools this alone may
-   deliver mechanism 1 — in-conversation approval, no further work.
+1. ~~**Invert the config.**~~ **Shipped in 0.41.0** as
+   `safety.read_only` — a standing refusal honoured by the TUI, the
+   CLI and the MCP surface, which the session toggle cannot lift.
+   There is deliberately no config key that grants.
+2. **Keep the call alive while a dialog is open.** The frame loop
+   currently caps a tool call at `TOOL_TIMEOUT_SECS`. Establish this
+   first: everything below is unbuildable if the ask times out under
+   ordinary use.
+3. **Ask at `confirm_action`** on connections that declared
+   elicitation, showing the plan and its foreclosure line. Deny on
+   no-answer. Audit the decline.
+4. **Advertise write tools by default on those connections**, subject
+   to standing restrictions. Steps 3 and 4 are one change: the surface
+   opens only where the ask exists, so they cannot ship apart.
+5. **Batch plans** — one plan covering a set, refused above an
+   enumerable cap, dispatching with per-item results.
+6. **Assume-role** (layer 4), targeted at a release soon after.
 
-   **Conditional on the gate existing.** Flipping this default without
-   knowing that the client prompts, or that elicitation is available,
-   converts a safe-by-default surface into an open-by-default one. Do
-   not ship the flip and the measurement in the same release.
-3. **Elicitation** (mechanism 2), if the measurement says it is
-   available, to make the prompt say something worth reading: the plan,
-   and what the action forecloses.
-4. **Operator-issued grants** (mechanism 3): a marker with a TTL that
-   `write_gate` consults as a temporary lift of a standing restriction,
-   plus visibility and audit correlation. No `list_changed` — see the
-   parity correction above.
-5. **Assume-role** (layer 4), targeted at a release soon after.
-
-Steps 2 and 3 are small once 1 is done. The honest unknown is how much
-of this the client gives for free at step 2, which is answered the
-first time an agent attempts a write.
+Deleted from an earlier version of this list, and worth recording so it
+is not reinvented: time-boxed grants, a grant marker reusing
+`freeze.rs`, TTLs, revocation on incident, `ebman grant` / `:grant`,
+`tools/list_changed` emission, and the grant-visibility surface. All of
+them existed to answer "what happens between asks", and under
+request-as-unit there is no between.
 
 ## Cost
 
-A few days, not an afternoon. `src/freeze.rs` supplies the hard part —
-cross-process state with liveness and reuse handling, already trusted
-for a safety decision. The new work is the grant vocabulary, the TTL,
-the `list_changed` emission, the audit correlation, and the TUI surface.
+Smaller than when this note was first written, because most of what it
+proposed has been deleted rather than built. The remaining work is the
+frame-loop change (step 2), the elicitation round-trip (step 3), the
+conditional advertising (step 4), and batch plans (step 5). Two to
+three days, and step 2 should be timeboxed first because a negative
+result there changes the design rather than delaying it.
