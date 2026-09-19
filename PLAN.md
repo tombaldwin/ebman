@@ -124,6 +124,14 @@ Three items, all of them promises already made in public. The tag notes
 name the first two as deliberate gaps, so they are debts, not ideas.
 
 0. **A declared capability is not a human** *(behaviour + measurement)*
+   — **partly done 2026-09-19.** `stage=asked` records the question,
+   answer and latency; `doctor` and `safety-and-privacy.md` now state
+   the limit and name the over-claim to avoid ("the confirmation was
+   approved", never "a human approved it"). **Still owed: script one
+   non-Claude-Code elicitation-declaring client** — the whole "asking
+   is a known quantity" claim still rests on n=1.
+
+   *Original entry:*
 
    The load-bearing claim of 0.42.0 is that writes are safe by default
    because a person answers. Nothing verifies a person is there.
@@ -194,7 +202,20 @@ name the first two as deliberate gaps, so they are debts, not ideas.
    honouring the flag as its own gate when the ask cannot be delivered.
    **Measure first; the answer changes which.**
 
-3. **A resend whose delete half failed** *(behaviour, small)*
+3. ~~**A resend whose delete half failed**~~ — **done 2026-09-19.**
+   The item reports `RESENT BUT NOT REMOVED`, says a duplicate now
+   exists, and tells the agent not to retry that id. Mock-client
+   tested both branches: a delete-half failure on `dlq_delete` must
+   NOT claim a duplicate, because nothing was sent.
+
+   **Found while testing, not yet fixed:** an SQS failure surfaces as
+   the SDK's bare `"service error"` with no code or message. That is
+   `DeleteMessageError`'s `Display`, not something the DLQ path adds,
+   so it affects every SQS error ebman reports. Worth a small item of
+   its own — pull `ErrorMetadata`'s code and message through — rather
+   than widening the one above.
+
+   *Original entry:*
 
    `dispatch_one_dlq_message` sends before deleting, deliberately. If
    the send succeeds and the delete fails, the item reports `ok: false`

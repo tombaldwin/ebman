@@ -3251,6 +3251,170 @@ mod tests {
         ///
         /// Here the message is gone by confirm time, which is ordinary:
         /// something else consumed, redrove or removed it in the token
+        /// A resend whose delete half fails says a duplicate exists.
+        ///
+        /// Send-before-delete is deliberate: the other order can lose
+        /// the message outright, while this one can at worst duplicate
+        /// it. But when the delete fails the copy IS on the main queue
+        /// and the original is still dead-lettered, and the batch
+        /// report calls that `ok: false` — which invites the retry
+        /// that mints another copy per attempt. The bare error said
+        /// none of that. Found twice by the same reviewer, in two
+        /// separate reviews.
+        #[tokio::test]
+        async fn a_resend_that_could_not_delete_says_a_duplicate_now_exists() {
+            use aws_sdk_elasticbeanstalk::operation::describe_environment_resources::DescribeEnvironmentResourcesOutput;
+            use aws_sdk_elasticbeanstalk::types::{EnvironmentResourceDescription, Queue};
+            use aws_sdk_sqs::operation::get_queue_attributes::GetQueueAttributesOutput;
+            use aws_sdk_sqs::operation::receive_message::ReceiveMessageOutput;
+            use aws_sdk_sqs::types::{Message, QueueAttributeName};
+
+            let resources = aws_smithy_mocks::mock!(EbClient::describe_environment_resources)
+                .then_output(|| {
+                    DescribeEnvironmentResourcesOutput::builder()
+                        .environment_resources(
+                            EnvironmentResourceDescription::builder()
+                                .queues(
+                                    Queue::builder()
+                                        .name("WorkerQueue")
+                                        .url("https://sqs/main")
+                                        .build(),
+                                )
+                                .queues(
+                                    Queue::builder()
+                                        .name("WorkerDeadLetterQueue")
+                                        .url("https://sqs/main-dlq")
+                                        .build(),
+                                )
+                                .build(),
+                        )
+                        .build()
+                });
+            let attrs =
+                aws_smithy_mocks::mock!(SqsClient::get_queue_attributes).then_output(|| {
+                    GetQueueAttributesOutput::builder()
+                        .attributes(QueueAttributeName::ApproximateNumberOfMessages, "1")
+                        .build()
+                });
+            let peek = aws_smithy_mocks::mock!(SqsClient::receive_message).then_output(|| {
+                ReceiveMessageOutput::builder()
+                    .messages(
+                        Message::builder()
+                            .message_id("m-1")
+                            .receipt_handle("rh-m-1")
+                            .body("payload")
+                            .build(),
+                    )
+                    .build()
+            });
+            // The send SUCCEEDS...
+            let send = aws_smithy_mocks::mock!(SqsClient::send_message).then_output(|| {
+                aws_sdk_sqs::operation::send_message::SendMessageOutput::builder().build()
+            });
+            // ...and the delete does not. This is the half-failure.
+            let del = aws_smithy_mocks::mock!(SqsClient::delete_message).then_error(|| {
+                aws_sdk_sqs::operation::delete_message::DeleteMessageError::generic(
+                    aws_smithy_types::error::ErrorMetadata::builder()
+                        .code("ReceiptHandleIsInvalid")
+                        .message("handle expired")
+                        .build(),
+                )
+            });
+            let events = aws_smithy_mocks::mock!(EbClient::describe_events).then_output(|| {
+                aws_sdk_elasticbeanstalk::operation::describe_events::DescribeEventsOutput::builder(
+                )
+                .build()
+            });
+            let eb = aws_smithy_mocks::mock_client!(
+                aws_sdk_elasticbeanstalk,
+                aws_smithy_mocks::RuleMode::MatchAny,
+                [&env_listing(), &resources, &events]
+            );
+            let sqs = aws_smithy_mocks::mock_client!(
+                aws_sdk_sqs,
+                aws_smithy_mocks::RuleMode::MatchAny,
+                [&attrs, &peek, &send, &del]
+            );
+            let s = Server::with_injected_client(
+                WriteScope::All,
+                crate::config::Config::default(),
+                client_with(eb, sqs),
+            );
+
+            let plan = s
+                .call_tool(
+                    "dlq_resend",
+                    &json!({"env": "poly-prod-wk", "message_id": "m-1"}),
+                )
+                .await
+                .expect("m-1 is present at plan time");
+            let token = plan
+                .split("\"confirm_token\":\"")
+                .nth(1)
+                .and_then(|r| r.split('"').next())
+                .expect("a token")
+                .to_string();
+
+            let err = s
+                .call_tool("confirm_action", &json!({"confirm_token": token}))
+                .await
+                .expect_err("nothing succeeded, so the call is an error");
+
+            assert!(
+                err.contains("RESENT BUT NOT REMOVED"),
+                "the agent must be told the send half worked: {err}"
+            );
+            assert!(
+                err.contains("duplicate now exists"),
+                "and that a duplicate exists, or `ok: false` reads as nothing \
+                 happened: {err}"
+            );
+            assert!(
+                err.contains("DO NOT resend this id again"),
+                "and must block the retry the batch report otherwise invites — each \
+                 attempt adds another copy: {err}"
+            );
+
+            // The OTHER branch, or the condition is untested: a
+            // dlq_delete whose delete fails has sent nothing, so
+            // claiming a duplicate exists would be a false statement
+            // about the main queue. One case per branch — a mutation
+            // flipping the verb check to `true` passed until this
+            // existed.
+            let plan = s
+                .call_tool(
+                    "dlq_delete",
+                    &json!({"env": "poly-prod-wk", "message_id": "m-1"}),
+                )
+                .await
+                .expect("m-1 is still present");
+            let token = plan
+                .split("\"confirm_token\":\"")
+                .nth(1)
+                .and_then(|r| r.split('"').next())
+                .expect("a token")
+                .to_string();
+            let err = s
+                .call_tool("confirm_action", &json!({"confirm_token": token}))
+                .await
+                .expect_err("the delete fails");
+            assert!(
+                !err.contains("RESENT BUT NOT REMOVED") && !err.contains("duplicate"),
+                "a delete sent nothing — claiming a duplicate is on the main queue \
+                 would be a false statement about the fleet: {err}"
+            );
+            assert!(
+                err.contains("\"ok\":false") && err.contains("failed\":1"),
+                "it must still report the item as failed: {err}"
+            );
+            // Recorded rather than asserted: the cause renders as the
+            // SDK's bare "service error", which tells an operator
+            // nothing. That is `DeleteMessageError`'s Display, not
+            // something this path adds, and wrapping every SQS error
+            // is its own item — noted in PLAN.md rather than widened
+            // into this one.
+        }
+
         /// window. The confirm must refuse and say nothing changed.
         #[tokio::test]
         async fn a_dlq_delete_refuses_when_the_planned_message_is_gone() {
@@ -5329,6 +5493,43 @@ mod tests {
             rest.contains("_ => None"),
             "every other verb must demand nothing — a typed confirm on a restart is \
              friction that teaches operators to type past the ones that matter"
+        );
+    }
+
+    /// doctor states the honest limit: a capability is not a human.
+    ///
+    /// The design note is explicit — "never describe elicitation as
+    /// 'a human confirmed'" — because the capability is a self-report
+    /// in the client's `initialize` frame, and a framework that
+    /// declares it and answers its own dialogs satisfies every ask.
+    /// ebman cannot tell the difference at the time. An agent that
+    /// relays "a person approved this" asserts something neither it
+    /// nor ebman can check.
+    #[tokio::test]
+    async fn doctor_says_a_declared_capability_is_not_proof_of_a_human() {
+        async fn doctor(s: &Server) -> String {
+            call(s, "doctor", json!({})).await.1.to_string()
+        }
+        let s = demo_server();
+        s.client_supports_elicitation
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let d = doctor(&s).await;
+        assert!(
+            d.contains("not proof a person saw"),
+            "the limit must be stated where an agent reads it: {d}"
+        );
+        assert!(
+            d.contains("not that a human approved it"),
+            "and must name the specific over-claim to avoid, not just gesture at \
+             uncertainty: {d}"
+        );
+
+        // A client that never declared it gets no such note — there
+        // is no ask to be sceptical about.
+        let quiet = demo_server();
+        assert!(
+            !doctor(&quiet).await.contains("not proof a person saw"),
+            "a connection with no elicitation has no ask to qualify"
         );
     }
 }

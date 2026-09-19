@@ -22,6 +22,20 @@
   produces — it did not do what was asked, and a CI gate must not read
   it as success.
 - **`ebman audit replay`** re-dispatches a previously-audited action and is itself audit-logged (`replay_of=`-tagged dispatched/completed lines); destructive verbs still require `--yes`.
+- **A declared elicitation capability is not proof of a human.** It is
+  a self-report in the client's `initialize` frame. A framework that
+  declares it and routes the question back to its own model satisfies
+  every ask, and ebman cannot tell the difference at the time —
+  arguably it would leave a *cleaner* record than an honest operator,
+  which is the wrong incentive. So the audit records each ask
+  (`stage=asked`) with its answer and how long it took: someone
+  reading a foreclosure line takes seconds, and a twenty-millisecond
+  answer is not reading anything. That makes an honest approval and a
+  synthesised one distinguishable **afterwards**, which is a smaller
+  claim than "prevents misuse" and the true one. `terminate` and
+  `dlq_purge` additionally require the environment name typed into the
+  dialog.
+
 - **`ebman mcp serve` writes only with a human in the loop.** If your
   MCP client declared **elicitation** at handshake, the write tools are
   available and every confirmation is put to you as a dialog naming the
