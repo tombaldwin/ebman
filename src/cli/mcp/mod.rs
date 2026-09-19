@@ -506,7 +506,13 @@ const ASK_NOTE: &str = "\n\nEach confirmation is put to the OPERATOR, who sees t
      action and answers it. Expect `confirm_action` to take as long as a person takes. \
      A decline is a final answer from a human — not an error, not a missing permission: \
      do not re-plan the same action, do not ask for the grant to be widened, and do not \
-     report it as a fault. Say the operator declined, and stop.";
+     report it as a fault. Say the operator declined, and stop.\n\nSURFACE THE PLAN; \
+     DO NOT RESTATE THE CASE FOR IT. The confirmation already names the action, the \
+     targets, the identity and what it forecloses, and the operator is about to read \
+     it. Re-deriving the reasoning in your own message — especially reasoning you and \
+     they settled days ago — turns a gate they approved of into a tax they resent, and \
+     the tax is charged on every single write. Say what you are about to do in a line, \
+     and let the dialog do the rest.";
 
 /// The write verbs, for the docs-drift guard in `app::tests`.
 ///
