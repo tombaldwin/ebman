@@ -460,6 +460,73 @@ materially different assurance from the one this note otherwise offers.
   health — `ProbeOutcome` in `src/cli/lint.rs` already encodes that
   distinction and the reason for it.
 
+## Keeping a copy of what was deleted
+
+**Designed, not built.** Raised by the maintainer as a way to soften
+the worst foreclosure: if ebman kept the message, `dlq_delete` stops
+being irreversible and the prompt stops needing to frighten anyone.
+
+It is a good instinct and it collides with something shipped the same
+day, so the shape matters more than the idea.
+
+### The collision
+
+`mcp.peek_bodies` exists because those payloads carry seller and buyer
+identifiers for a live staffing platform. **Writing the same bodies to
+`~/.cache/ebman` is strictly worse than showing them to an agent** —
+durable rather than transient, backed up, and collected by support
+bundles. A tool that withholds a body from the MCP surface while
+writing it to disk is incoherent, and for that fleet it would make
+ebman something holding personal data with a retention policy it never
+previously had.
+
+### And it would not be a restore
+
+Putting a message back means re-*sending* it: new message id, reset
+receive count, new timestamps, attributes rebuilt by the sender rather
+than preserved. That is "post a similar message", not "undelete".
+Describing it as restoration would be precisely the over-claim the
+foreclosure line exists to prevent, in the one place an operator is
+relying on the claim to decide.
+
+### Three tiers, because they carry different risk
+
+1. **Metadata, always.** Message id, task name / path / scheduled time,
+   receive count, timestamps, body length and a hash. Recorded in the
+   audit line. Answers *"what did I delete"* without storing payload.
+   This also closes an existing gap — see below — and is worth doing on
+   its own.
+2. **Body in memory, short window.** Process lifetime, minutes, never
+   touching disk. This covers the realistic mistake, which is not "I
+   need this back next week" but "wait, that was the wrong one" — and
+   it covers the fixture case that motivated the foreclosure line:
+   the message would have come back had anyone said so within the
+   window. Needs a cap, because `dlq_purge` can be thousands of
+   messages.
+3. **Body on disk, explicit opt-in, off by default**, with a stated
+   retention and the same 0600 treatment the log gets. For operators
+   whose payloads are not sensitive and who want a real undo.
+
+### The axis distinction, so this does not read as a contradiction
+
+*Config may only say no* governs **write permissions**, where parity
+with the TUI means open by default. **Data retention** is a different
+axis, where the safe default is closed: do not hold what you do not
+need. Both defaults are the cautious one *for their own axis*. They
+only look opposite.
+
+### The gap this exposed, which is independent and worth fixing now
+
+A `dlq_delete` audit line records that a message was deleted from
+`poly-batch`. It does not record **which** message: `write_extras_parts`
+carries `via` / `client` / `can_ask` / `version` / `settings`, and the
+target is the environment name. So the log can tell an operator that
+something was deleted and never what.
+
+That is tier 1 without any of the retention questions, and it is the
+prerequisite for the rest: a copy is worth little if the log cannot say
+what it was a copy of.
+
 ## What this is not
 
 **Layers 2 and 3 are not a security boundary.** Anything that can write

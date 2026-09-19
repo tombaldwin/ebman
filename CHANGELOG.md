@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **A dead-letter write now records which message it destroyed.** The
+  target of a DLQ write is the environment, so the audit line said a
+  message was deleted from `poly-batch` and never which one. For every
+  other action that is survivable — you can go and look at the
+  environment afterwards. For a delete it is not: the thing the log
+  declined to name is exactly the thing that no longer exists. Lines
+  now carry `message_id=` and `task=`.
+
 - **Every write plan now says what it forecloses.** A plan described
   the operation and was silent about the stakes, which is worse than
   vague: it reads as complete, and a prompt that looks complete
