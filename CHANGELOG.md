@@ -60,8 +60,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   arms set `dlq_url`?" stops being a question you answer by reading all
   of them.
 
-### Changed
-
 - **The dead-letter peek rule is written once.** Whether a queue can be
   peeked — or planned against — was expressed in four places: the live
   `worker_queues` path, `why`, the demo path, and the write planner.
