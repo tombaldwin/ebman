@@ -8,6 +8,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **A refusal you can hold is a refusal that was recorded.** The MCP
+  write surface returned `Result<String, String>`, so a policy refusal
+  and a malformed request were the same type and a new gate could
+  return `Err("nope".into())` and audit nothing. That happened in 0.40,
+  and classifying these sites found it still live: `confirm_action`'s
+  scope check refused without a line, while its sibling
+  `refuse_out_of_scope` had always recorded `not_granted` for the same
+  reason — a client reaching an unadvertised write tool is working
+  from a stale tool list or probing, which is worth seeing and
+  invisible any other way. **Now audited** as `rule=not_granted`.
+
+  `WriteError` splits `Refused` from `Invalid`. `Refused` carries an
+  `Audited`, whose field is private and whose only constructor writes
+  the `stage=refused` line — so holding one is proof the line exists.
+  `gate_refusal` and the operator-decline path now record through that
+  same constructor instead of calling the audit writer by hand.
+
+  It does not make the bug impossible: a new gate can still classify a
+  policy refusal as `Invalid`. What it does is turn an invisible
+  omission into a visible miscategorisation — the author has to name
+  which kind it is, and the wrong choice is a word in the diff rather
+  than the absence of one. Every other invariant here works that way;
+  none are impossible to violate, all are made visible.
+
+
 - **A stolen doc comment now fails the build, on the public surface.**
   Inserting an item directly below an existing doc comment attaches
   that doc to the NEW item and leaves the original undocumented. Three
