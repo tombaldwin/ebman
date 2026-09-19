@@ -2136,6 +2136,10 @@ mod renderer_tests {
             ..crate::config::Config::default()
         };
         cfg.safety_envs.insert("poly-prod-api".into(), true);
+        // An account pin as well as an env pin, so the count is a SUM
+        // of two non-zero terms. With only one, `+` and `-` produce
+        // the same answer and the arithmetic is untested.
+        cfg.safety_accounts.insert("prod-admin".into(), true);
         let s = Server::with_config(true, false, crate::cli::mcp::WriteScope::All, cfg);
 
         let v: Value = serde_json::from_str(&s.tool_doctor()).expect("json");
@@ -2149,8 +2153,10 @@ mod renderer_tests {
         );
         assert_eq!(
             v["standing_restrictions"]["pinned_targets"],
-            json!(1),
-            "{v}"
+            json!(2),
+            "env pins and account pins both count, and the total is their SUM — \
+             with only one pin set, `+` and `-` give the same answer and the \
+             arithmetic is untested: {v}"
         );
 
         let notes = v["notes"]

@@ -1024,6 +1024,66 @@ async fn peek_messages_loops_and_dedupes_across_batches() {
     assert_eq!(ids, vec!["msg-1", "msg-2", "msg-3"]);
 }
 
+/// `send_message` puts the attributes on the wire.
+///
+/// The source scan in `writes.rs` proves every call SITE passes them.
+/// This proves the function then sends them — a `send_message` that
+/// accepted attributes and quietly dropped them would satisfy the scan
+/// completely, and a mutation replacing this body with `Ok(())` did
+/// exactly that until now.
+///
+/// It matters because of what the attributes are: for a cron-style
+/// task the body is a fixed literal and `beanstalk.sqsd.*` carries the
+/// entire identity of the message.
+#[tokio::test]
+async fn send_message_puts_attributes_on_the_wire() {
+    use aws_sdk_sqs::operation::send_message::SendMessageOutput;
+
+    let rule = mock!(aws_sdk_sqs::Client::send_message)
+        .match_requests(|req| {
+            let attrs = req.message_attributes();
+            req.message_body() == Some("elasticbeanstalk scheduled job")
+                && attrs.is_some_and(|m| {
+                    m.get("beanstalk.sqsd.task_name")
+                        .and_then(|v| v.string_value())
+                        == Some("Remove unattended jobs")
+                        && m.get("beanstalk.sqsd.path").map(|v| v.data_type()) == Some("String")
+                })
+        })
+        .then_output(|| SendMessageOutput::builder().build());
+    let client = client_with_sqs(mock_client!(aws_sdk_sqs, [&rule]));
+
+    let attrs = vec![
+        (
+            "beanstalk.sqsd.task_name".to_string(),
+            "String".to_string(),
+            "Remove unattended jobs".to_string(),
+        ),
+        (
+            "beanstalk.sqsd.path".to_string(),
+            "String".to_string(),
+            "/STCleanupUnattendedJobs.do".to_string(),
+        ),
+    ];
+    client
+        .send_message(
+            "https://sqs.us-east-1.amazonaws.com/123/q",
+            "elasticbeanstalk scheduled job",
+            &attrs,
+        )
+        .await
+        .expect("send");
+
+    // The rule only matches a request carrying both attributes with
+    // the right type and value, so reaching here at all is the
+    // assertion. `num_calls` makes that explicit rather than implicit.
+    assert_eq!(
+        rule.num_calls(),
+        1,
+        "the send must have happened, and matched"
+    );
+}
+
 /// A peek retains the raw custom attributes, not just the parsed task.
 ///
 /// `task` is the view everything reads; `attributes` is what makes a

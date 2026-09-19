@@ -488,6 +488,23 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
   setup running as admin, which is why it is not first. Target: a
   release soon after.
 
+- [ ] **Two accepted equivalent mutants on the undo window.** Recorded
+  so nobody re-investigates them. `remember_deleted`'s prune compares
+  `elapsed < UNDO_WINDOW_SECS`; mutating that to `<=` or `==` survives
+  the suite.
+
+  Both differ from the original at exactly one instant — `elapsed ==
+  600s` — and `tokio::time::advance` with auto-advance will not
+  reliably land there, so the distinguishing case is not constructible
+  without contorting the test. The operational difference is whether a
+  message is recoverable at the 600.000000s mark.
+
+  `>` on the same line IS caught, by observing the buffer directly
+  rather than through `recoverable()` — which prunes again on read, so
+  anything the push-time prune leaks is cleaned up before observation.
+  That was the real finding: the line was executed and could not
+  affect any assertion.
+
 - [ ] **No guard catches a refusal path that audits nothing.**
   `write_refusal_paths_are_audited` pins the two callers of
   `write_refusal_unaudited` — it detects a path that reaches for the

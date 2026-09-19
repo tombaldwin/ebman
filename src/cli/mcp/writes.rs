@@ -2367,4 +2367,55 @@ mod tests {
             .expect_err("expired");
         assert!(err.contains("not recoverable"), "{err}");
     }
+
+    /// Remembering a new message evicts ones that have expired.
+    ///
+    /// `remember_deleted` prunes before it pushes, and the expiry test
+    /// above cannot see that: it pushes once, so the prune runs on an
+    /// empty buffer and every predicate behaves identically. The sweep
+    /// found three surviving mutants on that one comparison for
+    /// exactly this reason — the line was executed and could not
+    /// affect anything.
+    #[tokio::test(start_paused = true)]
+    async fn remembering_a_new_message_evicts_expired_ones() {
+        let s = Server::with_scope(true, false, crate::cli::mcp::WriteScope::All);
+        let msgs = crate::demo_fixture::dlq_messages_for_env("poly-batch");
+        let (old_id, new_id) = (msgs[0].id.clone(), msgs[1].id.clone());
+
+        s.remember_deleted("poly-batch", Some("https://q/dlq".into()), msgs[0].clone())
+            .await;
+        tokio::time::advance(std::time::Duration::from_secs(UNDO_WINDOW_SECS + 1)).await;
+
+        // The prune happens HERE, on a buffer holding one expired entry.
+        s.remember_deleted("poly-batch", Some("https://q/dlq".into()), msgs[1].clone())
+            .await;
+
+        // The BUFFER, before `recoverable()` prunes again on read.
+        // Reading through `recoverable` cannot see this: it applies the
+        // same filter, so anything the push-time prune leaks is
+        // cleaned up before observation and every mutant looks
+        // identical. The push-time prune exists to bound MEMORY, and
+        // memory is only observable here.
+        assert_eq!(
+            s.deleted.lock().await.len(),
+            1,
+            "the expired entry must be evicted when the next one is remembered — \
+             otherwise the buffer grows until someone happens to read it"
+        );
+
+        let held: Vec<String> = s
+            .recoverable()
+            .await
+            .into_iter()
+            .map(|d| d.original_id)
+            .collect();
+        assert_eq!(
+            held,
+            vec![new_id],
+            "the expired entry must be dropped when the next one arrives, not \
+             left to be filtered on read — a buffer that only prunes on read \
+             grows without bound while nobody is looking"
+        );
+        assert!(!held.contains(&old_id));
+    }
 }
