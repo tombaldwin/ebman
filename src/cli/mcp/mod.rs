@@ -45,6 +45,53 @@ pub(crate) const PROTOCOL_VERSION: &str = "2025-06-18";
 /// can't wedge the agent turn.
 const TOOL_TIMEOUT_SECS: u64 = 30;
 
+/// How long a call that will ASK a human may take.
+///
+/// 30 seconds bounds a hung AWS call, which is what it was written
+/// for. It is nonsense as a bound on a person deciding whether to
+/// delete production data: they will read the plan, think, and
+/// routinely take longer. Applying the AWS bound to a human turns the
+/// gate into a tool that times out under ordinary use.
+///
+/// Five minutes, not unbounded. An operator who has walked away must
+/// eventually produce a DENY rather than a call that never returns —
+/// an agent blocked forever on a dialog nobody will answer is its own
+/// failure, and the design's rule is that an unanswerable ask degrades
+/// to deny, never to allow.
+const ASK_TIMEOUT_SECS: u64 = 300;
+
+// The relation between the two budgets, enforced at COMPILE time.
+// Clippy caught these as constant assertions when they sat in a test,
+// and it was right: two consts cannot disagree at runtime, so a
+// runtime check is theatre. Here the build fails instead.
+//
+// Lower bound: a person reading a plan needs materially more than a
+// hung socket does. Upper bound: an ask nobody will answer has to end,
+// because the rule is deny on no-answer and a call blocked forever
+// never reaches it.
+const _: () = assert!(ASK_TIMEOUT_SECS > TOOL_TIMEOUT_SECS * 5);
+const _: () = assert!(ASK_TIMEOUT_SECS <= 900);
+
+/// How long this tool call may take.
+///
+/// Pure so the decision is testable without a client, a clock or a
+/// dialog — the frame loop that consumes it is reachable only through
+/// stdio, which is where the `wants_file_logging` decision had to go
+/// for the same reason.
+///
+/// `confirm_action` is the only tool that can block on a person: it is
+/// the single point every write dispatches through, and therefore the
+/// single point the ask fires at. Everything else is AWS-bound and
+/// keeps the AWS bound. A connection that cannot be asked keeps it
+/// too, because nothing will stop to ask.
+pub(crate) fn call_timeout_secs(tool: &str, client_can_elicit: bool) -> u64 {
+    if tool == writes::CONFIRM_TOOL && client_can_elicit {
+        ASK_TIMEOUT_SECS
+    } else {
+        TOOL_TIMEOUT_SECS
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct McpArgs {
     demo: bool,
@@ -747,16 +794,17 @@ impl Server {
                         "error": {"code": -32602, "message": format!("unknown tool '{name}'")}
                     }));
                 }
+                let budget = call_timeout_secs(
+                    &name,
+                    self.client_supports_elicitation
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                );
                 let outcome = tokio::time::timeout(
-                    std::time::Duration::from_secs(TOOL_TIMEOUT_SECS),
+                    std::time::Duration::from_secs(budget),
                     self.call_tool(&name, &args),
                 )
                 .await
-                .unwrap_or_else(|_| {
-                    Err(format!(
-                        "tool '{name}' timed out after {TOOL_TIMEOUT_SECS}s"
-                    ))
-                });
+                .unwrap_or_else(|_| Err(format!("tool '{name}' timed out after {budget}s")));
                 let (text, is_error) = match outcome {
                     Ok(body) => (body, false),
                     Err(msg) => (msg, true),
@@ -3376,6 +3424,85 @@ mod tests {
         assert!(
             open.write_scope.agent_summary(None).contains("ENABLED"),
             "without a standing refusal the grant is the right thing to describe"
+        );
+    }
+
+    /// A call that can ask a human gets a human's budget.
+    ///
+    /// `TOOL_TIMEOUT_SECS` is 30 and bounds a hung AWS call, which is
+    /// what it was written for. Applied to a person deciding whether
+    /// to delete production data it turns the gate into a tool that
+    /// times out under ordinary use — the failure a reviewer flagged
+    /// as "the difference between a gate and a thing that breaks when
+    /// used".
+    #[test]
+    fn only_the_call_that_asks_a_human_gets_a_humans_budget() {
+        // The one tool every write dispatches through, on a connection
+        // that can be asked.
+        assert_eq!(
+            call_timeout_secs(writes::CONFIRM_TOOL, true),
+            ASK_TIMEOUT_SECS
+        );
+        // A connection that cannot be asked keeps the AWS bound —
+        // nothing will stop to ask, so a long budget would only make a
+        // hung dispatch take longer to fail.
+        assert_eq!(
+            call_timeout_secs(writes::CONFIRM_TOOL, false),
+            TOOL_TIMEOUT_SECS
+        );
+
+        // Every other tool is AWS-bound whatever the client declared.
+        for t in [
+            "list_environments",
+            "worker_queues",
+            "deploy",
+            "terminate",
+            "doctor",
+        ] {
+            assert_eq!(
+                call_timeout_secs(t, true),
+                TOOL_TIMEOUT_SECS,
+                "`{t}` cannot block on a person and must keep the AWS bound"
+            );
+        }
+    }
+
+    /// The frame loop uses the budget rather than the raw constant.
+    ///
+    /// `call_timeout_secs` is pure and tested, and that proves
+    /// nothing about the one place it matters: a mutation swapping
+    /// `budget` back for `TOOL_TIMEOUT_SECS` at the call site left the
+    /// whole suite green. The loop is reachable only through stdio, so
+    /// this is anchored in source — the same shape as
+    /// `the_extracted_gates_are_wired_into_run`.
+    #[test]
+    fn the_frame_loop_times_calls_by_the_computed_budget() {
+        let src = include_str!("mod.rs");
+        let prod = crate::app::tests::scan::production_half(src);
+        let call = prod
+            .split("let outcome = tokio::time::timeout(")
+            .nth(1)
+            .and_then(|r| r.split(".await").next())
+            .expect("the frame loop times the tool call here");
+
+        assert!(
+            call.contains("from_secs(budget)"),
+            "the tool call must be bounded by the COMPUTED budget: a person deciding \
+             whether to delete production data gets the AWS bound otherwise, and the \
+             gate times out under ordinary use:\n{call}"
+        );
+        assert!(
+            !call.contains("TOOL_TIMEOUT_SECS"),
+            "and not by the raw constant, which is what it was before:\n{call}"
+        );
+
+        // Canary: the anchor must still find the loop. A scan that has
+        // stopped seeing its subject passes silently, which is worse
+        // than finding a defect.
+        assert!(
+            prod.contains("let budget = call_timeout_secs("),
+            "the budget is no longer computed in this file — this guard has lost \
+             its subject rather than being satisfied"
         );
     }
 }

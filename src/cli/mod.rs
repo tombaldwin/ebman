@@ -423,7 +423,7 @@ mod write_gate_guard {
                     continue;
                 }
                 let text = std::fs::read_to_string(&path).expect("read");
-                let prod = text.split("#[cfg(test)]").next().unwrap_or("");
+                let prod = crate::app::tests::scan::production_half(&text);
                 let n = prod.matches("write_refusal_unaudited(").count();
                 if n > 0 {
                     found.push((path.display().to_string(), n));
@@ -485,7 +485,7 @@ mod write_gate_guard {
                 let text = std::fs::read_to_string(&path).expect("read");
                 // Stop at the inline test module — fixtures legitimately
                 // exercise `pin_reason` directly.
-                let prod = text.split("#[cfg(test)]").next().unwrap_or("");
+                let prod = crate::app::tests::scan::production_half(&text);
                 for (n, line) in prod.lines().enumerate() {
                     let code = crate::app::tests::scan::strip_line_comment(line);
                     // Widened when `pin_reason` was folded into

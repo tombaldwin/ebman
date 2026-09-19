@@ -377,3 +377,141 @@ mod write_gate_convergence {
         }
     }
 }
+
+/// The production half of a source file: every line outside a
+/// `#[cfg(test)]` module.
+///
+/// Six guards hand-rolled this as `src.split("#[cfg(test)]").next()`,
+/// which truncates at the first INLINE test-only item — a
+/// `#[cfg(test)] fn for_tests(...)` seam, of which this codebase has
+/// many — rather than at the test module. Measured on 2026-09-19:
+/// `cli/mcp/mod.rs` guards saw 253 of 988 production lines,
+/// `writes.rs` 489 of 1425, `tools.rs` 740 of 1734. Each guard
+/// reported clean over roughly a third of its subject.
+///
+/// This is the `line.split("//").next()` lesson with a different
+/// splitter, and CLAUDE.md already records that five hand-rolled
+/// scanners taught it once and it was not generalised. So: one
+/// implementation, here, with its own accuracy test.
+///
+/// Not a prefix. `cli/mod.rs` has production code BETWEEN two test
+/// modules, so anything that stops at the first one loses the rest.
+/// Test modules are excised wherever they appear and the remainder is
+/// joined.
+pub(crate) fn production_half(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut lines = src.lines().peekable();
+    while let Some(line) = lines.next() {
+        // A top-level test MODULE, which rustfmt guarantees sits at
+        // column 0. An inline `#[cfg(test)]` item is one declaration
+        // and stays in view — treating it as a boundary is the bug
+        // this function exists to remove.
+        let opens_test_mod = line.trim_end() == "#[cfg(test)]"
+            && lines.peek().is_some_and(|n| n.starts_with("mod "));
+        if !opens_test_mod {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        // Skip to the module's closing brace: column 0, because the
+        // module is at column 0. Brace COUNTING was tried and is
+        // wrong — a `{` inside a format string unbalances it, and this
+        // codebase is full of `"{{\"pending\":true"`-shaped literals.
+        for body in lines.by_ref() {
+            if body == "}" {
+                break;
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod production_half_tests {
+    /// The splitter six guards hand-rolled, and the blind spot they
+    /// all shared.
+    ///
+    /// `src.split("#[cfg(test)]").next()` stops at the first INLINE
+    /// test-only item, of which this codebase has many. Measured
+    /// 2026-09-19 before the fix: `cli/mcp/mod.rs` guards saw 253 of
+    /// 988 production lines, `writes.rs` 489 of 1425, `tools.rs` 740
+    /// of 1734. Each reported clean over roughly a third of its
+    /// subject — and widening the scan immediately surfaced a real
+    /// violation that had been invisible.
+    #[test]
+    fn an_inline_test_item_does_not_end_the_production_half() {
+        let src = "fn a() {}\n\
+                   #[cfg(test)]\n\
+                   fn only_for_tests() {}\n\
+                   fn b() {}\n";
+        let prod = super::production_half(src);
+        assert!(prod.contains("fn a()"), "{prod}");
+        assert!(
+            prod.contains("fn b()"),
+            "an inline `#[cfg(test)]` item is ONE declaration, not a boundary — \
+             stopping there is what hid two thirds of three files: {prod}"
+        );
+    }
+
+    #[test]
+    fn a_test_module_is_excised_and_code_after_it_survives() {
+        let src = "fn a() {}\n\
+                   #[cfg(test)]\n\
+                   mod tests {\n\
+                   fn hidden() {}\n\
+                   }\n\
+                   fn b() {}\n";
+        let prod = super::production_half(src);
+        assert!(prod.contains("fn a()"));
+        assert!(
+            !prod.contains("fn hidden()"),
+            "the module body is test-only and must not be scanned: {prod}"
+        );
+        assert!(
+            prod.contains("fn b()"),
+            "production code AFTER a test module survives — `cli/mod.rs` has some, \
+             so anything treating this as a prefix loses it: {prod}"
+        );
+    }
+
+    /// Brace COUNTING was tried and is wrong here.
+    #[test]
+    fn a_brace_inside_a_string_does_not_end_the_module() {
+        let src = "fn a() {}\n\
+                   #[cfg(test)]\n\
+                   mod tests {\n\
+                   let s = \"{{\\\"pending\\\":true}}\";\n\
+                   fn hidden() {}\n\
+                   }\n\
+                   fn b() {}\n";
+        let prod = super::production_half(src);
+        assert!(
+            !prod.contains("fn hidden()"),
+            "a `{{` in a format string must not close the module early — this \
+             codebase is full of them: {prod}"
+        );
+        assert!(prod.contains("fn b()"), "{prod}");
+    }
+
+    /// The real files, so the helper is exercised on its actual subject.
+    #[test]
+    fn the_real_sources_keep_their_production_code() {
+        for (path, needle) in [
+            ("src/cli/mcp/mod.rs", "fn call_timeout_secs"),
+            ("src/cli/mcp/writes.rs", "fn dispatch_dlq_message"),
+            ("src/cli/mcp/tools.rs", "fn tool_doctor"),
+        ] {
+            let src = std::fs::read_to_string(path).expect("read");
+            let prod = super::production_half(&src);
+            assert!(
+                prod.contains(needle),
+                "`{needle}` is production code in {path} and a guard scanning it \
+                 must see it — the old splitter did not"
+            );
+            assert!(
+                !prod.contains("#[tokio::test]"),
+                "{path}: test bodies must be excised"
+            );
+        }
+    }
+}
