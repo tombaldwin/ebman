@@ -513,6 +513,27 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
   Do not widen `ALLOWED` to make anything quiet here — the list is the
   hatch, not the fix.
 
+  **Weighed in 0.42.0; recommendation is DON'T, for now.** The runtime
+  counter is out — a new refusal path is exactly what a
+  path-exercising harness does not cover, so it carries the same blind
+  spot it is meant to close. That leaves the marker type, and it does
+  not prevent the bug either: `tool_write_plan` returns
+  `Result<String, String>`, so `Err("nope".into())` stays available
+  whatever the gates return. Splitting the error into
+  `Validation` / `Refused`, where `Refused` can only be built by
+  something that audits, converts an invisible OMISSION into a visible
+  MISCATEGORISATION in the diff. That is worth something, but it is
+  not a guard.
+
+  Measured cost: ~33 error exits across `tool_write_plan` (6),
+  `tool_confirm_action` (14), `resolve_plan_details` (10) and
+  `resolve_dlq_plan` (3). Against one occurrence of the defect (0.40),
+  on a module rewritten substantially in 0.42.
+
+  **Trigger to revisit: the next time a gate is added to the write
+  surface.** Those sites need touching then anyway, and that is the
+  moment the distinction would have caught something.
+
 - [ ] **Possible flake in `a_derived_dlq_that_does_not_exist_still_answers`.**
   One failure in ~46 runs, reported by the 0.39.0 release review and
   never reproduced: 45 follow-ups by the reviewer, then 60 isolated runs,
