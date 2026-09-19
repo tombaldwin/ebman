@@ -302,6 +302,25 @@ trail than the honest attester**, which is precisely the wrong incentive.
 So: audit the ask as well (`stage=asked`, with the question and the
 answer), and never describe elicitation as "a human confirmed".
 
+### Latency is evidence, not a gate
+
+`stage=asked` records how long each confirmation took. Ruled
+2026-09-20, after measuring headless `claude -p` auto-declining in a
+fraction of its 22-second session against minutes for a human on the
+same dialog: **record it, do not gate on it.**
+
+A threshold does not stop a client that means to auto-answer — it can
+sleep first — so it would catch only accidents, while refusing a fast
+operator who already knows what the action costs. And the observed
+case is an auto-*decline*, which is fail-safe; the dangerous shape,
+an auto-*approve*, has not been seen. Gating on a guessed number
+against an unobserved threat, at the cost of misfiring on observed
+behaviour, is the wrong trade.
+
+It reopens if a client is seen auto-approving: surface it in the
+result first, gate only if it proves common, and choose the threshold
+from the distribution the log will by then contain.
+
 ### The honest limit
 
 **A false attestation is not detectable at the time.** An agent that
