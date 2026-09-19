@@ -1204,6 +1204,28 @@ impl Server {
             super::WriteScope::All => "every verb".to_string(),
             super::WriteScope::Only(v) => format!("{} only", v.join(", ")),
         };
+        // WHY the surface is open, not just how wide it is.
+        //
+        // doctor reported `elicitation: true` and `writes: every verb`
+        // as adjacent facts and never related them, and adjacency is
+        // not causation — an agent cannot derive one from the other,
+        // and a peer session confirmed it could not. The two
+        // provenances imply OPPOSITE things to tell a user: a flag is
+        // a standing grant, so "I can do this"; elicitation means
+        // every action is gated on a person answering a dialog, so the
+        // honest sentence is "I can propose this, and someone has to
+        // approve it — they may decline, or not answer." Rendering the
+        // same string for both makes one of those an over-promise.
+        let writes_via = if matches!(self.effective_scope(), super::WriteScope::None) {
+            "nothing - no writes are available"
+        } else if self.write_scope.any() {
+            // An explicit grant outranks the parity default, and
+            // `effective_scope` never widens past it.
+            "--allow-writes - a standing grant from the operator"
+        } else {
+            "client-elicitation - EVERY write is put to the operator, who may decline \
+             or not answer"
+        };
 
         // Counted, not listed: an agent does not need the operator's
         // whole pin table, and a refusal names the specific rule when
@@ -1291,11 +1313,12 @@ impl Server {
         }
 
         format!(
-            "{{\"ebman\":{},\"client\":{},\"client_declared\":{{\"elicitation\":{}}},\"writes\":{},\"standing_restrictions\":{{\"all_writes_refused\":{},\"pinned_targets\":{},\"config_unreadable\":{}}},\"redacting\":{},\"notes\":[{}]}}",
+            "{{\"ebman\":{},\"client\":{},\"client_declared\":{{\"elicitation\":{}}},\"writes\":{},\"writes_via\":{},\"standing_restrictions\":{{\"all_writes_refused\":{},\"pinned_targets\":{},\"config_unreadable\":{}}},\"redacting\":{},\"notes\":[{}]}}",
             util::json_string(env!("CARGO_PKG_VERSION")),
             util::json_string(&client),
             elicits,
             util::json_string(&writes),
+            util::json_string(writes_via),
             all_refused,
             pinned,
             !self.safety_cfg.safety_parse_errors.is_empty(),
