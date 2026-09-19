@@ -212,6 +212,34 @@ impl Server {
         region: Option<&str>,
     ) -> WriteError {
         let name = verb.tool_name();
+        // On a `--read-only` server, "start it with --allow-writes" is
+        // advice that produces a startup error: the two contradict and
+        // are refused together. The control the operator actually has
+        // is removing the flag they set, and a remedy naming the wrong
+        // control is the defect remedies exist to avoid — it goes into
+        // the audit line as well as the agent's error.
+        if self
+            .mcp_read_only
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return WriteError::Refused(Audited::record(
+                matches!(self.backend, Backend::Demo),
+                None,
+                region.unwrap_or("-"),
+                verb.label(),
+                env.unwrap_or("-"),
+                "not_granted",
+                "this server was started with --read-only; the operator must remove \
+                 that flag and restart it",
+                format!(
+                    "'{name}' is unavailable: this server was started with --read-only, \
+                     which refuses every write regardless of what your client can do. \
+                     Do not ask for --allow-writes — the two are refused together at \
+                     startup. Ask the operator to remove --read-only if they want \
+                     writes here."
+                ),
+            ));
+        }
         WriteError::Refused(Audited::record(
             matches!(self.backend, Backend::Demo),
             None,
@@ -291,10 +319,28 @@ impl Server {
 /// capped so one field cannot push the rest of the sentence out of a
 /// dialog.
 fn sanitize_for_ask(raw: &str) -> String {
-    const MAX: usize = 120;
-    let mut out = String::with_capacity(raw.len().min(MAX) + 1);
+    sanitize_capped(raw, 120)
+}
+
+/// The same stripping with no truncation.
+///
+/// ONLY for fields whose length is refused at plan time. Truncating a
+/// value the operator is approving hides its operative end: a
+/// `set_option` value of
+/// `https://payments.example/callback/<90 filler>@evil.example/x`
+/// shows as a benign-looking prefix and an ellipsis, because the `@`
+/// that makes everything before it userinfo sits past the cut. The
+/// operator approves one destination and another is applied. So a
+/// value that cannot be shown whole is not shown at all — the plan is
+/// refused instead, and this renders what survives that check.
+fn sanitize_whole(raw: &str) -> String {
+    sanitize_capped(raw, usize::MAX)
+}
+
+fn sanitize_capped(raw: &str, max: usize) -> String {
+    let mut out = String::with_capacity(raw.len().min(max.min(4096)) + 1);
     for c in raw.chars() {
-        if out.chars().count() >= MAX {
+        if out.chars().count() >= max {
             out.push('…');
             break;
         }
@@ -303,7 +349,13 @@ fn sanitize_for_ask(raw: &str) -> String {
         // needs, all of which change what the sentence appears to say.
         let formatting = matches!(c,
             '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
-            | '\u{2066}'..='\u{2069}' | '\u{2028}' | '\u{2029}' | '\u{FEFF}');
+            | '\u{2066}'..='\u{2069}' | '\u{2028}' | '\u{2029}' | '\u{FEFF}'
+            // U+061C ARABIC LETTER MARK is a bidi control that
+            // `is_control()` does not report, and it reorders visibly.
+            | '\u{061C}'
+            // The TAG block is invisible by design — text that renders
+            // as nothing at all, beside text that does.
+            | '\u{E0000}'..='\u{E007F}');
         if c.is_control() || formatting {
             out.push('\u{FFFD}');
         } else {
@@ -372,9 +424,11 @@ pub(super) fn ask_summary(p: &PendingWrite) -> String {
                 .iter()
                 .map(|(ns, name, value)| format!(
                     "  • {}:{} = {}",
-                    sanitize_for_ask(ns),
-                    sanitize_for_ask(name),
-                    sanitize_for_ask(value)
+                    sanitize_whole(ns),
+                    sanitize_whole(name),
+                    // WHOLE, never truncated — see `sanitize_whole`.
+                    // Bounded by `SET_OPTION_FIELD_MAX` at plan time.
+                    sanitize_whole(value)
                 ))
                 .collect::<Vec<_>>()
                 .join("\n")
@@ -383,7 +437,15 @@ pub(super) fn ask_summary(p: &PendingWrite) -> String {
     format!(
         "{what}{detail} on {}, {}.\n\n{}",
         sanitize_for_ask(&p.env),
-        p.caller.line(),
+        // Sanitised like every other foreign field. `line()` carries
+        // an ARN from STS, and on the `Unknown` arm a raw SDK error
+        // chain — remote prose that can contain newlines, and in one
+        // traced path an agent-supplied profile name echoed back
+        // through `tool_error`'s credential hint. The invariant this
+        // file states is "every foreign field"; this was the one slot
+        // that was not, and it sits in the sentence a human reads
+        // before destroying something.
+        sanitize_for_ask(&p.caller.line()),
         // `dlq_visible` is carried on the plan so a purge dialog can
         // say how much it destroys. Passing `None` here rendered
         // "every message in the queue" with no number, while the plan
@@ -1109,6 +1171,20 @@ struct PlanDetails {
 /// were asked for. The refusal names the cap and points at
 /// `dlq_purge`, which is one deliberate action carrying one honest
 /// foreclosure line.
+/// The longest `set_option` namespace, name or value a plan may carry.
+///
+/// Not a limit on what Elastic Beanstalk accepts — a limit on what an
+/// operator can be asked about. The dialog shows setting values WHOLE
+/// (see `sanitize_whole`), because truncating one hides its operative
+/// end: `https://payments.example/callback/<filler>@evil.example/x`
+/// reads as a benign host and applies another, the `@` sitting past
+/// the ellipsis. Refusing above a readable size is the same rule
+/// `DLQ_BATCH_CAP` applies to a list, pointed at a single field.
+///
+/// 256 is generous for the things that legitimately appear here —
+/// URLs, connection strings, ARNs — and still fits a dialog.
+pub(super) const SET_OPTION_FIELD_MAX: usize = 256;
+
 pub(super) const DLQ_BATCH_CAP: usize = 10;
 
 /// One dead-lettered message a plan names.
@@ -1672,6 +1748,25 @@ impl Server {
                     let value = s.get("value").and_then(Value::as_str).unwrap_or("");
                     if ns.is_empty() || name.is_empty() {
                         return Err("each setting needs non-empty namespace and name".into());
+                    }
+                    // Refuse a field the dialog cannot show whole.
+                    // Truncating in the dialog would let the operator
+                    // approve a prefix while a different value
+                    // dispatched — see `SET_OPTION_FIELD_MAX`.
+                    if let Some((what, len)) = [("namespace", ns), ("name", name), ("value", value)]
+                        .into_iter()
+                        .map(|(w, v)| (w, v.chars().count()))
+                        .find(|(_, len)| *len > SET_OPTION_FIELD_MAX)
+                    {
+                        return Err(format!(
+                            "that {what} is {len} characters, more than the \
+                             {SET_OPTION_FIELD_MAX} an operator can be shown in one \
+                             line of a confirmation. The dialog shows setting values \
+                             whole rather than truncated, because a shortened value \
+                             can read as one thing and apply another — so a value \
+                             too long to display is refused rather than abbreviated. \
+                             Shorten it, or set it outside ebman."
+                        ));
                     }
                     settings.push((ns.to_string(), name.to_string(), value.to_string()));
                 }
@@ -3968,6 +4063,19 @@ mod tests {
         let clean = sanitize_for_ask(evil);
         assert!(!clean.contains('\n'), "no newline may survive: {clean:?}");
         assert!(!clean.contains('\u{202E}'), "no bidi override: {clean:?}");
+        // Two the first version missed: an invisible bidi control that
+        // `is_control()` does not report, and text that renders as
+        // nothing at all.
+        assert_eq!(
+            sanitize_for_ask("a\u{061C}b"),
+            "a\u{FFFD}b",
+            "U+061C ARABIC LETTER MARK reorders visibly and is not a control char"
+        );
+        assert_eq!(
+            sanitize_for_ask("a\u{E0041}b"),
+            "a\u{FFFD}b",
+            "the TAG block is invisible by design"
+        );
         assert!(!clean.contains('\u{0007}'), "no control chars: {clean:?}");
         assert!(
             clean.starts_with("Nightly sweep"),
@@ -4005,7 +4113,17 @@ mod tests {
         let mut env = pending_for(WriteVerb::Restart);
         env.env = evil.to_string();
 
+        // The identity line too: `CallerIdentity::Unknown` carries a
+        // raw SDK error chain, which is remote prose, and it lands in
+        // the same sentence. It was the one field the "every foreign
+        // field" invariant did not actually cover.
+        let mut ident = pending_for(WriteVerb::Restart);
+        ident.caller = CallerIdentity::Unknown {
+            why: evil.to_string(),
+        };
+
         for (name, plan, allowed_bullets) in [
+            ("identity error", ident, 0),
             ("single message", single, 0),
             ("batch", batch, 2),
             ("set_option", opts, 1),
@@ -4063,5 +4181,67 @@ mod tests {
             dlq_targets: Vec::new(),
             dlq_url: None,
         }
+    }
+
+    /// A value too long to show whole is refused, not abbreviated.
+    ///
+    /// The attack the cap invited:
+    /// `https://payments.example/callback/<90 filler>@evil.example/x`
+    /// renders as a benign-looking prefix and an ellipsis, because the
+    /// `@` that makes everything before it userinfo sits past the cut.
+    /// The operator reads one host and approves another.
+    #[tokio::test]
+    async fn an_unshowable_setting_value_is_refused_rather_than_truncated() {
+        let s = Server::with_scope(true, false, crate::cli::mcp::WriteScope::All);
+        let sneaky = format!(
+            "https://payments.example/callback/{}@evil.example/steal",
+            "x".repeat(SET_OPTION_FIELD_MAX)
+        );
+        let err = s
+            .tool_write_plan(
+                WriteVerb::SetOption,
+                &json!({"env": "poly-batch", "settings": [{
+                    "namespace": "aws:elasticbeanstalk:application:environment",
+                    "name": "WEBHOOK_URL",
+                    "value": sneaky,
+                }]}),
+            )
+            .await
+            .expect_err("a value the dialog cannot show whole must be refused");
+        let text = err.to_string();
+        assert!(
+            text.contains(&SET_OPTION_FIELD_MAX.to_string()),
+            "the refusal must name the limit: {text}"
+        );
+        assert!(
+            text.contains("whole rather than truncated"),
+            "and say WHY, or this reads as arbitrary API fussiness to route \
+             around: {text}"
+        );
+
+        // A value at the limit still plans, and renders untruncated.
+        let ok_value = "y".repeat(SET_OPTION_FIELD_MAX);
+        s.tool_write_plan(
+            WriteVerb::SetOption,
+            &json!({"env": "poly-batch", "settings": [{
+                "namespace": "aws:elasticbeanstalk:application:environment",
+                "name": "WEBHOOK_URL",
+                "value": &ok_value,
+            }]}),
+        )
+        .await
+        .expect("at the limit is allowed");
+        let st = s.writes.lock().await;
+        let p = st.pending.as_ref().expect("a plan");
+        let summary = ask_summary(p);
+        assert!(
+            summary.contains(&ok_value),
+            "the dialog must carry the value WHOLE — a truncated one lets the \
+             operator approve a prefix while the full value dispatches"
+        );
+        assert!(
+            !summary.contains('…'),
+            "and must not have abbreviated it: {summary}"
+        );
     }
 }

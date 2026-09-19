@@ -883,7 +883,16 @@ impl Server {
             "method": "notifications/cancelled",
             "params": { "requestId": id, "reason": reason }
         });
-        let _ = tx.send(frame.to_string()).await;
+        // `try_send`, never `send`. This runs between the ask deadline
+        // and the deny that follows it, inside the outer call budget.
+        // A client frozen with a full outbound queue — which is
+        // exactly the client that just failed to answer a dialog —
+        // would block an awaited send, the outer timeout would drop
+        // the future, and the designed deny AND its `not_approved`
+        // audit line would be lost to a generic tool timeout. That is
+        // the precise loss `ASK_WAIT_SECS`'s margin exists to prevent,
+        // and a courtesy notification must not reintroduce it.
+        let _ = tx.try_send(frame.to_string());
     }
 
     pub(crate) async fn ask_operator(&self, summary: &str) -> AskOutcome {
@@ -1046,7 +1055,11 @@ impl Server {
                 // unconditional at startup: a genuinely read-only
                 // server is documented not to touch the config disk,
                 // and `should_init_audit` exists to keep that true.
-                if elicits && !matches!(self.backend, Backend::Demo) {
+                // `effective_scope`, not `elicits`: a `--read-only`
+                // server can never write, so it must not read the
+                // config disk either — which the comment above
+                // promises and `elicits` alone did not honour.
+                if self.effective_scope().any() && !matches!(self.backend, Backend::Demo) {
                     crate::audit::init_from_config_disk();
                 }
                 tracing::info!(
@@ -1424,7 +1437,16 @@ pub async fn run(args: &[String]) -> Result<()> {
         // is correct; the dispatch below would answer it `-32601`,
         // telling the client its perfectly well-formed reply named a
         // method that does not exist.
-        if req.get("method").is_none() && req.get("id").is_some() {
+        // A response carries `result` or `error`. A frame with an id
+        // and NEITHER, and no method, is a malformed request, and
+        // JSON-RPC says that gets `-32600` — so it must fall through
+        // rather than vanish. The first cut dropped on
+        // "no method + has id" alone and would have swallowed it
+        // silently, which is a behaviour change beyond the fix.
+        if req.get("method").is_none()
+            && req.get("id").is_some()
+            && (req.get("result").is_some() || req.get("error").is_some())
+        {
             tracing::debug!(
                 target: "ebman::mcp",
                 id = ?req.get("id"),
@@ -4808,13 +4830,29 @@ mod tests {
              it can act when it can only propose: {d}"
         );
 
-        // An explicit flag outranks the default even when both are true.
+        // BOTH: a flag grants the scope AND the client can be asked.
+        //
+        // This assertion previously read "an explicit flag outranks
+        // the default even when both are true" and pinned the wrong
+        // behaviour — a guard asserting the defect, which is the worst
+        // shape available. The ask fires on capability alone, so this
+        // connection DOES put every write to a person; reporting only
+        // the flag told the agent it held a standing grant, and
+        // `docs/headless.md` tells it that means "I can act". The plan
+        // on the same connection said a person may decline. One
+        // connection, two answers, and this was the false one.
         let both = Server::with_scope(true, false, WriteScope::All);
         both.client_supports_elicitation
             .store(true, std::sync::atomic::Ordering::Relaxed);
+        let d = doctor(&both).await;
         assert!(
-            doctor(&both).await.contains("--allow-writes"),
-            "the flag is the provenance when it was given"
+            d.contains("--allow-writes"),
+            "the flag is still where the scope came from: {d}"
+        );
+        assert!(
+            d.contains("still put to them") && d.contains("may decline"),
+            "and the ask fires on capability regardless of the flag, so doctor must \
+             not report this as a bare standing grant: {d}"
         );
 
         // Read-only says neither.
@@ -4913,8 +4951,12 @@ mod tests {
         let claim = body
             .find("if server.take_ask_reply(&req)")
             .expect("the loop routes ask replies");
+        // Anchored on the first line only: `cargo fmt` split this
+        // condition across three lines the moment it grew a clause,
+        // and an anchor written against the pre-fmt shape silently
+        // stops matching.
         let drop = body
-            .find("if req.get(\"method\").is_none() && req.get(\"id\").is_some()")
+            .find("if req.get(\"method\").is_none()")
             .expect("the loop must drop unclaimed responses");
         let dispatch = body
             .find("server.handle_request(&req).await")
@@ -4924,6 +4966,15 @@ mod tests {
             "the order must be claim, then drop, then dispatch: claiming after \
              dropping loses every real answer, and dispatching before dropping \
              answers a response"
+        );
+        // And the drop is narrowed to an ACTUAL response. A frame with
+        // an id, no method and neither result nor error is a malformed
+        // request, which JSON-RPC answers -32600 — it must fall
+        // through rather than vanish.
+        assert!(
+            body[drop..dispatch].contains("result") && body[drop..dispatch].contains("error"),
+            "the drop must require result or error, or it silently swallows a \
+             malformed request as well as a response"
         );
     }
 }
