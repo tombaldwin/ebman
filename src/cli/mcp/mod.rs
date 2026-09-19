@@ -411,7 +411,12 @@ impl WriteScope {
     /// authored text for exactly that reason: the capability is
     /// negotiated in protocol metadata the client sees, which never
     /// reaches the agent reading these instructions.
-    fn agent_summary(&self, standing_refusal: Option<&str>, can_ask: bool) -> String {
+    fn agent_summary(
+        &self,
+        standing_refusal: Option<&str>,
+        can_ask: bool,
+        opened_by_ask: bool,
+    ) -> String {
         // A standing refusal OUTRANKS the scope, so it is said first
         // and the scope is not said at all. Describing the grant on a
         // server that refuses every write told the agent "Writes are
@@ -442,6 +447,9 @@ impl WriteScope {
                 if can_ask {
                     t.push_str(ASK_NOTE);
                 }
+                if opened_by_ask {
+                    t.push_str(OPENED_BY_ASK_NOTE);
+                }
                 t
             }
             WriteScope::Only(v) => {
@@ -460,6 +468,32 @@ impl WriteScope {
         }
     }
 }
+
+/// Appended when the write surface exists ONLY because this client can
+/// be asked — no `--allow-writes` was given.
+///
+/// The operator never made a config edit to enable this. On 0.42 a
+/// bare registration gains the write surface the moment the client
+/// reconnects against a 0.42 binary, so the act that granted it was
+/// pressing Reconnect — something operators do for unrelated reasons,
+/// and did twice in one afternoon during this release's own testing.
+///
+/// ebman has no channel to the operator except a dialog, and raising
+/// a dialog to announce a capability would be its own kind of rude.
+/// The agent is the only path to them, so the agent is asked to say
+/// it once. A peer session working on live infrastructure spotted
+/// this and told its operator before touching anything, which is the
+/// behaviour this text exists to make ordinary rather than
+/// exceptional.
+const OPENED_BY_ASK_NOTE: &str = "\n\nWORTH SAYING ONCE, EARLY: writes are \
+     available here because YOUR CLIENT can put a question to the operator, not \
+     because they passed a flag. They may not know the surface widened — on a bare \
+     registration it widens when the client reconnects against this build. Tell them \
+     plainly the first time it becomes relevant, before you plan a write rather than \
+     after. Say that every action will be put to them and they can decline, and that \
+     `--read-only` keeps the old posture if they would rather. Do not treat this as a \
+     reason to avoid proposing work — it is a reason they should not be surprised by \
+     it.";
 
 /// Appended to a granted-writes summary when the operator can be asked.
 ///
@@ -1136,6 +1170,13 @@ impl Server {
                                 // already correct for this connection.
                                 self.client_supports_elicitation
                                     .load(std::sync::atomic::Ordering::Relaxed),
+                                // Opened by the ask alone: no flag was
+                                // given, so `effective_scope` widened
+                                // `None` on capability.
+                                !self.write_scope.any()
+                                    && self
+                                        .client_supports_elicitation
+                                        .load(std::sync::atomic::Ordering::Relaxed),
                             ),
                             concat!(
                             // NOT redundant with `serverInfo.version`.
@@ -3857,7 +3898,7 @@ mod tests {
     /// "go and enable them".
     #[test]
     fn the_instructions_say_a_grant_is_not_the_agents_to_make() {
-        let read_only = WriteScope::None.agent_summary(None, false);
+        let read_only = WriteScope::None.agent_summary(None, false, false);
         assert!(
             read_only.contains("Do not edit the MCP config yourself"),
             "a read-only server must say whose job the grant is: {read_only}"
@@ -3869,7 +3910,7 @@ mod tests {
 
         // A narrow grant needs the other half: the verb it is missing
         // may have been granted already and not picked up.
-        let narrow = WriteScope::Only(vec!["dlq_delete".into()]).agent_summary(None, false);
+        let narrow = WriteScope::Only(vec!["dlq_delete".into()]).agent_summary(None, false, false);
         assert!(
             narrow.contains("restart the client"),
             "a client that reconnects without re-reading its config shows the \
@@ -3925,7 +3966,7 @@ mod tests {
         let b = Server::with_config(true, false, WriteScope::All, broken);
         assert!(
             b.write_scope
-                .agent_summary(Some("the safety config could not be parsed."), false)
+                .agent_summary(Some("the safety config could not be parsed."), false, false)
                 .contains("REFUSED"),
             "a fail-closed parse refuses every write and the block must say so"
         );
@@ -3939,7 +3980,7 @@ mod tests {
         );
         assert!(
             open.write_scope
-                .agent_summary(None, false)
+                .agent_summary(None, false, false)
                 .contains("ENABLED"),
             "without a standing refusal the grant is the right thing to describe"
         );
@@ -4345,8 +4386,8 @@ mod tests {
             WriteScope::All,
             WriteScope::Only(vec!["restart".into(), "dlq_delete".into()]),
         ] {
-            let asked = scope.agent_summary(None, true);
-            let silent = scope.agent_summary(None, false);
+            let asked = scope.agent_summary(None, true, false);
+            let silent = scope.agent_summary(None, false, false);
             assert!(
                 asked.contains("OPERATOR"),
                 "a granted scope on an ask-capable client must say the confirmation \
@@ -4372,7 +4413,7 @@ mod tests {
     /// and wait on a question that will never be put.
     #[test]
     fn a_standing_refusal_outranks_the_ask_note() {
-        let t = WriteScope::All.agent_summary(Some("safety.read_only is set."), true);
+        let t = WriteScope::All.agent_summary(Some("safety.read_only is set."), true, true);
         assert!(t.contains("REFUSED"), "{t}");
         assert!(
             !t.contains("OPERATOR"),
@@ -4976,5 +5017,49 @@ mod tests {
             "the drop must require result or error, or it silently swallows a \
              malformed request as well as a response"
         );
+    }
+
+    /// The agent is told to say the surface widened without a flag.
+    ///
+    /// ebman has no channel to the operator except a dialog. On a bare
+    /// registration the write surface arrives when the client
+    /// reconnects against a 0.42 binary — an action operators take for
+    /// unrelated reasons — so the only way they hear about it is the
+    /// agent saying so.
+    #[test]
+    fn an_ask_opened_surface_tells_the_agent_to_warn_the_operator() {
+        let opened = WriteScope::All.agent_summary(None, true, true);
+        assert!(
+            opened.contains("YOUR CLIENT") && opened.contains("--read-only"),
+            "the agent must be told to explain WHY writes exist and name the way \
+             back: {opened}"
+        );
+        assert!(
+            opened.contains("before you plan a write"),
+            "and to say it before acting, not after: {opened}"
+        );
+        // And it must actively counteract over-caution. An agent told
+        // "the operator may not know you can write" can easily read
+        // that as "so do not". The note says the opposite outright —
+        // asserting the absence of the phrase, as a first version of
+        // this test did, checked nothing and failed on the note's own
+        // wording.
+        assert!(
+            opened.contains("not a reason to avoid")
+                || opened.contains("Do not treat this as a reason to avoid"),
+            "the note must say plainly that this is not a reason to stop proposing \
+             work, or it reads as a discouragement: {opened}"
+        );
+
+        // A flag-granted surface says nothing: the operator typed the
+        // flag, so there is nothing they did not know.
+        let flagged = WriteScope::All.agent_summary(None, true, false);
+        assert!(
+            !flagged.contains("YOUR CLIENT"),
+            "an operator who passed --allow-writes already knows: {flagged}"
+        );
+        // And a standing refusal still outranks both.
+        let refused = WriteScope::All.agent_summary(Some("read_only is set."), true, true);
+        assert!(!refused.contains("YOUR CLIENT"), "{refused}");
     }
 }
