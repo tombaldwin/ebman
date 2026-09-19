@@ -208,6 +208,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **A timed-out approval left the dialog on screen.** The server gave
+  up after the ask window and nothing told the client to withdraw the
+  prompt, so the operator was left looking at a live-seeming approval
+  for an action that could no longer happen. Pressing it was inert —
+  which is safe, and is also the problem: a prompt that does nothing
+  teaches that prompts may do nothing, and the next person to see that
+  screen has no way to tell it is spent. ebman now sends
+  `notifications/cancelled` naming the request.
+
+  A late reply is also **dropped** rather than answered. A frame with
+  an id and no method is a JSON-RPC *response*, and a response is
+  never answered — ebman was replying `-32601`, telling the client its
+  well-formed reply named a method that does not exist.
+
 - **An agent could not tell a standing grant from a human gate.**
   `doctor` reported `elicitation: true` and `writes: every verb` as
   adjacent facts and never related them, and the plan's `next` field

@@ -868,6 +868,24 @@ impl Server {
         self.write_scope.clone()
     }
 
+    /// Withdraw a request we are no longer waiting on.
+    ///
+    /// Best-effort by design: it is a notification, so there is no
+    /// reply to await, and a dead channel here means the client is
+    /// already gone — which is the case where the dialog cannot be
+    /// showing anyway.
+    async fn notify_cancelled(&self, id: i64, reason: &str) {
+        let Some(tx) = self.outbound.lock().ok().and_then(|g| g.clone()) else {
+            return;
+        };
+        let frame = json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/cancelled",
+            "params": { "requestId": id, "reason": reason }
+        });
+        let _ = tx.send(frame.to_string()).await;
+    }
+
     pub(crate) async fn ask_operator(&self, summary: &str) -> AskOutcome {
         if !self
             .client_supports_elicitation
@@ -919,6 +937,22 @@ impl Server {
             // answer", and both deny.
             _ => {
                 self.forget_ask(id);
+                // Tell the client to take the dialog down.
+                //
+                // Without this the server gives up and the operator is
+                // left looking at a live-seeming prompt for an action
+                // that can no longer happen — observed exactly that
+                // way during release QA. Worse than untidy: the next
+                // person to walk past that screen sees a pending
+                // approval and has no way to know it is spent, and an
+                // Accept on it is silently inert.
+                //
+                // `notifications/cancelled` is the protocol's own
+                // answer and a notification, so there is nothing to
+                // wait for and a client that ignores it is no worse
+                // off than before.
+                self.notify_cancelled(id, "the ask window expired with no answer")
+                    .await;
                 AskOutcome::Unanswered
             }
         }
@@ -1381,6 +1415,21 @@ pub async fn run(args: &[String]) -> Result<()> {
         // waiting out its budget and then denied a write the operator
         // had just approved.
         if server.take_ask_reply(&req) {
+            continue;
+        }
+        // An id with no method is a RESPONSE, and JSON-RPC says a
+        // response is never answered. If `take_ask_reply` did not
+        // claim it, it is a reply to an ask we have already given up
+        // on — a late Accept on a dialog that timed out. Dropping it
+        // is correct; the dispatch below would answer it `-32601`,
+        // telling the client its perfectly well-formed reply named a
+        // method that does not exist.
+        if req.get("method").is_none() && req.get("id").is_some() {
+            tracing::debug!(
+                target: "ebman::mcp",
+                id = ?req.get("id"),
+                "dropping a reply to an ask that is no longer pending"
+            );
             continue;
         }
         if let Some(resp) = invalid_request_response(&req) {
@@ -4219,6 +4268,13 @@ mod tests {
     /// reply sails straight past it. Written the other way round first,
     /// and the test failed — the guard was aimed at a function that
     /// would never have fired.
+    ///
+    /// Since 0.42.0 the frame loop also DROPS an unclaimed response
+    /// before dispatch, so this describes what `handle_request` would
+    /// do rather than what the loop now does. Both guards are needed:
+    /// this one says why claiming matters, and
+    /// `a_reply_to_a_forgotten_ask_is_dropped_not_answered` says why
+    /// the drop sits between claim and dispatch.
     #[tokio::test]
     async fn an_unclaimed_reply_would_be_answered_as_a_bad_method() {
         let s = demo_writes_server();
@@ -4793,6 +4849,81 @@ mod tests {
             !next.contains("OPERATOR"),
             "on a client that cannot be asked, promising an operator dialog is a \
              lie the agent would relay to its user: {next}"
+        );
+    }
+
+    /// A timed-out ask withdraws its dialog.
+    ///
+    /// Observed during release QA: the server gave up after the ask
+    /// window and the operator was left looking at a live-seeming
+    /// approval prompt for an action that could no longer happen.
+    /// Pressing it was inert — `forget_ask` had already removed the
+    /// entry — which is safe and also the problem: a prompt that does
+    /// nothing teaches that prompts may do nothing.
+    #[tokio::test(start_paused = true)]
+    async fn a_timed_out_ask_tells_the_client_to_withdraw_it() {
+        let s = std::sync::Arc::new(Server::with_scope(true, false, WriteScope::None));
+        s.client_supports_elicitation
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+        if let Ok(mut slot) = s.outbound.lock() {
+            *slot = Some(tx);
+        }
+
+        let srv = std::sync::Arc::clone(&s);
+        let asking = tokio::spawn(async move { srv.ask_operator("terminate poly-prod").await });
+
+        let ask: Value = serde_json::from_str(&rx.recv().await.expect("the ask")).expect("json");
+        let asked_id = ask["id"].clone();
+        assert_eq!(ask["method"], json!("elicitation/create"));
+
+        tokio::time::advance(std::time::Duration::from_secs(ASK_TIMEOUT_SECS + 1)).await;
+        assert_eq!(asking.await.expect("join"), AskOutcome::Unanswered);
+
+        let cancel: Value =
+            serde_json::from_str(&rx.recv().await.expect("a cancellation")).expect("json");
+        assert_eq!(
+            cancel["method"],
+            json!("notifications/cancelled"),
+            "the client must be told to take the dialog down: {cancel}"
+        );
+        assert_eq!(
+            cancel["params"]["requestId"], asked_id,
+            "and it must name the request it withdraws, or it cancels someone else's \
+             dialog: {cancel}"
+        );
+        assert!(
+            cancel.get("id").is_none(),
+            "a notification carries no id — an id makes it a request the client must \
+             answer: {cancel}"
+        );
+    }
+
+    /// A response is never answered.
+    ///
+    /// A frame with an id and no method is a RESPONSE. If the ask it
+    /// belongs to has already timed out, `take_ask_reply` will not
+    /// claim it, and the dispatch below would reply `-32601` — telling
+    /// the client that its well-formed reply named a method that does
+    /// not exist. JSON-RPC says a response is not answered at all.
+    #[test]
+    fn a_reply_to_a_forgotten_ask_is_dropped_not_answered() {
+        let src = include_str!("mod.rs");
+        let body = crate::app::tests::scan::production_half(src);
+        let claim = body
+            .find("if server.take_ask_reply(&req)")
+            .expect("the loop routes ask replies");
+        let drop = body
+            .find("if req.get(\"method\").is_none() && req.get(\"id\").is_some()")
+            .expect("the loop must drop unclaimed responses");
+        let dispatch = body
+            .find("server.handle_request(&req).await")
+            .expect("the loop dispatches requests");
+        assert!(
+            claim < drop && drop < dispatch,
+            "the order must be claim, then drop, then dispatch: claiming after \
+             dropping loses every real answer, and dispatching before dropping \
+             answers a response"
         );
     }
 }
