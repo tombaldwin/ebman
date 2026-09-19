@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`doctor` reports whether redaction is on.** `get_option_settings`
+  and `why` redact environment-variable values unless the server was
+  started with `--no-redact`, and an agent could not tell which world
+  it was in. That matters in both directions: with redaction on,
+  `(redacted)` is a policy rather than an empty value; with it off, the
+  agent is receiving real secrets and is itself the leak path, so the
+  note says not to quote or summarise them.
+
+  Raised by a session that spotted `redact_default = false` in an
+  operator's config and — correctly — did **not** call the tools to
+  find out what that meant, because checking would have meant pulling
+  the secrets. It turns out that key governs the TUI only and the MCP
+  surface redacts regardless, but nothing said so.
+
 ## [0.41.0] - 2026-09-19
 
 ### Added
