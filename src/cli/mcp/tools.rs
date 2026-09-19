@@ -1216,15 +1216,37 @@ impl Server {
         // honest sentence is "I can propose this, and someone has to
         // approve it — they may decline, or not answer." Rendering the
         // same string for both makes one of those an over-promise.
+        // TWO independent facts, and conflating them told the agent
+        // something false.
+        //
+        // Where the SCOPE came from (a flag, or the parity default) is
+        // not the same question as whether every write is ASKED. The
+        // ask fires on the client's capability alone — see
+        // `ask_operator` — so a connection holding BOTH an
+        // `--allow-writes` grant and elicitation still puts every
+        // write to a person. Branching on scope provenance alone
+        // reported that connection as a standing grant, which
+        // `docs/headless.md` tells the agent means "I can act", while
+        // the plan on the same connection correctly said a person may
+        // decline. One connection, two contradictory answers, and the
+        // doctor half was the wrong one — the exact over-promise the
+        // field was added to prevent, reintroduced by the addition.
         let writes_via = if matches!(self.effective_scope(), super::WriteScope::None) {
-            "nothing - no writes are available"
+            "nothing - no writes are available".to_string()
         } else if self.write_scope.any() {
-            // An explicit grant outranks the parity default, and
-            // `effective_scope` never widens past it.
-            "--allow-writes - a standing grant from the operator"
+            let base = "--allow-writes - a standing grant from the operator";
+            if elicits {
+                format!(
+                    "{base}, AND every write is still put to them, who may decline or \
+                     not answer"
+                )
+            } else {
+                base.to_string()
+            }
         } else {
             "client-elicitation - EVERY write is put to the operator, who may decline \
              or not answer"
+                .to_string()
         };
 
         // Counted, not listed: an agent does not need the operator's
@@ -1318,7 +1340,7 @@ impl Server {
             util::json_string(&client),
             elicits,
             util::json_string(&writes),
-            util::json_string(writes_via),
+            util::json_string(&writes_via),
             all_refused,
             pinned,
             !self.safety_cfg.safety_parse_errors.is_empty(),

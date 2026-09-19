@@ -8,6 +8,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Writes without the flag, on any client that can ask you.** If your
+  MCP client declared elicitation at handshake — it can put a question
+  to you mid-request — the write tools are available by default, and
+  every `confirm_action` shows you the action and waits for your
+  answer. No flag, no config edit, no client restart.
+
+  This is the bargain the TUI already makes. There you press `r`, read
+  the confirmation, press `y`. Here the agent proposes, you read the
+  same foreclosure line, and you accept or decline. The flag was never
+  what made a write safe — a person seeing it was — and once the client
+  can show you one, there is nothing left for the flag to carry.
+
+  Clients that cannot be asked are unchanged: `--allow-writes` still
+  gates them, because on such a connection nobody is reachable and the
+  flag is the only signal of intent there is. `doctor` reports which
+  case you are in.
+
+  Two boundaries, both deliberate:
+
+  - **Standing restrictions are untouched.** `safety.read_only`, pins,
+    freeze and `deny_write` refuse as before, and no ask appears
+    because there is nothing to approve. Config may only say no; there
+    is still no config key that grants.
+  - **An explicit narrow grant is not widened.**
+    `--allow-writes=dlq_delete` is an operator saying "only this", and
+    it stays that way on a client that can ask. Elicitation supplies a
+    default where none was set; it does not overrule one that was.
+
+  A decline is final — the plan is spent, and the instructions tell the
+  agent not to re-plan the same action. Declines and no-answers are
+  audited as `rule=not_approved`: a write a person stopped and a write
+  nobody attempted otherwise look identical afterwards, and the first
+  is the one worth knowing about.
+
+  Design: `docs/design/runtime-grants.md`, steps 3 and 4.
+
 - **`ebman mcp serve --read-only`** refuses writes on that server
   whatever the client can do. `safety.read_only` already refused them
   everywhere — including your own TUI — which left an operator who
@@ -69,42 +105,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   the log is the only place that answer still exists.
 
   Design: `docs/design/runtime-grants.md`, step 5.
-
-- **Writes without the flag, on any client that can ask you.** If your
-  MCP client declared elicitation at handshake — it can put a question
-  to you mid-request — the write tools are available by default, and
-  every `confirm_action` shows you the action and waits for your
-  answer. No flag, no config edit, no client restart.
-
-  This is the bargain the TUI already makes. There you press `r`, read
-  the confirmation, press `y`. Here the agent proposes, you read the
-  same foreclosure line, and you accept or decline. The flag was never
-  what made a write safe — a person seeing it was — and once the client
-  can show you one, there is nothing left for the flag to carry.
-
-  Clients that cannot be asked are unchanged: `--allow-writes` still
-  gates them, because on such a connection nobody is reachable and the
-  flag is the only signal of intent there is. `doctor` reports which
-  case you are in.
-
-  Two boundaries, both deliberate:
-
-  - **Standing restrictions are untouched.** `safety.read_only`, pins,
-    freeze and `deny_write` refuse as before, and no ask appears
-    because there is nothing to approve. Config may only say no; there
-    is still no config key that grants.
-  - **An explicit narrow grant is not widened.**
-    `--allow-writes=dlq_delete` is an operator saying "only this", and
-    it stays that way on a client that can ask. Elicitation supplies a
-    default where none was set; it does not overrule one that was.
-
-  A decline is final — the plan is spent, and the instructions tell the
-  agent not to re-plan the same action. Declines and no-answers are
-  audited as `rule=not_approved`: a write a person stopped and a write
-  nobody attempted otherwise look identical afterwards, and the first
-  is the one worth knowing about.
-
-  Design: `docs/design/runtime-grants.md`, steps 3 and 4.
 
 - **The stale-binary notice says whose job the reconnect is.** It said
   "reconnect (in Claude Code: /mcp, Reconnect) to pick it up" — an
@@ -215,7 +215,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   which is safe, and is also the problem: a prompt that does nothing
   teaches that prompts may do nothing, and the next person to see that
   screen has no way to tell it is spent. ebman now sends
-  `notifications/cancelled` naming the request.
+  `notifications/cancelled` naming the request. Verified to the wire —
+  the frame is emitted with the right shape and id — but whether a
+  given client withdraws the dialog on it has not been observed, so
+  the claim here is that ebman asks, not that every client complies.
 
   A late reply is also **dropped** rather than answered. A frame with
   an id and no method is a JSON-RPC *response*, and a response is
