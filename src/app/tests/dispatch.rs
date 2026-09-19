@@ -1220,6 +1220,142 @@ fn every_render_surface_is_accounted_for() {
 /// line after the first mistake. `proc_macro2` already lexes Rust
 /// correctly and is already in the lock file; classifying its output is
 /// the only part that needs writing.
+/// Byte ranges of every run of two or more spaces in `line`.
+///
+/// Hand-rolled rather than a regex dependency: the rule is small and
+/// the crate already avoids pulling one in for source scanning.
+fn regex_lite_runs(line: &str) -> Vec<(usize, usize)> {
+    let b = line.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] != b' ' {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < b.len() && b[i] == b' ' {
+            i += 1;
+        }
+        if i - start >= 2 {
+            out.push((start, i));
+        }
+    }
+    out
+}
+
+/// Literals whose VALUE carries a run of spaces mid-sentence — the
+/// COLLAPSED form of the defect `literals_with_embedded_newlines`
+/// catches.
+///
+/// A wrapped literal missing its `\` continuation embeds a newline and
+/// the next line's indent. A tool that eats the continuation instead
+/// emits the same text on ONE line: no newline, just a bare run of
+/// spaces mid-sentence. Every existing check passed it, and it shipped
+/// three times on 2026-09-19 alone.
+///
+/// Scans the literal's VALUE, not its source text. A correct `\`
+/// continuation contributes nothing to the value, so it cannot be
+/// mistaken for the bug — which is what a source-level scan does, and
+/// why the first attempt at this flagged 292 literals that were all
+/// correctly written.
+///
+/// The threshold the backlog item left open: a run of six inside a
+/// literal that is PROSE. Six is below one Rust indent level, so any
+/// real collapsed continuation trips it, and the alignment that
+/// survives in this tree — column headers, `w` output, help rows — is
+/// short and layout-shaped rather than prose.
+pub(super) fn literals_with_collapsed_indent_run(src: &str) -> Vec<String> {
+    /// `#[doc = "…"]`, which is what `///` becomes in a token stream.
+    ///
+    /// Doc comments are string literals and they are full of aligned
+    /// tables — every false positive the first measurement produced
+    /// was one. They also never reach a status bar, so they are not
+    /// merely noise here, they are out of scope.
+    fn is_doc_attr(g: &proc_macro2::Group) -> bool {
+        if g.delimiter() != proc_macro2::Delimiter::Bracket {
+            return false;
+        }
+        let mut it = g.stream().into_iter();
+        matches!(it.next(), Some(proc_macro2::TokenTree::Ident(i)) if i == "doc")
+    }
+
+    fn walk(ts: proc_macro2::TokenStream, out: &mut Vec<String>) {
+        for tree in ts {
+            match tree {
+                proc_macro2::TokenTree::Group(g) => {
+                    if !is_doc_attr(&g) {
+                        walk(g.stream(), out);
+                    }
+                }
+                proc_macro2::TokenTree::Literal(l) => {
+                    let text = l.to_string();
+                    if !text.starts_with('"') {
+                        continue;
+                    }
+                    let Ok(parsed) = syn::parse_str::<syn::LitStr>(&text) else {
+                        continue;
+                    };
+                    let value = parsed.value();
+                    // Prose, not layout. The defect lands in sentences;
+                    // what legitimately carries deep runs in this tree
+                    // is short and tabular. Both conditions, so a long
+                    // banner of dashes and a two-word column header are
+                    // equally uninteresting.
+                    // A lost continuation collapses onto ONE line: the
+                    // newline it should have carried is exactly what
+                    // went missing. A literal whose value spans lines
+                    // is declared layout — `--help`, the first-run
+                    // banner — where alignment is the point. That is
+                    // the discriminator the backlog item asked someone
+                    // to pick, and it needs no threshold tuning and no
+                    // allowlist: it is the defect's own signature.
+                    let prose = value.len() > 60 && !value.contains('\n');
+                    if !prose {
+                        continue;
+                    }
+                    {
+                        // Split the line into cells on runs of 2+
+                        // spaces, keeping the run widths. A lost
+                        // continuation leaves ONE wide run with prose
+                        // either side of it; a column header leaves
+                        // several with a single word in each cell.
+                        let line = value.as_str();
+                        let mut cells: Vec<&str> = Vec::new();
+                        let mut gaps: Vec<usize> = Vec::new();
+                        let mut last = 0usize;
+                        for m in regex_lite_runs(line) {
+                            cells.push(&line[last..m.0]);
+                            gaps.push(m.1 - m.0);
+                            last = m.1;
+                        }
+                        cells.push(&line[last..]);
+                        for (g, width) in gaps.iter().enumerate() {
+                            let wordy = |c: &str| c.trim().contains(' ');
+                            if *width >= 6 && wordy(cells[g]) && wordy(cells[g + 1]) {
+                                out.push(
+                                    value
+                                        .chars()
+                                        .take(90)
+                                        .collect::<String>()
+                                        .replace('\n', " "),
+                                );
+                                return;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if let Ok(ts) = src.parse::<proc_macro2::TokenStream>() {
+        walk(ts, &mut out);
+    }
+    out
+}
+
 pub(super) fn literals_with_embedded_newlines(src: &str) -> Vec<String> {
     fn walk(ts: proc_macro2::TokenStream, out: &mut Vec<String>) {
         for tree in ts {
@@ -2669,5 +2805,132 @@ fn a_standing_read_only_cannot_be_lifted_in_session() {
     assert!(
         open.read_only_reason("any-env").is_none(),
         "no standing restriction and no session toggle means writes are allowed"
+    );
+}
+/// The COLLAPSED form of the wrapped-literal defect.
+///
+/// `no_wrapped_string_literal_leaves_an_indentation_hole` catches a
+/// literal split across lines without its `\` continuation. It cannot
+/// see the same text once a tool has eaten the continuation and
+/// emitted one line — no newline, just a bare run of spaces
+/// mid-sentence. That shipped three times on 2026-09-19 alone, in code
+/// written minutes after reading the backlog item describing it, and
+/// every existing check passed all three.
+///
+/// The backlog item left the threshold open because raw space-run
+/// counts cannot separate the bug from column alignment at any N. The
+/// answer was not a better number: it is that **a lost continuation
+/// collapses onto one line** — the newline it should have carried is
+/// precisely what went missing — while real layout is inherently
+/// multi-line. Applied to literal VALUES rather than source text, that
+/// flags zero legitimate literals in this tree and needs no allowlist.
+#[test]
+fn no_string_literal_collapses_its_continuation_into_a_run_of_spaces() {
+    let mut offenders: Vec<String> = Vec::new();
+    let mut stack = vec![std::path::PathBuf::from("src")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("src dir") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") || is_test_source(&path) {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("read");
+            for lit in literals_with_collapsed_indent_run(&text) {
+                offenders.push(format!("{}: {lit}", path.display()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a single-line literal carries a run of spaces mid-sentence — a wrapped \
+         literal lost its `\\` continuation, and this renders as a hole in a \
+         one-line status bar: {offenders:#?}"
+    );
+}
+
+/// The collapsed-form detector can see one, and ignores what it should.
+///
+/// A guard that cannot be shown to fire reads as coverage. This one
+/// exists because three real instances slipped past every other check,
+/// so it is worth proving on the exact shapes rather than trusting the
+/// sweep's clean result.
+#[test]
+fn the_collapsed_run_scan_can_see_one() {
+    // The real defect, from `config.rs` on 2026-09-19.
+    let bug = r#"fn f() { let _ = "safety.read_only = {value} is not a boolean                          (expected true or false)"; }"#;
+    assert_eq!(
+        literals_with_collapsed_indent_run(bug).len(),
+        1,
+        "the scan must see the shape it exists for"
+    );
+
+    // Correctly continued: the value has no run at all.
+    let ok = "fn f() { let _ = \"safety.read_only = {value} is not a boolean \\\n         (expected true or false)\"; }";
+    assert!(
+        literals_with_collapsed_indent_run(ok).is_empty(),
+        "a correct `\\` continuation contributes nothing to the value"
+    );
+
+    // Declared layout: multi-line by design, alignment is the point.
+    let layout = r#"fn f() { let _ = "USAGE:
+    ebman [FLAGS]
+
+FLAGS:
+    -h      help. And prose too, at length, to clear the size floor.
+"; }"#;
+    assert!(
+        literals_with_collapsed_indent_run(layout).is_empty(),
+        "a multi-line literal is declared layout, not a lost continuation"
+    );
+
+    // Short tabular text stays out regardless.
+    let table = r#"fn f() { let _ = " dlq       the DLQ viewer"; }"#;
+    assert!(literals_with_collapsed_indent_run(table).is_empty());
+
+    // The rollout header the backlog item named as surviving every
+    // threshold. Its cells are single words, so nothing adjacent to
+    // its padding is prose.
+    let header = r#"fn f() { let _ = "   REGION                ENV               CURRENT           TARGET            STATUS"; }"#;
+    assert!(
+        literals_with_collapsed_indent_run(header).is_empty(),
+        "column alignment is not a lost continuation — this is the literal the \
+         backlog item said no threshold could separate"
+    );
+
+    // All THREE instances from 2026-09-19, so the guard is proven on
+    // every shape that actually got past the old checks rather than on
+    // one representative of them.
+    for (what, src) in [
+        (
+            "forecloses/restart",
+            r#"fn f() { let _ = "In-flight requests on the instances are dropped. Nothing else —              no state is lost and nothing here needs undoing."; }"#,
+        ),
+        (
+            "forecloses/terminate",
+            r#"fn f() { let _ = "The environment and its instances are destroyed. Its saved              configuration remains, so an environment can be rebuilt from it."; }"#,
+        ),
+        (
+            "config parse error",
+            r#"fn f() { let _ = "safety.read_only = {value} is not a boolean                          (expected true or false)"; }"#,
+        ),
+    ] {
+        assert_eq!(
+            literals_with_collapsed_indent_run(src).len(),
+            1,
+            "{what}: this exact literal shipped and every existing check passed it"
+        );
+    }
+
+    // Doc comments are literals too, and are full of aligned tables.
+    // They never reach a status bar, so they are out of scope — and
+    // they were every false positive of the first measurement.
+    let doc = "/// | settled      | in_flight | meaning                         |\nfn f() {}";
+    assert!(
+        literals_with_collapsed_indent_run(doc).is_empty(),
+        "a doc comment is documentation, not a rendered message"
     );
 }
