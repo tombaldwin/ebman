@@ -1367,7 +1367,7 @@ pub(super) fn write_tool_descriptors() -> Vec<Value> {
         }),
         json!({
             "name": "terminate",
-            "description": format!("TERMINATE an environment — destructive and irreversible. {confirm_note} Additionally, confirm_action requires confirm_name equal to the env name (strict-typed confirm; one retry per token)."),
+            "description": format!("TERMINATE an environment — destructive and irreversible. {confirm_note} Additionally, confirm_action requires confirm_name equal to the env name (one retry per token) AND — on a client that can be asked — the OPERATOR must type the environment name into the confirmation dialog themselves. Two different checks: yours binds you to the planned environment, theirs binds a person to it. If their client cannot render a text field, this verb cannot be confirmed there at all."),
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1468,7 +1468,7 @@ pub(super) fn write_tool_descriptors() -> Vec<Value> {
         }),
         json!({
             "name": "dlq_purge",
-            "description": format!("Empty the dead-letter queue. THE MOST DESTRUCTIVE TOOL HERE — arguably more so than `terminate`: an environment can be rebuilt from its configuration, and purged messages are gone. It also removes anything that arrived AFTER the plan was made, so the count in the plan is what was there then, not what will be deleted. Prefer `dlq_delete` when you know which message you mean. {confirm_note}"),
+            "description": format!("Empty the dead-letter queue. On a client that can be asked, the OPERATOR must type the environment name into the confirmation dialog — the same strict-typed confirm the TUI demands for a purge, and it fails closed if their client cannot render a text field. THE MOST DESTRUCTIVE TOOL HERE — arguably more so than `terminate`: an environment can be rebuilt from its configuration, and purged messages are gone. It also removes anything that arrived AFTER the plan was made, so the count in the plan is what was there then, not what will be deleted. Prefer `dlq_delete` when you know which message you mean. {confirm_note}"),
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2138,7 +2138,17 @@ impl Server {
         // change, deliberately, because advertising without the ask is
         // an open surface with no gate.
         let asked_at = std::time::Instant::now();
-        let outcome = self.ask_operator(&ask_summary(&pending)).await;
+        // Terminate and purge demand the operator TYPE the env name,
+        // matching the TUI's strict-typed-name confirms for both. The
+        // agent-supplied `confirm_name` check above stays: that binds
+        // the AGENT to the planned environment, and this binds a
+        // PERSON to it. They defend different things and neither
+        // replaces the other.
+        let typed = match pending.verb {
+            WriteVerb::Terminate | WriteVerb::DlqPurge => Some(pending.env.as_str()),
+            _ => None,
+        };
+        let outcome = self.ask_operator(&ask_summary(&pending), typed).await;
         // Record the ASK itself, whatever it answered — including an
         // approval, which previously left no trace that a question had
         // been put at all. A dispatch line's `can_ask=true` says an

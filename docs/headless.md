@@ -277,6 +277,14 @@ with **one** plan and **one** confirmation:
 {"env": "poly-batch", "message_ids": ["d3b0…0001", "5d41…0002"]}
 ```
 
+**`terminate` and `dlq_purge` require you to TYPE the environment
+name** into the confirmation dialog, matching the strict-typed-name
+confirms the TUI demands for both. The agent's `confirm_name` argument
+binds *it* to the planned environment; typing binds *you* to it, and
+neither replaces the other. It fails closed — a client that cannot
+render a text field cannot confirm those two verbs at all, so use the
+TUI, or `--allow-writes` on a client that can be asked.
+
 Every confirmation also names the identity the write would go out
 under — `as arn:aws:sts::123456789012:assumed-role/Admin/sess` — and
 the plan carries it as an `identity` object. If `sts:GetCallerIdentity`
