@@ -129,6 +129,41 @@ fn write_extras_parts(
     extras
 }
 
+/// One audit line's extras per message in a batch.
+///
+/// Extracted because the property that matters — N messages produce N
+/// lines, each naming its own id and task — is otherwise only
+/// observable through a live AWS dispatch, and so was not observable
+/// at all. Collapsing a batch to a single line would record that five
+/// messages were deleted from an environment while leaving the log
+/// unable to say which, and for a delete the log is the only place
+/// that answer can still exist.
+fn dlq_audit_line(
+    client_name: &str,
+    can_ask: bool,
+    target: &DlqTarget,
+) -> Vec<(&'static str, String)> {
+    write_extras_parts(
+        client_name,
+        can_ask,
+        None,
+        0,
+        Some(&target.id),
+        Some(&target.task),
+    )
+}
+
+fn dlq_audit_lines(
+    client_name: &str,
+    can_ask: bool,
+    targets: &[DlqTarget],
+) -> Vec<Vec<(&'static str, String)>> {
+    targets
+        .iter()
+        .map(|t| dlq_audit_line(client_name, can_ask, t))
+        .collect()
+}
+
 impl Server {
     /// Audit extras for an MCP-dispatched write.
     ///
@@ -224,6 +259,43 @@ impl Server {
     }
 }
 
+/// The one sentence an operator is asked to approve.
+///
+/// Server-authored from the plan, never from anything the agent wrote
+/// — a prompt composed by the party requesting permission is a
+/// persuasion surface regardless of intent.
+///
+/// Carries what the action FORECLOSES as well as what it does. A plan
+/// fully specified about mechanics and silent about stakes reads as
+/// complete, and a prompt that looks complete discourages the pause in
+/// which the operator remembers what it does not contain.
+pub(super) fn ask_summary(p: &PendingWrite) -> String {
+    let what = match p.dlq_targets.as_slice() {
+        [] => match p.version.as_deref() {
+            Some(v) => format!("{} to {v}", p.verb.label()),
+            None => p.verb.label().to_string(),
+        },
+        [one] => format!("{} — {} ({})", p.verb.label(), one.task, one.id),
+        // Enumerated, never summarised. "5 messages" is a number to
+        // agree with; a list is something to read. `DLQ_BATCH_CAP`
+        // exists precisely so this stays readable.
+        many => format!(
+            "{} — {} messages:\n{}",
+            p.verb.label(),
+            many.len(),
+            many.iter()
+                .map(|t| format!("  • {} ({})", t.task, t.id))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ),
+    };
+    format!(
+        "{what} on {}.\n\n{}",
+        p.env,
+        forecloses(p.verb, None, p.dlq_targets.len())
+    )
+}
+
 /// Resend or delete the message the plan NAMED, or refuse.
 ///
 /// The whole point is the id check. SQS deletes by receipt handle, and
@@ -236,33 +308,107 @@ impl Server {
 /// The fix that looks obvious and is worse: re-receive at confirm and
 /// act on whatever comes back. That deletes the head of the queue,
 /// which may not be the message the plan described, and nothing in the
-/// output would say they differed — a silent target swap. So: re-receive
-/// to get a FRESH handle, find the planned id among what came back, and
-/// refuse if it is not there.
+/// output would say they differed — a silent target swap. So:
+/// re-receive to get FRESH handles, find the planned ids among what
+/// came back, and refuse for any that is not there.
 ///
 /// Refusing is the right failure. The message may have been consumed,
 /// redriven or deleted by someone else in the interval, and every one
-/// of those means the plan no longer describes reality.
-async fn dispatch_dlq_message(
+/// of those means the plan no longer describes that message.
+///
+/// **Per message, not per batch.** One id gone says nothing about the
+/// other nine, and failing the whole plan would leave nine messages
+/// the operator approved untouched and force a re-plan against a queue
+/// that has moved again. So each is attempted and each reports, which
+/// is ARCHITECTURE.md rule 6 applied across a set.
+async fn dispatch_dlq_batch(
     client: &crate::aws::AwsClient,
     p: &PendingWrite,
-) -> Result<Option<crate::aws::QueueMessage>, String> {
-    let (Some(url), Some(want)) = (p.dlq_url.as_deref(), p.dlq_message_id.as_deref()) else {
-        return Err("plan carried no queue url or message id".into());
+) -> Result<Vec<DlqOutcome>, String> {
+    let Some(url) = p.dlq_url.as_deref() else {
+        return Err("plan carried no queue url".into());
     };
-    // A fresh receive: the handle from plan time is expired by now.
-    let msgs = client
-        .peek_messages(url, 10)
+    if p.dlq_targets.is_empty() {
+        return Err("plan named no messages".into());
+    }
+    // ONE fresh receive for the whole batch: the handles from plan
+    // time are expired, and re-reading per message would both cost N
+    // round trips and race itself — each peek makes the messages it
+    // returns invisible for 5s, so the second call could miss what the
+    // first was holding.
+    let pool = client
+        .peek_messages(url, (DLQ_BATCH_CAP as i32) * 3)
         .await
         .map_err(|e| format!("re-reading the queue failed: {e}"))?;
-    let Some(msg) = msgs.into_iter().find(|m| m.id == want) else {
-        return Err(format!(
-            "message '{want}' is no longer in the dead-letter queue — it may have been \
-             consumed, redriven or removed since the plan was made. Nothing was \
-             changed; re-run `worker_queues` with peek and plan again."
-        ));
-    };
-    if p.verb == WriteVerb::DlqResend {
+
+    let mut out = Vec::with_capacity(p.dlq_targets.len());
+    for target in &p.dlq_targets {
+        let Some(msg) = pool.iter().find(|m| m.id == target.id) else {
+            out.push(DlqOutcome {
+                target: target.clone(),
+                // Scoped to what was actually observed. It was not
+                // among the messages the re-read returned; SQS does not
+                // let us say more than that, and "it is gone" would be
+                // a firmer claim than the evidence supports.
+                result: Err(
+                    "not among the messages returned when the queue was re-read \
+                             — it may have been consumed, redriven or removed since the \
+                             plan was made. Nothing was changed for this one."
+                        .to_string(),
+                ),
+            });
+            continue;
+        };
+        out.push(DlqOutcome {
+            target: target.clone(),
+            result: dispatch_one_dlq_message(client, p.verb, url, msg).await,
+        });
+    }
+    Ok(out)
+}
+
+/// One message's line in the batch report.
+///
+/// ARCHITECTURE.md rule 6: a result carries its own negative space.
+/// A failed item is present and says WHY, rather than being absent —
+/// an agent that gets four results for a five-message plan has to
+/// infer the fifth, and "it isn't in the list" is indistinguishable
+/// from "the list was truncated".
+pub(super) fn render_dlq_item(
+    target: &DlqTarget,
+    result: &Result<Option<crate::aws::QueueMessage>, String>,
+) -> String {
+    match result {
+        Ok(_) => format!(
+            "{{\"message_id\":{},\"task\":{},\"ok\":true}}",
+            util::json_string(&target.id),
+            util::json_string(&target.task)
+        ),
+        Err(e) => format!(
+            "{{\"message_id\":{},\"task\":{},\"ok\":false,\"error\":{}}}",
+            util::json_string(&target.id),
+            util::json_string(&target.task),
+            util::json_string(e)
+        ),
+    }
+}
+
+/// What happened to one message in a batch.
+pub(super) struct DlqOutcome {
+    pub target: DlqTarget,
+    /// `Ok(Some(msg))` means it was destroyed and is briefly
+    /// recoverable; `Ok(None)` means it was resent, so it still exists
+    /// and there is nothing to recover.
+    pub result: Result<Option<crate::aws::QueueMessage>, String>,
+}
+
+async fn dispatch_one_dlq_message(
+    client: &crate::aws::AwsClient,
+    verb: WriteVerb,
+    url: &str,
+    msg: &crate::aws::QueueMessage,
+) -> Result<Option<crate::aws::QueueMessage>, String> {
+    if verb == WriteVerb::DlqResend {
         // Send first, delete second. The other order can lose the
         // message outright if the send fails; this order can duplicate
         // it, and a duplicate in a worker queue is the recoverable
@@ -286,7 +432,7 @@ async fn dispatch_dlq_message(
     // Handed back so the caller can hold it briefly. A resend returns
     // nothing: the message still exists, on the main queue, so there
     // is nothing to recover and offering one would be a lie.
-    Ok(captures_for_undo(p.verb).then_some(msg))
+    Ok(captures_for_undo(verb).then_some(msg.clone()))
 }
 
 /// The main queue a dead-letter queue drains from.
@@ -431,19 +577,38 @@ pub(super) enum WriteVerb {
 /// reported as approximate rather than as a count. Saying "it is the
 /// only message in the queue" would be a firmer claim than the source
 /// supports, which is the failure this function exists to avoid.
-pub(super) fn forecloses(verb: WriteVerb, dlq_visible: Option<i64>) -> String {
+/// `named` is how many messages this plan acts on — 0 for every verb
+/// that does not name messages individually. It is separate from
+/// `dlq_visible` (how many are in the queue) because they answer
+/// different questions, and a batch line that said only "the message
+/// is destroyed" would understate a plan for nine of them in the one
+/// sentence written to stop exactly that.
+pub(super) fn forecloses(verb: WriteVerb, dlq_visible: Option<i64>, named: usize) -> String {
     let queue_note = || match dlq_visible {
         Some(1) => " SQS reports 1 message in the queue, approximately.".to_string(),
         Some(n) => format!(" SQS reports about {n} messages in the queue."),
         None => String::new(),
     };
     match verb {
+        WriteVerb::DlqDelete if named > 1 => format!(
+            "All {named} messages are destroyed in SQS, which has no undelete. ebman \
+             holds copies in memory for {}s — `dlq_undo` can put each back, with a new \
+             message id and a receive count reset to 0 — and after that nothing can.{}",
+            UNDO_WINDOW_SECS,
+            queue_note()
+        ),
         WriteVerb::DlqDelete => format!(
             "The message is destroyed in SQS, which has no undelete. ebman holds \
              a copy in memory for {}s — `dlq_undo` can put it back, with a new \
              message id and a receive count reset to 0 — and after that nothing \
              can.{}",
             UNDO_WINDOW_SECS,
+            queue_note()
+        ),
+        WriteVerb::DlqResend if named > 1 => format!(
+            "All {named} messages leave the dead-letter queue. Any that fails again \
+             dead-letters again, carrying its receive count forward — so this is \
+             reversible only in the sense that the messages still exist.{}",
             queue_note()
         ),
         WriteVerb::DlqResend => format!(
@@ -535,6 +700,140 @@ impl WriteVerb {
     }
 }
 
+/// The message ids a DLQ plan was asked for.
+///
+/// Accepts `message_id` (one) or `message_ids` (several) and refuses
+/// every ambiguous shape rather than picking a reading. Each refusal
+/// below is a case where guessing would act on a set the agent did not
+/// ask for and the operator would approve without knowing:
+///
+/// - **Both keys.** No sane precedence exists. Taking `message_ids`
+///   silently drops `message_id`; taking `message_id` silently drops a
+///   list. Either way the confirmation names a set nobody requested.
+/// - **Neither, or an empty list.** A DLQ write with no target is not
+///   a no-op to approve — it is a malformed request, and answering it
+///   with "dispatched: 0 messages" reads as success.
+/// - **Duplicates.** The operator is told "5 messages"; four exist.
+///   Deduplicating silently would be worse than refusing, because the
+///   count in the dialog is the one thing they are being asked about.
+/// - **Over the cap.** See `DLQ_BATCH_CAP`.
+/// - **A non-string element.** An id that arrived as a number or null
+///   is a client bug, and coercing it invents an id to go looking for.
+fn requested_message_ids(args: &Value) -> Result<Vec<String>, String> {
+    let one = arg_str(args, "message_id");
+    let many = args.get("message_ids").filter(|v| !v.is_null());
+
+    let ids: Vec<String> = match (one, many) {
+        (Some(_), Some(_)) => {
+            return Err(
+                "give either 'message_id' or 'message_ids', not both — there is no \
+                        order of precedence that would not silently drop one of them"
+                    .into(),
+            );
+        }
+        (Some(id), None) => vec![id],
+        (None, Some(v)) => {
+            let arr = v
+                .as_array()
+                .ok_or("'message_ids' must be an array of message ids")?;
+            let mut out = Vec::with_capacity(arr.len());
+            for (i, item) in arr.iter().enumerate() {
+                let id = item.as_str().ok_or_else(|| {
+                    format!("'message_ids[{i}]' is not a string — every id must be one")
+                })?;
+                out.push(id.to_string());
+            }
+            out
+        }
+        (None, None) => {
+            return Err(
+                "'message_id' (one) or 'message_ids' (several) is required, from \
+                        `worker_queues` with peek"
+                    .into(),
+            );
+        }
+    };
+
+    if ids.is_empty() {
+        return Err("'message_ids' is empty — name at least one message".into());
+    }
+    if ids.len() > DLQ_BATCH_CAP {
+        return Err(format!(
+            "{} messages is more than one plan may name ({DLQ_BATCH_CAP}). The limit is \
+             there so the operator can read the list before approving it. Name fewer, \
+             or use `dlq_purge` if the intent is to empty the queue — that is one \
+             deliberate action with an honest foreclosure line, not a long list nobody \
+             reads.",
+            ids.len()
+        ));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for id in &ids {
+        if !seen.insert(id.as_str()) {
+            return Err(format!(
+                "'{id}' is named twice. The confirmation would say {} messages and \
+                 {} exist — refused rather than deduplicated, because that count is \
+                 what the operator is being asked to approve.",
+                ids.len(),
+                seen.len()
+            ));
+        }
+    }
+    Ok(ids)
+}
+
+/// The verb-dependent half of a plan.
+///
+/// A struct rather than a six-tuple: every field here is optional or
+/// empty for most verbs, and positional returns of five `None`s and a
+/// `String` are read wrong exactly once before someone swaps two of
+/// them.
+struct PlanDetails {
+    version: Option<String>,
+    settings: Vec<(String, String, String)>,
+    /// Pre-rendered JSON fragment, spliced into the plan body.
+    plan_extra: String,
+    dlq_targets: Vec<DlqTarget>,
+    dlq_url: Option<String>,
+    /// SQS's `ApproximateNumberOfMessages`, for the foreclosure line.
+    dlq_visible: Option<i64>,
+}
+
+/// How many dead-lettered messages one plan may name.
+///
+/// The number exists so the operator can *read* the list. Four
+/// messages enumerate; two hundred do not, and a plan that summarises
+/// — "200 messages matching X" — asks for approval of something
+/// nobody has read. That is the appearance of control without the
+/// substance, which this whole surface is built to avoid.
+///
+/// Ten, because that is also what one `worker_queues` peek shows: an
+/// agent cannot name a message it has not seen, so a cap above the
+/// peek would be unreachable by any honest path.
+///
+/// Above it the plan is REFUSED rather than truncated. Truncating
+/// would dispatch a subset while reporting the whole, which is the
+/// worst available outcome — the operator approves ten when twelve
+/// were asked for. The refusal names the cap and points at
+/// `dlq_purge`, which is one deliberate action carrying one honest
+/// foreclosure line.
+pub(super) const DLQ_BATCH_CAP: usize = 10;
+
+/// One dead-lettered message a plan names.
+///
+/// Id and task travel together because they answer different questions
+/// and the audit needs both: the id says WHICH message, the task says
+/// what it was. Keeping them as parallel `Vec`s invites the classic
+/// mismatch where a filtered id list is paired with an unfiltered task
+/// list and every line in the log names the wrong task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct DlqTarget {
+    /// The message id — deliberately NOT the receipt handle. See the
+    /// note on `PendingWrite::dlq_targets`.
+    pub id: String,
+    pub task: String,
+}
+
 pub(super) struct PendingWrite {
     pub token: String,
     pub verb: WriteVerb,
@@ -547,15 +846,21 @@ pub(super) struct PendingWrite {
     /// Terminate only: one `confirm_name` mismatch keeps the token
     /// alive for a single retry; the second drops the plan.
     pub name_retry_used: bool,
-    /// DLQ resend / delete: the task name the message carried, for the
-    /// audit line.
+    /// DLQ resend / delete: the messages this plan names.
     ///
-    /// The id says WHICH message; this says what it was. A log that
+    /// A `Vec` rather than an `Option`, because one and several differ
+    /// only in length and a separate single-message path would be a
+    /// second implementation of the same protocol — which is where the
+    /// two would drift. Empty for every non-DLQ verb; a plan for
+    /// resend or delete is refused before it is built if this would be
+    /// empty.
+    ///
+    /// Each carries the task name for the audit line. A log that
     /// records "a message was deleted from poly-batch" and cannot say
     /// which one, or what it was, answers neither question an operator
     /// asks afterwards.
-    pub dlq_task: Option<String>,
-    /// DLQ resend / delete: the message this plan names.
+    ///
+    /// Ids, deliberately — NOT receipt handles.
     ///
     /// The ID, deliberately — NOT the receipt handle. SQS deletes by
     /// handle, and a handle is only valid while the message is
@@ -567,9 +872,12 @@ pub(super) struct PendingWrite {
     /// whatever is at the head of the queue now, which removes a
     /// different message than the plan named and says nothing about it.
     ///
-    /// So confirm re-receives, finds THIS id, and refuses if it is not
-    /// there.
-    pub dlq_message_id: Option<String>,
+    /// So confirm re-receives and finds THESE ids among what comes
+    /// back, reporting per message rather than failing the batch: one
+    /// message consumed in the interval says nothing about the other
+    /// nine, and refusing all ten would force a re-plan against a
+    /// queue that has moved again.
+    pub dlq_targets: Vec<DlqTarget>,
     /// The dead-letter queue URL resolved at plan time.
     pub dlq_url: Option<String>,
 }
@@ -636,6 +944,7 @@ pub(super) const UNDO_TOOL: &str = "dlq_undo";
 /// ONLY under the verbs `--allow-writes` granted (spec: the listing is
 /// honest).
 pub(super) fn write_tool_descriptors() -> Vec<Value> {
+    let batch_note = format!("ONE CALL COVERS SEVERAL: pass `message_ids` (an array, up to {DLQ_BATCH_CAP}) to handle a set in one plan and ONE confirmation. Prefer it over calling this repeatedly — each plan asks the operator separately, and a person answering the same dialog eight times stops reading it. Over {DLQ_BATCH_CAP} is refused rather than truncated: the cap is what keeps the list readable, and `dlq_purge` is the action for emptying a queue. Give `message_id` or `message_ids`, not both.");
     let confirm_note = "TWO-PHASE: this tool DISPATCHES NOTHING. It validates and returns {pending:true, confirm_token, plan}; you must surface the plan, then call confirm_action with the token (60s TTL, single-use) to dispatch. Dispatch-only — poll the read tools for progress.";
     vec![
         json!({
@@ -743,30 +1052,40 @@ pub(super) fn write_tool_descriptors() -> Vec<Value> {
         }),
         json!({
             "name": "dlq_resend",
-            "description": format!("Move ONE dead-lettered message back to the main worker queue, so sqsd retries the task. Identify it by `message_id` from `worker_queues` with peek. {confirm_note} The plan names the message id and task; confirm re-reads the queue and acts on THAT id, refusing if it is no longer there — a receipt handle cannot survive the token window, and acting on whatever is at the head of the queue instead would silently target a different message. Sends before deleting: the other order can lose the message if the send fails, while this order can duplicate it, and a duplicate in a worker queue is the recoverable failure."),
+            "description": format!("Move dead-lettered messages back to the main worker queue, so sqsd retries the task. Identify them by id from `worker_queues` with peek. {batch_note} {confirm_note} The plan names each message id and task; confirm re-reads the queue and acts on THOSE ids, reporting per message and refusing any that is no longer there — a receipt handle cannot survive the token window, and acting on whatever is at the head of the queue instead would silently target a different message. Sends before deleting: the other order can lose the message if the send fails, while this order can duplicate it, and a duplicate in a worker queue is the recoverable failure."),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "env": {"type": "string", "description": "Environment name (required)"},
-                    "message_id": {"type": "string", "description": "From `worker_queues` with peek (required)"},
+                    "message_id": {"type": "string", "description": "One message, from `worker_queues` with peek. Give this OR message_ids."},
+                    "message_ids": {"type": "array", "items": {"type": "string"}, "maxItems": DLQ_BATCH_CAP, "description": format!("Several messages in one plan and one confirmation, up to {DLQ_BATCH_CAP}. Give this OR message_id.")},
                     "profile": {"type": "string"},
                     "region": {"type": "string"}
                 },
-                "required": ["env", "message_id"]
+                // Only `env` is structurally required: exactly one of
+                // the two id forms must be given, which JSON Schema
+                // cannot express here and the tool enforces with a
+                // message that says which shapes are wrong and why.
+                "required": ["env"]
             }
         }),
         json!({
             "name": "dlq_delete",
-            "description": format!("Delete ONE dead-lettered message. Identify it by `message_id` from `worker_queues` with peek. IRREVERSIBLE: unlike restarting or rebuilding an environment, a deleted message cannot be recovered — there is no configuration to rebuild it from. {confirm_note} The plan names the message id and task; confirm re-reads the queue and acts on THAT id, refusing if it is no longer there."),
+            "description": format!("Delete dead-lettered messages. Identify them by id from `worker_queues` with peek. {batch_note} IRREVERSIBLE: unlike restarting or rebuilding an environment, a deleted message cannot be recovered — there is no configuration to rebuild it from. {confirm_note} The plan names each message id and task; confirm re-reads the queue and acts on THOSE ids, reporting per message and refusing any that is no longer there."),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "env": {"type": "string", "description": "Environment name (required)"},
-                    "message_id": {"type": "string", "description": "From `worker_queues` with peek (required)"},
+                    "message_id": {"type": "string", "description": "One message, from `worker_queues` with peek. Give this OR message_ids."},
+                    "message_ids": {"type": "array", "items": {"type": "string"}, "maxItems": DLQ_BATCH_CAP, "description": format!("Several messages in one plan and one confirmation, up to {DLQ_BATCH_CAP}. Give this OR message_id.")},
                     "profile": {"type": "string"},
                     "region": {"type": "string"}
                 },
-                "required": ["env", "message_id"]
+                // Only `env` is structurally required: exactly one of
+                // the two id forms must be given, which JSON Schema
+                // cannot express here and the tool enforces with a
+                // message that says which shapes are wrong and why.
+                "required": ["env"]
             }
         }),
         json!({
@@ -799,59 +1118,163 @@ impl Server {
     /// Phase 1 for every write verb: shared gates (verb in scope,
     /// writes enabled, not mid-dispatch, freeze, pins, env exists),
     /// verb-specific validation, then a pending plan + token.
-    pub(super) async fn tool_write_plan(
+    /// The dead-letter arm of a plan: resolve the queue, and for
+    /// resend/delete the individual messages.
+    ///
+    /// Its own function because it is the only arm that talks to a
+    /// second AWS service, the only one that can name several targets,
+    /// and the only one whose plan can be refused for the shape of the
+    /// request rather than the state of the world. At 110 lines inside
+    /// a match it was most of what `resolve_plan_details` appeared to
+    /// be.
+    async fn resolve_dlq_plan(
         &self,
         verb: WriteVerb,
         args: &Value,
-    ) -> Result<String, String> {
-        // The VERB, not merely "writes are on". Unreachable via the
-        // scoped table — an out-of-scope tool is not advertised — but a
-        // client holding a cached list from a wider grant would
-        // otherwise reach the body. Belt-and-braces, and the braces are
-        // the ones that matter after a scope is narrowed.
-        if !self.write_scope.allows(verb.tool_name()) {
-            return Err(self.refuse_out_of_scope(
-                verb,
-                arg_str(args, "env").as_deref(),
-                arg_str(args, "region").as_deref(),
-            ));
-        }
-        if self.dispatching.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err("another write is in flight — wait for it to complete".into());
-        }
-        let env_name = arg_str(args, "env").ok_or("'env' is required")?;
+        env: &crate::aws::Environment,
+        profile: &Option<String>,
+        out: &mut PlanDetails,
+    ) -> Result<(), String> {
+        let profile = profile.clone();
+        let plan_extra;
+        let mut dlq_targets: Vec<DlqTarget> = Vec::new();
+        // Resolve the queue at plan time so the plan can say
+        // WHICH queue, and so a web-tier env is refused here
+        // rather than at confirm.
+        // Demo resolves from the fixture and never builds a
+        // client. It used to fall straight through to the AWS
+        // calls below, against this module's own promise that
+        // demo plans synthetically: `peek_messages` is not
+        // side-effect-free — it increments `receive_count` on
+        // every message it returns — so `--demo` could alter
+        // metadata on a live queue.
+        let queues = if matches!(self.backend, Backend::Demo) {
+            demo_fixture::worker_queues_for_env(&env.name)
+        } else {
+            let client = self.client(args).await?;
+            client
+                .describe_worker_queues(&env.application, &env.name)
+                .await
+                .map_err(|e| tool_error(&profile, "describe_worker_queues", &e.to_string()))?
+        };
+        let url = queues
+            .dlq_url
+            .clone()
+            .filter(|_| queues.dlq_stats.is_some())
+            .ok_or_else(|| format!("env '{}' has no dead-letter queue", env.name))?;
 
-        // Freeze + pin gate — run at plan time AND re-run at confirm,
-        // because the 60s token window is long enough for an operator
-        // to declare an incident between the two and the whole point of
-        // the gates is to stop a write dispatching then.
-        //
-        // The FREEZE is what the re-run catches: it is re-read from
-        // disk each time. `safety_cfg` is snapshotted at server
-        // construction, so a *pin* added during a long-lived session is
-        // not seen until restart. This comment used to claim it was.
-        let profile = arg_str(args, "profile");
-        if let Some(msg) = self.gate_refusal(
-            &env_name,
-            &profile,
-            arg_str(args, "region").as_deref(),
-            verb.label(),
-        ) {
-            return Err(msg);
+        let dlq_visible = queues.dlq_stats.as_ref().map(|s| s.visible);
+        if verb == WriteVerb::DlqPurge {
+            let visible = queues.dlq_stats.as_ref().map(|s| s.visible).unwrap_or(0);
+            plan_extra = format!(
+                ",\"queue\":{},\"messages_now\":{}",
+                util::json_string(&url),
+                visible
+            );
+        } else {
+            // The messages must exist NOW, and the plan names
+            // them by id. Confirm re-receives and matches those
+            // ids — it cannot carry receipt handles, which
+            // expire with the 5-second visibility timeout while
+            // the token lives 60.
+            let ids = requested_message_ids(args)?;
+            // Peek wider than the batch: the ids came from a
+            // peek of 10, but the queue has moved since and the
+            // planned messages need not be in the first 10 this
+            // time. Asking for more costs one more round trip
+            // and is the difference between "not there" and
+            // "not looked for".
+            let pool = if matches!(self.backend, Backend::Demo) {
+                demo_fixture::dlq_messages_for_env(&env.name)
+            } else {
+                self.client(args)
+                    .await?
+                    .peek_messages(&url, (DLQ_BATCH_CAP as i32) * 3)
+                    .await
+                    .map_err(|e| tool_error(&profile, "peek_messages", &e.to_string()))?
+            };
+            // Every id must resolve, or the plan does not
+            // describe reality and the operator would be
+            // approving a list partly made of things that are
+            // not there. This is the one place a batch fails
+            // whole: at DISPATCH a missing message is reported
+            // per item, because by then the others have been
+            // approved.
+            let mut missing: Vec<String> = Vec::new();
+            for id in &ids {
+                match pool.iter().find(|m| &m.id == id) {
+                    Some(msg) => dlq_targets.push(DlqTarget {
+                        id: id.clone(),
+                        task: msg
+                            .task
+                            .as_ref()
+                            .and_then(|t| t.name.clone())
+                            .unwrap_or_else(|| "(not an EB worker task)".into()),
+                    }),
+                    None => missing.push(id.clone()),
+                }
+            }
+            if !missing.is_empty() {
+                return Err(format!(
+                    "not in the dead-letter queue right now: {} — re-run \
+                         `worker_queues` with peek to see what is there. Nothing \
+                         was planned; the other {} named {} not been acted on.",
+                    missing.join(", "),
+                    ids.len() - missing.len(),
+                    if ids.len() - missing.len() == 1 {
+                        "has"
+                    } else {
+                        "have"
+                    }
+                ));
+            }
+            plan_extra = format!(
+                ",\"queue\":{},\"messages\":[{}],\"message_count\":{}",
+                util::json_string(&url),
+                dlq_targets
+                    .iter()
+                    .map(|t| format!(
+                        "{{\"message_id\":{},\"task\":{}}}",
+                        util::json_string(&t.id),
+                        util::json_string(&t.task)
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(","),
+                dlq_targets.len()
+            );
         }
+        out.dlq_url = Some(url);
+        out.plan_extra = plan_extra;
+        out.dlq_targets = dlq_targets;
+        out.dlq_visible = dlq_visible;
+        Ok(())
+    }
 
-        let envs = self.fetch_envs(args).await?;
-        let env = envs
-            .iter()
-            .find(|e| e.name == env_name)
-            .ok_or_else(|| format!("env '{env_name}' not found"))?
-            .clone();
-
+    /// Resolve everything the plan needs that depends on the VERB.
+    ///
+    /// Split out of `tool_write_plan`, which was 346 lines of which
+    /// this was 220 — the gates, the per-verb resolution and the
+    /// rendering read as one function only because they happened to be
+    /// adjacent. They have different reasons to change: a new verb
+    /// touches this and nothing else, while a change to the gates or
+    /// the token window touches the caller and none of this.
+    ///
+    /// Returns rather than mutating six locals across a 200-line
+    /// match. The previous shape made "which arms set `dlq_url`?" a
+    /// question you answered by reading all of them, and a arm that
+    /// forgot one was indistinguishable from an arm that meant not to.
+    async fn resolve_plan_details(
+        &self,
+        verb: WriteVerb,
+        args: &Value,
+        env: &crate::aws::Environment,
+        profile: &Option<String>,
+    ) -> Result<PlanDetails, String> {
+        let profile = profile.clone();
         let mut version: Option<String> = None;
         let mut settings: Vec<(String, String, String)> = Vec::new();
         let mut plan_extra = String::new();
-        let mut dlq_message_id: Option<String> = None;
-        let mut dlq_task: Option<String> = None;
+        let mut dlq_targets: Vec<DlqTarget> = Vec::new();
         let mut dlq_url: Option<String> = None;
         // Captured for the foreclosure line, which needs to say how
         // much else is in the queue. Only the DLQ branch resolves it.
@@ -959,86 +1382,92 @@ impl Server {
                 plan_extra = format!(",\"changes\":[{}]", rows.join(","));
             }
             WriteVerb::DlqResend | WriteVerb::DlqDelete | WriteVerb::DlqPurge => {
-                // Resolve the queue at plan time so the plan can say
-                // WHICH queue, and so a web-tier env is refused here
-                // rather than at confirm.
-                // Demo resolves from the fixture and never builds a
-                // client. It used to fall straight through to the AWS
-                // calls below, against this module's own promise that
-                // demo plans synthetically: `peek_messages` is not
-                // side-effect-free — it increments `receive_count` on
-                // every message it returns — so `--demo` could alter
-                // metadata on a live queue.
-                let queues = if matches!(self.backend, Backend::Demo) {
-                    demo_fixture::worker_queues_for_env(&env.name)
-                } else {
-                    let client = self.client(args).await?;
-                    client
-                        .describe_worker_queues(&env.application, &env.name)
-                        .await
-                        .map_err(|e| {
-                            tool_error(&profile, "describe_worker_queues", &e.to_string())
-                        })?
+                let mut out = PlanDetails {
+                    version: None,
+                    settings: Vec::new(),
+                    plan_extra: String::new(),
+                    dlq_targets: Vec::new(),
+                    dlq_url: None,
+                    dlq_visible: None,
                 };
-                let url = queues
-                    .dlq_url
-                    .clone()
-                    .filter(|_| queues.dlq_stats.is_some())
-                    .ok_or_else(|| format!("env '{}' has no dead-letter queue", env.name))?;
-
-                dlq_visible = queues.dlq_stats.as_ref().map(|s| s.visible);
-                if verb == WriteVerb::DlqPurge {
-                    let visible = queues.dlq_stats.as_ref().map(|s| s.visible).unwrap_or(0);
-                    plan_extra = format!(
-                        ",\"queue\":{},\"messages_now\":{}",
-                        util::json_string(&url),
-                        visible
-                    );
-                } else {
-                    // The message must exist NOW, and the plan names it
-                    // by id. Confirm re-receives and matches this id —
-                    // it cannot carry a receipt handle, which expires
-                    // with the 5-second visibility timeout while the
-                    // token lives 60.
-                    let id = arg_str(args, "message_id")
-                        .ok_or("'message_id' is required (from `worker_queues` with peek)")?;
-                    let found = if matches!(self.backend, Backend::Demo) {
-                        demo_fixture::dlq_messages_for_env(&env.name)
-                            .into_iter()
-                            .find(|m| m.id == id)
-                    } else {
-                        self.client(args)
-                            .await?
-                            .peek_messages(&url, 10)
-                            .await
-                            .map_err(|e| tool_error(&profile, "peek_messages", &e.to_string()))?
-                            .into_iter()
-                            .find(|m| m.id == id)
-                    };
-                    let Some(msg) = found else {
-                        return Err(format!(
-                            "message '{id}' is not in the dead-letter queue right now — \
-                             re-run `worker_queues` with peek to see what is there"
-                        ));
-                    };
-                    let task = msg
-                        .task
-                        .as_ref()
-                        .and_then(|t| t.name.clone())
-                        .unwrap_or_else(|| "(not an EB worker task)".into());
-                    plan_extra = format!(
-                        ",\"queue\":{},\"message_id\":{},\"task\":{}",
-                        util::json_string(&url),
-                        util::json_string(&id),
-                        util::json_string(&task)
-                    );
-                    dlq_message_id = Some(id);
-                    dlq_task = Some(task);
-                }
-                dlq_url = Some(url);
+                self.resolve_dlq_plan(verb, args, env, &profile, &mut out)
+                    .await?;
+                plan_extra = out.plan_extra;
+                dlq_targets = out.dlq_targets;
+                dlq_url = out.dlq_url;
+                dlq_visible = out.dlq_visible;
             }
             WriteVerb::Restart | WriteVerb::Rebuild | WriteVerb::Terminate => {}
         }
+
+        Ok(PlanDetails {
+            version,
+            settings,
+            plan_extra,
+            dlq_targets,
+            dlq_url,
+            dlq_visible,
+        })
+    }
+
+    pub(super) async fn tool_write_plan(
+        &self,
+        verb: WriteVerb,
+        args: &Value,
+    ) -> Result<String, String> {
+        // The VERB, not merely "writes are on". Unreachable via the
+        // scoped table — an out-of-scope tool is not advertised — but a
+        // client holding a cached list from a wider grant would
+        // otherwise reach the body. Belt-and-braces, and the braces are
+        // the ones that matter after a scope is narrowed.
+        if !self.effective_scope().allows(verb.tool_name()) {
+            return Err(self.refuse_out_of_scope(
+                verb,
+                arg_str(args, "env").as_deref(),
+                arg_str(args, "region").as_deref(),
+            ));
+        }
+        if self.dispatching.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("another write is in flight — wait for it to complete".into());
+        }
+        let env_name = arg_str(args, "env").ok_or("'env' is required")?;
+
+        // Freeze + pin gate — run at plan time AND re-run at confirm,
+        // because the 60s token window is long enough for an operator
+        // to declare an incident between the two and the whole point of
+        // the gates is to stop a write dispatching then.
+        //
+        // The FREEZE is what the re-run catches: it is re-read from
+        // disk each time. `safety_cfg` is snapshotted at server
+        // construction, so a *pin* added during a long-lived session is
+        // not seen until restart. This comment used to claim it was.
+        let profile = arg_str(args, "profile");
+        if let Some(msg) = self.gate_refusal(
+            &env_name,
+            &profile,
+            arg_str(args, "region").as_deref(),
+            verb.label(),
+        ) {
+            return Err(msg);
+        }
+
+        let envs = self.fetch_envs(args).await?;
+        let env = envs
+            .iter()
+            .find(|e| e.name == env_name)
+            .ok_or_else(|| format!("env '{env_name}' not found"))?
+            .clone();
+
+        let PlanDetails {
+            version,
+            settings,
+            plan_extra,
+            dlq_targets,
+            dlq_url,
+            dlq_visible,
+        } = self
+            .resolve_plan_details(verb, args, &env, &profile)
+            .await?;
 
         // Recent events give the plan operational context (3 max).
         let events_json = match self.backend {
@@ -1087,8 +1516,7 @@ impl Server {
                 expires_at: tokio::time::Instant::now()
                     + std::time::Duration::from_secs(CONFIRM_TTL_SECS),
                 name_retry_used: false,
-                dlq_message_id: dlq_message_id.clone(),
-                dlq_task: dlq_task.clone(),
+                dlq_targets: dlq_targets.clone(),
                 dlq_url: dlq_url.clone(),
             });
         }
@@ -1112,14 +1540,14 @@ impl Server {
             util::json_string(&env.application),
             util::json_string(&env.health),
             util::json_string(&env.status),
-            util::json_string(&forecloses(verb, dlq_visible)),
+            util::json_string(&forecloses(verb, dlq_visible, dlq_targets.len())),
             util::json_string(&next),
         ))
     }
 
     /// Phase 2: dispatch the pending plan.
     pub(super) async fn tool_confirm_action(&self, args: &Value) -> Result<String, String> {
-        if !self.write_scope.any() {
+        if !self.effective_scope().any() {
             return Err("writes are disabled — start the server with --allow-writes".into());
         }
         let token = arg_str(args, "confirm_token").ok_or("'confirm_token' is required")?;
@@ -1144,7 +1572,7 @@ impl Server {
             // standing between a cached tool list and a dispatch, and
             // a scope that held at plan time but not at confirm is a
             // bug worth failing on rather than dispatching through.
-            if !self.write_scope.allows(p.verb.tool_name()) {
+            if !self.effective_scope().allows(p.verb.tool_name()) {
                 let (verb, env, region) = (p.verb, p.env.clone(), p.region.clone());
                 st.pending = None;
                 drop(st);
@@ -1209,7 +1637,188 @@ impl Server {
             }
         }
         let _guard = DispatchGuard(&self.dispatching);
+
+        // THE GATE. Everything above this point is the agent talking
+        // to ebman; this is the operator being asked, once, about the
+        // request they made. Placed after the plan is taken so the
+        // question can carry it, and inside the dispatch guard so a
+        // second write cannot start while a human is deciding.
+        //
+        // On a client that cannot elicit, `ask_operator` returns
+        // `Unanswered` and the write is refused — which is why the
+        // write surface is only advertised by default where the ask
+        // exists. Those two are one change, deliberately: advertising
+        // without the ask is an open surface with no gate.
+        let outcome = self.ask_operator(&ask_summary(&pending)).await;
+        if outcome.refuses() {
+            let reason = outcome.reason();
+            // Audited, because a near-miss that leaves no trace is the
+            // pre-0.37 blind spot: a declined write and no attempt at
+            // all look identical in the log.
+            if !matches!(self.backend, Backend::Demo) {
+                crate::audit::append_action_refused(
+                    None,
+                    pending.profile.as_deref(),
+                    pending.region.as_deref().unwrap_or("-"),
+                    pending.verb.label(),
+                    &pending.env,
+                    "not_approved",
+                    reason,
+                );
+            }
+            // No remedy naming a control, deliberately. The control is
+            // a person who has just said no, and an agent that retries
+            // a decline is the failure mode here.
+            return Err(format!(
+                "not dispatched — {reason}. The plan is spent; do not re-plan the same \
+                 action unless the operator asks for it."
+            ));
+        }
         self.dispatch_write(&pending).await
+    }
+
+    /// Dispatch a DLQ batch, auditing each message separately.
+    ///
+    /// Separate from `dispatch_write`'s generic path because the audit
+    /// granularity differs: there, one action produces one
+    /// dispatched/completed pair; here, five messages produce five,
+    /// each naming its own id and task. Collapsing them would record
+    /// that five messages were deleted from an environment and leave
+    /// the log unable to say which — and for a delete, the log is the
+    /// only place that answer can still exist.
+    ///
+    /// The batch never fails whole once dispatched. A message that
+    /// vanished between plan and confirm is one failed item among
+    /// successes, because the others were approved and stopping at the
+    /// second of five would leave three in an unknown state.
+    async fn dispatch_dlq_and_audit(
+        &self,
+        client: &crate::aws::AwsClient,
+        p: &PendingWrite,
+        client_name: &str,
+        audit_profile: Option<&str>,
+    ) -> Result<String, String> {
+        let verb_label = p.verb.label();
+        let region = &client.context.region;
+        let can_ask = self
+            .client_supports_elicitation
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let lines = dlq_audit_lines(client_name, can_ask, &p.dlq_targets);
+        // One line per message BEFORE acting: a dispatched line with no
+        // completed line is how a crash mid-batch stays visible.
+        for extras in &lines {
+            let refs: Vec<(&str, &str)> = extras.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            crate::audit::append_action_dispatched(
+                None,
+                audit_profile,
+                region,
+                verb_label,
+                &p.env,
+                &refs,
+            );
+        }
+
+        // A whole-batch failure — no queue url, or the re-read itself
+        // failed — is not a per-item outcome: nothing was attempted.
+        // Each message still gets a completed line saying so, or the
+        // dispatched lines above dangle forever.
+        let outcomes = match dispatch_dlq_batch(client, p).await {
+            Ok(o) => o,
+            Err(e) => {
+                for extras in &lines {
+                    let refs: Vec<(&str, &str)> =
+                        extras.iter().map(|(k, v)| (*k, v.as_str())).collect();
+                    crate::audit::append_action_completed(
+                        None,
+                        audit_profile,
+                        region,
+                        verb_label,
+                        &p.env,
+                        Err(e.as_str()),
+                        &refs,
+                    );
+                }
+                return Err(tool_error(&p.profile, verb_label, &e));
+            }
+        };
+
+        let mut items: Vec<String> = Vec::with_capacity(outcomes.len());
+        let mut succeeded = 0usize;
+        let mut failed = 0usize;
+        let mut recoverable_until: Option<u64> = None;
+        // Built from the OUTCOME's own target, not zipped against the
+        // list above. A zip would pair by position and silently
+        // mispair — attaching every completion line to the wrong
+        // message, and truncating if the lengths ever diverged — while
+        // reading as obviously correct. The outcome carries the target
+        // it belongs to; using it removes the coupling rather than
+        // documenting it.
+        for o in outcomes {
+            let extras = dlq_audit_line(client_name, can_ask, &o.target);
+            let refs: Vec<(&str, &str)> = extras.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            crate::audit::append_action_completed(
+                None,
+                audit_profile,
+                region,
+                verb_label,
+                &p.env,
+                match &o.result {
+                    Ok(_) => Ok(()),
+                    Err(e) => Err(e.as_str()),
+                },
+                &refs,
+            );
+            match &o.result {
+                Ok(destroyed) => {
+                    succeeded += 1;
+                    if let Some(msg) = destroyed.clone() {
+                        if let Some(until) =
+                            self.remember_deleted(&p.env, p.dlq_url.clone(), msg).await
+                        {
+                            // The window is per message but they are
+                            // captured within milliseconds of each
+                            // other, so the shortest is the honest one
+                            // to quote for the batch.
+                            recoverable_until =
+                                Some(recoverable_until.map_or(until, |c: u64| c.min(until)));
+                        }
+                    }
+                }
+                Err(_) => failed += 1,
+            }
+            items.push(render_dlq_item(&o.target, &o.result));
+        }
+
+        let recoverable = recoverable_until
+            .map(|u| format!(",\"recoverable_for_secs\":{u}"))
+            .unwrap_or_default();
+        let report = format!(
+            "\"action\":{},\"env\":{},\"succeeded\":{succeeded},\"failed\":{failed},\
+             \"results\":[{}]",
+            util::json_string(verb_label),
+            util::json_string(&p.env),
+            items.join(",")
+        );
+
+        // Nothing succeeded → this is an ERROR, not a result with a
+        // false flag in it.
+        //
+        // A partial batch is a success carrying its failures; a total
+        // failure is a failure, and the difference matters because
+        // `isError` is the field agents branch on. Returning
+        // `{"dispatched": false}` with `isError` unset would tell an
+        // agent that skims — which is all of them, sometimes — that a
+        // delete happened when nothing was touched. That is the
+        // `peeked: true, messages: []` shape again: a result reporting
+        // the attempt while hiding that it achieved nothing.
+        //
+        // It also preserves the single-message behaviour exactly. One
+        // target that has vanished is a batch where nothing succeeded,
+        // so it errors as it always did.
+        if succeeded == 0 {
+            return Err(format!("{{\"dispatched\":false,{report}}}"));
+        }
+        Ok(format!("{{\"dispatched\":true,{report}{recoverable}}}"))
     }
 
     async fn dispatch_write(&self, p: &PendingWrite) -> Result<String, String> {
@@ -1219,21 +1828,45 @@ impl Server {
             // demo delete still fills the undo buffer from the
             // fixture, or the recovery path is unwalkable without
             // credentials — which is the one thing demo exists for.
-            let mut recoverable = String::new();
-            if captures_for_undo(p.verb) {
-                if let Some(msg) = p.dlq_message_id.as_deref().and_then(|want| {
-                    demo_fixture::dlq_messages_for_env(&p.env)
-                        .into_iter()
-                        .find(|m| m.id == want)
-                }) {
-                    if let Some(until) = self.remember_deleted(&p.env, p.dlq_url.clone(), msg).await
-                    {
-                        recoverable = format!(",\"recoverable_for_secs\":{until}");
+            let mut shortest: Option<u64> = None;
+            let mut results = String::new();
+            if !p.dlq_targets.is_empty() {
+                // The same per-item shape live dispatch produces. Demo
+                // rendering its own simpler result is how the two
+                // drift, and a demo that cannot show the batch report
+                // cannot be used to check it.
+                let mut items: Vec<String> = Vec::new();
+                for t in &p.dlq_targets {
+                    if captures_for_undo(p.verb) {
+                        if let Some(msg) = demo_fixture::dlq_messages_for_env(&p.env)
+                            .into_iter()
+                            .find(|m| m.id == t.id)
+                        {
+                            if let Some(until) =
+                                self.remember_deleted(&p.env, p.dlq_url.clone(), msg).await
+                            {
+                                // The SHORTEST window, as live does.
+                                // Overwriting per message would quote
+                                // the last one's, and a demo that
+                                // renders a different number from live
+                                // is a demo that hides the difference.
+                                shortest = Some(shortest.map_or(until, |c: u64| c.min(until)));
+                            }
+                        }
                     }
+                    items.push(render_dlq_item(t, &Ok(None)));
                 }
+                results = format!(
+                    ",\"results\":[{}],\"succeeded\":{},\"failed\":0",
+                    items.join(","),
+                    p.dlq_targets.len()
+                );
             }
+            let recoverable = shortest
+                .map(|u| format!(",\"recoverable_for_secs\":{u}"))
+                .unwrap_or_default();
             return Ok(format!(
-                "{{\"dispatched\":true,\"demo\":true,\"action\":{},\"env\":{}{recoverable}}}",
+                "{{\"dispatched\":true,\"demo\":true,\"action\":{},\"env\":{}{recoverable}{results}}}",
                 util::json_string(verb_label),
                 util::json_string(&p.env),
             ));
@@ -1252,12 +1885,23 @@ impl Server {
             .profile
             .clone()
             .or_else(|| std::env::var("AWS_PROFILE").ok());
+        // Resend and delete take the batch path, which audits per
+        // MESSAGE. The generic path below writes one dispatched line
+        // and one completed line for the whole action, and for a batch
+        // that records "five messages were deleted from poly-batch"
+        // without naming one of them — the exact gap `message_id=`
+        // exists to close, reopened by the plural.
+        if matches!(p.verb, WriteVerb::DlqResend | WriteVerb::DlqDelete) {
+            return self
+                .dispatch_dlq_and_audit(&client, p, &client_name, audit_profile.as_deref())
+                .await;
+        }
         let extras = self.write_extras(
             &client_name,
             p.version.as_deref(),
             p.settings.len(),
-            p.dlq_message_id.as_deref(),
-            p.dlq_task.as_deref(),
+            None,
+            None,
         );
         let extras_ref: Vec<(&str, &str)> = extras.iter().map(|(k, v)| (*k, v.as_str())).collect();
         crate::audit::append_action_dispatched(
@@ -1309,7 +1953,10 @@ impl Server {
                     .map_err(|e| e.to_string()),
                 None => Err("plan carried no queue url".into()),
             },
-            WriteVerb::DlqResend | WriteVerb::DlqDelete => dispatch_dlq_message(&client, p).await,
+            // Handled above, per message.
+            WriteVerb::DlqResend | WriteVerb::DlqDelete => {
+                Err("unreachable: dlq resend/delete take the batch path".into())
+            }
         };
         crate::audit::append_action_completed(
             None,
@@ -1484,8 +2131,7 @@ mod tests {
             region: None,
             expires_at: tokio::time::Instant::now() + std::time::Duration::from_secs(60),
             name_retry_used: false,
-            dlq_message_id: None,
-            dlq_task: None,
+            dlq_targets: Vec::new(),
             dlq_url: None,
         };
         st.install(plan("tok-a"));
@@ -1715,7 +2361,7 @@ mod tests {
             "a confirm token ({CONFIRM_TTL_SECS}s) outliving the peek's \
              {visibility}s visibility timeout is WHY the plan carries an \
              id rather than a receipt handle. If this ever stops being \
-             true, re-read the comment on `PendingWrite::dlq_message_id` \
+             true, re-read the comment on `PendingWrite::dlq_targets` \
              before simplifying anything."
         );
         // And the plan type must not be able to carry a handle.
@@ -1730,7 +2376,11 @@ mod tests {
             "a receipt handle in the plan is dead before the token \
              expires: {decl}"
         );
-        assert!(decl.contains("dlq_message_id"), "{decl}");
+        assert!(
+            decl.contains("dlq_targets"),
+            "the plan must still carry message IDS — the field a handle would \
+             have replaced: {decl}"
+        );
     }
 
     /// The main queue is the dead-letter URL without its suffix.
@@ -1812,8 +2462,7 @@ mod tests {
                 region: None,
                 expires_at: tokio::time::Instant::now() + std::time::Duration::from_secs(60),
                 name_retry_used: false,
-                dlq_message_id: None,
-                dlq_task: None,
+                dlq_targets: Vec::new(),
                 dlq_url: None,
             });
         }
@@ -1975,14 +2624,13 @@ mod tests {
             let st = s.writes.lock().await;
             let p = st.pending.as_ref().expect("a plan is pending");
             assert_eq!(
-                p.dlq_message_id.as_deref(),
-                Some(id.as_str()),
-                "the plan must carry the id the audit line will name"
-            );
-            assert_eq!(
-                p.dlq_task.as_deref(),
-                Some("Remove unattended jobs"),
-                "and the task, or the log can say which message but not what"
+                p.dlq_targets,
+                vec![DlqTarget {
+                    id: id.clone(),
+                    task: "Remove unattended jobs".into(),
+                }],
+                "the plan must carry the id the audit line will name, and the task — \
+                 or the log can say which message but not what"
             );
         }
 
@@ -2017,7 +2665,7 @@ mod tests {
     fn every_verb_states_what_it_forecloses() {
         for verb in WriteVerb::ALL {
             for depth in [None, Some(1), Some(12)] {
-                let t = forecloses(verb, depth);
+                let t = forecloses(verb, depth, 1);
                 assert!(t.len() > 40, "{verb:?} must say what it destroys: {t:?}");
                 assert!(
                     !t.contains("  "),
@@ -2031,7 +2679,7 @@ mod tests {
         // The destructive tail must state the LIMIT of recovery, and
         // the two differ — which is the point. Without this the test
         // passes on eight copies of "nothing happens".
-        let del = forecloses(WriteVerb::DlqDelete, Some(12));
+        let del = forecloses(WriteVerb::DlqDelete, Some(12), 1);
         assert!(
             del.contains("dlq_undo") && del.contains(&UNDO_WINDOW_SECS.to_string()),
             "a delete is briefly recoverable and must say how and for how long: {del:?}"
@@ -2042,7 +2690,7 @@ mod tests {
              the more dangerous half of the claim: {del:?}"
         );
 
-        let purge = forecloses(WriteVerb::DlqPurge, Some(12));
+        let purge = forecloses(WriteVerb::DlqPurge, Some(12), 1);
         assert!(
             purge.contains("None of them can be recovered"),
             "a purge is never recoverable: {purge:?}"
@@ -2055,7 +2703,7 @@ mod tests {
         );
         // And the cheap end must say it is cheap, or the variance that
         // makes the field informative is lost.
-        let restart = forecloses(WriteVerb::Restart, None);
+        let restart = forecloses(WriteVerb::Restart, None, 1);
         assert!(
             restart.contains("Nothing else"),
             "restart is cheap and should read as cheap: {restart:?}"
@@ -2064,7 +2712,7 @@ mod tests {
         // The count is SQS's approximate one and must not be stated as
         // fact — "the only message in the queue" is a firmer claim than
         // the source supports.
-        let one = forecloses(WriteVerb::DlqDelete, Some(1));
+        let one = forecloses(WriteVerb::DlqDelete, Some(1), 1);
         assert!(one.contains("approximately"), "{one:?}");
         assert!(
             !one.contains("only message"),
@@ -2072,7 +2720,7 @@ mod tests {
         );
         // No queue known, no queue sentence invented.
         assert!(
-            !forecloses(WriteVerb::DlqDelete, None).contains("SQS reports"),
+            !forecloses(WriteVerb::DlqDelete, None, 1).contains("SQS reports"),
             "with no depth available, say nothing about the depth"
         );
     }
@@ -2417,5 +3065,213 @@ mod tests {
              grows without bound while nobody is looking"
         );
         assert!(!held.contains(&old_id));
+    }
+
+    /// Every ambiguous request shape is refused, not guessed at.
+    ///
+    /// Each case here is one where picking a reading would act on a
+    /// set the agent did not ask for, and the operator would approve a
+    /// count that does not match what happens.
+    #[test]
+    fn an_ambiguous_batch_request_is_refused() {
+        let ok = |v: Value| requested_message_ids(&v).expect("valid");
+        assert_eq!(ok(json!({"message_id": "a"})), vec!["a"]);
+        assert_eq!(ok(json!({"message_ids": ["a", "b"]})), vec!["a", "b"]);
+        // An explicit null is the same as absent — clients send it for
+        // an omitted optional, and treating it as "an empty selection"
+        // would turn a missing argument into a no-op success.
+        assert_eq!(
+            ok(json!({"message_id": "a", "message_ids": null})),
+            vec!["a"]
+        );
+
+        let err = |v: Value| requested_message_ids(&v).expect_err("must refuse");
+        let both = err(json!({"message_id": "a", "message_ids": ["b"]}));
+        assert!(
+            both.contains("not both"),
+            "no precedence can drop one silently: {both}"
+        );
+        assert!(err(json!({"env": "x"})).contains("required"));
+        assert!(err(json!({"message_ids": []})).contains("empty"));
+        assert!(err(json!({"message_ids": "a"})).contains("array"));
+        let typed = err(json!({"message_ids": ["a", 7]}));
+        assert!(
+            typed.contains("message_ids[1]") && typed.contains("not a string"),
+            "it must say WHICH element, or the agent has to guess: {typed}"
+        );
+
+        let dup = err(json!({"message_ids": ["a", "b", "a"]}));
+        assert!(
+            dup.contains("named twice"),
+            "deduplicating silently would show the operator a count that does not \
+             match the list: {dup}"
+        );
+
+        let over: Vec<String> = (0..=DLQ_BATCH_CAP).map(|i| format!("id-{i}")).collect();
+        let big = err(json!({"message_ids": over}));
+        assert!(
+            big.contains(&DLQ_BATCH_CAP.to_string()) && big.contains("dlq_purge"),
+            "over the cap must name the cap and the alternative, not just refuse: {big}"
+        );
+        assert!(
+            !big.contains("truncat"),
+            "and must never offer to truncate — dispatching a subset while reporting \
+             the whole is the worst outcome available: {big}"
+        );
+    }
+
+    /// At the cap is allowed; one past it is not.
+    #[test]
+    fn the_cap_is_inclusive() {
+        let at: Vec<String> = (0..DLQ_BATCH_CAP).map(|i| format!("id-{i}")).collect();
+        assert_eq!(
+            requested_message_ids(&json!({"message_ids": at}))
+                .expect("the cap itself is allowed")
+                .len(),
+            DLQ_BATCH_CAP
+        );
+    }
+
+    /// A failed item is PRESENT and says why.
+    ///
+    /// Rule 6 across a set: an agent given four results for a
+    /// five-message plan cannot tell a dropped item from a truncated
+    /// list, so it has to infer — and it will infer success.
+    #[test]
+    fn a_failed_item_appears_in_the_report_with_its_reason() {
+        let t = DlqTarget {
+            id: "m-1".into(),
+            task: "Nightly sweep".into(),
+        };
+        let ok = render_dlq_item(&t, &Ok(None));
+        assert!(ok.contains("\"ok\":true") && ok.contains("m-1") && ok.contains("Nightly sweep"));
+        assert!(
+            !ok.contains("error"),
+            "a success carries no error field: {ok}"
+        );
+
+        let bad = render_dlq_item(&t, &Err("queue vanished".into()));
+        assert!(bad.contains("\"ok\":false"), "{bad}");
+        assert!(
+            bad.contains("m-1") && bad.contains("queue vanished"),
+            "a failure names the message AND the reason, or the agent cannot report \
+             which of five failed: {bad}"
+        );
+        // Both shapes must be parseable — these go into a JSON array.
+        for line in [ok, bad] {
+            serde_json::from_str::<Value>(&line).expect("each item is valid JSON");
+        }
+    }
+
+    /// The operator sees the list, never a count.
+    #[test]
+    fn a_batch_ask_enumerates_the_messages() {
+        let targets: Vec<DlqTarget> = (1..=3)
+            .map(|i| DlqTarget {
+                id: format!("m-{i}"),
+                task: format!("Task {i}"),
+            })
+            .collect();
+        let p = PendingWrite {
+            token: "t".into(),
+            verb: WriteVerb::DlqDelete,
+            env: "poly-batch".into(),
+            version: None,
+            settings: Vec::new(),
+            profile: None,
+            region: None,
+            expires_at: tokio::time::Instant::now(),
+            name_retry_used: false,
+            dlq_targets: targets,
+            dlq_url: Some("https://sqs/q-dlq".into()),
+        };
+        let summary = ask_summary(&p);
+        for i in 1..=3 {
+            assert!(
+                summary.contains(&format!("m-{i}")) && summary.contains(&format!("Task {i}")),
+                "every message must be readable in the dialog — a summarised count is \
+                 something to agree with, a list is something to read: {summary}"
+            );
+        }
+        assert!(summary.contains("poly-batch"), "{summary}");
+        assert!(
+            summary.contains("3 messages"),
+            "and the count, so a truncated dialog still shows the scale: {summary}"
+        );
+    }
+
+    /// The foreclosure line scales with the batch.
+    ///
+    /// "The message is destroyed" under a plan for nine of them
+    /// understates the cost in the one sentence written to stop
+    /// exactly that.
+    #[test]
+    fn the_foreclosure_line_counts_the_batch() {
+        let one = forecloses(WriteVerb::DlqDelete, None, 1);
+        let many = forecloses(WriteVerb::DlqDelete, None, 9);
+        assert!(one.contains("The message is destroyed"), "{one}");
+        assert!(
+            many.contains("All 9 messages are destroyed"),
+            "a batch must say how many it destroys: {many}"
+        );
+        assert!(
+            many.contains("dlq_undo"),
+            "and still name the one recovery path there is: {many}"
+        );
+        let resend = forecloses(WriteVerb::DlqResend, None, 4);
+        assert!(resend.contains("All 4 messages"), "{resend}");
+    }
+
+    /// A batch writes one audit line per message, each naming its own.
+    ///
+    /// The whole reason DLQ dispatch has its own audited path. One
+    /// line for five deletes records that five messages went from
+    /// `poly-batch` and leaves the log unable to say which — and for a
+    /// delete, the log is the only place that answer can still exist,
+    /// because the message does not.
+    #[test]
+    fn a_batch_audits_every_message_separately() {
+        let targets: Vec<DlqTarget> = (1..=4)
+            .map(|i| DlqTarget {
+                id: format!("m-{i}"),
+                task: format!("Task {i}"),
+            })
+            .collect();
+        let lines = dlq_audit_lines("claude-code", true, &targets);
+        assert_eq!(lines.len(), 4, "one line per message, not one per batch");
+
+        for (i, line) in lines.iter().enumerate() {
+            let get = |k: &str| {
+                line.iter()
+                    .find(|(key, _)| *key == k)
+                    .map(|(_, v)| v.clone())
+            };
+            assert_eq!(
+                get("message_id"),
+                Some(format!("m-{}", i + 1)),
+                "line {i} must name ITS message: {line:?}"
+            );
+            assert_eq!(
+                get("task"),
+                Some(format!("Task {}", i + 1)),
+                "and its task, paired correctly — a filtered id list against an \
+                 unfiltered task list is how every line ends up naming the wrong \
+                 task: {line:?}"
+            );
+            assert_eq!(get("via"), Some("mcp".to_string()));
+            assert_eq!(get("can_ask"), Some("true".to_string()));
+        }
+
+        // No two lines share an id, which a `clone()` of the first
+        // target would produce and every per-line assertion above
+        // would still pass.
+        let ids: std::collections::HashSet<_> = lines
+            .iter()
+            .filter_map(|l| l.iter().find(|(k, _)| *k == "message_id").map(|(_, v)| v))
+            .collect();
+        assert_eq!(ids.len(), 4, "four distinct messages, four distinct lines");
+
+        // An empty batch writes nothing — not one line with no id.
+        assert!(dlq_audit_lines("c", true, &[]).is_empty());
     }
 }

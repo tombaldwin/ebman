@@ -454,39 +454,21 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
   is the wrong shape for this. Consider instead requiring that a doc
   block contain exactly one summary-then-blank opening.
 
-- [ ] **Runtime grants — permission without a restart.** Designed in
-  `docs/design/runtime-grants.md` (2026-09-18). 0.40.0 made the write
-  grant narrow but not reachable: getting `dlq_delete` means stopping,
-  editing the MCP registration and restarting the client, which is the
-  moment most people abandon the tool. The maintainer's verdict on being
-  shown it — "I'd probably stop bothering" — is the motivation.
+- [ ] **Assume-role elevation for MCP writes** (`runtime-grants.md`
+  layer four / step 6). `sts:AssumeRole` is the time-boxed grant done
+  properly: STS enforces the TTL, the role policy is the ceiling, and
+  CloudTrail audits it independently of ebman — so the record does not
+  depend on ebman being honest about itself.
 
-  Shape: the flag stops meaning "may do" and starts meaning "may ask
-  about", set once and wide. Grants become runtime and time-boxed,
-  issued either by the operator (`ebman grant`, reusing the
-  `src/freeze.rs` cross-process marker) or by the agent asking via
-  elicitation. `notifications/tools/list_changed` makes write tools
-  appear mid-session with no restart.
+  `AwsClient::assume_role` already exists for cross-account switching,
+  so the plumbing is there. Buys nothing for a setup running as admin,
+  which is why it is not first; the maintainer asked for it to be
+  designed now and rolled out in a release soon after, not built into
+  the current cut.
 
-  The operator route does not depend on elicitation, which is what makes
-  this buildable before the client question is settled.
-
-  Blocked on two client behaviours that must be measured, not assumed:
-  whether Claude Code declares elicitation (documentary evidence says
-  yes; no measurement yet — needs one real client connection to 0.40.0,
-  which only the maintainer can initiate), and whether it refetches on
-  `tools/list_changed`.
-
-  ~a few days. `src/freeze.rs` supplies the hard part.
-
-  **Layer four — assume-role elevation — is designed but deliberately
-  out of scope for the first cut** (`runtime-grants.md`, "Layer four").
-  `sts:AssumeRole` is the time-boxed grant done properly: STS enforces
-  the TTL, the role policy is the ceiling, and CloudTrail audits it
-  independently of ebman. `AwsClient::assume_role` already exists for
-  cross-account switching, so the plumbing is there. Buys nothing for a
-  setup running as admin, which is why it is not first. Target: a
-  release soon after.
+  Attribution is the sleeper benefit: writes land as the assumed role
+  rather than the operator's own identity, so "what did the agent do"
+  is answerable from CloudTrail alone.
 
 - [ ] **Two accepted equivalent mutants on the undo window.** Recorded
   so nobody re-investigates them. `remember_deleted`'s prune compares

@@ -747,3 +747,68 @@ const TOOL_NAMES: &[&str] = &[
     "dlq_delete",
     "dlq_purge",
 ];
+
+/// The server must exit when stdin closes.
+///
+/// It stopped doing so the moment the ask channel was added in 0.42.0:
+/// `Server::outbound` holds a clone of the writer's sender for the
+/// whole connection, so dropping the loop's local sender left one
+/// alive, the writer's receiver never closed, and `writer.await` never
+/// returned. A stdio MCP server that does not exit when its stdin
+/// closes is a process the client cannot reclaim — it accumulates one
+/// per reconnect.
+///
+/// Two existing subprocess tests caught it only by hanging, which is
+/// the worst way to find out: no failure message, and a suite that
+/// looks slow rather than broken. This one names the hazard and
+/// bounds the wait, so the next regression reports itself.
+///
+/// Deliberately a subprocess test. The leak is in the shutdown of a
+/// loop that owns stdin, so no lib test reaches it.
+#[test]
+fn mcp_serve_exits_when_stdin_closes() {
+    let home = std::env::temp_dir().join(format!("ebman-cli-exit-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&home);
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ebman"));
+    no_aws_credentials(&mut cmd);
+    let mut child = cmd
+        .args(["mcp", "serve", "--demo"])
+        .env("NO_COLOR", "1")
+        .env("HOME", &home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap_or_else(|e| panic!("could not spawn ebman: {e}"));
+
+    // A real handshake first: the ask channel is registered during
+    // startup, so an exit path tested without one proves nothing.
+    if let Some(mut si) = child.stdin.take() {
+        let _ = si.write_all(
+            br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"elicitation":{}},"clientInfo":{"name":"t","version":"0"}}}
+"#,
+        );
+        // Dropping `si` closes stdin, which is the signal under test.
+    }
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "serve must exit cleanly: {status:?}");
+                return;
+            }
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    panic!(
+                        "ebman mcp serve did not exit within 30s of stdin closing — \
+                         something is still holding the writer's channel open"
+                    );
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => panic!("could not wait on ebman: {e}"),
+        }
+    }
+}

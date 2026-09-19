@@ -6,7 +6,89 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **`tool_write_plan` split three ways** — 346 lines to 134, with the
+  verb-dependent resolution and the dead-letter arm as their own
+  functions. They had different reasons to change and read as one
+  function only because they were adjacent: a new verb now touches one
+  place, and the gates and token window another. The six locals
+  threaded through a 200-line match became a returned struct, so "which
+  arms set `dlq_url`?" stops being a question you answer by reading all
+  of them.
+
 ### Added
+
+- **One confirmation for a set of dead-lettered messages.**
+  `dlq_resend` and `dlq_delete` accept `message_ids` — up to 10 — and
+  cover them with a single plan and a single ask.
+
+  This is what keeps the ask affordable now that every write asks.
+  Without it a ten-message clean-up is ten dialogs, and a person
+  answering the same dialog ten times stops reading it: the asking
+  costs more safety than it buys, and the tool is worse than the
+  console it replaces.
+
+  The confirmation **enumerates** the messages, task and id per line,
+  rather than reporting a count. A count is something to agree with; a
+  list is something to read, and the cap exists so it stays readable.
+
+  - **Over the cap is refused, never truncated.** Dispatching a subset
+    while reporting the whole is the worst outcome available. The
+    refusal names the cap and points at `dlq_purge`.
+  - **Ambiguous requests are refused rather than guessed.** Both id
+    forms at once, an empty array, a duplicated id, a non-string
+    element — each fails with a reason. A silently deduplicated list
+    would show the operator a count that does not match what happens.
+  - **Failure is per message.** One id consumed or redriven between
+    plan and confirm fails as an item; the rest still go. The result
+    carries `succeeded`, `failed`, and a line per message *including
+    the failures* — an absent item reads as a truncated list. If
+    nothing succeeded, the whole call is an error, so an agent
+    branching on `isError` cannot read a no-op as a delete.
+
+  Each message is audited separately, naming its own id and task. A
+  single line for five deletes would record that five messages left an
+  environment and leave the log unable to say which — and for a delete
+  the log is the only place that answer still exists.
+
+  Design: `docs/design/runtime-grants.md`, step 5.
+
+- **Writes without the flag, on any client that can ask you.** If your
+  MCP client declared elicitation at handshake — it can put a question
+  to you mid-request — the write tools are available by default, and
+  every `confirm_action` shows you the action and waits for your
+  answer. No flag, no config edit, no client restart.
+
+  This is the bargain the TUI already makes. There you press `r`, read
+  the confirmation, press `y`. Here the agent proposes, you read the
+  same foreclosure line, and you accept or decline. The flag was never
+  what made a write safe — a person seeing it was — and once the client
+  can show you one, there is nothing left for the flag to carry.
+
+  Clients that cannot be asked are unchanged: `--allow-writes` still
+  gates them, because on such a connection nobody is reachable and the
+  flag is the only signal of intent there is. `doctor` reports which
+  case you are in.
+
+  Two boundaries, both deliberate:
+
+  - **Standing restrictions are untouched.** `safety.read_only`, pins,
+    freeze and `deny_write` refuse as before, and no ask appears
+    because there is nothing to approve. Config may only say no; there
+    is still no config key that grants.
+  - **An explicit narrow grant is not widened.**
+    `--allow-writes=dlq_delete` is an operator saying "only this", and
+    it stays that way on a client that can ask. Elicitation supplies a
+    default where none was set; it does not overrule one that was.
+
+  A decline is final — the plan is spent, and the instructions tell the
+  agent not to re-plan the same action. Declines and no-answers are
+  audited as `rule=not_approved`: a write a person stopped and a write
+  nobody attempted otherwise look identical afterwards, and the first
+  is the one worth knowing about.
+
+  Design: `docs/design/runtime-grants.md`, steps 3 and 4.
 
 - **The stale-binary notice says whose job the reconnect is.** It said
   "reconnect (in Claude Code: /mcp, Reconnect) to pick it up" — an

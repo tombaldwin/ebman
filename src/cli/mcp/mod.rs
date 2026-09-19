@@ -60,6 +60,33 @@ const TOOL_TIMEOUT_SECS: u64 = 30;
 /// to deny, never to allow.
 const ASK_TIMEOUT_SECS: u64 = 300;
 
+/// How long the ask itself waits — strictly less than the budget of
+/// the call containing it.
+///
+/// These must not be equal. `call_timeout_secs` bounds the whole
+/// `confirm_action` call at `ASK_TIMEOUT_SECS`, and that clock starts
+/// before the question is even sent, so an ask given the same budget
+/// loses the race with its own container. The visible effect is that
+/// an unanswered ask returns a generic tool timeout instead of the
+/// designed deny, and — worse — the `rule=not_approved` audit line
+/// never gets written, because the code that writes it is on the far
+/// side of a future that was dropped. "Deny on no-answer, audit the
+/// decline" is the design's rule; equal budgets silently deliver
+/// neither.
+const ASK_WAIT_SECS: u64 = ASK_TIMEOUT_SECS - 20;
+
+// The margin is the point, so it is checked at compile time rather
+// than left to whoever next edits one of the two numbers.
+const _: () = assert!(
+    ASK_WAIT_SECS < ASK_TIMEOUT_SECS,
+    "the ask must resolve inside the call that carries it, or the deny \
+     and its audit line are both lost to the outer timeout"
+);
+const _: () = assert!(
+    ASK_WAIT_SECS > TOOL_TIMEOUT_SECS,
+    "and it must still be a human-sized wait, not an AWS-sized one"
+);
+
 // The relation between the two budgets, enforced at COMPILE time.
 // Clippy caught these as constant assertions when they sat in a test,
 // and it was right: two consts cannot disagree at runtime, so a
@@ -71,6 +98,71 @@ const ASK_TIMEOUT_SECS: u64 = 300;
 // never reaches it.
 const _: () = assert!(ASK_TIMEOUT_SECS > TOOL_TIMEOUT_SECS * 5);
 const _: () = assert!(ASK_TIMEOUT_SECS <= 900);
+
+/// What an operator said when asked.
+///
+/// Three outcomes, not two. "They said no" and "nobody answered" are
+/// different facts and the audit line should not conflate them — but
+/// they have the same EFFECT, because the design's rule is that an
+/// unanswerable ask degrades to deny and never to allow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AskOutcome {
+    Approved,
+    Declined,
+    /// Asked, and nobody answered within the budget. Denies.
+    Unanswered,
+    /// No ask was possible — the client declared no elicitation, or
+    /// there is no channel. Distinct from `Unanswered` because it has
+    /// the opposite consequence: nothing was asked, so nothing was
+    /// refused, and the write falls back to whatever gated it before
+    /// (the `--allow-writes` opt-in). Conflating the two denied every
+    /// write on every client that cannot elicit, including the ones
+    /// an operator had explicitly granted with the flag.
+    NotAsked,
+}
+
+impl AskOutcome {
+    /// Does this outcome stop the write?
+    ///
+    /// `NotAsked` does not: no question was put, so there is no answer
+    /// to respect, and the surface it reached was gated by the flag.
+    pub(crate) fn refuses(self) -> bool {
+        matches!(self, AskOutcome::Declined | AskOutcome::Unanswered)
+    }
+
+    /// For the audit line and the agent-facing refusal.
+    pub(crate) fn reason(self) -> &'static str {
+        match self {
+            AskOutcome::Approved => "approved",
+            AskOutcome::Declined => "declined by the operator",
+            AskOutcome::Unanswered => "no answer within the ask window",
+            AskOutcome::NotAsked => "not asked",
+        }
+    }
+}
+
+/// Map a client's `elicitation/create` reply to an outcome.
+///
+/// Pure, because the interesting part is the mapping and the rest is
+/// plumbing. Per MCP, the reply carries an `action` of `accept`,
+/// `decline` or `cancel`. Anything else — a malformed reply, a missing
+/// action, an error response — is NOT an approval: this is the one
+/// place where being generous would convert a broken client into a
+/// standing yes.
+pub(crate) fn ask_outcome_from(reply: &Value) -> AskOutcome {
+    if reply.get("error").is_some() {
+        return AskOutcome::Declined;
+    }
+    match reply
+        .get("result")
+        .and_then(|r| r.get("action"))
+        .and_then(Value::as_str)
+    {
+        Some("accept") => AskOutcome::Approved,
+        Some("decline") | Some("cancel") => AskOutcome::Declined,
+        _ => AskOutcome::Declined,
+    }
+}
 
 /// How long this tool call may take.
 ///
@@ -216,7 +308,14 @@ impl WriteScope {
     /// version line above exists to prevent, and it has the same cost
     /// — an agent reporting a capability gap that is really a config
     /// choice, instead of asking the operator to widen the grant.
-    fn agent_summary(&self, standing_refusal: Option<&str>) -> String {
+    /// `can_ask` is whether this connection's client declared
+    /// elicitation. It changes what a confirm *means* — with the ask,
+    /// a human sees the action and may say no — and an agent that does
+    /// not know that reads a decline as a bug and retries it. This is
+    /// authored text for exactly that reason: the capability is
+    /// negotiated in protocol metadata the client sees, which never
+    /// reaches the agent reading these instructions.
+    fn agent_summary(&self, standing_refusal: Option<&str>, can_ask: bool) -> String {
         // A standing refusal OUTRANKS the scope, so it is said first
         // and the scope is not said at all. Describing the grant on a
         // server that refuses every write told the agent "Writes are
@@ -240,11 +339,18 @@ impl WriteScope {
                  client that edit is refused as self-modification, so trying it \
                  costs a denial and teaches nothing."
                 .to_string(),
-            WriteScope::All => "Writes are ENABLED for every verb, via the two-phase \
-                 plan-then-confirm protocol."
-                .to_string(),
-            WriteScope::Only(v) => format!(
-                "Writes are NARROWLY granted: {} only, via the two-phase plan-then-confirm \
+            WriteScope::All => {
+                let mut t = "Writes are ENABLED for every verb, via the two-phase \
+                     plan-then-confirm protocol."
+                    .to_string();
+                if can_ask {
+                    t.push_str(ASK_NOTE);
+                }
+                t
+            }
+            WriteScope::Only(v) => {
+                format!(
+                    "Writes are NARROWLY granted: {} only, via the two-phase plan-then-confirm \
                  protocol. Any other write verb is absent from this list because it was NOT \
                  GRANTED, not because ebman lacks it — say so and ask the operator to widen \
                  the grant rather than reporting it as unsupported. Asking is your part; \
@@ -252,11 +358,22 @@ impl WriteScope {
                  missing here, the likeliest cause is a client that reconnected without \
                  re-reading its config — ask them to restart the client before either of you \
                  concludes it is broken.",
-                v.join(", ")
-            ),
+                    v.join(", ")
+                ) + if can_ask { ASK_NOTE } else { "" }
+            }
         }
     }
 }
+
+/// Appended to a granted-writes summary when the operator can be asked.
+///
+/// Kept whole rather than inlined twice: the two grant arms said the
+/// same thing about confirmation and drifted apart once already.
+const ASK_NOTE: &str = "\n\nEach confirmation is put to the OPERATOR, who sees the \
+     action and answers it. Expect `confirm_action` to take as long as a person takes. \
+     A decline is a final answer from a human — not an error, not a missing permission: \
+     do not re-plan the same action, do not ask for the grant to be widened, and do not \
+     report it as a fault. Say the operator declined, and stop.";
 
 /// The write verbs, for the docs-drift guard in `app::tests`.
 ///
@@ -466,6 +583,23 @@ pub(crate) struct Server {
     /// Two-phase write state: the single pending-plan slot (spec:
     /// writes are serialized server-wide).
     writes: tokio::sync::Mutex<writes::WriteState>,
+    /// Frames this server originates, for the writer task to drain.
+    ///
+    /// Until elicitation, every frame ebman sent was a RESPONSE to a
+    /// request the client made, so the response could simply be
+    /// returned up the call stack. An ask is the server originating a
+    /// REQUEST, which needs a way out that is not a return value.
+    outbound: std::sync::Mutex<Option<tokio::sync::mpsc::Sender<String>>>,
+    /// Asks awaiting an answer, by request id.
+    ///
+    /// The frame loop treats every inbound frame as a request. A reply
+    /// to one of ours is a frame with an id we issued and no `method`,
+    /// which that loop would have answered `-32601`. This is how it
+    /// tells them apart.
+    pending_asks:
+        std::sync::Mutex<std::collections::HashMap<i64, tokio::sync::oneshot::Sender<Value>>>,
+    next_ask_id: std::sync::atomic::AtomicI64,
+
     /// Messages this server destroyed and can still put back.
     ///
     /// In memory, never on disk: a dead-lettered body can carry
@@ -545,6 +679,12 @@ impl Server {
             write_scope: scope,
             safety_cfg,
             writes: tokio::sync::Mutex::new(writes::WriteState::default()),
+            outbound: std::sync::Mutex::new(None),
+            pending_asks: std::sync::Mutex::new(std::collections::HashMap::new()),
+            // Well clear of any id a client is likely to use for its
+            // own requests; ids only need to be unique per direction,
+            // but a collision would be maddening to diagnose.
+            next_ask_id: std::sync::atomic::AtomicI64::new(1_000_000),
             deleted: tokio::sync::Mutex::new(Vec::new()),
             dispatching: std::sync::atomic::AtomicBool::new(false),
             client_name: std::sync::Mutex::new("unknown".to_string()),
@@ -577,6 +717,125 @@ impl Server {
         let mut s = Self::with_config(false, false, scope, safety_cfg);
         s.injected_client = Some(std::sync::Arc::new(client));
         s
+    }
+
+    /// Put a question in front of the operator and wait for the answer.
+    ///
+    /// This is the gate. Until it existed the two-phase protocol was
+    /// honour-system: an agent could plan and confirm without ever
+    /// surfacing the plan, and nothing made it stop.
+    ///
+    /// Never degrades to approved. Distinguishes two non-answers that
+    /// have opposite consequences: `NotAsked` when there was nobody to
+    /// ask (no client capability, no channel) and the write falls back
+    /// to whatever gated it before, versus `Unanswered` when the
+    /// question went out and nobody replied in time — an operator who
+    /// has walked away must produce a deny.
+    /// The write surface for *this connection*.
+    ///
+    /// A client that can be asked gets parity with the TUI by default:
+    /// the operator sees and answers every confirmation, so the flag
+    /// is not carrying the safety — the human is. This is the whole
+    /// usability claim of the design. Without it an operator has to
+    /// stop, edit a config file and restart their client the first
+    /// time they want a write, which is where people give up.
+    ///
+    /// An *explicitly narrowed* grant is still honoured. `--allow-writes=
+    /// restart` is an operator saying "only this", and widening it back
+    /// to everything because the client happens to support a dialog
+    /// would override a restriction they typed on purpose. `None` is
+    /// different in kind: it is the operator having said nothing at
+    /// all, which is what the parity default is for.
+    pub(crate) fn effective_scope(&self) -> WriteScope {
+        if matches!(self.write_scope, WriteScope::None)
+            && self
+                .client_supports_elicitation
+                .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return WriteScope::All;
+        }
+        self.write_scope.clone()
+    }
+
+    pub(crate) async fn ask_operator(&self, summary: &str) -> AskOutcome {
+        if !self
+            .client_supports_elicitation
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return AskOutcome::NotAsked;
+        }
+        let Some(tx) = self.outbound.lock().ok().and_then(|g| g.clone()) else {
+            return AskOutcome::NotAsked;
+        };
+
+        let id = self
+            .next_ask_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        if let Ok(mut map) = self.pending_asks.lock() {
+            map.insert(id, reply_tx);
+        }
+
+        let frame = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "elicitation/create",
+            "params": {
+                "message": summary,
+                // A confirmation, so the answer lives in `action` and
+                // the schema carries nothing. An empty object rather
+                // than an omitted field: the field is required, and a
+                // client that validates it should get something valid.
+                "requestedSchema": {"type": "object", "properties": {}}
+            }
+        });
+        if tx.send(frame.to_string()).await.is_err() {
+            self.forget_ask(id);
+            return AskOutcome::NotAsked;
+        }
+
+        match tokio::time::timeout(std::time::Duration::from_secs(ASK_WAIT_SECS), reply_rx).await {
+            Ok(Ok(reply)) => ask_outcome_from(&reply),
+            // Sender dropped, or the budget expired. Both are "no
+            // answer", and both deny.
+            _ => {
+                self.forget_ask(id);
+                AskOutcome::Unanswered
+            }
+        }
+    }
+
+    fn forget_ask(&self, id: i64) {
+        if let Ok(mut map) = self.pending_asks.lock() {
+            map.remove(&id);
+        }
+    }
+
+    /// Route a frame that is a reply to one of OUR requests.
+    ///
+    /// Returns true when it was consumed. The frame loop must call
+    /// this before dispatching, because a reply has an id and no
+    /// method, which that loop would otherwise answer `-32601` while
+    /// the ask sat waiting out its budget.
+    pub(crate) fn take_ask_reply(&self, frame: &Value) -> bool {
+        if frame.get("method").is_some() {
+            return false;
+        }
+        let Some(id) = frame.get("id").and_then(Value::as_i64) else {
+            return false;
+        };
+        let waiting = self
+            .pending_asks
+            .lock()
+            .ok()
+            .and_then(|mut m| m.remove(&id));
+        match waiting {
+            Some(tx) => {
+                let _ = tx.send(frame.clone());
+                true
+            }
+            None => false,
+        }
     }
 
     /// One JSON-RPC frame in, at most one out (`None` for
@@ -628,6 +887,15 @@ impl Server {
                     .is_some_and(Value::is_object);
                 self.client_supports_elicitation
                     .store(elicits, std::sync::atomic::Ordering::Relaxed);
+                // A connection that can be asked can write even with no
+                // flag, so the audit wiring it needs cannot be decided
+                // from argv alone. Deferred to here rather than made
+                // unconditional at startup: a genuinely read-only
+                // server is documented not to touch the config disk,
+                // and `should_init_audit` exists to keep that true.
+                if elicits && !matches!(self.backend, Backend::Demo) {
+                    crate::audit::init_from_config_disk();
+                }
                 tracing::info!(
                     target: "ebman::mcp",
                     client = %self.client_name.lock().map(|c| c.clone()).unwrap_or_default(),
@@ -677,7 +945,7 @@ impl Server {
                             "ebman ", env!("CARGO_PKG_VERSION"),
                             " — a fleet console for AWS Elastic Beanstalk. This surface exposes reads, ",
                             "plus two-phase writes when the server was started with --allow-writes.\n\n"),
-                            self.write_scope.agent_summary(
+                            self.effective_scope().agent_summary(
                                 // Parse errors FIRST, matching
                                 // `write_gate::decide`'s precedence.
                                 // Reversed, an operator with both set
@@ -696,6 +964,11 @@ impl Server {
                                 } else {
                                     None
                                 },
+                                // Recorded from this same `initialize`
+                                // request a few lines above, so it is
+                                // already correct for this connection.
+                                self.client_supports_elicitation
+                                    .load(std::sync::atomic::Ordering::Relaxed),
                             ),
                             concat!(
                             // NOT redundant with `serverInfo.version`.
@@ -758,7 +1031,7 @@ impl Server {
             "tools/list" => Some(json!({
                 "jsonrpc": "2.0",
                 "id": id,
-                "result": {"tools": tool_table(&self.write_scope, self.safety_cfg.mcp_peek_bodies)}
+                "result": {"tools": tool_table(&self.effective_scope(), self.safety_cfg.mcp_peek_bodies)}
             })),
             "tools/call" => {
                 let params = req.get("params").cloned().unwrap_or_else(|| json!({}));
@@ -771,9 +1044,10 @@ impl Server {
                     .get("arguments")
                     .cloned()
                     .unwrap_or_else(|| json!({}));
-                let advertised = tool_table(&self.write_scope, self.safety_cfg.mcp_peek_bodies)
-                    .as_array()
-                    .is_some_and(|t| t.iter().any(|d| d["name"] == name.as_str()));
+                let advertised =
+                    tool_table(&self.effective_scope(), self.safety_cfg.mcp_peek_bodies)
+                        .as_array()
+                        .is_some_and(|t| t.iter().any(|d| d["name"] == name.as_str()));
                 // A real verb this server was not granted falls through
                 // to the scope gate rather than being answered here, so
                 // it comes back as a refusal naming the flag, and gets
@@ -875,6 +1149,12 @@ pub async fn run(args: &[String]) -> Result<()> {
     // apply backpressure (senders park at `send().await`), not grow
     // an unbounded queue of completed frames.
     let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<String>(256);
+    // The server originates frames now (an ask is a server→client
+    // request), so it needs the writer's channel. Everything it sent
+    // before was a response returned up the call stack.
+    if let Ok(mut slot) = server.outbound.lock() {
+        *slot = Some(out_tx.clone());
+    }
     let writer = tokio::spawn(async move {
         use tokio::io::AsyncWriteExt;
         let mut stdout = tokio::io::stdout();
@@ -962,6 +1242,13 @@ pub async fn run(args: &[String]) -> Result<()> {
                 continue;
             }
         };
+        // A reply to an ask WE sent: an id we issued, no method. The
+        // dispatch below would answer it `-32601` while the ask sat
+        // waiting out its budget and then denied a write the operator
+        // had just approved.
+        if server.take_ask_reply(&req) {
+            continue;
+        }
         if let Some(resp) = invalid_request_response(&req) {
             let _ = out_tx.send(resp).await;
             continue;
@@ -990,9 +1277,23 @@ pub async fn run(args: &[String]) -> Result<()> {
     // stdin closed: drop the sender. The writer keeps draining until
     // in-flight tool tasks (which hold out_tx clones) finish — bounded
     // by the per-call timeout — then exits.
+    //
+    // The ask channel holds a clone too, and it is not task-scoped:
+    // it lives in the server for the whole connection, so dropping
+    // only the local sender leaves one alive forever, the writer's
+    // receiver never closes, and `writer.await` below never returns.
+    // The process then hangs after stdin closes instead of exiting —
+    // which two subprocess tests caught and no unit test could, since
+    // the leak is in the shutdown of a loop they never run.
+    if let Ok(mut slot) = server.outbound.lock() {
+        *slot = None;
+    }
     drop(out_tx);
     let _ = writer.await;
-    if write_scope.any() {
+    // `effective_scope`, not `write_scope`: an elicit-capable client
+    // writes with no flag, and draining on the flag alone would drop
+    // the webhooks those writes queued.
+    if server.effective_scope().any() {
         crate::audit::drain_webhooks(std::time::Duration::from_secs(12)).await;
     }
     Ok(())
@@ -2700,9 +3001,19 @@ mod tests {
                 .await
                 .expect_err("m-1 is gone by confirm time — this must refuse");
             assert!(
-                err.contains("no longer in the dead-letter queue"),
-                "it must say the planned message is gone, not delete m-2 \
+                err.contains("not among the messages returned when the queue was re-read"),
+                "it must say the planned message was not found, not delete m-2 \
                  quietly: {err}"
+            );
+            // Scoped to what was observed. This said "is no longer in
+            // the dead-letter queue", which is a firmer claim than a
+            // receive can support: SQS returns a sample, so absence
+            // from one read is evidence, not proof. Same rule as
+            // `empty_queue_reason` and the `peeked` flag — say what was
+            // looked at, not what is the case.
+            assert!(
+                !err.contains("dispatched\":true"),
+                "a batch where nothing succeeded must not report a dispatch: {err}"
             );
             assert!(
                 !err.contains("m-2"),
@@ -3341,7 +3652,7 @@ mod tests {
     /// "go and enable them".
     #[test]
     fn the_instructions_say_a_grant_is_not_the_agents_to_make() {
-        let read_only = WriteScope::None.agent_summary(None);
+        let read_only = WriteScope::None.agent_summary(None, false);
         assert!(
             read_only.contains("Do not edit the MCP config yourself"),
             "a read-only server must say whose job the grant is: {read_only}"
@@ -3353,7 +3664,7 @@ mod tests {
 
         // A narrow grant needs the other half: the verb it is missing
         // may have been granted already and not picked up.
-        let narrow = WriteScope::Only(vec!["dlq_delete".into()]).agent_summary(None);
+        let narrow = WriteScope::Only(vec!["dlq_delete".into()]).agent_summary(None, false);
         assert!(
             narrow.contains("restart the client"),
             "a client that reconnects without re-reading its config shows the \
@@ -3409,7 +3720,7 @@ mod tests {
         let b = Server::with_config(true, false, WriteScope::All, broken);
         assert!(
             b.write_scope
-                .agent_summary(Some("the safety config could not be parsed."))
+                .agent_summary(Some("the safety config could not be parsed."), false)
                 .contains("REFUSED"),
             "a fail-closed parse refuses every write and the block must say so"
         );
@@ -3422,7 +3733,9 @@ mod tests {
             crate::config::Config::default(),
         );
         assert!(
-            open.write_scope.agent_summary(None).contains("ENABLED"),
+            open.write_scope
+                .agent_summary(None, false)
+                .contains("ENABLED"),
             "without a standing refusal the grant is the right thing to describe"
         );
     }
@@ -3503,6 +3816,609 @@ mod tests {
             prod.contains("let budget = call_timeout_secs("),
             "the budget is no longer computed in this file — this guard has lost \
              its subject rather than being satisfied"
+        );
+    }
+
+    /// A reply that is not a clear "accept" is not an approval.
+    ///
+    /// This is the one place where being generous to a malformed
+    /// client converts a broken reply into a standing yes. Every
+    /// shape that is not exactly `accept` denies.
+    #[test]
+    fn only_an_explicit_accept_approves() {
+        let accept = json!({"jsonrpc":"2.0","id":1,"result":{"action":"accept"}});
+        assert_eq!(ask_outcome_from(&accept), AskOutcome::Approved);
+
+        for reply in [
+            json!({"jsonrpc":"2.0","id":1,"result":{"action":"decline"}}),
+            json!({"jsonrpc":"2.0","id":1,"result":{"action":"cancel"}}),
+            // Malformed, missing, wrong type, an error response, a
+            // result that is not an object — none of these is consent.
+            json!({"jsonrpc":"2.0","id":1,"result":{"action":"ACCEPT"}}),
+            json!({"jsonrpc":"2.0","id":1,"result":{"action":true}}),
+            json!({"jsonrpc":"2.0","id":1,"result":{}}),
+            json!({"jsonrpc":"2.0","id":1,"result":"accept"}),
+            json!({"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"no"}}),
+            json!({"jsonrpc":"2.0","id":1}),
+        ] {
+            assert_eq!(
+                ask_outcome_from(&reply),
+                AskOutcome::Declined,
+                "not an explicit accept, so not an approval: {reply}"
+            );
+        }
+    }
+
+    /// Not-asked and unanswered have opposite consequences.
+    #[test]
+    fn not_asked_is_not_the_same_as_unanswered() {
+        assert!(
+            AskOutcome::Unanswered.refuses(),
+            "an ask nobody answered denies"
+        );
+        assert!(AskOutcome::Declined.refuses());
+        assert!(
+            !AskOutcome::NotAsked.refuses(),
+            "no question was put, so there is no answer to respect — conflating \
+             these denied every write on every client that cannot elicit, including \
+             ones the operator had granted with the flag"
+        );
+        assert_ne!(
+            AskOutcome::NotAsked,
+            AskOutcome::Approved,
+            "nor is it an approval"
+        );
+    }
+
+    /// A client that cannot elicit is not asked, and is not refused.
+    #[tokio::test]
+    async fn a_client_without_elicitation_is_not_asked() {
+        let s = Server::with_scope(true, false, WriteScope::All);
+        assert_eq!(
+            s.ask_operator("delete something").await,
+            AskOutcome::NotAsked
+        );
+    }
+
+    /// An ask with nobody listening denies rather than hanging.
+    #[tokio::test(start_paused = true)]
+    async fn an_unanswered_ask_denies_when_the_budget_expires() {
+        let s = Server::with_scope(true, false, WriteScope::All);
+        s.client_supports_elicitation
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(4);
+        if let Ok(mut slot) = s.outbound.lock() {
+            *slot = Some(tx);
+        }
+
+        let asked = tokio::spawn(async move { s.ask_operator("delete something").await });
+        // The question goes out...
+        let frame: Value = serde_json::from_str(&rx.recv().await.expect("a frame")).expect("json");
+        assert_eq!(frame["method"], json!("elicitation/create"), "{frame}");
+        assert!(
+            frame["params"]["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("delete something")),
+            "the question must carry what is being asked: {frame}"
+        );
+
+        // ...and nobody ever replies.
+        tokio::time::advance(std::time::Duration::from_secs(ASK_TIMEOUT_SECS + 1)).await;
+        // Past ASK_WAIT_SECS, which is the one that fires.
+        let outcome = asked.await.expect("join");
+        assert_eq!(
+            outcome,
+            AskOutcome::Unanswered,
+            "an operator who walked away must produce a deny, not a call that \
+             never returns"
+        );
+    }
+
+    /// The answer reaches the waiting ask.
+    ///
+    /// A reply has an id and no method, which the frame loop would
+    /// otherwise answer `-32601` while the ask sat waiting out its
+    /// budget — denying a write the operator had just approved.
+    #[tokio::test]
+    async fn an_answer_is_routed_back_to_the_ask_that_is_waiting() {
+        let s = std::sync::Arc::new(Server::with_scope(true, false, WriteScope::All));
+        s.client_supports_elicitation
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(4);
+        if let Ok(mut slot) = s.outbound.lock() {
+            *slot = Some(tx);
+        }
+
+        let asking = {
+            let s = std::sync::Arc::clone(&s);
+            tokio::spawn(async move { s.ask_operator("terminate prod").await })
+        };
+        let frame: Value = serde_json::from_str(&rx.recv().await.expect("frame")).expect("json");
+        let id = frame["id"].clone();
+
+        let reply = json!({"jsonrpc": "2.0", "id": id, "result": {"action": "accept"}});
+        assert!(
+            s.take_ask_reply(&reply),
+            "a frame carrying an id we issued, with no method, is ours"
+        );
+        assert_eq!(asking.await.expect("join"), AskOutcome::Approved);
+
+        // Someone else's frame is not ours, and must fall through to
+        // the normal dispatch rather than being swallowed.
+        assert!(!s.take_ask_reply(&json!({"jsonrpc":"2.0","id":7,"result":{}})));
+        assert!(!s.take_ask_reply(&json!({"jsonrpc":"2.0","id":1,"method":"ping"})));
+    }
+
+    /// A demo server whose client can elicit, with a stand-in for the
+    /// frame loop answering every ask with `action` and recording what
+    /// it was asked.
+    fn demo_answering(
+        action: &'static str,
+    ) -> (
+        std::sync::Arc<Server>,
+        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
+        let s = std::sync::Arc::new(demo_writes_server());
+        s.client_supports_elicitation
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+        if let Ok(mut slot) = s.outbound.lock() {
+            *slot = Some(tx);
+        }
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = std::sync::Arc::clone(&asked);
+        let srv = std::sync::Arc::clone(&s);
+        tokio::spawn(async move {
+            while let Some(line) = rx.recv().await {
+                let frame: Value = serde_json::from_str(&line).expect("json");
+                if let Some(m) = frame["params"]["message"].as_str() {
+                    seen.lock().expect("lock").push(m.to_string());
+                }
+                // Exactly what the real frame loop does with a reply.
+                let reply = json!({
+                    "jsonrpc": "2.0",
+                    "id": frame["id"].clone(),
+                    "result": {"action": action},
+                });
+                assert!(srv.take_ask_reply(&reply), "the loop must route it back");
+            }
+        });
+        (s, asked)
+    }
+
+    /// The gate is *wired*, not merely present.
+    ///
+    /// `ask_operator` having its own passing tests says nothing about
+    /// whether `confirm_action` consults it — four separate defects
+    /// this cycle were a tested function nothing called. So: decline,
+    /// and assert the dispatch did not happen.
+    #[tokio::test]
+    async fn a_declined_ask_stops_the_write() {
+        let (s, asked) = demo_answering("decline");
+        let env = demo_fixture::envs()[0].name.clone();
+        let (err, plan) = call(&s, "restart", json!({"env": &env})).await;
+        assert!(!err, "planning is not gated: {plan}");
+        let token = plan["confirm_token"].as_str().expect("token").to_string();
+
+        let (err, out) = call(&s, "confirm_action", json!({"confirm_token": token})).await;
+        assert!(err, "a declined ask must refuse the write: {out}");
+        let text = out.to_string();
+        assert!(
+            text.contains("declined"),
+            "the refusal must say the operator declined, not blame a missing \
+             flag or an expired token: {text}"
+        );
+        assert!(
+            !text.contains("--allow-writes"),
+            "and must not send the agent off to widen permissions it already \
+             has — the answer was no: {text}"
+        );
+
+        let asked = asked.lock().expect("lock");
+        assert_eq!(asked.len(), 1, "exactly one ask: {asked:?}");
+        assert!(
+            asked[0].contains(&env) && asked[0].to_lowercase().contains("restart"),
+            "the operator must be told which verb on which environment, or the \
+             question is unanswerable: {:?}",
+            asked[0]
+        );
+    }
+
+    /// And an approval lets it through — otherwise "it refuses" is
+    /// satisfied by a gate that refuses everything.
+    #[tokio::test]
+    async fn an_approved_ask_lets_the_write_through() {
+        let (s, asked) = demo_answering("accept");
+        let env = demo_fixture::envs()[0].name.clone();
+        let (_, plan) = call(&s, "restart", json!({"env": env})).await;
+        let token = plan["confirm_token"].as_str().expect("token").to_string();
+
+        let (err, out) = call(&s, "confirm_action", json!({"confirm_token": token})).await;
+        assert!(!err, "an approved write must dispatch: {out}");
+        assert_eq!(asked.lock().expect("lock").len(), 1, "and must still ask");
+    }
+
+    /// The ask happens once per dispatch, not once per plan.
+    ///
+    /// A spent token must not re-ask: an agent replaying a used token
+    /// would otherwise put the same question to the operator again,
+    /// and repeated identical prompts are how consent gets clicked
+    /// through.
+    #[tokio::test]
+    async fn a_spent_token_does_not_ask_again() {
+        let (s, asked) = demo_answering("accept");
+        let env = demo_fixture::envs()[0].name.clone();
+        let (_, plan) = call(&s, "restart", json!({"env": env})).await;
+        let token = plan["confirm_token"].as_str().expect("token").to_string();
+
+        assert!(
+            !call(&s, "confirm_action", json!({"confirm_token": &token}))
+                .await
+                .0
+        );
+        assert!(
+            call(&s, "confirm_action", json!({"confirm_token": &token}))
+                .await
+                .0,
+            "the token is single-use"
+        );
+        assert_eq!(
+            asked.lock().expect("lock").len(),
+            1,
+            "the replay must be rejected before anyone is asked"
+        );
+    }
+
+    /// The frame loop must claim an ask reply *before* it dispatches.
+    ///
+    /// The loop reads stdin and can't be called here, so this pins the
+    /// two halves separately: that interception is load-bearing
+    /// (below), and that the source has it in the right place
+    /// (`take_ask_reply_precedes_the_dispatch`). Without it a reply is
+    /// answered `-32601`, the ask waits out its full budget, and a
+    /// write the operator *approved* is denied — indistinguishable
+    /// from a timeout, so it would be diagnosed as a slow operator
+    /// rather than a routing bug.
+    ///
+    /// Note it is `handle_request`, not `invalid_request_response`,
+    /// that does the damage: that one only rejects non-objects, so a
+    /// reply sails straight past it. Written the other way round first,
+    /// and the test failed — the guard was aimed at a function that
+    /// would never have fired.
+    #[tokio::test]
+    async fn an_unclaimed_reply_would_be_answered_as_a_bad_method() {
+        let s = demo_writes_server();
+        let reply = json!({"jsonrpc": "2.0", "id": 1_000_000, "result": {"action": "accept"}});
+        assert!(
+            invalid_request_response(&reply).is_none(),
+            "the validity check passes it through — it only rejects non-objects"
+        );
+        let resp = s.handle_request(&reply).await.expect("a response");
+        assert_eq!(
+            resp["error"]["code"], -32601,
+            "so an unclaimed reply gets method-not-found, and the approval is \
+             lost: {resp}"
+        );
+    }
+
+    /// ...and that the source actually intercepts before dispatching.
+    #[test]
+    fn take_ask_reply_precedes_the_dispatch() {
+        let src = include_str!("mod.rs");
+        let body = crate::app::tests::scan::production_half(src);
+        let claim = body
+            .find("if server.take_ask_reply(&req)")
+            .expect("the frame loop must route ask replies");
+        let dispatch = body
+            .find("server.handle_request(&req).await")
+            .expect("the frame loop must dispatch requests");
+        assert!(
+            claim < dispatch,
+            "take_ask_reply must come first: a reply has an id and no method, \
+             so the dispatch below answers it -32601 and the ask denies a write \
+             the operator had approved"
+        );
+    }
+
+    /// The agent is told the ask exists — and only when it does.
+    ///
+    /// Elicitation is negotiated in protocol metadata the *client*
+    /// consumes; none of it reaches the agent reading `instructions`.
+    /// So an agent on an ask-capable connection, not told, reads the
+    /// operator's decline as a permission error and retries — which is
+    /// the one response a decline must not produce.
+    #[test]
+    fn the_summary_says_whether_confirmations_are_put_to_a_person() {
+        for scope in [
+            WriteScope::All,
+            WriteScope::Only(vec!["restart".into(), "dlq_delete".into()]),
+        ] {
+            let asked = scope.agent_summary(None, true);
+            let silent = scope.agent_summary(None, false);
+            assert!(
+                asked.contains("OPERATOR"),
+                "a granted scope on an ask-capable client must say the confirmation \
+                 reaches a person: {asked}"
+            );
+            assert!(
+                asked.contains("decline"),
+                "and must say what a decline means, or it reads as an error: {asked}"
+            );
+            assert!(
+                !silent.contains("OPERATOR"),
+                "but must NOT promise an ask that cannot happen — on a client that \
+                 can't elicit, nobody is reachable and the agent would wait for a \
+                 human who is never shown anything: {silent}"
+            );
+        }
+    }
+
+    /// A standing refusal still outranks the ask note.
+    ///
+    /// Otherwise a server that refuses every write tells the agent to
+    /// expect the operator to be asked — inviting it to plan a write
+    /// and wait on a question that will never be put.
+    #[test]
+    fn a_standing_refusal_outranks_the_ask_note() {
+        let t = WriteScope::All.agent_summary(Some("safety.read_only is set."), true);
+        assert!(t.contains("REFUSED"), "{t}");
+        assert!(
+            !t.contains("OPERATOR"),
+            "nothing will be put to anyone on a server that refuses every write: {t}"
+        );
+    }
+
+    /// Parity by default: a client that can be asked gets the write
+    /// surface with no flag at all.
+    ///
+    /// This is the design's whole usability claim. Without it the
+    /// operator must stop, edit a config file and restart their client
+    /// the first time they want a write — which is the point at which
+    /// people stop bothering.
+    #[tokio::test]
+    async fn an_ask_capable_client_gets_writes_without_a_flag() {
+        let s = Server::with_scope(true, false, WriteScope::None);
+        assert_eq!(
+            s.effective_scope(),
+            WriteScope::None,
+            "no flag and no ask is still read-only"
+        );
+        s.client_supports_elicitation
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            s.effective_scope(),
+            WriteScope::All,
+            "but a client that can be asked gets parity with the TUI"
+        );
+    }
+
+    /// An explicitly narrowed grant is NOT widened by elicitation.
+    ///
+    /// `--allow-writes=dlq_delete` is an operator saying "only this".
+    /// Opening it to every verb because the client supports a dialog
+    /// would override a restriction they typed deliberately — the one
+    /// direction this design must never move on its own.
+    #[tokio::test]
+    async fn elicitation_does_not_widen_a_narrowed_grant() {
+        let narrow = WriteScope::Only(vec!["dlq_delete".into()]);
+        let s = Server::with_scope(true, false, narrow.clone());
+        s.client_supports_elicitation
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            s.effective_scope(),
+            narrow,
+            "the operator said only dlq_delete, and a dialog capability is not \
+             their permission to widen it"
+        );
+        assert!(!s.effective_scope().allows("terminate"));
+    }
+
+    /// The advertised surface follows the connection, not argv.
+    ///
+    /// `tools/list` is where an agent learns what it may do. If the
+    /// scope opened but the table did not, the write tools would exist
+    /// and be invisible — and an agent that cannot see a tool will
+    /// tell the operator ebman does not support it.
+    #[tokio::test]
+    async fn the_advertised_tools_follow_the_connection() {
+        let s = demo_server(); // no flag
+        let names = |s: &Server| -> Vec<String> {
+            tool_table(&s.effective_scope(), true)
+                .as_array()
+                .expect("array")
+                .iter()
+                .filter_map(|t| t["name"].as_str().map(str::to_string))
+                .collect()
+        };
+        let before = names(&s);
+        assert!(
+            !before.iter().any(|n| n == "confirm_action"),
+            "read-only: {before:?}"
+        );
+        s.client_supports_elicitation
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let after = names(&s);
+        assert!(
+            after.iter().any(|n| n == "confirm_action"),
+            "an ask-capable client must be able to SEE the write surface, not \
+             just be permitted it: {after:?}"
+        );
+        assert!(
+            after.len() > before.len(),
+            "and the read tools must not have been swapped out for them"
+        );
+    }
+
+    /// Doctor reports the surface this connection actually has.
+    ///
+    /// It is the tool an agent runs when something is missing, so a
+    /// doctor still reading argv would say "read-only" on a connection
+    /// that had just been granted everything.
+    #[tokio::test]
+    async fn doctor_reports_the_effective_surface() {
+        let s = demo_server();
+        // Through the tool interface, not the private method: that is
+        // how an agent reaches it, and it pins the wiring too.
+        async fn doctor(s: &Server) -> String {
+            call(s, "doctor", json!({})).await.1.to_string()
+        }
+        assert!(doctor(&s).await.contains("read-only"));
+        s.client_supports_elicitation
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let d = doctor(&s).await;
+        assert!(
+            !d.contains("read-only"),
+            "doctor must not report a restriction this connection does not have: {d}"
+        );
+        assert!(d.contains("every verb"), "{d}");
+    }
+
+    /// The whole feature, end to end: no flag, no restart, one human
+    /// answer, and the write goes.
+    ///
+    /// Each piece is tested above in isolation, and every one of them
+    /// can pass while the path as a whole does not — which is the
+    /// failure this cycle kept producing. So this drives the actual
+    /// tools an agent calls, on a server started with no write flag.
+    #[tokio::test]
+    async fn no_flag_one_answer_and_the_write_dispatches() {
+        let s = std::sync::Arc::new(demo_server());
+        s.client_supports_elicitation
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+        if let Ok(mut slot) = s.outbound.lock() {
+            *slot = Some(tx);
+        }
+        let srv = std::sync::Arc::clone(&s);
+        tokio::spawn(async move {
+            while let Some(line) = rx.recv().await {
+                let f: Value = serde_json::from_str(&line).expect("json");
+                let reply = json!({"jsonrpc":"2.0","id":f["id"].clone(),
+                                   "result":{"action":"accept"}});
+                assert!(srv.take_ask_reply(&reply));
+            }
+        });
+
+        let env = demo_fixture::envs()[0].name.clone();
+        let (err, plan) = call(&s, "restart", json!({"env": env})).await;
+        assert!(
+            !err,
+            "a write tool must be callable with no flag when the operator can be \
+             asked — this is the restart-your-client problem the design exists to \
+             remove: {plan}"
+        );
+        let token = plan["confirm_token"].as_str().expect("a token").to_string();
+        let (err, out) = call(&s, "confirm_action", json!({"confirm_token": token})).await;
+        assert!(!err, "and it must dispatch once approved: {out}");
+    }
+
+    /// The ask must lose to nothing, and beat its own container.
+    ///
+    /// Found in self-review: both were `ASK_TIMEOUT_SECS`, so the outer
+    /// call bound — whose clock starts earlier — would fire first, and
+    /// the deny plus its `rule=not_approved` audit line would be lost
+    /// with the dropped future. The suite was green: every ask test
+    /// either answers or waits past both.
+    ///
+    /// The constants are compared at compile time above. What this adds
+    /// is the WIRING: that `call_timeout_secs` actually hands
+    /// `confirm_action` the larger budget on an ask-capable connection.
+    /// A margin between two constants is worth nothing if the call that
+    /// carries the ask is still bounded at 30 seconds.
+    #[test]
+    fn the_ask_resolves_inside_the_call_that_carries_it() {
+        assert!(
+            ASK_WAIT_SECS < call_timeout_secs(writes::CONFIRM_TOOL, true),
+            "an ask given its container's whole budget never returns its own \
+             answer — the outer timeout wins and nothing is audited"
+        );
+    }
+
+    /// Two messages, ONE confirmation.
+    ///
+    /// The constraint this feature exists to satisfy, in the
+    /// maintainer's words: *"if I ask to delete certain messages 1
+    /// confirmation is fine, more than that and it's easier to do it
+    /// myself"*. Every write asks, so without batching a ten-message
+    /// clean-up is ten dialogs and the tool is worse than the console.
+    ///
+    /// Asserting the ask COUNT is the point. Everything else here
+    /// could pass while the server quietly asked once per message.
+    #[tokio::test]
+    async fn a_batch_of_two_asks_once_and_reports_per_message() {
+        let (s, asked) = demo_answering("accept");
+        let ids: Vec<String> = crate::demo_fixture::dlq_messages_for_env("poly-batch")
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(ids.len(), 2, "the fixture must hold a real batch");
+
+        let (err, plan) = call(
+            &s,
+            "dlq_delete",
+            json!({"env": "poly-batch", "message_ids": ids.clone()}),
+        )
+        .await;
+        assert!(!err, "a batch plan must be accepted: {plan}");
+        let token = plan["confirm_token"].as_str().expect("token").to_string();
+        let plan_text = plan.to_string();
+        for id in &ids {
+            assert!(
+                plan_text.contains(id.as_str()),
+                "the plan must name every message it covers: {plan_text}"
+            );
+        }
+
+        let (err, out) = call(&s, "confirm_action", json!({"confirm_token": token})).await;
+        assert!(!err, "the batch must dispatch: {out}");
+
+        let asked = asked.lock().expect("lock");
+        assert_eq!(
+            asked.len(),
+            1,
+            "ONE dialog for the whole batch — asking per message is the failure \
+             this feature exists to remove: {asked:?}"
+        );
+        for id in &ids {
+            assert!(
+                asked[0].contains(id.as_str()),
+                "and that one dialog must enumerate what it covers, or the operator \
+                 approves a set they were not shown: {:?}",
+                asked[0]
+            );
+        }
+
+        let text = out.to_string();
+        assert!(
+            text.contains("\"succeeded\":2"),
+            "the result must account for both: {text}"
+        );
+        assert!(
+            text.contains("\"failed\":0"),
+            "including the failures it did NOT have — an absent count reads as \
+             unknown: {text}"
+        );
+    }
+
+    /// A batch plan over the cap is refused before anyone is asked.
+    #[tokio::test]
+    async fn an_oversized_batch_never_reaches_the_operator() {
+        let (s, asked) = demo_answering("accept");
+        let too_many: Vec<String> = (0..=super::writes::DLQ_BATCH_CAP)
+            .map(|i| format!("id-{i}"))
+            .collect();
+        let (err, out) = call(
+            &s,
+            "dlq_delete",
+            json!({"env": "poly-batch", "message_ids": too_many}),
+        )
+        .await;
+        assert!(err, "over the cap must refuse: {out}");
+        assert_eq!(
+            asked.lock().expect("lock").len(),
+            0,
+            "and must refuse at PLAN time — an unreadable list must never reach a \
+             dialog, because the cap exists to keep the dialog readable"
         );
     }
 }

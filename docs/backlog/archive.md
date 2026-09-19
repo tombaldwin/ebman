@@ -3949,3 +3949,39 @@ zero false positives and **also missed the real defect**, because a
 "prose" test required sentence punctuation the message did not have.
 Verified clean before verified useful is how a guard that cannot fire
 gets shipped.
+
+- [x] **Runtime grants — permission without a restart.** Designed in
+  `docs/design/runtime-grants.md` (2026-09-18), shipped in 0.42.0 as
+  steps 1–4. An MCP client that declares elicitation gets the write
+  surface by default and is asked to approve every confirmation; one
+  that cannot be asked keeps `--allow-writes` unchanged.
+
+  Worth recording that **the shipped design is not the one in this
+  entry**. The original shape — grants that are runtime and time-boxed,
+  issued by `ebman grant` reusing `src/freeze.rs`, with
+  `notifications/tools/list_changed` making tools appear mid-session —
+  was deleted rather than built. All of it existed to answer "what
+  happens between asks", and once the unit of authorisation became the
+  request, there is no between. Also deleted for the same reason: TTLs,
+  revocation on incident, `:grant`, and the grant-visibility surface.
+
+  The blocking measurement resolved: Claude Code **does** declare
+  `elicitation`, measured against a live handshake rather than inferred
+  from its docs. The second blocker (whether it refetches on
+  `tools/list_changed`) became moot — nothing emits that notification
+  any more.
+
+- [x] **Batch plans for MCP writes** (`runtime-grants.md` step 5),
+  shipped in 0.42.0. `dlq_resend` / `dlq_delete` accept `message_ids`
+  up to `DLQ_BATCH_CAP` (10) — one plan, one ask, per-message dispatch,
+  audit and results.
+
+  The cap is 10 because that is also what one `worker_queues` peek
+  shows: an agent cannot name a message it has not seen, so a higher
+  cap would be unreachable by any honest path.
+
+  Decided during the build and not in the note: a batch where **nothing**
+  succeeded is an error, not a result carrying `dispatched: false`.
+  `isError` is the field agents branch on, and an unset one reads as
+  success — the same shape as the old `peeked: true, messages: []`
+  defect. It also keeps the single-message behaviour byte-for-byte.
