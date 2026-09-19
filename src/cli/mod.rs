@@ -213,11 +213,14 @@ pub(crate) fn write_refusal_unaudited(
         crate::write_gate::Refusal::AccountPinned { profile: p } => {
             format!("refusing {env} — pinned by safety.accounts.{p}.read_only")
         }
-        // Unreachable: the CLI never sets `global_read_only`. Rendered
-        // rather than `unreachable!()` because a panic in a write gate
-        // is a worse failure than a slightly odd message.
+        // Reachable since `safety.read_only` shipped. It was not
+        // before, and the comment here said so — which made this the
+        // one arm whose message never had to name a control, because
+        // nothing could reach it. On this path the source is
+        // unambiguous: the CLI has no session toggle, so it can only
+        // be the config key.
         crate::write_gate::Refusal::GlobalReadOnly => {
-            format!("refusing {env} — read-only mode")
+            format!("refusing {env} — safety.read_only is set in config.toml")
         }
     };
     Some((refusal, message, pin_profile))

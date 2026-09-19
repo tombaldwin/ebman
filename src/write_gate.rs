@@ -112,8 +112,18 @@ impl Refusal {
             Refusal::SafetyConfigUnreadable { problem } => {
                 format!("fix config.toml — {problem}")
             }
+            // BOTH sources, because the gate ORs them and this type
+            // genuinely cannot tell which fired. Naming only the
+            // session toggle was correct while that was the sole
+            // source and became actively misleading when
+            // `safety.read_only` shipped: an operator following it
+            // toggles the flag, is still refused, and has been sent to
+            // the wrong control by the field that exists to name the
+            // right one.
             Refusal::GlobalReadOnly => {
-                "clear read-only mode (:readonly off, or restart without --read-only)".into()
+                "clear read-only: the session toggle (:readonly off, or restart \
+                 without --read-only) or safety.read_only in config.toml"
+                    .into()
             }
             Refusal::Frozen => "end the deploy freeze (:thaw-deploys, or :incident END)".into(),
             Refusal::EnvPinned { env } => {
@@ -412,5 +422,42 @@ mod tests {
             decide(&f.ctx("open-env", Some("open-acct"))).is_none(),
             "a clean config must still allow writes"
         );
+    }
+
+    /// The read-only remedy names both controls that can cause it.
+    ///
+    /// `remedy()` is what an operator follows out of a `stage=refused`
+    /// audit line. It named only the session toggle, which was right
+    /// while that was the sole source and became actively misleading
+    /// when `safety.read_only` shipped: following it toggles the flag,
+    /// leaves the refusal in place, and sends the operator to the
+    /// wrong control by the one field that exists to name the right
+    /// one.
+    ///
+    /// Both, not one, because the gate ORs them and this type cannot
+    /// tell which fired. Where the source IS unambiguous — the CLI,
+    /// which has no session toggle — `cli::render_refusal` names the
+    /// config key alone.
+    #[test]
+    fn the_read_only_remedy_names_every_control_that_causes_it() {
+        let r = Refusal::GlobalReadOnly.remedy();
+        assert!(
+            r.contains("safety.read_only"),
+            "a config-set read-only must be liftable by following this: {r}"
+        );
+        assert!(
+            r.contains(":readonly off"),
+            "and so must a session-set one: {r}"
+        );
+        assert!(
+            !r.contains("  "),
+            "rendered into a one-line status bar: {r:?}"
+        );
+
+        // The other arms already name exactly one control each; this
+        // is the only one with two sources, and the asymmetry should
+        // be deliberate rather than an oversight.
+        let pinned = Refusal::EnvPinned { env: "prod".into() }.remedy();
+        assert!(pinned.contains("safety.envs.prod.read_only"), "{pinned}");
     }
 }

@@ -349,10 +349,12 @@ impl Server {
         env: &str,
         queue_url: Option<String>,
         msg: crate::aws::QueueMessage,
-    ) -> u64 {
-        let Some(queue_url) = queue_url else {
-            return 0;
-        };
+    ) -> Option<u64> {
+        // `None`, not `Some(0)`. A zero-second window is a claim that
+        // the message was held and has already expired; not holding it
+        // at all is a different fact, and the one an agent needs if it
+        // is about to tell someone the delete is reversible.
+        let queue_url = queue_url?;
         let mut buf = self.deleted.lock().await;
         buf.retain(|d: &DeletedMessage| d.at.elapsed().as_secs() < UNDO_WINDOW_SECS);
         if buf.len() >= UNDO_CAPACITY {
@@ -367,7 +369,7 @@ impl Server {
             attributes: msg.attributes,
             at: tokio::time::Instant::now(),
         });
-        UNDO_WINDOW_SECS
+        Some(UNDO_WINDOW_SECS)
     }
 
     /// What is still recoverable, newest first.
@@ -1224,8 +1226,10 @@ impl Server {
                         .into_iter()
                         .find(|m| m.id == want)
                 }) {
-                    let until = self.remember_deleted(&p.env, p.dlq_url.clone(), msg).await;
-                    recoverable = format!(",\"recoverable_for_secs\":{until}");
+                    if let Some(until) = self.remember_deleted(&p.env, p.dlq_url.clone(), msg).await
+                    {
+                        recoverable = format!(",\"recoverable_for_secs\":{until}");
+                    }
                 }
             }
             return Ok(format!(
@@ -1322,10 +1326,11 @@ impl Server {
         match outcome {
             Ok(destroyed) => {
                 let recoverable = match destroyed {
-                    Some(msg) => {
-                        let until = self.remember_deleted(&p.env, p.dlq_url.clone(), msg).await;
-                        format!(",\"recoverable_for_secs\":{until}")
-                    }
+                    Some(msg) => self
+                        .remember_deleted(&p.env, p.dlq_url.clone(), msg)
+                        .await
+                        .map(|until| format!(",\"recoverable_for_secs\":{until}"))
+                        .unwrap_or_default(),
                     None => String::new(),
                 };
                 Ok(format!(
@@ -2210,8 +2215,24 @@ mod tests {
             )
             .await;
         assert_eq!(
-            window, UNDO_WINDOW_SECS,
+            window,
+            Some(UNDO_WINDOW_SECS),
             "the caller is told how long it has"
+        );
+
+        // `None` means NOT HELD, which is a different fact from a
+        // window that has expired. Reporting `Some(0)` would claim the
+        // message was kept and is merely too late to recover.
+        assert_eq!(
+            s.remember_deleted(
+                "poly-batch",
+                None,
+                crate::demo_fixture::dlq_messages_for_env("poly-batch")[1].clone()
+            )
+            .await,
+            None,
+            "with no queue url there is nothing to restore to, and saying so is \
+             not the same as offering a zero-second window"
         );
 
         // Listing names what is there, and what the offer does not cover.
