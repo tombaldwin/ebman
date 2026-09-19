@@ -275,6 +275,13 @@ with **one** plan and **one** confirmation:
 {"env": "poly-batch", "message_ids": ["d3b0…0001", "5d41…0002"]}
 ```
 
+Every confirmation also names the identity the write would go out
+under — `as arn:aws:sts::123456789012:assumed-role/Admin/sess` — and
+the plan carries it as an `identity` object. If `sts:GetCallerIdentity`
+is denied the plan is not refused: `identity` is null, `identity_error`
+says why, and the dialog says the identity is UNKNOWN. A policy can
+deny STS while Elastic Beanstalk works.
+
 The confirmation **enumerates** them — task and id per line — rather
 than saying "2 messages". A count is something to agree with; a list is
 something to read.

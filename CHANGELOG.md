@@ -36,6 +36,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Every plan names whose credentials it would use.** The
+  confirmation now reads "Terminate poly-prod, as
+  `arn:aws:sts::…:assumed-role/Admin/sess`", and the plan carries an
+  `identity` object with the ARN and account.
+
+  A plan said what would happen and not what it would happen *as*, and
+  the account number is the part that says which account this is about
+  to occur in. That matters more since writes no longer need a flag:
+  the ask is the control, and an operator approving a terminate should
+  not have to remember which profile the server was started with.
+
+  A denied `sts:GetCallerIdentity` does **not** refuse the plan — a
+  policy can deny STS while Elastic Beanstalk works, and that is
+  exactly the scoped-IAM setup this is most useful to. It renders as
+  `identity: null` *with* an `identity_error`, and the dialog says the
+  identity is UNKNOWN and why. The type makes that unskippable: a plan
+  that quietly dropped the field would show nothing where there should
+  be something, and nothing reads as fine.
+
 - **One confirmation for a set of dead-lettered messages.**
   `dlq_resend` and `dlq_delete` accept `message_ids` — up to 10 — and
   cover them with a single plan and a single ask.
