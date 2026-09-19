@@ -352,6 +352,60 @@ pub(super) fn arg_u64(args: &Value, key: &str) -> Option<u64> {
     args.get(key).and_then(Value::as_u64)
 }
 
+/// The one place that decides whether a dead-letter queue can be
+/// peeked, and at which URL.
+///
+/// Gated on `dlq_stats`, not on `dlq_url`. A DERIVED url — one ebman
+/// guessed by the `<main>-dlq` convention — routinely names a queue
+/// that does not exist, and `describe_worker_queues` treats that as
+/// THE genuine "this env has no dead-letter queue" shape: it swallows
+/// NonExistentQueue and leaves `dlq_stats: None` with `dlq_url: Some`.
+/// Peeking that url raises NonExistentQueue again, which failed the
+/// whole call in `worker_queues` — throwing away the depth answer
+/// already in hand — and recorded a spurious "we could not look" in
+/// `why`'s `errors` for every healthy worker env whose guess missed.
+///
+/// **Consolidated because it was written three times and missed
+/// twice.** The gate was added to the live `worker_queues` path,
+/// then found absent from `why`, then found absent from the demo path
+/// three commits later — where it answered `peeked: true` for a web
+/// env with no queue at all, on the path agents rehearse against. Each
+/// copy carried a comment claiming to be "the same gate as" another
+/// one, which is what a policy looks like shortly before it diverges.
+///
+/// Taking `requested` as well means the whole decision — may we, and
+/// were we asked — is one value, so `peeked` cannot be computed from a
+/// different expression than the one that chose the URL. That
+/// divergence is precisely the `peeked: true, messages: []` defect.
+pub(super) fn dlq_peek_target(queues: &crate::aws::WorkerQueues, requested: bool) -> Option<&str> {
+    if !requested {
+        return None;
+    }
+    answered_dlq_url(queues)
+}
+
+/// The URL of a dead-letter queue that actually answered.
+///
+/// The predicate itself, separate from the peek question, because
+/// `writes.rs` needs the same one for a different purpose: before
+/// planning a resend, delete or purge it must know there is a real
+/// queue to act on, and it was asking with its own
+/// `dlq_url.filter(|_| dlq_stats.is_some())` — a fourth copy of this
+/// rule, found while consolidating the first three.
+///
+/// `dlq_stats: None` with `dlq_url: Some` is the ordinary shape for an
+/// env with no dead-letter queue: ebman guessed the url from the
+/// `<main>-dlq` convention and `describe_worker_queues` swallowed the
+/// resulting NonExistentQueue. Acting on such a url — peeking it or
+/// planning against it — raises that error again at a point where it
+/// reads as a fault rather than as "there is no queue here".
+pub(super) fn answered_dlq_url(queues: &crate::aws::WorkerQueues) -> Option<&str> {
+    // The queue answered: `describe_worker_queues` got stats back for
+    // it. Without this the url alone is only a guess ebman made.
+    queues.dlq_stats.as_ref()?;
+    queues.dlq_url.as_deref()
+}
+
 /// Turn a dead-letter peek result into `(messages, peeked)`, recording
 /// a failure rather than swallowing it.
 ///
@@ -1376,7 +1430,7 @@ impl Server {
                 // always wants the peek, so `requested` is true and
                 // the only question the gate answers here is whether
                 // there is a queue to look in.
-                let peek = match q.dlq_url.as_deref().filter(|_| q.dlq_stats.is_some()) {
+                let peek = match dlq_peek_target(&q, true) {
                     Some(url) => Some(
                         client
                             .peek_messages(url, 5)
@@ -1516,8 +1570,7 @@ impl Server {
             // to stop, reintroduced on the path agents rehearse
             // against. Found by review three commits after the live
             // fix, which is why this now calls rather than restates.
-            let peekable = queues.dlq_stats.is_some();
-            let peeked = peek && peekable;
+            let peeked = dlq_peek_target(&queues, peek).is_some();
             let msgs = if peeked {
                 demo_fixture::dlq_messages_for_env(&env_name)
             } else {
@@ -1544,17 +1597,12 @@ impl Server {
                 )
             })?;
 
-        // Gated on `dlq_stats`, not on `dlq_url`. A DERIVED url — one
-        // ebman guessed by the `<main>-dlq` convention — routinely names
-        // a queue that does not exist, and `describe_worker_queues`
-        // treats that as THE genuine "this env has no dead-letter
-        // queue" shape.
-        let peekable = queues.dlq_stats.is_some();
-        let messages = match (peek && peekable, queues.dlq_url.as_deref()) {
-            (true, Some(url)) => client.peek_messages(url, max).await.map_err(|e| {
+        let target = dlq_peek_target(&queues, peek);
+        let messages = match target {
+            Some(url) => client.peek_messages(url, max).await.map_err(|e| {
                 tool_error(&arg_str(args, "profile"), "peek_messages", &e.to_string())
             })?,
-            _ => Vec::new(),
+            None => Vec::new(),
         };
         // `peeked` reports whether we LOOKED, not what was asked for.
         // Passing the request flag through said "we looked, it was
@@ -1565,7 +1613,7 @@ impl Server {
         Ok(render_worker_queues_json(
             &queues,
             &messages,
-            peek && peekable,
+            target.is_some(),
             self.safety_cfg.mcp_peek_bodies,
             empty_queue_reason(&env.tier, &queues),
         ))
@@ -2516,5 +2564,113 @@ mod renderer_tests {
             serde_json::from_str(&render_worker_queues_json(&some, &[], false, true, None))
                 .expect("json");
         assert!(ok["reason"].is_null(), "{ok}");
+    }
+
+    /// The peek gate, in both directions.
+    #[test]
+    fn a_dlq_is_peekable_only_when_it_answered() {
+        use crate::aws::{QueueStats, WorkerQueues};
+        let with = |stats: Option<QueueStats>, url: Option<&str>| WorkerQueues {
+            main_url: None,
+            dlq_url: url.map(str::to_string),
+            main_stats: None,
+            dlq_stats: stats,
+            dlq_origin: None,
+        };
+        let real = with(Some(QueueStats::default()), Some("https://sqs/q-dlq"));
+        assert_eq!(dlq_peek_target(&real, true), Some("https://sqs/q-dlq"));
+        assert_eq!(
+            dlq_peek_target(&real, false),
+            None,
+            "not asked for is not peeked — the default path must touch nothing, \
+             because a peek increments every returned message's receive count"
+        );
+
+        // The case that cost three fixes: a DERIVED url naming a queue
+        // that does not exist. `dlq_url` is Some and `dlq_stats` is
+        // None, and this is the ORDINARY shape for an env with no
+        // dead-letter queue.
+        let guessed = with(None, Some("https://sqs/q-dlq"));
+        assert_eq!(
+            dlq_peek_target(&guessed, true),
+            None,
+            "a url ebman guessed, for a queue that never answered, must not be \
+             peeked — doing so raises NonExistentQueue and failed the whole call, \
+             discarding the depth answer already in hand"
+        );
+
+        // And stats without a url cannot be peeked either.
+        assert_eq!(
+            dlq_peek_target(&with(Some(QueueStats::default()), None), true),
+            None
+        );
+        assert_eq!(dlq_peek_target(&with(None, None), true), None);
+    }
+
+    /// The policy is expressed ONCE.
+    ///
+    /// This guard is about duplication, not correctness, because
+    /// duplication is how this specific bug kept coming back: the gate
+    /// was written into the live path, found missing from `why`, then
+    /// found missing from the demo path three commits after the live
+    /// fix — each copy carrying a comment claiming to be "the same
+    /// gate as" another one. Every copy was individually defensible
+    /// and the set of them was the defect.
+    #[test]
+    fn nothing_re_expresses_the_peek_gate() {
+        // Decisions only. `stats(&queues.dlq_stats)` in the renderer
+        // reads the field without judging it, which is fine; what must
+        // not spread is the RULE that a queue with no stats is not a
+        // queue. Matching on decision syntax rather than counting
+        // mentions means the guard survives a refactor of the helper
+        // itself — an earlier version broke the moment clippy asked
+        // for `as_ref()?` instead of `is_none()`.
+        const DECISIONS: [&str; 4] = [
+            "dlq_stats.is_",
+            "dlq_stats.as_ref()?",
+            "dlq_stats.is_some()",
+            "|_| queues.dlq_stats",
+        ];
+
+        // Comments stripped through the shared scanner: this guard's
+        // own subject is described in prose on the helper it guards,
+        // and a raw substring search reads that description as a
+        // violation. `strip_line_comment` also handles a `//` inside a
+        // string literal, which eight hand-rolled strippers here did
+        // not.
+        let code = |src: &str| -> String {
+            crate::app::tests::scan::production_half(src)
+                .lines()
+                .map(crate::app::tests::scan::strip_line_comment)
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let tools = code(include_str!("tools.rs"));
+        // Everything outside the one function allowed to decide.
+        let start = tools
+            .find("pub(super) fn answered_dlq_url")
+            .expect("the helper must exist");
+        let end = tools[start..].find("\n}\n").expect("its body ends") + start;
+        let mut elsewhere = tools.clone();
+        elsewhere.replace_range(start..end, "");
+
+        for probe in DECISIONS {
+            assert!(
+                !elsewhere.contains(probe),
+                "tools.rs: `{probe}` outside `answered_dlq_url` is a second copy of \
+                 the rule. That is how this defect returned three times — the live \
+                 path had it, `why` did not, the demo path did not, and each copy \
+                 carried a comment claiming to be the same gate as another one."
+            );
+            // writes.rs must not decide at all: it calls the helper.
+            let writes = code(include_str!("writes.rs"));
+            assert!(
+                !writes.contains(probe),
+                "writes.rs: `{probe}` is the fourth copy of this rule, found while \
+                 consolidating the first three — it asked the same question to \
+                 decide whether a queue could be PLANNED against. Call \
+                 `answered_dlq_url`."
+            );
+        }
     }
 }

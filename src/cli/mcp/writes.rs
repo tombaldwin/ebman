@@ -1157,11 +1157,12 @@ impl Server {
                 .await
                 .map_err(|e| tool_error(&profile, "describe_worker_queues", &e.to_string()))?
         };
-        let url = queues
-            .dlq_url
-            .clone()
-            .filter(|_| queues.dlq_stats.is_some())
-            .ok_or_else(|| format!("env '{}' has no dead-letter queue", env.name))?;
+        // The same predicate the peek paths use, not a fourth copy of
+        // it: a url ebman guessed for a queue that never answered is
+        // not a queue to plan against either.
+        let url = super::tools::answered_dlq_url(&queues)
+            .ok_or_else(|| format!("env '{}' has no dead-letter queue", env.name))?
+            .to_string();
 
         let dlq_visible = queues.dlq_stats.as_ref().map(|s| s.visible);
         if verb == WriteVerb::DlqPurge {
