@@ -88,6 +88,11 @@ pub(super) const TOOL_ATTRS: &[(&str, ToolAttrs)] = &[
     // Local file, no AWS call — verified by reading `tool_audit_log`,
     // which is `std::fs::read_to_string` and nothing else.
     ("audit_log", ToolAttrs::local_read()),
+    // Reports this connection's own capabilities and restrictions.
+    // Touches neither AWS nor the filesystem — it reads fields already
+    // on the server — so it is the one tool guaranteed to answer even
+    // when everything it describes is broken. That is the point of it.
+    ("doctor", ToolAttrs::local_read()),
     // ── writes ──
     //
     // `restart` bounces the app servers: downtime, but nothing is

@@ -8,6 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **New MCP tool: `doctor`** — what this connection can and cannot do,
+  and why. Reports the ebman build, what your client declared at
+  handshake, the write surface in force, and the operator's standing
+  restrictions.
+
+  Three things look identical from an agent's side: a feature ebman
+  lacks, a feature its *client* lacks, and a thing the operator
+  forbade. It cannot tell them apart, and the default assumption —
+  "ebman cannot do this" — is the one that gets reported as a bug. The
+  `instructions` block now tells agents to call `doctor` before
+  reporting any capability as missing.
+
+  It touches neither AWS nor the filesystem, so it answers even when
+  everything it describes is broken. A diagnostic that fails for the
+  reasons it exists to diagnose is not one.
+
 - **A dead-letter write now records which message it destroyed.** The
   target of a DLQ write is the environment, so the audit line said a
   message was deleted from `poly-batch` and never which one. For every
