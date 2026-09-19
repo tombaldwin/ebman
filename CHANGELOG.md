@@ -208,6 +208,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **A timeout told the agent the same thing as a decline.** Found by
+  a live run against the shipped build, not by reading the code — both
+  ended with "The plan is spent; do not re-plan the same action unless
+  the operator asks for it", byte-identical from "The plan is spent"
+  onward.
+
+  For a decline that is right. For a timeout it names the operator as
+  the only way forward — the one party who demonstrably was not
+  there — leaving the agent no legitimate move at all. A timeout now
+  says the silence is **not** a refusal, that the operator may never
+  have been shown the dialog, and to tell them it expired rather than
+  quietly re-plan or report a refusal that nobody made.
+
+  The decline wording is unchanged, and deliberately stays a flat
+  prohibition rather than a rationale about intent: the agent that hit
+  this reported the pull it felt was task-completion pressure, not
+  permission-seeking, and a "respect the refusal" phrasing would not
+  have caught that — nobody had refused anything.
+
 - **A dead ask channel denied nothing.** Found by a release review
   panel before tagging. `ask_operator` returned `NotAsked` for three
   different situations — the client never declared elicitation, the
