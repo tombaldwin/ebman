@@ -1117,6 +1117,15 @@ impl Server {
                     .into(),
             );
         }
+        if !self.redact {
+            notes.push(
+                "Redaction is OFF (--no-redact): `get_option_settings` and `why` return \
+                 environment variable values and DBPassword verbatim. Treat what comes \
+                 back as secret material — do not quote it, echo it into a summary, or \
+                 paste it anywhere it will outlive this conversation."
+                    .into(),
+            );
+        }
         if !self.safety_cfg.mcp_peek_bodies {
             notes.push(
                 "mcp.peek_bodies is off: dead-lettered message bodies are withheld and \
@@ -1135,7 +1144,7 @@ impl Server {
         }
 
         format!(
-            "{{\"ebman\":{},\"client\":{},\"client_declared\":{{\"elicitation\":{}}},\"writes\":{},\"standing_restrictions\":{{\"all_writes_refused\":{},\"pinned_targets\":{},\"config_unreadable\":{}}},\"notes\":[{}]}}",
+            "{{\"ebman\":{},\"client\":{},\"client_declared\":{{\"elicitation\":{}}},\"writes\":{},\"standing_restrictions\":{{\"all_writes_refused\":{},\"pinned_targets\":{},\"config_unreadable\":{}}},\"redacting\":{},\"notes\":[{}]}}",
             util::json_string(env!("CARGO_PKG_VERSION")),
             util::json_string(&client),
             elicits,
@@ -1143,6 +1152,7 @@ impl Server {
             self.safety_cfg.safety_read_only,
             pinned,
             !self.safety_cfg.safety_parse_errors.is_empty(),
+            self.redact,
             notes
                 .iter()
                 .map(|n| util::json_string(n))
@@ -2174,6 +2184,40 @@ mod renderer_tests {
         // choosing not to ask.
         assert_eq!(v["client_declared"]["elicitation"], json!(false), "{v}");
         assert!(notes.contains("elicitation"), "{notes}");
+
+        // Redaction on by default, and silent about it — a note for
+        // every normal condition is noise, and noise is how the
+        // abnormal ones stop being read.
+        assert_eq!(v["redacting"], json!(true), "{v}");
+        assert!(!notes.contains("Redaction is OFF"), "{notes}");
+
+        // With it off, say so loudly. An agent receiving real
+        // environment variables needs to know they are real: the
+        // difference between `(redacted)` as a policy and a value that
+        // happens to look like a secret is not visible from the value.
+        let open_secrets = Server::with_config(
+            true,
+            true,
+            crate::cli::mcp::WriteScope::None,
+            crate::config::Config::default(),
+        );
+        let o: Value = serde_json::from_str(&open_secrets.tool_doctor()).expect("json");
+        assert_eq!(o["redacting"], json!(false), "{o}");
+        let on = o["notes"]
+            .as_array()
+            .expect("notes")
+            .iter()
+            .filter_map(|n| n.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            on.contains("--no-redact"),
+            "name the flag that did it: {on}"
+        );
+        assert!(
+            on.contains("do not quote it"),
+            "and say what to do about it, since the agent is the leak path: {on}"
+        );
 
         // The control: a clean server volunteers no restriction notes,
         // so the notes mean something when they appear.

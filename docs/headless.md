@@ -267,12 +267,15 @@ least one major client that describes something which cannot happen.
 not.** Two different questions, and conflating them sends people the
 long way round.
 
-A stdio MCP server is a child process, so a reconnect must terminate
-and respawn it — which re-executes `ebman` and picks up whatever is now
-on PATH. A version upgrade therefore needs only `brew upgrade` and a
-reconnect. (Inference from the mechanism rather than a measurement, but
-the mechanism does not leave much room: a "reconnect" that did not
-respawn would not reconnect anything.)
+A stdio MCP server is a child process, so a reconnect terminates and
+respawns it, which re-executes `ebman` and picks up whatever is now on
+PATH. A version upgrade therefore needs only `brew upgrade` and a
+reconnect.
+
+**Measured, 2026-09-19**, in Claude Code: a session running ebman
+0.38.0 upgraded to 0.39.0 on disk, the operator ran `/mcp` Reconnect,
+and the `instructions` block afterwards read `ebman 0.39.0`. No client
+restart at any point.
 
 Whether that respawn uses NEW argv, or the spawn command cached at
 session start, is the part nobody has established.
