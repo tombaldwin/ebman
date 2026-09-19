@@ -282,6 +282,11 @@ fn read_tool_table() -> Value {
             }
         },
         {
+            "name": "doctor",
+            "description": "What THIS connection can and cannot do, and why. Reports the ebman build, what your client declared at handshake, the write surface in force, and the standing restrictions the operator has set. Call this before reporting a capability as missing: most of what looks like a gap in ebman is a client that does not carry a feature, or an operator who has forbidden something deliberately. Reads no AWS and takes no arguments.",
+            "inputSchema": {"type": "object", "properties": {}}
+        },
+        {
             "name": "audit_log",
             "description": "Read ebman's local audit log (~/.cache/ebman/audit.log): every dispatched action + outcome, as a JSON array of entries. Local to this machine — actions dispatched elsewhere are not recorded.",
             "inputSchema": {
@@ -719,6 +724,7 @@ impl Server {
             "lint" => self.tool_lint(args).await,
             "get_option_settings" => self.tool_option_settings(args).await,
             "drift" => self.tool_drift(args).await,
+            "doctor" => Ok(self.tool_doctor()),
             "audit_log" => self.tool_audit_log(args),
             "recent_events" => self.tool_recent_events(args).await,
             "list_versions" => self.tool_list_versions(args).await,
@@ -1043,6 +1049,105 @@ impl Server {
             ),
             &skipped,
         ))
+    }
+
+    /// Answer "why can't I do X" without the agent having to guess.
+    ///
+    /// Three things look identical from the agent's side: a feature
+    /// ebman lacks, a feature its CLIENT lacks, and a thing the
+    /// operator forbade. It cannot tell them apart, and the default
+    /// assumption — "ebman cannot do this" — is the one that gets
+    /// reported as a capability gap and wastes everyone's time.
+    ///
+    /// The precedent is concrete. On 2026-09-17 the update checker
+    /// logged `current="0.36.0" latest=0.38.0` three times while a
+    /// session reported gaps against that same binary: the fact
+    /// existed, in the right file, with no route to its consumer. The
+    /// version line in `instructions` fixed that for version. This is
+    /// the fix for everything else.
+    ///
+    /// Deliberately AWS-free and synchronous: a diagnostic that can
+    /// fail for the reasons it exists to diagnose is not one.
+    fn tool_doctor(&self) -> String {
+        let elicits = self
+            .client_supports_elicitation
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let client = self
+            .client_name
+            .lock()
+            .map(|c| c.clone())
+            .unwrap_or_else(|_| "unknown".into());
+
+        let writes = match &self.write_scope {
+            super::WriteScope::None => "none - this server is read-only".to_string(),
+            super::WriteScope::All => "every verb".to_string(),
+            super::WriteScope::Only(v) => format!("{} only", v.join(", ")),
+        };
+
+        // Counted, not listed: an agent does not need the operator's
+        // whole pin table, and a refusal names the specific rule when
+        // one actually fires.
+        let pinned = self
+            .safety_cfg
+            .safety_envs
+            .values()
+            .filter(|ro| **ro)
+            .count()
+            + self
+                .safety_cfg
+                .safety_accounts
+                .values()
+                .filter(|ro| **ro)
+                .count();
+
+        let mut notes: Vec<String> = Vec::new();
+        if self.safety_cfg.safety_read_only {
+            notes.push(
+                "safety.read_only is set: EVERY write is refused, everywhere. No grant \
+                 or confirmation lifts it - only the operator editing their config."
+                    .into(),
+            );
+        }
+        if !elicits {
+            notes.push(
+                "Your client did not declare elicitation support, so this server cannot \
+                 put a question in front of your operator mid-call. Anything needing \
+                 their decision has to be arranged by them instead."
+                    .into(),
+            );
+        }
+        if !self.safety_cfg.mcp_peek_bodies {
+            notes.push(
+                "mcp.peek_bodies is off: dead-lettered message bodies are withheld and \
+                 replaced with a marker. A message shown with no body is not an empty \
+                 message."
+                    .into(),
+            );
+        }
+        if matches!(self.backend, Backend::Demo) {
+            notes.push(
+                "This is a DEMO server. Every environment, queue and message is \
+                 synthetic, no AWS call is made, and writes report success without \
+                 doing anything."
+                    .into(),
+            );
+        }
+
+        format!(
+            "{{\"ebman\":{},\"client\":{},\"client_declared\":{{\"elicitation\":{}}},\"writes\":{},\"standing_restrictions\":{{\"all_writes_refused\":{},\"pinned_targets\":{},\"config_unreadable\":{}}},\"notes\":[{}]}}",
+            util::json_string(env!("CARGO_PKG_VERSION")),
+            util::json_string(&client),
+            elicits,
+            util::json_string(&writes),
+            self.safety_cfg.safety_read_only,
+            pinned,
+            !self.safety_cfg.safety_parse_errors.is_empty(),
+            notes
+                .iter()
+                .map(|n| util::json_string(n))
+                .collect::<Vec<_>>()
+                .join(",")
+        )
     }
 
     fn tool_audit_log(&self, args: &Value) -> Result<String, String> {
@@ -2015,6 +2120,100 @@ mod renderer_tests {
         assert!(
             !normal.to_string().contains("BODIES ARE WITHHELD"),
             "the note must not appear when bodies are on"
+        );
+    }
+
+    /// `doctor` distinguishes the three things that look identical to
+    /// an agent: ebman can't, your client can't, the operator said no.
+    #[tokio::test]
+    async fn doctor_separates_cannot_from_was_not_allowed() {
+        let mut cfg = crate::config::Config {
+            safety_read_only: true,
+            mcp_peek_bodies: false,
+            ..crate::config::Config::default()
+        };
+        cfg.safety_envs.insert("poly-prod-api".into(), true);
+        let s = Server::with_config(true, false, crate::cli::mcp::WriteScope::All, cfg);
+
+        let v: Value = serde_json::from_str(&s.tool_doctor()).expect("json");
+
+        assert_eq!(v["ebman"], env!("CARGO_PKG_VERSION"), "names the build");
+        assert_eq!(
+            v["standing_restrictions"]["all_writes_refused"],
+            json!(true),
+            "an agent must be able to learn that every write will fail BEFORE \
+             trying one and reporting it as broken: {v}"
+        );
+        assert_eq!(
+            v["standing_restrictions"]["pinned_targets"],
+            json!(1),
+            "{v}"
+        );
+
+        let notes = v["notes"]
+            .as_array()
+            .expect("notes")
+            .iter()
+            .filter_map(|n| n.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(notes.contains("safety.read_only"), "{notes}");
+        assert!(notes.contains("peek_bodies"), "{notes}");
+        assert!(notes.contains("DEMO"), "{notes}");
+        // No elicitation declared by this client, so say so — the
+        // absence of an ask is otherwise indistinguishable from ebman
+        // choosing not to ask.
+        assert_eq!(v["client_declared"]["elicitation"], json!(false), "{v}");
+        assert!(notes.contains("elicitation"), "{notes}");
+
+        // The control: a clean server volunteers no restriction notes,
+        // so the notes mean something when they appear.
+        let clean = Server::with_config(
+            false,
+            false,
+            crate::cli::mcp::WriteScope::None,
+            crate::config::Config::default(),
+        );
+        let c: Value = serde_json::from_str(&clean.tool_doctor()).expect("json");
+        assert_eq!(
+            c["standing_restrictions"]["all_writes_refused"],
+            json!(false)
+        );
+        assert_eq!(c["standing_restrictions"]["pinned_targets"], json!(0));
+        let cn = c["notes"]
+            .as_array()
+            .expect("notes")
+            .iter()
+            .filter_map(|n| n.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            !cn.contains("DEMO"),
+            "a live server must not claim to be demo: {cn}"
+        );
+        assert!(!cn.contains("safety.read_only"), "{cn}");
+    }
+
+    /// `doctor` answers when everything it describes is broken.
+    ///
+    /// A diagnostic that needs AWS, or the config it is reporting on,
+    /// fails for the reasons it exists to explain. This one reads
+    /// fields already on the server and nothing else.
+    #[tokio::test]
+    async fn doctor_answers_with_an_unreadable_config_and_no_aws() {
+        let cfg = crate::config::Config {
+            safety_parse_errors: vec!["safety.envs.prod = true is missing .read_only".into()],
+            ..crate::config::Config::default()
+        };
+        // Not demo: a real backend whose AWS calls would fail here.
+        let s = Server::with_config(false, false, crate::cli::mcp::WriteScope::All, cfg);
+
+        let v: Value = serde_json::from_str(&s.tool_doctor()).expect("json");
+        assert_eq!(
+            v["standing_restrictions"]["config_unreadable"],
+            json!(true),
+            "an unreadable safety config refuses every write, and the agent \
+             should learn that here rather than from a refusal: {v}"
         );
     }
 }

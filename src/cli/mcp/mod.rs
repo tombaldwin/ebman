@@ -644,7 +644,20 @@ impl Server {
                             "- A LIVE log tail (streaming, follows new lines): TUI, Detail view, Logs tab. ",
                             "Point-in-time log queries ARE exposed here, as `recent_logs`.\n\n",
                             "Tool descriptions carry CAVEATS naming what each tool cannot see. They are accurate and ",
-                            "worth reading: a clean result from a tool does not clear what that tool never checked."
+                            "worth reading: a clean result from a tool does not clear what that tool never checked.\n\n",
+                            // The version line above answers "is this
+                            // build capable?". This answers the three
+                            // questions it does not: is this CLIENT
+                            // capable, has the operator forbidden it,
+                            // and is this server even real. All three
+                            // otherwise present as "ebman cannot do
+                            // this", which is the report that wastes a
+                            // maintainer's afternoon.
+                            "Before reporting ANY capability as missing, call `doctor`. It names this build, what ",
+                            "your client declared, the write surface in force, and the operator's standing ",
+                            "restrictions — which is how you tell \"ebman cannot\" from \"your client cannot\" from ",
+                            "\"the operator said no\". Those three are indistinguishable from where you sit, and only ",
+                            "the first is a bug worth reporting."
                         ))
                     }
                 }))
@@ -1293,6 +1306,7 @@ mod tests {
                 "lint",
                 "get_option_settings",
                 "drift",
+                "doctor",
                 "audit_log",
                 "recent_events",
                 "list_versions",
