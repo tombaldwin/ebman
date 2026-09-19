@@ -17,6 +17,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   arms set `dlq_url`?" stops being a question you answer by reading all
   of them.
 
+### Changed
+
+- **The dead-letter peek rule is written once.** Whether a queue can be
+  peeked — or planned against — was expressed in four places: the live
+  `worker_queues` path, `why`, the demo path, and the write planner.
+  Each copy carried a comment claiming to be "the same gate as"
+  another one, which is what a policy looks like shortly before it
+  diverges. It had already been missed twice: added to the live path,
+  found absent from `why`, then found absent from the demo path three
+  commits later — where it answered `peeked: true` for a web env with
+  no queue at all, on the path agents rehearse against. The fourth copy
+  turned up while consolidating the first three.
+
+  Now one `answered_dlq_url`, with a guard that fails if the rule is
+  written anywhere else. The guard matches decision syntax rather than
+  counting mentions, so it survives a refactor of the helper itself.
+
 ### Added
 
 - **One confirmation for a set of dead-lettered messages.**

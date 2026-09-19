@@ -3985,3 +3985,16 @@ gets shipped.
   `isError` is the field agents branch on, and an unset one reads as
   success — the same shape as the old `peeked: true, messages: []`
   defect. It also keeps the single-message behaviour byte-for-byte.
+
+- [x] **Architecture review findings, 0.42.0.** Both fixed before
+  tagging.
+
+  1. *Dead-letter peek policy consolidated.* The rule was written four
+     times — live `worker_queues`, `why`, the demo path, and the write
+     planner — and had already been missed twice. Now
+     `tools::answered_dlq_url`, guarded by
+     `nothing_re_expresses_the_peek_gate`, which matches decision
+     syntax rather than counting mentions so it survives a refactor of
+     the helper.
+  2. *`tool_write_plan` split.* 346 → 134 lines, with
+     `resolve_plan_details` (146) and `resolve_dlq_plan` (125).
