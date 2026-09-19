@@ -8,6 +8,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **Nothing claims a person declined a write.** Measured against
+  headless `claude -p`: it declares `elicitation: true`, is given the
+  full write surface, and auto-declines a confirmation in under a
+  second with no human in the session at all. ebman reported *"declined
+  by the operator"*, and the agent relayed "the operator simply said
+  no" to its user. Nobody had.
+
+  The reason now reads "the confirmation was declined", and the
+  guidance tells the agent not to attribute it — naming `-p` runs and
+  CI harnesses, because a concrete case is more use than a hedge. The
+  flat do-not-retry instruction is unchanged; it is what stops a retry
+  loop and the hedging must not weaken it.
+
+  The good news from the same measurement: there is no five-minute
+  stall in headless use. The ask is answered immediately. `stage=asked`
+  records the latency, which is what makes an auto-decline and a human
+  decline distinguishable afterwards.
+
 - **`terminate` and `dlq_purge` now require the operator to TYPE the
   environment name** into the confirmation dialog, matching the
   strict-typed-name confirms the TUI has always demanded for both.

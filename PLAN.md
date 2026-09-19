@@ -190,7 +190,31 @@ name the first two as deliberate gaps, so they are debts, not ideas.
    why this must be measured — a silent refusal of every terminate is a
    poor way to discover a rendering gap.
 
-2. **The headless configuration** *(measurement, then a maintainer ruling)*
+2. ~~**The headless configuration**~~ — **measured 2026-09-20, and
+   the measurement changed the fix.** `claude -p` declares
+   `elicitation: true`, gets `writes: every verb`, and does **not**
+   hang: it auto-declines a confirmation in under a second.
+
+   So there is no availability problem — and a worse one. The reply
+   was recorded and reported as *"declined by the operator"* with no
+   human anywhere in the session, and the agent relayed "the operator
+   simply said no" to its user. A false attribution, produced by the
+   tool, repeated by the agent.
+
+   Fixed: nothing now claims a person answered. The reason reads "the
+   confirmation was declined", and the guidance tells the agent not to
+   attribute it, naming `-p` and CI harnesses as the concrete case.
+   The flat do-not-retry prohibition is unchanged.
+
+   `stage=asked` already records latency, which is what makes the two
+   distinguishable afterwards — a sub-second decline is not somebody
+   reading a foreclosure line. **Still open, and now better posed:**
+   should a sub-second answer be treated differently at the time, or
+   only be visible in the log? That is a maintainer ruling, not an
+   implementation detail, and it is the stop condition this item
+   always carried.
+
+   *Original entry:*
 
    `claude -p` and CI harnesses use the same client binary and
    plausibly declare the same capability with no human to render to.

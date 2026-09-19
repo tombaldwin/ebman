@@ -198,7 +198,11 @@ impl AskOutcome {
         match self {
             AskOutcome::Declined => {
                 "The plan is spent; do not re-plan the same action unless the operator \
-                 asks for it."
+                 asks for it. Say the confirmation was declined — do NOT tell your \
+                 user a person refused, unless you independently know one was there. \
+                 A non-interactive client (a `-p` run, a CI harness) declares the \
+                 same capability and declines automatically with nobody present, and \
+                 that is indistinguishable from here."
             }
             AskOutcome::Unconfirmed => {
                 "The plan is spent. Nobody declined — the confirmation text did not \
@@ -225,7 +229,13 @@ impl AskOutcome {
     pub(crate) fn reason(self) -> &'static str {
         match self {
             AskOutcome::Approved => "approved",
-            AskOutcome::Declined => "declined by the operator",
+            // NOT "declined by the operator". Measured 2026-09-20:
+            // headless `claude -p` declares elicitation, auto-declines
+            // in under a second, and there is no human in the session
+            // at all. Asserting one made a decision is a false record,
+            // and the agent relays it — the run that found this told
+            // its user "the operator simply said no".
+            AskOutcome::Declined => "the confirmation was declined",
             AskOutcome::Unanswered => "no answer within the ask window",
             AskOutcome::Unconfirmed => {
                 "the typed confirmation did not match (or your client returned none)"
@@ -5530,6 +5540,43 @@ mod tests {
         assert!(
             !doctor(&quiet).await.contains("not proof a person saw"),
             "a connection with no elicitation has no ask to qualify"
+        );
+    }
+
+    /// Nothing claims a person declined.
+    ///
+    /// Measured 2026-09-20 against headless `claude -p`: it declares
+    /// `elicitation: true`, gets the full write surface, and
+    /// auto-declines a confirmation in under a second with no human in
+    /// the session. The text said "declined by the operator", the
+    /// agent relayed "the operator simply said no", and nobody had.
+    #[test]
+    fn a_decline_does_not_assert_that_a_person_made_it() {
+        let reason = AskOutcome::Declined.reason();
+        assert!(
+            !reason.contains("operator") && !reason.contains("human"),
+            "ebman cannot see who answered — asserting a person did is a false \
+             record the agent repeats to its user: {reason}"
+        );
+        assert!(
+            reason.contains("declined"),
+            "while still saying plainly what happened: {reason}"
+        );
+
+        let guidance = AskOutcome::Declined.guidance();
+        assert!(
+            guidance.contains("do not re-plan the same action unless the operator"),
+            "the flat prohibition must survive the hedging — it is what stops a \
+             retry loop: {guidance}"
+        );
+        assert!(
+            guidance.contains("do NOT tell your user a person refused"),
+            "and the agent must be told not to attribute it: {guidance}"
+        );
+        assert!(
+            guidance.contains("-p") || guidance.contains("CI harness"),
+            "naming the concrete case beats gesturing at uncertainty — an agent that \
+             knows a `-p` run declines by itself can say something useful: {guidance}"
         );
     }
 }
