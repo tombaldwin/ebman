@@ -186,6 +186,7 @@ mod tests {
             id: id.into(),
             receipt_handle: format!("rh-{id}"),
             body: String::new(),
+            attributes: Vec::new(),
             receive_count: 1,
             sent_at: mins_ago.map(|m| now - Duration::minutes(m)),
             task: None,

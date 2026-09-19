@@ -24,6 +24,20 @@ pub(crate) struct QueueMessage {
     /// The Elastic Beanstalk worker task this message carries, when it
     /// is one.
     pub task: Option<SqsdTask>,
+    /// The raw custom message attributes, kept verbatim.
+    ///
+    /// `task` is the parsed view and is what everything reads; this is
+    /// what makes a message RESTORABLE. Re-sending a body alone loses
+    /// the `beanstalk.sqsd.*` attributes, and for a cron-style task
+    /// that is the whole message: the body is the fixed literal
+    /// "elasticbeanstalk scheduled job" and every fact about which task
+    /// failed lives out here. A restore that dropped these would put
+    /// back something unidentifiable and call it the message.
+    ///
+    /// Kept as `(name, data_type, value)` rather than re-derived from
+    /// `task`, so attributes an APPLICATION set — which sqsd never
+    /// wrote and this code does not know about — survive too.
+    pub attributes: Vec<(String, String, String)>,
 }
 
 /// The `beanstalk.sqsd.*` attributes EB's worker daemon puts on a
@@ -208,10 +222,24 @@ impl AwsClient {
                     .and_then(|v| v.parse::<i64>().ok())
                     .and_then(DateTime::from_timestamp_millis);
                 let task = sqsd_task_from(m.message_attributes.as_ref());
+                let attributes = m
+                    .message_attributes
+                    .as_ref()
+                    .map(|map| {
+                        map.iter()
+                            .filter_map(|(k, v)| {
+                                v.string_value
+                                    .as_ref()
+                                    .map(|sv| (k.clone(), v.data_type.clone(), sv.clone()))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 out.push(QueueMessage {
                     id,
                     receipt_handle: m.receipt_handle.unwrap_or_default(),
                     body: m.body.unwrap_or_default(),
+                    attributes,
                     receive_count,
                     sent_at,
                     task,
@@ -224,13 +252,33 @@ impl AwsClient {
         Ok(out)
     }
 
-    pub(crate) async fn send_message(&self, queue_url: &str, body: &str) -> Result<()> {
-        self.sqs
+    /// Send a message, optionally carrying custom attributes back.
+    ///
+    /// `attrs` empty is an ordinary send. Non-empty is what makes a
+    /// restore faithful: the `beanstalk.sqsd.*` attributes are where a
+    /// cron task's identity lives, so a resend or an undo that dropped
+    /// them would deliver something nothing could identify.
+    pub(crate) async fn send_message(
+        &self,
+        queue_url: &str,
+        body: &str,
+        attrs: &[(String, String, String)],
+    ) -> Result<()> {
+        let mut req = self
+            .sqs
             .send_message()
             .queue_url(queue_url)
-            .message_body(body)
-            .send()
-            .await?;
+            .message_body(body);
+        for (name, data_type, value) in attrs {
+            req = req.message_attributes(
+                name,
+                aws_sdk_sqs::types::MessageAttributeValue::builder()
+                    .data_type(data_type)
+                    .string_value(value)
+                    .build()?,
+            );
+        }
+        req.send().await?;
         Ok(())
     }
 

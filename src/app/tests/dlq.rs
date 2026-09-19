@@ -298,6 +298,7 @@ async fn the_dlq_viewer_renders_its_messages() {
         dlq_url: "https://sqs.eu-west-2.amazonaws.com/1/awseb-main-dlq".into(),
         messages: vec![crate::aws::QueueMessage {
             id: "MSG-CANARY-1".into(),
+            attributes: Vec::new(),
             receipt_handle: "rh".into(),
             body: "poison pill payload".into(),
             receive_count: 7,
@@ -375,6 +376,7 @@ async fn the_embedded_shell_pane_renders_its_transcript() {
 fn msg(id: &str) -> crate::aws::QueueMessage {
     crate::aws::QueueMessage {
         id: id.into(),
+        attributes: Vec::new(),
         receipt_handle: format!("rh-{id}"),
         body: "{}".into(),
         receive_count: 1,
@@ -1004,6 +1006,7 @@ async fn the_dlq_view_names_the_task_and_marks_the_count_approximate() {
     let mut state = open_dlq_state("api-prod");
     state.messages = vec![crate::aws::QueueMessage {
         id: "m-1".into(),
+        attributes: Vec::new(),
         receipt_handle: "rh-1".into(),
         body: "elasticbeanstalk scheduled job".into(),
         receive_count: 4,
@@ -1046,6 +1049,7 @@ async fn a_plain_dlq_message_still_shows_its_body() {
     let mut state = open_dlq_state("api-prod");
     state.messages = vec![crate::aws::QueueMessage {
         id: "m-2".into(),
+        attributes: Vec::new(),
         receipt_handle: "rh-2".into(),
         body: "ORDER-4471-RETRY".into(),
         receive_count: 1,

@@ -268,6 +268,26 @@ pub(crate) fn dlq_messages_for_env(env_name: &str) -> Vec<QueueMessage> {
             body: "elasticbeanstalk scheduled job".into(),
             receive_count: 4,
             sent_at: Some(fixture_now() - chrono::Duration::hours(9)),
+            // The raw form of the task below. Present so the restore
+            // and resend paths — which carry attributes, not just the
+            // body — are exercisable without AWS.
+            attributes: vec![
+                (
+                    "beanstalk.sqsd.task_name".into(),
+                    "String".into(),
+                    "Remove unattended jobs".into(),
+                ),
+                (
+                    "beanstalk.sqsd.path".into(),
+                    "String".into(),
+                    "/STCleanupUnattendedJobs.do".into(),
+                ),
+                (
+                    "beanstalk.sqsd.scheduled_time".into(),
+                    "String".into(),
+                    "2026-05-24 06:04:00 UTC".into(),
+                ),
+            ],
             task: Some(SqsdTask {
                 name: Some("Remove unattended jobs".into()),
                 path: Some("/STCleanupUnattendedJobs.do".into()),
@@ -281,6 +301,8 @@ pub(crate) fn dlq_messages_for_env(env_name: &str) -> Vec<QueueMessage> {
             body: "{\"job\":\"reindex\",\"tenant\":\"acme\",\"attempt\":3}".into(),
             receive_count: 3,
             sent_at: Some(fixture_now() - chrono::Duration::hours(2)),
+            // No attributes at all: the ordinary-queue shape.
+            attributes: Vec::new(),
             // Not an EB task: no `beanstalk.sqsd.*` attributes. Renders
             // `task: null`, which is a different thing from a task with
             // no name.

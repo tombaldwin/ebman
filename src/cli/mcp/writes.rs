@@ -267,8 +267,15 @@ async fn dispatch_dlq_message(
         // message outright if the send fails; this order can duplicate
         // it, and a duplicate in a worker queue is the recoverable
         // failure — sqsd tasks are retried by design.
+        // WITH the attributes. Sending the body alone moved a husk:
+        // for a cron-style task the body is the fixed literal
+        // "elasticbeanstalk scheduled job" and every fact about which
+        // task it was — `beanstalk.sqsd.task_name`, `.path`,
+        // `.scheduled_time` — lives in the attributes. A resend that
+        // dropped them delivered something the worker daemon has no
+        // path to route to.
         client
-            .send_message(&main_queue_for(url), &msg.body)
+            .send_message(&main_queue_for(url), &msg.body, &msg.attributes)
             .await
             .map_err(|e| format!("resend failed, message left in the dead-letter queue: {e}"))?;
     }
@@ -1861,6 +1868,80 @@ mod tests {
                 .iter()
                 .all(|(n, _)| *n != "message_id" && *n != "task"),
             "a non-queue write must not carry empty queue fields: {deploy:?}"
+        );
+    }
+
+    /// A resend carries the task identity, not just the body.
+    ///
+    /// The defect this pins, shipped in 0.40.0 and found a day later
+    /// by a change that needed the same data: all three resend paths
+    /// called `send_message(url, &msg.body)` and dropped the custom
+    /// attributes.
+    ///
+    /// For a cron-style task that is not a partial loss, it is total.
+    /// The codebase already records why: the body is the fixed literal
+    /// "elasticbeanstalk scheduled job" and carries nothing, while
+    /// `beanstalk.sqsd.task_name` / `.path` / `.scheduled_time` carry
+    /// every fact about which task it was. A resend that dropped them
+    /// put a husk on the main queue.
+    ///
+    /// What follows from that about sqsd's behaviour — that it would
+    /// have no path to route to — is inference, not something verified
+    /// against a live worker. The attribute loss itself is not.
+    #[test]
+    fn a_resend_carries_the_sqsd_attributes() {
+        let m = crate::demo_fixture::dlq_messages_for_env("poly-batch")
+            .into_iter()
+            .find(|m| m.task.is_some())
+            .expect("the fixture has an EB task");
+
+        // The premise: for this shape the body is worthless on its own.
+        assert_eq!(
+            m.body, "elasticbeanstalk scheduled job",
+            "if this stops being a fixed literal, re-read why attributes matter"
+        );
+
+        let names: Vec<&str> = m.attributes.iter().map(|(n, _, _)| n.as_str()).collect();
+        for want in [
+            "beanstalk.sqsd.task_name",
+            "beanstalk.sqsd.path",
+            "beanstalk.sqsd.scheduled_time",
+        ] {
+            assert!(
+                names.contains(&want),
+                "a restorable message must retain {want}: {names:?}"
+            );
+        }
+
+        // And the source scan. Not a match against the one spelling the
+        // bug happened to have: a mutation passing `&[]` instead of
+        // `&msg.attributes` is the identical defect and walked straight
+        // past the first version of this. So every production
+        // `send_message(` call must name `attributes` in its arguments.
+        let sources = [
+            ("writes.rs", include_str!("writes.rs")),
+            ("spawn_dlq.rs", include_str!("../../app/spawn_dlq.rs")),
+        ];
+        let mut calls = 0;
+        for (name, src) in sources {
+            let prod = src.split("#[cfg(test)]").next().unwrap_or("");
+            for (i, _) in prod.match_indices(".send_message(") {
+                calls += 1;
+                // The call text up to its closing `.await`, which is
+                // where the argument list has certainly ended.
+                let tail = &prod[i..];
+                let call = &tail[..tail.find(".await").unwrap_or(tail.len()).min(400)];
+                assert!(
+                    call.contains("attributes"),
+                    "{name}: a send_message that does not pass attributes delivers a \
+                     husk for any sqsd task — the body alone is a fixed literal:\n{call}"
+                );
+            }
+        }
+        assert!(
+            calls >= 2,
+            "the scan found {calls} send_message calls — it has stopped seeing them, \
+             which is worse than finding a defect"
         );
     }
 }
