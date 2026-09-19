@@ -19,6 +19,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   agent cannot tell "you can't do this" from "nobody told you who can",
   and the second is cheap to fix.
 
+- **Six source-scanning guards were blind to most of their subject.**
+  Each hand-rolled `src.split("#[cfg(test)]").next()` to find the
+  production half of a file, which stops at the first *inline*
+  test-only item rather than at the test module. Measured:
+  `cli/mcp/mod.rs` guards saw 253 of 988 production lines,
+  `writes.rs` 489 of 1425, `tools.rs` 740 of 1734 — each reporting
+  clean over roughly a third of what it claimed to check.
+
+  Now one `scan::production_half` with its own accuracy tests. Widening
+  the scan immediately surfaced a real violation that had been
+  invisible: `doctor` read the raw safety-pin maps, which the CLI
+  write-gate guard exists to forbid.
+
+- **A call that asks a human gets a human's budget.** Every tool call
+  was bounded at 30 seconds, which is right for a hung AWS call and
+  nonsense for a person deciding whether to delete production data.
+  `confirm_action` on a connection that declared elicitation now gets
+  five minutes — not unbounded, because an ask nobody will answer must
+  still reach a deny.
+
 ### Fixed
 
 - **A demo peek claimed to have looked at a queue that does not
