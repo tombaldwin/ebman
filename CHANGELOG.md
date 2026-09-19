@@ -112,6 +112,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **A read-only refusal named the wrong control.** The remedy an
+  operator follows out of a `stage=refused` audit line said "clear
+  read-only mode (:readonly off, or restart without --read-only)" —
+  correct while the session toggle was the only source of that rung,
+  and misleading the moment `safety.read_only` existed. Following it
+  toggled the flag and left the refusal exactly where it was. It now
+  names both controls, and on the CLI — which has no session toggle —
+  it names the config key alone.
+
+- **The MCP `instructions` block described the grant, not the
+  reality.** On a server with `safety.read_only` set, it told the agent
+  "Writes are ENABLED for every verb" while every write was refused: a
+  true statement about the flag and a false one about the server, in
+  the one channel an agent is guaranteed to read. A standing refusal
+  now outranks the grant and is stated instead of it. The same applies
+  to a safety config that fails to parse, which also fails closed.
+
 - **A dead-letter resend was moving a husk.** All three resend paths —
   the MCP `dlq_resend`, the TUI's single resend and its bulk resend —
   sent the message *body* and dropped its custom attributes.
