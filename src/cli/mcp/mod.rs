@@ -132,6 +132,46 @@ impl AskOutcome {
         matches!(self, AskOutcome::Declined | AskOutcome::Unanswered)
     }
 
+    /// What the agent should do next, which is NOT the same for a
+    /// decline and a silence.
+    ///
+    /// Both used to end with the decline guard verbatim — "do not
+    /// re-plan unless the operator asks for it". For a timeout that
+    /// leaves an agent with no legitimate move at all, because the one
+    /// party who could unblock it is the party who demonstrably was
+    /// not there. A peer session hit exactly this, reasoned its own
+    /// way to "tell the human it expired", and reported that it had to
+    /// invent the redirect.
+    ///
+    /// A decline is an answer and ends the line. A silence is the
+    /// absence of one: the operator may have stepped away, or never
+    /// been shown the dialog, and saying so is the correct next act.
+    ///
+    /// The decline wording stays a FLAT prohibition with one named
+    /// exception rather than a rationale about the operator's intent.
+    /// The same peer noted that the pull it felt was task-completion
+    /// pressure, not permission-seeking — a teammate had asked it for
+    /// the decline string — and that a rationale-shaped guard
+    /// ("respect the refusal") would not have caught that, because
+    /// nobody had refused anything. The flat form did.
+    pub(crate) fn guidance(self) -> &'static str {
+        match self {
+            AskOutcome::Declined => {
+                "The plan is spent; do not re-plan the same action unless the operator \
+                 asks for it."
+            }
+            AskOutcome::Unanswered => {
+                "The plan is spent. Nobody answered, which is NOT a refusal — the \
+                 operator may have stepped away, or may never have been shown the \
+                 dialog. Tell them it expired and let them decide; do not quietly \
+                 re-plan it, and do not report this as a refusal."
+            }
+            // Neither reaches an agent: `Approved` dispatches, and
+            // `NotAsked` falls through to the flag that granted it.
+            AskOutcome::Approved | AskOutcome::NotAsked => "",
+        }
+    }
+
     /// For the audit line and the agent-facing refusal.
     pub(crate) fn reason(self) -> &'static str {
         match self {
@@ -4610,5 +4650,44 @@ mod tests {
         );
         assert!(parse_mcp_args(&args(&["--allow-writes", "--read-only"])).is_err());
         assert!(parse_mcp_args(&args(&["--read-only", "--read-only"])).is_err());
+    }
+
+    /// A silence is not a refusal, and must not be answered as one.
+    ///
+    /// Both outcomes ended with the decline guard verbatim, which for
+    /// a timeout names the operator as the only way forward — the very
+    /// party who was not there. A peer session hit this live and had
+    /// to invent the redirect itself.
+    #[test]
+    fn a_timeout_and_a_decline_tell_the_agent_different_things() {
+        let declined = AskOutcome::Declined.guidance();
+        let silent = AskOutcome::Unanswered.guidance();
+        assert_ne!(declined, silent, "the two must not share wording");
+
+        assert!(
+            declined.contains("unless the operator asks for it"),
+            "a decline keeps the flat prohibition with one named exception — a \
+             rationale-shaped guard does not catch an agent under \
+             task-completion pressure, which is a different pull from \
+             permission-seeking: {declined}"
+        );
+
+        assert!(
+            silent.contains("NOT a refusal"),
+            "a silence must not be reported as a refusal — nobody refused: {silent}"
+        );
+        assert!(
+            silent.contains("Tell them"),
+            "and must name a legitimate next act, or the agent's only options are \
+             invent one or go quiet: {silent}"
+        );
+        assert!(
+            !silent.contains("unless the operator asks for it"),
+            "naming the absent party as the only unblock leaves no move at all: {silent}"
+        );
+
+        // The two that never reach an agent say nothing.
+        assert!(AskOutcome::Approved.guidance().is_empty());
+        assert!(AskOutcome::NotAsked.guidance().is_empty());
     }
 }
