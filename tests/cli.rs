@@ -812,3 +812,161 @@ fn mcp_serve_exits_when_stdin_closes() {
         }
     }
 }
+
+/// A scripted MCP client that is not Claude Code.
+///
+/// Everything known about how a client behaves against this server
+/// came from one product. That is the `n=1` a release review kept
+/// naming, and it matters twice over: the elicitation round-trip is
+/// what the whole write surface rests on, and the TYPED confirmation
+/// for `terminate` / `dlq_purge` has never been exercised by anything
+/// at all — the live matrix validated the zero-field form only.
+///
+/// This drives the real binary over real stdio, declares elicitation,
+/// and answers the dialog itself — so the frame loop, the ask routing,
+/// the schema and the typed match are all exercised by something whose
+/// behaviour this repo controls. It does not replace a live client (it
+/// cannot tell you whether a human-facing UI renders an input field)
+/// but it does mean the protocol half stops depending on one vendor.
+///
+/// `--demo`, so no AWS call is possible.
+#[test]
+fn a_scripted_client_can_complete_a_typed_confirmation() {
+    use std::io::{BufRead, BufReader};
+
+    let home = std::env::temp_dir().join(format!("ebman-cli-conf-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&home);
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ebman"));
+    no_aws_credentials(&mut cmd);
+    let mut child = cmd
+        .args(["mcp", "serve", "--demo"])
+        .env("NO_COLOR", "1")
+        .env("HOME", &home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap_or_else(|e| panic!("could not spawn ebman: {e}"));
+
+    let mut si = child
+        .stdin
+        .take()
+        .unwrap_or_else(|| panic!("no stdin on the spawned server"));
+    let mut out = BufReader::new(
+        child
+            .stdout
+            .take()
+            .unwrap_or_else(|| panic!("no stdout on the spawned server")),
+    );
+    let mut send = |v: &serde_json::Value| {
+        use std::io::Write;
+        writeln!(si, "{v}").unwrap_or_else(|e| panic!("write frame: {e}"));
+        si.flush().unwrap_or_else(|e| panic!("flush: {e}"));
+    };
+    let recv = |out: &mut BufReader<std::process::ChildStdout>| -> serde_json::Value {
+        let mut line = String::new();
+        let n = out
+            .read_line(&mut line)
+            .unwrap_or_else(|e| panic!("read frame: {e}"));
+        assert!(n > 0, "server closed stdout early");
+        serde_json::from_str(&line).unwrap_or_else(|e| panic!("bad frame {line:?}: {e}"))
+    };
+
+    // Declaring elicitation is what opens the write surface with no
+    // flag — the 0.42 default.
+    send(&serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {"elicitation": {}},
+            "clientInfo": {"name": "ebman-conformance", "version": "0"}
+        }
+    }));
+    let init = recv(&mut out);
+    assert_eq!(init["id"], serde_json::json!(1), "{init}");
+
+    // The write tools must be there without a flag.
+    send(&serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}));
+    let listed = recv(&mut out).to_string();
+    for t in ["dlq_purge", "confirm_action"] {
+        assert!(
+            listed.contains(t),
+            "a client that declares elicitation gets the write surface with no \
+             --allow-writes: {t} missing"
+        );
+    }
+
+    // Plan a purge — one of the two verbs that demands a typed name.
+    send(&serde_json::json!({
+        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": {"name": "dlq_purge", "arguments": {"env": "poly-batch"}}
+    }));
+    // The plan is JSON inside a tool-result text field. Parse it
+    // rather than splitting on escaped quotes — the first version did
+    // and silently produced an empty token, which the server then
+    // correctly rejected as unknown.
+    let plan_frame = recv(&mut out);
+    let inner = plan_frame["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no text in {plan_frame}"));
+    let plan: serde_json::Value =
+        serde_json::from_str(inner).unwrap_or_else(|e| panic!("plan not JSON {inner:?}: {e}"));
+    let token = plan["confirm_token"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no confirm_token in {plan}"))
+        .to_string();
+
+    // Confirm. The server will now ASK us, and we answer as a client.
+    send(&serde_json::json!({
+        "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+        "params": {"name": "confirm_action", "arguments": {"confirm_token": token}}
+    }));
+
+    let ask = recv(&mut out);
+    assert_eq!(
+        ask["method"],
+        serde_json::json!("elicitation/create"),
+        "the confirm must put the action to the operator: {ask}"
+    );
+    let schema = &ask["params"]["requestedSchema"];
+    assert_eq!(
+        schema["required"],
+        serde_json::json!(["confirm"]),
+        "a purge must demand a typed name, as the TUI does: {ask}"
+    );
+    assert!(
+        ask["params"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("poly-batch")),
+        "and the question must name what it is about: {ask}"
+    );
+
+    // Answer it the way a human would: accept, with the name typed.
+    send(&serde_json::json!({
+        "jsonrpc": "2.0", "id": ask["id"].clone(),
+        "result": {"action": "accept", "content": {"confirm": "poly-batch"}}
+    }));
+
+    // Parsed, not substring-matched. The first version asserted
+    // `result.contains("dispatched")` — and the refusal reads "NOT
+    // dispatched", which contains it, so the assertion passed with the
+    // typed check inverted. It could not fail for the thing it named.
+    let done = recv(&mut out);
+    assert!(
+        done["result"]["isError"].as_bool() != Some(true),
+        "a correctly typed confirmation must not error: {done}"
+    );
+    let text = done["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no text in {done}"));
+    let body: serde_json::Value =
+        serde_json::from_str(text).unwrap_or_else(|e| panic!("result not JSON {text:?}: {e}"));
+    assert_eq!(
+        body["dispatched"],
+        serde_json::json!(true),
+        "the purge must actually dispatch once the name is typed correctly: {body}"
+    );
+
+    drop(si);
+    let _ = child.wait();
+}
