@@ -631,11 +631,21 @@ impl Server {
                             " — a fleet console for AWS Elastic Beanstalk. This surface exposes reads, ",
                             "plus two-phase writes when the server was started with --allow-writes.\n\n"),
                             self.write_scope.agent_summary(
-                                if self.safety_cfg.safety_read_only {
-                                    Some("safety.read_only is set in config.toml.")
-                                } else if !self.safety_cfg.safety_parse_errors.is_empty() {
+                                // Parse errors FIRST, matching
+                                // `write_gate::decide`'s precedence.
+                                // Reversed, an operator with both set
+                                // was told to clear `safety.read_only`
+                                // while every actual refusal rendered
+                                // as "safety config unreadable" — they
+                                // clear it, are still refused, and have
+                                // been sent to the wrong control by the
+                                // text that exists to name the right
+                                // one.
+                                if !self.safety_cfg.safety_parse_errors.is_empty() {
                                     Some("the safety config could not be parsed, which \
                                           fails closed.")
+                                } else if self.safety_cfg.safety_read_only {
+                                    Some("safety.read_only is set in config.toml.")
                                 } else {
                                     None
                                 },
