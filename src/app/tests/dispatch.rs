@@ -2934,3 +2934,57 @@ FLAGS:
         "a doc comment is documentation, not a rendered message"
     );
 }
+/// Every user-visible commit since the last tag has a changelog entry.
+///
+/// Nothing pinned this, and it cost three entries in one release
+/// cycle: `dlq_undo` shipped undocumented, then both review fixes,
+/// then the guard-scanner fix — each caught by hand-diffing the log
+/// against the changelog, twice AFTER saying out loud that a guard was
+/// needed.
+///
+/// Deliberately crude. "User-visible" has no syntactic signature, so
+/// this asks a cruder question that is still load-bearing: if `feat:`
+/// or `fix:` commits landed since the tag, `[Unreleased]` must not be
+/// empty. It cannot tell whether the entries MATCH the commits — a
+/// human still has to do that — but it catches the case that actually
+/// happened, which is shipping features under an empty heading.
+#[test]
+fn unreleased_changes_are_written_down() {
+    let out = std::process::Command::new("git")
+        .args([
+            "log",
+            "--format=%s",
+            "--no-merges",
+            "HEAD",
+            "--not",
+            "--tags",
+        ])
+        .output();
+    let Ok(out) = out else {
+        return; // no git available: not this guard's business
+    };
+    let subjects = String::from_utf8_lossy(&out.stdout);
+    let user_visible = subjects
+        .lines()
+        .filter(|l| l.starts_with("feat") || l.starts_with("fix"))
+        .count();
+    if user_visible == 0 {
+        return;
+    }
+
+    let log = std::fs::read_to_string("CHANGELOG.md").expect("read CHANGELOG.md");
+    let unreleased = log
+        .split("## [Unreleased]")
+        .nth(1)
+        .and_then(|r| r.split("\n## [").next())
+        .unwrap_or("");
+    let entries = unreleased.matches("\n- ").count();
+
+    assert!(
+        entries > 0,
+        "{user_visible} feat/fix commit(s) since the last tag and nothing under \
+         `## [Unreleased]`. This is the third time in one cycle that a shipped \
+         change had no entry, each found by reading rather than by anything \
+         mechanical."
+    );
+}
