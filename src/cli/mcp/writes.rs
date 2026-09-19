@@ -2176,7 +2176,7 @@ mod tests {
         ];
         let mut calls = 0;
         for (name, src) in sources {
-            let prod = src.split("#[cfg(test)]").next().unwrap_or("");
+            let prod = crate::app::tests::scan::production_half(src);
             for (i, _) in prod.match_indices(".send_message(") {
                 calls += 1;
                 // The call text up to its closing `.await`, which is

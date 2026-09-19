@@ -2391,7 +2391,7 @@ mod webhook_gate_tests {
     #[test]
     fn the_extracted_gates_are_wired_into_run() {
         let src = std::fs::read_to_string("src/cli/lint.rs").expect("read own source");
-        let prod = src.split("#[cfg(test)]").next().expect("production half");
+        let prod = crate::app::tests::scan::production_half(&src);
 
         assert!(
             prod.contains("fix_may_dispatch(yes, to_set.len())"),

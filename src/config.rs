@@ -200,8 +200,6 @@ pub(crate) struct AccountSpec {
     pub region: Option<String>,
 }
 
-impl Config {}
-
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -239,6 +237,26 @@ impl Default for Config {
 }
 
 impl Config {
+    /// How many targets this config pins read-only.
+    ///
+    /// A property of the config, summarised by the config — which is the
+    /// shape two guards forced this into, and they were right both times.
+    /// Reading `safety_envs` / `safety_accounts` from a `src/cli` path
+    /// trips `cli_write_paths_do_not_reach_past_the_shared_gate`, because
+    /// a path that reads the pins is one step from deciding with them and
+    /// skipping the freeze. Routing through `write_gate` instead trips
+    /// `only_the_gates_consult_the_shared_decision`, because only the two
+    /// gates may touch the shared decision.
+    ///
+    /// `doctor` needs this to report the restrictions in force, which is a
+    /// reporting need and not a deciding one — a distinction neither guard
+    /// can make syntactically, and neither should have to. Here it belongs
+    /// to neither the gate nor the reporter.
+    pub(crate) fn pinned_target_count(&self) -> usize {
+        self.safety_envs.values().filter(|ro| **ro).count()
+            + self.safety_accounts.values().filter(|ro| **ro).count()
+    }
+
     /// The resolved icon style. `main` reads this to run the Powerline
     /// glyph probe and writes the answer back before the `App` is built,
     /// which is the only reason `Config` has any public surface beyond

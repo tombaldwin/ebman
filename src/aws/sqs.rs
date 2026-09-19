@@ -430,7 +430,7 @@ mod sqsd_task_tests {
     #[test]
     fn the_peek_requests_custom_message_attributes() {
         let src = std::fs::read_to_string("src/aws/sqs.rs").expect("read own source");
-        let prod = src.split("#[cfg(test)]").next().expect("production half");
+        let prod = crate::app::tests::scan::production_half(&src);
         assert!(
             prod.contains("receive_message()"),
             "the scan is not finding the peek at all"

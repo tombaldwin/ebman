@@ -1138,19 +1138,12 @@ impl Server {
 
         // Counted, not listed: an agent does not need the operator's
         // whole pin table, and a refusal names the specific rule when
-        // one actually fires.
-        let pinned = self
-            .safety_cfg
-            .safety_envs
-            .values()
-            .filter(|ro| **ro)
-            .count()
-            + self
-                .safety_cfg
-                .safety_accounts
-                .values()
-                .filter(|ro| **ro)
-                .count();
+        // one actually fires. The count comes from `Config`, not from
+        // the raw maps and not through `write_gate` — reading the maps
+        // here tripped the CLI gate guard, and routing through the gate
+        // tripped the one that says only the gates may touch the shared
+        // decision. Both were right; the count belongs to neither.
+        let pinned = self.safety_cfg.pinned_target_count();
 
         // The freeze is the ONE gate rung that changes mid-connection:
         // `gate_refusal` re-reads the cross-process marker on every
