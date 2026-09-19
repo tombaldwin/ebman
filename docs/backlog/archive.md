@@ -3909,3 +3909,43 @@ Three things the implementation turned on:
   the settings form would have got them back with no indication. A
   mutation proved the config-level round-trip test did not cover that
   path; a second test now drives `current_config_snapshot` directly.
+
+### The collapsed-form wrapped-literal guard (2026-09-19)
+
+Built after the defect shipped three more times in a single session —
+all three in code written minutes after reading this item, and all
+three passing every existing check.
+
+The item left the threshold open on the grounds that raw space-run
+counts cannot separate the bug from column alignment at any N (28 at
+N=3, 7 at N=6, 3 at N=8, 2 at N=12, with legitimate table headers
+surviving every one), so a guard would need either a threshold that
+misses shallow holes or an allowlist people route around.
+
+The answer was not a better number. Three discriminators, each from the
+defect's own signature rather than from tuning:
+
+- **Scan the literal's VALUE, not its source text.** A correct `\`
+  continuation contributes nothing to the value, so it cannot be
+  mistaken for the bug. The first attempt scanned source and flagged
+  **292** correctly-written literals.
+- **A lost continuation collapses onto ONE line.** The newline it
+  should have carried is precisely what went missing, while real layout
+  is inherently multi-line. That retired `--help` and the first-run
+  banner.
+- **Prose on both sides of the run.** A column header's cells are
+  single words — `REGION`, `ENV`, `CURRENT` — so nothing adjacent to
+  its padding contains a space. That retired the rollout header this
+  item named as unseparable.
+
+Doc comments turned out to be the remaining noise: `///` becomes
+`#[doc = "…"]`, a string literal, and they are full of aligned tables.
+They never reach a status bar, so they are skipped structurally.
+
+Result: zero false positives across the tree, no allowlist, and the
+guard is proven against all three real instances rather than one
+representative. That last part mattered — an intermediate version had
+zero false positives and **also missed the real defect**, because a
+"prose" test required sentence punctuation the message did not have.
+Verified clean before verified useful is how a guard that cannot fire
+gets shipped.
