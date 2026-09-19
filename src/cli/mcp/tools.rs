@@ -1276,6 +1276,29 @@ impl Server {
         let all_refused = self.safety_cfg.safety_read_only || unreadable || frozen;
 
         let mut notes: Vec<String> = Vec::new();
+        // The honest limit on the whole design, stated where an agent
+        // reads it rather than left implicit.
+        //
+        // `docs/design/protection-levels.md`: "never describe
+        // elicitation as 'a human confirmed'". The capability is a
+        // self-report in the client's `initialize` frame; a framework
+        // that declares it and routes the question to its own model
+        // satisfies every ask. ebman cannot tell the difference at the
+        // time, and an agent that tells its user "a person approved
+        // this" would be asserting something neither of them can
+        // check.
+        if elicits {
+            notes.push(util::json_string(
+                "Writes here are gated on an elicitation your CLIENT said it \
+                 supports. That is the client's word, not proof a person saw \
+                 anything: ebman cannot distinguish an operator answering a dialog \
+                 from a client answering for itself. Tell your user the \
+                 confirmation was approved, not that a human approved it. The audit \
+                 records each ask with its answer and how long it took, so the two \
+                 can be told apart afterwards -- which is the smaller and true \
+                 claim.",
+            ));
+        }
         if unreadable {
             notes.push(
                 "The safety config could not be parsed, which fails CLOSED: every write is \

@@ -587,7 +587,29 @@ async fn dispatch_one_dlq_message(
     client
         .delete_message(url, &msg.receipt_handle)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            if verb == WriteVerb::DlqResend {
+                // The send already succeeded. The message is NOW on
+                // the main queue and the original is still in the
+                // dead-letter queue, so this half-failure is not the
+                // same as "nothing happened" — and the batch report
+                // that calls it `ok: false` invites exactly the retry
+                // that mints another copy, one per attempt.
+                //
+                // Found twice by the same reviewer, in two separate
+                // reviews, because the bare error said none of this.
+                format!(
+                    "RESENT BUT NOT REMOVED: the copy reached the main queue and \
+                     sqsd will pick it up, but deleting the original from the \
+                     dead-letter queue failed ({e}). A duplicate now exists. DO NOT \
+                     resend this id again — each attempt adds another copy. Delete \
+                     it from the dead-letter queue instead, or leave it: the work \
+                     itself is already on its way."
+                )
+            } else {
+                e.to_string()
+            }
+        })?;
     // Handed back so the caller can hold it briefly. A resend returns
     // nothing: the message still exists, on the main queue, so there
     // is nothing to recover and offering one would be a lie.
