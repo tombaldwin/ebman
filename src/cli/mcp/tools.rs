@@ -829,7 +829,10 @@ impl Server {
             "lint" => self.tool_lint(args).await,
             "get_option_settings" => self.tool_option_settings(args).await,
             "drift" => self.tool_drift(args).await,
-            "dlq_undo" => self.tool_dlq_undo(args).await,
+            "dlq_undo" => self
+                .tool_dlq_undo(args)
+                .await
+                .map_err(writes::WriteError::into_message),
             "doctor" => Ok(self.tool_doctor()),
             "audit_log" => self.tool_audit_log(args),
             "recent_events" => self.tool_recent_events(args).await,
@@ -838,30 +841,42 @@ impl Server {
             // Write surface (only reachable under --allow-writes — the
             // RPC layer gates the table on it). Phase 1 verbs plan;
             // confirm_action dispatches.
-            "deploy" => self.tool_write_plan(writes::WriteVerb::Deploy, args).await,
-            "restart" => self.tool_write_plan(writes::WriteVerb::Restart, args).await,
-            "rebuild" => self.tool_write_plan(writes::WriteVerb::Rebuild, args).await,
-            "dlq_resend" => {
-                self.tool_write_plan(writes::WriteVerb::DlqResend, args)
-                    .await
-            }
-            "dlq_delete" => {
-                self.tool_write_plan(writes::WriteVerb::DlqDelete, args)
-                    .await
-            }
-            "dlq_purge" => {
-                self.tool_write_plan(writes::WriteVerb::DlqPurge, args)
-                    .await
-            }
-            "terminate" => {
-                self.tool_write_plan(writes::WriteVerb::Terminate, args)
-                    .await
-            }
-            "set_option" => {
-                self.tool_write_plan(writes::WriteVerb::SetOption, args)
-                    .await
-            }
-            "confirm_action" => self.tool_confirm_action(args).await,
+            "deploy" => self
+                .tool_write_plan(writes::WriteVerb::Deploy, args)
+                .await
+                .map_err(writes::WriteError::into_message),
+            "restart" => self
+                .tool_write_plan(writes::WriteVerb::Restart, args)
+                .await
+                .map_err(writes::WriteError::into_message),
+            "rebuild" => self
+                .tool_write_plan(writes::WriteVerb::Rebuild, args)
+                .await
+                .map_err(writes::WriteError::into_message),
+            "dlq_resend" => self
+                .tool_write_plan(writes::WriteVerb::DlqResend, args)
+                .await
+                .map_err(writes::WriteError::into_message),
+            "dlq_delete" => self
+                .tool_write_plan(writes::WriteVerb::DlqDelete, args)
+                .await
+                .map_err(writes::WriteError::into_message),
+            "dlq_purge" => self
+                .tool_write_plan(writes::WriteVerb::DlqPurge, args)
+                .await
+                .map_err(writes::WriteError::into_message),
+            "terminate" => self
+                .tool_write_plan(writes::WriteVerb::Terminate, args)
+                .await
+                .map_err(writes::WriteError::into_message),
+            "set_option" => self
+                .tool_write_plan(writes::WriteVerb::SetOption, args)
+                .await
+                .map_err(writes::WriteError::into_message),
+            "confirm_action" => self
+                .tool_confirm_action(args)
+                .await
+                .map_err(writes::WriteError::into_message),
             // Belt-and-braces: the RPC layer already 32602s names not
             // in tool_table(), so this is unreachable unless the table
             // and this match drift — in which case failing loud here

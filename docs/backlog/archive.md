@@ -3998,3 +3998,21 @@ gets shipped.
      the helper.
   2. *`tool_write_plan` split.* 346 → 134 lines, with
      `resolve_plan_details` (146) and `resolve_dlq_plan` (125).
+
+- [x] **No guard catches a refusal path that audits nothing.** Closed
+  in 0.42.0 by `WriteError` — `Refused` carries an `Audited` whose only
+  constructor writes the line, so the value is proof the audit ran.
+
+  The entry asked for two shapes to be weighed. The runtime counter was
+  rejected: a harness asserting audit lines against refusal returns
+  needs every path exercised, and a NEW refusal path is exactly what it
+  would miss — the same blind spot it was meant to close.
+
+  Doing the classification found a live instance of the defect:
+  `tool_confirm_action`'s scope check refused and audited nothing,
+  where `refuse_out_of_scope` had always recorded `not_granted`.
+
+  Honest limit, stated rather than discovered later: a new gate can
+  still type a policy refusal as `Invalid`. The type converts an
+  invisible omission into a visible miscategorisation; it is not a
+  proof.

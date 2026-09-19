@@ -205,28 +205,26 @@ impl Server {
     ///
     /// Demo writes nothing real, matching `gate_refusal`: the refusal
     /// is genuine, the fleet is not.
-    fn refuse_out_of_scope(
+    fn refused_out_of_scope(
         &self,
         verb: WriteVerb,
         env: Option<&str>,
         region: Option<&str>,
-    ) -> String {
+    ) -> WriteError {
         let name = verb.tool_name();
-        if !matches!(self.backend, Backend::Demo) {
-            crate::audit::append_action_refused(
-                None,
-                None,
-                region.unwrap_or("-"),
-                verb.label(),
-                env.unwrap_or("-"),
-                "not_granted",
-                &format!("restart the MCP server with --allow-writes={name}"),
-            );
-        }
-        format!(
-            "'{name}' is not in this server's write scope — start it with \
-             --allow-writes, or --allow-writes={name} to grant just this one"
-        )
+        WriteError::Refused(Audited::record(
+            matches!(self.backend, Backend::Demo),
+            None,
+            region.unwrap_or("-"),
+            verb.label(),
+            env.unwrap_or("-"),
+            "not_granted",
+            &format!("restart the MCP server with --allow-writes={name}"),
+            format!(
+                "'{name}' is not in this server's write scope — start it with \
+                 --allow-writes, or --allow-writes={name} to grant just this one"
+            ),
+        ))
     }
 
     /// The write gate for both MCP phases.
@@ -249,13 +247,27 @@ impl Server {
         profile: &Option<String>,
         region: Option<&str>,
         action_label: &str,
-    ) -> Option<String> {
+    ) -> Option<Audited> {
         let freeze = crate::freeze::read_active();
-        if matches!(self.backend, Backend::Demo) {
-            return crate::cli::write_refusal_unaudited(&self.safety_cfg, env, profile, freeze)
-                .map(|(_, message, _)| message);
-        }
-        crate::cli::write_refusal(&self.safety_cfg, env, profile, freeze, region, action_label)
+        // The UNAUDITED half deliberately, for both backends: the
+        // recording happens in `Audited::record` so there is exactly
+        // one place in this module that writes a refusal line. Going
+        // through `cli::write_refusal` for the live case would audit
+        // there instead, and a `Refused` would then exist that this
+        // module had not recorded — which is the whole property the
+        // type carries.
+        let (refusal, message, pin_profile) =
+            crate::cli::write_refusal_unaudited(&self.safety_cfg, env, profile, freeze)?;
+        Some(Audited::record(
+            matches!(self.backend, Backend::Demo),
+            pin_profile.as_deref(),
+            region.unwrap_or("-"),
+            action_label,
+            env,
+            refusal.rule(),
+            &refusal.remedy(),
+            message,
+        ))
     }
 }
 
@@ -783,6 +795,137 @@ fn requested_message_ids(args: &Value) -> Result<Vec<String>, String> {
     Ok(ids)
 }
 
+/// A refusal you can only hold if it has been recorded.
+///
+/// The point of the private field: outside this module `Audited`
+/// cannot be constructed, and inside it the only constructors are the
+/// two below — one that writes the `stage=refused` line, and one that
+/// accepts a line the shared CLI funnel already wrote. So a
+/// `WriteError::Refused` is proof an audit line exists.
+///
+/// This does not make the bug impossible. A new gate can still return
+/// `WriteError::Invalid` for something that is really a policy
+/// refusal. What it does is convert an invisible OMISSION into a
+/// visible MISCATEGORISATION: the author has to name which kind it is,
+/// and the wrong choice is a word in the diff rather than the absence
+/// of one. Every other invariant here works the same way —
+/// `rebuild_view`, the generation guards, match-arm order — none are
+/// impossible to violate, all are made visible.
+mod audited {
+    /// A recorded refusal. The message is for the agent; the audit
+    /// line is already on disk.
+    #[derive(Debug, Clone)]
+    pub(in crate::cli::mcp) struct Audited(String);
+
+    impl Audited {
+        /// Record a refusal and render it. The ONLY way to make an
+        /// `Audited` from nothing.
+        ///
+        /// `demo` suppresses the write, not the refusal: a demo server
+        /// reads the real cross-process freeze marker, so its verdict
+        /// is genuine while its fleet is not, and it must leave no
+        /// line in a real operator's log.
+        #[allow(clippy::too_many_arguments)]
+        pub(super) fn record(
+            demo: bool,
+            profile: Option<&str>,
+            region: &str,
+            action: &str,
+            env: &str,
+            rule: &str,
+            remedy: &str,
+            message: String,
+        ) -> Self {
+            if !demo {
+                crate::audit::append_action_refused(
+                    None, profile, region, action, env, rule, remedy,
+                );
+            }
+            Audited(message)
+        }
+
+        /// Add context to the message without losing the proof.
+        ///
+        /// Inside the module, so the private field stays private and a
+        /// `Refused` still means a line was written.
+        pub(super) fn map_message(self, f: impl FnOnce(String) -> String) -> Self {
+            Audited(f(self.0))
+        }
+
+        pub(super) fn message(&self) -> &str {
+            &self.0
+        }
+
+        pub(super) fn into_message(self) -> String {
+            self.0
+        }
+    }
+}
+
+use audited::Audited;
+
+/// Why a write call failed.
+///
+/// The distinction is the audit obligation. `Refused` means a policy
+/// stopped this — a pin, a freeze, read-only, an out-of-scope verb, an
+/// operator declining — and every one of those leaves a
+/// `stage=refused` line, because a blocked write and nobody trying
+/// look identical afterwards otherwise. `Invalid` means nothing was
+/// refused: a missing argument, an unknown environment, a spent token,
+/// another write already in flight. There was no attempt to record.
+///
+/// Replaces a bare `String`, where the two were indistinguishable and
+/// a new gate could return `Err("nope".into())` and silently audit
+/// nothing. That happened in 0.40 and again in 0.42 — the latter found
+/// by classifying these sites to write this type.
+#[derive(Debug)]
+pub(super) enum WriteError {
+    /// Nothing was refused by policy; no audit line.
+    Invalid(String),
+    /// A policy refused this. The payload is proof it was recorded.
+    Refused(Audited),
+}
+
+impl std::fmt::Display for WriteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WriteError::Invalid(m) => f.write_str(m),
+            WriteError::Refused(a) => f.write_str(a.message()),
+        }
+    }
+}
+
+impl WriteError {
+    /// Add context, preserving which kind it is.
+    pub(super) fn with_context(self, f: impl FnOnce(String) -> String) -> Self {
+        match self {
+            WriteError::Invalid(m) => WriteError::Invalid(f(m)),
+            WriteError::Refused(a) => WriteError::Refused(a.map_message(f)),
+        }
+    }
+
+    pub(super) fn into_message(self) -> String {
+        match self {
+            WriteError::Invalid(m) => m,
+            WriteError::Refused(a) => a.into_message(),
+        }
+    }
+}
+
+// `?` on the many `ok_or("'env' is required")` sites keeps working,
+// and lands on Invalid — the right default, since a refusal now has to
+// be written deliberately.
+impl From<&str> for WriteError {
+    fn from(m: &str) -> Self {
+        WriteError::Invalid(m.to_string())
+    }
+}
+impl From<String> for WriteError {
+    fn from(m: String) -> Self {
+        WriteError::Invalid(m)
+    }
+}
+
 /// Whose credentials the write would go out under.
 ///
 /// An enum rather than `Option<String>` so the failure has to be
@@ -1172,7 +1315,9 @@ impl Server {
         verb: WriteVerb,
         args: &Value,
     ) -> Result<String, String> {
-        self.tool_write_plan(verb, args).await
+        self.tool_write_plan(verb, args)
+            .await
+            .map_err(WriteError::into_message)
     }
 
     /// Phase 1 for every write verb: shared gates (verb in scope,
@@ -1510,14 +1655,14 @@ impl Server {
         &self,
         verb: WriteVerb,
         args: &Value,
-    ) -> Result<String, String> {
+    ) -> Result<String, WriteError> {
         // The VERB, not merely "writes are on". Unreachable via the
         // scoped table — an out-of-scope tool is not advertised — but a
         // client holding a cached list from a wider grant would
         // otherwise reach the body. Belt-and-braces, and the braces are
         // the ones that matter after a scope is narrowed.
         if !self.effective_scope().allows(verb.tool_name()) {
-            return Err(self.refuse_out_of_scope(
+            return Err(self.refused_out_of_scope(
                 verb,
                 arg_str(args, "env").as_deref(),
                 arg_str(args, "region").as_deref(),
@@ -1538,13 +1683,13 @@ impl Server {
         // construction, so a *pin* added during a long-lived session is
         // not seen until restart. This comment used to claim it was.
         let profile = arg_str(args, "profile");
-        if let Some(msg) = self.gate_refusal(
+        if let Some(refused) = self.gate_refusal(
             &env_name,
             &profile,
             arg_str(args, "region").as_deref(),
             verb.label(),
         ) {
-            return Err(msg);
+            return Err(WriteError::Refused(refused));
         }
 
         let envs = self.fetch_envs(args).await?;
@@ -1650,9 +1795,27 @@ impl Server {
     }
 
     /// Phase 2: dispatch the pending plan.
-    pub(super) async fn tool_confirm_action(&self, args: &Value) -> Result<String, String> {
+    pub(super) async fn tool_confirm_action(&self, args: &Value) -> Result<String, WriteError> {
         if !self.effective_scope().any() {
-            return Err("writes are disabled — start the server with --allow-writes".into());
+            // A REFUSAL, and it audited nothing until 0.42 — the
+            // defect the backlog entry predicted, found by classifying
+            // these sites rather than by any guard. Its sibling
+            // `refused_out_of_scope` has always recorded `not_granted`
+            // for the same reason: a client reaching a write tool that
+            // is not advertised is working from a stale tool list or
+            // probing, which is worth seeing and invisible any other
+            // way. Reachable exactly as that one is — via a cached
+            // tool list from a wider grant.
+            return Err(WriteError::Refused(Audited::record(
+                matches!(self.backend, Backend::Demo),
+                arg_str(args, "profile").as_deref(),
+                arg_str(args, "region").as_deref().unwrap_or("-"),
+                "confirm",
+                "-",
+                "not_granted",
+                "restart the MCP server with --allow-writes",
+                "writes are disabled — start the server with --allow-writes".to_string(),
+            )));
         }
         let token = arg_str(args, "confirm_token").ok_or("'confirm_token' is required")?;
         let pending = {
@@ -1664,7 +1827,10 @@ impl Server {
                 return Err("no pending write — call a write tool first".into());
             };
             if p.token != token {
-                return Err(mismatched_token_message(&st.retired, &token));
+                return Err(WriteError::Invalid(mismatched_token_message(
+                    &st.retired,
+                    &token,
+                )));
             }
             if tokio::time::Instant::now() >= p.expires_at {
                 st.pending = None;
@@ -1680,10 +1846,9 @@ impl Server {
                 let (verb, env, region) = (p.verb, p.env.clone(), p.region.clone());
                 st.pending = None;
                 drop(st);
-                return Err(format!(
-                    "{} — plan dropped",
-                    self.refuse_out_of_scope(verb, Some(&env), region.as_deref())
-                ));
+                return Err(self
+                    .refused_out_of_scope(verb, Some(&env), region.as_deref())
+                    .with_context(|m| format!("{m} — plan dropped")));
             }
             if p.verb == WriteVerb::Terminate {
                 let supplied = arg_str(args, "confirm_name").unwrap_or_default();
@@ -1695,21 +1860,21 @@ impl Server {
                         );
                     }
                     p.name_retry_used = true;
-                    return Err(format!(
+                    return Err(WriteError::Invalid(format!(
                         "confirm_name must equal the env name ({}) — one retry remains on this token",
                         p.env
-                    ));
+                    )));
                 }
             }
             // Re-gate at CONFIRM time (R1, 0.28 panel): freeze/pin
             // were checked at plan time, but the token window is long
             // enough for an incident to be declared since. A refusal
             // here drops the plan — reality changed, re-plan required.
-            if let Some(msg) =
+            if let Some(refused) =
                 self.gate_refusal(&p.env, &p.profile, p.region.as_deref(), p.verb.label())
             {
                 st.pending = None;
-                return Err(msg);
+                return Err(WriteError::Refused(refused));
             }
             // Set BEFORE releasing the writes lock: a concurrent
             // plan/confirm checking `dispatching` must see it true.
@@ -1756,29 +1921,33 @@ impl Server {
         let outcome = self.ask_operator(&ask_summary(&pending)).await;
         if outcome.refuses() {
             let reason = outcome.reason();
-            // Audited, because a near-miss that leaves no trace is the
-            // pre-0.37 blind spot: a declined write and no attempt at
-            // all look identical in the log.
-            if !matches!(self.backend, Backend::Demo) {
-                crate::audit::append_action_refused(
-                    None,
-                    pending.profile.as_deref(),
-                    pending.region.as_deref().unwrap_or("-"),
-                    pending.verb.label(),
-                    &pending.env,
-                    "not_approved",
-                    reason,
-                );
-            }
-            // No remedy naming a control, deliberately. The control is
-            // a person who has just said no, and an agent that retries
-            // a decline is the failure mode here.
-            return Err(format!(
-                "not dispatched — {reason}. The plan is spent; do not re-plan the same \
-                 action unless the operator asks for it."
-            ));
+            // Through `Audited::record` like every other refusal, so
+            // the line is written by the same code that makes the
+            // error. The hand-rolled `append_action_refused` this
+            // replaces was correct, and was also exactly the shape
+            // that made the 0.40 omission invisible — an audit call
+            // that a future edit could drop without the type noticing.
+            //
+            // The remedy names no control, deliberately. The control
+            // is a person who has just said no, and an agent that
+            // retries a decline is the failure mode here.
+            return Err(WriteError::Refused(Audited::record(
+                matches!(self.backend, Backend::Demo),
+                pending.profile.as_deref(),
+                pending.region.as_deref().unwrap_or("-"),
+                pending.verb.label(),
+                &pending.env,
+                "not_approved",
+                reason,
+                format!(
+                    "not dispatched — {reason}. The plan is spent; do not re-plan the \
+                     same action unless the operator asks for it."
+                ),
+            )));
         }
-        self.dispatch_write(&pending).await
+        self.dispatch_write(&pending)
+            .await
+            .map_err(WriteError::Invalid)
     }
 
     /// Dispatch a DLQ batch, auditing each message separately.
@@ -2111,7 +2280,7 @@ impl Server {
     /// refuses anything, which is arguable — restoring a message during
     /// an incident is often what you want — but a gate with exceptions
     /// is one nobody can predict, and the operator can lift it.
-    pub(super) async fn tool_dlq_undo(&self, args: &Value) -> Result<String, String> {
+    pub(super) async fn tool_dlq_undo(&self, args: &Value) -> Result<String, WriteError> {
         let held = self.recoverable().await;
         let Some(want) = arg_str(args, "message_id") else {
             // No id: report what is available rather than guessing.
@@ -2139,15 +2308,17 @@ impl Server {
         };
 
         let Some(d) = held.into_iter().find(|d| d.original_id == want) else {
-            return Err(format!(
+            return Err(WriteError::Invalid(format!(
                 "'{want}' is not recoverable. Either it was never deleted by this server, \
                  or the {UNDO_WINDOW_SECS}s window has passed, or the server restarted. \
                  Call this tool with no arguments to see what IS recoverable."
-            ));
+            )));
         };
 
-        if let Some(msg) = self.gate_refusal(&d.env, &arg_str(args, "profile"), None, "dlq-undo") {
-            return Err(msg);
+        if let Some(refused) =
+            self.gate_refusal(&d.env, &arg_str(args, "profile"), None, "dlq-undo")
+        {
+            return Err(WriteError::Refused(refused));
         }
 
         if !matches!(self.backend, Backend::Demo) {
@@ -2366,7 +2537,7 @@ mod tests {
             )
             .await
             .expect_err("a pinned env must refuse");
-        assert!(err.contains("safety.envs"), "{err}");
+        assert!(err.to_string().contains("safety.envs"), "{err}");
 
         let after = std::fs::read_to_string(&path).unwrap_or_default();
         let delta = after
@@ -2426,7 +2597,7 @@ mod tests {
             .tool_write_plan(WriteVerb::Terminate, &json!({"env": env_name}))
             .await
             .expect_err("demo must still refuse — the verdict is real");
-        assert!(err.contains("safety.envs"), "{err}");
+        assert!(err.to_string().contains("safety.envs"), "{err}");
         let after = std::fs::read_to_string(&path).unwrap_or_default();
         assert!(
             !after
@@ -2584,7 +2755,7 @@ mod tests {
             .await
             .expect_err("terminate is outside the grant");
         assert!(
-            err.contains("not in this server's write scope"),
+            err.to_string().contains("not in this server's write scope"),
             "the refusal must name the scope: {err}"
         );
 
@@ -2625,7 +2796,10 @@ mod tests {
             )
             .await
             .expect_err("terminate was not granted");
-        assert!(err.contains("not in this server's write scope"), "{err}");
+        assert!(
+            err.to_string().contains("not in this server's write scope"),
+            "{err}"
+        );
 
         let after = std::fs::read_to_string(&path).unwrap_or_default();
         let delta = after
@@ -2757,7 +2931,10 @@ mod tests {
             )
             .await
             .expect_err("an unknown id must be refused even in demo");
-        assert!(err.contains("not in the dead-letter queue"), "{err}");
+        assert!(
+            err.to_string().contains("not in the dead-letter queue"),
+            "{err}"
+        );
     }
 
     /// Every verb says what it forecloses, and says it in one clean line.
@@ -3041,8 +3218,11 @@ mod tests {
             .tool_dlq_undo(&json!({"message_id": "never-existed"}))
             .await
             .expect_err("unknown id");
-        assert!(err.contains("not recoverable"), "{err}");
-        assert!(err.contains("no arguments"), "point at the listing: {err}");
+        assert!(err.to_string().contains("not recoverable"), "{err}");
+        assert!(
+            err.to_string().contains("no arguments"),
+            "point at the listing: {err}"
+        );
     }
 
     /// A resend is not recoverable, because nothing was destroyed.
@@ -3125,7 +3305,7 @@ mod tests {
             .tool_dlq_undo(&json!({"message_id": id}))
             .await
             .expect_err("expired");
-        assert!(err.contains("not recoverable"), "{err}");
+        assert!(err.to_string().contains("not recoverable"), "{err}");
     }
 
     /// Remembering a new message evicts ones that have expired.
@@ -3464,6 +3644,110 @@ mod tests {
         assert!(
             ask_summary(&p).contains("UNKNOWN"),
             "and an unresolved identity must be visible in the dialog too"
+        );
+    }
+
+    /// Every policy refusal is a `Refused`; nothing else is.
+    ///
+    /// The type's whole claim: holding a `Refused` means an audit line
+    /// exists. A path that refuses by policy and returns `Invalid`
+    /// silently records nothing — which is the 0.40 defect, and was
+    /// still live in `tool_confirm_action`'s scope check until
+    /// classifying these sites for this type turned it up.
+    #[tokio::test]
+    async fn a_policy_refusal_is_typed_as_one() {
+        // Read-only server: confirm_action is not advertised, but a
+        // client with a cached tool list reaches the body.
+        let s = Server::with_scope(true, false, crate::cli::mcp::WriteScope::None);
+        let err = s
+            .tool_confirm_action(&json!({"confirm_token": "anything"}))
+            .await
+            .expect_err("a read-only server must refuse");
+        assert!(
+            matches!(err, WriteError::Refused(_)),
+            "the scope check is a POLICY refusal and must be typed as one, or it \
+             audits nothing: {err}"
+        );
+        assert!(err.to_string().contains("--allow-writes"), "{err}");
+
+        // And a malformed request is NOT a refusal — otherwise
+        // `is_refusal` is satisfied by calling everything one, and the
+        // audit log fills with attempts nobody made.
+        let s = Server::with_scope(true, false, crate::cli::mcp::WriteScope::All);
+        for bad in [json!({}), json!({"confirm_token": "no-such-token"})] {
+            let err = s
+                .tool_confirm_action(&bad)
+                .await
+                .expect_err("malformed must fail");
+            assert!(
+                !matches!(err, WriteError::Refused(_)),
+                "a missing or unknown token is not a policy refusal — nothing was \
+                 blocked, so there is no attempt to record: {err}"
+            );
+        }
+    }
+
+    /// An out-of-scope verb refuses, and is typed as a refusal.
+    #[tokio::test]
+    async fn a_verb_outside_the_grant_is_a_typed_refusal() {
+        let s = Server::with_scope(
+            true,
+            false,
+            super::super::WriteScope::Only(vec!["dlq_delete".into()]),
+        );
+        let err = s
+            .tool_write_plan(WriteVerb::Terminate, &json!({"env": "poly-prod"}))
+            .await
+            .expect_err("terminate is not granted");
+        assert!(matches!(err, WriteError::Refused(_)), "{err}");
+        assert!(
+            err.to_string().contains("not in this server's write scope"),
+            "{err}"
+        );
+    }
+
+    /// `Audited` cannot be forged.
+    ///
+    /// The privacy of its field is what makes `Refused` mean
+    /// something, and privacy is easy to widen by accident while
+    /// chasing a compile error. This fails if the field gains a
+    /// visibility keyword, or if a second constructor appears
+    /// alongside `record`.
+    #[test]
+    fn a_refusal_cannot_be_constructed_without_recording_it() {
+        let src = include_str!("writes.rs");
+        let body = crate::app::tests::scan::production_half(src);
+        let start = body
+            .find("mod audited {")
+            .expect("the audited module must exist");
+        let end = body[start..].find("\n}\n").expect("its body ends") + start;
+        let module = &body[start..end];
+
+        assert!(
+            module.contains("struct Audited(String);"),
+            "the field must stay PRIVATE — a `pub` on it lets any code in this \
+             module build a Refused without an audit line, which is the entire \
+             property the type carries"
+        );
+        // Exactly one way to make one from nothing.
+        let ctors = module.matches("-> Self {").count();
+        assert_eq!(
+            ctors, 2,
+            "expected exactly two: `record`, which writes the line, and \
+             `map_message`, which only rewrites one that exists. A third is a \
+             way to hold a refusal that was never recorded — which is the hatch \
+             this type exists to remove."
+        );
+        assert!(
+            module.contains("append_action_refused"),
+            "record must audit"
+        );
+
+        // Nothing outside the module may name the tuple constructor.
+        let elsewhere = body.replace(module, "");
+        assert!(
+            !elsewhere.contains("Audited("),
+            "`Audited(..)` outside its module means the field is reachable"
         );
     }
 }

@@ -401,8 +401,12 @@ mod write_gate_guard {
             (
                 "src/cli/mcp/writes.rs",
                 1,
-                "demo mode reaches the same verdict and writes nothing \
-                 real — the refusal is genuine, the fleet is not",
+                "`Server::gate_refusal` uses the unaudited half for BOTH \
+                 backends and records through `Audited::record`, so this \
+                 module has exactly one place that writes a refusal line \
+                 and a `WriteError::Refused` is proof it ran. Demo still \
+                 writes nothing real — the refusal is genuine, the fleet \
+                 is not",
             ),
         ];
 
