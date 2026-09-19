@@ -368,8 +368,25 @@ least one major client that describes something which cannot happen.
 
 **Changing the FLAG needs a client restart; upgrading the BINARY does
 not.** Two different questions, and conflating them sends people the
-long way round. On a client that can be asked, this whole problem is
-moot — there is no flag to change.
+long way round.
+
+> **Upgrading to 0.42 changes what a reconnect does.** If your server
+> is registered bare — `ebman mcp serve`, no `--allow-writes` — and
+> your client declares elicitation, then on 0.42 that registration
+> gains the write surface. The binary swap alone changes nothing; a
+> running server keeps the build it started with. **Pressing Reconnect
+> is what applies it.**
+>
+> So on 0.42 a reconnect is not the neutral maintenance action it used
+> to be: for a bare registration it is the grant. Every write is still
+> put to you as a dialog and nothing dispatches without your answer —
+> the gate is real — but the thing that used to stand between an agent
+> and `dlq_delete` was a config edit you had not made, and now it is a
+> button you press for unrelated reasons.
+>
+> Reconnect deliberately, or pass `--read-only` first if you want the
+> old posture kept. `doctor`'s `writes_via` tells you which side of
+> this you are on.
 
 A stdio MCP server is a child process, so a reconnect terminates and
 respawns it, which re-executes `ebman` and picks up whatever is now on

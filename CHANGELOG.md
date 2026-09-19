@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **On 0.42, reconnecting a bare registration is the grant — and
+  nothing said so.** A live agent found this after the tag. If a
+  server is registered `ebman mcp serve` with no `--allow-writes` and
+  the client declares elicitation, that registration gains the write
+  surface on 0.42 — and the act that applies it is pressing
+  **Reconnect**, which operators do for unrelated reasons. During this
+  release's own testing the maintainer reconnected twice in an
+  afternoon without it meaning anything; on 0.42 the next one would
+  have meant something.
+
+  The gate is real — every write is still put to the operator and a
+  decline is final. But what used to stand between an agent and
+  `dlq_delete` was a config edit they had not made, and now it is a
+  button. `docs/headless.md` said the opposite, because it was written
+  when the flag was the grant: "upgrading the BINARY does not [need a
+  restart] — on a client that can be asked, this whole problem is
+  moot."
+
+  Now documented where an operator reads it, and the `instructions`
+  block asks the agent to say it once, early, before planning a write
+  rather than after — ebman has no channel to the operator except a
+  dialog, so the agent is the only way the message reaches them.
+
 ## [0.42.0] - 2026-09-19
 
 ### Added
