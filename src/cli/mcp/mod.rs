@@ -132,6 +132,23 @@ impl AskOutcome {
         matches!(self, AskOutcome::Declined | AskOutcome::Unanswered)
     }
 
+    /// The audit vocabulary for `stage=asked`.
+    ///
+    /// Separate from `reason()`, which is prose for the agent. This is
+    /// a token a log reader filters on, so it is a fixed small set and
+    /// stays stable across wording changes to the agent-facing text.
+    pub(crate) fn answer_label(self) -> &'static str {
+        match self {
+            AskOutcome::Approved => "approved",
+            AskOutcome::Declined => "declined",
+            AskOutcome::Unanswered => "unanswered",
+            // Never reaches the audit — the caller skips `NotAsked`,
+            // because no question was put and a line claiming one was
+            // is exactly the false record this stage exists to avoid.
+            AskOutcome::NotAsked => "not_asked",
+        }
+    }
+
     /// What the agent should do next, which is NOT the same for a
     /// decline and a silence.
     ///
@@ -5079,5 +5096,66 @@ mod tests {
         // And a standing refusal still outranks both.
         let refused = WriteScope::All.agent_summary(Some("read_only is set."), true, true);
         assert!(!refused.contains("YOUR CLIENT"), "{refused}");
+    }
+
+    /// An approval leaves a record that a question was put.
+    ///
+    /// Before this, a dispatch carried `can_ask=true` — an ask was
+    /// POSSIBLE — and nothing said one happened or what answered it.
+    /// A client that declares elicitation and answers its own dialogs
+    /// produced a cleaner log than an operator at a keyboard, which
+    /// `docs/design/protection-levels.md` names as precisely the wrong
+    /// incentive.
+    #[test]
+    fn the_ask_audit_vocabulary_is_stable_and_excludes_the_unasked() {
+        assert_eq!(AskOutcome::Approved.answer_label(), "approved");
+        assert_eq!(AskOutcome::Declined.answer_label(), "declined");
+        assert_eq!(AskOutcome::Unanswered.answer_label(), "unanswered");
+
+        // Distinct tokens, or a log reader cannot filter on them.
+        let all = [
+            AskOutcome::Approved.answer_label(),
+            AskOutcome::Declined.answer_label(),
+            AskOutcome::Unanswered.answer_label(),
+        ];
+        assert_eq!(
+            all.iter().collect::<std::collections::HashSet<_>>().len(),
+            3,
+            "every outcome must be distinguishable in the log"
+        );
+
+        // And the vocabulary is separate from the agent-facing prose,
+        // so rewording one cannot silently reshape the other.
+        for o in [
+            AskOutcome::Approved,
+            AskOutcome::Declined,
+            AskOutcome::Unanswered,
+        ] {
+            assert!(
+                !o.answer_label().contains(' '),
+                "a log token must not contain spaces — `escape_value` does not quote \
+                 them, so a spaced token can forge a field: {:?}",
+                o.answer_label()
+            );
+        }
+    }
+
+    /// The unasked case must not produce a line claiming a question.
+    #[test]
+    fn a_connection_that_was_never_asked_writes_no_ask_line() {
+        let src = include_str!("writes.rs");
+        let body = crate::app::tests::scan::production_half(src);
+        let call = body
+            .find("append_action_asked")
+            .expect("the confirm path must audit the ask");
+        let guard = body[..call]
+            .rfind("outcome != AskOutcome::NotAsked")
+            .expect("and must exclude the case where no question was put");
+        assert!(
+            call - guard < 400,
+            "the NotAsked guard must be the condition on THIS call — a line saying \
+             a question was asked when none was is the false record this stage \
+             exists to prevent"
+        );
     }
 }
