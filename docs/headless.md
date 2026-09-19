@@ -263,10 +263,19 @@ So the instruction is: **operator edits the config, operator restarts
 the client.** Never "ask your agent to add `--allow-writes=…`" — in at
 least one major client that describes something which cannot happen.
 
-**Restart the client, don't just reconnect.** Whether a client's
-reconnect re-reads the config and re-spawns with the new argv, or
-reuses the spawn command cached at session start, is client behaviour
-ebman cannot see and we have not established for any specific client.
+**Changing the FLAG needs a client restart; upgrading the BINARY does
+not.** Two different questions, and conflating them sends people the
+long way round.
+
+A stdio MCP server is a child process, so a reconnect must terminate
+and respawn it — which re-executes `ebman` and picks up whatever is now
+on PATH. A version upgrade therefore needs only `brew upgrade` and a
+reconnect. (Inference from the mechanism rather than a measurement, but
+the mechanism does not leave much room: a "reconnect" that did not
+respawn would not reconnect anything.)
+
+Whether that respawn uses NEW argv, or the spawn command cached at
+session start, is the part nobody has established.
 The failure mode if it caches matters: the server comes back without
 the verb, `tools/list` omits it, and that reads as "the feature does
 not work" rather than "the flag has not taken effect yet". A full
