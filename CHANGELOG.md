@@ -6,28 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-### Changed
+### Added
 
-### Fixed
+- **`dlq_undo` — a deleted message can be put back for 10 minutes.**
+  It changes the worst prompt in the tool: `dlq_delete`'s foreclosure
+  line now reads *"ebman holds a copy in memory for 600s — `dlq_undo`
+  can put it back — and after that nothing can"* rather than *"nothing
+  here can return it"*.
 
-- **A dead-letter resend was moving a husk.** All three resend paths —
-  the MCP `dlq_resend`, the TUI's single resend and its bulk resend —
-  sent the message *body* and dropped its custom attributes.
+  In memory only, never on disk. `mcp.peek_bodies` exists because those
+  payloads can carry customer data, and a durable copy would be worse
+  than showing one to an agent. It dies with the process, by design.
 
-  For a cron-style worker task that is not partial loss, it is total.
-  The body is the fixed literal `elasticbeanstalk scheduled job` and
-  carries nothing; `beanstalk.sqsd.task_name`, `.path` and
-  `.scheduled_time` carry every fact about which task failed — which is
-  exactly why the peek asks for them. A resend delivered a message with
-  no routing information on it.
+  Single-phase, unlike every other write: undo is the least destructive
+  action here and is reached for under exactly the time pressure that
+  makes plan-then-confirm harmful. It rides along with any write grant,
+  like `confirm_action`, since it can only reverse a delete that was
+  already authorised.
 
-  Attributes are now retained verbatim through a peek, including ones
-  an application set that ebman knows nothing about, and re-sent with
-  the message. `send_message` takes them as an argument, so the old
-  shape no longer compiles.
-
-  (What follows for sqsd's behaviour — that it would have had no path
-  to route to — is inference. The attribute loss is not.)
+  Honest about its limits. Only a delete captures — a resend leaves the
+  message on the main queue, so "restoring" it would enqueue a
+  duplicate, and a purge can be thousands where a capped sample would
+  put back *some* of what it destroyed. And the restore reports what it
+  could not restore: the message id changes, `receive_count` resets to
+  0, and the enqueue time becomes now.
 
 - **New MCP tool: `doctor`** — what this connection can and cannot do,
   and why. Reports the ebman build, what your client declared at
@@ -44,14 +46,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   It touches neither AWS nor the filesystem, so it answers even when
   everything it describes is broken. A diagnostic that fails for the
   reasons it exists to diagnose is not one.
-
-- **A dead-letter write now records which message it destroyed.** The
-  target of a DLQ write is the environment, so the audit line said a
-  message was deleted from `poly-batch` and never which one. For every
-  other action that is survivable — you can go and look at the
-  environment afterwards. For a delete it is not: the thing the log
-  declined to name is exactly the thing that no longer exists. Lines
-  now carry `message_id=` and `task=`.
 
 - **Every write plan now says what it forecloses.** A plan described
   the operation and was silent about the stakes, which is worse than
@@ -91,6 +85,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   parse error refuses every write until it is fixed — `safety.read_only
   = ture` fails closed rather than silently meaning false.
 
+### Changed
+
 - **A verb grant says whose job it is.** Field-reported from a session
   that upgraded to 0.40.0, went to scope its own server to
   `--allow-writes=dlq_delete` — the narrowest grant, the exact case the
@@ -113,6 +109,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   correct under either behaviour. A narrow grant's `instructions` now
   tells the agent to suspect this before concluding a granted verb is
   missing.
+
+### Fixed
+
+- **A dead-letter resend was moving a husk.** All three resend paths —
+  the MCP `dlq_resend`, the TUI's single resend and its bulk resend —
+  sent the message *body* and dropped its custom attributes.
+
+  For a cron-style worker task that is not partial loss, it is total.
+  The body is the fixed literal `elasticbeanstalk scheduled job` and
+  carries nothing; `beanstalk.sqsd.task_name`, `.path` and
+  `.scheduled_time` carry every fact about which task failed — which is
+  exactly why the peek asks for them. A resend delivered a message with
+  no routing information on it.
+
+  Attributes are now retained verbatim through a peek, including ones
+  an application set that ebman knows nothing about, and re-sent with
+  the message. `send_message` takes them as an argument, so the old
+  shape no longer compiles.
+
+  (What follows for sqsd's behaviour — that it would have had no path
+  to route to — is inference. The attribute loss is not.)
+
+- **A dead-letter write now records which message it destroyed.** The
+  target of a DLQ write is the environment, so the audit line said a
+  message was deleted from `poly-batch` and never which one. For every
+  other action that is survivable — you can go and look at the
+  environment afterwards. For a delete it is not: the thing the log
+  declined to name is exactly the thing that no longer exists. Lines
+  now carry `message_id=` and `task=`.
 
 ## [0.40.0] - 2026-09-18
 
