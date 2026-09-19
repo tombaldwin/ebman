@@ -206,13 +206,13 @@ name the first two as deliberate gaps, so they are debts, not ideas.
    attribute it, naming `-p` and CI harnesses as the concrete case.
    The flat do-not-retry prohibition is unchanged.
 
-   `stage=asked` already records latency, which is what makes the two
+   `stage=asked` records the latency, which is what makes the two
    distinguishable afterwards — a sub-second decline is not somebody
-   reading a foreclosure line. **Still open, and now better posed:**
-   should a sub-second answer be treated differently at the time, or
-   only be visible in the log? That is a maintainer ruling, not an
-   implementation detail, and it is the stop condition this item
-   always carried.
+   reading a foreclosure line.
+
+   **Ruled 2026-09-20: log it, do not act on it.** No code change; this
+   is the shipped behaviour. See "Not scheduled" for the reasoning and
+   the one thing that would reopen it.
 
    *Original entry:*
 
@@ -502,6 +502,34 @@ one never happens. If that stops being true, the stage is wrong.
    a guess about the second.
 
 ### Not scheduled
+
+- **Refusing an implausibly fast answer.** `stage=asked` records how
+  long a confirmation took, and a sub-second answer is not somebody
+  reading a foreclosure line — headless `claude -p` auto-declines in
+  well under the 22 seconds its whole session took, against minutes
+  for a human on the same dialog. **Ruled 2026-09-20: record it, do
+  not gate on it.**
+
+  Two reasons, and the second decides it. A threshold does not stop
+  anyone who means it — a client that auto-answers can sleep two
+  seconds first, one line — so it catches only accidents, at the cost
+  of refusing a fast human who already knows what a purge does. And
+  the case measured is an auto-*decline*, which is fail-safe; the
+  dangerous shape is an auto-*approve*, which no known client does. A
+  magic number defending an unobserved threat while misfiring on
+  observed behaviour is the wrong trade.
+
+  This also keeps the design honest about its own limit: a false
+  attestation is not detectable at the time, and latency does not
+  change that — it makes it reviewable afterwards, which is the
+  smaller and true claim.
+
+  **What reopens it:** a client observed auto-*approving*. Then
+  surface it in the result first (dispatch, but say "answered in
+  180ms") and only gate if it proves common — at which point the
+  threshold is chosen from the latency distribution already in the
+  log, not guessed. That is the argument for logging now: it is what
+  generates the evidence any gate would need.
 
 - **Hierarchical resources.** Cedar's entity ancestry is the known
   answer; ebman's flat env/account pins do not need it. A namespaced
