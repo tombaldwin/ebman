@@ -403,6 +403,13 @@ pub(crate) struct Server {
     /// Two-phase write state: the single pending-plan slot (spec:
     /// writes are serialized server-wide).
     writes: tokio::sync::Mutex<writes::WriteState>,
+    /// Messages this server destroyed and can still put back.
+    ///
+    /// In memory, never on disk: a dead-lettered body can carry
+    /// customer data — `mcp.peek_bodies` exists for that reason — and a
+    /// durable copy would be worse than showing one to an agent. Dies
+    /// with the process, by design.
+    deleted: tokio::sync::Mutex<Vec<writes::DeletedMessage>>,
     /// Whether a write dispatch is in flight — separate AtomicBool so
     /// the confirm path's RAII guard can reset it on an unwind
     /// (pre-tag review I2).
@@ -475,6 +482,7 @@ impl Server {
             write_scope: scope,
             safety_cfg,
             writes: tokio::sync::Mutex::new(writes::WriteState::default()),
+            deleted: tokio::sync::Mutex::new(Vec::new()),
             dispatching: std::sync::atomic::AtomicBool::new(false),
             client_name: std::sync::Mutex::new("unknown".to_string()),
             client_supports_elicitation: std::sync::atomic::AtomicBool::new(false),
