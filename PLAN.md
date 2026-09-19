@@ -97,28 +97,147 @@ holds:
 
 ## Current window
 
-*Refreshed 2026-09-09. The previous window (narrow-terminal work, the
-mutation sweep, 0.35.0 and 0.36.0) is closed — see `CHANGELOG.md` and
-`docs/backlog/archive.md`.*
+*Refreshed 2026-09-19, after 0.42.0. The previous window's blocking
+question — whether an MCP client can be asked something mid-request —
+is answered, measured and shipped, which unblocks stage 5 and changes
+what the remaining stages are for.*
 
 ### Done since the last refresh
 
-- **0.36.0 shipped** — the narrow-terminal release, reviewed by a
-  three-way panel that found four things before they went out, including
-  a backup file bound for the crates.io tarball.
-- **Whole-tree mutation sweep completed locally** — 6209 mutants, 63.3%
-  kill rate against 52.1% at the previous full sweep. All 105 survivors
-  in the changed-code slice triaged; three recorded as genuine
-  equivalents so nobody re-investigates them.
-- **`docs/design/protection-levels.md`** written and revised after
-  review.
+- **0.42.0 shipped** — writes without a flag on any client that can ask
+  the operator; `--read-only`; batch DLQ plans; caller identity in every
+  plan; `writes_via`. Live on crates.io, Homebrew and the MCP Registry,
+  and **exercised against real infrastructure**: a dead-lettered message
+  cleared on the uFlexi fleet through plan → dialog → approve.
+- **The elicitation round-trip is observed, not inferred** — approve,
+  decline and walk-away, against a real client. Stage 3's instrument is
+  no longer dead.
+- **Four reviewers found a fail-open before it shipped** — a dead ask
+  channel dispatched an unapproved `terminate`. A re-review after the
+  fix pass found three more defects the fix pass had itself introduced,
+  including a guard that asserted a defect and talked a second reviewer
+  out of reporting it.
 
-### Now — protection levels
+### Now — 0.43
 
-*Stages 1-4 and 4b are done. Stage 5 (levels + the `Decision` type) is
-the next substantial one and remains blocked on the elicitation data
-stage 3 instruments — the ladder's middle rungs are defined in terms of
-asking, and 4b deliberately did not prejudge them.*
+Three items, all of them promises already made in public. The tag notes
+name the first two as deliberate gaps, so they are debts, not ideas.
+
+0. **A declared capability is not a human** *(behaviour + measurement)*
+
+   The load-bearing claim of 0.42.0 is that writes are safe by default
+   because a person answers. Nothing verifies a person is there.
+   `effective_scope` grants every verb on a self-reported capability
+   bit in the client's `initialize` frame, and a framework that
+   declares `elicitation: {}` and routes the question to its own model
+   satisfies every ask — producing a **cleaner** audit trail than an
+   honest operator, which `protection-levels.md` calls out by name as
+   the wrong incentive.
+
+   That note prescribed the mitigation and 0.42.0 shipped without it.
+   Partly repaid already: `stage=asked` now records the question, the
+   answer and the latency, so an approval leaves a trace and a
+   twenty-millisecond answer is distinguishable from someone reading a
+   foreclosure line. Remaining:
+
+   - `doctor` and the docs must never describe elicitation-approved as
+     "a human confirmed" — the honest phrasing is that the client said
+     it would ask.
+   - **Script one non-Claude-Code elicitation-declaring client.** The
+     whole "asking is a known quantity" claim rests on n=1. This is the
+     same twenty minutes item 2 gets, and it is worth more.
+
+   Note for whoever picks this up: item 1 is **no defence here.** A
+   self-answering client types an environment name back as readily as
+   it clicks. Name-back defends against a rubber-stamping human, which
+   is a different threat.
+
+1. **Terminate name-back parity** *(behaviour)*
+
+   In the TUI a human types the environment name back before a
+   terminate. Over MCP `confirm_name` is supplied by the AGENT, so the
+   human's whole contribution to destroying an environment is one
+   click. "Same bargain as the TUI" is the justification for
+   writes-by-default, and for this one verb it is not true.
+
+   Elicitation supports the missing gate: a `requestedSchema` with a
+   required string property, validated against the env name, refusing
+   on mismatch.
+
+   **The ordering is the point.** A non-empty `requestedSchema` is
+   client behaviour nothing has exercised — the live matrix validated
+   the zero-field form only. So: prototype the schema, verify against a
+   real client, THEN ship. Shipping it untested would repeat the exact
+   sin 0.42.0 spent a day correcting.
+
+   Fails closed if a client cannot render it: no typed field means no
+   match, which refuses. That is the right direction, and it is also
+   why this must be measured — a silent refusal of every terminate is a
+   poor way to discover a rendering gap.
+
+2. **The headless configuration** *(measurement, then a maintainer ruling)*
+
+   `claude -p` and CI harnesses use the same client binary and
+   plausibly declare the same capability with no human to render to.
+   For those, every write waits out the ask window and then denies —
+   including writes an operator explicitly granted with
+   `--allow-writes`, because the ask fires on capability alone.
+
+   The tag notes state this as untested rather than claiming it works.
+   Twenty minutes with `claude -p` settles it. If it reproduces, the
+   fix is not obvious and is a **stop condition**, not a small item —
+   an autonomous run must measure and then stop, rather than reach for
+   a flag design:
+   possibly a startup flag asserting no human is present, possibly
+   honouring the flag as its own gate when the ask cannot be delivered.
+   **Measure first; the answer changes which.**
+
+3. **A resend whose delete half failed** *(behaviour, small)*
+
+   `dispatch_one_dlq_message` sends before deleting, deliberately. If
+   the send succeeds and the delete fails, the item reports `ok: false`
+   with a bare error — but the message IS now on the main queue and the
+   original is still in the DLQ. An agent that retries the "failed" id,
+   which the batch report invites, mints another duplicate per attempt.
+   Found by the correctness reviewer, twice, in both reviews.
+
+   The error needs to say a duplicate now exists and not to resend that
+   id. Half a day including the mock-client test.
+
+### Then — re-scope stage 5 against runtime-grants *(analyse, half a day)*
+
+*This entry said "unblocked" and that was momentum wearing a label. A
+review took it apart three ways and all three hold:*
+
+- **The data is not the data.** Stage 3's prerequisite is a
+  *population* question — "if MOST clients declare it". What arrived is
+  one connection, one client, one day. That answers the *mechanism*
+  question and not the one the ladder's middle rungs were waiting on.
+- **Data was not the only block.** The neutral action vocabulary is
+  named in `protection-levels.md` as load-bearing for levels and
+  budgeted as part of them. It has not moved. "Nothing in it changed,
+  it simply became buildable" was false on the note's own text.
+- **`runtime-grants.md` reshapes stage 5 rather than following it.**
+  Config may only say no; no key grants; request-as-unit; parity
+  default. 0.42.0 shipped that reshape. Stage 5 as written is
+  `safety.level = "trusted"` config keys and an ask tri-state that
+  request-as-unit collapsed into ask-on-every-write.
+
+So the work is not "build stage 5". It is: **say what levels still buy
+after 0.42.0.** Plausible answer — something for headless CLI
+principals, approximately nothing for an elicitation-capable MCP
+connection where every write already asks and pins already refuse.
+"Killed by evidence" is an outcome this file celebrates; parts of
+stage 5 are candidates, and pretending otherwise guarantees the
+thrown-away work the stages section exists to prevent.
+
+### The protection-levels stages, in order
+
+*Stages 1-4 and 4b are done. Stage 5 (levels + the `Decision` type) was
+blocked on the elicitation data stage 3 instruments — the ladder's
+middle rungs are defined in terms of asking, and 4b deliberately did
+not prejudge them. **That block lifted on 2026-09-19**: 0.42.0 shipped
+the ask and its behaviour is measured, not assumed. See "Then" above.*
 
 The design note is agreed in principle. What follows is the
 implementation order, and the ordering is the important part: the

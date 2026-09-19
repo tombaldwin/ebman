@@ -748,6 +748,51 @@ pub(crate) fn append_action_refused(
     write_audit_line(account, profile, region, &detail);
 }
 
+/// Append a `stage=asked` line — an approval request put to a human,
+/// and what came back.
+///
+/// `docs/design/protection-levels.md` asked for this and 0.42.0
+/// shipped without it: *"A framework that declares `elicitation: {}`
+/// and routes the question back to its own model gets its asks
+/// 'satisfied' with no attestation event... a cleaner audit trail than
+/// the honest attester, which is precisely the wrong incentive. So:
+/// audit the ask as well, and never describe elicitation as 'a human
+/// confirmed'."*
+///
+/// Without it a dispatch carried `can_ask=true`, which records that an
+/// ask was POSSIBLE — not that one was put, nor what answered it. A
+/// self-answering client and an operator at a keyboard produced
+/// identical logs.
+///
+/// `answer` is `approved` / `declined` / `unanswered`. `elapsed_ms` is
+/// recorded because it is the cheapest discriminator available between
+/// a person and a model: a human reading a foreclosure line takes
+/// seconds, and something answering in twenty milliseconds is not
+/// reading anything. It is evidence, not proof — this cannot detect a
+/// false attestation at the time, which the design note states as the
+/// honest limit — but it makes the two distinguishable AFTERWARDS,
+/// which is the whole claim.
+pub(crate) fn append_action_asked(
+    account: Option<&str>,
+    profile: Option<&str>,
+    region: &str,
+    action_label: &str,
+    target: &str,
+    answer: &str,
+    elapsed_ms: u128,
+) {
+    let detail = format!(
+        "stage=asked {} {} answer={} elapsed_ms={elapsed_ms}",
+        field_token("action", action_label),
+        field_token("target", target),
+        // Same forge path the refusal writer closes: a fixed set
+        // today, escaped anyway, because "no writer can forge a line"
+        // must not depend on who the callers happen to be.
+        sanitise_token(answer),
+    );
+    write_audit_line(account, profile, region, &detail);
+}
+
 /// Append a `stage=undone` line — an operator-driven undo of a prior
 /// action. No outcome (the undo dispatch logs its own completion via the
 /// normal action path); this records that the undo was initiated.

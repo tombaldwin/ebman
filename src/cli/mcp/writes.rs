@@ -2137,7 +2137,26 @@ impl Server {
         // by default only where the ask exists; those two are one
         // change, deliberately, because advertising without the ask is
         // an open surface with no gate.
+        let asked_at = std::time::Instant::now();
         let outcome = self.ask_operator(&ask_summary(&pending)).await;
+        // Record the ASK itself, whatever it answered — including an
+        // approval, which previously left no trace that a question had
+        // been put at all. A dispatch line's `can_ask=true` says an
+        // ask was possible; this says one happened and what came back.
+        // `docs/design/protection-levels.md` asked for it: a client
+        // that declares elicitation and answers its own dialogs
+        // otherwise produces a cleaner record than an honest one.
+        if outcome != AskOutcome::NotAsked && !matches!(self.backend, Backend::Demo) {
+            crate::audit::append_action_asked(
+                None,
+                pending.profile.as_deref(),
+                pending.region.as_deref().unwrap_or("-"),
+                pending.verb.label(),
+                &pending.env,
+                outcome.answer_label(),
+                asked_at.elapsed().as_millis(),
+            );
+        }
         // Belt-and-braces, independent of `refuses()`. If this verb is
         // only reachable because the client declared elicitation —
         // `write_scope` does not grant it, `effective_scope` does —

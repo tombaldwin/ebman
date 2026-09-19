@@ -8,6 +8,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **An approval left no record that anyone was asked.** A dispatch
+  carried `can_ask=true`, which says an ask was *possible* — not that
+  one happened, nor what answered it. So a client that declares
+  elicitation and routes the question to its own model produced a
+  **cleaner** audit trail than an operator at a keyboard, which
+  `docs/design/protection-levels.md` names as precisely the wrong
+  incentive. That note prescribed `stage=asked` and 0.42.0 shipped
+  without it.
+
+  Now recorded: the action, the target, the answer
+  (`approved`/`declined`/`unanswered`) and the latency. Latency
+  because it is the cheapest discriminator there is between a person
+  and a model — someone reading a foreclosure line takes seconds, and
+  a twenty-millisecond answer is not reading anything. Evidence, not
+  proof: a false attestation still cannot be detected at the time,
+  which the design note states as the honest limit. What changes is
+  that the two are distinguishable afterwards.
+
 - **On 0.42, reconnecting a bare registration is the grant — and
   nothing said so.** A live agent found this after the tag. If a
   server is registered `ebman mcp serve` with no `--allow-writes` and
