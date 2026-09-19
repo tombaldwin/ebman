@@ -22,7 +22,17 @@
   produces — it did not do what was asked, and a CI gate must not read
   it as success.
 - **`ebman audit replay`** re-dispatches a previously-audited action and is itself audit-logged (`replay_of=`-tagged dispatched/completed lines); destructive verbs still require `--yes`.
-- **`ebman mcp serve` is read-only unless you opt in.** No write tool is even *advertised* without `--allow-writes`; without the flag the surface is reads only. With it, the five write verbs are two-phase (a plan, then a single-use 60s `confirm_token`), serialized one at a time, and subject to the same pins, freeze and read-only gates as every other surface — re-checked at both plan and confirm, so the token window cannot be used to slip a write past a freshly-declared incident. Every tool descriptor carries MCP annotations (`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint`) so a client can tell the two groups apart without hardcoding names. Redaction-by-default covers every tool that can carry option values — `get_option_settings`, `drift` (tf + live values of drifted secrets), and `audit_log` (`value=` extras from `:set-option` / `lint --fix` lines) — so an MCP client sees config *keys*, not secrets, with `--no-redact` as the explicit opt-out. **Three reads return free text that cannot be redacted**: `recent_logs` (CloudWatch log lines), and the message *bodies* from `worker_queues` with `peek` and from `why` — which peeks the dead-letter queue automatically, up to five messages, with no opt-in. ebman's redaction is namespace-and-key based: it recognises `aws:elasticbeanstalk:application:environment` and `DBPassword`, not a token an application printed mid-sentence or a customer record inside a queued job. A worker queue carries whatever your application POSTed to it. Each of those tools says so in its own description. If that data is sensitive, granting an agent these tools hands it over — scope the IAM role or leave them unused.
+- **`ebman mcp serve` writes only with a human in the loop.** If your
+  MCP client declared **elicitation** at handshake, the write tools are
+  available and every confirmation is put to you as a dialog naming the
+  action, what it forecloses, and the identity it would use — nothing
+  dispatches without your answer, and an ask that cannot be delivered
+  denies. If your client *cannot* be asked, the write tools are absent
+  unless you start the server with `--allow-writes`. Either way
+  `--read-only` refuses writes on that server outright, and
+  `safety.read_only` refuses them everywhere including the TUI. Run
+  `doctor` to see which case you are in. (Before 0.42 the flag was the
+  only route; this bullet described that.)
 - **Drift redaction everywhere** (0.27+): the same contract covers `ebman drift` (`--no-redact` opts out — piped CI logs shouldn't collect drifted secrets by default) and the TUI `:drift` overlay (always on; the deliberate paths for reading real values are the Config tab / `:env list`).
 
 ## What's stored locally

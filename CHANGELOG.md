@@ -4,81 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Changed
-
-- **A refusal you can hold is a refusal that was recorded.** The MCP
-  write surface returned `Result<String, String>`, so a policy refusal
-  and a malformed request were the same type and a new gate could
-  return `Err("nope".into())` and audit nothing. That happened in 0.40,
-  and classifying these sites found it still live: `confirm_action`'s
-  scope check refused without a line, while its sibling
-  `refuse_out_of_scope` had always recorded `not_granted` for the same
-  reason — a client reaching an unadvertised write tool is working
-  from a stale tool list or probing, which is worth seeing and
-  invisible any other way. **Now audited** as `rule=not_granted`.
-
-  `WriteError` splits `Refused` from `Invalid`. `Refused` carries an
-  `Audited`, whose field is private and whose only constructor writes
-  the `stage=refused` line — so holding one is proof the line exists.
-  `gate_refusal` and the operator-decline path now record through that
-  same constructor instead of calling the audit writer by hand.
-
-  It does not make the bug impossible: a new gate can still classify a
-  policy refusal as `Invalid`. What it does is turn an invisible
-  omission into a visible miscategorisation — the author has to name
-  which kind it is, and the wrong choice is a word in the diff rather
-  than the absence of one. Every other invariant here works that way;
-  none are impossible to violate, all are made visible.
-
-
-- **A stolen doc comment now fails the build, on the public surface.**
-  Inserting an item directly below an existing doc comment attaches
-  that doc to the NEW item and leaves the original undocumented. Three
-  happened in the 0.40 verb-scope work and three more in 0.42, each
-  found by reading a diff rather than by anything mechanical.
-
-  The comment's own shape has no reliable signature — a scan for it
-  returns false positives and nothing else against the current tree —
-  but the *robbed* half does: the original item ends up with no doc.
-  `#![warn(missing_docs)]` plus CI's `-D warnings` turns that into a
-  build failure. The 18 public items that lacked docs now have them,
-  including module docs for `config` and `control`.
-
-  It narrows the class rather than closing it: `pub(crate)` is most of
-  the tree and `missing_docs_in_private_items` is far too noisy to
-  enable.
-
-
-- **`tool_write_plan` split three ways** — 346 lines to 134, with the
-  verb-dependent resolution and the dead-letter arm as their own
-  functions. They had different reasons to change and read as one
-  function only because they were adjacent: a new verb now touches one
-  place, and the gates and token window another. The six locals
-  threaded through a 200-line match became a returned struct, so "which
-  arms set `dlq_url`?" stops being a question you answer by reading all
-  of them.
-
-- **The dead-letter peek rule is written once.** Whether a queue can be
-  peeked — or planned against — was expressed in four places: the live
-  `worker_queues` path, `why`, the demo path, and the write planner.
-  Each copy carried a comment claiming to be "the same gate as"
-  another one, which is what a policy looks like shortly before it
-  diverges. It had already been missed twice: added to the live path,
-  found absent from `why`, then found absent from the demo path three
-  commits later — where it answered `peeked: true` for a web env with
-  no queue at all, on the path agents rehearse against. The fourth copy
-  turned up while consolidating the first three.
-
-  Now one `answered_dlq_url`, with a guard that fails if the rule is
-  written anywhere else. The guard matches decision syntax rather than
-  counting mentions, so it survives a refactor of the helper itself.
+## [0.42.0] - 2026-09-19
 
 ### Added
 
+- **`ebman mcp serve --read-only`** refuses writes on that server
+  whatever the client can do. `safety.read_only` already refused them
+  everywhere — including your own TUI — which left an operator who
+  wanted their *agent* read-only with no way to say so once writes
+  became available by default. A flag rather than a config key, like
+  `--allow-writes`, so the write posture stays visible in the process
+  table and `.mcp.json`. Combining the two is refused at startup.
+
 - **Every plan names whose credentials it would use.** The
-  confirmation now reads "Terminate poly-prod, as
+  confirmation now reads "Terminate on poly-prod, as
   `arn:aws:sts::…:assumed-role/Admin/sess`", and the plan carries an
   `identity` object with the ARN and account.
 
@@ -198,7 +137,121 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   five minutes — not unbounded, because an ask nobody will answer must
   still reach a deny.
 
+### Changed
+
+- **A refusal you can hold is a refusal that was recorded.** The MCP
+  write surface returned `Result<String, String>`, so a policy refusal
+  and a malformed request were the same type and a new gate could
+  return `Err("nope".into())` and audit nothing. That happened in 0.40,
+  and classifying these sites found it still live: `confirm_action`'s
+  scope check refused without a line, while its sibling
+  `refuse_out_of_scope` had always recorded `not_granted` for the same
+  reason — a client reaching an unadvertised write tool is working
+  from a stale tool list or probing, which is worth seeing and
+  invisible any other way. **Now audited** as `rule=not_granted`.
+
+  `WriteError` splits `Refused` from `Invalid`. `Refused` carries an
+  `Audited`, whose field is private and whose only constructor writes
+  the `stage=refused` line — so holding one is proof the line exists.
+  `gate_refusal` and the operator-decline path now record through that
+  same constructor instead of calling the audit writer by hand.
+
+  It does not make the bug impossible: a new gate can still classify a
+  policy refusal as `Invalid`. What it does is turn an invisible
+  omission into a visible miscategorisation — the author has to name
+  which kind it is, and the wrong choice is a word in the diff rather
+  than the absence of one. Every other invariant here works that way;
+  none are impossible to violate, all are made visible.
+
+
+- **A stolen doc comment now fails the build, on the public surface.**
+  Inserting an item directly below an existing doc comment attaches
+  that doc to the NEW item and leaves the original undocumented. Three
+  happened in the 0.40 verb-scope work and three more in 0.42, each
+  found by reading a diff rather than by anything mechanical.
+
+  The comment's own shape has no reliable signature — a scan for it
+  returns false positives and nothing else against the current tree —
+  but the *robbed* half does: the original item ends up with no doc.
+  `#![warn(missing_docs)]` plus CI's `-D warnings` turns that into a
+  build failure. The 18 public items that lacked docs now have them,
+  including module docs for `config` and exit codes on the CLI entry points.
+
+  It narrows the class rather than closing it: `pub(crate)` is most of
+  the tree and `missing_docs_in_private_items` is far too noisy to
+  enable.
+
+
+- **`tool_write_plan` split three ways** — 317 lines to 134, with the
+  verb-dependent resolution and the dead-letter arm as their own
+  functions. They had different reasons to change and read as one
+  function only because they were adjacent: a new verb now touches one
+  place, and the gates and token window another. The six locals
+  threaded through a 200-line match became a returned struct, so "which
+  arms set `dlq_url`?" stops being a question you answer by reading all
+  of them.
+
+- **The dead-letter peek rule is written once.** Whether a queue can be
+  peeked — or planned against — was expressed in four places: the live
+  `worker_queues` path, `why`, the demo path, and the write planner.
+  Each copy carried a comment claiming to be "the same gate as"
+  another one, which is what a policy looks like shortly before it
+  diverges. It had already been missed twice: added to the live path,
+  found absent from `why`, then found absent from the demo path three
+  commits later — where it answered `peeked: true` for a web env with
+  no queue at all, on the path agents rehearse against. The fourth copy
+  turned up while consolidating the first three.
+
+  Now one `answered_dlq_url`, with a guard that fails if the rule is
+  written anywhere else. The guard matches decision syntax rather than
+  counting mentions, so it survives a refactor of the helper itself.
+
 ### Fixed
+
+- **A dead ask channel denied nothing.** Found by a release review
+  panel before tagging. `ask_operator` returned `NotAsked` for three
+  different situations — the client never declared elicitation, the
+  outbound channel was gone, the send failed — and only the first has
+  a `--allow-writes` flag to fall back to. On a connection whose write
+  surface exists *because* the client can be asked, the ask **is** the
+  gate: a client that crashed or quit mid-confirm left no channel, and
+  the write dispatched unapproved with no `not_approved` line.
+
+  `NotAsked` now means only "this client never declared elicitation".
+  Every other non-answer is `Unanswered` and denies. A second,
+  independent check at the confirm site refuses anything short of an
+  explicit approval when the verb is reachable only through
+  elicitation, so a future value that is neither approved nor
+  "refusing" cannot dispatch either.
+
+- **The operator now sees what they are approving.** `set_option`
+  rendered as "SetOption on api-prod" — no namespace, no key, no
+  value — while the plan JSON showed the agent the detail. The dialog
+  exists precisely because the operator may not be reading the agent's
+  transcript, and `set_option` can re-point an environment variable at
+  another endpoint. It now enumerates each `namespace:key = value`.
+  `dlq_purge` likewise carries the queue depth, and the `set_option`
+  foreclosure line no longer says the previous values are "shown
+  above" — true of the transcript, false of the dialog.
+
+- **Untrusted text cannot reshape the approval dialog.** A
+  dead-lettered message's task name is whatever the application POSTed
+  to the queue, and it was interpolated raw into the one sentence a
+  human reads before destroying something — so a newline and a bullet
+  forged an extra row in a batch list, and a bidi override reversed
+  the line around it. Prompt injection aimed at a person rather than a
+  model, which the design note's "no agent-supplied prose" rule missed
+  because these strings come from AWS, not from the agent. Control and
+  bidi characters are now replaced and every foreign field is
+  length-capped, at all of them: environment names, version labels,
+  task names, message ids and option values.
+
+- **The gates are re-checked after the approval.** They ran before the
+  ask, and the dialog can stay open for five minutes — far longer than
+  the 60-second token window the original double-check was written
+  around. A `:freeze-deploys` declared while a colleague was reading
+  the dialog was not honoured, contrary to what
+  `safety-and-privacy.md` promises.
 
 - **A demo peek claimed to have looked at a queue that does not
   exist.** `worker_queues --peek` on a web-tier env in demo mode
@@ -3512,7 +3565,7 @@ Initial public release. Headline surface:
 - Published to crates.io as `ebman`.
 - Homebrew tap at `tombaldwin/homebrew-tap`.
 
-[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.39.1...HEAD
+[Unreleased]: https://github.com/tombaldwin/ebman/compare/v0.42.0...HEAD
 [0.39.1]: https://github.com/tombaldwin/ebman/compare/v0.39.0...v0.39.1
 [0.39.0]: https://github.com/tombaldwin/ebman/compare/v0.38.0...v0.39.0
 [0.38.0]: https://github.com/tombaldwin/ebman/compare/v0.37.0...v0.38.0

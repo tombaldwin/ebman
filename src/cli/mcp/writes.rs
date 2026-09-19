@@ -271,6 +271,48 @@ impl Server {
     }
 }
 
+/// Make a foreign string safe to show an operator.
+///
+/// Everything interpolated into the approval dialog that ebman did not
+/// author is untrusted: a DLQ task name is whatever the application
+/// POSTed to the queue (`beanstalk.sqsd.task_name`, arbitrary
+/// sender-controlled UTF-8), a version label comes from AWS, and an
+/// STS error is a remote string. The dialog is one sentence a human
+/// reads to decide whether to destroy something, so a newline plus
+/// `  • Nightly sweep (id)` forges a batch row, and a bidi override
+/// reverses the meaning of the line around it.
+///
+/// This is prompt injection aimed at a PERSON rather than a model, and
+/// the design note's "no agent-supplied prose in a plan" rule missed
+/// it: these strings come from AWS, not from the agent.
+///
+/// Control characters and bidi/zero-width formatting become U+FFFD so
+/// something visibly wrong is shown rather than nothing; length is
+/// capped so one field cannot push the rest of the sentence out of a
+/// dialog.
+fn sanitize_for_ask(raw: &str) -> String {
+    const MAX: usize = 120;
+    let mut out = String::with_capacity(raw.len().min(MAX) + 1);
+    for c in raw.chars() {
+        if out.chars().count() >= MAX {
+            out.push('…');
+            break;
+        }
+        // Bidi overrides/embeddings, zero-width joiners and marks, and
+        // the line/paragraph separators — none of which a task name
+        // needs, all of which change what the sentence appears to say.
+        let formatting = matches!(c,
+            '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
+            | '\u{2066}'..='\u{2069}' | '\u{2028}' | '\u{2029}' | '\u{FEFF}');
+        if c.is_control() || formatting {
+            out.push('\u{FFFD}');
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// The one sentence an operator is asked to approve.
 ///
 /// Server-authored from the plan, never from anything the agent wrote
@@ -284,10 +326,15 @@ impl Server {
 pub(super) fn ask_summary(p: &PendingWrite) -> String {
     let what = match p.dlq_targets.as_slice() {
         [] => match p.version.as_deref() {
-            Some(v) => format!("{} to {v}", p.verb.label()),
+            Some(v) => format!("{} to {}", p.verb.label(), sanitize_for_ask(v)),
             None => p.verb.label().to_string(),
         },
-        [one] => format!("{} — {} ({})", p.verb.label(), one.task, one.id),
+        [one] => format!(
+            "{} — {} ({})",
+            p.verb.label(),
+            sanitize_for_ask(&one.task),
+            sanitize_for_ask(&one.id)
+        ),
         // Enumerated, never summarised. "5 messages" is a number to
         // agree with; a list is something to read. `DLQ_BATCH_CAP`
         // exists precisely so this stays readable.
@@ -296,16 +343,53 @@ pub(super) fn ask_summary(p: &PendingWrite) -> String {
             p.verb.label(),
             many.len(),
             many.iter()
-                .map(|t| format!("  • {} ({})", t.task, t.id))
+                .map(|t| format!(
+                    "  • {} ({})",
+                    sanitize_for_ask(&t.task),
+                    sanitize_for_ask(&t.id)
+                ))
                 .collect::<Vec<_>>()
                 .join("\n")
         ),
     };
+    // The CHANGES themselves, not just the verb. A dialog reading
+    // "SetOption on api-prod" asks the operator to approve an unknown
+    // edit to an unknown key — and `set_option` can re-point an
+    // environment variable at an attacker's endpoint. The plan JSON
+    // has carried these all along; the plan JSON is read by the agent,
+    // and the dialog exists precisely because the operator may not be
+    // reading the agent's transcript.
+    //
+    // Values are shown. They are the substance of the approval, and a
+    // redacted new value would make the prompt unanswerable; the
+    // operator is the party already trusted with this environment.
+    let detail = if p.settings.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n{}",
+            p.settings
+                .iter()
+                .map(|(ns, name, value)| format!(
+                    "  • {}:{} = {}",
+                    sanitize_for_ask(ns),
+                    sanitize_for_ask(name),
+                    sanitize_for_ask(value)
+                ))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
     format!(
-        "{what} on {}, {}.\n\n{}",
-        p.env,
+        "{what}{detail} on {}, {}.\n\n{}",
+        sanitize_for_ask(&p.env),
         p.caller.line(),
-        forecloses(p.verb, None, p.dlq_targets.len())
+        // `dlq_visible` is carried on the plan so a purge dialog can
+        // say how much it destroys. Passing `None` here rendered
+        // "every message in the queue" with no number, while the plan
+        // JSON showed the agent `messages_now` — the operator got the
+        // vaguer half of the same fact.
+        forecloses(p.verb, p.dlq_visible, p.dlq_targets.len())
     )
 }
 
@@ -652,9 +736,10 @@ pub(super) fn forecloses(verb: WriteVerb, dlq_visible: Option<i64>, named: usize
         WriteVerb::Restart => "In-flight requests on the instances are dropped. Nothing else — \
              no state is lost and nothing here needs undoing."
             .to_string(),
-        WriteVerb::SetOption => "The previous values are replaced. They are shown above and can \
-             be set back, so this is recoverable — but a change that triggers \
-             an environment update will bounce instances to apply it."
+        WriteVerb::SetOption => "The previous values are replaced. ebman does not keep them: \
+             read them back with `get_option_settings` before approving if you need \
+             to restore them. A change that triggers an environment update will \
+             bounce instances to apply it."
             .to_string(),
     }
 }
@@ -1041,6 +1126,11 @@ pub(super) struct PendingWrite {
     pub profile: Option<String>,
     pub region: Option<String>,
     pub expires_at: tokio::time::Instant,
+    /// SQS's `ApproximateNumberOfMessages` at plan time, for the
+    /// purge dialog's foreclosure line. Without it the operator is
+    /// asked to approve destroying "every message in the queue" with
+    /// no indication whether that is one or twelve thousand.
+    pub dlq_visible: Option<i64>,
     /// Whose credentials this would go out under, resolved at plan
     /// time so the confirmation can name it. Resolved then rather than
     /// at dispatch because the confirmation is the only moment an
@@ -1760,6 +1850,7 @@ impl Server {
                 profile: profile.clone(),
                 region: arg_str(args, "region"),
                 caller: caller.clone(),
+                dlq_visible,
                 expires_at: tokio::time::Instant::now()
                     + std::time::Duration::from_secs(CONFIRM_TTL_SECS),
                 name_retry_used: false,
@@ -1913,13 +2004,25 @@ impl Server {
         // question can carry it, and inside the dispatch guard so a
         // second write cannot start while a human is deciding.
         //
-        // On a client that cannot elicit, `ask_operator` returns
-        // `Unanswered` and the write is refused — which is why the
-        // write surface is only advertised by default where the ask
-        // exists. Those two are one change, deliberately: advertising
-        // without the ask is an open surface with no gate.
+        // On a client that cannot elicit, and ONLY then, `ask_operator`
+        // returns `NotAsked` — and the write proceeds, because there
+        // the `--allow-writes` flag was the gate and still is. Every
+        // other non-answer, including a channel that died mid-confirm,
+        // is `Unanswered` and denies. The write surface is advertised
+        // by default only where the ask exists; those two are one
+        // change, deliberately, because advertising without the ask is
+        // an open surface with no gate.
         let outcome = self.ask_operator(&ask_summary(&pending)).await;
-        if outcome.refuses() {
+        // Belt-and-braces, independent of `refuses()`. If this verb is
+        // only reachable because the client declared elicitation —
+        // `write_scope` does not grant it, `effective_scope` does —
+        // then the ask is the ONLY gate this write ever had, and
+        // anything short of an explicit approval must stop it. Without
+        // this, any future value that is neither Approved nor
+        // "refusing" dispatches unapproved, which is exactly how the
+        // dead-channel `NotAsked` got through.
+        let ask_is_the_only_gate = !self.write_scope.allows(pending.verb.tool_name());
+        if outcome.refuses() || (ask_is_the_only_gate && outcome != AskOutcome::Approved) {
             let reason = outcome.reason();
             // Through `Audited::record` like every other refusal, so
             // the line is written by the same code that makes the
@@ -1945,6 +2048,25 @@ impl Server {
                 ),
             )));
         }
+        // Re-gate AFTER the approval. The gates ran before the ask,
+        // and the dialog can stay open for `ASK_WAIT_SECS` — far
+        // longer than the 60s token window the original double-check
+        // was written around. An operator who declares an incident
+        // while a colleague is reading the dialog expects the freeze
+        // to win, and `safety-and-privacy.md` promises exactly that.
+        // The freeze is re-read from disk here, so this is the check
+        // that catches it.
+        if let Some(refused) = self.gate_refusal(
+            &pending.env,
+            &pending.profile,
+            pending.region.as_deref(),
+            pending.verb.label(),
+        ) {
+            return Err(WriteError::Refused(refused.map_message(|m| {
+                format!("{m} (declared while the confirmation was open — nothing was dispatched)")
+            })));
+        }
+
         self.dispatch_write(&pending)
             .await
             .map_err(WriteError::Invalid)
@@ -2405,6 +2527,7 @@ mod tests {
             profile: None,
             region: None,
             expires_at: tokio::time::Instant::now() + std::time::Duration::from_secs(60),
+            dlq_visible: None,
             caller: CallerIdentity::Known {
                 arn: "arn:aws:iam::123456789012:user/test".into(),
                 account: "123456789012".into(),
@@ -2740,6 +2863,7 @@ mod tests {
                 profile: None,
                 region: None,
                 expires_at: tokio::time::Instant::now() + std::time::Duration::from_secs(60),
+                dlq_visible: None,
                 caller: CallerIdentity::Known {
                     arn: "arn:aws:iam::123456789012:user/test".into(),
                     account: "123456789012".into(),
@@ -3473,6 +3597,7 @@ mod tests {
             profile: None,
             region: None,
             expires_at: tokio::time::Instant::now(),
+            dlq_visible: None,
             caller: CallerIdentity::Known {
                 arn: "arn:aws:iam::123456789012:user/test".into(),
                 account: "123456789012".into(),
@@ -3621,6 +3746,7 @@ mod tests {
             settings: Vec::new(),
             profile: None,
             region: None,
+            dlq_visible: None,
             caller: CallerIdentity::Known {
                 arn: "arn:aws:iam::999:role/Admin".into(),
                 account: "999".into(),
@@ -3749,5 +3875,166 @@ mod tests {
             !elsewhere.contains("Audited("),
             "`Audited(..)` outside its module means the field is reachable"
         );
+    }
+
+    /// The dialog names the CHANGES, not just the verb.
+    ///
+    /// `set_option` can re-point an environment variable at an
+    /// attacker's endpoint. "SetOption on api-prod" asks the operator
+    /// to approve an unknown edit to an unknown key — the plan JSON
+    /// carried the detail all along, and the plan JSON is read by the
+    /// agent, which is the party the dialog exists to check.
+    #[test]
+    fn a_set_option_dialog_shows_what_changes() {
+        let mut p = pending_for(WriteVerb::SetOption);
+        p.settings = vec![
+            (
+                "aws:elasticbeanstalk:application:environment".into(),
+                "WEBHOOK_URL".into(),
+                "https://evil.example/collect".into(),
+            ),
+            ("aws:autoscaling:asg".into(), "MinSize".into(), "1".into()),
+        ];
+        let s = ask_summary(&p);
+        for needle in [
+            "WEBHOOK_URL",
+            "https://evil.example/collect",
+            "MinSize",
+            "aws:autoscaling:asg",
+        ] {
+            assert!(
+                s.contains(needle),
+                "the operator must see the actual change, or the approval is blind: \
+                 {needle:?} missing from {s:?}"
+            );
+        }
+        assert!(
+            !s.contains("shown above"),
+            "the old foreclosure line pointed at the agent's transcript, which the \
+             operator reading this dialog is not looking at: {s}"
+        );
+    }
+
+    /// A purge dialog says how much it destroys.
+    #[test]
+    fn a_purge_dialog_carries_the_queue_depth() {
+        let mut p = pending_for(WriteVerb::DlqPurge);
+        p.dlq_visible = Some(12);
+        let s = ask_summary(&p);
+        assert!(
+            s.contains("12"),
+            "the plan JSON showed the agent `messages_now`; the operator got \
+             \"every message in the queue\" with no number: {s}"
+        );
+    }
+
+    /// Untrusted strings cannot reshape the operator's sentence.
+    ///
+    /// A DLQ task name is whatever the application POSTed to the
+    /// queue. The dialog is one sentence a human reads before
+    /// destroying something, so a newline plus a bullet forges a row,
+    /// and a bidi override reverses the line around it. This is prompt
+    /// injection aimed at a person.
+    #[test]
+    fn a_hostile_task_name_cannot_forge_dialog_lines() {
+        let evil = "Nightly sweep\n  • Something harmless (m-999)\u{202E}reversed\u{0007}";
+        let clean = sanitize_for_ask(evil);
+        assert!(!clean.contains('\n'), "no newline may survive: {clean:?}");
+        assert!(!clean.contains('\u{202E}'), "no bidi override: {clean:?}");
+        assert!(!clean.contains('\u{0007}'), "no control chars: {clean:?}");
+        assert!(
+            clean.starts_with("Nightly sweep"),
+            "legible text survives: {clean:?}"
+        );
+
+        // And it is applied at EVERY call site — the function existing
+        // proves nothing, and the single-message and batch arms
+        // interpolate through different expressions. A first version
+        // of this test covered only the single arm, and a mutation
+        // removing the batch arm's sanitiser passed clean.
+        //
+        // One case per site: env, version, single task/id, batch
+        // task/id, and each setting field.
+        let mut single = pending_for(WriteVerb::DlqDelete);
+        single.dlq_targets = vec![DlqTarget {
+            id: evil.to_string(),
+            task: evil.to_string(),
+        }];
+
+        let mut batch = pending_for(WriteVerb::DlqDelete);
+        batch.dlq_targets = (0..2)
+            .map(|i| DlqTarget {
+                id: format!("{evil}-{i}"),
+                task: evil.to_string(),
+            })
+            .collect();
+
+        let mut opts = pending_for(WriteVerb::SetOption);
+        opts.settings = vec![(evil.to_string(), evil.to_string(), evil.to_string())];
+
+        let mut deploy = pending_for(WriteVerb::Deploy);
+        deploy.version = Some(evil.to_string());
+
+        let mut env = pending_for(WriteVerb::Restart);
+        env.env = evil.to_string();
+
+        for (name, plan, allowed_bullets) in [
+            ("single message", single, 0),
+            ("batch", batch, 2),
+            ("set_option", opts, 1),
+            ("deploy version", deploy, 0),
+            ("env name", env, 0),
+        ] {
+            let rendered = ask_summary(&plan);
+            let bullets = rendered
+                .lines()
+                .filter(|l| l.trim_start().starts_with('•'))
+                .count();
+            assert_eq!(
+                bullets,
+                allowed_bullets,
+                "{name}: the payload forged {} extra bullet rows — every line the \
+                 operator reads must come from ebman, not from the queue: {rendered:?}",
+                bullets.saturating_sub(allowed_bullets)
+            );
+            assert!(
+                !rendered.contains('\u{202E}') && !rendered.contains('\u{0007}'),
+                "{name}: formatting/control characters reached the dialog: {rendered:?}"
+            );
+        }
+    }
+
+    /// Long fields cannot push the rest of the sentence out of view.
+    #[test]
+    fn a_huge_task_name_is_capped() {
+        let long = "A".repeat(5_000);
+        let clean = sanitize_for_ask(&long);
+        assert!(
+            clean.chars().count() <= 121,
+            "capped: {}",
+            clean.chars().count()
+        );
+        assert!(clean.ends_with('…'), "and says it was truncated");
+    }
+
+    fn pending_for(verb: WriteVerb) -> PendingWrite {
+        PendingWrite {
+            token: "t".into(),
+            verb,
+            env: "api-prod".into(),
+            version: None,
+            settings: Vec::new(),
+            profile: None,
+            region: None,
+            dlq_visible: None,
+            caller: CallerIdentity::Known {
+                arn: "arn:aws:iam::1:user/t".into(),
+                account: "1".into(),
+            },
+            expires_at: tokio::time::Instant::now(),
+            name_retry_used: false,
+            dlq_targets: Vec::new(),
+            dlq_url: None,
+        }
     }
 }

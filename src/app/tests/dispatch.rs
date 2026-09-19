@@ -1745,6 +1745,66 @@ mod docs_drift {
              docs/configuration.md: {missing:?}"
         );
     }
+    /// `[Unreleased]` has one section per kind, in Keep a Changelog
+    /// order.
+    ///
+    /// Appending a `### Fixed` per change rather than merging into the
+    /// existing one produces two sections with the same name, which
+    /// renders as two lists and reads as two different kinds of
+    /// change. Done twice in one session, both times by hand, both
+    /// times caught by eye afterwards — hence a guard.
+    #[test]
+    fn the_unreleased_changelog_has_no_duplicate_sections() {
+        const ORDER: [&str; 6] = [
+            "Added",
+            "Changed",
+            "Deprecated",
+            "Removed",
+            "Fixed",
+            "Security",
+        ];
+        let text = std::fs::read_to_string("CHANGELOG.md").expect("CHANGELOG.md");
+        // The topmost section, whatever it is called. After a release
+        // is cut there is no `[Unreleased]` until the next change
+        // lands, and the section about to ship is exactly the one
+        // worth checking.
+        let start = text.find("\n## [").expect("a version section") + 1;
+        let rest = &text[start..];
+        // Index into `rest`, not into `text` — adding `start` here
+        // overshot into the released sections and the guard read the
+        // whole file's headings as [Unreleased]'s.
+        let end = rest.find("\n## ").unwrap_or(rest.len());
+        let block = &rest[..end];
+
+        let seen: Vec<&str> = block
+            .lines()
+            .filter_map(|l| l.strip_prefix("### "))
+            .map(str::trim)
+            .collect();
+
+        for kind in &seen {
+            assert!(
+                ORDER.contains(kind),
+                "unknown changelog section `### {kind}` — Keep a Changelog defines \
+                 {ORDER:?}"
+            );
+            assert_eq!(
+                seen.iter().filter(|s| *s == kind).count(),
+                1,
+                "`### {kind}` appears more than once in [Unreleased]: {seen:?}. \
+                 Merge the entries under one heading."
+            );
+        }
+
+        let ranks: Vec<usize> = seen
+            .iter()
+            .map(|k| ORDER.iter().position(|o| o == k).expect("known"))
+            .collect();
+        assert!(
+            ranks.windows(2).all(|w| w[0] < w[1]),
+            "sections must follow Keep a Changelog order {ORDER:?}, found {seen:?}"
+        );
+    }
 
     /// Every subcommand `cli::SUBCOMMANDS` advertises must appear in
     /// `docs/headless.md`, which is the reference for anything scripting
@@ -2973,12 +3033,25 @@ fn unreleased_changes_are_written_down() {
     }
 
     let log = std::fs::read_to_string("CHANGELOG.md").expect("read CHANGELOG.md");
-    let unreleased = log
+    // Between the release commit and the tag, the entries live under a
+    // DATED heading rather than `[Unreleased]`: the procedure cuts the
+    // section and bumps the version in one commit, then pushes, waits
+    // for green, and only then tags. For that window the commits are
+    // still "since the last tag" while the changelog is already cut —
+    // and this guard failed the build for doing exactly what the
+    // procedure says to do.
+    //
+    // So: accept a cut section, but only when it is the version being
+    // released. Any other heading means the entries are filed against
+    // something that is not what is about to ship.
+    let cut_heading = format!("## [{}]", env!("CARGO_PKG_VERSION"));
+    let section = log
         .split("## [Unreleased]")
         .nth(1)
+        .or_else(|| log.split(cut_heading.as_str()).nth(1))
         .and_then(|r| r.split("\n## [").next())
         .unwrap_or("");
-    let entries = unreleased.matches("\n- ").count();
+    let entries = section.matches("\n- ").count();
 
     assert!(
         entries > 0,
