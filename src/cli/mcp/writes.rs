@@ -2042,10 +2042,7 @@ impl Server {
                 &pending.env,
                 "not_approved",
                 reason,
-                format!(
-                    "not dispatched — {reason}. The plan is spent; do not re-plan the \
-                     same action unless the operator asks for it."
-                ),
+                format!("not dispatched — {reason}. {}", outcome.guidance()),
             )));
         }
         // Re-gate AFTER the approval. The gates ran before the ask,
