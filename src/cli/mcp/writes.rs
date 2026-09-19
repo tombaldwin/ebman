@@ -246,7 +246,7 @@ impl Server {
 async fn dispatch_dlq_message(
     client: &crate::aws::AwsClient,
     p: &PendingWrite,
-) -> Result<(), String> {
+) -> Result<Option<crate::aws::QueueMessage>, String> {
     let (Some(url), Some(want)) = (p.dlq_url.as_deref(), p.dlq_message_id.as_deref()) else {
         return Err("plan carried no queue url or message id".into());
     };
@@ -282,7 +282,11 @@ async fn dispatch_dlq_message(
     client
         .delete_message(url, &msg.receipt_handle)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // Handed back so the caller can hold it briefly. A resend returns
+    // nothing: the message still exists, on the main queue, so there
+    // is nothing to recover and offering one would be a lie.
+    Ok(captures_for_undo(p.verb).then_some(msg))
 }
 
 /// The main queue a dead-letter queue drains from.
@@ -291,6 +295,89 @@ async fn dispatch_dlq_message(
 /// convention `derive_dlq_url` applies in the other direction.
 fn main_queue_for(dlq_url: &str) -> String {
     dlq_url.strip_suffix("-dlq").unwrap_or(dlq_url).to_string()
+}
+
+/// Does this verb destroy something that can be handed back?
+///
+/// One function because there are two dispatch paths — live and demo —
+/// and they had the same condition written twice. A mutation to the
+/// live copy was invisible to a demo-mode test, which is the shape
+/// that hides a defect rather than the shape that finds one.
+///
+/// Delete only. A resend leaves the message existing on the main
+/// queue, so "restoring" it would enqueue a second copy and call that
+/// a recovery. A purge can be thousands, and a capped sample would put
+/// back SOME of what it destroyed — worse than offering nothing.
+pub(super) fn captures_for_undo(verb: WriteVerb) -> bool {
+    matches!(verb, WriteVerb::DlqDelete)
+}
+
+/// How long a deleted message stays recoverable.
+///
+/// Long enough for "wait, that was the wrong one" — the mistake that
+/// actually happens — and short enough that ebman is not a message
+/// store. Memory only: the bodies are never written to disk, because
+/// `mcp.peek_bodies` exists precisely because they can carry customer
+/// data, and a durable copy would be worse than showing one to an
+/// agent.
+pub(super) const UNDO_WINDOW_SECS: u64 = 600;
+
+/// How many. A cap, because an agent working through a bad deploy can
+/// delete many in a row and memory is not free.
+const UNDO_CAPACITY: usize = 20;
+
+/// A message ebman destroyed and can still put back.
+#[derive(Debug, Clone)]
+pub(super) struct DeletedMessage {
+    pub env: String,
+    pub queue_url: String,
+    pub original_id: String,
+    pub task: Option<String>,
+    pub body: String,
+    pub attributes: Vec<(String, String, String)>,
+    pub at: tokio::time::Instant,
+}
+
+impl Server {
+    /// Hold a destroyed message for [`UNDO_WINDOW_SECS`], and say how
+    /// long the caller has.
+    ///
+    /// Returns the window rather than nothing so the dispatch result
+    /// can state it. An undo nobody is told about is not an undo.
+    pub(super) async fn remember_deleted(
+        &self,
+        env: &str,
+        queue_url: Option<String>,
+        msg: crate::aws::QueueMessage,
+    ) -> u64 {
+        let Some(queue_url) = queue_url else {
+            return 0;
+        };
+        let mut buf = self.deleted.lock().await;
+        buf.retain(|d: &DeletedMessage| d.at.elapsed().as_secs() < UNDO_WINDOW_SECS);
+        if buf.len() >= UNDO_CAPACITY {
+            buf.remove(0);
+        }
+        buf.push(DeletedMessage {
+            env: env.to_string(),
+            queue_url,
+            original_id: msg.id,
+            task: msg.task.as_ref().and_then(|t| t.name.clone()),
+            body: msg.body,
+            attributes: msg.attributes,
+            at: tokio::time::Instant::now(),
+        });
+        UNDO_WINDOW_SECS
+    }
+
+    /// What is still recoverable, newest first.
+    pub(super) async fn recoverable(&self) -> Vec<DeletedMessage> {
+        let mut buf = self.deleted.lock().await;
+        buf.retain(|d| d.at.elapsed().as_secs() < UNDO_WINDOW_SECS);
+        let mut out = buf.clone();
+        out.reverse();
+        out
+    }
 }
 
 const RETIRED_TOKEN_MEMORY: usize = 8;
@@ -350,8 +437,11 @@ pub(super) fn forecloses(verb: WriteVerb, dlq_visible: Option<i64>) -> String {
     };
     match verb {
         WriteVerb::DlqDelete => format!(
-            "The message is destroyed. SQS has no undelete and ebman keeps no \
-             copy, so nothing here can return it.{}",
+            "The message is destroyed in SQS, which has no undelete. ebman holds \
+             a copy in memory for {}s — `dlq_undo` can put it back, with a new \
+             message id and a receive count reset to 0 — and after that nothing \
+             can.{}",
+            UNDO_WINDOW_SECS,
             queue_note()
         ),
         WriteVerb::DlqResend => format!(
@@ -519,7 +609,7 @@ pub(super) fn write_verb_names() -> Vec<String> {
     write_tool_descriptors()
         .iter()
         .filter_map(|d| d.get("name").and_then(|n| n.as_str()))
-        .filter(|n| *n != CONFIRM_TOOL)
+        .filter(|n| *n != CONFIRM_TOOL && *n != UNDO_TOOL)
         .map(str::to_string)
         .collect()
 }
@@ -531,6 +621,14 @@ pub(super) fn write_verb_names() -> Vec<String> {
 /// advertised `dlq_delete` without this would let an agent plan a
 /// delete it could never confirm.
 pub(super) const CONFIRM_TOOL: &str = "confirm_action";
+
+/// Also not a verb, and for the same reason as `confirm_action`: it is
+/// not an independently grantable capability. `dlq_undo` can only ever
+/// put back something a delete already removed under a grant, so
+/// granting it separately would mean nothing, and withholding it from
+/// someone who holds `dlq_delete` would mean giving them the
+/// destruction without the remedy.
+pub(super) const UNDO_TOOL: &str = "dlq_undo";
 
 /// Tool descriptors for the write surface — appended to tools/list
 /// ONLY under the verbs `--allow-writes` granted (spec: the listing is
@@ -615,6 +713,18 @@ pub(super) fn write_tool_descriptors() -> Vec<Value> {
                     "region": {"type": "string"}
                 },
                 "required": ["env", "settings"]
+            }
+        }),
+        json!({
+            "name": "dlq_undo",
+            "description": "Put back a dead-lettered message THIS server deleted, within 10 minutes. Call with no arguments to list what is still recoverable. Single-phase — no plan/confirm — because it is the least destructive action here and is reached for under time pressure. CAVEATS: held in memory by this server only, so a restart loses them and nothing deleted by another process is here; purges are never recoverable; and the restore is a re-send, so the message id changes, receive_count resets to 0 and the enqueue time becomes now. Body and attributes come back verbatim.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "message_id": {"type": "string", "description": "The id reported when it was deleted. Omit to list what is recoverable."},
+                    "profile": {"type": "string"},
+                    "region": {"type": "string"}
+                }
             }
         }),
         json!({
@@ -1103,9 +1213,23 @@ impl Server {
     async fn dispatch_write(&self, p: &PendingWrite) -> Result<String, String> {
         let verb_label = p.verb.label();
         if matches!(self.backend, Backend::Demo) {
-            // Synthetic success: no AWS, no audit, no webhook.
+            // Synthetic success: no AWS, no audit, no webhook. But a
+            // demo delete still fills the undo buffer from the
+            // fixture, or the recovery path is unwalkable without
+            // credentials — which is the one thing demo exists for.
+            let mut recoverable = String::new();
+            if captures_for_undo(p.verb) {
+                if let Some(msg) = p.dlq_message_id.as_deref().and_then(|want| {
+                    demo_fixture::dlq_messages_for_env(&p.env)
+                        .into_iter()
+                        .find(|m| m.id == want)
+                }) {
+                    let until = self.remember_deleted(&p.env, p.dlq_url.clone(), msg).await;
+                    recoverable = format!(",\"recoverable_for_secs\":{until}");
+                }
+            }
             return Ok(format!(
-                "{{\"dispatched\":true,\"demo\":true,\"action\":{},\"env\":{}}}",
+                "{{\"dispatched\":true,\"demo\":true,\"action\":{},\"env\":{}{recoverable}}}",
                 util::json_string(verb_label),
                 util::json_string(&p.env),
             ));
@@ -1140,26 +1264,45 @@ impl Server {
             &p.env,
             &extras_ref,
         );
-        let outcome: Result<(), String> = match p.verb {
+        // `Ok(Some(msg))` means a message was destroyed and is briefly
+        // recoverable; `Ok(None)` means nothing was, which is every
+        // other verb.
+        let outcome: Result<Option<crate::aws::QueueMessage>, String> = match p.verb {
             WriteVerb::Deploy => client
                 .deploy_version(&p.env, p.version.as_deref().unwrap_or_default())
                 .await
+                .map(|()| None)
                 .map_err(|e| e.to_string()),
             WriteVerb::Restart => client
                 .restart_app_server(&p.env)
                 .await
+                .map(|()| None)
                 .map_err(|e| e.to_string()),
-            WriteVerb::Rebuild => client.rebuild_env(&p.env).await.map_err(|e| e.to_string()),
+            WriteVerb::Rebuild => client
+                .rebuild_env(&p.env)
+                .await
+                .map(|()| None)
+                .map_err(|e| e.to_string()),
             WriteVerb::Terminate => client
                 .terminate_env(&p.env)
                 .await
+                .map(|()| None)
                 .map_err(|e| e.to_string()),
             WriteVerb::SetOption => client
                 .update_env_option_settings(&p.env, &p.settings, &[])
                 .await
+                .map(|()| None)
                 .map_err(|e| e.to_string()),
             WriteVerb::DlqPurge => match p.dlq_url.as_deref() {
-                Some(url) => client.purge_queue(url).await.map_err(|e| e.to_string()),
+                // Deliberately NOT captured. A purge can be thousands
+                // of messages, and holding a capped sample would offer
+                // an undo that silently restores some of what it
+                // destroyed — worse than offering none.
+                Some(url) => client
+                    .purge_queue(url)
+                    .await
+                    .map(|()| None)
+                    .map_err(|e| e.to_string()),
                 None => Err("plan carried no queue url".into()),
             },
             WriteVerb::DlqResend | WriteVerb::DlqDelete => dispatch_dlq_message(&client, p).await,
@@ -1171,19 +1314,107 @@ impl Server {
             verb_label,
             &p.env,
             match &outcome {
-                Ok(()) => Ok(()),
+                Ok(_) => Ok(()),
                 Err(e) => Err(e.as_str()),
             },
             &extras_ref,
         );
         match outcome {
-            Ok(()) => Ok(format!(
-                "{{\"dispatched\":true,\"action\":{},\"env\":{},\"note\":\"dispatch-only — poll list_environments / recent_events for progress\"}}",
+            Ok(destroyed) => {
+                let recoverable = match destroyed {
+                    Some(msg) => {
+                        let until = self.remember_deleted(&p.env, p.dlq_url.clone(), msg).await;
+                        format!(",\"recoverable_for_secs\":{until}")
+                    }
+                    None => String::new(),
+                };
+                Ok(format!(
+                "{{\"dispatched\":true,\"action\":{},\"env\":{}{recoverable},\"note\":\"dispatch-only — poll list_environments / recent_events for progress\"}}",
                 util::json_string(verb_label),
                 util::json_string(&p.env),
-            )),
+            ))
+            }
             Err(e) => Err(tool_error(&p.profile, verb_label, &e)),
         }
+    }
+}
+
+impl Server {
+    /// Put back a message this server destroyed, or list what still
+    /// can be.
+    ///
+    /// **Single-phase, deliberately.** Every other write plans and then
+    /// confirms, because the cost of acting is high and the cost of
+    /// pausing is low. Undo inverts both: it is the least destructive
+    /// thing here — it restores what a previous write removed — and it
+    /// is reached for under exactly the time pressure that makes a
+    /// two-step protocol harmful. Requiring a plan to undo a mistake is
+    /// backwards.
+    ///
+    /// The gates still apply. A freeze or a pin refuses this as it
+    /// refuses anything, which is arguable — restoring a message during
+    /// an incident is often what you want — but a gate with exceptions
+    /// is one nobody can predict, and the operator can lift it.
+    pub(super) async fn tool_dlq_undo(&self, args: &Value) -> Result<String, String> {
+        let held = self.recoverable().await;
+        let Some(want) = arg_str(args, "message_id") else {
+            // No id: report what is available rather than guessing.
+            // Restoring "the last one" is the kind of convenience that
+            // puts back the wrong message at 3am.
+            let rows: Vec<String> = held
+                .iter()
+                .map(|d| {
+                    format!(
+                        "{{\"message_id\":{},\"env\":{},\"task\":{},\"expires_in_secs\":{}}}",
+                        util::json_string(&d.original_id),
+                        util::json_string(&d.env),
+                        util::json_string(d.task.as_deref().unwrap_or("(not an EB worker task)")),
+                        UNDO_WINDOW_SECS.saturating_sub(d.at.elapsed().as_secs()),
+                    )
+                })
+                .collect();
+            return Ok(format!(
+                "{{\"recoverable\":[{}],\"window_secs\":{UNDO_WINDOW_SECS},\"note\":\"Held in \
+                 memory by THIS server only: a restart loses them, and nothing deleted by \
+                 another process or before this server started is here. Purges are never \
+                 recoverable.\"}}",
+                rows.join(",")
+            ));
+        };
+
+        let Some(d) = held.into_iter().find(|d| d.original_id == want) else {
+            return Err(format!(
+                "'{want}' is not recoverable. Either it was never deleted by this server, \
+                 or the {UNDO_WINDOW_SECS}s window has passed, or the server restarted. \
+                 Call this tool with no arguments to see what IS recoverable."
+            ));
+        };
+
+        if let Some(msg) = self.gate_refusal(&d.env, &arg_str(args, "profile"), None, "dlq-undo") {
+            return Err(msg);
+        }
+
+        if !matches!(self.backend, Backend::Demo) {
+            self.client(args)
+                .await?
+                .send_message(&d.queue_url, &d.body, &d.attributes)
+                .await
+                .map_err(|e| format!("restoring the message failed: {e}"))?;
+        }
+
+        // Rule 6: say what could NOT be restored. The body and every
+        // attribute come back verbatim, and three things cannot —
+        // calling this an undo without saying so would be the
+        // over-claim the foreclosure line exists to prevent.
+        Ok(format!(
+            "{{\"restored\":true,\"queue\":{},\"original_message_id\":{},\"task\":{},\
+             \"not_restored\":[\"the message id: SQS assigns a new one on send\",\
+             \"receive_count: resets to 0, so retry history is lost\",\
+             \"sent_at: now, not the original enqueue time\"]}}",
+            util::json_string(&d.queue_url),
+            util::json_string(&d.original_id),
+            util::json_string(d.task.as_deref().unwrap_or("(not an EB worker task)")),
+        ))
     }
 }
 
@@ -1792,15 +2023,31 @@ mod tests {
             }
         }
 
-        // The destructive tail must say it cannot be undone. Without
-        // this the test passes on eight copies of "nothing happens".
-        for verb in [WriteVerb::DlqDelete, WriteVerb::DlqPurge] {
-            let t = forecloses(verb, Some(12));
-            assert!(
-                t.contains("recover") || t.contains("return it"),
-                "{verb:?} destroys data and must say so: {t:?}"
-            );
-        }
+        // The destructive tail must state the LIMIT of recovery, and
+        // the two differ — which is the point. Without this the test
+        // passes on eight copies of "nothing happens".
+        let del = forecloses(WriteVerb::DlqDelete, Some(12));
+        assert!(
+            del.contains("dlq_undo") && del.contains(&UNDO_WINDOW_SECS.to_string()),
+            "a delete is briefly recoverable and must say how and for how long: {del:?}"
+        );
+        assert!(
+            del.contains("after that nothing can"),
+            "and must say the window ENDS — a recovery offer without an expiry is \
+             the more dangerous half of the claim: {del:?}"
+        );
+
+        let purge = forecloses(WriteVerb::DlqPurge, Some(12));
+        assert!(
+            purge.contains("None of them can be recovered"),
+            "a purge is never recoverable: {purge:?}"
+        );
+        assert!(
+            !purge.contains("dlq_undo"),
+            "and must not offer an undo it does not have — a purge is deliberately \
+             not captured, because a capped sample would restore SOME of what it \
+             destroyed and call that an undo: {purge:?}"
+        );
         // And the cheap end must say it is cheap, or the variance that
         // makes the field informative is lost.
         let restart = forecloses(WriteVerb::Restart, None);
@@ -1943,5 +2190,160 @@ mod tests {
             "the scan found {calls} send_message calls — it has stopped seeing them, \
              which is worse than finding a defect"
         );
+    }
+    /// A deleted message is briefly recoverable, and the offer is
+    /// honest about its limits.
+    #[tokio::test]
+    async fn a_deleted_message_can_be_put_back_within_the_window() {
+        let s = Server::with_scope(true, false, crate::cli::mcp::WriteScope::All);
+        let msg = crate::demo_fixture::dlq_messages_for_env("poly-batch")
+            .into_iter()
+            .find(|m| m.task.is_some())
+            .expect("fixture");
+        let id = msg.id.clone();
+
+        let window = s
+            .remember_deleted(
+                "poly-batch",
+                Some("https://sqs.eu-west-2.amazonaws.com/1/poly-batch-dlq".into()),
+                msg,
+            )
+            .await;
+        assert_eq!(
+            window, UNDO_WINDOW_SECS,
+            "the caller is told how long it has"
+        );
+
+        // Listing names what is there, and what the offer does not cover.
+        let listed: Value =
+            serde_json::from_str(&s.tool_dlq_undo(&json!({})).await.expect("list")).expect("json");
+        assert_eq!(
+            listed["recoverable"][0]["message_id"],
+            json!(id),
+            "{listed}"
+        );
+        assert_eq!(
+            listed["recoverable"][0]["task"],
+            json!("Remove unattended jobs"),
+            "the list must be readable without looking the id up: {listed}"
+        );
+        let note = listed["note"].as_str().expect("note");
+        assert!(
+            note.contains("restart"),
+            "an in-memory buffer dies with the process: {note}"
+        );
+        assert!(note.contains("Purges are never recoverable"), "{note}");
+
+        // Restoring reports what it could NOT restore. An "undo" that
+        // silently changes the id and resets the retry count would be
+        // the over-claim the foreclosure line exists to prevent.
+        let done: Value = serde_json::from_str(
+            &s.tool_dlq_undo(&json!({"message_id": id}))
+                .await
+                .expect("undo"),
+        )
+        .expect("json");
+        assert_eq!(done["restored"], json!(true), "{done}");
+        let not = done["not_restored"].as_array().expect("not_restored");
+        assert_eq!(not.len(), 3, "{done}");
+        let joined = not
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(joined.contains("new one on send"), "{joined}");
+        assert!(joined.contains("receive_count"), "{joined}");
+
+        // An id that was never deleted is refused, and the refusal says
+        // where to look rather than just failing.
+        let err = s
+            .tool_dlq_undo(&json!({"message_id": "never-existed"}))
+            .await
+            .expect_err("unknown id");
+        assert!(err.contains("not recoverable"), "{err}");
+        assert!(err.contains("no arguments"), "point at the listing: {err}");
+    }
+
+    /// A resend is not recoverable, because nothing was destroyed.
+    ///
+    /// The message still exists — on the main queue — so offering to
+    /// "restore" it would enqueue a second copy and call that a
+    /// recovery. Only a delete captures.
+    #[tokio::test]
+    async fn only_a_delete_fills_the_undo_buffer() {
+        let s = Server::with_scope(true, false, crate::cli::mcp::WriteScope::All);
+        let msg = crate::demo_fixture::dlq_messages_for_env("poly-batch")
+            .into_iter()
+            .next()
+            .expect("fixture");
+        let id = msg.id.clone();
+
+        for verb in [WriteVerb::DlqResend, WriteVerb::DlqPurge] {
+            let plan = s
+                .tool_write_plan(verb, &json!({"env": "poly-batch", "message_id": id}))
+                .await
+                .expect("plan");
+            let token = serde_json::from_str::<Value>(&plan).expect("json")["confirm_token"]
+                .as_str()
+                .expect("token")
+                .to_string();
+            s.tool_confirm_action(&json!({"confirm_token": token}))
+                .await
+                .expect("dispatch");
+        }
+
+        assert!(
+            s.recoverable().await.is_empty(),
+            "resend and purge destroy nothing this server can put back; offering an \
+             undo for either would enqueue a duplicate and call it a recovery"
+        );
+
+        // The decision itself, so this holds for the LIVE dispatch path
+        // too. The loop above runs in demo, where the real
+        // `dispatch_dlq_message` is never called — a mutation there was
+        // invisible to it until the condition moved into one function.
+        assert!(captures_for_undo(WriteVerb::DlqDelete));
+        for verb in WriteVerb::ALL {
+            if verb != WriteVerb::DlqDelete {
+                assert!(
+                    !captures_for_undo(verb),
+                    "{verb:?} must not offer an undo it cannot honour"
+                );
+            }
+        }
+    }
+
+    /// The window expires, and the offer goes with it.
+    ///
+    /// Time is advanced rather than waited on. Without this the buffer
+    /// could retain forever and every assertion above still passes —
+    /// an undo with no expiry is the more dangerous half of the claim,
+    /// because it is the half an operator relies on later.
+    #[tokio::test(start_paused = true)]
+    async fn the_undo_window_expires() {
+        let s = Server::with_scope(true, false, crate::cli::mcp::WriteScope::All);
+        let msg = crate::demo_fixture::dlq_messages_for_env("poly-batch")
+            .into_iter()
+            .next()
+            .expect("fixture");
+        let id = msg.id.clone();
+        s.remember_deleted("poly-batch", Some("https://q/poly-batch-dlq".into()), msg)
+            .await;
+        assert_eq!(s.recoverable().await.len(), 1, "held immediately after");
+
+        tokio::time::advance(std::time::Duration::from_secs(UNDO_WINDOW_SECS - 1)).await;
+        assert_eq!(s.recoverable().await.len(), 1, "still inside the window");
+
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        assert!(
+            s.recoverable().await.is_empty(),
+            "past the window, it is gone"
+        );
+
+        let err = s
+            .tool_dlq_undo(&json!({"message_id": id}))
+            .await
+            .expect_err("expired");
+        assert!(err.contains("not recoverable"), "{err}");
     }
 }

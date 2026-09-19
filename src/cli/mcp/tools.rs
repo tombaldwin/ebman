@@ -138,7 +138,7 @@ pub(super) fn tool_table(scope: &super::WriteScope, peek_bodies: bool) -> Value 
                     // than a verb of its own, so filtering it out
                     // would leave a narrow grant able to plan a write
                     // and never dispatch it.
-                    n == writes::CONFIRM_TOOL || scope.allows(n)
+                    n == writes::CONFIRM_TOOL || n == writes::UNDO_TOOL || scope.allows(n)
                 })
             }));
         }
@@ -724,6 +724,7 @@ impl Server {
             "lint" => self.tool_lint(args).await,
             "get_option_settings" => self.tool_option_settings(args).await,
             "drift" => self.tool_drift(args).await,
+            "dlq_undo" => self.tool_dlq_undo(args).await,
             "doctor" => Ok(self.tool_doctor()),
             "audit_log" => self.tool_audit_log(args),
             "recent_events" => self.tool_recent_events(args).await,

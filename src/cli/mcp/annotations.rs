@@ -93,6 +93,10 @@ pub(super) const TOOL_ATTRS: &[(&str, ToolAttrs)] = &[
     // on the server — so it is the one tool guaranteed to answer even
     // when everything it describes is broken. That is the point of it.
     ("doctor", ToolAttrs::local_read()),
+    // A write — it sends a message — but a restorative one. Not
+    // destructive: it puts something back. Not idempotent: calling it
+    // twice would enqueue two copies.
+    ("dlq_undo", ToolAttrs::write(false, false)),
     // ── writes ──
     //
     // `restart` bounces the app servers: downtime, but nothing is
