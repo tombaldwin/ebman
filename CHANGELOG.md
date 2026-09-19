@@ -8,6 +8,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **`terminate` and `dlq_purge` now require the operator to TYPE the
+  environment name** into the confirmation dialog, matching the
+  strict-typed-name confirms the TUI has always demanded for both.
+
+  Over MCP, `confirm_name` is an argument the *agent* supplies — so
+  the human's entire contribution to destroying an environment was one
+  click. "Same bargain as the TUI" is the justification for
+  writes-by-default, and for these two verbs it was not true. The
+  agent's argument binds *it* to the planned environment; typing binds
+  *a person* to it. Both checks stay; they defend different things.
+
+  It **fails closed**: a client that cannot render a text field
+  returns no content, which does not match, which denies — so those
+  two verbs become unusable there rather than quietly one-click. The
+  refusal says exactly that, rather than leaving an operator to wonder
+  why terminate stopped working, and it is reported as `unconfirmed`
+  rather than as a decline, because nobody refused.
+
+  Exact matching, deliberately: trimming whitespace or folding case is
+  a convenience that erodes the only thing the step buys, which is
+  that somebody read the name and reproduced it. And scoped to these
+  two verbs only — a typed confirm on a `restart` is friction that
+  teaches operators to type past the ones that matter.
+
 - **An approval left no record that anyone was asked.** A dispatch
   carried `can_ask=true`, which says an ask was *possible* — not that
   one happened, nor what answered it. So a client that declares

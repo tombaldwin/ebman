@@ -111,6 +111,14 @@ pub(crate) enum AskOutcome {
     Declined,
     /// Asked, and nobody answered within the budget. Denies.
     Unanswered,
+    /// The operator accepted, but the text they typed did not match
+    /// what was required — or the client returned no text at all,
+    /// which is what a client that cannot render an input field does.
+    ///
+    /// Distinct from `Declined` because nobody refused: this is a
+    /// failed confirmation, and the log should not record a decline
+    /// that did not happen. Denies either way.
+    Unconfirmed,
     /// No ask was possible because this client never declared
     /// elicitation. ONLY that — a missing channel or a failed send on
     /// a client that CAN elicit is `Unanswered`, because there the ask
@@ -129,7 +137,10 @@ impl AskOutcome {
     /// `NotAsked` does not: no question was put, so there is no answer
     /// to respect, and the surface it reached was gated by the flag.
     pub(crate) fn refuses(self) -> bool {
-        matches!(self, AskOutcome::Declined | AskOutcome::Unanswered)
+        matches!(
+            self,
+            AskOutcome::Declined | AskOutcome::Unanswered | AskOutcome::Unconfirmed
+        )
     }
 
     /// The audit vocabulary for `stage=asked`.
@@ -142,6 +153,7 @@ impl AskOutcome {
             AskOutcome::Approved => "approved",
             AskOutcome::Declined => "declined",
             AskOutcome::Unanswered => "unanswered",
+            AskOutcome::Unconfirmed => "unconfirmed",
             // Never reaches the audit — the caller skips `NotAsked`,
             // because no question was put and a line claiming one was
             // is exactly the false record this stage exists to avoid.
@@ -188,6 +200,14 @@ impl AskOutcome {
                 "The plan is spent; do not re-plan the same action unless the operator \
                  asks for it."
             }
+            AskOutcome::Unconfirmed => {
+                "The plan is spent. Nobody declined — the confirmation text did not \
+                 match, which for this verb is required and is typed by the OPERATOR, \
+                 not by you. If their client cannot show a text field, this verb \
+                 cannot be confirmed there at all: say so and suggest the TUI, or \
+                 `--allow-writes` on a client that can. If they simply mistyped, they \
+                 can ask you to try again."
+            }
             AskOutcome::Unanswered => {
                 "The plan is spent. Nobody answered, which is NOT a refusal — the \
                  operator may have stepped away, or may never have been shown the \
@@ -207,6 +227,9 @@ impl AskOutcome {
             AskOutcome::Approved => "approved",
             AskOutcome::Declined => "declined by the operator",
             AskOutcome::Unanswered => "no answer within the ask window",
+            AskOutcome::Unconfirmed => {
+                "the typed confirmation did not match (or your client returned none)"
+            }
             AskOutcome::NotAsked => "not asked",
         }
     }
@@ -955,7 +978,23 @@ impl Server {
         let _ = tx.try_send(frame.to_string());
     }
 
-    pub(crate) async fn ask_operator(&self, summary: &str) -> AskOutcome {
+    /// `typed` demands the operator TYPE a string into the dialog, and
+    /// requires it to match exactly.
+    ///
+    /// For `terminate` and `dlq_purge`, matching what the TUI already
+    /// does — both are strict-typed-name confirms there, while the MCP
+    /// side only ever checked a `confirm_name` the AGENT supplied, so
+    /// the human's whole contribution to destroying an environment was
+    /// one click. "Same bargain as the TUI" is the justification for
+    /// writes-by-default, and for those two verbs it was not true.
+    ///
+    /// Fails CLOSED. A client that cannot render an input field
+    /// returns no content, which does not match, which denies — so
+    /// these two verbs become unusable there rather than quietly
+    /// one-click. That is the right direction, and it is why the
+    /// refusal says plainly what happened instead of leaving an
+    /// operator wondering why terminate stopped working.
+    pub(crate) async fn ask_operator(&self, summary: &str, typed: Option<&str>) -> AskOutcome {
         if !self
             .client_supports_elicitation
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -980,17 +1019,32 @@ impl Server {
             map.insert(id, reply_tx);
         }
 
+        // An empty object for an ordinary confirmation — the answer
+        // lives in `action` and there is nothing to collect; an empty
+        // object rather than an omitted field, because the field is
+        // required and a client that validates it should get something
+        // valid. A required string property where the operator must
+        // type something back.
+        let schema = match typed {
+            None => json!({"type": "object", "properties": {}}),
+            Some(_) => json!({
+                "type": "object",
+                "properties": {
+                    "confirm": {
+                        "type": "string",
+                        "description": "Type the environment name exactly, to confirm",
+                    }
+                },
+                "required": ["confirm"],
+            }),
+        };
         let frame = json!({
             "jsonrpc": "2.0",
             "id": id,
             "method": "elicitation/create",
             "params": {
                 "message": summary,
-                // A confirmation, so the answer lives in `action` and
-                // the schema carries nothing. An empty object rather
-                // than an omitted field: the field is required, and a
-                // client that validates it should get something valid.
-                "requestedSchema": {"type": "object", "properties": {}}
+                "requestedSchema": schema
             }
         });
         if tx.send(frame.to_string()).await.is_err() {
@@ -1001,7 +1055,28 @@ impl Server {
         }
 
         match tokio::time::timeout(std::time::Duration::from_secs(ASK_WAIT_SECS), reply_rx).await {
-            Ok(Ok(reply)) => ask_outcome_from(&reply),
+            Ok(Ok(reply)) => match (ask_outcome_from(&reply), typed) {
+                // Only an accept is checked against the typed value: a
+                // decline is a decline whatever the field holds.
+                (AskOutcome::Approved, Some(expected)) => {
+                    let got = reply
+                        .get("result")
+                        .and_then(|r| r.get("content"))
+                        .and_then(|c| c.get("confirm"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    // Exact, deliberately. Trimming or folding case is
+                    // a convenience that erodes the only thing this
+                    // step buys — that somebody read the name and
+                    // reproduced it.
+                    if got == expected {
+                        AskOutcome::Approved
+                    } else {
+                        AskOutcome::Unconfirmed
+                    }
+                }
+                (outcome, _) => outcome,
+            },
             // Sender dropped, or the budget expired. Both are "no
             // answer", and both deny.
             _ => {
@@ -4147,7 +4222,7 @@ mod tests {
     async fn a_client_without_elicitation_is_not_asked() {
         let s = Server::with_scope(true, false, WriteScope::All);
         assert_eq!(
-            s.ask_operator("delete something").await,
+            s.ask_operator("delete something", None).await,
             AskOutcome::NotAsked
         );
     }
@@ -4163,7 +4238,7 @@ mod tests {
             *slot = Some(tx);
         }
 
-        let asked = tokio::spawn(async move { s.ask_operator("delete something").await });
+        let asked = tokio::spawn(async move { s.ask_operator("delete something", None).await });
         // The question goes out...
         let frame: Value = serde_json::from_str(&rx.recv().await.expect("a frame")).expect("json");
         assert_eq!(frame["method"], json!("elicitation/create"), "{frame}");
@@ -4203,7 +4278,7 @@ mod tests {
 
         let asking = {
             let s = std::sync::Arc::clone(&s);
-            tokio::spawn(async move { s.ask_operator("terminate prod").await })
+            tokio::spawn(async move { s.ask_operator("terminate prod", None).await })
         };
         let frame: Value = serde_json::from_str(&rx.recv().await.expect("frame")).expect("json");
         let id = frame["id"].clone();
@@ -4716,7 +4791,7 @@ mod tests {
         // Capability declared, but no channel — the shutdown path
         // clears it, and a confirm already in flight sees this.
         assert_eq!(
-            s.ask_operator("terminate poly-prod").await,
+            s.ask_operator("terminate poly-prod", None).await,
             AskOutcome::Unanswered,
             "a client that can be asked but cannot be reached must DENY — \
              `NotAsked` would fall back to a flag that was never given"
@@ -4729,7 +4804,7 @@ mod tests {
             *slot = Some(tx);
         }
         assert_eq!(
-            s.ask_operator("terminate poly-prod").await,
+            s.ask_operator("terminate poly-prod", None).await,
             AskOutcome::Unanswered,
             "a send that cannot be delivered is an unanswered ask, not an absent one"
         );
@@ -4737,7 +4812,7 @@ mod tests {
         // And the one case that legitimately falls back is untouched.
         let flagged = Server::with_scope(true, false, WriteScope::All);
         assert_eq!(
-            flagged.ask_operator("x").await,
+            flagged.ask_operator("x", None).await,
             AskOutcome::NotAsked,
             "no capability is still NotAsked, or every flag-granted client is denied"
         );
@@ -4976,7 +5051,8 @@ mod tests {
         }
 
         let srv = std::sync::Arc::clone(&s);
-        let asking = tokio::spawn(async move { srv.ask_operator("terminate poly-prod").await });
+        let asking =
+            tokio::spawn(async move { srv.ask_operator("terminate poly-prod", None).await });
 
         let ask: Value = serde_json::from_str(&rx.recv().await.expect("the ask")).expect("json");
         let asked_id = ask["id"].clone();
@@ -5156,6 +5232,103 @@ mod tests {
             "the NotAsked guard must be the condition on THIS call — a line saying \
              a question was asked when none was is the false record this stage \
              exists to prevent"
+        );
+    }
+
+    /// Terminate and purge demand a TYPED name; nothing else does.
+    ///
+    /// The TUI makes a human type the environment name for both. Over
+    /// MCP `confirm_name` is supplied by the agent, so the human's
+    /// whole contribution to destroying an environment was one click.
+    #[tokio::test(start_paused = true)]
+    async fn terminate_and_purge_require_the_operator_to_type_the_name() {
+        async fn ask_with(reply_content: Option<Value>, expect: Option<&str>) -> AskOutcome {
+            let s = std::sync::Arc::new(Server::with_scope(true, false, WriteScope::All));
+            s.client_supports_elicitation
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(4);
+            if let Ok(mut slot) = s.outbound.lock() {
+                *slot = Some(tx);
+            }
+            let want = expect.map(str::to_string);
+            let srv = std::sync::Arc::clone(&s);
+            let asking = tokio::spawn(async move {
+                srv.ask_operator("terminate poly-prod", want.as_deref())
+                    .await
+            });
+            let frame: Value = serde_json::from_str(&rx.recv().await.expect("ask")).expect("json");
+
+            // The schema must actually demand a field when one is required.
+            let required = frame["params"]["requestedSchema"]["required"].clone();
+            if expect.is_some() {
+                assert_eq!(
+                    required,
+                    json!(["confirm"]),
+                    "a typed confirm must be a REQUIRED property, or a client may \
+                     render nothing and the operator types nothing: {frame}"
+                );
+            } else {
+                assert!(
+                    required.is_null(),
+                    "ordinary confirms demand nothing: {frame}"
+                );
+            }
+
+            let mut result = json!({"action": "accept"});
+            if let Some(c) = reply_content {
+                result["content"] = c;
+            }
+            let reply = json!({"jsonrpc": "2.0", "id": frame["id"].clone(), "result": result});
+            assert!(s.take_ask_reply(&reply));
+            asking.await.expect("join")
+        }
+
+        // The right name, typed: approved.
+        assert_eq!(
+            ask_with(Some(json!({"confirm": "poly-prod"})), Some("poly-prod")).await,
+            AskOutcome::Approved
+        );
+        // The wrong name: NOT a decline — nobody refused.
+        assert_eq!(
+            ask_with(Some(json!({"confirm": "poly-prd"})), Some("poly-prod")).await,
+            AskOutcome::Unconfirmed,
+            "a mistyped name is a failed confirmation, and logging it as a decline \
+             records a refusal that did not happen"
+        );
+        // No content at all — what a client that cannot render an
+        // input field returns. Must fail CLOSED.
+        assert_eq!(
+            ask_with(None, Some("poly-prod")).await,
+            AskOutcome::Unconfirmed,
+            "a client that cannot show a text field must not be able to one-click a \
+             terminate"
+        );
+        // Case and whitespace are not close enough.
+        for near in ["Poly-Prod", " poly-prod", "poly-prod "] {
+            assert_eq!(
+                ask_with(Some(json!({"confirm": near})), Some("poly-prod")).await,
+                AskOutcome::Unconfirmed,
+                "{near:?} must not pass — the only thing this step buys is that \
+                 somebody read the name and reproduced it"
+            );
+        }
+        // And a verb that demands nothing still works on a bare accept.
+        assert_eq!(ask_with(None, None).await, AskOutcome::Approved);
+    }
+
+    /// Only the two destructive-and-irreversible verbs demand it.
+    #[test]
+    fn the_typed_confirm_is_scoped_to_terminate_and_purge() {
+        let src = include_str!("writes.rs");
+        let body = crate::app::tests::scan::production_half(src);
+        let arm = body
+            .find("WriteVerb::Terminate | WriteVerb::DlqPurge => Some(pending.env.as_str())")
+            .expect("terminate and purge demand a typed name");
+        let rest = &body[arm..arm + 200];
+        assert!(
+            rest.contains("_ => None"),
+            "every other verb must demand nothing — a typed confirm on a restart is \
+             friction that teaches operators to type past the ones that matter"
         );
     }
 }

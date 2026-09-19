@@ -152,7 +152,9 @@ name the first two as deliberate gaps, so they are debts, not ideas.
    it clicks. Name-back defends against a rubber-stamping human, which
    is a different threat.
 
-1. **Terminate name-back parity** *(behaviour)*
+1. ~~**Terminate name-back parity**~~ — **done 2026-09-19**, and widened to `dlq_purge` on the maintainer's ruling: both are strict-typed-name confirms in the TUI, so both are now typed over MCP. Fails closed on a client that cannot render a text field. **Still owed: the live verification** — the non-empty `requestedSchema` has not been exercised against a real client, which was the whole reason this was sequenced behind a prototype. Do that before it ships in a tag.
+
+   *Original entry, for the reasoning:*
 
    In the TUI a human types the environment name back before a
    terminate. Over MCP `confirm_name` is supplied by the AGENT, so the
