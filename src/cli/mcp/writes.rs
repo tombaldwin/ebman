@@ -817,6 +817,15 @@ impl WriteVerb {
 /// - **Over the cap.** See `DLQ_BATCH_CAP`.
 /// - **A non-string element.** An id that arrived as a number or null
 ///   is a client bug, and coercing it invents an id to go looking for.
+///
+/// The descriptor's schema is NOT a gate, so every check below is
+/// load-bearing rather than belt-and-braces.
+///
+/// `message_ids` declares `maxItems: 10` and `items: {type: string}`,
+/// and a live run through Claude Code sent both a bare integer and
+/// eleven elements straight past them to this function. Client-side
+/// validation of tool arguments is optional and that client does not
+/// do it. Do not drop a check here as redundant with the schema.
 fn requested_message_ids(args: &Value) -> Result<Vec<String>, String> {
     let one = arg_str(args, "message_id");
     let many = args.get("message_ids").filter(|v| !v.is_null());
@@ -1862,13 +1871,34 @@ impl Server {
         // `next` is a human-readable string VALUE — build it plain,
         // then json_string it so any quotes (terminate's confirm_name
         // hint carries them) are escaped rather than breaking the frame.
+        // `next` must say that a PERSON is asked, where one is.
+        //
+        // It read as a mechanical second step — "call confirm_action
+        // with the confirm_token to dispatch" — and an agent that
+        // never happened to hit a timeout would model the confirm as a
+        // formality it performs. A peer session said exactly that: it
+        // learned a human gate existed only by timing out, and noted
+        // that an agent which never did would report a decline to its
+        // user as an ERROR rather than as a person's decision. The
+        // server instructions say this; the plan did not, and the plan
+        // is what an agent reads at the moment it matters.
+        let asked = self
+            .client_supports_elicitation
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let gate = if asked {
+            " — the OPERATOR is asked to approve it and may decline or not answer, so \
+             this is a request, not a formality"
+        } else {
+            ""
+        };
         let next = if verb == WriteVerb::Terminate {
             format!(
-                "call confirm_action with the confirm_token AND confirm_name={} to dispatch",
+                "call confirm_action with the confirm_token AND confirm_name={} to \
+                 dispatch{gate}",
                 env.name
             )
         } else {
-            "call confirm_action with the confirm_token to dispatch".to_string()
+            format!("call confirm_action with the confirm_token to dispatch{gate}")
         };
         Ok(format!(
             "{{\"pending\":true,\"confirm_token\":{},\"expires_in_secs\":{CONFIRM_TTL_SECS},\"plan\":{{\"action\":{},\"env\":{},\"application\":{},\"health\":{},\"status\":{},\"identity\":{},\"forecloses\":{}{plan_extra}{events_json}}},\"next\":{}}}",

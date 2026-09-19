@@ -4690,4 +4690,84 @@ mod tests {
         assert!(AskOutcome::Approved.guidance().is_empty());
         assert!(AskOutcome::NotAsked.guidance().is_empty());
     }
+
+    /// An agent can tell a standing grant from a human gate.
+    ///
+    /// `doctor` reported `elicitation: true` and `writes: every verb`
+    /// as adjacent facts, and a peer session confirmed it could not
+    /// relate them. The two imply opposite things to tell a user: a
+    /// flag means "I can do this"; elicitation means "I can propose
+    /// this, and someone must approve it". The same string for both
+    /// over-promises in one of them.
+    #[tokio::test]
+    async fn doctor_says_why_writes_are_available_not_just_how_wide() {
+        async fn doctor(s: &Server) -> String {
+            call(s, "doctor", json!({})).await.1.to_string()
+        }
+
+        // Granted by the flag: a standing grant.
+        let flagged = Server::with_scope(true, false, WriteScope::All);
+        let d = doctor(&flagged).await;
+        assert!(d.contains("--allow-writes"), "{d}");
+        assert!(
+            !d.contains("client-elicitation"),
+            "a flag-granted surface must not claim every write is put to a person — \
+             on a client that cannot be asked, nobody is: {d}"
+        );
+
+        // Granted by the parity default: every write is asked.
+        let asked = demo_server();
+        asked
+            .client_supports_elicitation
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let d = doctor(&asked).await;
+        assert!(
+            d.contains("client-elicitation") && d.contains("may decline"),
+            "an elicitation-gated surface must say so, or the agent tells its user \
+             it can act when it can only propose: {d}"
+        );
+
+        // An explicit flag outranks the default even when both are true.
+        let both = Server::with_scope(true, false, WriteScope::All);
+        both.client_supports_elicitation
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            doctor(&both).await.contains("--allow-writes"),
+            "the flag is the provenance when it was given"
+        );
+
+        // Read-only says neither.
+        let ro = demo_server();
+        let d = doctor(&ro).await;
+        assert!(d.contains("no writes are available"), "{d}");
+    }
+
+    /// The plan tells the agent a person is asked.
+    ///
+    /// `next` read as a mechanical step. An agent that never timed out
+    /// would model confirm_action as a formality and report a decline
+    /// to its user as an error rather than as someone's decision.
+    #[tokio::test]
+    async fn the_plan_says_a_person_will_be_asked() {
+        let s = demo_server();
+        s.client_supports_elicitation
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let env = demo_fixture::envs()[0].name.clone();
+        let (_, plan) = call(&s, "restart", json!({"env": &env})).await;
+        let next = plan["next"].as_str().expect("a next hint");
+        assert!(
+            next.contains("OPERATOR") && next.contains("decline"),
+            "the plan must say the confirm is a request put to a person: {next}"
+        );
+
+        // And must NOT say it where nobody will be asked.
+        let flagged = Server::with_scope(true, false, WriteScope::All);
+        let (_, plan) = call(&flagged, "restart", json!({"env": env})).await;
+        let next = plan["next"].as_str().expect("a next hint");
+        assert!(
+            !next.contains("OPERATOR"),
+            "on a client that cannot be asked, promising an operator dialog is a \
+             lie the agent would relay to its user: {next}"
+        );
+    }
 }

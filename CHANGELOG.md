@@ -208,6 +208,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **An agent could not tell a standing grant from a human gate.**
+  `doctor` reported `elicitation: true` and `writes: every verb` as
+  adjacent facts and never related them, and the plan's `next` field
+  read as a mechanical step — "call confirm_action with the
+  confirm_token to dispatch". Both found by an agent exercising a live
+  server, which learned a human gate existed only because one of its
+  calls happened to time out.
+
+  The two provenances imply opposite things to tell a user: a flag is
+  a standing grant, so "I can do this"; elicitation means every action
+  waits on a person, so the honest sentence is "I can propose this,
+  and someone has to approve it — they may decline, or not answer."
+  Rendering the same thing for both over-promises in one of them, and
+  an agent that models the confirm as a formality reports a decline as
+  an error rather than as a person's decision.
+
+  `doctor` now carries `writes_via`, and a plan says the confirmation
+  is a request put to the operator — but only where one will actually
+  be asked, since promising a dialog on a client that cannot show one
+  is the same lie in the other direction.
+
 - **A timeout told the agent the same thing as a decline.** Found by
   a live run against the shipped build, not by reading the code — both
   ended with "The plan is spent; do not re-plan the same action unless
