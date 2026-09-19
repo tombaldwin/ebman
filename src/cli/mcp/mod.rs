@@ -399,9 +399,11 @@ pub(crate) fn staleness(at_start: Option<u64>, now: Option<u64>) -> bool {
 pub(crate) fn stale_binary_notice(path: &str) -> String {
     format!(
         "[ebman {} is running, but a different build is now installed at {}. \
-         This server keeps the old one until the connection is re-established \
-         — reconnect (in Claude Code: /mcp, Reconnect) to pick it up. \
-         Results below are from the running build.]",
+         This server keeps the old one until the connection is re-established. \
+         ASK YOUR OPERATOR to reconnect (in Claude Code: /mcp, Reconnect) — you \
+         cannot do it yourself: it is a client action, not a tool call, and \
+         there is no MCP message a server can send to trigger one. Results \
+         below are from the running build.]",
         env!("CARGO_PKG_VERSION"),
         path
     )
@@ -2679,6 +2681,27 @@ mod tests {
     /// underneath a running process changes its inode while
     /// `current_exe()` still resolves the path. That is the whole
     /// mechanism — a `brew upgrade` leaves the server on the old inode.
+    #[test]
+    fn the_stale_notice_says_whose_job_the_reconnect_is() {
+        let n = stale_binary_notice("/usr/local/bin/ebman");
+        assert!(
+            n.contains("ASK YOUR OPERATOR"),
+            "an agent reading `reconnect` imperatively will try it and fail — the \
+             panel is a client surface it cannot reach: {n}"
+        );
+        assert!(
+            n.contains("cannot do it yourself"),
+            "and must be told why, or it will look for another way round: {n}"
+        );
+        assert!(
+            n.contains("no MCP message a server can send"),
+            "naming the missing primitive stops an agent hunting for a tool that \
+             does not exist: {n}"
+        );
+        assert!(n.contains(env!("CARGO_PKG_VERSION")), "{n}");
+        assert!(!n.contains("  "), "renders into one line: {n:?}");
+    }
+
     #[test]
     fn a_replaced_binary_is_stale_and_an_unreadable_one_is_not() {
         assert!(
