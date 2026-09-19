@@ -196,8 +196,9 @@ case** (destructive, non-idempotent): it dispatches whatever is pending,
 which may be a terminate, and its token is single-use.
 
 These are hints. They are there so a client asks the right question, not
-as a control — the boundary is IAM, and `--allow-writes` is what
-actually gates the write surface.
+as a control — the boundary is IAM. What actually gates the write
+surface is the operator's answer to the confirmation dialog, or on a
+client that cannot be asked, the `--allow-writes` flag.
 
 Whether the write tools appear depends on your client: one that can put a question to you mid-request gets them by default, one that cannot needs `--allow-writes`. Either way no write dispatches without a confirmation — see [Writes](#writes) below. Tools (all take optional `profile` / `region`):
 
@@ -220,13 +221,14 @@ Whether the write tools appear depends on your client: one that can put a questi
 
 **Exit codes.** `serve` exits 0 when stdin closes, and 2 on any usage
 error — an unknown flag, a `--allow-writes` value naming a verb that
-does not exist, `--allow-writes=` with no verbs after it, or
-`--allow-writes` given more than once. All four are refused at startup
+does not exist, `--allow-writes=` with no verbs after it,
+`--allow-writes` or `--read-only` given more than once, or
+`--read-only` combined with `--allow-writes`. All are refused at startup
 rather than at first use, so a bad registration fails when you make it
 rather than the first time an agent tries to write. `setup` is the
 same: 0, or 2 on a usage error.
 
-Tool calls run concurrently with a 30s bound; expired-credential errors surface as the `aws sso login --profile X` hint so the agent can relay it. Failures come back as `isError` tool results, not protocol errors.
+Tool calls run concurrently with a 30s bound — except `confirm_action` on a client that can be asked, which gets five minutes, because the bound is waiting on a person rather than on AWS; expired-credential errors surface as the `aws sso login --profile X` hint so the agent can relay it. Failures come back as `isError` tool results, not protocol errors.
 
 ### Writes
 
@@ -305,6 +307,23 @@ Three rules worth knowing before you hit them:
 
 Every message gets its own audit line naming its own id and task. For
 a delete that log is the only place the answer still exists.
+
+#### Turning it off: `--read-only` (0.42+)
+
+If you want your agent read-only regardless of what its client can do:
+
+```bash
+claude mcp add ebman -- ebman mcp serve --read-only
+```
+
+The write tools are absent, exactly as they are on a client that
+cannot be asked and has no flag. This is a **server** control, so it
+does not touch your TUI — `safety.read_only` in `config.toml` is the
+one that refuses writes everywhere, including your own hands.
+
+`--read-only` together with `--allow-writes` is refused at startup.
+Picking a winner silently would hand you a posture you did not choose,
+whichever way it went.
 
 #### If it cannot: `--allow-writes` (0.28+)
 

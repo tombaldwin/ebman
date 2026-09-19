@@ -612,7 +612,7 @@ request-as-unit there is no between.
 ## Cost
 
 Smaller than when this note was first written, because most of what it
-proposed has been deleted rather than built. Steps 1–4 have shipped.
+proposed has been deleted rather than built. Steps 1–5 have shipped.
 The remaining work is assume-role (step 6).
 
 Step 2 was timeboxed first, as planned, on the grounds that a negative

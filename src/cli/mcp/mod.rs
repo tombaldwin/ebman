@@ -111,8 +111,10 @@ pub(crate) enum AskOutcome {
     Declined,
     /// Asked, and nobody answered within the budget. Denies.
     Unanswered,
-    /// No ask was possible — the client declared no elicitation, or
-    /// there is no channel. Distinct from `Unanswered` because it has
+    /// No ask was possible because this client never declared
+    /// elicitation. ONLY that — a missing channel or a failed send on
+    /// a client that CAN elicit is `Unanswered`, because there the ask
+    /// was the gate and losing it must deny. Distinct from `Unanswered` because it has
     /// the opposite consequence: nothing was asked, so nothing was
     /// refused, and the write falls back to whatever gated it before
     /// (the `--allow-writes` opt-in). Conflating the two denied every
@@ -189,11 +191,14 @@ struct McpArgs {
     demo: bool,
     no_redact: bool,
     write_scope: WriteScope,
+    /// The operator said no to writes on THIS server, whatever the
+    /// client can do. Distinct from `write_scope == None`, which is
+    /// "said nothing" and is what elicitation fills in.
+    read_only: bool,
 }
 
-const MCP_USAGE: &str =
-    "usage: ebman mcp <serve [--demo] [--no-redact] [--allow-writes[=verb,verb]] \
-     | setup [--allow-writes[=verb,verb]]>";
+const MCP_USAGE: &str = "usage: ebman mcp <serve [--demo] [--no-redact] [--read-only] \
+     [--allow-writes[=verb,verb]] | setup [--allow-writes[=verb,verb]]>";
 
 fn parse_mcp_args(args: &[String]) -> Result<McpArgs, String> {
     // args[0] = "mcp"; the only sub-verb is "serve".
@@ -204,11 +209,34 @@ fn parse_mcp_args(args: &[String]) -> Result<McpArgs, String> {
     let mut no_redact = false;
     let mut write_scope = WriteScope::None;
     let mut saw_write_flag = false;
+    let mut read_only = false;
     let known: Vec<String> = writes::write_verb_names();
     let known_refs: Vec<&str> = known.iter().map(String::as_str).collect();
     for arg in args.iter().skip(2) {
         // `--allow-writes` alone still means every verb, so an existing
         // `.mcp.json` keeps working. `--allow-writes=a,b` narrows it.
+        if arg == "--read-only" {
+            // The MCP-scoped standing no.
+            //
+            // `safety.read_only` already refuses every write, and it
+            // refuses them EVERYWHERE — TUI and CLI included. Before
+            // this flag, an operator who wanted their agent read-only
+            // while keeping their own TUI usable had no way to say so:
+            // writes became available by default to any client that
+            // can be asked, and the only "no" was one that disabled
+            // their own hands too.
+            //
+            // A flag rather than a config key, matching
+            // `--allow-writes`: the write posture of an MCP server
+            // stays visible in the process table and `.mcp.json`. It
+            // only ever says NO, which is the direction config is
+            // allowed to move in.
+            if read_only {
+                return Err(format!("ebman mcp: --read-only given twice — {MCP_USAGE}"));
+            }
+            read_only = true;
+            continue;
+        }
         if let Some(rest) = arg.strip_prefix("--allow-writes") {
             // Repeating it is an error, not last-wins. Last-wins is the
             // ordinary convention and wrong here: `--allow-writes=dlq_delete
@@ -240,10 +268,26 @@ fn parse_mcp_args(args: &[String]) -> Result<McpArgs, String> {
             other => return Err(format!("ebman mcp: unknown flag '{other}' — {MCP_USAGE}")),
         }
     }
+    if read_only && saw_write_flag {
+        // Refused rather than resolved. Both flags together is an
+        // operator who does not know what this server will do, and
+        // picking a winner silently — either way — hands them a
+        // posture they did not choose. Every other bad flag
+        // combination here fails at startup for the same reason: a
+        // registration that is wrong should break when you write it,
+        // not the first time an agent tries to write.
+        return Err(format!(
+            "ebman mcp: --read-only and --allow-writes contradict each other — {MCP_USAGE}"
+        ));
+    }
+    if read_only {
+        write_scope = WriteScope::None;
+    }
     Ok(McpArgs {
         demo,
         no_redact,
         write_scope,
+        read_only,
     })
 }
 
@@ -624,6 +668,9 @@ pub(crate) struct Server {
     /// Nothing branches on this yet. It is logged at initialize so the
     /// question has an answer before the levels work depends on it.
     client_supports_elicitation: std::sync::atomic::AtomicBool,
+    /// `--read-only`: the operator said no to writes on this server,
+    /// whatever the client can do.
+    mcp_read_only: std::sync::atomic::AtomicBool,
     /// `clientInfo.name` from initialize — lands in audit extras so
     /// agent-dispatched writes are attributable.
     client_name: std::sync::Mutex<String>,
@@ -689,6 +736,7 @@ impl Server {
             dispatching: std::sync::atomic::AtomicBool::new(false),
             client_name: std::sync::Mutex::new("unknown".to_string()),
             client_supports_elicitation: std::sync::atomic::AtomicBool::new(false),
+            mcp_read_only: std::sync::atomic::AtomicBool::new(false),
             exe: ExeIdentity::current(),
             #[cfg(test)]
             injected_client: None,
@@ -747,6 +795,17 @@ impl Server {
     /// different in kind: it is the operator having said nothing at
     /// all, which is what the parity default is for.
     pub(crate) fn effective_scope(&self) -> WriteScope {
+        // `--read-only` is a standing NO and outranks the parity
+        // default: the operator asked for a server that cannot write,
+        // and a client that happens to support dialogs is not their
+        // permission to change that. Checked first so nothing below
+        // can widen past it.
+        if self
+            .mcp_read_only
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return WriteScope::None;
+        }
         if matches!(self.write_scope, WriteScope::None)
             && self
                 .client_supports_elicitation
@@ -764,8 +823,14 @@ impl Server {
         {
             return AskOutcome::NotAsked;
         }
+        // No channel on a client that CAN elicit is a dead ask, not an
+        // absent one — the client vanished mid-confirm, or the writer
+        // task is gone. `NotAsked` would fall back to the flag, and on
+        // a connection widened purely by elicitation there is no flag
+        // to fall back to: the ask IS the gate. That path dispatched
+        // an unapproved terminate. `Unanswered` denies.
         let Some(tx) = self.outbound.lock().ok().and_then(|g| g.clone()) else {
-            return AskOutcome::NotAsked;
+            return AskOutcome::Unanswered;
         };
 
         let id = self
@@ -791,7 +856,9 @@ impl Server {
         });
         if tx.send(frame.to_string()).await.is_err() {
             self.forget_ask(id);
-            return AskOutcome::NotAsked;
+            // Same: the question could not be delivered to a client
+            // that should have been able to answer it.
+            return AskOutcome::Unanswered;
         }
 
         match tokio::time::timeout(std::time::Duration::from_secs(ASK_WAIT_SECS), reply_rx).await {
@@ -944,7 +1011,8 @@ impl Server {
                             concat!(
                             "ebman ", env!("CARGO_PKG_VERSION"),
                             " — a fleet console for AWS Elastic Beanstalk. This surface exposes reads, ",
-                            "plus two-phase writes when the server was started with --allow-writes.\n\n"),
+                            "plus two-phase writes. Whether writes are available to YOU is said below; ",
+                            "it depends on this connection, not on the binary.\n\n"),
                             self.effective_scope().agent_summary(
                                 // Parse errors FIRST, matching
                                 // `write_gate::decide`'s precedence.
@@ -1137,6 +1205,7 @@ pub async fn run(args: &[String]) -> Result<()> {
         demo,
         no_redact,
         write_scope,
+        read_only,
     } = match parse_mcp_args(args) {
         Ok(parsed) => parsed,
         Err(msg) => {
@@ -1150,6 +1219,9 @@ pub async fn run(args: &[String]) -> Result<()> {
         crate::audit::init_from_config_disk();
     }
     let server = Arc::new(Server::with_scope(demo, no_redact, write_scope.clone()));
+    server
+        .mcp_read_only
+        .store(read_only, std::sync::atomic::Ordering::Relaxed);
     // Frame-level tools/call concurrency cap (see the spawn site).
     let tool_slots = Arc::new(tokio::sync::Semaphore::new(16));
 
@@ -4430,5 +4502,113 @@ mod tests {
             "and must refuse at PLAN time — an unreadable list must never reach a \
              dialog, because the cap exists to keep the dialog readable"
         );
+    }
+
+    /// A dead ask channel DENIES; it does not fall through.
+    ///
+    /// Found by a release panel and confirmed: `NotAsked` meant three
+    /// different things — no capability, no channel, failed send — and
+    /// only the first has a flag to fall back to. On a connection
+    /// widened purely by elicitation the ask IS the gate, so a client
+    /// that crashed mid-confirm dispatched an unapproved terminate.
+    #[tokio::test]
+    async fn a_dead_ask_channel_denies_rather_than_falling_through() {
+        let s = Server::with_scope(true, false, WriteScope::None);
+        s.client_supports_elicitation
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        // Capability declared, but no channel — the shutdown path
+        // clears it, and a confirm already in flight sees this.
+        assert_eq!(
+            s.ask_operator("terminate poly-prod").await,
+            AskOutcome::Unanswered,
+            "a client that can be asked but cannot be reached must DENY — \
+             `NotAsked` would fall back to a flag that was never given"
+        );
+
+        // A closed receiver is the same hazard by another route.
+        let (tx, rx) = tokio::sync::mpsc::channel::<String>(1);
+        drop(rx);
+        if let Ok(mut slot) = s.outbound.lock() {
+            *slot = Some(tx);
+        }
+        assert_eq!(
+            s.ask_operator("terminate poly-prod").await,
+            AskOutcome::Unanswered,
+            "a send that cannot be delivered is an unanswered ask, not an absent one"
+        );
+
+        // And the one case that legitimately falls back is untouched.
+        let flagged = Server::with_scope(true, false, WriteScope::All);
+        assert_eq!(
+            flagged.ask_operator("x").await,
+            AskOutcome::NotAsked,
+            "no capability is still NotAsked, or every flag-granted client is denied"
+        );
+    }
+
+    /// The whole point, end to end: no flag, no channel, no dispatch.
+    #[tokio::test]
+    async fn a_write_that_only_the_ask_gated_cannot_dispatch_unasked() {
+        let s = demo_server(); // no --allow-writes
+        s.client_supports_elicitation
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let env = demo_fixture::envs()[0].name.clone();
+        let (err, plan) = call(&s, "restart", json!({"env": env})).await;
+        assert!(!err, "planning is open: {plan}");
+        let token = plan["confirm_token"].as_str().expect("token").to_string();
+
+        // No outbound channel was ever installed — the client is gone.
+        let (err, out) = call(&s, "confirm_action", json!({"confirm_token": token})).await;
+        assert!(
+            err,
+            "with no flag and no reachable operator, nothing may dispatch: {out}"
+        );
+    }
+
+    /// `--read-only` outranks the parity default.
+    #[tokio::test]
+    async fn read_only_outranks_the_elicitation_default() {
+        let s = Server::with_scope(true, false, WriteScope::None);
+        s.mcp_read_only
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        s.client_supports_elicitation
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            s.effective_scope(),
+            WriteScope::None,
+            "the operator said no to writes on this server; a client that supports \
+             dialogs is not their permission to change that"
+        );
+        assert!(
+            !tool_table(&s.effective_scope(), true)
+                .as_array()
+                .expect("array")
+                .iter()
+                .any(|t| t["name"] == "confirm_action"),
+            "and the write surface must not be advertised"
+        );
+    }
+
+    /// The flag parses, refuses contradictions, and refuses repeats.
+    #[test]
+    fn read_only_is_parsed_and_cannot_contradict_a_grant() {
+        let args = |v: &[&str]| -> Vec<String> {
+            std::iter::once("mcp".to_string())
+                .chain(std::iter::once("serve".to_string()))
+                .chain(v.iter().map(|s| (*s).to_string()))
+                .collect()
+        };
+        let ok = parse_mcp_args(&args(&["--read-only"])).expect("valid");
+        assert_eq!(ok.write_scope, WriteScope::None);
+
+        let err = parse_mcp_args(&args(&["--read-only", "--allow-writes"]))
+            .expect_err("contradiction must be refused");
+        assert!(
+            err.contains("contradict"),
+            "picking a winner silently hands the operator a posture they did not \
+             choose, either way: {err}"
+        );
+        assert!(parse_mcp_args(&args(&["--allow-writes", "--read-only"])).is_err());
+        assert!(parse_mcp_args(&args(&["--read-only", "--read-only"])).is_err());
     }
 }
