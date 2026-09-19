@@ -151,13 +151,25 @@ Three mechanisms, in preference order:
    clients that cannot elicit and for pre-opening a window when the
    operator already knows they are about to do twenty of these.
 
-When a grant is issued by route 3 the server emits
-`notifications/tools/list_changed`, the client refetches, and write
-tools appear **mid-session**. No restart, no file.
+**Corrected after the parity ruling.** An earlier draft had route 3
+making write tools "appear mid-session" via
+`notifications/tools/list_changed`. That only makes sense on a server
+where they were *absent* — and parity-by-default means they never are.
+Two consequences, both of which shrink the work:
 
-**Route 3 needs no elicitation**, which is what keeps the feature
-buildable if the measurement comes back negative — but it is the
-consolation prize, not the design.
+- **`tools/list_changed` is not needed.** Restrictions are per
+  environment and tools are global, so no grant ever changes the tool
+  set. Nothing appears, so nothing needs announcing. It stays out
+  until something actually varies the listing.
+- **A grant is a temporary lift of a standing restriction**, not an
+  addition of capability. "prod is `read_only`, and for the next hour
+  `dlq_delete` is allowed there." That is still a permission, and still
+  consistent with *config may only say no*: the config's no is
+  permanent and the lift is transient and made in the conversation,
+  which is the whole distinction this note turns on.
+
+Which also means route 3 is much smaller than it looked — a marker
+with a TTL that `write_gate` consults, not a capability system.
 
 ### The plan IS the permission request
 
@@ -576,11 +588,11 @@ should be answered before building, not designed around:
   real Claude Code client to connect to ebman 0.40.0, and restarting
   the client is a human action — an agent cannot restart the session it
   is running inside. One connection writes the line.
-- **Does the client refetch on `tools/list_changed`?** If it ignores the
-  notification, the feature degrades to "the agent must already know the
-  tool name" — workable but poor, and worth knowing first. Note this
-  only bites mechanism 3: under mechanisms 1 and 2 the tools are always
-  advertised, so nothing needs refetching.
+- ~~**Does the client refetch on `tools/list_changed`?**~~ **Moot.**
+  Under parity-by-default the tool set never varies, so ebman has no
+  reason to send the notification and the client's handling of it does
+  not matter. Removed rather than left as an open question nobody needs
+  answered.
 
 - **Does Claude Code prompt before calling a tool annotated
   `destructiveHint: true`?** This decides how much of mechanism 1 comes
@@ -618,8 +630,10 @@ And one that is ours:
 3. **Elicitation** (mechanism 2), if the measurement says it is
    available, to make the prompt say something worth reading: the plan,
    and what the action forecloses.
-4. **Operator-issued grants** (mechanism 3) with TTL, `list_changed`,
-   visibility and audit correlation.
+4. **Operator-issued grants** (mechanism 3): a marker with a TTL that
+   `write_gate` consults as a temporary lift of a standing restriction,
+   plus visibility and audit correlation. No `list_changed` — see the
+   parity correction above.
 5. **Assume-role** (layer 4), targeted at a release soon after.
 
 Steps 2 and 3 are small once 1 is done. The honest unknown is how much
