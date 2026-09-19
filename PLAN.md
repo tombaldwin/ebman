@@ -127,9 +127,14 @@ name the first two as deliberate gaps, so they are debts, not ideas.
    — **partly done 2026-09-19.** `stage=asked` records the question,
    answer and latency; `doctor` and `safety-and-privacy.md` now state
    the limit and name the over-claim to avoid ("the confirmation was
-   approved", never "a human approved it"). **Still owed: script one
-   non-Claude-Code elicitation-declaring client** — the whole "asking
-   is a known quantity" claim still rests on n=1.
+   approved", never "a human approved it"). ~~Still owed: script one
+   non-Claude-Code elicitation-declaring client~~ — **done
+   2026-09-20**: `a_scripted_client_can_complete_a_typed_confirmation`
+   drives the real binary over stdio, declares elicitation, and
+   answers its own dialog including the typed field. The protocol half
+   no longer depends on one vendor. It still cannot tell you whether a
+   human-facing UI renders an input box, which is the part only a live
+   client answers.
 
    *Original entry:*
 
