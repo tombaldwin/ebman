@@ -290,8 +290,9 @@ pub(super) fn ask_summary(p: &PendingWrite) -> String {
         ),
     };
     format!(
-        "{what} on {}.\n\n{}",
+        "{what} on {}, {}.\n\n{}",
         p.env,
+        p.caller.line(),
         forecloses(p.verb, None, p.dlq_targets.len())
     )
 }
@@ -782,6 +783,60 @@ fn requested_message_ids(args: &Value) -> Result<Vec<String>, String> {
     Ok(ids)
 }
 
+/// Whose credentials the write would go out under.
+///
+/// An enum rather than `Option<String>` so the failure has to be
+/// rendered. A plan that simply omitted the identity when the lookup
+/// failed would show the operator nothing where there should be
+/// something, and "no identity to show" reads as "this is fine" —
+/// ARCHITECTURE.md rule 6, pinned by the type rather than by everyone
+/// remembering.
+///
+/// `sts:GetCallerIdentity` can be denied by policy while Elastic
+/// Beanstalk works perfectly, so a failed lookup does NOT refuse the
+/// plan. Same call as `ProbeOutcome` in `src/cli/lint.rs`: a denied
+/// probe is "could not check", never a clean bill of health, and
+/// never a reason to stop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum CallerIdentity {
+    Known { arn: String, account: String },
+    Unknown { why: String },
+}
+
+impl CallerIdentity {
+    /// The line the operator reads in the confirmation.
+    ///
+    /// Full ARN, not a shortened form. `assumed-role/Deploy/x` and
+    /// `assumed-role/Admin/x` differ by one word in the middle, and
+    /// the account number — the part that says WHICH account this is
+    /// about to happen in — is only in the full form.
+    pub(super) fn line(&self) -> String {
+        match self {
+            CallerIdentity::Known { arn, .. } => format!("as {arn}"),
+            CallerIdentity::Unknown { why } => {
+                format!("as an UNKNOWN identity — ebman could not determine it ({why})")
+            }
+        }
+    }
+
+    /// The plan's `identity` field.
+    pub(super) fn json(&self) -> String {
+        match self {
+            CallerIdentity::Known { arn, account } => format!(
+                "{{\"arn\":{},\"account\":{}}}",
+                util::json_string(arn),
+                util::json_string(account)
+            ),
+            // Null AND a reason. A bare null says "there is no
+            // identity", which is never true of a call that is about
+            // to be made with one.
+            CallerIdentity::Unknown { why } => {
+                format!("null,\"identity_error\":{}", util::json_string(why))
+            }
+        }
+    }
+}
+
 /// The verb-dependent half of a plan.
 ///
 /// A struct rather than a six-tuple: every field here is optional or
@@ -843,6 +898,11 @@ pub(super) struct PendingWrite {
     pub profile: Option<String>,
     pub region: Option<String>,
     pub expires_at: tokio::time::Instant,
+    /// Whose credentials this would go out under, resolved at plan
+    /// time so the confirmation can name it. Resolved then rather than
+    /// at dispatch because the confirmation is the only moment an
+    /// operator can act on it.
+    pub caller: CallerIdentity,
     /// Terminate only: one `confirm_name` mismatch keeps the token
     /// alive for a single retry; the second drops the plan.
     pub name_retry_used: bool,
@@ -1251,6 +1311,41 @@ impl Server {
         Ok(())
     }
 
+    /// Who the write would go out as.
+    ///
+    /// Never fails: a denied `sts:GetCallerIdentity` becomes
+    /// `Unknown` with the reason, because a policy can deny STS while
+    /// Elastic Beanstalk works, and refusing the plan over a
+    /// diagnostic would break exactly the scoped-IAM setups this is
+    /// most useful to.
+    async fn caller_identity(&self, args: &Value) -> CallerIdentity {
+        if matches!(self.backend, Backend::Demo) {
+            // A synthetic but well-formed ARN, so the demo renders the
+            // same shape live does. A demo that showed nothing here
+            // would be a demo you cannot use to check this.
+            return CallerIdentity::Known {
+                arn: "arn:aws:iam::123456789012:user/demo".into(),
+                account: "123456789012".into(),
+            };
+        }
+        let client = match self.client(args).await {
+            Ok(c) => c,
+            Err(e) => return CallerIdentity::Unknown { why: e },
+        };
+        match client.verify_identity().await {
+            Ok(id) => match (id.caller_arn, id.account_id) {
+                (Some(arn), Some(account)) => CallerIdentity::Known { arn, account },
+                // STS answered without the fields. Reported rather
+                // than papered over with an empty string, which would
+                // render as `as ` and read as a rendering bug.
+                _ => CallerIdentity::Unknown {
+                    why: "sts:GetCallerIdentity returned no arn".into(),
+                },
+            },
+            Err(e) => CallerIdentity::Unknown { why: e.to_string() },
+        }
+    }
+
     /// Resolve everything the plan needs that depends on the VERB.
     ///
     /// Split out of `tool_write_plan`, which was 346 lines of which
@@ -1470,6 +1565,11 @@ impl Server {
             .resolve_plan_details(verb, args, &env, &profile)
             .await?;
 
+        // Resolved before the plan is rendered so the operator sees
+        // it in the confirmation, which is the only moment they can
+        // act on it.
+        let caller = self.caller_identity(args).await;
+
         // Recent events give the plan operational context (3 max).
         let events_json = match self.backend {
             Backend::Demo => String::new(),
@@ -1514,6 +1614,7 @@ impl Server {
                 settings: settings.clone(),
                 profile: profile.clone(),
                 region: arg_str(args, "region"),
+                caller: caller.clone(),
                 expires_at: tokio::time::Instant::now()
                     + std::time::Duration::from_secs(CONFIRM_TTL_SECS),
                 name_retry_used: false,
@@ -1534,13 +1635,15 @@ impl Server {
             "call confirm_action with the confirm_token to dispatch".to_string()
         };
         Ok(format!(
-            "{{\"pending\":true,\"confirm_token\":{},\"expires_in_secs\":{CONFIRM_TTL_SECS},\"plan\":{{\"action\":{},\"env\":{},\"application\":{},\"health\":{},\"status\":{},\"forecloses\":{}{plan_extra}{events_json}}},\"next\":{}}}",
+            "{{\"pending\":true,\"confirm_token\":{},\"expires_in_secs\":{CONFIRM_TTL_SECS},\"plan\":{{\"action\":{},\"env\":{},\"application\":{},\"health\":{},\"status\":{},\"identity\":{},\"forecloses\":{}{plan_extra}{events_json}}},\"next\":{}}}",
             util::json_string(&token),
             util::json_string(verb.label()),
             util::json_string(&env.name),
             util::json_string(&env.application),
             util::json_string(&env.health),
             util::json_string(&env.status),
+            // Already JSON — an object, or `null` plus the reason.
+            caller.json(),
             util::json_string(&forecloses(verb, dlq_visible, dlq_targets.len())),
             util::json_string(&next),
         ))
@@ -2131,6 +2234,10 @@ mod tests {
             profile: None,
             region: None,
             expires_at: tokio::time::Instant::now() + std::time::Duration::from_secs(60),
+            caller: CallerIdentity::Known {
+                arn: "arn:aws:iam::123456789012:user/test".into(),
+                account: "123456789012".into(),
+            },
             name_retry_used: false,
             dlq_targets: Vec::new(),
             dlq_url: None,
@@ -2462,6 +2569,10 @@ mod tests {
                 profile: None,
                 region: None,
                 expires_at: tokio::time::Instant::now() + std::time::Duration::from_secs(60),
+                caller: CallerIdentity::Known {
+                    arn: "arn:aws:iam::123456789012:user/test".into(),
+                    account: "123456789012".into(),
+                },
                 name_retry_used: false,
                 dlq_targets: Vec::new(),
                 dlq_url: None,
@@ -3182,6 +3293,10 @@ mod tests {
             profile: None,
             region: None,
             expires_at: tokio::time::Instant::now(),
+            caller: CallerIdentity::Known {
+                arn: "arn:aws:iam::123456789012:user/test".into(),
+                account: "123456789012".into(),
+            },
             name_retry_used: false,
             dlq_targets: targets,
             dlq_url: Some("https://sqs/q-dlq".into()),
@@ -3274,5 +3389,81 @@ mod tests {
 
         // An empty batch writes nothing — not one line with no id.
         assert!(dlq_audit_lines("c", true, &[]).is_empty());
+    }
+
+    /// An unknown identity is SAID, not omitted.
+    ///
+    /// Rule 6 on the one field whose absence is most reassuring: a
+    /// plan that quietly dropped `identity` when STS was denied would
+    /// show nothing where there should be something, and nothing
+    /// reads as fine.
+    #[test]
+    fn an_unknown_caller_is_rendered_rather_than_dropped() {
+        let known = CallerIdentity::Known {
+            arn: "arn:aws:sts::123456789012:assumed-role/Admin/sess".into(),
+            account: "123456789012".into(),
+        };
+        assert_eq!(
+            known.line(),
+            "as arn:aws:sts::123456789012:assumed-role/Admin/sess",
+            "the FULL arn — assumed-role/Deploy and assumed-role/Admin differ by one \
+             word, and the account number is only in the full form"
+        );
+        let j: Value = serde_json::from_str(&format!("{{\"identity\":{}}}", known.json()))
+            .expect("valid JSON");
+        assert_eq!(j["identity"]["account"], json!("123456789012"));
+
+        let unknown = CallerIdentity::Unknown {
+            why: "AccessDenied".into(),
+        };
+        let line = unknown.line();
+        assert!(
+            line.contains("UNKNOWN") && line.contains("AccessDenied"),
+            "the operator must be told they are approving a write whose identity \
+             could not be established, and why: {line}"
+        );
+        // Null AND a reason — a bare null claims there is no identity,
+        // which is never true of a call about to be made with one.
+        let raw = format!("{{\"identity\":{}}}", unknown.json());
+        let j: Value = serde_json::from_str(&raw).expect("valid JSON: {raw}");
+        assert_eq!(j["identity"], Value::Null);
+        assert_eq!(j["identity_error"], json!("AccessDenied"));
+    }
+
+    /// The confirmation names the identity.
+    #[test]
+    fn the_ask_says_whose_credentials_it_would_use() {
+        let mut p = PendingWrite {
+            token: "t".into(),
+            verb: WriteVerb::Terminate,
+            env: "poly-prod".into(),
+            version: None,
+            settings: Vec::new(),
+            profile: None,
+            region: None,
+            caller: CallerIdentity::Known {
+                arn: "arn:aws:iam::999:role/Admin".into(),
+                account: "999".into(),
+            },
+            expires_at: tokio::time::Instant::now(),
+            name_retry_used: false,
+            dlq_targets: Vec::new(),
+            dlq_url: None,
+        };
+        let s = ask_summary(&p);
+        assert!(
+            s.contains("arn:aws:iam::999:role/Admin"),
+            "approving a terminate without being shown whose credentials it goes \
+             out under is the gap this closes: {s}"
+        );
+        assert!(s.contains("poly-prod"), "{s}");
+
+        p.caller = CallerIdentity::Unknown {
+            why: "sts denied".into(),
+        };
+        assert!(
+            ask_summary(&p).contains("UNKNOWN"),
+            "and an unresolved identity must be visible in the dialog too"
+        );
     }
 }
