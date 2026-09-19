@@ -102,6 +102,8 @@ fn write_extras_parts(
     can_ask: bool,
     version: Option<&str>,
     settings_len: usize,
+    dlq_message_id: Option<&str>,
+    dlq_task: Option<&str>,
 ) -> Vec<(&'static str, String)> {
     let mut extras = vec![
         ("via", "mcp".to_string()),
@@ -113,6 +115,16 @@ fn write_extras_parts(
     }
     if settings_len > 0 {
         extras.push(("settings", settings_len.to_string()));
+    }
+    // WHICH message, and what it was. The target of a DLQ write is the
+    // environment, so without these the log records that something was
+    // deleted from `poly-batch` and never what — and a delete is the
+    // one action where "what" cannot be recovered by looking.
+    if let Some(id) = dlq_message_id {
+        extras.push(("message_id", id.to_string()));
+    }
+    if let Some(t) = dlq_task {
+        extras.push(("task", t.to_string()));
     }
     extras
 }
@@ -131,6 +143,8 @@ impl Server {
         client_name: &str,
         version: Option<&str>,
         settings_len: usize,
+        dlq_message_id: Option<&str>,
+        dlq_task: Option<&str>,
     ) -> Vec<(&'static str, String)> {
         write_extras_parts(
             client_name,
@@ -138,6 +152,8 @@ impl Server {
                 .load(std::sync::atomic::Ordering::Relaxed),
             version,
             settings_len,
+            dlq_message_id,
+            dlq_task,
         )
     }
 }
@@ -432,6 +448,14 @@ pub(super) struct PendingWrite {
     /// Terminate only: one `confirm_name` mismatch keeps the token
     /// alive for a single retry; the second drops the plan.
     pub name_retry_used: bool,
+    /// DLQ resend / delete: the task name the message carried, for the
+    /// audit line.
+    ///
+    /// The id says WHICH message; this says what it was. A log that
+    /// records "a message was deleted from poly-batch" and cannot say
+    /// which one, or what it was, answers neither question an operator
+    /// asks afterwards.
+    pub dlq_task: Option<String>,
     /// DLQ resend / delete: the message this plan names.
     ///
     /// The ID, deliberately — NOT the receipt handle. SQS deletes by
@@ -708,6 +732,7 @@ impl Server {
         let mut settings: Vec<(String, String, String)> = Vec::new();
         let mut plan_extra = String::new();
         let mut dlq_message_id: Option<String> = None;
+        let mut dlq_task: Option<String> = None;
         let mut dlq_url: Option<String> = None;
         // Captured for the foreclosure line, which needs to say how
         // much else is in the queue. Only the DLQ branch resolves it.
@@ -889,6 +914,7 @@ impl Server {
                         util::json_string(&task)
                     );
                     dlq_message_id = Some(id);
+                    dlq_task = Some(task);
                 }
                 dlq_url = Some(url);
             }
@@ -943,6 +969,7 @@ impl Server {
                     + std::time::Duration::from_secs(CONFIRM_TTL_SECS),
                 name_retry_used: false,
                 dlq_message_id: dlq_message_id.clone(),
+                dlq_task: dlq_task.clone(),
                 dlq_url: dlq_url.clone(),
             });
         }
@@ -1090,7 +1117,13 @@ impl Server {
             .profile
             .clone()
             .or_else(|| std::env::var("AWS_PROFILE").ok());
-        let extras = self.write_extras(&client_name, p.version.as_deref(), p.settings.len());
+        let extras = self.write_extras(
+            &client_name,
+            p.version.as_deref(),
+            p.settings.len(),
+            p.dlq_message_id.as_deref(),
+            p.dlq_task.as_deref(),
+        );
         let extras_ref: Vec<(&str, &str)> = extras.iter().map(|(k, v)| (*k, v.as_str())).collect();
         crate::audit::append_action_dispatched(
             None,
@@ -1209,6 +1242,7 @@ mod tests {
             expires_at: tokio::time::Instant::now() + std::time::Duration::from_secs(60),
             name_retry_used: false,
             dlq_message_id: None,
+            dlq_task: None,
             dlq_url: None,
         };
         st.install(plan("tok-a"));
@@ -1242,12 +1276,12 @@ mod tests {
                 .map(|(_, v)| v.clone())
         };
 
-        let cannot = write_extras_parts("some-agent", false, None, 0);
+        let cannot = write_extras_parts("some-agent", false, None, 0, None, None);
         assert_eq!(find(&cannot, "can_ask").as_deref(), Some("false"));
         assert_eq!(find(&cannot, "client").as_deref(), Some("some-agent"));
         assert_eq!(find(&cannot, "via").as_deref(), Some("mcp"));
 
-        let can = write_extras_parts("some-agent", true, None, 0);
+        let can = write_extras_parts("some-agent", true, None, 0, None, None);
         assert_eq!(
             find(&can, "can_ask").as_deref(),
             Some("true"),
@@ -1257,7 +1291,7 @@ mod tests {
 
     #[test]
     fn audit_extras_omit_optional_context_when_absent() {
-        let bare = write_extras_parts("agent", false, None, 0);
+        let bare = write_extras_parts("agent", false, None, 0, None, None);
         assert!(
             !bare
                 .iter()
@@ -1265,7 +1299,7 @@ mod tests {
             "absent context must not appear as an empty value: {bare:?}"
         );
 
-        let full = write_extras_parts("agent", false, Some("app-v3"), 2);
+        let full = write_extras_parts("agent", false, Some("app-v3"), 2, None, None);
         assert!(full.contains(&("version", "app-v3".to_string())));
         assert!(full.contains(&("settings", "2".to_string())));
     }
@@ -1289,7 +1323,7 @@ mod tests {
                     }
                 }))
                 .await;
-            s.write_extras("probe", None, 0)
+            s.write_extras("probe", None, 0, None, None)
                 .iter()
                 .find(|(k, _)| *k == "can_ask")
                 .map(|(_, v)| v.clone())
@@ -1536,6 +1570,7 @@ mod tests {
                 expires_at: tokio::time::Instant::now() + std::time::Duration::from_secs(60),
                 name_retry_used: false,
                 dlq_message_id: None,
+                dlq_task: None,
                 dlq_url: None,
             });
         }
@@ -1678,6 +1713,36 @@ mod tests {
             );
         }
 
+        // The pending plan must RETAIN what the audit will need. A
+        // mutation dropping `dlq_task = Some(task)` left the suite
+        // green: the extras builder was tested, the wiring into it was
+        // not — third time today that distinction has bitten.
+        //
+        // Re-planned deliberately: the loop above ends on `dlq_purge`,
+        // which names no single message and correctly carries neither
+        // field. Asserting on whatever the loop happened to leave
+        // behind would have been testing the wrong plan.
+        s.tool_write_plan(
+            WriteVerb::DlqDelete,
+            &json!({"env": "poly-batch", "message_id": id}),
+        )
+        .await
+        .expect("plan");
+        {
+            let st = s.writes.lock().await;
+            let p = st.pending.as_ref().expect("a plan is pending");
+            assert_eq!(
+                p.dlq_message_id.as_deref(),
+                Some(id.as_str()),
+                "the plan must carry the id the audit line will name"
+            );
+            assert_eq!(
+                p.dlq_task.as_deref(),
+                Some("Remove unattended jobs"),
+                "and the task, or the log can say which message but not what"
+            );
+        }
+
         // And an id the fixture does not hold is refused, rather than
         // demo accepting anything — a plan that names a message which
         // is not there is the silent target swap this surface exists
@@ -1750,6 +1815,52 @@ mod tests {
         assert!(
             !forecloses(WriteVerb::DlqDelete, None).contains("SQS reports"),
             "with no depth available, say nothing about the depth"
+        );
+    }
+
+    /// A DLQ write records WHICH message, and what it was.
+    ///
+    /// The target of a DLQ write is the environment, so the audit line
+    /// used to say a message was deleted from `poly-batch` and never
+    /// which one. For every other verb that is survivable — you can go
+    /// and look at the environment afterwards. For a delete it is not:
+    /// the thing the log declines to name is exactly the thing that no
+    /// longer exists.
+    ///
+    /// Tier 1 of the retention design in `docs/design/runtime-grants.md`,
+    /// and the prerequisite for the rest: a copy is worth little if the
+    /// log cannot say what it was a copy of.
+    #[test]
+    fn a_dlq_write_records_which_message_it_destroyed() {
+        let extras = write_extras_parts(
+            "agent",
+            false,
+            None,
+            0,
+            Some("d3b07384-d9a0-4f1e-9f3a-11c0ffee0001"),
+            Some("Remove unattended jobs"),
+        );
+        let get = |k: &str| extras.iter().find(|(n, _)| *n == k).map(|(_, v)| v.clone());
+        assert_eq!(
+            get("message_id").as_deref(),
+            Some("d3b07384-d9a0-4f1e-9f3a-11c0ffee0001"),
+            "the log must name the message that no longer exists"
+        );
+        assert_eq!(
+            get("task").as_deref(),
+            Some("Remove unattended jobs"),
+            "and what it was — an id alone answers neither question asked afterwards"
+        );
+
+        // Non-DLQ writes carry neither, rather than empty fields: an
+        // `message_id=` on a deploy line would be noise that reads as
+        // missing data.
+        let deploy = write_extras_parts("agent", false, Some("app-v3"), 0, None, None);
+        assert!(
+            deploy
+                .iter()
+                .all(|(n, _)| *n != "message_id" && *n != "task"),
+            "a non-queue write must not carry empty queue fields: {deploy:?}"
         );
     }
 }
