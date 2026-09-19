@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **The stale-binary notice says whose job the reconnect is.** It said
+  "reconnect (in Claude Code: /mcp, Reconnect) to pick it up" — an
+  imperative an agent will attempt and fail, because `/mcp` is a client
+  surface it cannot reach. It now says to ask the operator, and why:
+  there is no MCP message a server can send to request a respawn, so
+  hunting for one is wasted effort.
+
+  This is the same shape as the verb-grant wording fixed in 0.41.0. An
+  agent cannot tell "you can't do this" from "nobody told you who can",
+  and the second is cheap to fix.
+
 - **`doctor` reports whether redaction is on.** `get_option_settings`
   and `why` redact environment-variable values unless the server was
   started with `--no-redact`, and an agent could not tell which world
