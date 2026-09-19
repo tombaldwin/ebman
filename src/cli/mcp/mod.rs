@@ -169,7 +169,21 @@ impl WriteScope {
     /// version line above exists to prevent, and it has the same cost
     /// — an agent reporting a capability gap that is really a config
     /// choice, instead of asking the operator to widen the grant.
-    fn agent_summary(&self) -> String {
+    fn agent_summary(&self, standing_refusal: Option<&str>) -> String {
+        // A standing refusal OUTRANKS the scope, so it is said first
+        // and the scope is not said at all. Describing the grant on a
+        // server that refuses every write told the agent "Writes are
+        // ENABLED for every verb" while nothing could write — true
+        // about the flag, false about the server, and wrong in the one
+        // channel an agent is guaranteed to read.
+        if let Some(why) = standing_refusal {
+            return format!(
+                "Writes are REFUSED on this server, regardless of any grant: {why} No plan \
+                 will dispatch and no confirmation will lift it. Only the operator changing \
+                 that control can. Do not plan writes and do not report this as a fault — \
+                 `doctor` reports it too."
+            );
+        }
         match self {
             WriteScope::None => "This server is READ-ONLY: no write tool is available. ASK the \
                  operator to restart it with --allow-writes (optionally \
@@ -614,7 +628,16 @@ impl Server {
                             "ebman ", env!("CARGO_PKG_VERSION"),
                             " — a fleet console for AWS Elastic Beanstalk. This surface exposes reads, ",
                             "plus two-phase writes when the server was started with --allow-writes.\n\n"),
-                            self.write_scope.agent_summary(),
+                            self.write_scope.agent_summary(
+                                if self.safety_cfg.safety_read_only {
+                                    Some("safety.read_only is set in config.toml.")
+                                } else if !self.safety_cfg.safety_parse_errors.is_empty() {
+                                    Some("the safety config could not be parsed, which \
+                                          fails closed.")
+                                } else {
+                                    None
+                                },
+                            ),
                             concat!(
                             // NOT redundant with `serverInfo.version`.
                             // Confirmed, not assumed: an agent on Claude
@@ -3237,7 +3260,7 @@ mod tests {
     /// "go and enable them".
     #[test]
     fn the_instructions_say_a_grant_is_not_the_agents_to_make() {
-        let read_only = WriteScope::None.agent_summary();
+        let read_only = WriteScope::None.agent_summary(None);
         assert!(
             read_only.contains("Do not edit the MCP config yourself"),
             "a read-only server must say whose job the grant is: {read_only}"
@@ -3249,12 +3272,77 @@ mod tests {
 
         // A narrow grant needs the other half: the verb it is missing
         // may have been granted already and not picked up.
-        let narrow = WriteScope::Only(vec!["dlq_delete".into()]).agent_summary();
+        let narrow = WriteScope::Only(vec!["dlq_delete".into()]).agent_summary(None);
         assert!(
             narrow.contains("restart the client"),
             "a client that reconnects without re-reading its config shows the \
              verb as absent, which reads as a broken feature: {narrow}"
         );
         assert!(narrow.contains("Asking is your part"), "{narrow}");
+    }
+
+    /// A standing refusal outranks the grant in the instructions.
+    ///
+    /// The block is the one channel an agent is guaranteed to read. On
+    /// a server with `safety.read_only` set it said "Writes are
+    /// ENABLED for every verb" — true about the flag, false about the
+    /// server, and the sentence an agent would plan an afternoon
+    /// around. `doctor` reported it correctly, which is not a defence:
+    /// a tool the agent has to think to call is not the same as the
+    /// text it is handed.
+    #[tokio::test]
+    async fn a_standing_refusal_outranks_the_grant_in_the_instructions() {
+        let cfg = crate::config::Config {
+            safety_read_only: true,
+            ..crate::config::Config::default()
+        };
+        let s = Server::with_config(true, false, WriteScope::All, cfg);
+        let init = rpc(
+            &s,
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize",
+                   "params":{"protocolVersion":"2025-06-18","capabilities":{},
+                             "clientInfo":{"name":"t","version":"0"}}}),
+        )
+        .await
+        .expect("initialize");
+        let ins = init["result"]["instructions"]
+            .as_str()
+            .expect("instructions");
+
+        assert!(ins.contains("Writes are REFUSED"), "{ins}");
+        assert!(
+            ins.contains("safety.read_only"),
+            "and name the control: {ins}"
+        );
+        assert!(
+            !ins.contains("Writes are ENABLED"),
+            "the grant must not be described on a server that refuses every write: {ins}"
+        );
+
+        // An unreadable safety config fails closed the same way, and
+        // says so rather than describing a grant it will not honour.
+        let broken = crate::config::Config {
+            safety_parse_errors: vec!["safety.envs.prod = true is missing .read_only".into()],
+            ..crate::config::Config::default()
+        };
+        let b = Server::with_config(true, false, WriteScope::All, broken);
+        assert!(
+            b.write_scope
+                .agent_summary(Some("the safety config could not be parsed."))
+                .contains("REFUSED"),
+            "a fail-closed parse refuses every write and the block must say so"
+        );
+
+        // The control: an unrestricted server still describes its grant.
+        let open = Server::with_config(
+            true,
+            false,
+            WriteScope::All,
+            crate::config::Config::default(),
+        );
+        assert!(
+            open.write_scope.agent_summary(None).contains("ENABLED"),
+            "without a standing refusal the grant is the right thing to describe"
+        );
     }
 }
