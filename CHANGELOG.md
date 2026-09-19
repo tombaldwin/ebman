@@ -8,6 +8,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+### Fixed
+
+- **A dead-letter resend was moving a husk.** All three resend paths —
+  the MCP `dlq_resend`, the TUI's single resend and its bulk resend —
+  sent the message *body* and dropped its custom attributes.
+
+  For a cron-style worker task that is not partial loss, it is total.
+  The body is the fixed literal `elasticbeanstalk scheduled job` and
+  carries nothing; `beanstalk.sqsd.task_name`, `.path` and
+  `.scheduled_time` carry every fact about which task failed — which is
+  exactly why the peek asks for them. A resend delivered a message with
+  no routing information on it.
+
+  Attributes are now retained verbatim through a peek, including ones
+  an application set that ebman knows nothing about, and re-sent with
+  the message. `send_message` takes them as an argument, so the old
+  shape no longer compiles.
+
+  (What follows for sqsd's behaviour — that it would have had no path
+  to route to — is inference. The attribute loss is not.)
+
 - **New MCP tool: `doctor`** — what this connection can and cannot do,
   and why. Reports the ebman build, what your client declared at
   handshake, the write surface in force, and the operator's standing

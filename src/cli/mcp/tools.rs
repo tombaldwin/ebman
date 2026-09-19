@@ -1907,6 +1907,7 @@ mod renderer_tests {
         };
         let msgs = vec![crate::aws::QueueMessage {
             id: "m-1".into(),
+            attributes: Vec::new(),
             receipt_handle: String::new(),
             body: "elasticbeanstalk scheduled job".into(),
             receive_count: 4,
@@ -1939,6 +1940,7 @@ mod renderer_tests {
         // empty object that reads as a task with no name.
         let plain = vec![crate::aws::QueueMessage {
             id: "m-2".into(),
+            attributes: Vec::new(),
             receipt_handle: String::new(),
             body: "{}".into(),
             receive_count: 1,

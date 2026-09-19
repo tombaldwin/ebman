@@ -348,6 +348,7 @@ pub(super) fn open_dlq_state(env: &str) -> crate::app::DlqState {
         dlq_url: "https://sqs/q-dlq".into(),
         messages: vec![crate::aws::QueueMessage {
             id: "m-1".into(),
+            attributes: Vec::new(),
             receipt_handle: "rh-1".into(),
             body: "{}".into(),
             receive_count: 1,

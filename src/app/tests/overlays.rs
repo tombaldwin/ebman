@@ -1049,6 +1049,7 @@ async fn the_why_overlay_names_the_dead_lettered_task() {
         })),
         dlq_messages: Some(Ok(vec![crate::aws::QueueMessage {
             id: "m-1".into(),
+            attributes: Vec::new(),
             receipt_handle: "rh-1".into(),
             body: "elasticbeanstalk scheduled job".into(),
             receive_count: 4,

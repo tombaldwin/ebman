@@ -1996,6 +1996,7 @@ mod tests {
         use crate::aws::QueueMessage;
         let msg = || QueueMessage {
             id: "m-1".into(),
+            attributes: Vec::new(),
             receipt_handle: String::new(),
             body: "b".into(),
             receive_count: 1,

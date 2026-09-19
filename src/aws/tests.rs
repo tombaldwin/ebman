@@ -1024,6 +1024,86 @@ async fn peek_messages_loops_and_dedupes_across_batches() {
     assert_eq!(ids, vec!["msg-1", "msg-2", "msg-3"]);
 }
 
+/// A peek retains the raw custom attributes, not just the parsed task.
+///
+/// `task` is the view everything reads; `attributes` is what makes a
+/// message restorable. All three resend paths shipped sending the body
+/// alone, and for a cron-style task that is total loss — the body is
+/// the fixed literal "elasticbeanstalk scheduled job" and every fact
+/// about which task it was lives in these attributes.
+///
+/// Pinned here rather than through the demo fixture, which supplies
+/// its own attributes and so cannot see the SDK-side retention at all.
+#[tokio::test]
+async fn peek_messages_retains_raw_attributes_for_a_restore() {
+    use aws_sdk_sqs::operation::receive_message::ReceiveMessageOutput;
+    use aws_sdk_sqs::types::{Message, MessageAttributeValue};
+
+    let attr = |v: &str| {
+        MessageAttributeValue::builder()
+            .data_type("String")
+            .string_value(v)
+            .build()
+            .expect("attr")
+    };
+    let rule = mock!(aws_sdk_sqs::Client::receive_message)
+        .sequence()
+        .output(move || {
+            ReceiveMessageOutput::builder()
+                .messages(
+                    Message::builder()
+                        .message_id("m-1")
+                        .body("elasticbeanstalk scheduled job")
+                        .message_attributes(
+                            "beanstalk.sqsd.task_name",
+                            attr("Remove unattended jobs"),
+                        )
+                        .message_attributes(
+                            "beanstalk.sqsd.path",
+                            attr("/STCleanupUnattendedJobs.do"),
+                        )
+                        .message_attributes("x-app-tenant", attr("acme"))
+                        .build(),
+                )
+                .build()
+        })
+        .output(|| ReceiveMessageOutput::builder().build())
+        .output(|| ReceiveMessageOutput::builder().build())
+        .build();
+    let client = client_with_sqs(mock_client!(aws_sdk_sqs, [&rule]));
+
+    let out = client
+        .peek_messages("https://sqs.us-east-1.amazonaws.com/123/q", 10)
+        .await
+        .expect("peek");
+    let m = out.first().expect("one message");
+
+    let names: Vec<&str> = m.attributes.iter().map(|(n, _, _)| n.as_str()).collect();
+    assert!(names.contains(&"beanstalk.sqsd.task_name"), "{names:?}");
+    assert!(names.contains(&"beanstalk.sqsd.path"), "{names:?}");
+    // An attribute the APPLICATION set, which sqsd never wrote and
+    // this code knows nothing about. Re-deriving from the parsed
+    // `task` would silently drop it.
+    assert!(
+        names.contains(&"x-app-tenant"),
+        "attributes are kept verbatim so app-set ones survive: {names:?}"
+    );
+    assert_eq!(
+        m.attributes
+            .iter()
+            .find(|(n, _, _)| n == "beanstalk.sqsd.task_name")
+            .map(|(_, t, v)| (t.as_str(), v.as_str())),
+        Some(("String", "Remove unattended jobs")),
+        "type and value are kept, since a send must reproduce both"
+    );
+    // The parsed view still works — this adds to it, it does not
+    // replace it.
+    assert_eq!(
+        m.task.as_ref().and_then(|t| t.name.as_deref()),
+        Some("Remove unattended jobs")
+    );
+}
+
 #[tokio::test]
 async fn peek_messages_stops_after_two_empty_batches() {
     use aws_sdk_sqs::operation::receive_message::ReceiveMessageOutput;

@@ -174,7 +174,12 @@ impl App {
                     return;
                 }
             };
-            let result = match aws.send_message(&main_url, &msg.body).await {
+            // With attributes — see the note in `dispatch_dlq_message`.
+            // The body alone is a husk for any sqsd-scheduled task.
+            let result = match aws
+                .send_message(&main_url, &msg.body, &msg.attributes)
+                .await
+            {
                 Ok(()) => match aws.delete_message(&dlq_url, &msg.receipt_handle).await {
                     Ok(()) => Ok(DlqOp::Resent {
                         message_id: msg.id.clone(),
@@ -300,7 +305,12 @@ impl App {
             };
             let mut failures = 0usize;
             for msg in &messages {
-                match aws.send_message(&main_url, &msg.body).await {
+                // With attributes — same reason as the single resend
+                // above: the body alone is a husk for an sqsd task.
+                match aws
+                    .send_message(&main_url, &msg.body, &msg.attributes)
+                    .await
+                {
                     Ok(()) => {
                         if let Err(e) = aws.delete_message(&dlq_url, &msg.receipt_handle).await {
                             tracing::error!(target: "ebman::aws", op = "dlq_replay_delete", error = ?e, msg_id = %msg.id, "DLQ delete after send failed");
