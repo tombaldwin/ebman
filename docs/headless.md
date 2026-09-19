@@ -199,7 +199,7 @@ These are hints. They are there so a client asks the right question, not
 as a control — the boundary is IAM, and `--allow-writes` is what
 actually gates the write surface.
 
-v1 is **reads-only** by default — no tool dispatches a write unless the server is started with `--allow-writes` (see Writes below). Tools (all take optional `profile` / `region`):
+Whether the write tools appear depends on your client: one that can put a question to you mid-request gets them by default, one that cannot needs `--allow-writes`. Either way no write dispatches without a confirmation — see [Writes](#writes) below. Tools (all take optional `profile` / `region`):
 
 | Tool | Returns | Notes |
 |---|---|---|
@@ -207,7 +207,7 @@ v1 is **reads-only** by default — no tool dispatches a write unless the server
 | `why` | everything bearing on one env's health in one call: events, alarms, instances, dead-letter queue + messages, recent versions | the TUI's `:why` overlay. Deliberately **not** a narrative — adjacent facts, conclusion left to the reader. A section that failed to fetch is `null` with its reason in `errors`, never an empty array: "could not look" and "nothing there" are opposite conclusions |
 | `recent_logs` | the **newest** log lines for an env, with `complete`. **Not redacted** — log lines are free text and ebman's redaction is namespace-and-key based | `FilterLogEvents` returns matches oldest-first, so a truncated window hands back the OLDEST lines and answers "is this still running?" with evidence from hours ago. `complete: false` means exactly that — narrow `since_minutes` rather than trusting the result. It also goes false when an env has more than 8 log groups and the fan-out was capped, since a dropped group might hold the newest lines |
 | `dlq_undo` | put back a message THIS server deleted, within 10 minutes | single-phase, no plan/confirm — it is the least destructive action here and is reached for under time pressure. Rides along with any write grant, like `confirm_action`, since it can only ever undo a delete that was already authorised. CAVEATS: held in memory by this server only, so a restart loses them and nothing deleted by another process is there; a purge is never recoverable; and the restore is a re-send, so the message id changes, `receive_count` resets to 0 and the enqueue time becomes now. Body and attributes return verbatim |
-| `dlq_resend` / `dlq_delete` / `dlq_purge` | dead-letter management, two-phase, `--allow-writes` only | resend and delete name ONE message by `message_id` from a `worker_queues` peek. The plan carries the **id**, not a receipt handle — a handle expires with the peek's 5s visibility timeout while a confirm token lives 60s, so confirm re-reads the queue, finds that id, and refuses if it is gone rather than acting on whatever is at the head. `dlq_purge` is the bluntest: arguably more destructive than `terminate`, since an environment can be rebuilt from its configuration and a purged message cannot |
+| `dlq_resend` / `dlq_delete` / `dlq_purge` | dead-letter management, two-phase, write surface only | resend and delete name messages by id from a `worker_queues` peek — `message_id` for one, or `message_ids` for up to 10 in a single plan and a single confirmation. Over 10 is refused rather than truncated: the cap is what keeps the list readable in the dialog, and dispatching a subset while reporting the whole is the worst outcome available. Each message is dispatched and audited separately, and the result reports per message — one that vanished between plan and confirm is a failed item among successes, not a failed batch. If *nothing* succeeded the call is an error, so an agent branching on `isError` cannot read a no-op as a delete. The plan carries the **id**, not a receipt handle — a handle expires with the peek's 5s visibility timeout while a confirm token lives 60s, so confirm re-reads the queue, finds that id, and refuses if it is gone rather than acting on whatever is at the head. `dlq_purge` is the bluntest: arguably more destructive than `terminate`, since an environment can be rebuilt from its configuration and a purged message cannot |
 | `worker_queues` | main + dead-letter queue depth for one env; with `peek`, the dead-lettered messages and their `beanstalk.sqsd.*` task attributes | answers EB's "1 message in Dead Letter Queue", which names no task. `dead_letter_queue.origin` distinguishes a queue EB reported from one derived by the `<main>-dlq` convention. A peek is non-destructive but increments each returned message's `receive_count`, which counts every receive and is **not** a retry count |
 | `list_environments` | env list | same schema as `ebman envs --json`: `name`, `application`, `tier` (Web/Worker), `status`, `health`, `platform`, `cname`, `version_label`, `updated` (EB's `DateUpdated`, RFC3339 or null), `region` (or null). **`updated` is the environment's last change, NOT a health-since** — an env that went Yellow on its own still reports the last config change, so do not read it as when the health moved. |
 | `lint` | rule findings | EBL011 never fires here (no queue polling) and EBL016 doesn't run (no live HTTP probe) — stated in the tool description. The EBL020 X-Ray probe, the EBL018 WAF probe, and the EBL015 account-level pass all run (EBL015 only when not scoped to one env) |
@@ -228,9 +228,86 @@ same: 0, or 2 on a usage error.
 
 Tool calls run concurrently with a 30s bound; expired-credential errors surface as the `aws sso login --profile X` hint so the agent can relay it. Failures come back as `isError` tool results, not protocol errors.
 
-### Writes (`--allow-writes`, 0.28+)
+### Writes
 
-Start the server with `--allow-writes` (flag only — never a config key, so write capability is visible in the process table and `.mcp.json`) and the write tools plus `confirm_action` appear in `tools/list`. Without the flag they're absent entirely.
+#### If your client can ask you (0.42+)
+
+If your client declared **elicitation** at handshake — it can put a
+question to you in the middle of a request — the write tools are
+available with no flag and no restart, and every `confirm_action` shows
+you the action and waits for your answer.
+
+That is the same bargain as the TUI. There, you press `r`, read the
+confirmation, and press `y`. Here your agent proposes the action, you
+read the same foreclosure line, and you accept or decline. The flag was
+never what made a write safe; a person seeing it was, and once the
+client can show you one there is nothing left for the flag to carry.
+
+A decline is final. The plan is spent, and the instructions tell the
+agent not to re-plan the same action — a tool that lets an agent retry
+a refusal until you tire of reading it is worse than one that never
+asked.
+
+Run `doctor` to see which case you are in: it reports what your client
+declared and what this connection may do.
+
+**What it does not change.** Standing restrictions are untouched:
+`safety.read_only`, pins, freeze and `deny_write` all still refuse, and
+the ask never appears because there is nothing to approve. An operator
+who has said no in config has said no, and no dialog overrides it.
+Config may only say no — there is deliberately no config key that
+grants.
+
+**An explicit narrow grant is not widened.** `--allow-writes=dlq_delete`
+is you saying "only this", so it stays that way even on a client that
+can ask. Elicitation supplies the default where you set none; it does
+not overrule one you set.
+
+#### Several messages, one confirmation (0.42+)
+
+Every write asks, so a ten-message clean-up would be ten dialogs — and
+a person answering the same dialog ten times stops reading it, which
+costs more safety than the asking bought. So `dlq_resend` and
+`dlq_delete` take `message_ids` (an array, up to 10) and cover the set
+with **one** plan and **one** confirmation:
+
+```json
+{"env": "poly-batch", "message_ids": ["d3b0…0001", "5d41…0002"]}
+```
+
+The confirmation **enumerates** them — task and id per line — rather
+than saying "2 messages". A count is something to agree with; a list is
+something to read.
+
+Three rules worth knowing before you hit them:
+
+- **Over 10 is refused, never truncated.** Dispatching a subset while
+  reporting the whole is the worst available outcome. Name fewer, or
+  use `dlq_purge` if the intent is to empty the queue — that is one
+  deliberate action with one honest foreclosure line.
+- **Ambiguous requests are refused, not guessed.** `message_id` and
+  `message_ids` together, an empty array, or the same id twice all
+  fail with a reason. A silently deduplicated list would show you a
+  count that does not match what happens.
+- **Failure is per message.** One id consumed or redriven between plan
+  and confirm is reported as that item failing; the rest still go. The
+  result carries `succeeded`, `failed`, and a line per message
+  including the ones that did not work — an absent item would be
+  indistinguishable from a truncated list. If nothing succeeded the
+  whole call is an error.
+
+Every message gets its own audit line naming its own id and task. For
+a delete that log is the only place the answer still exists.
+
+#### If it cannot: `--allow-writes` (0.28+)
+
+Clients without elicitation work exactly as before. Start the server
+with `--allow-writes` (flag only — never a config key, so write
+capability is visible in the process table and `.mcp.json`) and the
+write tools plus `confirm_action` appear in `tools/list`. Without the
+flag they're absent entirely. Nobody can be asked on such a connection,
+so the flag is the only signal of intent available and it still carries
+the whole grant.
 
 ```bash
 claude mcp add ebman -- ebman mcp serve --allow-writes
@@ -265,7 +342,8 @@ least one major client that describes something which cannot happen.
 
 **Changing the FLAG needs a client restart; upgrading the BINARY does
 not.** Two different questions, and conflating them sends people the
-long way round.
+long way round. On a client that can be asked, this whole problem is
+moot — there is no flag to change.
 
 A stdio MCP server is a child process, so a reconnect terminates and
 respawns it, which re-executes `ebman` and picks up whatever is now on

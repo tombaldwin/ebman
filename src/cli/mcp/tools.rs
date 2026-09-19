@@ -1130,7 +1130,7 @@ impl Server {
             .map(|c| c.clone())
             .unwrap_or_else(|_| "unknown".into());
 
-        let writes = match &self.write_scope {
+        let writes = match &self.effective_scope() {
             super::WriteScope::None => "none - this server is read-only".to_string(),
             super::WriteScope::All => "every verb".to_string(),
             super::WriteScope::Only(v) => format!("{} only", v.join(", ")),
@@ -1372,11 +1372,10 @@ impl Server {
         );
         let queues = match client.describe_worker_queues(&app, &env_name).await {
             Ok(q) => {
-                // Same gate as `worker_queues`: without it, every
-                // healthy worker env whose derived DLQ guess missed
-                // recorded a spurious "we could not look" in `errors`,
-                // which is triage noise in the array that exists to
-                // make partial answers load-bearing.
+                // Same gate as `worker_queues` — the function. `why`
+                // always wants the peek, so `requested` is true and
+                // the only question the gate answers here is whether
+                // there is a queue to look in.
                 let peek = match q.dlq_url.as_deref().filter(|_| q.dlq_stats.is_some()) {
                     Some(url) => Some(
                         client
@@ -1510,15 +1509,16 @@ impl Server {
             // stop claiming to have looked; the better one is to have
             // something to look at.
             let queues = demo_fixture::worker_queues_for_env(&env_name);
-            // The SAME gate as the live path below, not a second copy
-            // of the intent. Passing raw `peek` here answered
-            // `peeked: true` for a web env with no queue at all — "we
-            // looked, it was empty" about a queue that does not exist,
-            // which is exactly the defect the live gate was added to
-            // stop, reintroduced on the path agents rehearse against.
-            // Found by review three commits after the live fix.
+            // The SAME gate as the live path below — the function,
+            // not a second copy of the intent. Passing raw `peek` here
+            // answered `peeked: true` for a web env with no queue at
+            // all, which is exactly the defect the live gate was added
+            // to stop, reintroduced on the path agents rehearse
+            // against. Found by review three commits after the live
+            // fix, which is why this now calls rather than restates.
             let peekable = queues.dlq_stats.is_some();
-            let msgs = if peek && peekable {
+            let peeked = peek && peekable;
+            let msgs = if peeked {
                 demo_fixture::dlq_messages_for_env(&env_name)
             } else {
                 Vec::new()
@@ -1526,7 +1526,7 @@ impl Server {
             return Ok(render_worker_queues_json(
                 &queues,
                 &msgs,
-                peek && peekable,
+                peeked,
                 self.safety_cfg.mcp_peek_bodies,
                 empty_queue_reason(&env.tier, &queues),
             ));
@@ -1548,11 +1548,7 @@ impl Server {
         // ebman guessed by the `<main>-dlq` convention — routinely names
         // a queue that does not exist, and `describe_worker_queues`
         // treats that as THE genuine "this env has no dead-letter
-        // queue" shape: it swallows NonExistentQueue and leaves
-        // `dlq_stats: None` with `dlq_url: Some`. Peeking that url
-        // raises NonExistentQueue again, and the `?` here failed the
-        // WHOLE call — throwing away the depth answer we already had,
-        // on the case the tool's own description calls ordinary.
+        // queue" shape.
         let peekable = queues.dlq_stats.is_some();
         let messages = match (peek && peekable, queues.dlq_url.as_deref()) {
             (true, Some(url)) => client.peek_messages(url, max).await.map_err(|e| {
@@ -1564,7 +1560,8 @@ impl Server {
         // Passing the request flag through said "we looked, it was
         // empty" for a queue that does not exist — the exact
         // distinction this field carries, and `why` already answered it
-        // the other way for the same env.
+        // the other way for the same env. Derived from `target`, so it
+        // cannot disagree with the decision that chose the URL.
         Ok(render_worker_queues_json(
             &queues,
             &messages,

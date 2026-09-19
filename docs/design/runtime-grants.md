@@ -561,18 +561,45 @@ something the client does not.
    `safety.read_only` — a standing refusal honoured by the TUI, the
    CLI and the MCP surface, which the session toggle cannot lift.
    There is deliberately no config key that grants.
-2. **Keep the call alive while a dialog is open.** The frame loop
-   currently caps a tool call at `TOOL_TIMEOUT_SECS`. Establish this
-   first: everything below is unbuildable if the ask times out under
-   ordinary use.
-3. **Ask at `confirm_action`** on connections that declared
-   elicitation, showing the plan and its foreclosure line. Deny on
-   no-answer. Audit the decline.
-4. **Advertise write tools by default on those connections**, subject
-   to standing restrictions. Steps 3 and 4 are one change: the surface
-   opens only where the ask exists, so they cannot ship apart.
-5. **Batch plans** — one plan covering a set, refused above an
-   enumerable cap, dispatching with per-item results.
+2. ~~**Keep the call alive while a dialog is open.**~~ **Shipped** —
+   `confirm_action` on an elicit-capable connection gets
+   `ASK_TIMEOUT_SECS` instead of `TOOL_TIMEOUT_SECS`.
+3. ~~**Ask at `confirm_action`**~~ **Shipped** — on connections that
+   declared elicitation, showing the plan and its foreclosure line.
+   Deny on no-answer; the decline is audited `rule=not_approved`.
+4. ~~**Advertise write tools by default on those connections**~~
+   **Shipped** — as `Server::effective_scope`, and as predicted these
+   went in as one change.
+
+   Two things the note did not settle, decided during the build and
+   recorded here because both are the kind of thing that gets
+   "simplified" later by someone who cannot see why it is shaped that
+   way:
+
+   - **"No ask was possible" is not "the ask was refused."** The first
+     implementation had one non-answer state, and it denied every write
+     on every client that cannot elicit — including ones an operator
+     had explicitly granted with the flag. `NotAsked` falls back to
+     whatever gated the write before; `Unanswered` denies. An operator
+     who walked away must produce a deny; an operator who was never
+     reachable must not have their flag silently revoked.
+   - **An explicitly narrowed grant is not widened.** "Subject to
+     standing restrictions" above is ambiguous about
+     `--allow-writes=dlq_delete`, which is a grant in form and a
+     restriction in intent. It is honoured as typed. `WriteScope::None`
+     — the operator having said nothing at all — is what the parity
+     default fills in, and nothing else.
+5. ~~**Batch plans**~~ **Shipped** — `dlq_resend` / `dlq_delete` take
+   `message_ids` up to `DLQ_BATCH_CAP` (10), with one ask covering the
+   set and per-item results.
+
+   One thing the note got wrong by omission: it said "partial failure
+   reports per item" and left the *total* failure unstated. Reporting
+   a batch where nothing succeeded as a result with `dispatched: false`
+   is the `peeked: true, messages: []` shape — `isError` is what agents
+   branch on, and an unset one reads as success. Nothing succeeded is
+   an error; some succeeded is a result carrying its failures. That
+   also preserves the single-message behaviour exactly.
 6. **Assume-role** (layer 4), targeted at a release soon after.
 
 Deleted from an earlier version of this list, and worth recording so it
@@ -585,8 +612,11 @@ request-as-unit there is no between.
 ## Cost
 
 Smaller than when this note was first written, because most of what it
-proposed has been deleted rather than built. The remaining work is the
-frame-loop change (step 2), the elicitation round-trip (step 3), the
-conditional advertising (step 4), and batch plans (step 5). Two to
-three days, and step 2 should be timeboxed first because a negative
-result there changes the design rather than delaying it.
+proposed has been deleted rather than built. Steps 1–4 have shipped.
+The remaining work is assume-role (step 6).
+
+Step 2 was timeboxed first, as planned, on the grounds that a negative
+result would change the design rather than delay it. It came back
+positive — Claude Code declares `elicitation`, measured against a live
+handshake rather than inferred from the spec — and steps 3 and 4
+followed in a day.

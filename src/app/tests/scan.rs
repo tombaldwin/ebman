@@ -498,7 +498,7 @@ mod production_half_tests {
     fn the_real_sources_keep_their_production_code() {
         for (path, needle) in [
             ("src/cli/mcp/mod.rs", "fn call_timeout_secs"),
-            ("src/cli/mcp/writes.rs", "fn dispatch_dlq_message"),
+            ("src/cli/mcp/writes.rs", "fn dispatch_dlq_batch"),
             ("src/cli/mcp/tools.rs", "fn tool_doctor"),
         ] {
             let src = std::fs::read_to_string(path).expect("read");
