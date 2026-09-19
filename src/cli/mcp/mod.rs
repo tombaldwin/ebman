@@ -147,6 +147,17 @@ impl AskOutcome {
     /// absence of one: the operator may have stepped away, or never
     /// been shown the dialog, and saying so is the correct next act.
     ///
+    /// The retry permission is STATED rather than implied. An earlier
+    /// version said "do not quietly re-plan it", and the same peer
+    /// reported that as the one place it still had to reason: the
+    /// adverb implies a non-quiet re-plan is allowed, which is an
+    /// inference, not an instruction. It could not simply be given the
+    /// decline's "unless the operator asks for it" clause — that names
+    /// the absent party as the only route, which is the whole defect
+    /// being fixed, and a test pins its absence here. "If they ask you
+    /// to try again, plan it fresh" grants the exception without
+    /// naming anyone as the unblock.
+    ///
     /// The decline wording stays a FLAT prohibition with one named
     /// exception rather than a rationale about the operator's intent.
     /// The same peer noted that the pull it felt was task-completion
@@ -163,8 +174,9 @@ impl AskOutcome {
             AskOutcome::Unanswered => {
                 "The plan is spent. Nobody answered, which is NOT a refusal — the \
                  operator may have stepped away, or may never have been shown the \
-                 dialog. Tell them it expired and let them decide; do not quietly \
-                 re-plan it, and do not report this as a refusal."
+                 dialog. Tell them it expired and let them decide. If they ask you \
+                 to try again, plan it fresh; do not re-plan it on your own \
+                 initiative, and do not report this as a refusal."
             }
             // Neither reaches an agent: `Approved` dispatches, and
             // `NotAsked` falls through to the flag that granted it.
@@ -4684,6 +4696,19 @@ mod tests {
         assert!(
             !silent.contains("unless the operator asks for it"),
             "naming the absent party as the only unblock leaves no move at all: {silent}"
+        );
+        // The retry permission must be STATED, not implied by an
+        // adverb. "Do not QUIETLY re-plan" left an agent inferring
+        // that a non-quiet re-plan was allowed — correct, and an
+        // inference rather than an instruction.
+        assert!(
+            silent.contains("plan it fresh"),
+            "a legitimate retry must be granted outright, or the agent reasons its \
+             way to one from an adverb: {silent}"
+        );
+        assert!(
+            !silent.contains("quietly"),
+            "the adverb is what made the permission implicit: {silent}"
         );
 
         // The two that never reach an agent say nothing.
