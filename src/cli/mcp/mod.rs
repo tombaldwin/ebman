@@ -490,7 +490,10 @@ const OPENED_BY_ASK_NOTE: &str = "\n\nWORTH SAYING ONCE, EARLY: writes are \
      because they passed a flag. They may not know the surface widened — on a bare \
      registration it widens when the client reconnects against this build. Tell them \
      plainly the first time it becomes relevant, before you plan a write rather than \
-     after. Say that every action will be put to them and they can decline, and that \
+     after. Name the BREADTH, not just the fact: the default is every verb, \
+     `terminate` included, so an operator who wanted one narrow thing got the rest \
+     alongside it. Say that every action will be put to them and they can decline, \
+     that `--allow-writes=verb,verb` narrows this permanently, and that \
      `--read-only` keeps the old posture if they would rather. Do not treat this as a \
      reason to avoid proposing work — it is a reason they should not be surprised by \
      it.";
@@ -5037,6 +5040,15 @@ mod tests {
         assert!(
             opened.contains("before you plan a write"),
             "and to say it before acting, not after: {opened}"
+        );
+        // The BREADTH, not just the fact. An agent on a live
+        // production fleet observed that the reconnect granted
+        // `terminate` alongside the `dlq_delete` someone actually
+        // wanted — correct by design, and worth saying out loud
+        // rather than letting it arrive quietly with the narrow thing.
+        assert!(
+            opened.contains("terminate") && opened.contains("--allow-writes=verb,verb"),
+            "it must name what else came with it, and the way to narrow it: {opened}"
         );
         // And it must actively counteract over-caution. An agent told
         // "the operator may not know you can write" can easily read
