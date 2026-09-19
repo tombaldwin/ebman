@@ -51,6 +51,9 @@ pub(crate) fn render_envs_json(envs: &[aws::Environment]) -> String {
     format!("[{}]", entries.join(","))
 }
 
+/// `ebman envs` — list environments, optionally as JSON.
+///
+/// Exit 2 on a usage error.
 pub async fn run(args: &[String]) -> Result<()> {
     let mut json = false;
     // Reject unknown flags like every other subcommand — `--jsn`

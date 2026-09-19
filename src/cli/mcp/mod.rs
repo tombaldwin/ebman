@@ -1111,6 +1111,16 @@ impl Server {
     }
 }
 
+/// `ebman mcp` — `serve` the stdio MCP server, or `setup` to print
+/// local registration instructions.
+///
+/// `setup` is print-only and never edits a client's config: the
+/// instructions come from the binary you already installed, so there
+/// is no remote file to fetch or tamper with.
+///
+/// `serve` exits 0 when stdin closes, 2 on a usage error — including a
+/// `--allow-writes` value naming a verb that does not exist, refused
+/// at startup rather than at first use.
 pub async fn run(args: &[String]) -> Result<()> {
     // Sub-verbs: `serve` (the stdio server) and `setup` (print the local
     // registration instructions — no network, no remote fetch). Anything

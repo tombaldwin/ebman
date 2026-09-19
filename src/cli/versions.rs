@@ -59,6 +59,9 @@ fn parse_versions_args(args: &[String]) -> Result<VersionsArgs, String> {
     Ok(VersionsArgs { env_name, json })
 }
 
+/// `ebman versions` — list an application's versions.
+///
+/// Exit 2 on a usage error.
 pub async fn run(args: &[String]) -> Result<()> {
     let VersionsArgs { env_name, json } = match parse_versions_args(args) {
         Ok(parsed) => parsed,
