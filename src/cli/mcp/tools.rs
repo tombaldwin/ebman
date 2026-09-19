@@ -213,7 +213,7 @@ fn read_tool_table() -> Value {
         },
         {
             "name": "recent_logs",
-            "description": "The NEWEST log lines for an environment from CloudWatch Logs. NOT REDACTED: log lines are free text and this tool returns them verbatim, so anything an application logged — tokens, connection strings, customer data — reaches the client. ebman's redaction is namespace-and-key based (`get_option_settings`, `drift`, `audit_log`) and cannot apply here; use `filter` to narrow what you pull rather than relying on it being scrubbed. CAVEATS: returns the newest in the window, not the oldest — `FilterLogEvents` itself returns matches oldest-first, so a naive query answers \"is this still running?\" with lines from hours ago and looks plausible doing it. If `complete` is false the window held more than could be read and what you have is the OLDEST part of it: narrow `since_minutes` rather than trusting the result. `log_group` defaults to the environment's own groups (`/aws/elasticbeanstalk/<env>/…`); if the env has none, the result says so rather than erroring. `filter` is CloudWatch Logs filter-pattern syntax, not a regex.",
+            "description": "The NEWEST log lines for an environment from CloudWatch Logs. NOT REDACTED: log lines are free text and this tool returns them verbatim, so anything an application logged — tokens, connection strings, customer data — reaches the client. ebman's redaction is namespace-and-key based (`get_option_settings`, `drift`, `audit_log`) and cannot apply here; use `filter` to narrow what you pull rather than relying on it being scrubbed. CAVEATS: returns the newest in the window, not the oldest — `FilterLogEvents` itself returns matches oldest-first, so a naive query answers \"is this still running?\" with lines from hours ago and looks plausible doing it. If `complete` is false the SCAN stopped early and what you have is the OLDEST part of the window: narrow `since_minutes` rather than trusting the result. `complete` is about the scan, NOT about the result — `truncated_by_limit` is the other half, and says the window held more than `limit` so you have the newest slice of a larger set. Both can be true at once: a complete scan of two hours returning the newest 5 of thousands is `complete: true, truncated_by_limit: true`, and reading the first without the second gives you \"that is all there was\". `log_group` defaults to the environment's own groups (`/aws/elasticbeanstalk/<env>/…`); if the env has none, the result says so rather than erroring. `filter` is CloudWatch Logs filter-pattern syntax, not a regex.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -558,6 +558,7 @@ fn render_recent_logs_json(
     env: &str,
     groups: &[String],
     complete: bool,
+    truncated_by_limit: bool,
     events: &[(String, crate::aws::LogEvent)],
 ) -> String {
     let esc = crate::util::json_escape;
@@ -578,10 +579,11 @@ fn render_recent_logs_json(
         })
         .collect();
     format!(
-        "{{\"env\":\"{}\",\"groups\":[{}],\"complete\":{},\"events\":[{}]}}",
+        "{{\"env\":\"{}\",\"groups\":[{}],\"complete\":{},\"truncated_by_limit\":{},\"events\":[{}]}}",
         esc(env),
         gs.join(","),
         complete,
+        truncated_by_limit,
         evs.join(",")
     )
 }
@@ -592,11 +594,36 @@ fn render_recent_logs_json(
 /// in the dead-letter queue" from "we did not look" — the two are the
 /// same empty array otherwise, and they mean opposite things during
 /// triage.
+/// Why a queue answer is empty, when it is.
+///
+/// `None` when there is something to report — a reason beside real
+/// data is noise, and noise is how the meaningful ones stop being
+/// read.
+fn empty_queue_reason(tier: &str, queues: &aws::WorkerQueues) -> Option<&'static str> {
+    if queues.main_url.is_some() || queues.dlq_url.is_some() {
+        return None;
+    }
+    if tier.eq_ignore_ascii_case("Worker") {
+        // A worker env SHOULD have a queue. EB reporting none is not
+        // the ordinary case and should not read like one.
+        Some(
+            "worker tier, but EB reported no queues for this environment — unexpected; \
+              check the environment's configuration",
+        )
+    } else {
+        Some(
+            "web tier — web environments have no worker queues, so there is nothing \
+              here to read",
+        )
+    }
+}
+
 fn render_worker_queues_json(
     queues: &aws::WorkerQueues,
     messages: &[aws::QueueMessage],
     peeked: bool,
     bodies: bool,
+    reason: Option<&str>,
 ) -> String {
     let stats = |s: &Option<aws::QueueStats>| match s {
         Some(s) => format!(
@@ -657,8 +684,19 @@ fn render_worker_queues_json(
             )
         })
         .collect();
+    // WHY there is nothing, when there is nothing. All-nulls is
+    // consistent with three different worlds — a web tier that has no
+    // queues, a failure reading queue configuration, and EB not
+    // reporting queues for an env that has them — and the tool
+    // description naming the first is read once and elsewhere. Field
+    // report: `peeked: false` correctly said "I did not look" and
+    // nothing said why there was nothing to look at.
+    let reason = match reason {
+        Some(r) => format!(",\"reason\":{}", crate::util::json_string(r)),
+        None => String::new(),
+    };
     format!(
-        "{{\"main_queue\":{{\"url\":{},\"stats\":{}}},\"dead_letter_queue\":{{\"url\":{},\"stats\":{},\"origin\":{}}},\"peeked\":{},\"messages\":[{}]}}",
+        "{{\"main_queue\":{{\"url\":{},\"stats\":{}}},\"dead_letter_queue\":{{\"url\":{},\"stats\":{},\"origin\":{}}},\"peeked\":{},\"messages\":[{}]{reason}}}",
         url(&queues.main_url),
         stats(&queues.main_stats),
         url(&queues.dlq_url),
@@ -1239,7 +1277,13 @@ impl Server {
                 &render_events_json(&events),
                 "null",
                 "null",
-                &render_worker_queues_json(&queues, &[], false, self.safety_cfg.mcp_peek_bodies),
+                &render_worker_queues_json(
+                    &queues,
+                    &[],
+                    false,
+                    self.safety_cfg.mcp_peek_bodies,
+                    empty_queue_reason(&env.tier, &queues),
+                ),
                 "null",
                 &[],
             ));
@@ -1303,7 +1347,13 @@ impl Server {
                     None => None,
                 };
                 let (msgs, peeked) = dlq_peek_outcome(peek, &mut errors);
-                render_worker_queues_json(&q, &msgs, peeked, self.safety_cfg.mcp_peek_bodies)
+                render_worker_queues_json(
+                    &q,
+                    &msgs,
+                    peeked,
+                    self.safety_cfg.mcp_peek_bodies,
+                    empty_queue_reason(&env.tier, &q),
+                )
             }
             Err(e) => {
                 errors.push(("queues".into(), e.to_string()));
@@ -1358,8 +1408,9 @@ impl Server {
         // and a dropped group is the same instruction.
         let (groups, mut complete) = cap_log_groups(groups, arg_str(args, "log_group").is_some());
         let mut events: Vec<(String, crate::aws::LogEvent)> = Vec::new();
+        let mut truncated = false;
         for g in &groups {
-            let (evs, done) = client
+            let (evs, done, cut) = client
                 .fetch_latest_log_events(g, since_ms, limit, filter.as_deref())
                 .await
                 .map_err(|e| tool_error(&profile, "fetch_latest_log_events", &e.to_string()))?;
@@ -1367,11 +1418,16 @@ impl Server {
             // a consumer cannot act on "some of this is the oldest part
             // of the window" per group.
             complete &= done;
+            truncated |= cut;
             events.extend(evs.into_iter().map(|e| (g.clone(), e)));
         }
+        // The merge across groups can truncate even when no single
+        // group did: two groups of `limit` events each yield `limit`
+        // between them, and half of what was read is dropped here.
+        truncated |= events.len() > limit;
         merge_newest(&mut events, limit);
         Ok(render_recent_logs_json(
-            &env_name, &groups, complete, &events,
+            &env_name, &groups, complete, truncated, &events,
         ))
     }
 
@@ -1419,6 +1475,7 @@ impl Server {
                 &msgs,
                 peek,
                 self.safety_cfg.mcp_peek_bodies,
+                empty_queue_reason(&env.tier, &queues),
             ));
         }
 
@@ -1460,6 +1517,7 @@ impl Server {
             &messages,
             peek && peekable,
             self.safety_cfg.mcp_peek_bodies,
+            empty_queue_reason(&env.tier, &queues),
         ))
     }
 
@@ -1811,9 +1869,19 @@ mod renderer_tests {
                 message: "task finished".into(),
             },
         )];
-        let v = parse(&render_recent_logs_json("api-prod", &[], true, &events));
+        let v = parse(&render_recent_logs_json(
+            "api-prod",
+            &[],
+            true,
+            false,
+            &events,
+        ));
         assert_eq!(v["env"], "api-prod");
         assert_eq!(v["complete"], true);
+        assert_eq!(
+            v["truncated_by_limit"], false,
+            "a complete scan that returned everything says so on both axes"
+        );
         let e = &v["events"][0];
         assert!(
             e["timestamp"]
@@ -1930,7 +1998,7 @@ mod renderer_tests {
                 scheduled_at: None,
             }),
         }];
-        let v = parse(&render_worker_queues_json(&queues, &msgs, true, true));
+        let v = parse(&render_worker_queues_json(&queues, &msgs, true, true, None));
 
         assert_eq!(v["dead_letter_queue"]["stats"]["visible"], 1);
         assert_eq!(
@@ -1958,7 +2026,9 @@ mod renderer_tests {
             sent_at: None,
             task: None,
         }];
-        let v = parse(&render_worker_queues_json(&queues, &plain, true, true));
+        let v = parse(&render_worker_queues_json(
+            &queues, &plain, true, true, None,
+        ));
         assert_eq!(v["messages"][0]["task"], Value::Null);
     }
 
@@ -1973,7 +2043,7 @@ mod renderer_tests {
             dlq_stats: None,
             dlq_origin: None,
         };
-        let v = parse(&render_worker_queues_json(&none, &[], false, true));
+        let v = parse(&render_worker_queues_json(&none, &[], false, true, None));
         assert_eq!(v["main_queue"]["url"], Value::Null);
         assert_eq!(
             v["main_queue"]["stats"],
@@ -2268,5 +2338,65 @@ mod renderer_tests {
             "an unreadable safety config refuses every write, and the agent \
              should learn that here rather than from a refusal: {v}"
         );
+    }
+
+    /// An empty queue answer says WHY it is empty.
+    ///
+    /// Field-reported against a live web-tier env: all-nulls with
+    /// `peeked: false`. The flag did its job — it correctly said "I did
+    /// not look" rather than implying an empty queue — but nothing
+    /// said why there was nothing to look at. All-nulls is consistent
+    /// with a web tier that has no queues, a failure reading queue
+    /// configuration, and EB not reporting queues for an env that has
+    /// them. The tool description names the first; a description is
+    /// read once and elsewhere, which is the argument already accepted
+    /// for `rules_not_checked`.
+    #[test]
+    fn an_empty_queue_answer_says_why_it_is_empty() {
+        let none = aws::WorkerQueues::default();
+
+        let web = empty_queue_reason("Web", &none).expect("a web env has a reason");
+        assert!(web.contains("web tier"), "{web}");
+        assert!(
+            web.contains("nothing here to read"),
+            "and must close the question rather than leaving it open: {web}"
+        );
+
+        // A worker env with no queues is NOT ordinary and must not read
+        // like the web case.
+        let worker = empty_queue_reason("Worker", &none).expect("a worker env has a reason");
+        assert!(worker.contains("unexpected"), "{worker}");
+        assert_ne!(web, worker, "the two cases mean different things");
+
+        // With queues present there is nothing to explain, and a
+        // reason beside real data is noise.
+        let some = aws::WorkerQueues {
+            main_url: Some("https://q/main".into()),
+            ..Default::default()
+        };
+        assert_eq!(empty_queue_reason("Worker", &some), None);
+        assert_eq!(empty_queue_reason("Web", &some), None);
+
+        // And it reaches the rendered payload.
+        let v: Value = serde_json::from_str(&render_worker_queues_json(
+            &none,
+            &[],
+            false,
+            true,
+            empty_queue_reason("Web", &none),
+        ))
+        .expect("json");
+        assert!(
+            v["reason"].as_str().is_some_and(|r| r.contains("web tier")),
+            "the reason must be in the RESULT, not only in the tool description: {v}"
+        );
+        assert_eq!(v["peeked"], json!(false), "{v}");
+
+        // No reason key at all when there is data — absence is the
+        // signal that nothing needed explaining.
+        let ok: Value =
+            serde_json::from_str(&render_worker_queues_json(&some, &[], false, true, None))
+                .expect("json");
+        assert!(ok["reason"].is_null(), "{ok}");
     }
 }

@@ -19,6 +19,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   agent cannot tell "you can't do this" from "nobody told you who can",
   and the second is cheap to fix.
 
+- **`recent_logs` distinguishes a complete scan from a complete
+  result.** Field-reported against a live fleet: two hours of nginx
+  access log, `limit: 5`, five newest rows back and `complete: true`
+  beside them. True about the scan, which walked the whole window — and
+  read as "nothing else is in here", which is the opposite of what the
+  field exists to warn about.
+
+  `complete` and `truncated_by_limit` are different facts and can both
+  be true. The caveat now says which is which, and the result carries
+  both.
+
+- **An empty `worker_queues` answer says why it is empty.** All-nulls
+  with `peeked: false` is consistent with three different worlds: a web
+  tier that has no queues, a failure reading queue configuration, and
+  EB not reporting queues for an environment that has them. `peeked`
+  correctly said "I did not look"; nothing said why there was nothing
+  to look at. A `reason` now does, and distinguishes a web tier (where
+  empty is expected) from a worker tier (where it is not).
+
 - **`doctor` reports whether redaction is on.** `get_option_settings`
   and `why` redact environment-variable values unless the server was
   started with `--no-redact`, and an agent could not tell which world

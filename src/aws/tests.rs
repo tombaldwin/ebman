@@ -1024,6 +1024,64 @@ async fn peek_messages_loops_and_dedupes_across_batches() {
     assert_eq!(ids, vec!["msg-1", "msg-2", "msg-3"]);
 }
 
+/// A complete scan of a window that held more than `want` says both.
+///
+/// Field-reported on a live fleet: two hours of nginx access log,
+/// `limit: 5`, five newest rows back and `complete: true` beside them.
+/// True about the scan — it walked the whole window — and read as
+/// "nothing else is in here", which is the opposite of what the field
+/// exists to warn about.
+///
+/// `complete` and `truncated_by_limit` are different facts and can
+/// both be true. Conflating them meant the common case (a small limit
+/// on a busy log) reported completeness it did not have.
+#[tokio::test]
+async fn a_complete_scan_still_reports_truncation_by_limit() {
+    use aws_sdk_cloudwatchlogs::operation::filter_log_events::FilterLogEventsOutput;
+    use aws_sdk_cloudwatchlogs::types::FilteredLogEvent;
+
+    let ev = |ms: i64| {
+        FilteredLogEvent::builder()
+            .timestamp(ms)
+            .log_stream_name("i-1")
+            .message(format!("line at {ms}"))
+            .build()
+    };
+    // One page, six events, no next_token: the scan IS complete.
+    let rule = mock!(aws_sdk_cloudwatchlogs::Client::filter_log_events)
+        .sequence()
+        .output(move || {
+            FilterLogEventsOutput::builder()
+                .events(ev(1))
+                .events(ev(2))
+                .events(ev(3))
+                .events(ev(4))
+                .events(ev(5))
+                .events(ev(6))
+                .build()
+        })
+        .build();
+    let client = client_with_cw_logs(mock_client!(aws_sdk_cloudwatchlogs, [&rule]));
+
+    let (events, complete, truncated) = client
+        .fetch_latest_log_events("/aws/eb/env", 0, 2, None)
+        .await
+        .expect("fetch");
+
+    assert!(complete, "one page and no next token — the scan finished");
+    assert!(
+        truncated,
+        "but six events were seen and two were asked for, so what comes back \
+         is the newest slice of a larger set and must say so"
+    );
+    assert_eq!(events.len(), 2, "the limit is honoured");
+    assert_eq!(
+        events.iter().map(|e| e.timestamp_ms).collect::<Vec<_>>(),
+        vec![5, 6],
+        "and it keeps the NEWEST two, which is the whole point of the fetch"
+    );
+}
+
 /// `send_message` puts the attributes on the wire.
 ///
 /// The source scan in `writes.rs` proves every call SITE passes them.
@@ -4377,7 +4435,7 @@ async fn latest_log_events_returns_the_newest_across_pages() {
     let cw_logs = aws_smithy_mocks::mock_client!(aws_sdk_cloudwatchlogs, [&page1, &page2]);
     let client = client_with_cw_logs(cw_logs);
 
-    let (events, complete) = client
+    let (events, complete, _truncated) = client
         .fetch_latest_log_events("/aws/eb/env", 0, 2, None)
         .await
         .expect("ok");
@@ -4434,7 +4492,7 @@ async fn a_truncated_window_reports_incomplete() {
     );
     let client = client_with_cw_logs(cw_logs);
 
-    let (events, complete) = client
+    let (events, complete, _truncated) = client
         .fetch_latest_log_events("/aws/eb/env", 0, 10, None)
         .await
         .expect("ok");
@@ -4463,7 +4521,7 @@ async fn the_log_filter_pattern_reaches_the_request() {
 
     // The mock only matches when the pattern is present, so this
     // resolving at all is the assertion.
-    let (events, _) = client
+    let (events, _, _) = client
         .fetch_latest_log_events("/aws/eb/env", 0, 10, Some("ERROR"))
         .await
         .expect("the request must carry filter_pattern=ERROR");
