@@ -251,13 +251,22 @@ impl AwsClient {
     /// is the OLDEST part of the window and the newest events are the
     /// ones missing — the caller must be told to narrow `since_ms`
     /// rather than shown a plausible wrong answer.
+    ///
+    /// Returns `(events, scan_complete, truncated_by_limit)`. The two
+    /// booleans are different facts and were conflated into one:
+    /// `scan_complete` is whether the walk reached the end of the
+    /// window, while `truncated_by_limit` is whether the window held
+    /// more than `want`. A caller can have a complete scan and a
+    /// partial result at the same time — five newest rows out of
+    /// thousands — and reporting only the first reads as "that is all
+    /// there was".
     pub(crate) async fn fetch_latest_log_events(
         &self,
         log_group: &str,
         since_ms: i64,
         want: usize,
         filter_pattern: Option<&str>,
-    ) -> Result<(Vec<LogEvent>, bool)> {
+    ) -> Result<(Vec<LogEvent>, bool, bool)> {
         // Deliberately higher than the tail's per-poll cap: a tail is
         // called again in 15 seconds, this is called once and must not
         // report incomplete for an ordinary window.
@@ -266,6 +275,14 @@ impl AwsClient {
         let mut kept: std::collections::VecDeque<LogEvent> = std::collections::VecDeque::new();
         let mut next_token: Option<String> = None;
         let mut complete = true;
+        // Distinct from `complete`, and the distinction is the point.
+        // `complete` says the SCAN walked the whole window. This says
+        // the WINDOW held more than `want`, so what comes back is the
+        // newest slice of a larger set. A field-reported case: two
+        // hours of nginx access log, `limit: 5`, five newest rows
+        // returned and `complete: true` beside them — true about the
+        // scan, and read as "nothing else is in here".
+        let mut seen = 0usize;
 
         for page in 0..MAX_PAGES {
             let mut req = self
@@ -281,6 +298,7 @@ impl AwsClient {
             }
             let resp = req.send().await.wrap_err("FilterLogEvents failed")?;
             for e in resp.events.unwrap_or_default() {
+                seen += 1;
                 keep_newest(
                     &mut kept,
                     LogEvent {
@@ -303,7 +321,7 @@ impl AwsClient {
                 _ => break,
             }
         }
-        Ok((kept.into_iter().collect(), complete))
+        Ok((kept.into_iter().collect(), complete, seen > want))
     }
 
     /// Fetch events from one CW Logs group since `since_ms` (Unix
