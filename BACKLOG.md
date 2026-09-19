@@ -428,31 +428,33 @@ Populated by autonomous runs per `CLAUDE.md` stop-conditions. Each entry: one-li
   than wiring the levels engine to `cli::mcp::annotations` and growing a
   second table that drifts. Raised by the 0.37 architecture review.
 
-- [ ] **Doc comments merged onto the wrong item, tree-wide.** Inserting
-  a new function directly below an existing doc comment attaches that
-  comment to the NEW item and leaves the original undocumented. The
-  merged block then reads as one doc that contradicts itself — one
-  instance opened "Named `gate_refusal` rather than `refuse_write`
-  because…" while sitting on a function called `refuse_out_of_scope`.
+- [ ] **Merged doc comments on `pub(crate)` items are still
+  unguarded.** 0.42.0 closed this for the PUBLIC surface —
+  `#![warn(missing_docs)]` in `lib.rs`, plus docs for the 18 public
+  items that lacked them — because the robbed half of a stolen doc has
+  a mechanical signature: the original item ends up undocumented.
+  Verified by staging the bug; the robbed function fails the build
+  under CI's `-D warnings`.
 
-  Three were introduced in the 0.40 verb-scope work and fixed there.
-  A tree scan for the signature (a doc line ending a paragraph,
-  followed by a summary line, followed by a blank `///`) returns **19
-  candidates across 15 files**. Three were checked by hand: two were
-  real merges (`src/app/spawn_refresh.rs`, `src/cli/action.rs`) and one
-  was a false positive (`src/aws.rs` — a field doc with an ordinary
-  paragraph break). The rest are untriaged; bullet lists and
-  two-sentence paragraphs both trip the heuristic, so the count is
-  candidates, not defects.
+  It does not reach `pub(crate)`, which is most of the tree.
+  `clippy::missing_docs_in_private_items` is the obvious lever and is
+  far too noisy — it demands a doc on every private field and helper.
 
-  Not folded into 0.40: triage needs a judgement per site about which
-  text belongs to which item, and it spans 15 modules — the
-  more-than-3-modules stop condition.
+  Worth considering: restrict the lint to *items that already have a
+  sibling doc*, or lint only modules where doc density is already
+  high. Both need a custom lint or a source scan, and a scan for the
+  COMMENT's shape is a dead end — see below.
 
-  The scan is worth keeping as a guard only if the false-positive rate
-  comes down; as written it would need an allowlist, and an allowlist
-  is the wrong shape for this. Consider instead requiring that a doc
-  block contain exactly one summary-then-blank opening.
+  **The comment-shape scan is retired.** It returned 19 candidates
+  across 15 files in the 0.40 era. Re-run against the 0.42 tree, both
+  a strict and a loose form return 2 candidates, and both are false
+  positives (a lead-in to a bullet list, and a legitimate
+  several-single-sentence-paragraph doc). The real merges named in the
+  old entry — `src/app/spawn_refresh.rs`, `src/cli/action.rs` — now
+  read correctly. Scoped claim: the tree is clean by those two
+  signatures, which is not the same as no merged doc existing
+  anywhere. The scan cannot become a guard at a 100% false-positive
+  rate, exactly as the old entry predicted.
 
 - [ ] **Assume-role elevation for MCP writes** (`runtime-grants.md`
   layer four / step 6). `sts:AssumeRole` is the time-boxed grant done

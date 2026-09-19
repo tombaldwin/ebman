@@ -176,6 +176,12 @@ pub(crate) fn builtin_commands() -> Vec<&'static str> {
     crate::commands::all_names()
 }
 
+/// The whole TUI: fleet state, derived view, and every in-flight
+/// background task.
+///
+/// Construct with [`App::new`] against real credentials, or
+/// [`App::new_demo`] against the synthetic fleet, then drive it with
+/// [`App::run`].
 pub struct App {
     pub(crate) context: AwsContext,
     pub(crate) scope: Scope,
@@ -1123,6 +1129,9 @@ pub(crate) fn safety_config_warning(errors: &[String]) -> Option<String> {
 }
 
 impl App {
+    /// Build against real AWS credentials, resolving the caller
+    /// identity so an invalid persisted profile fails here rather than
+    /// on the first refresh.
     pub async fn new(config: Config) -> Result<Self> {
         // Stash the notify-webhook URL globally before any audit
         // line could be written. OnceLock::set is no-op on second
@@ -1504,6 +1513,11 @@ impl App {
         self.reload_requested
     }
 
+    /// Build against the synthetic fleet in `demo_fixture`.
+    ///
+    /// Touches no AWS and no credentials: the stub client fails every
+    /// call by design, which is what makes `--demo` safe to hand to
+    /// someone evaluating the tool.
     pub fn new_demo(config: Config) -> Self {
         // Demo's stub client fails every call by design — downgrade
         // those log lines from ERROR to debug so a demo session doesn't
@@ -1719,6 +1733,11 @@ impl App {
     /// watching their own network.
     const UPDATE_RECHECK_INTERVAL_SECS: u64 = 6 * 60 * 60;
 
+    /// Run the event loop until the operator quits.
+    ///
+    /// Owns the terminal for its duration — it installs the alternate
+    /// screen, so nothing inside may write to stdout. Use `tracing`,
+    /// which goes to `~/.cache/ebman/ebman.log`.
     pub async fn run(
         &mut self,
         terminal: &mut Tui,
@@ -2155,6 +2174,12 @@ impl App {
         self.rebuild_view();
     }
 
+    /// Write the session's sort, filter and selection to
+    /// `state.toml` so the next launch resumes where this one stopped.
+    ///
+    /// A no-op under `--demo`: a synthetic fleet must not leave its
+    /// sort order and selected environment behind for a real session
+    /// to inherit.
     pub fn persist_state(&self) {
         // `--demo` mode runs against a synthetic fleet on a fake
         // profile/region with cost tracking flipped on by the fixture.

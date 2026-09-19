@@ -59,6 +59,20 @@
 // module, so its ratatui `Color` fields were publicly readable while the
 // type stayed unnameable. Grep does not find that class; the compiler does.
 #![warn(unreachable_pub)]
+// A stolen doc comment leaves the ORIGINAL item undocumented, and
+// that is the half with a mechanical signature. Inserting a new item
+// directly below an existing doc attaches that doc to the new item;
+// the comment then reads as one block that contradicts itself, and
+// the item it used to describe has nothing. Three happened in the
+// 0.40 verb-scope work, three more in 0.42, each found by reading a
+// diff rather than by anything that could fail a build.
+//
+// This catches it for the public surface: the robbed item trips
+// `missing_docs`, and CI runs with `-D warnings`. It does not reach
+// `pub(crate)`, which is most of the tree —
+// `missing_docs_in_private_items` is far too noisy to enable — so it
+// narrows the class rather than closing it.
+#![warn(missing_docs)]
 
 pub mod app;
 pub mod audit;

@@ -869,6 +869,13 @@ pub(crate) fn watch_sleep(
         .saturating_sub(cycle_elapsed.to_std().unwrap_or_default())
 }
 
+/// `ebman lint` — run the diagnostic rule engine over the fleet.
+///
+/// Exit 2 on a usage error, 1 when `--baseline` refuses to snapshot a
+/// degraded run. Findings themselves do not set the exit code.
+///
+/// A run whose inputs partly failed reports `skipped_envs` rather than
+/// failing: check it before reading a clean result as full coverage.
 pub async fn run(args: &[String]) -> Result<()> {
     let LintArgs {
         env_name,

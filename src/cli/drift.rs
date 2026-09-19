@@ -137,6 +137,15 @@ fn no_state_output(quiet: bool, json: bool) -> NoState {
     NoState::Hint(terraform::no_state_hint("--tfstate PATH"))
 }
 
+/// `ebman drift` — compare Terraform state against the live fleet.
+///
+/// Three outcomes, deliberately distinct: **3** drift found (the
+/// actionable one, and it wins over a degraded run), **1** no drift
+/// but coverage was incomplete so clean is unproven, **0** clean and
+/// complete. Exit 2 on a usage error.
+///
+/// Reads state FILES and never talks to a backend — for a remote
+/// backend, `terraform state pull` first.
 pub async fn run(args: &[String]) -> Result<()> {
     let DriftArgs {
         env_name,

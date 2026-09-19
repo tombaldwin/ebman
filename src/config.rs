@@ -1,8 +1,25 @@
+//! `config.toml`: the parser, its defaults, and the safety keys.
+//!
+//! Parsing is a pure `parse(&str)` with a thin I/O wrapper, so the
+//! whole key table is unit-testable without touching a disk.
+//!
+//! Unknown keys and unparseable values are COLLECTED rather than
+//! ignored — see `Config::parse_errors`. A safety key that silently
+//! failed to apply is worse than one that failed loudly, so the
+//! safety section fails CLOSED: unreadable means writes are refused,
+//! never permitted.
+
 use std::{path::PathBuf, time::Duration};
 
 use crate::util::{config_file, parse_bool};
 
 #[derive(Debug, Clone)]
+/// Everything `config.toml` can set, already parsed and defaulted.
+///
+/// Load with [`load`]. Unknown keys and unparseable values are
+/// reported rather than ignored — see `Config::parse_errors` — because
+/// a safety key that silently failed to apply is worse than one that
+/// failed loudly.
 pub struct Config {
     pub(crate) refresh_interval: Duration,
     pub(crate) extra_regions: Vec<String>,
@@ -272,6 +289,13 @@ impl Config {
     }
 }
 
+/// Read and parse `config.toml`, falling back to defaults.
+///
+/// Never fails: a missing file is the ordinary case, and a malformed
+/// one yields defaults plus the errors in `Config::parse_errors`, so
+/// the caller can surface them. Safety keys fail CLOSED — an
+/// unreadable safety section refuses writes rather than permitting
+/// them.
 pub fn load() -> Config {
     let path = config_path();
     config_from_read(std::fs::read_to_string(&path), &path)

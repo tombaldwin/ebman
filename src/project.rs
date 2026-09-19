@@ -139,6 +139,11 @@ pub(crate) fn parse(text: &str) -> Option<ProjectConfig> {
 /// parse failures reach stderr. Never set from TUI code.
 static WARN_TO_STDERR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Send project-file warnings to stderr instead of the log.
+///
+/// For the CLI and MCP paths, which have no TUI status bar to show
+/// them in. The TUI must NOT call this: it owns the alternate screen,
+/// and a stray write to stderr corrupts the display.
 pub fn warnings_to_stderr() {
     WARN_TO_STDERR.store(true, std::sync::atomic::Ordering::Relaxed);
 }

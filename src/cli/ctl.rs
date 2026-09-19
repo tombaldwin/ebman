@@ -68,6 +68,10 @@ fn parse_ctl_args(args: &[String], default_socket: std::path::PathBuf) -> Result
     })
 }
 
+/// `ebman ctl` — drive a running TUI over its control socket.
+///
+/// Exit 2 on a usage error, 1 when no TUI is listening or the command
+/// is refused.
 pub async fn run(args: &[String]) -> Result<()> {
     let CtlArgs {
         socket_path,

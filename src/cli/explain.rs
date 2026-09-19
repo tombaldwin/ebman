@@ -83,6 +83,11 @@ fn parse_explain_args(args: &[String]) -> Result<ExplainArgs, String> {
     })
 }
 
+/// `ebman explain <rule-id>` — an LLM explanation of one lint finding.
+///
+/// Exit 3 when no environment in scope has that issue — nothing to
+/// explain is not an error in the rule engine, and must not read as
+/// one. Exit 2 on a usage error, 1 on an LLM or network failure.
 pub async fn run(args: &[String]) -> Result<()> {
     let ExplainArgs {
         issue_id,

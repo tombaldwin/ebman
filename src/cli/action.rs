@@ -247,6 +247,11 @@ async fn refuse_write(prog: &'static str, env: &str, explicit: Option<&str>, act
     crate::cli::refuse_write(prog, env, env, profile, None, action_label).await;
 }
 
+/// `ebman action` — dispatch one write, or a `rollout` across many.
+///
+/// Every dispatch goes through the same pins, freeze and read-only
+/// checks as the TUI. Exit 2 on a usage error, 1 on a failed
+/// dispatch.
 pub async fn run(args: &[String]) -> Result<()> {
     let action_name = args.get(1).map(|s| s.as_str()).unwrap_or("");
     if action_name == "rollout" {

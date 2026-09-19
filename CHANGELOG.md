@@ -8,6 +8,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **A stolen doc comment now fails the build, on the public surface.**
+  Inserting an item directly below an existing doc comment attaches
+  that doc to the NEW item and leaves the original undocumented. Three
+  happened in the 0.40 verb-scope work and three more in 0.42, each
+  found by reading a diff rather than by anything mechanical.
+
+  The comment's own shape has no reliable signature — a scan for it
+  returns false positives and nothing else against the current tree —
+  but the *robbed* half does: the original item ends up with no doc.
+  `#![warn(missing_docs)]` plus CI's `-D warnings` turns that into a
+  build failure. The 18 public items that lacked docs now have them,
+  including module docs for `config` and `control`.
+
+  It narrows the class rather than closing it: `pub(crate)` is most of
+  the tree and `missing_docs_in_private_items` is far too noisy to
+  enable.
+
+
 - **`tool_write_plan` split three ways** — 346 lines to 134, with the
   verb-dependent resolution and the dead-letter arm as their own
   functions. They had different reasons to change and read as one
