@@ -6,25 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-### Fixed
+### Added
 
-- **Nothing claims a person declined a write.** Measured against
-  headless `claude -p`: it declares `elicitation: true`, is given the
-  full write surface, and auto-declines a confirmation in under a
-  second with no human in the session at all. ebman reported *"declined
-  by the operator"*, and the agent relayed "the operator simply said
-  no" to its user. Nobody had.
+- **An approval left no record that anyone was asked.** A dispatch
+  carried `can_ask=true`, which says an ask was *possible* — not that
+  one happened, nor what answered it. So a client that declares
+  elicitation and routes the question to its own model produced a
+  **cleaner** audit trail than an operator at a keyboard, which
+  `docs/design/protection-levels.md` names as precisely the wrong
+  incentive. That note prescribed `stage=asked` and 0.42.0 shipped
+  without it.
 
-  The reason now reads "the confirmation was declined", and the
-  guidance tells the agent not to attribute it — naming `-p` runs and
-  CI harnesses, because a concrete case is more use than a hedge. The
-  flat do-not-retry instruction is unchanged; it is what stops a retry
-  loop and the hedging must not weaken it.
+  Now recorded: the action, the target, the answer
+  (`approved`/`declined`/`unanswered`) and the latency. Latency
+  because it is the cheapest discriminator there is between a person
+  and a model — someone reading a foreclosure line takes seconds, and
+  a twenty-millisecond answer is not reading anything. Evidence, not
+  proof: a false attestation still cannot be detected at the time,
+  which the design note states as the honest limit. What changes is
+  that the two are distinguishable afterwards.
 
-  The good news from the same measurement: there is no five-minute
-  stall in headless use. The ask is answered immediately. `stage=asked`
-  records the latency, which is what makes an auto-decline and a human
-  decline distinguishable afterwards.
+- **`stage=asked` is joined by two more things an agent can act on.**
+  `doctor` reports `writes_via` — whether the write surface came from
+  an `--allow-writes` grant or from the client declaring it can ask —
+  because those imply opposite things to tell a user: a flag means "I
+  can act", elicitation means "I can propose this, and someone may
+  decline". And a plan's `next` now says the confirmation is a request
+  put to a person, on connections where one will actually be asked.
+
+### Changed
 
 - **`terminate` and `dlq_purge` now require the operator to TYPE the
   environment name** into the confirmation dialog, matching the
@@ -50,23 +60,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   two verbs only — a typed confirm on a `restart` is friction that
   teaches operators to type past the ones that matter.
 
-- **An approval left no record that anyone was asked.** A dispatch
-  carried `can_ask=true`, which says an ask was *possible* — not that
-  one happened, nor what answered it. So a client that declares
-  elicitation and routes the question to its own model produced a
-  **cleaner** audit trail than an operator at a keyboard, which
-  `docs/design/protection-levels.md` names as precisely the wrong
-  incentive. That note prescribed `stage=asked` and 0.42.0 shipped
-  without it.
+- **An agent is told how WIDE the surface is, not just that it
+  exists.** On a bare registration the write tools arrive when the
+  client reconnects against a 0.42 build, and that includes
+  `terminate`. An agent whose surface came from elicitation rather
+  than a flag is now asked to say so once, early — naming what came
+  with it, and naming both `--allow-writes=verb,verb` to narrow it
+  permanently and `--read-only` to close it. Prompted by an agent on a
+  production fleet that worked this out and told its operator before I
+  had written anything down.
 
-  Now recorded: the action, the target, the answer
-  (`approved`/`declined`/`unanswered`) and the latency. Latency
-  because it is the cheapest discriminator there is between a person
-  and a model — someone reading a foreclosure line takes seconds, and
-  a twenty-millisecond answer is not reading anything. Evidence, not
-  proof: a false attestation still cannot be detected at the time,
-  which the design note states as the honest limit. What changes is
-  that the two are distinguishable afterwards.
+### Fixed
+
+- **A resend whose delete half failed reported nothing useful.** Send
+  before delete is deliberate — the other order can lose the message,
+  this one can at worst duplicate it. But when the delete fails the
+  copy IS on the main queue and the original is still dead-lettered,
+  and the item reported a bare `ok: false`, inviting the retry that
+  mints another copy per attempt. It now says `RESENT BUT NOT
+  REMOVED`, that a duplicate exists, and not to resend that id.
+
+- **Nothing claims a person declined a write.** Measured against
+  headless `claude -p`: it declares `elicitation: true`, is given the
+  full write surface, and auto-declines a confirmation in under a
+  second with no human in the session at all. ebman reported *"declined
+  by the operator"*, and the agent relayed "the operator simply said
+  no" to its user. Nobody had.
+
+  The reason now reads "the confirmation was declined", and the
+  guidance tells the agent not to attribute it — naming `-p` runs and
+  CI harnesses, because a concrete case is more use than a hedge. The
+  flat do-not-retry instruction is unchanged; it is what stops a retry
+  loop and the hedging must not weaken it.
+
+  The good news from the same measurement: there is no five-minute
+  stall in headless use. The ask is answered immediately. `stage=asked`
+  records the latency, which is what makes an auto-decline and a human
+  decline distinguishable afterwards.
 
 - **On 0.42, reconnecting a bare registration is the grant — and
   nothing said so.** A live agent found this after the tag. If a
@@ -90,6 +120,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   block asks the agent to say it once, early, before planning a write
   rather than after — ebman has no channel to the operator except a
   dialog, so the agent is the only way the message reaches them.
+
 
 ## [0.42.0] - 2026-09-19
 
